@@ -1260,4 +1260,19 @@ test("Dev Force uses the same delayed approval guard as Host", () => {
   expect(restartForceDeadline({ ...job, target: "host" })).toBe(deadline);
   expect(restartForceDeadline({ ...job, status: "pending" })).toBeNull();
   expect(restartForceDeadline({ ...job, engineRestartPlanSha256: "a".repeat(64) })).toBeNull();
+  // An update holding for current turns can be ended the same way.
+  const update: RestartJob = {
+    ...job,
+    target: "host",
+    whenIdle: true,
+    update: {
+      sourceCommit: "a".repeat(40),
+      baseCommit: "b".repeat(40),
+      sha256: "c".repeat(64),
+      bytes: 100,
+    },
+  };
+  expect(restartForceDeadline(update)).toBe(deadline);
+  // The server acts on it only while the update waits for idle.
+  expect(restartForceDeadline({ ...update, whenIdle: false })).toBeNull();
 });

@@ -1,3 +1,4 @@
+import { RestartHoldError } from "../restart-hold.js";
 import { createIdleRuntimeCleanup } from "../idle-runtime-cleanup/index.js";
 import { HostObservationError } from "../host-operations/index.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -68,7 +69,12 @@ afterEach(async () => {
   for (const service of services.splice(0)) await service.close();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
-async function scenario(directory?: string, removalFailures = 0, retryDelayMs = 1) {
+async function scenario(
+  directory?: string,
+  removalFailures = 0,
+  retryDelayMs = 1,
+  waitForRestartHoldRelease?: (signal: AbortSignal) => Promise<void>,
+) {
   const home = directory ?? (await mkdtemp(join(tmpdir(), "finish-recovery-")));
   if (!directory) homes.push(home);
   const durableStore = createJsonFinishSubscriptionStore(home);
@@ -93,6 +99,7 @@ async function scenario(directory?: string, removalFailures = 0, retryDelayMs = 
     serverId: "origin",
     logger: createTestLogger(),
     retryDelayMs,
+    ...(waitForRestartHoldRelease ? { waitForRestartHoldRelease } : {}),
   });
   services.push(service);
   await service.start();
@@ -289,6 +296,29 @@ test("dispatch failure retains intent and retries the ordinary finish notificati
   await until(() => state.delivery.prompts.length === 2);
   expect(await state.store.list()).toHaveLength(1);
   expect(state.observation.waits).toHaveLength(1);
+  state.delivery.acknowledgments[1]!.resolve("steered");
+  await expect.poll(async () => (await state.store.list()).length).toBe(0);
+});
+
+test("a restart hold waits for its release instead of retrying the notification", async () => {
+  const release = deferred<void>();
+  let waits = 0;
+  const state = await scenario(undefined, 0, 1, async () => {
+    waits++;
+    await release.promise;
+  });
+  await state.service.register(intent);
+  await until(() => state.observation.waits.length === 1);
+  state.observation.waits[0]!.result.resolve(outcome());
+  await until(() => state.delivery.prompts.length === 1);
+  state.delivery.acknowledgments[0]!.reject(new RestartHoldError());
+  await until(() => waits === 1);
+  // No retry storm while the hold lasts, and the durable intent is kept.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(state.delivery.prompts).toHaveLength(1);
+  expect(await state.store.list()).toHaveLength(1);
+  release.resolve();
+  await until(() => state.delivery.prompts.length === 2);
   state.delivery.acknowledgments[1]!.resolve("steered");
   await expect.poll(async () => (await state.store.list()).length).toBe(0);
 });

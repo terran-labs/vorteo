@@ -664,6 +664,23 @@ interrupting a running turn. Active threads receive a timeline warning; provider
 with steering also receive the instruction during their current turn. Unsupported
 providers finish normally. No timeout silently converts this into a forced restart.
 
+During the hold a message for an agent whose turn is running, such as a child's
+finish notification to a coordinator waiting on it, is steered into that turn so
+the turn can finish. A message that would start or replace a turn stays held and
+fails with a typed hold error. Finish notifications keep their durable intent and
+wait for the hold to end instead of retrying every few seconds.
+
+The coordinator records when the hold first waits in its private `restart-holds.json`,
+which survives a coordinator restart, and logs each change in the set of agents it
+waits for, by agent ID only. After `restartHoldDeadlineMinutes` (default 15),
+whatever it is waiting on, it logs once, changes the job's detail and badges it
+**Your decision needed** for clients that request the reply-only
+`holdDeadlineExceeded`. The owner can choose **Force restart now**, which interrupts
+the remaining turns, or cancel. It still never interrupts them on its own. Restart
+activity lists the waiting agents by title, and Force restart now is offered for a
+source update or batch while it is approved and waiting for idle. See [restart hold
+deadline](protocol-compatibility.md#restart-hold-deadline) for rollback.
+
 The existing idle check includes provider subagents and registrations already in
 flight. Before dispatch, the daemon drains persistence and saves agent snapshots.
 A failed goal block remains a visible blocker. Cancellation is journaled first and

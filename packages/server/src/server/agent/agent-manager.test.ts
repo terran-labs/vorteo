@@ -989,6 +989,119 @@ test("notification batches share the run they start or join", async () => {
   }
 });
 
+test("during a restart hold a message joins a running turn but never starts or replaces one", async () => {
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-hold-steer-"));
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const send = (clientMessageId: string) =>
+    startAgentRun(manager, agent.id, clientMessageId, logger, {
+      replaceRunning: true,
+      activeTurnBehavior: "steer",
+      runOptions: { clientMessageId },
+    });
+  try {
+    const run = manager.streamAgent(agent.id, "initial");
+    void (async () => {
+      for await (const _event of run) {
+      }
+    })();
+    await manager.waitForAgentRunStart(agent.id);
+    const hold = randomUUID();
+    manager.beginRestartDrain(hold);
+    // A coordinator waiting on a child's reply receives it inside its running turn.
+    await expect(send("joined")).resolves.toEqual({ disposition: "steered" });
+    // A refused steer would replace the turn, so it stays held instead.
+    session.steerResult = "unavailable";
+    await expect(send("refused")).rejects.toMatchObject({ code: "restart_hold" });
+    expect(session.interruptCount).toBe(0);
+    // Once the turn ends, a message would start new work: held until the hold ends.
+    session.steerResult = "accepted";
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+    await expect.poll(() => manager.getAgent(agent.id)?.lifecycle).toBe("idle");
+    await expect(send("idle")).rejects.toMatchObject({ code: "restart_hold" });
+    expect(session.startCount).toBe(1);
+    const released = manager.waitForRestartHoldRelease();
+    expect(manager.cancelRestartDrain(hold)).toBe(true);
+    await released;
+    await expect(send("after")).resolves.toEqual({ disposition: "turn_started" });
+  } finally {
+    await manager.closeAgent(agent.id);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test.each(["provider", "fallback"] as const)(
+  "a restart hold beginning during the %s await prevents replacement",
+  async (stage) => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const pause = async () => {
+      entered.resolve();
+      await release.promise;
+    };
+    class PausingSession extends SteeringTestSession {
+      override async steerActiveTurn(
+        prompt: AgentPromptInput,
+        options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
+      ): Promise<import("./agent-sdk-types.js").SteerResult> {
+        if (stage === "provider") await pause();
+        return super.steerActiveTurn(prompt, options);
+      }
+    }
+    const session = new PausingSession({ provider: "codex", cwd: process.cwd() });
+    session.steerResult = "unavailable";
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-hold-admission-"));
+    const client = new (class extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return session;
+      }
+    })();
+    const manager = new AgentManager({
+      clients: { codex: client },
+      logger,
+      ...(stage === "fallback" ? { beforeSteerUnavailableFallback: pause } : {}),
+    });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const hold = randomUUID();
+    try {
+      const run = manager.streamAgent(agent.id, "initial");
+      const consumed = (async () => {
+        for await (const _event of run) {
+        }
+      })();
+      await manager.waitForAgentRunStart(agent.id);
+      const send = startAgentRun(manager, agent.id, "replacement", logger, {
+        replaceRunning: true,
+        activeTurnBehavior: "steer",
+      });
+      const rejected = expect(send).rejects.toMatchObject({ code: "restart_hold" });
+      await entered.promise;
+      manager.beginRestartDrain(hold);
+      release.resolve();
+      await rejected;
+      expect(session.interruptCount).toBe(0);
+      expect(session.startCount).toBe(1);
+      session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+      await consumed;
+    } finally {
+      release.resolve();
+      manager.cancelRestartDrain(hold);
+      await manager.closeAgent(agent.id);
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("unavailable steer interrupts once and starts one replacement turn", async () => {
   const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
   session.steerResult = "unavailable";
