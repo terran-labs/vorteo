@@ -38,6 +38,8 @@ export const SESSION_HOST_TEST_CLIENT_MODULE_ENV = "PASEO_SESSION_HOST_TEST_CLIE
 const IDLE_EXIT_GRACE_MS = 200;
 
 export interface SessionHostServiceOptions {
+  /** Prepares the private host directory; tests can hold the first startup await here. */
+  prepareDirectory?: typeof preparePrivateDirectory;
   /** Defaults to PASEO_HOME, resolved the way the daemon resolves it. */
   paseoHome?: string;
   /** Defaults to the Claude client. Tests inject a fake provider here. */
@@ -162,10 +164,11 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
  * Runs the session host as its own long-lived process: private files, a rotated token, the
  * off-thread watchdog, graceful shutdown on SIGTERM or SIGINT, and an exit at idle when a worker
  * needs a newer protocol, so launchd restarts the host on the installed release.
+ * Returns undefined when startup is interrupted and an injected exit function returns.
  */
 export async function startSessionHostService(
   options: SessionHostServiceOptions = {},
-): Promise<SessionHostService> {
+): Promise<SessionHostService | undefined> {
   // No process-wide umask: Claude and every tool it runs inherit this process's mask, and files
   // they create must stay readable as usual. Host files use explicit modes instead, and the host
   // applies a private mask only while it creates its socket.
@@ -179,34 +182,11 @@ export async function startSessionHostService(
     options.releaseCheckMs ??
     readDurableSessionsSettings(paseoHome).releaseCheckMs ??
     DEFAULT_RELEASE_CHECK_MS;
-  await preparePrivateDirectory(paths.directory);
-  const children = createProviderChildRegistry(paths.directory);
-  // A broken install fails here, before it can rotate the token of anything.
-  const createClient = options.createClient ?? (await loadProviderClientFactory(children));
   const logPath = path.join(paths.directory, SESSION_HOST_LOG_FILE_NAME);
-  const logger = openPrivateLog(logPath);
-  /**
-   * Detached provider processes from a host that died keep running; stop them before serving, so
-   * no continued agent ever shares a thread with an orphan. This runs only once this host holds
-   * the lock: a second host started by mistake must never stop the live host's providers.
-   */
-  async function reapOrphans(): Promise<void> {
-    const reaped = await children.reapOrphans();
-    if (reaped.stopped.length || reaped.dropped.length)
-      logger.warn(
-        {
-          stopped: reaped.stopped.map((child) => ({ pid: child.pid, agentId: child.agentId })),
-          dropped: reaped.dropped.length,
-        },
-        "Stopped provider processes left by an earlier session host",
-      );
-  }
-  const watchdog = startSessionHostWatchdog({
-    logPath,
-    hangTimeoutMs: options.hangTimeoutMs ?? DEFAULT_HANG_TIMEOUT_MS,
-    probe: { socketPath: paths.socketPath, tokenPath: paths.tokenPath },
-    onError: (error) => logger.error({ err: error }, "Session host watchdog failed"),
-  });
+  // Before the private directory exists, launchd captures shutdown diagnostics on stderr.
+  let logger = pino({ base: { pid: process.pid, module: "session-host" } }, process.stderr);
+  let watchdog: ReturnType<typeof startSessionHostWatchdog> | null = null;
+  let startingHost: Promise<SessionHost> | null = null;
 
   let host: SessionHost | null = null;
   let toolRelay: ToolRelay | null = null;
@@ -217,8 +197,9 @@ export async function startSessionHostService(
 
   function shutdown(reason: string): Promise<void> {
     shuttingDown ??= (async () => {
-      watchdog.armDeadline(Date.now() + shutdownDeadlineMs);
+      watchdog?.armDeadline(Date.now() + shutdownDeadlineMs);
       if (releaseTimer) clearInterval(releaseTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       logger.info({ reason }, "Session host stopping");
       // launchd relaunches the host on the installed release; until it listens, workers must treat
       // the missing socket as a host that is returning, not one that was removed.
@@ -231,6 +212,9 @@ export async function startSessionHostService(
         );
       let code = 0;
       try {
+        // The listener may be binding when the signal arrives. Let it finish acquiring its
+        // resources before closing, so shutdown never leaves a newly acquired lock behind.
+        await startingHost?.catch(() => {});
         await host?.close();
         await toolRelay?.closeAll();
       } catch (error) {
@@ -248,6 +232,7 @@ export async function startSessionHostService(
    * exits at zero sessions; the marker file is how workers and the coordinator learn of it.
    */
   function markUpgradePending(why: string, detail: Record<string, unknown>): void {
+    if (shuttingDown) return;
     if (!upgradePending) {
       logger.info(detail, why);
       void writeMarker(paths.upgradeMarkerPath, {
@@ -265,7 +250,7 @@ export async function startSessionHostService(
   async function checkInstalledRelease(): Promise<void> {
     if (upgradePending || shuttingDown) return;
     const installed = await installedRelease();
-    if (installed && installed !== release)
+    if (!shuttingDown && installed && installed !== release)
       markUpgradePending("A newer release is installed; exiting once no session runs", {
         installed,
         running: release,
@@ -282,67 +267,126 @@ export async function startSessionHostService(
     }, IDLE_EXIT_GRACE_MS);
   }
 
-  const writeAudit = createSessionHostAuditLog({
-    path: paths.auditLogPath,
-    onError: (error) => logger.warn({ err: error }, "Session host audit write failed"),
-  });
-  function audit(record: SessionHostAuditRecord): void {
-    writeAudit(record);
-    // Only a peer holding the token reaches the version check, so no stranger can cause this. An
-    // older worker is no reason to restart: the installed release would refuse it again.
-    if (
-      record.event === "hello_rejected" &&
-      record.reason === "version" &&
-      typeof record.protocolVersion === "number" &&
-      record.protocolVersion > SESSION_HOST_PROTOCOL_VERSION
-    ) {
-      markUpgradePending("A worker needs a newer session host; exiting once no session runs", {
-        protocolVersion: record.protocolVersion,
-      });
-    } else if (record.event === "session_closed" || record.event === "open_failed") {
-      exitIfIdle();
-    }
-  }
-
-  const sessionLogger = logger.child({ module: "session-host-provider" });
-  // Memory only: workers learn it at hello, and a new host run means a new token.
-  const mcpToken = randomBytes(32).toString("base64url");
-  toolRelay = startToolRelay(paths.directory, mcpToken, logger);
-  host = await startSessionHost({
-    socketPath: paths.socketPath,
-    // Rotated only once this host holds the lock, so a second host started by mistake fails
-    // without invalidating the running host's token.
-    token: () => rotateSessionHostToken(paths),
-    mcpToken,
-    openSession: createProviderSessionFactory({
-      logger: sessionLogger,
-      createClient,
-      toolRelay,
-    }),
-    audit,
-    release,
-    limits: options.limits,
-    afterLock: reapOrphans,
-  });
-  watchdog.markListening();
-  // A tracked restart or an upgrade exit left these for workers; the host that answers again
-  // removes them.
-  for (const marker of [paths.restartMarkerPath, paths.upgradeMarkerPath])
-    await rm(marker, { force: true }).catch((error: unknown) =>
-      logger.warn({ err: error, marker }, "Could not remove a session host marker"),
-    );
-  logger.info({ hostId: host.identity.id, release }, "Session host started");
-  // A mismatched hello can arrive before startSessionHost returns.
-  exitIfIdle();
-  releaseTimer = setInterval(() => void checkInstalledRelease(), releaseCheckMs);
-  releaseTimer.unref();
-
   // once: a second SIGTERM or SIGINT during shutdown takes the default action and kills the host
   // at once. That is intended; launchd itself escalates to SIGKILL after its exit timeout.
-  for (const signal of ["SIGTERM", "SIGINT"] as const)
-    process.once(signal, () => void shutdown(signal));
+  const signalHandlers = (["SIGTERM", "SIGINT"] as const).map((signal) => {
+    const handler = () => void shutdown(signal);
+    process.once(signal, handler);
+    return { signal, handler };
+  });
 
-  return { host, logger, shutdown };
+  async function start(): Promise<SessionHostService | undefined> {
+    await (options.prepareDirectory ?? preparePrivateDirectory)(paths.directory);
+    if (shuttingDown) return;
+    const children = createProviderChildRegistry(paths.directory);
+    // A broken install fails here, before it can rotate the token of anything.
+    const injectedClient = options.createClient ?? (await loadTestClientFactory(process.env));
+    if (shuttingDown) return;
+    const createClient = injectedClient ?? (await loadProviderClientFactory(children));
+    if (shuttingDown) return;
+    logger = openPrivateLog(logPath);
+    /**
+     * Detached provider processes from a host that died keep running; stop them before serving, so
+     * no continued agent ever shares a thread with an orphan. This runs only once this host holds
+     * the lock: a second host started by mistake must never stop the live host's providers.
+     */
+    async function reapOrphans(): Promise<void> {
+      const reaped = await children.reapOrphans();
+      if (reaped.stopped.length || reaped.dropped.length)
+        logger.warn(
+          {
+            stopped: reaped.stopped.map((child) => ({ pid: child.pid, agentId: child.agentId })),
+            dropped: reaped.dropped.length,
+          },
+          "Stopped provider processes left by an earlier session host",
+        );
+    }
+    watchdog = startSessionHostWatchdog({
+      logPath,
+      hangTimeoutMs: options.hangTimeoutMs ?? DEFAULT_HANG_TIMEOUT_MS,
+      probe: { socketPath: paths.socketPath, tokenPath: paths.tokenPath },
+      onError: (error) => logger.error({ err: error }, "Session host watchdog failed"),
+    });
+
+    const writeAudit = createSessionHostAuditLog({
+      path: paths.auditLogPath,
+      onError: (error) => logger.warn({ err: error }, "Session host audit write failed"),
+    });
+    function audit(record: SessionHostAuditRecord): void {
+      writeAudit(record);
+      // Only a peer holding the token reaches the version check, so no stranger can cause this. An
+      // older worker is no reason to restart: the installed release would refuse it again.
+      if (
+        record.event === "hello_rejected" &&
+        record.reason === "version" &&
+        typeof record.protocolVersion === "number" &&
+        record.protocolVersion > SESSION_HOST_PROTOCOL_VERSION
+      ) {
+        markUpgradePending("A worker needs a newer session host; exiting once no session runs", {
+          protocolVersion: record.protocolVersion,
+        });
+      } else if (record.event === "session_closed" || record.event === "open_failed") {
+        exitIfIdle();
+      }
+    }
+
+    const sessionLogger = logger.child({ module: "session-host-provider" });
+    // Memory only: workers learn it at hello, and a new host run means a new token.
+    const mcpToken = randomBytes(32).toString("base64url");
+    toolRelay = startToolRelay(paths.directory, mcpToken, logger);
+    startingHost = startSessionHost({
+      socketPath: paths.socketPath,
+      // Rotated only once this host holds the lock, so a second host started by mistake fails
+      // without invalidating the running host's token.
+      token: () => rotateSessionHostToken(paths),
+      mcpToken,
+      openSession: createProviderSessionFactory({
+        logger: sessionLogger,
+        createClient,
+        toolRelay,
+      }),
+      audit,
+      release,
+      limits: options.limits,
+      afterLock: reapOrphans,
+    });
+    try {
+      host = await startingHost;
+    } catch (error) {
+      if (!shuttingDown) throw error;
+      await shuttingDown;
+      return;
+    }
+    if (shuttingDown) {
+      await shuttingDown;
+      return;
+    }
+    watchdog.markListening();
+    // A tracked restart or an upgrade exit left these for workers; the host that answers again
+    // removes them.
+    for (const marker of [paths.restartMarkerPath, paths.upgradeMarkerPath]) {
+      if (shuttingDown) return;
+      await rm(marker, { force: true }).catch((error: unknown) =>
+        logger.warn({ err: error, marker }, "Could not remove a session host marker"),
+      );
+    }
+    if (shuttingDown) return;
+    logger.info({ hostId: host.identity.id, release }, "Session host started");
+    // A mismatched hello can arrive before startSessionHost returns.
+    exitIfIdle();
+    releaseTimer = setInterval(() => void checkInstalledRelease(), releaseCheckMs);
+    releaseTimer.unref();
+
+    return { host, logger, shutdown };
+  }
+
+  try {
+    return await start();
+  } catch (error) {
+    // A caller may catch a failed start instead of exiting like the process entrypoint.
+    for (const { signal, handler } of signalHandlers) process.off(signal, handler);
+    throw error;
+  }
 }
 
 /**
