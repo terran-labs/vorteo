@@ -206,6 +206,117 @@ export async function fetchGitHubReleases(
   return z.array(GitHubReleaseSchema).parse(await response.json());
 }
 
+const GITHUB_HEADERS = {
+  Accept: "application/vnd.github+json",
+  "User-Agent": "vorteo-installation-coordinator",
+  "X-GitHub-Api-Version": "2022-11-28",
+};
+
+const RulesetSchema = z.object({
+  rules: z.array(
+    z.object({
+      type: z.string(),
+      parameters: z
+        .object({
+          required_status_checks: z
+            .array(z.object({ context: z.string(), integration_id: z.number().optional() }))
+            .optional(),
+        })
+        .passthrough()
+        .optional(),
+    }),
+  ),
+});
+
+const CheckRunSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  status: z.string(),
+  conclusion: z.string().nullable(),
+  app: z.object({ id: z.number() }).nullable().optional(),
+});
+export type CheckRun = z.infer<typeof CheckRunSchema>;
+
+/** Required check names and their one app, from `.github/rulesets/main.json` at the commit. */
+export function requiredChecksOf(rulesetText: string): { names: string[]; app: number } {
+  const ruleset = RulesetSchema.parse(JSON.parse(rulesetText));
+  const checks =
+    ruleset.rules.find((rule) => rule.type === "required_status_checks")?.parameters
+      ?.required_status_checks ?? [];
+  // An empty list is a configuration error, never a pass.
+  if (!checks.length) throw new Error("The main ruleset lists no required checks.");
+  const apps = new Set(checks.map((check) => check.integration_id));
+  const [app] = [...apps];
+  if (apps.size !== 1 || app === undefined)
+    throw new Error("The main ruleset's required checks do not name one app.");
+  return { names: checks.map((check) => check.context), app };
+}
+
+/** CI's `changes` job decides through its path filter whether these checks run. */
+const PATH_FILTER_GATE = "changes";
+const PATH_FILTERED_CHECKS = new Set(["format", "lint", "typecheck"]);
+
+/**
+ * Whether every required check passed on one commit, as scripts/lib/github.mjs judges it for
+ * publication: the newest run per name decides and only success passes, except that a
+ * path-filtered check skipped beside a passing `changes` counts. Runs from other apps are
+ * ignored, so nothing but the ruleset's app can satisfy a check.
+ */
+export function summarizeRequiredChecks(
+  runs: readonly CheckRun[],
+  required: { names: readonly string[]; app: number },
+): { passed: boolean; detail: string } {
+  const latest = new Map<string, CheckRun>();
+  for (const run of runs) {
+    if (run.app?.id !== required.app) continue;
+    const previous = latest.get(run.name);
+    if (!previous || run.id > previous.id) latest.set(run.name, run);
+  }
+  const gate = latest.get(PATH_FILTER_GATE);
+  const gatePassed = gate?.status === "completed" && gate.conclusion === "success";
+  const pending: string[] = [];
+  const failed: string[] = [];
+  for (const name of required.names) {
+    const run = latest.get(name);
+    if (!run || run.status !== "completed") pending.push(name);
+    else if (run.conclusion === "success") continue;
+    else if (run.conclusion === "skipped" && PATH_FILTERED_CHECKS.has(name) && gatePassed) continue;
+    else failed.push(`${name} (${run.conclusion ?? "no result"})`);
+  }
+  if (failed.length) return { passed: false, detail: `failed: ${failed.join(", ")}.` };
+  if (pending.length)
+    return { passed: false, detail: `missing or still running: ${pending.join(", ")}.` };
+  return { passed: true, detail: `${required.names.join(", ")} passed.` };
+}
+
+/** Reads a commit's check runs from the public GitHub API without a token. */
+export async function fetchCheckRuns(
+  commit: string,
+  fetchImpl: typeof fetch = fetch,
+  repository = VORTEO_RELEASE_REPOSITORY,
+): Promise<CheckRun[]> {
+  const runs: CheckRun[] = [];
+  // A main push runs about 30 jobs; five pages leave ample room.
+  for (let page = 1; page <= 5; page += 1) {
+    const response = await fetchImpl(
+      `https://api.github.com/repos/${repository}/commits/${commit}/check-runs?per_page=100&page=${page}`,
+      { headers: GITHUB_HEADERS, signal: AbortSignal.timeout(30_000) },
+    );
+    if (!response.ok)
+      throw new Error(
+        response.status === 403 || response.status === 429
+          ? "GitHub rate-limited the check-run query. Try again within the hour."
+          : `GitHub answered the check-run query with HTTP ${response.status}.`,
+      );
+    const body = z
+      .object({ total_count: z.number(), check_runs: z.array(CheckRunSchema) })
+      .parse(await response.json());
+    runs.push(...body.check_runs);
+    if (runs.length >= body.total_count || body.check_runs.length === 0) return runs;
+  }
+  return runs;
+}
+
 export class ReleaseUpdates {
   private last: UpdateCheck = {
     checkedAt: null,
@@ -321,6 +432,13 @@ export class ReleaseUpdates {
       .list()
       .some((item) => item.release === latest.release && item.status !== "cancelled");
     if (seen) return;
+    // A source upgrade or another coordinator job holds release upgrades off; the next check
+    // offers the release once it ends. This is not a failed check.
+    const blocked = this.upgrades.blocked();
+    if (blocked) {
+      this.last = { ...this.last, note: `Not offered yet: ${blocked}` };
+      return;
+    }
     const upgrade = await this.upgrades.request(latest.release, {
       origin: "update-check",
       notes: latest.notes,
@@ -331,6 +449,7 @@ export class ReleaseUpdates {
 
   /** Reads the policy as it is now, since the owner may have changed it during the fetch. */
   private approveIfAutomatic(id: string): void {
-    if (this.policy().mode === "automatic") this.upgrades.approveAutomatically(id);
+    if (this.policy().mode === "automatic" && !this.upgrades.blocked())
+      this.upgrades.approveAutomatically(id);
   }
 }

@@ -1,4 +1,5 @@
 import { isWeb } from "@/constants/platform";
+import { WorkspacePreviewRows } from "@/components/workspace-preview-rows";
 
 import { useVortonTouch } from "@/vorton-touch";
 import {
@@ -138,6 +139,8 @@ function WorkspaceHoverCardContent({
           testID="hover-card-workspace-cwd"
         />
       ) : null}
+      {/* Running services with preview URLs, lost in merge 51f16b39f (e4e3bca72). */}
+      <WorkspacePreviewRows scripts={workspace.scripts} />
       {prHint?.checks && prHint.checks.length > 0 ? (
         <>
           <View style={styles.separator} />

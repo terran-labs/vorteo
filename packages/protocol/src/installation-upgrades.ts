@@ -155,6 +155,8 @@ export const UpdateCheckSchema = z.object({
   error: z.string().nullable(),
   /** The installed Host source version, such as 26.10.3001, or null when unknown. */
   installedVersion: z.string().nullable(),
+  /** Why the offer was held back, such as a source upgrade running. Absent when it was not. */
+  note: z.string().optional(),
   /** The newest installable release above the installed version, or null when current. */
   latest: z
     .object({ release: ReleaseTagSchema, channel: UpdateChannelSchema, notes: ReleaseNotesSchema })
@@ -211,6 +213,8 @@ export const UpgradeStatusSchema = z.object({
     .object({
       sourceCommit: CommitSchema,
       release: ReleaseTagSchema.nullable(),
+      /** Set when a source upgrade installed a commit ahead of this release. */
+      aheadOf: ReleaseTagSchema.optional(),
     })
     .nullable(),
   container: z.boolean(),
@@ -236,6 +240,77 @@ export const UpgradeDecisionSchema = z.strictObject({
   decision: z.enum(["approve", "approve-after-work", "reject", "cancel", "acknowledge"]),
 });
 export type UpgradeDecision = z.infer<typeof UpgradeDecisionSchema>;
+
+/**
+ * Owner-approved upgrade of a Stable installation to one reviewed commit on `main`, served
+ * under /api/installation/owner/source-upgrades. Gated on `sourceUpgrade` in
+ * /api/installation/capabilities; older coordinators return 404. It runs the release upgrade's
+ * steps, journaled apart from release upgrades so older coordinators never read these records.
+ */
+export const SourceUpgradeSchema = InstallationUpgradeSchema.omit({
+  release: true,
+  origin: true,
+  notes: true,
+  automatic: true,
+  acknowledgedAt: true,
+}).extend({
+  kind: z.literal("source-upgrade"),
+  /** Why the owner wants this commit before the next release. */
+  reason: z.string().min(1).max(500),
+  requestedBy: z.string().min(1).max(200),
+  /** The newest release the target commit contains, or null when unknown. */
+  lastRelease: ReleaseTagSchema.nullable(),
+  /** Set on an owner rollback: the source upgrade whose previous Host release it reselects. */
+  rollbackOf: z.string().uuid().optional(),
+  /** When a rollback's 24-hour window ends. Approval and the fetch step refuse it afterwards. */
+  rollbackUntil: z.string().datetime().optional(),
+});
+export type SourceUpgrade = z.infer<typeof SourceUpgradeSchema>;
+
+/** Reply to POST /api/installation/owner/source-upgrades/query. */
+export const SourceUpgradeStatusSchema = z.object({
+  available: z.boolean(),
+  /** Why source upgrades are unavailable, or what one replaces. */
+  detail: z.string(),
+  current: z
+    .object({
+      sourceCommit: CommitSchema,
+      /** The release the installed commit was installed from or, ahead of a release, contains. */
+      lastRelease: ReleaseTagSchema.nullable(),
+      /** True when the installed commit came from a source upgrade, ahead of `lastRelease`. */
+      ahead: z.boolean(),
+    })
+    .nullable(),
+  /** The owner rollback of the newest source upgrade, offered for 24 hours after it finished. */
+  rollback: z.object({
+    available: z.boolean(),
+    detail: z.string(),
+    upgradeId: z.string().uuid().optional(),
+    /** The Host commit a rollback reselects. */
+    commit: CommitSchema.optional(),
+    until: z.string().datetime().optional(),
+  }),
+  upgrades: z.array(SourceUpgradeSchema),
+});
+export type SourceUpgradeStatus = z.infer<typeof SourceUpgradeStatusSchema>;
+
+/** POST /api/installation/owner/source-upgrades creates a pending source upgrade for review. */
+export const SourceUpgradeRequestSchema = z.strictObject({
+  commit: CommitSchema,
+  reason: z.string().min(1).max(500),
+});
+export type SourceUpgradeRequest = z.infer<typeof SourceUpgradeRequestSchema>;
+
+/** POST /api/installation/owner/source-upgrades/rollback names the source upgrade to undo. */
+export const SourceUpgradeRollbackRequestSchema = z.strictObject({ upgradeId: z.string().uuid() });
+export type SourceUpgradeRollbackRequest = z.infer<typeof SourceUpgradeRollbackRequestSchema>;
+
+/** POST /api/installation/owner/source-upgrades/:id/decision. Never approved automatically. */
+export const SourceUpgradeDecisionSchema = z.strictObject({
+  revision: z.string().uuid(),
+  decision: z.enum(["approve", "approve-after-work", "reject", "cancel"]),
+});
+export type SourceUpgradeDecision = z.infer<typeof SourceUpgradeDecisionSchema>;
 
 /**
  * Moves an installer-layout coordinator onto the Host's selected release, which Host source

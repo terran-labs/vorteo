@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 import { loadFactoryQueue, factoryAgentStatusKey, type FactoryInvoke } from "./queue";
 import { ProjectFactoryStateSchema } from "@/components/sidebar/factory-state";
 import { FACTORY_LANES, factoryLanes, factoryTrack } from "./overview-model";
+import {
+  activeDrains,
+  aggregateStageCounts,
+  canResumeHost,
+  canStopHost,
+  collectNeedsYou,
+  hostStopState,
+  selectFreshTargets,
+} from "./all-factories-model";
+import { OWNER_STOP_REASON } from "./factory-reads";
 
 const emptyQueue = { fetchedAt: "2026-11-04T12:00:00Z", error: null, issues: [] };
 const oldState = {
@@ -133,4 +143,129 @@ it("places repair work in the Review lane and maps each stage onto the five-box 
       pr: { number: 1, url: "", headSha: "", checks: null, reviewDecision: null },
     }),
   ).toEqual(["done", "done", "blocked", "pending", "pending"]);
+});
+
+it("orders what needs the owner across Factories: questions and proposals before issues", () => {
+  const issue = (number: number, extra: object) => ({
+    number,
+    title: `Issue ${number}`,
+    url: `https://github.com/owner/repo/issues/${number}`,
+    label: "running" as const,
+    stage: "review" as const,
+    pr: null,
+    agents: [],
+    ...extra,
+  });
+  const failingPr = { number: 9, url: "pr", headSha: "h", checks: "failing", reviewDecision: null };
+  const state = ProjectFactoryStateSchema.parse({
+    ...oldState,
+    roles: [
+      {
+        role: "factory-mechanic",
+        title: "Mechanic",
+        workspaceId: null,
+        agentId: null,
+        heartbeat: null,
+        launch: { provider: null, profileId: null },
+        status: null,
+        instructions: { revision: 1, review: "proposed" },
+      },
+    ],
+  });
+  const entry = {
+    key: "host:project",
+    serverId: "host",
+    projectId: "project",
+    name: "Project",
+    hostLabel: null,
+    state,
+    status: "on" as const,
+    drain: null,
+    issues: [
+      issue(1, { stage: "blocked" }),
+      issue(2, { pr: failingPr }),
+      issue(3, { pr: failingPr, stage: "repair" }),
+      issue(4, { label: "human-review" }),
+    ],
+  };
+  const question = {
+    id: "00000000-0000-4000-8000-000000000001",
+    question: "Ship it?",
+    why: "Because.",
+    recommendedDefault: "Yes",
+    askedAt: "2026-11-07T10:00:00Z",
+    askedBy: "agent",
+    status: "open" as const,
+  };
+  const items = collectNeedsYou({
+    entries: [entry],
+    questions: [{ factoryKey: entry.key, serverId: "host", agentId: "worker", question }],
+  });
+  expect(items.map((item) => `${item.kind}:${item.number ?? item.subject}`)).toEqual([
+    "question:Ship it?",
+    "proposal:Mechanic",
+    "humanReview:4",
+    "failingChecks:2",
+    "blocked:1",
+  ]);
+  expect(aggregateStageCounts([entry.issues, null]).review).toBe(3);
+});
+
+it("shows one stop per host and reason, however many per-project drain ids it holds", () => {
+  const entry = (projectId: string, serverId: string, drain: object | null) => ({
+    key: `${serverId}:${projectId}`,
+    serverId,
+    projectId,
+    name: projectId,
+    hostLabel: null,
+    state: null,
+    status: "paused" as const,
+    drain: drain as { id: string; reason: string; pausedAt: string } | null,
+    issues: [],
+  });
+  const ours = (id: string, pausedAt: string) => ({ id, reason: OWNER_STOP_REASON, pausedAt });
+  const entries = [
+    entry("a", "host", ours("drain-a", "2026-11-07T10:00:02Z")),
+    entry("b", "host", ours("drain-b", "2026-11-07T10:00:01Z")),
+    entry("c", "other", {
+      id: "drain-c",
+      reason: "drain before restart",
+      pausedAt: "2026-11-07T09:00:00Z",
+    }),
+    entry("d", "other", null),
+  ];
+  expect(activeDrains(entries)).toEqual([
+    expect.objectContaining({
+      serverId: "host",
+      projects: 2,
+      owner: true,
+      pausedAt: "2026-11-07T10:00:01Z",
+    }),
+    expect.objectContaining({ serverId: "other", projects: 1, owner: false }),
+  ]);
+  // A host anyone else holds is never resumed or stopped on top; ours resumes, running ones stop.
+  const host = hostStopState(entries.filter((item) => item.serverId === "host"));
+  const other = hostStopState(entries.filter((item) => item.serverId === "other"));
+  expect([canResumeHost(host), canStopHost(host)]).toEqual([true, false]);
+  expect([canResumeHost(other), canStopHost(other)]).toEqual([false, false]);
+  expect(canStopHost(hostStopState([{ status: "on", drain: null }]))).toBe(true);
+  // A host whose fresh read failed is left alone; the others still act or are skipped.
+  const running = { projects: [{ state: "on", drain: null }] };
+  const held = { projects: [{ state: "paused", drain: { reason: "drain before restart" } }] };
+  expect(
+    selectFreshTargets(
+      ["a", "b", "c"],
+      [
+        { status: "rejected", reason: new Error("offline") },
+        { status: "fulfilled", value: running },
+        { status: "fulfilled", value: held },
+      ],
+      canStopHost,
+    ),
+  ).toEqual({ act: ["b"], unreadable: ["a"], skipped: ["c"] });
+  const stops = collectNeedsYou({ entries, questions: [] }).filter((item) => item.kind === "drain");
+  expect(stops.map((item) => [item.serverId, item.action.kind])).toEqual([
+    ["other", "stop"],
+    ["host", "stop"],
+  ]);
 });

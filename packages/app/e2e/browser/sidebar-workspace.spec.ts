@@ -452,6 +452,12 @@ test.describe("Sidebar workspace list", () => {
 
       await focusWorkspaceRowWithKeyboard(page, workspace.workspaceId);
       await expectWorkspaceHoverCardOpen(page);
+      // Vorteo keeps the row's actions button mounted (bcd8dda7a), so the first Tab stays in the
+      // row and the card stays open; the next one leaves the row.
+      await page.keyboard.press("Tab");
+      await expect(
+        page.getByTestId(`sidebar-workspace-kebab-${getServerId()}:${workspace.workspaceId}`),
+      ).toBeFocused();
       await page.keyboard.press("Tab");
       await expectWorkspaceHoverCardClosed(page);
     } finally {
@@ -642,14 +648,12 @@ test.describe("Half-screen desktop layout", () => {
       await waitForSidebarProject(page, path.basename(workspace.repoPath));
       await openWorkspaceFromSidebar(page, workspace.workspaceId);
 
-      // Explorer shows Files as a card beside the conversation. At 751px the dock and workspace
-      // leave no room for app navigation, so the sidebar yields (docs/explorer-sidebar.md).
       await openFilesPanel(page);
       const explorerToggle = page.getByTestId("workspace-explorer-toggle").first();
       const files = page.getByTestId("file-explorer-tree-scroll").filter({ visible: true });
       await expect(files).toBeVisible();
       await expect(explorerToggle).toHaveAccessibleName("Close Explorer sidebar");
-      await expect(page.locator('[data-testid="sidebar-collapse"]:visible')).toHaveCount(0);
+      await expect(page.locator('[data-testid="sidebar-collapse"]:visible')).toHaveCount(1);
       await expect(page.getByTestId("sidebar-global-new-workspace")).not.toBeVisible();
       await expect(page.getByTestId("workspace-supporting-cards")).toBeVisible();
       await expect(

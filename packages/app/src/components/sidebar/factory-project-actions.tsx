@@ -4,6 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/contexts/toast-context";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { useMenuContext } from "@/components/ui/menu";
+import { factoryListQueryKey } from "@/screens/factory/factory-reads";
+import { checkProjectResume, projectResume } from "@/screens/factory/resume-confirm";
 import { openFactoryInstructions } from "./factory-instructions";
 import { openFactoryDialog, factoryActions, type ProjectFactoryState } from "./project-factory";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./project-menu-item";
@@ -49,11 +51,15 @@ export function FactoryProjectActions({
   const applyFactoryState = useCallback(
     (state: ProjectFactoryState) => {
       setFactoryState(state);
-      if (settingsTarget)
-        factoryQueryClient.setQueryData(
-          ["projectFactory", settingsTarget.serverId, settingsTarget.projectId],
-          state,
-        );
+      if (!settingsTarget) return;
+      factoryQueryClient.setQueryData(
+        ["projectFactory", settingsTarget.serverId, settingsTarget.projectId],
+        state,
+      );
+      // The list carries pause and drain state for the All Factories card and overview.
+      void factoryQueryClient.invalidateQueries({
+        queryKey: factoryListQueryKey(settingsTarget.serverId),
+      });
     },
     [settingsTarget, factoryQueryClient],
   );
@@ -72,11 +78,35 @@ export function FactoryProjectActions({
         return;
       }
       setFactoryPending(true);
-      void factoryPlugin
-        .invoke(`factory.project.${action}`, {
-          projectId: settingsTarget.projectId,
+      // Resume decides from a fresh read, as the overview does: a project another process now
+      // holds is not resumed, and one stopped by Stop all asks first.
+      const check =
+        action === "resume"
+          ? checkProjectResume({
+              client: factoryQueryClient,
+              ...settingsTarget,
+              invoke: factoryPlugin.invoke,
+              t,
+            })
+          : Promise.resolve({ resume: true, message: null });
+      void check
+        .then(async ({ resume: allowed, message }) => {
+          if (!allowed) {
+            const fresh = factoryQueryClient.getQueryData<ProjectFactoryState>([
+              "projectFactory",
+              settingsTarget.serverId,
+              settingsTarget.projectId,
+            ]);
+            if (fresh) setFactoryState(fresh);
+            if (message) setFactoryError(message);
+            return undefined;
+          }
+          const state = await factoryPlugin.invoke(`factory.project.${action}`, {
+            projectId: settingsTarget.projectId,
+          });
+          applyFactoryState(state as ProjectFactoryState);
+          return state;
         })
-        .then((state) => applyFactoryState(state as ProjectFactoryState))
         .catch((error) =>
           toast.error(error instanceof Error ? error.message : t("projectFactory.failed")),
         )
@@ -88,11 +118,13 @@ export function FactoryProjectActions({
       factoryPending,
       projectPath,
       factoryState,
+      factoryQueryClient,
       toast,
       t,
       applyFactoryState,
     ],
   );
+  const held = projectResume(factoryState?.drain) === "hidden";
   const openInstructions = useCallback(() => {
     if (settingsTarget) openFactoryInstructions(settingsTarget);
   }, [settingsTarget]);
@@ -116,16 +148,24 @@ export function FactoryProjectActions({
           {t("projectFactory.workerModels")}
         </ProjectMenuItem>
       ) : null}
+      {factoryState && held ? (
+        <ProjectMenuItem surface={surface} disabled>
+          {t("projectFactory.needsYou.kinds.held", { subject: factoryState.drain!.reason })}
+        </ProjectMenuItem>
+      ) : null}
       {factoryState
-        ? factoryActions(factoryState.state).map((action) => (
-            <FactoryActionItem
-              key={action}
-              surface={surface}
-              action={action}
-              pending={factoryPending}
-              onAction={factoryAction}
-            />
-          ))
+        ? factoryActions(factoryState.state)
+            // Another process holds this project, so it offers no Resume, as in the overview.
+            .filter((action) => !(held && action === "resume"))
+            .map((action) => (
+              <FactoryActionItem
+                key={action}
+                surface={surface}
+                action={action}
+                pending={factoryPending}
+                onAction={factoryAction}
+              />
+            ))
         : null}
       {factoryError || !factoryState || factoryState.state === "unavailable" ? (
         <ProjectMenuItem surface={surface} disabled>
