@@ -1761,7 +1761,12 @@ describe("WorkspaceGitServiceImpl with workspace folders that no longer exist", 
       additions: cwd === survivingWorktree ? ++survivingWorktreeEdits : 1,
       deletions: 0,
     }));
-    const service = createService(git.deps);
+    // The first idle release lands at a phase hashed from the repository path, which here is a
+    // random temporary folder. An idle release fetches and restarts the 3 minute fetch clock, so
+    // one landing just after an active fetch adds a third fetch inside the two intervals measured
+    // below. Phase 0 runs it at the first activity check, before the deletion; the next one is 30
+    // minutes later, after this test.
+    const service = createService({ ...git.deps, getIdleGitReleasePhaseMs: () => 0 });
     const deletedSubscription = service.registerWorkspace({ cwd: deletedWorktree }, vi.fn());
     await waitForObservationToSettle(service, 1);
     const survivingSubscription = service.registerWorkspace({ cwd: survivingWorktree }, vi.fn());
@@ -2233,7 +2238,7 @@ describe("workspace polling pressure", () => {
     await service.dispose();
   });
 
-  test("an idle worktree beside an active one gets ref changes at the idle release", async () => {
+  test("an idle worktree beside an active one gets ref changes at the idle release and a checkout at once", async () => {
     const gitCommonDir = join(REPO_CWD, ".git");
     const idleCwd = join(REPO_CWD, "packages", "server");
     const watchCallbacks = new Map<string, WatchCallback>();
@@ -2272,6 +2277,18 @@ describe("workspace polling pressure", () => {
     expect(idleListener).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(IDLE_BACKGROUND_GIT_FETCH_INTERVAL_MS);
+    await waitForRefreshesToSettle(service);
+    expect(calledCwds()).toContain(idleCwd);
+    expect(idleListener).toHaveBeenCalled();
+
+    // HEAD moving is a checkout: the branch every list shows changed, so it cannot wait 30 minutes.
+    await vi.advanceTimersByTimeAsync(5_000);
+    idleListener.mockClear();
+    getCheckoutSnapshotFacts.mockClear();
+    watchCallbacks.get(gitCommonDir)?.(null, [
+      { path: join(gitCommonDir, "HEAD"), type: "update" },
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
     await waitForRefreshesToSettle(service);
     expect(calledCwds()).toContain(idleCwd);
     expect(idleListener).toHaveBeenCalled();

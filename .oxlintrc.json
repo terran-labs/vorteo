@@ -1285,6 +1285,25 @@
         "paseo/no-raw-scroller": "error"
       }
     },
+    // Code the app's Metro bundler loads; e2e/ runs in Node and keeps its .js specifiers.
+    {
+      "files": [
+        "packages/app/index.ts",
+        "packages/app/src/**/*.{ts,tsx}",
+        "packages/app/modules/**/*.{ts,tsx}"
+      ],
+      "rules": { "paseo/no-relative-js-extension": "error" }
+    },
+    // A Vitest global setup: Node loads it to import a repository script by its .mjs name.
+    {
+      "files": ["packages/app/src/runtime/websocket-test-global-setup.ts"],
+      "rules": { "paseo/no-relative-js-extension": "off" }
+    },
+    // Loaded by Metro and by the daemon's Node runtime alike, so no relative import works for both.
+    {
+      "files": ["plugins/*/shared/**/*.ts"],
+      "rules": { "paseo/no-relative-shared-import": "error" }
+    },
     // Press feedback is owned by the primitives in components/ui. Raw pressable burn-down:
     // 117 retained files. Future work should remove entries as contracts migrate to shared primitives.
     {

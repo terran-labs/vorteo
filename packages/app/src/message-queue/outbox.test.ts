@@ -8,7 +8,7 @@ import {
   type OutboxRecord,
   type OutboxStorage,
 } from "./outbox-record";
-import type { QueueOperation } from "@getpaseo/protocol/message-queue";
+import type { QueueChangeOperation } from "@getpaseo/protocol/message-queue";
 
 function memoryStorage(): OutboxStorage {
   const records = new Map<string, OutboxRecord>();
@@ -36,7 +36,7 @@ function memoryStorage(): OutboxStorage {
   };
 }
 
-const operation: QueueOperation = {
+const operation: QueueChangeOperation = {
   kind: "enqueue",
   operationId: "op",
   messageId: "message",
@@ -155,7 +155,7 @@ it("cleans retained stale controls but preserves unacknowledged sends and messag
       error: { code: "missing", message: "Gone" },
     }),
   });
-  const send: QueueOperation = {
+  const send: QueueChangeOperation = {
     kind: "send_now",
     operationId: "send",
     messageId: "message",
@@ -223,7 +223,7 @@ it("keeps a rejected edit locally while allowing later messages to synchronize",
           }
         : { snapshot, error: null },
   });
-  const edit: QueueOperation = {
+  const edit: QueueChangeOperation = {
     ...operation,
     kind: "edit",
     expectedRevision: 0,
@@ -300,7 +300,7 @@ it.each([operation, { ...operation, operationId: legacyImportOperationId(operati
   "retains the exact operation across reload after a lost acknowledgement: %j",
   async (savedOperation) => {
     const storage = memoryStorage();
-    const sent: QueueOperation[] = [];
+    const sent: QueueChangeOperation[] = [];
     const cleaned: string[] = [];
     const first = new QueueOutbox(storage, {
       ...port,
@@ -352,7 +352,7 @@ it("does not acknowledge a local commit when storage fails", async () => {
 it("competing tabs send only the winning persisted attachment IDs", async () => {
   const storage = memoryStorage();
   let uploaded = 0;
-  const sent: QueueOperation[] = [];
+  const sent: QueueChangeOperation[] = [];
   let release!: () => void;
   const bothUploading = new Promise<void>((resolve) => {
     release = resolve;
@@ -441,7 +441,7 @@ it("keeps rejected content visible and blocks later operations for the same task
 it("settles stale pause and resume conflicts instead of stranding later messages", async () => {
   const storage = memoryStorage();
   const conflict = { code: "revision_conflict", message: "The queue changed." };
-  const sent: QueueOperation[] = [];
+  const sent: QueueChangeOperation[] = [];
   let host = { ...snapshot, revision: 3, paused: false };
   const outbox = new QueueOutbox(storage, {
     ...port,
@@ -593,7 +593,7 @@ it("refreshes the shared queue on rejection without losing or replaying the loca
       discarded += 1;
     },
   });
-  const edit: QueueOperation = {
+  const edit: QueueChangeOperation = {
     ...operation,
     kind: "edit",
     expectedRevision: 0,

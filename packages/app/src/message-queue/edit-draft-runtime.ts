@@ -3,12 +3,19 @@ import { queueAttachmentStore } from "./attachment-store";
 import { createQueueEditDraftStorage } from "./edit-draft-storage";
 import { QueueEditDraftSession } from "./edit-draft-session";
 import { captureQueueEdit } from "./stage";
-import { messageOutbox, flushMessageOutbox, refreshMessageOutbox } from "./runtime";
+import {
+  messageOutbox,
+  flushMessageOutbox,
+  queueEditHoldSupported,
+  refreshMessageOutbox,
+  sendQueueEditHold,
+} from "./runtime";
 
 export const queueEditDraftStorage = createQueueEditDraftStorage();
 export const queueEditDraftSession = new QueueEditDraftSession({
   storage: queueEditDraftStorage,
   identity: generateMessageId,
+  editHold: { supported: queueEditHoldSupported, send: sendQueueEditHold },
   cleanup: async (draft) => {
     await Promise.all(
       draft.localAttachments.map(({ metadata }) =>
@@ -74,10 +81,13 @@ export async function reviewRejectedQueueEdit(
     createdAt: new Date(record.createdAt).toISOString(),
     delivery: { status: "queued" as const },
   };
-  const draft = await queueEditDraftSession.open(record.serverId, record.agentId, {
-    ...original,
-    context: record.operation.context,
-  });
+  // The editor holds the message once it shows a current, queued revision.
+  const draft = await queueEditDraftSession.open(
+    record.serverId,
+    record.agentId,
+    { ...original, context: record.operation.context },
+    { hold: false },
+  );
   const copies: import("./outbox-record").LocalQueueAttachment[] = [];
   try {
     for (const attachment of record.localAttachments) {

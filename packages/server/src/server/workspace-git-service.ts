@@ -521,6 +521,8 @@ interface RepoMetadataWorkspaceRefresh {
   structural: boolean;
   movedRemoteRefs: Set<string>;
   queueIfBusy: boolean;
+  /** The workspace's own HEAD moved, so its branch changed; an idle workspace must not wait. */
+  headMoved?: boolean;
 }
 
 interface WorkingTreeWatchTarget {
@@ -2809,7 +2811,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       case "ignore":
         return true;
       case "owner":
-        this.routeMainCheckoutMetadata(target, matchesRepoGitRoot, effect.refreshBase, refreshes);
+        this.routeMainCheckoutMetadata(
+          target,
+          matchesRepoGitRoot,
+          effect.refreshBase,
+          refreshes,
+          commonRelativePath === "HEAD",
+        );
         return true;
       case "ref":
         if (effect.namespace === "local") {
@@ -2871,7 +2879,9 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       matched = true;
       const effect = classifyGitMetadataPath("worktree", relativePath);
       if (effect.kind === "owner") {
-        this.addWorkspaceMetadataRefresh(refreshes, workspaceKey, effect.refreshBase);
+        this.addWorkspaceMetadataRefresh(refreshes, workspaceKey, effect.refreshBase, {
+          headMoved: relativePath.replaceAll("\\", "/") === "HEAD",
+        });
       } else if (effect.kind !== "ignore") {
         throw new Error(`Invalid ${effect.kind} effect for worktree metadata`);
       }
@@ -2884,11 +2894,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     matchesRepoGitRoot: (candidate: string) => boolean,
     refreshBase: boolean,
     refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
+    headMoved: boolean,
   ): void {
     for (const workspaceKey of target.workspaceKeys) {
       const facts = this.workspaceTargets.get(workspaceKey)?.latestFacts;
       if (facts?.isGit && facts.absoluteGitDir && matchesRepoGitRoot(facts.absoluteGitDir)) {
-        this.addWorkspaceMetadataRefresh(refreshes, workspaceKey, refreshBase);
+        this.addWorkspaceMetadataRefresh(refreshes, workspaceKey, refreshBase, { headMoved });
       }
     }
   }
@@ -2965,6 +2976,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       structural?: boolean;
       movedRemoteRef?: string;
       queueIfBusy?: boolean;
+      headMoved?: boolean;
     },
   ): void {
     const previous = refreshes.get(workspaceKey);
@@ -2977,6 +2989,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       structural: previous?.structural === true || options?.structural !== false,
       movedRemoteRefs,
       queueIfBusy: (previous?.queueIfBusy ?? false) || (options?.queueIfBusy ?? true),
+      headMoved: previous?.headMoved === true || options?.headMoved === true,
     });
   }
 
@@ -2990,7 +3003,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       return;
     }
     const workingTreeTargets = new Set<WorkingTreeWatchTarget>();
-    const refreshes =
+    const refreshes: Map<string, RepoMetadataWorkspaceRefresh> =
       routedRefreshes ??
       new Map(
         Array.from(target.workspaceKeys, (workspaceKey) => [
@@ -3030,8 +3043,14 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           movedRemoteRefs: refresh.movedRemoteRefs,
         });
         // One ref change (most often a fetch) would otherwise rescan every worktree of the
-        // repository. Idle workspaces keep the request and run it when next active.
-        if (!target.refreshIdleWorkspaces && !this.isWorkspaceTargetActive(workspaceTarget)) {
+        // repository. Idle workspaces keep the request and run it when next active, unless
+        // their own HEAD moved: a checkout changes the branch every list shows, and it happens
+        // once per user action rather than on every fetch.
+        if (
+          !target.refreshIdleWorkspaces &&
+          !refresh.headMoved &&
+          !this.isWorkspaceTargetActive(workspaceTarget)
+        ) {
           workspaceTarget.deferredRefresh = this.mergeRefreshRequests(
             workspaceTarget.deferredRefresh,
             request,

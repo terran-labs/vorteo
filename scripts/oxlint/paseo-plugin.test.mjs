@@ -170,3 +170,66 @@ test("sync IO exceptions must be removed when a module stops using the API", () 
   assert.equal(result.failed, true, result.output);
   assert.match(result.output, /Remove the unused sync IO exception for readFileSync/);
 });
+
+// The app bundle failed on a re-export of "./lean.js" that every existing check passed (Nov 27).
+for (const { name, rule, source, fails } of [
+  {
+    name: "a relative .js import in app code",
+    rule: "paseo/no-relative-js-extension",
+    source: 'import { a } from "./lean.js";\nexport { a };\n',
+    fails: true,
+  },
+  {
+    name: "a relative .js re-export in app code",
+    rule: "paseo/no-relative-js-extension",
+    source: 'export * from "../lean.js";\n',
+    fails: true,
+  },
+  {
+    name: "a relative dynamic .js import in app code",
+    rule: "paseo/no-relative-js-extension",
+    source: 'export const m = import("./lean.js");\n',
+    fails: true,
+  },
+  {
+    name: "an extensionless relative import in app code",
+    rule: "paseo/no-relative-js-extension",
+    source: 'import { a } from "./lean";\nexport { a };\n',
+    fails: false,
+  },
+  {
+    name: "a package import ending in .js in app code",
+    rule: "paseo/no-relative-js-extension",
+    source: 'import { a } from "pkg/lean.js";\nexport { a };\n',
+    fails: false,
+  },
+  {
+    name: "an extensionless relative import in a shared plugin file",
+    rule: "paseo/no-relative-shared-import",
+    source: 'export * from "./lean";\n',
+    fails: true,
+  },
+  {
+    name: "a relative .js import in a shared plugin file",
+    rule: "paseo/no-relative-shared-import",
+    source: 'import { a } from "./lean.js";\nexport { a };\n',
+    fails: true,
+  },
+  {
+    name: "a type-only relative import in a shared plugin file",
+    rule: "paseo/no-relative-shared-import",
+    source: 'import type { A } from "./lean.js";\nexport type { A };\n',
+    fails: false,
+  },
+  {
+    name: "a package import in a shared plugin file",
+    rule: "paseo/no-relative-shared-import",
+    source: 'import { z } from "zod";\nexport { z };\n',
+    fails: false,
+  },
+]) {
+  test(`${rule}: ${name} ${fails ? "is reported" : "passes"}`, () => {
+    const result = lint(source, rule, undefined, "probe.ts");
+    assert.equal(result.failed, fails, result.output);
+  });
+}

@@ -1,7 +1,7 @@
 import { useFetchQuery } from "@/data/query";
 import { useEffect, useState, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
-import type { QueueOperation } from "@getpaseo/protocol/message-queue";
+import type { QueueChangeOperation } from "@getpaseo/protocol/message-queue";
 import { useSessionStore } from "@/stores/session-store";
 import { useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useRetainedPanelActive } from "@/components/retained-panel";
@@ -21,8 +21,8 @@ import {
   subscribeQueue,
 } from "./runtime";
 
-export type QueueAction = QueueOperation extends infer T
-  ? T extends QueueOperation
+export type QueueAction = QueueChangeOperation extends infer T
+  ? T extends QueueChangeOperation
     ? Omit<T, "operationId">
     : never
   : never;
@@ -36,6 +36,9 @@ export function useMessageQueue(serverId: string, agentId: string) {
   const connected = useHostRuntimeIsConnected(serverId);
   const supported = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.durableMessageQueue === true,
+  );
+  const editHold = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.messageQueueEditHold === true,
   );
   const archived = useSessionStore(
     (state) => !!state.sessions[serverId]?.agents.get(agentId)?.archivedAt,
@@ -136,6 +139,8 @@ export function useMessageQueue(serverId: string, agentId: string) {
   return {
     visible: true,
     supported,
+    /** The daemon holds a message from delivery while it is being edited. */
+    editHold,
     connected,
     activeTurnId,
     snapshot: queue.data,

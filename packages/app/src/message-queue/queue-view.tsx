@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isQueueGoalError } from "./goal-error";
 import { useReportActionError } from "@/hooks/use-action-error";
+import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { useCallback, useState, useRef, useContext, useEffect, useMemo } from "react";
 import { Text, View } from "react-native";
@@ -596,6 +597,11 @@ function pendingAttachments(record: OutboxRecord) {
   return [...operation.attachments, ...record.localAttachments];
 }
 
+/** For the "Being edited" label only; the daemon's own clock decides what is held. */
+function isBeingEdited(item: QueueItem): boolean {
+  return !!item.editHold && Date.parse(item.editHold.expiresAt) > Date.now();
+}
+
 function describeQueuedMessage(item: QueueItem): string {
   return (
     item.text ||
@@ -636,10 +642,19 @@ function QueueRow({
   const edits = useQueueEditDrafts();
   const editing = edits.drafts.filter((draft) => draft.original.id === row.id);
   const reportError = useReportActionError();
+  const toast = useToast();
+  const editHold = control.editHold;
   const edit = useCallback(() => {
     if (!item) return;
+    // COMPAT(messageQueueEditHold): added 2026-11-27, remove after 2027-05-27 once the daemon
+    // floor holds edits. Older daemons cannot hold the message while it is edited.
+    if (!editHold)
+      toast.show("This message may be sent as it is while you edit it.", {
+        variant: "warning",
+        durationMs: 6000,
+      });
     void edits.open(item).catch(reportError);
-  }, [edits, item, reportError]);
+  }, [edits, item, reportError, editHold, toast]);
   const [details, setDetails] = useState(false);
   const toggleDetails = useCallback(() => setDetails((value) => !value), []);
   return (
@@ -686,6 +701,9 @@ function QueueRow({
         </TaskCardRow>
       ) : null}
       {record ? <PendingRecovery record={record} control={control} /> : null}
+      {item && !editing.length && isBeingEdited(item) ? (
+        <Text style={[styles.secondary, taskCardStyles.proseInset]}>Being edited</Text>
+      ) : null}
       {item && details && !editing.length ? (
         <SharedQueueAttachments
           serverId={serverId}
@@ -731,6 +749,7 @@ function QueueActions({
   const rowActionStyle = useTaskCardRowActionStyle();
   const queued = item.delivery.status === "queued";
   const sendNow = useCallback(() => {
+    // The daemon decides whether a held message may be sent now; this client's clock may differ.
     void control
       .mutate({
         kind: "send_now",

@@ -73,6 +73,7 @@ For testing rules, see [testing.md](testing.md).
 - Centralize policy. The same discriminator (`plan`, `provider`, `kind`, `status`) branched in 3+ files → policy table, not another `else if` per case.
 - New features get a home before implementation. A feature smeared across 5 shared files is the same slop as a flat-peer namespace.
 - Don't drop new files at the nearest root just because placement is unclear — say so and ask.
+- Code the app bundles imports relative files without an extension: Metro cannot resolve `./x.js` for a `.ts` source, though Vitest can. Shared plugin files (`plugins/*/shared/`) are loaded by Metro and by the daemon's Node runtime, which needs the extension, so they import only packages; publish a second shared file as its own package export. Lint enforces both (`paseo/no-relative-js-extension`, `paseo/no-relative-shared-import`).
 
 ## Refactoring is a bolt-on test
 

@@ -297,6 +297,22 @@ The daemon accepts answers only from sessions whose hello declared `mobile` or `
 
 Daemons that validate typed questions also advertise `features.agentQuestionInputs`. Questions gain optional `input`, `recommendedOptionIds`, `answerOptionIds`, `answerNote` and `answerSource` fields, and the answer request gains optional `optionIds`, `note` and `source`. `recommendedDefault` and `answer` stay required strings, so an older client shows a typed question as free text and can still answer it in text, which the daemon accepts. The client sends the new answer fields only when the daemon advertises the capability; an older daemon would strip them anyway. A typed question's `input` is part of the ask retry identity, so reusing an ID with different options is a conflict.
 
+## Queue edit holds
+
+Daemons advertise `features.messageQueueEditHold` when `agent.queue.mutate.request` accepts the
+`hold_edit` and `release_edit` operations and queue items carry optional `editHold`
+(`holderId`, `expiresAt`, optional `heldSince`). Clients send hold operations only to capable daemons; an older
+daemon's operation schema rejects them. Older clients ignore `editHold` and never hold, so
+their editing behaves as before, but their send now on a held item is refused. A hold changes
+neither the item nor the snapshot revision, so the holder's later edit still matches and
+another client's pause or reorder is not refused; clients accept a snapshot at an equal
+revision, which is how a renewed hold reaches them. Holds
+keep no operation receipt and record no ingress evidence. An expired hold counts as absent, and
+so does one expiring more than two minutes and ten seconds ahead of the daemon's clock. The daemon refuses
+renewal 30 minutes after `heldSince` with error code `edit_hold_expired`; `heldSince` carries
+over only when the holder's previous hold lapsed less than two minutes earlier. A client's clock decides only whether it shows "Being
+edited"; the daemon decides whether the message may be edited or sent now.
+
 ## Workspace project membership at creation
 
 Clients require `workspaceCreateProjectMembership` before including optional
