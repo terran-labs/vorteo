@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## Unreleased - 2026-11-07
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.601 - 2026-11-06
 
 Beta that keeps Claude subscription accounts signed in overnight, with lighter CI while PWA releases are the only channel.
