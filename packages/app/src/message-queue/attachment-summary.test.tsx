@@ -399,6 +399,18 @@ it("hides an empty paused queue after Stop while preserving locally pending mess
     ),
   );
   expect(container.querySelector('[data-testid="shared-message-queue"]')).toBeNull();
+  // An in-flight command for a message that already left the queue has no row to show.
+  state.pendingEdit = true;
+  await act(async () =>
+    root.render(
+      <SharedQueueView
+        serverId="host"
+        agentId="agent"
+        control={useMessageQueue("host", "agent")}
+      />,
+    ),
+  );
+  expect(container.querySelector('[data-testid="shared-message-queue"]')).toBeNull();
   state.pending = true;
   await act(async () =>
     root.render(

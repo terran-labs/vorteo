@@ -2,6 +2,10 @@
 
 Release preparation 26.11.901 preserves the reviewed interface and installer batch and adds shutdown admission checks. Running provider requests retain their existing cleanup ownership; physical iOS acceptance remains unverified.
 
+Maintenance review (2026-11-09): New workspace wraps Import session in the composer's launch picker collapse, driven by the same pending flag, so it leaves with the profile selector while the first message submits and returns if creation fails. Interface only; no new test, since existing browser specs use the button before submitting. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-09): The shared Queue card now shows only when its body has a row, an error or a recovery action. Loading and in-flight commands against an emptied queue previously left an expanded empty card. The existing queue view test covers an in-flight edit for a delivered message. Interface only; README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-09): The agent lifecycle now rechecks shutdown after asynchronous setup and before provider session creation, releasing temporary launch context on rejection. Existing cleanup ownership and deadlines remain unchanged. This does not cancel provider requests already running or establish the cause of the original uninstrumented CI timeout. Nine focused lifecycle cases and the isolated supervisor stop fixture pass. Builds reviewed the rejection cleanup correction; final normal hooks and exact-commit review remain pending. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-09): Prepared the reviewed interface and installation changes for beta validation and stable promotion. Existing inventory entries remain accurate; README overview and onboarding are unchanged. Release installation and platform validation remain separate gates.
@@ -357,6 +361,8 @@ Maintenance review (2026-11-05): browser warm-up applies its configured deadline
 Maintenance review (2026-11-05): System offers tracked Dev repair through the Host when Dev is unavailable. The session-host holder regression now renders System Details and retains its permission and named-agent assertions. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): live tweak by Calm spinner: Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
+
+Maintenance review (2026-11-09): live development now starts on installations whose canonical address is a custom domain. The dev server uses whichever configured origin is .ts.net, and the other address forwards to it. Coordinator change, not yet installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-09): Lab now includes live development. The installation type is the only switch: Lab serves the live checkout with hot reload and allows lab self-updates, Stable serves the published interface. The Delivery mode toggle became a read-only Live development status; the old route translates to a type change. Coordinator change, not yet installed. README overview and onboarding are unchanged.
 

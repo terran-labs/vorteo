@@ -311,15 +311,19 @@ function QueueCountBadge({ control }: { control: MessageQueueControl }) {
   );
 }
 
+// Show the card only when its body renders something. Loading, and in-flight
+// commands such as send now, pause or delete against an emptied queue, have no
+// row of their own and would leave an empty card.
 function showSharedQueue(control: MessageQueueControl, goalErrorHandled: boolean): boolean {
   if (!control.visible || (!control.supported && !control.pending.length)) return false;
   const snapshot = control.snapshot;
   return Boolean(
     snapshot?.items.length ||
     (snapshot?.deliveryError && !(goalErrorHandled && isQueueGoalError(snapshot.deliveryError))) ||
-    control.pending.length ||
-    control.error ||
-    control.loading,
+    control.pending.some(
+      (record) => record.operation.kind === "enqueue" || !!record.error || !!record.dismissed,
+    ) ||
+    control.error,
   );
 }
 
