@@ -13,6 +13,7 @@
   "bracketSpacing": true,
   "ignorePatterns": [
     "*.lock",
+    "docker/multiplex/seccomp/upstream-default.json",
     "**/*.gen.ts",
     "**/*.gen.tsx",
     "packages/app/public/appearance-fonts/vorton-fonts-6e84901.css"

@@ -1,3 +1,4 @@
+import type { CooperativeDrainPreparation } from "@getpaseo/protocol/maintenance-interruption";
 import { retainCustodyBinding } from "../retained-custody-binding.js";
 import { assertWorkerLaunchAdmission, workerLaunchRequestCompatible } from "./worker-launch.js";
 import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
@@ -208,6 +209,7 @@ export function assertStandingRestartAdmission(input: AdmissionInput): void {
     const retained =
       prior && (prior.target === "host" || prior.target === "container-daemon") ? prior : undefined;
     assertRetainedBindings(retained, proposed);
+    assertCooperativePreparation(input, retained, proposed);
     const phase = effectPhase(retained, proposed);
     assertInterruptionTransition(input, retained, proposed, phase);
     if (phase || registrationPreparation(retained, proposed)) {
@@ -231,6 +233,148 @@ export function assertStandingRestartAdmission(input: AdmissionInput): void {
       throw new BootstrapRequestConflict("Protected Linux worker launch capability is unavailable");
     assertEffectAdmission(input, retained, proposed, phase);
   }
+}
+
+function assertCooperativePreparation(
+  input: AdmissionInput,
+  previous: RestartJob | undefined,
+  job: RestartJob,
+): void {
+  const retained = previous?.cooperativeDrainPreparation;
+  const proposed = job.cooperativeDrainPreparation;
+  if (isDeepStrictEqual(retained, proposed)) return;
+  if (retained) {
+    assertCooperativeObservation(retained, job);
+    input.assertEvidence(job, "hold");
+    return;
+  }
+  if (!proposed) return;
+  assertCooperativeGrant(input, previous, job, proposed);
+  const intentJob = { ...job, standingInterruption: proposed.intent };
+  assertInterruptionIdentity(intentJob);
+  assertInterruptionNative(intentJob);
+  assertCooperativeDeadline(input, job, proposed);
+  assertEffectAdmission(input, previous, job, "hold");
+}
+
+function assertCooperativeObservation(
+  retained: CooperativeDrainPreparation,
+  job: RestartJob,
+): void {
+  const proposed = job.cooperativeDrainPreparation;
+  if (!proposed) throw new BootstrapRequestConflict("Cooperative reservation cannot be discarded");
+  const { phase: priorPhase, observation: _priorObservation, ...prior } = retained;
+  const { phase: nextPhase, observation, ...next } = proposed;
+  if (
+    !isDeepStrictEqual(prior, next) ||
+    nextPhase === "reserved" ||
+    (priorPhase === "settled" && nextPhase !== "settled") ||
+    (priorPhase === "refused" && nextPhase !== "refused")
+  )
+    throw new BootstrapRequestConflict("Cooperative reservation is observation-only; never replay");
+  if (
+    nextPhase === "settled" &&
+    (!observation ||
+      observation.activeAgents !== 0 ||
+      observation.pendingStarts !== 0 ||
+      observation.restartDrainId !== job.id ||
+      observation.workerInstanceId !== proposed.intent.held.workerInstanceId)
+  )
+    throw new BootstrapRequestConflict("Cooperative settlement lacks exact idle observation");
+}
+
+function assertCooperativeGrant(
+  input: AdmissionInput,
+  previous: RestartJob | undefined,
+  job: RestartJob,
+  proposed: CooperativeDrainPreparation,
+): void {
+  if (input.state.status !== "enrolled")
+    throw new BootstrapRequestConflict("Cooperative preparation requires retained enrollment");
+  const coverage = input.state.grant.manifest.interruption.cooperativeDrainPreparation;
+  const hold = job.standingHold;
+  assertCooperativeBudget(input.state);
+  if (
+    !coverage ||
+    !hold?.observedAt ||
+    hold.releaseRequestedAt ||
+    hold.initialDaemonInstanceSha256 ||
+    proposed.phase !== "reserved" ||
+    proposed.observation ||
+    previous?.status !== "approved" ||
+    job.status !== "approved" ||
+    !job.whenIdle ||
+    job.standingDecision?.activationStep ||
+    !job.finishCurrentTurns ||
+    !job.continuationCaptureRequested
+  )
+    throw new BootstrapRequestConflict(
+      "Cooperative preparation is not covered by the exact held grant",
+    );
+  assertCooperativeGrantBinding(input.state, job, proposed, coverage.endpointIdentitySha256);
+  // Manual finish approval preserves the wait, not automatic interruption authority.
+  const current = input.evaluate(job, input.state);
+  if (
+    !current ||
+    !job.standingDecision ||
+    !isDeepStrictEqual(
+      { ...current, requestRevision: job.standingDecision.requestRevision },
+      job.standingDecision,
+    )
+  )
+    throw new BootstrapRequestConflict("Standing maintenance authority changed before admission");
+}
+
+function assertCooperativeGrantBinding(
+  state: Extract<InstallationEnrollmentState, { status: "enrolled" }>,
+  job: RestartJob,
+  proposed: CooperativeDrainPreparation,
+  endpointIdentitySha256: string,
+): void {
+  if (
+    proposed.continuationCauseId !== (job.continuationCaptureId ?? job.id) ||
+    proposed.endpointIdentitySha256 !== endpointIdentitySha256 ||
+    proposed.manifestSha256 !== enrollmentManifestDigest(state.grant.manifest)
+  )
+    throw new BootstrapRequestConflict(
+      "Cooperative preparation differs from the retained grant binding",
+    );
+}
+
+function assertCooperativeBudget(state: InstallationEnrollmentState): void {
+  if (state.status !== "enrolled") throw new BootstrapRequestConflict("Enrollment unavailable");
+  const coverage = state.grant.manifest.interruption.cooperativeDrainPreparation;
+  if (
+    coverage &&
+    (coverage.waitSeconds + coverage.settlementSeconds >
+      state.grant.manifest.interruption.finishTurnsSeconds ||
+      coverage.settlementSeconds > state.grant.manifest.interruption.terminateGraceSeconds)
+  )
+    throw new BootstrapRequestConflict("Cooperative phase exceeds retained restart limits");
+}
+
+function assertCooperativeDeadline(
+  input: AdmissionInput,
+  job: RestartJob,
+  proposed: CooperativeDrainPreparation,
+): void {
+  if (input.state.status !== "enrolled")
+    throw new BootstrapRequestConflict("Enrollment unavailable");
+  const coverage = input.state.grant.manifest.interruption.cooperativeDrainPreparation!;
+  const now = input.now ?? Date.now();
+  const reservedAt = Date.parse(proposed.intent.reservedAt);
+  const deadline = Date.parse(job.standingHold!.reservedAt) + coverage.waitSeconds * 1000;
+  if (
+    Date.parse(proposed.deadlineAt) !== deadline ||
+    now < deadline ||
+    reservedAt > now ||
+    now - reservedAt >= 30000 ||
+    proposed.intent.held.terminateAt !== reservedAt + coverage.settlementSeconds * 1000 ||
+    proposed.intent.held.terminateAt <= now
+  )
+    throw new BootstrapRequestConflict(
+      "Cooperative preparation deadline differs from the retained grant",
+    );
 }
 
 function assertInterruptionTransition(
@@ -542,4 +686,20 @@ function assertRetainedBindings(previous: RestartJob | undefined, next: RestartJ
     if (nextRelease && !["rejected", "failed", "succeeded"].includes(next.status))
       throw new BootstrapRequestConflict("Hold release requires a terminal lifecycle result");
   }
+}
+
+/** The ordinary native command owner invokes this under the existing lifecycle
+ * lock immediately before its one-use enqueue. Accepted is a durable claim,
+ * not proof of provider settlement or permission to select source. */
+export function assertCooperativeDispatchAdmission(input: AdmissionInput, job: RestartJob): void {
+  if (job.cooperativeDrainPreparation?.phase !== "accepted")
+    throw new BootstrapRequestConflict("Cooperative dispatch requires its exact accepted claim");
+  const reserved = { ...job.cooperativeDrainPreparation, phase: "reserved" as const };
+  const proposed = { ...job, cooperativeDrainPreparation: reserved };
+  assertCooperativeGrant(input, job, proposed, reserved);
+  assertCooperativeDeadline(input, proposed, reserved);
+  const intentJob = { ...proposed, standingInterruption: reserved.intent };
+  assertInterruptionIdentity(intentJob);
+  assertInterruptionNative(intentJob);
+  assertEffectAdmission(input, job, proposed, "hold");
 }

@@ -11,3 +11,5 @@
 ## Maintenance review
 
 Added the owner's time zone to shared installation settings and daemon settings, behind the new `timeZoneSetting` capability and opt-in reads for older strict clients and daemons, with a Settings row in General > Installation. A new Owner time zone for agents inventory entry describes it. README overview and onboarding are unchanged.
+
+Review follow-up: bare UTC offsets such as "+01:00" are refused as time zones, because they ignore daylight saving. The owner lock unit test stubs the Time zone row, whose searchable select the unit environment cannot load; that broke the app unit tests in CI.

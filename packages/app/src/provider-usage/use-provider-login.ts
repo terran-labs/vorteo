@@ -11,6 +11,7 @@ import {
   claudeUpgradeRequest,
 } from "./claude-setup-login";
 import {
+  codexAccountUsesInstallationSignIn,
   codexInstallationRequest,
   codexInstallationSignInAvailable,
 } from "./codex-installation-login";
@@ -31,12 +32,15 @@ function useOwnerAllowed(serverId?: string | null) {
 
 /**
  * Whether this account signs in once for the installation through the coordinator. Claude always
- * does inside an installation. Codex does when the coordinator runs Host-owned Codex sign-in;
- * otherwise each environment keeps its own sign-in.
+ * does inside an installation. Codex does when the coordinator runs Host-owned Codex sign-in and,
+ * given a `providerId`, the installation created that account; the coordinator refuses older
+ * Codex accounts, so they keep their environment's own sign-in. Otherwise each environment keeps
+ * its own sign-in.
  */
 export function useSharedInstallationSignIn(
   serverId: string | null,
   provider: "claude" | "codex",
+  providerId?: string,
 ): boolean {
   const ownerAllowed = useOwnerAllowed(serverId);
   const installation = readExecutionInstallation();
@@ -51,7 +55,18 @@ export function useSharedInstallationSignIn(
     dataShape: "value",
     retry: false,
   });
-  return inInstallation && (provider === "claude" || codex.data === true);
+  const codexAccount = useFetchQuery({
+    queryKey: ["codex-installation-account", installation?.installationId, serverId, providerId],
+    queryFn: () => codexAccountUsesInstallationSignIn(serverId!, providerId!),
+    enabled: ownerAllowed && codex.data === true && Boolean(serverId && providerId),
+    staleTimeMs: 60_000,
+    dataShape: "value",
+    retry: false,
+  });
+  if (!inInstallation) return false;
+  if (provider === "claude") return true;
+  // Until the account answers, keep the provider-wide answer.
+  return codex.data === true && codexAccount.data !== false;
 }
 
 /**
@@ -203,7 +218,7 @@ export function useProviderLogin(
   const hostConnected = useHostRuntimeIsConnected(serverId ?? "");
   const ownerAllowed = useOwnerAllowed(serverId);
   const installation = readExecutionInstallation();
-  const shared = useSharedInstallationSignIn(serverId, provider);
+  const shared = useSharedInstallationSignIn(serverId, provider, providerId);
   const sharedClaude = shared && provider === "claude";
   const connected = ownerAllowed && (shared || hostConnected);
   const cache = useQueryClient();

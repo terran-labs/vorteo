@@ -22,6 +22,7 @@ import {
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServiceManager, installResult, runSteps } from "./apply.mjs";
+import { installCommand } from "./command.mjs";
 import { hostClientFile } from "./coordinator-config.mjs";
 import { JOURNAL, readEnvFile } from "./detect.mjs";
 import { releaseRevision } from "./host-adoption.mjs";
@@ -822,7 +823,15 @@ async function hostStep(s) {
         COORDINATOR_READY_MS,
       ),
   });
-  return { message: `The Host daemon runs ${label(s.plan.to)}.` };
+  const commandMessage = installCommand({
+    home: s.context.home,
+    root: s.context.root,
+    source: s.install.plan.paths.hostReleaseLink,
+    node: s.install.plan.executables.node,
+    env: s.context.env,
+    platform: s.context.platform,
+  });
+  return { message: `The Host daemon runs ${label(s.plan.to)}. ${commandMessage}` };
 }
 
 async function coordinatorHealth(s, port) {
