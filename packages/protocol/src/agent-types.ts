@@ -200,6 +200,11 @@ export interface AgentUsage {
   cachedInputTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
+  /**
+   * Estimated session cost from token counts and list prices, for providers that report no
+   * cost. Clients show it as an estimate when totalCostUsd is absent.
+   */
+  estimatedCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
 }

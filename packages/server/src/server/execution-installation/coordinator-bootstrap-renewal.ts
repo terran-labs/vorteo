@@ -382,7 +382,12 @@ export function verifyAdmissionDocker(
   config: InstallationConfig,
   admission: z.infer<typeof BootstrapAdmissionSetupSchema>,
 ) {
-  for (const binding of [config.nativeHelper, config.previewMonitor]) {
+  for (const binding of [
+    config.nativeHelper,
+    config.previewMonitor,
+    config.previewBroker,
+    config.previewBrokerDeployment,
+  ]) {
     if (
       binding &&
       (binding.docker !== admission.docker ||

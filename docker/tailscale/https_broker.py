@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Bounded host consumer. Requests are data; all host commands are fixed argv."""
-import fcntl
 import hashlib
 from itertools import islice
 import json
@@ -15,6 +14,7 @@ import time
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from host_config import load
+from channel_identity import broker_lock, verify_channel, verify_fence
 
 MAX_BYTES = 4096
 ID = re.compile(r'^[a-f0-9-]{36}$')
@@ -149,6 +149,15 @@ class Runtime:
         # A PID alone can be reused, including across a container restart.
         code = r"""
 const fs=require('node:fs');const path=require('node:path');const found=[];
+const crypto=require('node:crypto');const replaced=new Map();
+// A program whose file was replaced keeps running the old inode, shown as "(deleted)". Accept it
+// only when the file now at that path is byte-identical; anything else fails closed.
+const exe=pid=>{const link=fs.readlinkSync(`/proc/${pid}/exe`);if(!link.endsWith(' (deleted)'))return fs.realpathSync(`/proc/${pid}/exe`);
+  const current=fs.realpathSync(link.slice(0,-' (deleted)'.length));const key=`${link}:${fs.statSync(`/proc/${pid}/exe`).ino}`;
+  const digest=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if(!replaced.has(key))replaced.set(key,digest(`/proc/${pid}/exe`)===digest(current));
+  if(!replaced.get(key))process.exit(1);
+  return current;};
 const home=process.env.PASEO_HOME||path.join(require('node:os').homedir(),'.paseo');
 const ownerFile=path.join(home,'paseo.pid');
 const ownerText=fs.readFileSync(ownerFile,'utf8');
@@ -170,7 +179,7 @@ if(fs.existsSync(markerFile)){
   if(!selected.startsWith(marker.root+path.sep))process.exit(1);
   entry=path.join(selected,'packages/server/dist/server/server/daemon-worker.js');
   if(fs.realpathSync(entry)!==entry)process.exit(1);
-  node=fs.realpathSync(`/proc/${owner}/exe`);
+  node=exe(owner);
 }
 for(const pid of fs.readdirSync('/proc').filter(p=>/^\d+$/.test(p))){
   try{
@@ -182,7 +191,7 @@ for(const pid of fs.readdirSync('/proc').filter(p=>/^\d+$/.test(p))){
     if(marker){
       if(parent!==owner)continue;
       const argv=fs.readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\0');
-      if(argv.pop()!==''||argv.length!==2||argv[1]!==entry||fs.realpathSync(argv[0])!==node||fs.realpathSync(`/proc/${pid}/exe`)!==node)continue;
+      if(argv.pop()!==''||argv.length!==2||argv[1]!==entry||fs.realpathSync(argv[0])!==node||exe(pid)!==node)continue;
     }else if(!/^Name:\s+Paseo Daemon$/m.test(status)||(Number(pid)!==owner&&parent!==owner))continue;
     found.push({pid,ticks,value:`${boot}:${pid}:${ticks}`});
   }catch(e){if(!['ENOENT','EACCES','ESRCH'].includes(e.code))throw e;}
@@ -268,10 +277,12 @@ process.stdout.write(found[0].value);
             seen.add(cwd)
             if not self.workspace_path_allowed(cwd):
                 continue
-            path = self.host_workspace(cwd)
+            # A workspace whose path is missing, symlinked or otherwise unsafe
+            # cannot be served (current() rejects it), so it holds no ports.
+            # Skip it rather than failing every other workspace's reservation.
             try:
-                cfg = project_config(path)
-            except FileNotFoundError:
+                cfg = project_config(self.host_workspace(cwd))
+            except (OSError, ValueError):
                 continue
             for definition in cfg.get('scripts', {}).values():
                 if isinstance(definition, dict) and definition.get('type') == 'service' and type(definition.get('port')) is int:
@@ -489,10 +500,11 @@ def runtime_for(config):
 
 
 class Broker:
-    def __init__(self, config, runtime=None):
+    def __init__(self, config, runtime=None, reload_config=None):
         self.c = config
         self.root = Path(config['deployment'])
         self.runtime = runtime or runtime_for(config)
+        self.reload_config = reload_config
         self.ledger_path = self.root / 'https-broker-ledger.json'
         self.channel = Path(config['channel'])
         self.ledger = safe_read(self.ledger_path, 2 * 1024 * 1024) if self.ledger_path.exists() else {'entries': {}, 'requests': {}}
@@ -748,15 +760,17 @@ class Broker:
                 self.save()
 
     def run(self):
-        # The entire channel must still be the installation's original directories.
-        for name, identity in self.c['channelIdentities'].items():
-            path = self.channel / name
-            info = path.lstat()
-            if not stat.S_ISDIR(info.st_mode) or [info.st_dev, info.st_ino] != identity or path.resolve() != path.absolute():
-                raise ValueError('Request channel replaced; administrator review required')
-        self.runtime.preflight()
-        with (self.root / 'https-broker.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with broker_lock(self.root):
+            # A process loaded before a managed migration must not use stale pins.
+            if self.reload_config is not None:
+                fresh = self.reload_config()
+                if fresh['deployment'] != str(self.root) or fresh['channel'] != str(self.channel):
+                    raise ValueError('Broker topology changed while acquiring lock')
+                self.c = fresh
+                self.runtime = runtime_for(fresh)
+            verify_fence(self.c)
+            verify_channel(self.c)
+            self.runtime.preflight()
             # Reload inside the lock to serialize concurrent consumers.
             if self.ledger_path.exists():
                 self.ledger = safe_read(self.ledger_path, 2 * 1024 * 1024)
@@ -803,7 +817,7 @@ class Broker:
 
 if __name__ == '__main__':
     try:
-        Broker(load()).run()
+        Broker(load(protected=True), reload_config=lambda: load(protected=True)).run()
     except BlockingIOError:
         pass
     except Exception as error:

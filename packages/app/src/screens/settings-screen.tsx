@@ -1,8 +1,9 @@
+import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
+import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
 import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
 import { InstallationConnectionCheck } from "@/execution-installation/connection-check-wrapper";
 import { InstallationRestartBanner, InstallationControls } from "@/execution-installation/panel";
 import { SystemProjectCard } from "@/execution-installation/system-project-card";
-import { ActionFooter } from "@/components/ui/action-footer";
 import { WorkspaceDefaultsSection } from "@/screens/settings/general/workspace-defaults-section";
 import { AttentionSection } from "@/screens/settings/general/attention-section";
 import { EnvironmentsPane } from "./settings/environments-page";
@@ -50,7 +51,6 @@ import { OpenLocationSection } from "@/screens/settings/open-location/open-locat
 import { TerminalSection } from "@/screens/settings/terminal/terminal-section";
 import { ChatSection } from "@/screens/settings/chat/chat-section";
 import { SendingSection } from "@/screens/settings/general/sending-section";
-import { ProviderDetailPage, providerTypeLabel } from "@/screens/settings/provider-detail-page";
 import {
   useAppSettings,
   useSettings,
@@ -103,21 +103,8 @@ import {
   type AppLanguage,
   type SupportedLocale,
 } from "@/i18n/locales";
-import {
-  HostConnectionsPage,
-  HostPairDevicePage,
-  HostAgentsPage,
-  HostSettingsPage,
-  HostProvidersPage,
-  HostUsagePage,
-  HostWorkspacesPage,
-  HostTerminalsPage,
-} from "@/screens/settings/host-page";
 import { PluginSettingsContent } from "@/plugins/settings";
 import { useInstalledPlugins } from "@/plugins/registry";
-import { HostPluginsPage } from "@/screens/settings/plugins-page";
-import { MetadataGenerationPage } from "@/screens/settings/metadata-generation-page";
-import ProjectsScreen from "@/screens/projects-screen";
 import ProjectSettingsScreen from "@/screens/project-settings-screen";
 import {
   SETTINGS_DESKTOP_SIDEBAR_WIDTH,
@@ -125,12 +112,9 @@ import {
   useIsCompactFormFactor,
 } from "@/constants/layout";
 import { useEnableBuiltInDaemonOption } from "@/desktop/hooks/use-enable-built-in-daemon-option";
-import {
-  buildSettingsHostSectionRoute,
-  buildSettingsSectionRoute,
-  type HostSectionSlug,
-} from "@/utils/host-routes";
+import { buildSettingsHostSectionRoute, buildSettingsSectionRoute } from "@/utils/host-routes";
 import { returnFromSettings, type SettingsView } from "@/navigation/settings-navigation";
+import { SettingsFocusContext } from "@/screens/settings/settings-focus";
 import { isNative, isWeb } from "@/constants/platform";
 import { InstallationSettingsContent } from "@/screens/settings/installation-sections";
 import { readExecutionInstallation } from "@/execution-installation/policy";
@@ -141,7 +125,6 @@ import {
   getSection,
   isAvailable,
   panesForSection,
-  resolveSettingsTarget,
   type SettingsAvailabilityContext,
   type SettingsSectionId,
 } from "@/settings-catalog/catalog";
@@ -178,34 +161,10 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   maintenance: Wrench,
 };
 
-interface HostSectionItem {
-  id: HostSectionSlug;
-  labelKey: string;
-}
-
-/** Titles for the per-host drill-in pages under `/settings/hosts/<id>/<section>`. */
-const HOST_SECTION_ITEMS: HostSectionItem[] = [
-  { id: "host", labelKey: "settings.hostSections.host" },
-  { id: "providers", labelKey: "settings.hostSections.providers" },
-  { id: "projects", labelKey: "settings.hostSections.projects" },
-  { id: "connections", labelKey: "settings.hostSections.connections" },
-  { id: "agents", labelKey: "settings.hostSections.agents" },
-  { id: "metadata", labelKey: "settings.hostSections.metadata" },
-  { id: "workspaces", labelKey: "settings.hostSections.workspaces" },
-  { id: "usage", labelKey: "settings.hostSections.usage" },
-  { id: "terminals", labelKey: "settings.hostSections.terminals" },
-  { id: "plugins", labelKey: "settings.hostSections.plugins" },
-];
-
 /** The section a drill-in page belongs to, for the sidebar highlight. */
 function sectionForView(view: SettingsView): SettingsSectionId | null {
   if (view.kind === "project") return "workspaces";
-  if (view.kind === "provider") return "accounts";
   if (view.kind === "plugin") return "plugins";
-  if (view.kind === "host") {
-    if (view.section === "host") return "environments";
-    return resolveSettingsTarget(view.section).section;
-  }
   return null;
 }
 
@@ -217,36 +176,6 @@ function selectedSidebarSection(
 ): SettingsSectionId | null {
   if (searching) return null;
   return view.kind === "section" ? activeSection : sectionForView(view);
-}
-
-function renderHostSettingsContent(
-  view: Extract<SettingsView, { kind: "host" }>,
-  onHostRemoved: () => void,
-): ReactNode {
-  switch (view.section) {
-    case "projects":
-      return <ProjectsScreen serverId={view.serverId} />;
-    case "connections":
-      return <HostConnectionsPage serverId={view.serverId} />;
-    case "pair-device":
-      return <HostPairDevicePage serverId={view.serverId} />;
-    case "agents":
-      return <HostAgentsPage serverId={view.serverId} />;
-    case "metadata":
-      return <MetadataGenerationPage serverId={view.serverId} />;
-    case "workspaces":
-      return <HostWorkspacesPage serverId={view.serverId} />;
-    case "providers":
-      return <HostProvidersPage serverId={view.serverId} />;
-    case "usage":
-      return <HostUsagePage serverId={view.serverId} />;
-    case "terminals":
-      return <HostTerminalsPage serverId={view.serverId} />;
-    case "plugins":
-      return <HostPluginsPage serverId={view.serverId} />;
-    case "host":
-      return <HostSettingsPage serverId={view.serverId} onHostRemoved={onHostRemoved} />;
-  }
 }
 
 function useAvailabilityContext(): SettingsAvailabilityContext {
@@ -714,6 +643,7 @@ function getUpdateButtonLabel(
 }
 
 function DesktopAppUpdateRow() {
+  const isCompactLayout = useIsCompactFormFactor();
   const { t } = useTranslation();
   const { settings, updateSettings } = useSettings();
   const {
@@ -814,7 +744,13 @@ function DesktopAppUpdateRow() {
           options={releaseChannelOptions}
         />
       </View>
-      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View
+        style={[
+          settingsStyles.row,
+          settingsStyles.rowBorder,
+          isCompactLayout && styles.narrowDesktopAppUpdateRow,
+        ]}
+      >
         <View style={settingsStyles.rowContent}>
           <Text style={settingsStyles.rowTitle}>{t("settings.about.updates.label")}</Text>
           <Text style={settingsStyles.rowHint}>{statusText}</Text>
@@ -827,7 +763,7 @@ function DesktopAppUpdateRow() {
           ) : null}
           {errorMessage ? <Text style={styles.aboutErrorText}>{errorMessage}</Text> : null}
         </View>
-        <ActionFooter style={styles.aboutUpdateActions}>
+        <View style={styles.aboutUpdateActions}>
           <Button
             variant="outline"
             size="sm"
@@ -844,7 +780,7 @@ function DesktopAppUpdateRow() {
           >
             {getUpdateButtonLabel(t, isInstalling, readyUpdateVersion)}
           </Button>
-        </ActionFooter>
+        </View>
       </View>
     </>
   );
@@ -902,7 +838,6 @@ function SidebarSectionButton({
 }
 
 interface SettingsSidebarProps {
-  appVersionText: string;
   sections: readonly SettingsPageSection[];
   selectedSection: SettingsSectionId | null;
   onSelectSection: (section: SettingsSectionId) => void;
@@ -913,7 +848,6 @@ interface SettingsSidebarProps {
 }
 
 function SettingsSidebar({
-  appVersionText,
   sections,
   selectedSection,
   onSelectSection,
@@ -1045,15 +979,10 @@ function SettingsSidebar({
             {sidebarBody}
           </ScrollView>
           <InstallationRestartBanner placement="sidebar" />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${appVersionText}, check for updates`}
-            onPress={openUpdates}
-            style={sidebarStyles.versionButton}
-            testID="settings-sidebar-version"
-          >
-            <Text style={sidebarStyles.version}>{appVersionText}</Text>
-          </Pressable>
+          <SidebarIdentityFooter
+            onOpenUpdates={openUpdates}
+            versionTestID="settings-sidebar-version"
+          />
         </View>
       ) : (
         sidebarBody
@@ -1095,6 +1024,7 @@ function installationPane(section: InstallationPaneSection) {
 /** Each catalog pane's body. Panes reuse the existing settings components. */
 const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "general.attention": (context) => <AttentionSection onOpenPane={context.onOpenPane} />,
+  "general.installation": () => <InstallationNameSection />,
   "general.notifications": () => <DesktopNotificationsSection />,
   "general.about": (context) => (
     <AboutSection appVersionText={context.appVersionText} isDesktopApp={context.isDesktopApp} />
@@ -1158,12 +1088,7 @@ function resolveDetailTitle(
       ?.settingsScreens.find((candidate) => candidate.id === view.screenId);
     return `${view.pluginId} · ${screen?.title ?? t("settings.title")}`;
   }
-  if (view.kind === "host") {
-    const item = HOST_SECTION_ITEMS.find((s) => s.id === view.section);
-    return item ? t(item.labelKey) : undefined;
-  }
   if (view.kind === "project") return t("settings.projects");
-  if (view.kind === "provider") return providerTypeLabel(view.providerType);
   return undefined;
 }
 
@@ -1172,7 +1097,6 @@ function renderDetailContent(
   options: {
     isCompactLayout: boolean;
     onBack: () => void;
-    onHostRemoved: () => void;
   },
 ): ReactNode {
   if (view.kind === "plugin") {
@@ -1186,8 +1110,6 @@ function renderDetailContent(
       />
     );
   }
-  if (view.kind === "host") return renderHostSettingsContent(view, options.onHostRemoved);
-  if (view.kind === "provider") return <ProviderDetailPage providerType={view.providerType} />;
   if (view.kind === "project") {
     return (
       <ProjectSettingsScreen
@@ -1404,8 +1326,8 @@ export default function SettingsScreen({
   const detailContent = renderDetailContent(view, {
     isCompactLayout,
     onBack: handleBackFromDetail,
-    onHostRemoved: handleHostRemoved,
   });
+  const focus = view.kind === "section" ? (view.focus ?? null) : null;
 
   if (settingsLoading) {
     return (
@@ -1416,19 +1338,21 @@ export default function SettingsScreen({
   }
 
   const scrollPage = (
-    <SettingsScrollPage
-      sections={sections}
-      renderPane={renderPane}
-      request={request}
-      onActiveSectionChange={navigation.handleActiveSectionChange}
-      query={query}
-      results={results}
-      matchedPanes={navigation.matchedPanes}
-      selectedResult={navigation.selectedResult}
-      onSelectResult={navigation.handleSelectResult}
-      search={isCompactLayout ? search : undefined}
-      bottomInset={insets.bottom}
-    />
+    <SettingsFocusContext.Provider value={focus}>
+      <SettingsScrollPage
+        sections={sections}
+        renderPane={renderPane}
+        request={request}
+        onActiveSectionChange={navigation.handleActiveSectionChange}
+        query={query}
+        results={results}
+        matchedPanes={navigation.matchedPanes}
+        selectedResult={navigation.selectedResult}
+        onSelectResult={navigation.handleSelectResult}
+        search={isCompactLayout ? search : undefined}
+        bottomInset={insets.bottom}
+      />
+    </SettingsFocusContext.Provider>
   );
 
   const showScrollPage = view.kind === "section" || searching;
@@ -1498,7 +1422,6 @@ export default function SettingsScreen({
                 <SettingsSearchBox search={search} />
               </View>
               <SettingsSidebar
-                appVersionText={appVersionText}
                 sections={sections}
                 selectedSection={null}
                 onSelectSection={navigation.handleSelectSection}
@@ -1532,7 +1455,6 @@ export default function SettingsScreen({
       <View style={desktopStyles.row}>
         <WindowChromeRegion corners="top-left">
           <SettingsSidebar
-            appVersionText={appVersionText}
             sections={sections}
             selectedSection={selectedSection}
             onSelectSection={navigation.handleSelectSection}
@@ -1598,9 +1520,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[3],
     paddingHorizontal: theme.spacing[4],
   },
+  narrowDesktopAppUpdateRow: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: theme.spacing[3],
+  },
   aboutUpdateActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
+    justifyContent: "flex-end",
     gap: theme.spacing[2],
   },
   placeholder: {
@@ -1640,16 +1569,6 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     paddingHorizontal: theme.spacing[2],
     paddingTop: theme.spacing[2],
-  },
-  version: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.foregroundMuted,
-    textAlign: "center",
-  },
-  versionButton: {
-    minHeight: 44,
-    justifyContent: "center",
-    padding: theme.spacing[3],
   },
   modeHeader: {
     height: VORTON_HEADER_HEIGHT,

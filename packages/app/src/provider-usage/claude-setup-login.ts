@@ -34,6 +34,14 @@ const FullReadSchema = z.object({
   }),
 });
 
+/**
+ * The coordinator delivers credentials only to installation accounts. The built-in `claude`
+ * provider is the machine's own CLI login, so the coordinator refuses to connect it.
+ */
+export function claudeProviderConnectsToInstallation(providerId: string): boolean {
+  return providerId.startsWith("claude-account-");
+}
+
 /** Resolve exact shared bindings, never account labels or cached native-login identities. */
 async function claudeDefinition(serverId: string, providerId: string) {
   const snapshot = await requestInstallationSettings();

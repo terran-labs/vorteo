@@ -65,6 +65,7 @@ export interface FakeCodexAppServer {
   updatesPlan(params: { threadId: string; steps: string[] }): void;
   completeTurn(params?: {
     threadId?: string;
+    turnId?: string;
     status?: "completed" | "failed" | "interrupted";
     error?: { message: string; codexErrorInfo?: unknown } | null;
   }): void;
@@ -393,6 +394,7 @@ export function createFakeCodexAppServer(
           params: {
             threadId: params.threadId ?? "thread-1",
             turn: {
+              ...(params.turnId ? { id: params.turnId } : {}),
               status: params.status ?? "completed",
               error: params.error ?? null,
             },

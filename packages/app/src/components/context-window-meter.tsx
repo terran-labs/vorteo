@@ -9,7 +9,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useHostReportsUsage } from "@/usage";
 import { ContextWindowDetails } from "./context-window-details";
 import { ContextWindowSheet } from "./context-window-sheet";
-import { formatSessionCost, getUsagePercentage } from "./context-window-meter.utils";
+import { getUsagePercentage, resolveSessionCost } from "./context-window-meter.utils";
 import { useVortonTouch } from "@/vorton-touch";
 
 interface ContextWindowMeterProps {
@@ -18,6 +18,8 @@ interface ContextWindowMeterProps {
   maxTokens: number | null;
   usedTokens: number | null;
   totalCostUsd?: number | null;
+  /** The daemon's estimate, shown as one when the provider reports no cost. */
+  estimatedCostUsd?: number | null;
   showPercentage?: boolean;
   /** Reserve the meter footprint and show a loading ring while usage is pending. */
   pending?: boolean;
@@ -73,6 +75,7 @@ export function ContextWindowMeter({
   maxTokens,
   usedTokens,
   totalCostUsd,
+  estimatedCostUsd,
   showPercentage = false,
   pending = false,
   glyphSize,
@@ -128,8 +131,7 @@ export function ContextWindowMeter({
   const { svgSize, center, radius, strokeWidth, circumference, containerStyle } = geometry;
   const dashOffset = circumference - (clampedPercentage / 100) * circumference;
   const colors = getMeterColors(theme);
-  const formattedSessionCost =
-    typeof totalCostUsd === "number" ? formatSessionCost(totalCostUsd) : null;
+  const formattedSessionCost = resolveSessionCost(totalCostUsd, estimatedCostUsd);
 
   const ring = (
     <Svg

@@ -30,6 +30,9 @@ vi.mock("@/hooks/use-action-error", () => ({
   useReportActionError: () => reportActionError,
 }));
 
+const toast = vi.hoisted(() => ({ show: vi.fn(), error: vi.fn(), copied: vi.fn() }));
+vi.mock("@/contexts/toast-context", () => ({ useToast: () => toast }));
+
 vi.mock("@/runtime/host-features", () => ({
   useHostFeature: (_serverId: string, feature: string) => {
     if (feature === "pluginLogs") return runtime.logsSupported;
@@ -161,6 +164,7 @@ function renderPage(client: PluginClient | null): void {
 
 describe("HostPluginsPage", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.stubGlobal("React", React);
     runtime.connected = true;
     runtime.supported = true;
@@ -210,6 +214,54 @@ describe("HostPluginsPage", () => {
 
     await waitFor(() => expect(client[method]).toHaveBeenCalledTimes(1));
   });
+
+  it.each([false, true])(
+    "announces results only inline and clears them on the next action (%s)",
+    async (fails) => {
+      const client = createClient();
+      client.listPlugins.mockResolvedValue([plugin()]);
+      let finish!: () => void;
+      client.disablePlugin.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            finish = () => {
+              if (fails) {
+                reject(new Error("Action failed"));
+                return;
+              }
+              resolve(plugin(false));
+            };
+          }),
+      );
+      renderPage(client);
+      fireEvent.click(await screen.findByRole("switch", { name: "example: Disable" }));
+      await waitFor(() => expect(client.disablePlugin).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId("plugin-management-feedback")).toBeNull();
+      finish();
+      const feedback = await screen.findByTestId("plugin-management-feedback");
+      expect(feedback.textContent).toBe(
+        fails
+          ? "Action failed"
+          : testI18n.t("settings.plugins.feedback.disable", { id: "example" }),
+      );
+      expect(feedback.getAttribute("aria-live")).toBe("polite");
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.show).not.toHaveBeenCalled();
+      let completeReload!: (value: PluginListItem) => void;
+      client.reloadPlugin.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completeReload = resolve;
+          }),
+      );
+      await selectPluginAction("Reload");
+      await waitFor(() => expect(client.reloadPlugin).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId("plugin-management-feedback")).toBeNull();
+      expect(feedback.getAttribute("aria-live")).toBeNull();
+      completeReload(plugin());
+      await screen.findByTestId("plugin-management-feedback");
+    },
+  );
 
   it("reports an action lost to a dropped connection as a toast, not inline feedback", async () => {
     const client = createClient();

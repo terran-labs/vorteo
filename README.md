@@ -1,19 +1,19 @@
 # <img src="packages/app/assets/brand/vorteo-color.png" width="48" height="48" alt="Vorteo icon" /> Vorteo (Vorton + Paseo)
 
-- [Vorton](https://github.com/AubreyF/vorton) is an elegant visual control plane for AI operating systems and software factories.
+- [Vorton](https://github.com/terran-labs/vorton) is an elegant visual control plane for AI operating systems and software factories.
 - Vorteo extends [Paseo](https://github.com/getpaseo/paseo) for seamless Vorton integration. It also adds multiple Codex accounts, usage visibility, reusable profiles, task goals, cross-device message queuing, and a smoother ux. I've used it to build massive open-source projects such as [Freed](https://freed.wtf). I'm sharing it as open source to empower other OS devs with max agentic leverage and efficiency. Let's steer the course of history, together.
 
 ## Intelligent Frontier Account Pooling
 
-Connect multiple Codex and Claude accounts and distribute tasks across them. See usage and reset windows beside reusable profiles that keep your model, reasoning, permissions and instructions together. When an account hits its limit, switch the thread to another account, even another provider, without leaving it; a marker shows where the model changed. See [profile switching](docs/plans/profile-switching.md).
+Connect multiple Codex and Claude accounts and distribute tasks across them. See usage and reset windows beside reusable profiles that keep your model, reasoning, permissions and instructions together. When an account hits its limit, switch the thread to another account, even another provider, without leaving it; a marker shows where the model changed. See [launch presets](docs/agent-presets.md#quota-stops-and-explicit-successors).
 
 <img width="800" alt="Vorteo environment and profile switcher" src="https://github.com/user-attachments/assets/b2489333-cb9a-4f2f-9d0b-8ee1c319923c" />
 
-For a configured Host and Dev installation, open its HTTPS address on your new device and enter the owner password on the welcome page. Vorteo connects both environments for you.
+To add a device, open your installation's address on it and enter the owner password on the welcome page. Vorteo connects every environment for you.
 
 ## Enhanced Security
 
-- **Give agents room to work without handing them your whole machine.** The installer automatically builds and starts a local dev container for Vorteo and your agents. This limits the damage an accidental destructive command can do to your host: agents can modify the container home and mounted projects, while unmounted personal files stay outside their filesystem access. Keep backups of mounted projects; the container does not protect those files from deletion. See the [security boundaries](docs/container-tailscale.md).
+- **Give agents room to work without handing them your whole machine.** The installer can build and start a local Dev container for your agents. This limits the damage an accidental destructive command can do to your host: agents can modify the container home and mounted projects, while unmounted personal files stay outside their filesystem access. Keep backups of mounted projects; the container does not protect those files from deletion. See the [security boundaries](docs/container-tailscale.md).
 
 <img width="400" alt="Vorteo host versus dev container permissions authorization." src="https://github.com/user-attachments/assets/2429afbe-65fb-41d5-9899-b7c7aea20d04" />
 
@@ -23,7 +23,7 @@ For a configured Host and Dev installation, open its HTTPS address on your new d
 
 - **Try a workspace before connecting.** Choose Demo on the browser welcome page to explore simulated projects, tasks, conversations, files and changes. Try Vorton's six themes from the sidebar menu, with Dark Star as the default. The adjacent zoom slider, also driven by Cmd or Ctrl with plus and minus, scales the whole browser interface and remembers your preferred size. Demo edits stay in the current browser tab and Reset restores the samples. See [appearance and demo behavior](docs/vorteo-customizations.md#projects-devices-and-interface).
 
-- **Keep your sidebar across devices.** Project and workspace order, nested folders, expanded sections, grouping and filters follow you between connected devices. Folders group projects, or a project's workspaces, without touching disk. Offline edits sync after reconnection. Requires the updated Host daemon.
+- **Keep your sidebar across devices.** Project and workspace order, nested folders, expanded sections, grouping and filters follow you between connected devices. Folders group projects, or a project's workspaces, without touching disk, and you can focus the sidebar on one project or folder with a breadcrumb back out. Offline edits sync after reconnection. Requires the updated Host daemon.
 
 - **Find any setting.** Settings is one scrolling page of eleven sections, led by what needs your attention. Search forgives typos, jumps to the exact row and shows whether a value belongs to this device, every environment or one environment. Accounts show their remaining quota, and every provider's profiles share one list. See [settings navigation and search](docs/vorteo-customizations.md#projects-devices-and-interface).
 
@@ -37,7 +37,7 @@ For a configured Host and Dev installation, open its HTTPS address on your new d
 
 <img width="400" alt="Server managed cross-device message queuing." src="https://github.com/user-attachments/assets/59dfdb03-e1ec-40d2-b66e-9683134e3811" />
 
-- **Reviewed updates and queued restarts.** On a configured installation, Dev agents can submit source for the Host or Dev daemon and return an exact approval link. Host updates also publish the shared interface. Plain restarts can wait for active work to finish with your browser closed. With a compatible coordinator, an owner-unlocked preference can approve routine Host and Dev updates and restarts through the same tracked controls. Coordinator and supervisor maintenance retain separate approval. Host-prepared Dev supervisor repairs use the same visible review and cancellation controls. Coordinator updates can include automatic restoration of the verified previous release if replacement fails or stalls. [Setup and limits](docs/execution-installation.md#reviewed-source-updates).
+- **Reviewed updates and queued restarts.** On a configured installation, Dev agents can submit source for the Host or Dev daemon and return an exact approval link. Host updates also publish the shared interface. Plain restarts can wait for active work to finish with your browser closed. With a compatible coordinator, an owner-unlocked preference can approve routine Host and Dev updates and restarts through the same tracked controls. Coordinator and supervisor maintenance retain separate approval unless the owner explicitly delegates supported maintenance to trusted Host requests. A separate management grant lets trusted Host agents cancel pending or queued installation work with exact request checks and receipts. Exact plans and revocation remain enforced. Host-prepared Dev supervisor repairs use the same visible review and cancellation controls. Coordinator updates can include automatic restoration of the verified previous release if replacement fails or stalls. [Setup and limits](docs/execution-installation.md#reviewed-source-updates).
 
 <img width="400" alt="Queued daemon upgrades" src="https://github.com/user-attachments/assets/3a1c344d-42ac-4da7-8fb0-b5059b3c280f" />
 
@@ -58,7 +58,7 @@ For a configured Host and Dev installation, open its HTTPS address on your new d
 
 <img width="400" alt="Protected and scheduled workspaces" src="https://github.com/user-attachments/assets/757352aa-a2e7-457d-b95f-7ded601444f7" />
 
-- **Tailor your own installation.** Every daemon keeps a Vorteo System project that sits with your other projects under the Vorteo mark. Point it at the checkout your installation was built from, and new workspaces branch from the code that is running; changes go live through your reviewed source update. It also holds standing upkeep such as the Optimization Runner, and it can't be removed. Requires the updated daemon. See [Vorteo System project](docs/system-project.md).
+- **Tailor your own installation.** Every daemon keeps a Vorteo System project that sits with your other projects under the Vorteo mark. Point it at the checkout your installation was built from, and new workspaces branch from the code that is running; changes go live through your reviewed source update. It also holds standing upkeep such as the Vorteo :: Optimizer workspace, and it can't be removed. Requires the updated daemon. See [Vorteo System project](docs/system-project.md).
 
 - **Run tasks in either environment within one workspace.** Choose Host or Dev container in a new task while retaining draft text and uploaded files. Task tabs identify their environment; mapped directories and remembered folder choices keep later tasks in the same visible workspace. Updated daemons are required.
 
@@ -68,29 +68,42 @@ See the [Vorteo customizations](docs/vorteo-customizations.md) for the full feat
 
 ## Install
 
-Give your agent this command, or run it yourself:
+Run this on the Mac or Linux computer that will host Vorteo, or give it to your agent:
 
 ```sh
-git clone https://github.com/AubreyF/vorteo.git "$HOME/vorteo-source" &&
-  bash "$HOME/vorteo-source/docker/multiplex/install.sh" "$HOME/vorteo"
+curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash
 ```
+
+Preview the complete setup without installing anything:
+
+```sh
+curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash -s -- --demo
+```
+
+Demo mode asks the setup questions, shows the plan, animates builds for five minutes and displays simulated completion. It uses an existing Node.js runtime and changes no files, services, credentials or settings. Press Ctrl+C to leave early. Add `--yes` to use the default answers.
+
+After installation or repair, the terminal shows the connection address, password-file location and a QR code when space allows. The owner password is copied to the clipboard when available. Rerunning the installer also shows these details for an existing installation.
+
+Allow about 15 to 60 minutes with a Dev container, or 5 to 20 minutes for Host only. These are planning estimates; cached builds can finish faster and slow machines or downloads can take longer. The installer shows elapsed time and live build activity. On interactive terminals, a green Matrix animation runs during builds and pauses for questions; redirected output stays plain text.
+
+Authenticated provider connections receive a Default profile automatically, so you can create a workspace immediately. Later connections receive the same setup; your existing profiles and deliberate deletions are preserved.
+
+It creates:
+
+- `~/vorteo`, the installation folder. Your owner password is in `~/vorteo/host/owner-password`.
+- your Projects folder, `~/dev` by default.
+- an optional Dev container where agents work, which needs Docker.
+- optional Tailscale access from your other devices. Without it, open `http://localhost` on this computer.
+
+On Windows, the installer probably won't work yet, even inside WSL. Full WSL support is planned in [#35](https://github.com/terran-labs/vorteo/issues/35).
+
+Every later change happens in the interface, from connecting accounts to updating Vorteo. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. Custom Compose overrides require review before conversion to the network gate; the installer stops before changing such a deployment. See [host and container execution](docs/execution-installation.md) for what it installs.
+
+On Linux, Host and Dev share the selected Projects folder through explicit file permissions while preserving ownership. The installer checks access in both directions and retains permission backups. See [Projects folder](docs/execution-installation.md#projects-folder) for filesystem requirements and recovery.
 
 ### Instructions for installation agents
 
-Your task is to get the user to a working web interface.
-
-1. Clone the repository and run the container installer above. Complete any required Tailscale login.
-2. Confirm the container is running, then open the installation’s HTTPS address and verify that the web interface loads. A running container alone does not establish success. If access fails, diagnose and fix it before handing over.
-3. As soon as access works, give the user the clickable HTTPS address and tell them where to find their login password. Keep the handoff short.
-
-Provider authentication happens afterward through the provider settings, which explain any required container CLI sign-in. Do not ask the user to authenticate Codex, Claude, or other providers during installation. Do not delay the browser handoff for provider setup, presets, or optional configuration.
-
-Keep progress messages brief. If verification requires access only the user has, request that specific check and state what remains unverified.
-
-The installer builds locally, creates private storage and starts the container. Complete the Tailscale login, open the printed HTTPS address, and use the password in `$HOME/vorteo/.env`. Connect your provider accounts in the web interface. Connect other devices through Tailscale using the environment address and existing application authentication. QR and pairing-link onboarding are retired.
-
-No registry account, host Node or separate host Tailscale installation is needed. Existing checkout? See [installation details](docker/multiplex/README.md).
-Keep personal files, Docker's socket and other users' homes outside the container mounts. See the [security boundaries](docs/container-tailscale.md).
+Run the command. If it exits with status 3, it has printed the questions it needs answered: ask the owner each one, then rerun it with the flags it printed. When it finishes, give the owner the address it printed. Leave provider sign-in for the interface.
 
 ## Optional: your own domain with private access
 

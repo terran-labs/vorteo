@@ -35,3 +35,18 @@ describe("describeConnectionStatus", () => {
     expect(describeConnectionStatus([state(host, "none")])).toBe("Not set up yet");
   });
 });
+
+describe("first-load classification", () => {
+  it("checks missing entries only until the first load settles", async () => {
+    const { classifyEnvironment } = await import("./provider-connection-status");
+    const input = {
+      bound: true,
+      excluded: false,
+      connected: true,
+      needsSignIn: false,
+      entry: undefined,
+    };
+    expect(classifyEnvironment({ ...input, settled: false }).label).toBe("Checking");
+    expect(classifyEnvironment({ ...input, settled: true }).label).toBe("Not installed");
+  });
+});

@@ -15,10 +15,30 @@ type Descriptions = {
  * new setting cannot reach approval without a description here.
  */
 const DESCRIPTIONS: Descriptions = {
+  operationalTelemetryEnabled: (config) =>
+    config === null
+      ? "Turn off future coordinator performance samples. Keep retained private logs."
+      : "Turn on private minute-by-minute coordinator performance logging, up to 12 MiB. Records process CPU and memory, cached queue and connection health, and fixed operation status labels; no prompts or account content.",
+  installationLead: (lead) =>
+    lead === null
+      ? "Stop notifying an installation lead thread about failed or stalled coordinator updates."
+      : `Notify agent thread ${lead.agentId} once when a coordinator update fails before it starts or stalls after approval. The thread receives a message only; it gains no approval or installation authority.`,
+  containerSourceUpdateNode: (node) =>
+    node === null
+      ? "This plan cannot remove the Node executable required by Dev source updates."
+      : `Use ${node} for subsequent Dev source updates. This does not replace the running supervisor or restart Dev.`,
   factoryRuntimeAdoption: (config) =>
     config === null
       ? "Disable new Factory startup adoption requests. Existing recovery requirements remain."
       : `Configure Factory startup adoption plan ${config.sha256}. Adopting startup still requires a separate approval.`,
+  previewBrokerDeployment: (config) =>
+    config === null
+      ? "Disable new broker consumer deployments. Retained recovery evidence remains."
+      : "Configure the protected broker pair and declared participant scope. Consumer replacement requires a separate exact approval; channel trust is unchanged.",
+  previewBroker: (config) =>
+    config === null
+      ? "Disable new broker trust migrations. Retained jobs and fences remain."
+      : "Configure manual broker channel identity migration for two exact protected configs. Trust activation requires a separate exact approval; no hostname or service change is included.",
   previewMonitor: (config) =>
     config === null
       ? "Disable new preview monitor requests. Existing receipts remain in history."
@@ -27,6 +47,10 @@ const DESCRIPTIONS: Descriptions = {
     config === null
       ? "Turn off Host-owned refresh for full sign-in Claude accounts. Dev loses those accounts when their current access expires, within about 8 hours, and new full sign-in accounts can no longer be added. Host use and setup-token accounts are unaffected."
       : "Turn on Host-owned refresh for full sign-in Claude accounts. The Host keeps each account signed in and sends Dev short-lived access, so long Dev turns survive token expiry. Adding a full sign-in account becomes available once every environment supports it.",
+  codexHostRefresh: (config) =>
+    config === null
+      ? "Turn off one-time Codex sign-in for the installation. Dev loses shared Codex accounts when their current access expires, and each environment needs its own sign-in again. Host use is unaffected."
+      : "Turn on one-time Codex sign-in for the installation. Shared Codex accounts sign in once on the Host, which keeps them fresh and sends Dev access without a second sign-in. It becomes available once every environment supports it.",
   engineRestart: (config) =>
     config === null
       ? "Remove the tracked Docker restart plan."

@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { compare } from "bcryptjs";
 import { z } from "zod";
+import type { RestartJob } from "@getpaseo/protocol/execution-installation";
 import { parseLifecycleJournal, isSupervisorEffectSettled } from "./lifecycle-journal.js";
 import {
   CoordinatorBootstrapPlanSchema,
@@ -30,8 +31,17 @@ export interface BootstrapRequestJournal {
   promote?(request: CoordinatorBootstrapRequest): void;
   /** Atomically compare against expected and persist next, or refuse the edit. */
   replace(expected: CoordinatorBootstrapRequest[], next: CoordinatorBootstrapRequest[]): void;
+  /** Synchronous compare-and-swap transaction under the shared lifecycle lock. */
+  withRecoveryTransaction?<T>(
+    operation: (
+      records: CoordinatorBootstrapRequest[],
+      replace: (next: CoordinatorBootstrapRequest[]) => void,
+    ) => T,
+  ): T;
   /** Under the journal lock, prove a failed claim never reached either promotion location. */
   verifyUnpromotedFailure?(expected: CoordinatorBootstrapRequest): void;
+  /** The installation lifecycle journal, for display-only dispatch readiness. */
+  readLifecycle?(): unknown;
 }
 
 const BindingSchema = z.strictObject({
@@ -55,7 +65,8 @@ export type BootstrapReconciliationLedger = Pick<
   | "reserveAutomaticReconciliation"
   | "finishAutomaticReconciliation"
   | "cancelForReplacedHostRelease"
->;
+> &
+  Partial<Pick<CoordinatorBootstrapRequests, "cancelUnderManagement" | "readLifecycle">>;
 
 export function coordinatorAutomaticStatus(
   request: CoordinatorBootstrapRequest,
@@ -109,39 +120,82 @@ export function assertFrozenCoordinatorIdle(journal: unknown, childPids: unknown
  * It excludes recorded work, but cannot establish native process quiescence. */
 export function assertCoordinatorLifecycleIdle(journal: unknown): void {
   const work = coordinatorLifecycleWork(journal);
-  if (work.some((job) => job.target === "native-helper" || job.target === "preview-monitor"))
+  if (
+    work.some(
+      (job) =>
+        job.target === "native-helper" ||
+        job.target === "preview-monitor" ||
+        job.target === "preview-broker" ||
+        job.target === "preview-broker-deployment",
+    )
+  )
     throw new BootstrapCoordinatorBusy("Coordinator has unresolved helper installation work");
   if (work.length > 0)
     throw new BootstrapCoordinatorBusy("Coordinator has unresolved installation work");
 }
 
 export function coordinatorLifecycleWork(journal: unknown) {
-  return parseLifecycleJournal(journal).filter((job) => {
-    // A coordinator replacement must not cut a session host install or removal short either.
-    if (
-      job.target === "maintenance-controller" ||
-      job.target === "recovery-launcher" ||
-      job.target === "session-host"
-    )
-      return job.status === "approved" || job.status === "running";
-    if (job.target === "native-helper" || job.target === "preview-monitor") {
-      return (
-        ["approved", "running"].includes(job.status) ||
-        (job.stage === "preparing" && job.status === "pending") ||
-        job.stage === "recovery_required"
-      );
-    }
-    if (job.target === "host" || job.target === "container-daemon") {
-      const active = job.status === "approved" || job.status === "running";
-      const held =
-        (job.finishCurrentTurns === true || job.continuationCaptureRequested === true) &&
-        job.holdReleased !== true;
-      const preparing = job.sourceBatch?.status === "preparing";
-      const registration = job.supervisorEffect && !isSupervisorEffectSettled(job.supervisorEffect);
-      return active || held || preparing || registration;
-    }
-    return false;
+  return parseLifecycleJournal(journal).filter((job) => lifecycleWorkReason(job) !== null);
+}
+
+/** Plain descriptions of the recorded work that would refuse a coordinator claim
+ * now. Shown before approval; the claim itself still runs the authoritative check. */
+export function coordinatorLifecycleBlockers(journal: unknown): string[] {
+  return parseLifecycleJournal(journal).flatMap((job) => {
+    const reason = lifecycleWorkReason(job);
+    return reason
+      ? [`${lifecycleTargetLabels[job.target] ?? "An installation job"} ${reason}`]
+      : [];
   });
+}
+
+const lifecycleTargetLabels: Record<string, string> = {
+  host: "A Host restart or source update",
+  "container-daemon": "A Dev restart or source update",
+  "session-host": "A session host job",
+  "maintenance-controller": "A maintenance service job",
+  "recovery-launcher": "A recovery service job",
+  "native-helper": "A native helper installation",
+  "preview-monitor": "A preview monitor installation",
+  "preview-broker": "A preview broker installation",
+  "preview-broker-deployment": "A preview broker deployment",
+};
+
+type LifecycleWorkJob = ReturnType<typeof parseLifecycleJournal>[number];
+
+/** Why one job blocks a coordinator replacement, or null when it does not. */
+function lifecycleWorkReason(job: LifecycleWorkJob): string | null {
+  const active = job.status === "approved" || job.status === "running";
+  // A coordinator replacement must not cut a session host install or removal short either.
+  if (["maintenance-controller", "recovery-launcher", "session-host"].includes(job.target))
+    return active ? `is ${job.status}` : null;
+  if (
+    job.target === "native-helper" ||
+    job.target === "preview-monitor" ||
+    job.target === "preview-broker" ||
+    job.target === "preview-broker-deployment"
+  ) {
+    if (active) return `is ${job.status}`;
+    if (job.stage === "preparing" && job.status === "pending") return "is still preparing";
+    return job.stage === "recovery_required" ? "needs recovery" : null;
+  }
+  if (job.target === "host" || job.target === "container-daemon")
+    return active ? `is ${job.status}` : restartWorkReason(job);
+  return null;
+}
+
+function restartWorkReason(job: RestartJob): string | null {
+  if (
+    (job.finishCurrentTurns === true || job.continuationCaptureRequested === true) &&
+    job.holdReleased !== true
+  )
+    return "is holding agents at the end of their turns";
+  // A rejected, canceled or failed request never resumes source preparation.
+  if (job.status === "pending" && job.sourceBatch?.status === "preparing")
+    return "is still preparing its source";
+  if (job.supervisorEffect && !isSupervisorEffectSettled(job.supervisorEffect))
+    return "has an unsettled supervisor registration";
+  return null;
 }
 
 const dispatchIdentity = z.strictObject({
@@ -353,6 +407,7 @@ function automaticRecoverySuccessor(
 function assertAutomaticCoordinatorPlan(
   plan: CoordinatorBootstrapPlan,
   preFreezeRecovery = false,
+  delegatedMaintenance = false,
 ): void {
   if (
     !plan.bootRecovery ||
@@ -363,13 +418,14 @@ function assertAutomaticCoordinatorPlan(
       "Automatic coordinator maintenance requires independent compatible recovery",
     );
   if (
-    plan.candidate.configuration.sha256 !== plan.previous.configuration.sha256 ||
     plan.compatibleRecovery.configuration.sha256 !== plan.previous.configuration.sha256 ||
     (plan.recoveredFrom && !preFreezeRecovery) ||
     plan.supervisionRecovery ||
-    plan.sourceUpdateTooling ||
-    plan.nativeHelperConfiguration !== undefined ||
-    plansConfigurationChange(plan)
+    (!delegatedMaintenance &&
+      (plan.candidate.configuration.sha256 !== plan.previous.configuration.sha256 ||
+        plan.sourceUpdateTooling ||
+        plan.nativeHelperConfiguration !== undefined ||
+        plansConfigurationChange(plan)))
   )
     throw new BootstrapRequestConflict(
       "Coordinator configuration, recovery successors and other service changes require exact owner review",
@@ -401,6 +457,7 @@ export class CoordinatorBootstrapRequests {
     private readonly verifyPreparedBytes: (plan: CoordinatorBootstrapPlan) => Promise<void>,
     private readonly now: () => number = Date.now,
     private readonly automaticAuthority: () => CoordinatorAutomaticAuthority | null = () => null,
+    private readonly delegatedMaintenance: () => boolean = () => false,
   ) {
     BindingSchema.parse(binding());
   }
@@ -532,6 +589,7 @@ export class CoordinatorBootstrapRequests {
     assertAutomaticCoordinatorPlan(
       request.plan,
       automaticRecoverySuccessor(request.plan, expected, this.journal),
+      this.delegatedMaintenance(),
     );
     await this.verifyApproval(request);
     this.requireSameBinding(binding, request.plan);
@@ -688,6 +746,11 @@ export class CoordinatorBootstrapRequests {
 
   private requireEligibleAutomaticDispatch(request: CoordinatorBootstrapRequest): void {
     const authority = this.requireAutomaticAuthority(request);
+    assertAutomaticCoordinatorPlan(
+      request.plan,
+      automaticRecoverySuccessor(request.plan, this.read(), this.journal),
+      this.delegatedMaintenance(),
+    );
     if (
       !request.automaticApproval ||
       !this.matchesAutomaticAuthority(request.automaticApproval, authority) ||
@@ -764,6 +827,44 @@ export class CoordinatorBootstrapRequests {
     return canceled;
   }
 
+  /** Cancellation grants no approval. Authority is reread under the same lock as
+   * dispatch claims; callbacks must not acquire that lock or perform async work. */
+  cancelUnderManagement(value: unknown, assertAuthority: () => void): CoordinatorBootstrapRequest {
+    const input = CoordinatorBootstrapDecisionSchema.extend({
+      decision: z.literal("cancel"),
+    }).parse(value);
+    if (!this.journal.withRecoveryTransaction)
+      throw new BootstrapRequestConflict("Atomic management cancellation is unavailable");
+    return this.journal.withRecoveryTransaction((stored, replace) => {
+      const records = this.validateRecords(stored);
+      if (assertAuthority() !== undefined)
+        throw new BootstrapRequestConflict("Management authority must be checked synchronously");
+      const request = records.find((item) => item.id === input.id);
+      if (
+        !request ||
+        request.revision !== input.revision ||
+        request.planSha256 !== input.planSha256
+      )
+        throw new BootstrapRequestConflict("Bootstrap request changed. Refresh its review.");
+      if (request.execution)
+        throw new BootstrapRequestConflict("Bootstrap dispatch has already claimed this request");
+      if (request.status !== "pending" && request.status !== "approved")
+        throw new BootstrapRequestConflict("Bootstrap request has already been decided");
+      const binding = this.readBinding(request.plan);
+      const next: CoordinatorBootstrapRequest = {
+        ...request,
+        revision: randomUUID(),
+        status: "canceled",
+        decisionAt: new Date(this.now()).toISOString(),
+      };
+      this.requireSameBinding(binding, request.plan);
+      if (assertAuthority() !== undefined)
+        throw new BootstrapRequestConflict("Management authority must be checked synchronously");
+      replace(records.map((item) => (item.id === next.id ? next : item)));
+      return structuredClone(next);
+    });
+  }
+
   async decide(value: unknown, ownerPassword: string): Promise<CoordinatorBootstrapRequest> {
     const input = CoordinatorBootstrapDecisionSchema.parse(value);
     const expected = this.read();
@@ -792,6 +893,50 @@ export class CoordinatorBootstrapRequests {
       decisionAt: new Date(this.now()).toISOString(),
     };
     // Another decision or preparation may finish during authentication or byte checks.
+    this.journal.replace(
+      expected,
+      expected.map((item) => (item.id === next.id ? next : item)),
+    );
+    return structuredClone(next);
+  }
+
+  /** Display-only lifecycle view; claims recheck it under the journal lock. */
+  readLifecycle(): unknown {
+    if (!this.journal.readLifecycle)
+      throw new BootstrapRequestConflict("Installation journal is unavailable");
+    return this.journal.readLifecycle();
+  }
+
+  /**
+   * Close an approval whose dispatch failed before its durable claim, so the
+   * request stops reading as "approved, awaiting dispatch" and cannot be reused.
+   * Applies only to the exact approved revision without an execution record: a
+   * claimed or changed request is left alone and its own recovery path decides.
+   * Like cancelForReplacedHostRelease, this is a system decision applied by CAS.
+   * Returns null when the request no longer matches.
+   */
+  closeFailedDispatch(
+    value: unknown,
+    closedRevision: string = randomUUID(),
+  ): CoordinatorBootstrapRequest | null {
+    const input = dispatchIdentity.parse(value);
+    z.string().uuid().parse(closedRevision);
+    const expected = this.read();
+    const request = expected.find((item) => item.id === input.id);
+    if (
+      !request ||
+      request.revision !== input.revision ||
+      request.planSha256 !== input.planSha256 ||
+      request.status !== "approved" ||
+      request.execution
+    )
+      return null;
+    const next: CoordinatorBootstrapRequest = {
+      ...request,
+      revision: closedRevision,
+      status: "canceled",
+      decisionAt: new Date(this.now()).toISOString(),
+    };
     this.journal.replace(
       expected,
       expected.map((item) => (item.id === next.id ? next : item)),
@@ -896,7 +1041,11 @@ export class CoordinatorBootstrapRequests {
   }
 
   private read(): CoordinatorBootstrapRequest[] {
-    const records = z.array(CoordinatorBootstrapRequestSchema).parse(this.journal.read());
+    return this.validateRecords(this.journal.read());
+  }
+
+  private validateRecords(value: unknown): CoordinatorBootstrapRequest[] {
+    const records = z.array(CoordinatorBootstrapRequestSchema).parse(value);
     if (new Set(records.map((item) => item.id)).size !== records.length)
       throw new BootstrapRequestConflict("Duplicate bootstrap request identity");
     for (const request of records) {

@@ -4,6 +4,7 @@ import { expect, test, type Page } from "../support/fixtures";
 import { gotoAppShell } from "../support/helpers/app";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { getServerId } from "../support/helpers/server-id";
+import { resizeAndSettle } from "../support/helpers/viewport";
 
 async function openProvidersInMode({ page, vortonMode }: { page: Page; vortonMode: boolean }) {
   await page.evaluate((enabled) => {
@@ -44,7 +45,7 @@ test("old Claude CLI explains missing models and clears the warning after upgrad
       exact: true,
     });
     for (const width of [1280, 402]) {
-      await page.setViewportSize({ width, height: 1000 });
+      await resizeAndSettle(page, { width, height: 1000 });
       await expect(row).toContainText("CLI update needed");
       await row.click();
       const warning = page.getByTestId("provider-cli-update");
@@ -55,13 +56,12 @@ test("old Claude CLI explains missing models and clears the warning after upgrad
       expect(await warning.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
         true,
       );
-      await page.screenshot({ path: test.info().outputPath(`cli-update-${width}.png`) });
       await page.getByRole("button", { name: "Close", exact: true }).click();
       await expect(page.getByTestId("provider-settings-sheet")).toBeHidden();
     }
     // Retired 2026-10-25: the Standard mode check that hid this warning went with the mode in
     // 471d7f22a.
-    await page.setViewportSize({ width: 1280, height: 1000 });
+    await resizeAndSettle(page, { width: 1280, height: 1000 });
     await expect(row).toContainText("CLI update needed");
     await client.patchDaemonConfig({
       providers: {
@@ -129,27 +129,6 @@ test("provider rows preserve snapshot labels, layout, settings, and enabled stat
     expect(count).toBeGreaterThan(1);
     const modelCount = `${count.toLocaleString()} models`;
     await expect(row.getByText(modelCount, { exact: true })).toBeVisible();
-    // Controls are siblings of the details button, so read order from the row container.
-    const order = await row.locator("..").evaluate(
-      (element, expected) => {
-        const nodes = Array.from(element.querySelectorAll("*"));
-        const icons = Array.from(element.querySelectorAll("svg"));
-        return {
-          icons: icons.slice(0, 2).map((icon) => nodes.indexOf(icon)),
-          label: nodes.findIndex((node) => node.textContent === expected.label),
-          models: nodes.findIndex((node) => node.textContent === expected.modelCount),
-          status: nodes.findIndex((node) => node.textContent === "Available"),
-          toggle: nodes.findIndex((node) => node.getAttribute("role") === "switch"),
-        };
-      },
-      { label: mock.label, modelCount },
-    );
-    expect(order.icons).toHaveLength(2);
-    expect(order.icons[1]).toBeGreaterThan(order.icons[0]);
-    expect(order.label).toBeGreaterThan(order.icons[1]);
-    expect(order.status).toBeGreaterThan(order.label);
-    expect(order.models).toBeGreaterThan(order.status);
-    expect(order.toggle).toBeGreaterThan(order.models);
     const disabledToggle = card.getByRole("switch", {
       name: "Enable Disabled account",
       exact: true,

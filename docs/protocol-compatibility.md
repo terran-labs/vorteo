@@ -164,6 +164,8 @@ The blocked status is discretionary and independent of `blockedBy` prerequisite 
 
 Daemons advertise `features.agentJournal`. The interface gates the journal card on that capability. Journal entries travel as an optional `journal` array in existing agent snapshots; older clients ignore the field, and newer clients still accept snapshots that omit it. No new WebSocket message type is sent to older clients. The caller-bound MCP tools assign append sequence and timestamp on the server, commit before broadcasting, and deduplicate retries by entry ID. Ordinary agent snapshot writes preserve the durable journal.
 
+Daemons advertise `features.agentTimelinePromptIndexAfterSeq` when `agent.timeline.list_prompts.request` accepts optional `afterSeq` and returns only prompts after that timeline position. The interface sends the field only to capable daemons; older daemons would strip it and return the complete index, which older interfaces continue to request. Prompt rows keep their sequence once appended, so a suffix extends the held index for the same epoch.
+
 Journal entries and append input accept optional `machineContext` text for agent reference details. The card renders only `text`; machine context remains available in journal reads and snapshots and is not a secret store. Older entries omit it, and older clients ignore it. Agents must inspect the append tool schema before sending this field to an older daemon; no client write path assumes support. Retries must retain both text and machine context exactly. The short-summary limits are writing instructions, not a narrowing of the existing wire text schema; historical entries remain readable.
 
 ## Open questions
@@ -225,3 +227,11 @@ Clients treat a project root inside a Projects folder that two daemons advertise
 ## Project policies
 
 Installation settings gain optional `projectPolicies`. Older coordinators, owner clients and daemon admission readers parse settings strictly, so the coordinator includes the field only for owner requests with `X-Vorteo-Project-Policies: 1` and admission reads with `projectPolicies=1`. Owner clients read its presence as the capability. Daemon config gains optional `installationProjectPolicies`, with a loose policy schema so newer fields never break older clients, and `features.installationProjectPolicies`. The coordinator projects the copy only to daemons whose config reports the key.
+
+## Delegated native maintenance approvals
+
+Native helper, preview monitor and session host journal schemas accept optional private `delegatedApproval` evidence. Public job replies omit it for older strict clients. The coordinator checks its grant epoch, credentials, request revision, plan digest and cancellation deadline before dispatch, including after asynchronous validation. Rollback coordinators must understand this retained journal field. New owner delegation routes require owner authentication and same-origin checks; scoped capabilities advertise their availability. Existing service permission replies are unchanged.
+
+## Unavailable-provider thread recovery
+
+The optional `agentProviderRecovery` feature advertises recovery through the existing `agent.profile.switch.request`. The client shows recovery in the load error only with this capability; older hosts retain Retry. The request shape and switch marker are unchanged, and the existing `profile_switch_timeline` client gate still applies. Older clients ignore the optional feature and continue using ordinary switching.

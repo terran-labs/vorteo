@@ -202,13 +202,23 @@ export async function connectSessionHost(
       terminate(new SessionHostClientError("invalid_frame", "Session host frame is too large.")),
   });
   let connected = false;
+  // Kept so a close names its cause; otherwise the log cannot tell a host restart from a fault.
+  let socketErrorCode: string | null = null;
   socket.once("connect", () => {
     connected = true;
   });
   socket.on("close", () =>
-    terminate(new SessionHostClientError("disconnected", "Session host connection closed.")),
+    terminate(
+      new SessionHostClientError(
+        "disconnected",
+        socketErrorCode
+          ? `Session host connection closed after a socket error (${socketErrorCode}).`
+          : "Session host connection closed by the host.",
+      ),
+    ),
   );
   socket.on("error", (error: NodeJS.ErrnoException) => {
+    socketErrorCode = error.code ?? "unknown";
     if (!connected)
       terminate(
         new SessionHostClientError(
@@ -286,7 +296,10 @@ export async function connectSessionHost(
           sessionId,
           call: hostCall,
         }));
-        if (hostCall.method === "close" && channels.get(sessionId) === channel)
+        if (
+          (hostCall.method === "close" || hostCall.method === "closeIfIdle") &&
+          channels.get(sessionId) === channel
+        )
           channels.delete(sessionId);
         return value;
       },
@@ -370,7 +383,12 @@ export async function connectSessionHost(
       else closeListeners.push(listener);
     },
     close: () =>
-      terminate(new SessionHostClientError("disconnected", "Session host connection closed.")),
+      terminate(
+        new SessionHostClientError(
+          "disconnected",
+          "Session host connection closed by this daemon.",
+        ),
+      ),
   };
 }
 

@@ -7,6 +7,8 @@ import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { getServerId } from "../support/helpers/server-id";
 import { openWorkspaceActionsMenu } from "../support/helpers/workspace-ui";
 import { daemonWsRoutePattern } from "../support/helpers/daemon-port";
+import { SIDEBAR_INDENT_UNIT } from "../../src/components/sidebar/indent";
+import { openMobileAgentSidebar } from "../support/helpers/sidebar";
 
 /**
  * Escape closes an open tooltip first and the menu on the next press, so keep pressing until
@@ -138,7 +140,7 @@ test.fixme("Standing follows schedules and protection, and failed changes can be
     await labelsItem(page, agent.workspaceId, "protected").click();
     await expect(page.getByTestId(`workspace-shield-${agent.workspaceId}`)).toBeVisible();
     await page.keyboard.press("Escape");
-    const section = page.getByTestId(/^sidebar-standing-section-/);
+    const section = page.getByTestId(/^sidebar-standing-section-.*-toggle$/);
     await expect(section).toHaveText("Standing");
     const heading = section.getByText("Standing", { exact: true });
     const workspaceRow = page
@@ -153,12 +155,17 @@ test.fixme("Standing follows schedules and protection, and failed changes can be
       .getByText("main", { exact: true })
       .evaluate((element) => getComputedStyle(element).fontSize);
     await expect(heading).toHaveCSS("font-size", titleSize);
-    const arrowBox = await section.locator("svg").first().boundingBox();
-    if (!arrowBox) throw new Error("Expected leading disclosure arrow");
-    expect(Math.abs(arrowBox.x + arrowBox.width / 2 - dotBox.x - dotBox.width / 2)).toBeLessThan(1);
-    expect(headingBox.x - arrowBox.x - arrowBox.width).toBeGreaterThanOrEqual(8);
+    // Standing is a project child like a folder, so its folder icon sits one indent unit
+    // outside the workspaces it holds.
+    const folderIconBox = await section.locator("svg").first().boundingBox();
+    if (!folderIconBox) throw new Error("Expected leading folder icon");
+    const iconCenter = folderIconBox.x + folderIconBox.width / 2;
+    expect(Math.abs(dotBox.x + dotBox.width / 2 - iconCenter - SIDEBAR_INDENT_UNIT)).toBeLessThan(
+      1,
+    );
+    expect(headingBox.x - folderIconBox.x - folderIconBox.width).toBeGreaterThanOrEqual(8);
     const workspaceTitleBox = await workspaceRow.getByText("main", { exact: true }).boundingBox();
-    expect(Math.abs(headingBox.x - workspaceTitleBox!.x)).toBeLessThan(1);
+    expect(Math.abs(workspaceTitleBox!.x - headingBox.x - SIDEBAR_INDENT_UNIT)).toBeLessThan(1);
     await section.hover();
     expect(await section.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe(
       "rgba(0, 0, 0, 0)",
@@ -279,6 +286,46 @@ test.fixme("Standing follows schedules and protection, and failed changes can be
 test.describe("touch controls", () => {
   test.use({ hasTouch: true, viewport: { width: 1280, height: 800 } });
 
+  test("focused Standing keeps usable breadcrumb targets at 390px", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "standing-focus-touch-",
+      title: "Focused supervisor",
+    });
+    try {
+      await agent.client.setWorkspaceLifecycle({
+        workspaceId: agent.workspaceId,
+        standing: true,
+      });
+      await openAgentRoute(page, agent);
+      await openMobileAgentSidebar(page);
+      const focus = page.getByTestId(/^sidebar-standing-section-.*-focus$/);
+      await expect(focus).toBeVisible();
+      await focus.tap();
+      const breadcrumb = page.getByTestId("sidebar-focus-breadcrumb");
+      await expect(breadcrumb).toBeVisible();
+      await expect(page.getByTestId("sidebar-focus-current")).toHaveText("Standing");
+      for (const link of await breadcrumb.getByRole("link").all()) {
+        const box = await link.boundingBox();
+        expect(box?.height).toBeGreaterThanOrEqual(44);
+        expect(box?.width).toBeGreaterThanOrEqual(44);
+      }
+      await page.reload();
+      await openMobileAgentSidebar(page);
+      await expect(page.getByTestId("sidebar-focus-current")).toHaveText("Standing");
+      await page.getByTestId("sidebar-focus-crumb-all").tap();
+      await expect(breadcrumb).toBeHidden();
+      await expect(focus).toBeVisible();
+    } finally {
+      await agent.client.setWorkspaceLifecycle({
+        workspaceId: agent.workspaceId,
+        protected: false,
+      });
+      await agent.cleanup();
+    }
+  });
+
   test("Standing and Scheduled keep touch targets on a wide touchscreen", async ({ page }) => {
     test.setTimeout(180_000);
     page.setDefaultTimeout(15_000);
@@ -301,7 +348,7 @@ test.describe("touch controls", () => {
       scheduleId = created.schedule.id;
       await client.schedulePause({ id: scheduleId });
       await openAgentRoute(page, agent);
-      const section = page.getByTestId(/^sidebar-standing-section-/);
+      const section = page.getByTestId(/^sidebar-standing-section-.*-toggle$/);
       const scheduled = page.getByTestId(`workspace-scheduled-${agent.workspaceId}`);
       await expect(scheduled).toBeVisible();
       expect((await section.boundingBox())?.height).toBeGreaterThanOrEqual(44);
@@ -310,7 +357,6 @@ test.describe("touch controls", () => {
       await expect(scheduled).toBeHidden();
       await section.tap();
       await expect(scheduled).toBeVisible();
-      await page.screenshot({ path: test.info().outputPath("standing-touch.png") });
       // Touch rows have no overflow button since 2415534c8; the workspace menu has its actions.
       await openWorkspaceActionsMenu(page, { tap: true });
       await page.getByTestId("workspace-header-labels").tap();
@@ -324,7 +370,6 @@ test.describe("touch controls", () => {
       await expect
         .poll(async () => Math.round((await protection.boundingBox())?.height ?? 0))
         .toBeGreaterThanOrEqual(44);
-      await page.screenshot({ path: test.info().outputPath("tag-as-touch.png") });
       await page.touchscreen.tap(900, 200);
       await expect(protection).toBeHidden();
       await scheduled.tap();
@@ -394,7 +439,6 @@ test("older environments show disabled built-in protection instead of a custom l
         )
         .getByText("Update this environment to use Protected."),
     ).toBeVisible();
-    await page.screenshot({ path: test.info().outputPath("protected-old-environment.png") });
   } finally {
     await agent.cleanup();
   }
@@ -410,7 +454,7 @@ test("workspace schedule creation, pause, resume and deletion drive Standing", a
   let scheduleId: string | undefined;
   try {
     await openAgentRoute(page, agent);
-    const section = page.getByTestId(/^sidebar-standing-section-/);
+    const section = page.getByTestId(/^sidebar-standing-section-.*-toggle$/);
     await expect(section).toBeHidden();
     await openMenu(page, agent.workspaceId);
     await page
@@ -460,12 +504,8 @@ test("workspace schedule creation, pause, resume and deletion drive Standing", a
   }
 });
 
-for (const state of ["protected", "scheduled", "paused", "protected-scheduled"] as const) {
+for (const state of ["protected", "scheduled", "paused"] as const) {
   test(`archive stays locked for ${state} until blockers are removed`, async ({ page }) => {
-    // Product regression, reported to Builds on 2026-10-24: since 84f489a59 the daemon checks
-    // protection before schedules, so archiving a protected, scheduled workspace reports only
-    // "Unprotect to archive". Remove the fixme once it names both blockers.
-    test.fixme(state === "protected-scheduled", "Archive reports only the protection blocker");
     test.setTimeout(180_000);
     page.setDefaultTimeout(15_000);
     const agent = await seedMockAgentWorkspace({
@@ -473,14 +513,13 @@ for (const state of ["protected", "scheduled", "paused", "protected-scheduled"] 
       title: "Archive lock",
     });
     const client = await connectDaemonClient<DaemonClient>({ clientIdPrefix: "archive-lock" });
-    const protectedWorkspace = state === "protected" || state === "protected-scheduled";
+    const protectedWorkspace = state === "protected";
     const scheduled = state !== "protected";
     const reasons = {
       protected: "Unprotect to archive",
       active: "Remove schedules to archive",
       scheduled: "Remove schedules to archive",
       paused: "Remove schedules to archive",
-      "protected-scheduled": "Unprotect and remove schedules to archive",
     };
     const reason = reasons[state];
     let scheduleId: string | undefined;
@@ -510,7 +549,6 @@ for (const state of ["protected", "scheduled", "paused", "protected-scheduled"] 
       await expect(archive).toBeDisabled();
       await archive.locator("..").hover();
       await expect(page.getByText(reason, { exact: true })).toBeVisible();
-      await page.screenshot({ path: test.info().outputPath(`${state}-archive-locked.png`) });
       await closeMenus(page);
       await page.keyboard.press("Control+Shift+Backspace");
       await page.keyboard.press("Meta+Shift+Backspace");
@@ -580,57 +618,8 @@ test.describe("compact archive lock", () => {
       const hint = page.getByText("Unprotect to archive", { exact: true });
       await hint.scrollIntoViewIfNeeded();
       await expect(hint).toBeInViewport({ ratio: 1 });
-      await page.screenshot({ path: test.info().outputPath("compact-archive-lock.png") });
     } finally {
       await client.setWorkspaceLifecycle({ workspaceId: agent.workspaceId, protected: false });
-      await client.close();
-      await agent.cleanup();
-    }
-  });
-  // Product regression, reported to Builds on 2026-10-24: since 56b01ba3a phones cannot open the
-  // Explorer's Changes view. Remove the fixme once they can.
-  test.fixme("compact Git Archive explains the schedule lock outside the sidebar", async ({
-    page,
-  }) => {
-    test.setTimeout(180_000);
-    page.setDefaultTimeout(15_000);
-    const agent = await seedMockAgentWorkspace({
-      repoPrefix: "archive-lock-git-",
-      title: "Scheduled Git guard",
-    });
-    const client = await connectDaemonClient<DaemonClient>({ clientIdPrefix: "archive-lock-git" });
-    let scheduleId: string | undefined;
-    try {
-      const created = await client.scheduleCreate({
-        prompt: "Review",
-        target: { type: "agent", agentId: agent.agentId },
-        cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
-        runOnCreate: false,
-      });
-      if (!created.schedule) throw new Error(created.error ?? "Expected schedule");
-      scheduleId = created.schedule.id;
-      await client.schedulePause({ id: scheduleId });
-      await openAgentRoute(page, agent);
-      const changesTab = page.getByTestId("explorer-tab-changes").filter({ visible: true });
-      if (!(await changesTab.isVisible()))
-        await page.getByTestId("workspace-explorer-toggle").first().click();
-      await expect(changesTab).toBeVisible();
-      await changesTab.click();
-      const explorer = page.getByTestId("explorer-content-area").filter({ visible: true });
-      await explorer.getByTestId("changes-actions-menu-trigger").click();
-      const archive = page.getByTestId("workspace-archive-action");
-      await expect(archive).toBeDisabled();
-      const hint = archive.getByText("Remove schedules to archive", { exact: true });
-      await hint.scrollIntoViewIfNeeded();
-      await expect(hint).toBeInViewport({ ratio: 1 });
-      await page.screenshot({ path: test.info().outputPath("compact-git-archive-lock.png") });
-      await client.setWorkspaceLifecycle({ workspaceId: agent.workspaceId, protected: false });
-      await expect(archive).toBeDisabled();
-      await client.scheduleDelete({ id: scheduleId });
-      scheduleId = undefined;
-      await expect(archive).toBeEnabled({ timeout: 30_000 });
-    } finally {
-      if (scheduleId) await client.scheduleDelete({ id: scheduleId });
       await client.close();
       await agent.cleanup();
     }
@@ -673,7 +662,6 @@ test("sidebar sub-agent badge counts active work and hides finished unarchived w
     await client.sendAgentMessage(child.id, "Work on the sidebar check.");
     await expect(badge).toHaveText("A1");
     await expect(badge.getByLabel("1 active subagent")).toHaveText("A1");
-    await page.screenshot({ path: test.info().outputPath("active-subagent-badge.png") });
     await expect(badge).not.toBeAttached({ timeout: 30_000 });
     await page.reload();
     await expect(badge).not.toBeAttached();

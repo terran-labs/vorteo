@@ -6,6 +6,9 @@ import {
   useHasExecutionEnvironment,
 } from "@/execution-installation/environment-icon";
 import { WorkspaceChecklistProgress } from "@/task-checklist/workspace-progress";
+import { ReviewWaitIndicator } from "@/task-checklist/review-wait-indicator";
+import { useWorkspaceReviewTasks } from "@/task-checklist/use-workspace-review-tasks";
+import { showsReviewWait } from "@/task-checklist/review-wait";
 import { WorkspaceQueueCount } from "@/message-queue/workspace-queue-count";
 import { WorkspaceOpenQuestionCount } from "@/open-questions/workspace-count";
 import { WorkspaceSubagentCount } from "@/subagents/workspace-count";
@@ -16,6 +19,7 @@ import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
 import { Text, View, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import { sidebarIndent } from "@/components/sidebar/indent";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 import {
@@ -194,6 +198,8 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
           />
         ) : (
           <WorkspaceStatusIndicator
+            serverId={workspace.serverId}
+            workspaceId={workspace.workspaceId}
             bucket={workspace.statusBucket}
             workspaceKind={workspace.workspaceKind}
             loading={isLoading}
@@ -229,18 +235,23 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
 });
 
 function WorkspaceStatusIndicator({
+  serverId,
+  workspaceId,
   bucket,
   workspaceKind,
   loading = false,
   reserveIdleSpace = true,
   muted = false,
 }: {
+  serverId: string;
+  workspaceId: string;
   bucket: SidebarWorkspaceEntry["statusBucket"];
   workspaceKind: SidebarWorkspaceEntry["workspaceKind"];
   loading?: boolean;
   reserveIdleSpace?: boolean;
   muted?: boolean;
 }) {
+  const reviewTasks = useWorkspaceReviewTasks(serverId, workspaceId);
   // Busy is the only status that moves, and it is the ring rather than a dot for the same
   // reason it is a dot elsewhere: every status in the sidebar sits in this one slot, so busy
   // has to fill it without displacing anything. A row starting up and a row working are both
@@ -269,6 +280,17 @@ function WorkspaceStatusIndicator({
           uniProps={muted ? managedAlertMapping : needsInputColorMapping}
         />
       </View>
+    );
+  }
+
+  // An idle thread waiting on a Review item, such as a Builds delivery, is not ready yet.
+  if (showsReviewWait(bucket, reviewTasks.length)) {
+    return (
+      <ReviewWaitIndicator
+        tasks={reviewTasks}
+        muted={muted}
+        slotStyle={styles.workspaceStatusDot}
+      />
     );
   }
 
@@ -328,9 +350,9 @@ function getStatusDotColorStyle(bucket: SidebarStateBucket) {
 }
 
 export const sidebarWorkspaceRowStyles = StyleSheet.create((theme) => ({
-  // Project children sit one icon column inside the project heading. Keep the
+  // Project children sit one hierarchy level inside the project heading. Keep the
   // full-width row background while making the parent-child hierarchy visible.
-  projectIndented: { paddingLeft: 14 + theme.iconSize.md },
+  projectIndented: { paddingLeft: sidebarIndent(1) },
   // How far a workspace row sits inside the group header above it — a project row or a
   // status group header. Both groupings share this one indent, so every grouped workspace row
   // in the sidebar sits on the same rail regardless of how the list is grouped. Pinned rows

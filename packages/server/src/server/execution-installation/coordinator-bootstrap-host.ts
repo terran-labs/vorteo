@@ -1,3 +1,6 @@
+import { PreviewBrokerDeploymentConfigurationSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import { PreviewBrokerConfigurationSchema } from "@getpaseo/protocol/preview-broker-maintenance";
+import { maintenanceDelegationActivation } from "./owner-delegation.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { readPrivateBootstrapConfiguration } from "./coordinator-bootstrap-private-configuration.js";
 import { retainServiceFiles } from "./coordinator-bootstrap-maintenance-service-inspection.js";
@@ -112,14 +115,18 @@ export function createBootstrapReconciliationLedger(
       );
       return coordinatorAutomaticAuthority(config);
     },
+    () => maintenanceDelegationActivation(initial.stateDirectory) !== null,
   );
   return {
     list: () => requests.list(),
+    cancelUnderManagement: (value, assertAuthority) =>
+      requests.cancelUnderManagement(value, assertAuthority),
     revokeAutomatic: () => requests.revokeAutomatic(),
     cancelForReplacedHostRelease: (selected, releaseRoot) =>
       requests.cancelForReplacedHostRelease(selected, releaseRoot),
     reserveAutomaticReconciliation: (value) => requests.reserveAutomaticReconciliation(value),
     finishAutomaticReconciliation: (id, value) => requests.finishAutomaticReconciliation(id, value),
+    readLifecycle: () => requests.readLifecycle(),
   };
 }
 
@@ -197,13 +204,71 @@ export async function createBootstrapReviewService(
       );
       return coordinatorAutomaticAuthority(config);
     },
+    () => maintenanceDelegationActivation(initial.stateDirectory) !== null,
   );
+}
+
+function verifyDeploymentBootstrapBinding(
+  plan: CoordinatorBootstrapPlan,
+  host: BootstrapAdmissionHost,
+): void {
+  const changes = planConfigurationChanges(plan);
+  if (!changes.ok) throw new BootstrapRequestConflict(changes.reason);
+  const deploymentChange = changes.changes.find(
+    (item) => item.setting === "previewBrokerDeployment",
+  );
+  if (deploymentChange?.value != null) {
+    const deployment = PreviewBrokerDeploymentConfigurationSchema.parse(deploymentChange.value);
+    const recovery = bootstrapRecoveryRelease(plan);
+    const directory = path.join(
+      recovery.directory,
+      "packages/server/dist/server/server/execution-installation",
+    );
+    if (
+      deployment.docker !== host.docker ||
+      deployment.socket !== host.socket ||
+      deployment.containerId !== host.containerId ||
+      deployment.recovery.node.path !== recovery.node.path ||
+      deployment.recovery.node.sha256 !== recovery.node.sha256 ||
+      deployment.recovery.journal.path !== path.join(directory, "lifecycle-journal.js") ||
+      deployment.recovery.queue.path !== path.join(directory, "restarts.js") ||
+      deployment.recovery.configModule.path !== path.join(directory, "config.js")
+    )
+      throw new BootstrapRequestConflict(
+        "Consumer deployment must bind exact container and recovery readers",
+      );
+  }
 }
 
 function verifyMonitorBootstrapBinding(
   plan: CoordinatorBootstrapPlan,
   host: BootstrapAdmissionHost,
 ): void {
+  const changes = planConfigurationChanges(plan);
+  if (!changes.ok) throw new BootstrapRequestConflict(changes.reason);
+  const change = changes.changes.find((item) => item.setting === "previewBroker");
+  verifyDeploymentBootstrapBinding(plan, host);
+  if (change?.value != null) {
+    const broker = PreviewBrokerConfigurationSchema.parse(change.value);
+    const recovery = bootstrapRecoveryRelease(plan);
+    const directory = path.join(
+      recovery.directory,
+      "packages/server/dist/server/server/execution-installation",
+    );
+    if (
+      broker.docker !== host.docker ||
+      broker.socket !== host.socket ||
+      broker.containerId !== host.containerId ||
+      broker.recovery.node.path !== recovery.node.path ||
+      broker.recovery.node.sha256 !== recovery.node.sha256 ||
+      broker.recovery.journal.path !== path.join(directory, "lifecycle-journal.js") ||
+      broker.recovery.queue.path !== path.join(directory, "restarts.js") ||
+      broker.recovery.configModule.path !== path.join(directory, "config.js")
+    )
+      throw new BootstrapRequestConflict(
+        "Broker configuration must bind exact paired container and retained recovery readers",
+      );
+  }
   if (
     plan.previewMonitorConfiguration &&
     (plan.previewMonitorConfiguration.docker !== host.docker ||
@@ -502,7 +567,13 @@ function expectedBootstrapConfiguration(
   current: InstallationConfig,
 ): InstallationConfig {
   // Copy each section edited below so the live configuration is never mutated.
-  const expected = { ...current, host: { ...current.host }, container: { ...current.container } };
+  const expected: InstallationConfig = {
+    ...current,
+    host: { ...current.host },
+    ...(current.container ? { container: { ...current.container } } : {}),
+  };
+  if (current.containerSourceUpdates)
+    expected.containerSourceUpdates = { ...current.containerSourceUpdates };
   if (plan.sourceUpdateTooling === true) {
     if (!current.sourceUpdates)
       throw new BootstrapRequestConflict("Source update tooling requires existing source updates");
@@ -511,8 +582,13 @@ function expectedBootstrapConfiguration(
       toolingDirectory: path.join(plan.candidate.directory, "scripts"),
     };
   }
-  for (const change of reviewedConfigurationChanges(plan))
+  for (const change of reviewedConfigurationChanges(plan)) {
+    if (change.setting === "containerSourceUpdateNode" && !current.containerSourceUpdates)
+      throw new BootstrapRequestConflict(
+        "Node replacement requires existing container source updates",
+      );
     applyConfigurationChange(expected, change);
+  }
   if (plan.nativeHelperConfiguration === null) delete expected.nativeHelper;
   else if (plan.nativeHelperConfiguration !== undefined)
     expected.nativeHelper = plan.nativeHelperConfiguration;
@@ -588,9 +664,9 @@ function inspectBootstrapConfiguration(
   if (!isDeepStrictEqual(current, previous))
     throw new BootstrapRequestConflict("Previous coordinator configuration no longer matches");
   const devConfiguration =
-    candidate.container.persistentRegistration &&
+    candidate.container?.persistentRegistration &&
     candidate.container.supervisorMaintenance &&
-    !current.container.persistentRegistration
+    !current.container?.persistentRegistration
       ? inspectDevRegistrationConfiguration({
           plan: input.plan,
           currentFile: input.configurationFile,

@@ -1,3 +1,10 @@
+import { useToast } from "@/contexts/toast-api-context";
+import type { BrokerReviewJob } from "./preview-broker-review";
+import {
+  brokerActionDisabledReason,
+  brokerReviewSummary,
+  type BrokerAction,
+} from "./preview-broker-review";
 import { MaintenanceServiceQueue } from "./maintenance-service-queue";
 import { MaintenanceDashboard } from "./maintenance-dashboard";
 import { RecoveryBookmark } from "./recovery-bookmark";
@@ -43,8 +50,8 @@ import {
   type ComponentProps,
 } from "react";
 import { Pressable, Text, View } from "react-native";
-import { CheckSquare, Square, Info, ChevronDown, ChevronUp } from "lucide-react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { CheckSquare, Square, Info, ChevronDown, ChevronUp, Copy } from "lucide-react-native";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { EditingTextInput } from "@/components/ui/text-input";
@@ -74,8 +81,10 @@ import {
   PreclaimRecoveryReview,
   PreclaimRecoveryBanner,
 } from "./bootstrap-panel";
-import { readExecutionInstallation } from "./policy";
+import { installationHasDev, readExecutionInstallation } from "./policy";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
+import { SafetySnapshotsCard } from "./safety-snapshots";
+import { InstallationUpgradeCard } from "./installation-upgrade-card";
 import {
   InstallationPanelModel,
   restartRequestSummary,
@@ -86,7 +95,9 @@ import {
   restartBlockingReason,
   restartRepairGuidance,
   restartActionDisabledReason,
+  passwordCopyCommand,
 } from "./panel-model";
+import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import type {
   MaintenanceService,
   ProfileSharingStatus,
@@ -102,33 +113,61 @@ function disclosureProps(expanded: boolean) {
 }
 
 let panelModel: InstallationPanelModel | null = null;
+// The owner client behind the panel model, shared with owner cards outside the panel.
+let panelClient: InstallationClient | null = null;
 function getInstallationPanel(registryLoaded: boolean): InstallationPanelModel | null {
   const installation = readExecutionInstallation();
   if (!installation) return null;
   const runtime = getHostRuntimeStore();
   if (!registryLoaded) return null;
-  if (!panelModel)
-    panelModel = new InstallationPanelModel(
-      new InstallationClient(installation, {
-        request: requestInstallationOwner,
-        register: runtime,
-      }),
-      {
-        connectionsRegistered: hasInstallationConnections(installation, runtime.getHosts()),
-        openRequested:
-          typeof window !== "undefined" &&
-          new URL(window.location.href).searchParams.get("installation") === "1",
-      },
-    );
+  if (!panelModel) {
+    panelClient = new InstallationClient(installation, {
+      request: requestInstallationOwner,
+      register: runtime,
+    });
+    panelModel = new InstallationPanelModel(panelClient, {
+      connectionsRegistered: hasInstallationConnections(installation, runtime.getHosts()),
+      openRequested:
+        typeof window !== "undefined" &&
+        new URL(window.location.href).searchParams.get("installation") === "1",
+    });
+  }
   return panelModel;
 }
 
-export function InstallationWelcome() {
+const noSubscription = () => () => {};
+const lockedState = () => false;
+
+/** The installation owner client while controls are unlocked, otherwise null. */
+export function useInstallationOwnerClient(): InstallationClient | null {
   const model = getInstallationPanel(useHostRegistryLoaded());
-  return model ? <InstallationWelcomeForm model={model} /> : null;
+  const unlocked = useSyncExternalStore(
+    model?.subscribe ?? noSubscription,
+    model ? () => model.getState().unlocked : lockedState,
+    model ? () => model.getState().unlocked : lockedState,
+  );
+  return model && unlocked ? panelClient : null;
 }
 
-function InstallationWelcomeForm({ model }: { model: InstallationPanelModel }) {
+/** Loopback installations are reached without Tailscale. */
+function installationIsLocal(): boolean {
+  const origin = readExecutionInstallation()?.origin;
+  if (!origin) return false;
+  return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(origin).hostname);
+}
+
+export function InstallationWelcome({ wide = false }: { wide?: boolean }) {
+  const model = getInstallationPanel(useHostRegistryLoaded());
+  return model ? <InstallationWelcomeForm model={model} wide={wide} /> : null;
+}
+
+function InstallationWelcomeForm({
+  model,
+  wide,
+}: {
+  model: InstallationPanelModel;
+  wide: boolean;
+}) {
   // The model outlives this dialog; dismissed password drafts must not.
   useEffect(() => () => model.clearPasswordDraft(), [model]);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
@@ -142,42 +181,110 @@ function InstallationWelcomeForm({ model }: { model: InstallationPanelModel }) {
   if (state.unlocked) {
     return (
       <Text accessibilityLiveRegion="polite" style={styles.text}>
-        Signed in. Connecting to your environments. Keep Tailscale connected on this device.
+        {installationIsLocal()
+          ? "Signed in. Connecting to your environments."
+          : "Signed in. Connecting to your environments. Keep Tailscale connected on this device."}
       </Text>
     );
   }
   return (
-    <View style={styles.historyItem} testID="installation-welcome">
-      <Field label="Owner password">
-        <FormTextInput
-          size="md"
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="current-password"
-          textContentType="password"
-          initialValue=""
-          onChangeText={setPassword}
-          onSubmitEditing={connect}
-          returnKeyType="go"
-          editable={!state.busy}
-          accessibilityLabel="Owner password"
-          testID="installation-password"
-        />
-      </Field>
-      {state.error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {state.error}
-        </Text>
+    <View
+      style={[styles.welcomeForm, wide && styles.welcomeFormWide]}
+      testID="installation-welcome"
+    >
+      <View style={styles.welcomeSignIn}>
+        <Field label="Owner password">
+          <FormTextInput
+            size="md"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="current-password"
+            textContentType="password"
+            initialValue=""
+            onChangeText={setPassword}
+            onSubmitEditing={connect}
+            returnKeyType="go"
+            editable={!state.busy}
+            accessibilityLabel="Owner password"
+            testID="installation-password"
+          />
+        </Field>
+        {state.error ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {state.error}
+          </Text>
+        ) : null}
+        <Button
+          size="lg"
+          disabled={state.busy || !state.password.trim()}
+          onPress={connect}
+          testID="installation-unlock"
+        >
+          {state.busy ? "Connecting..." : "Connect"}
+        </Button>
+      </View>
+      {state.passwordFile ? (
+        <PasswordFileHint passwordFile={state.passwordFile} wide={wide} />
       ) : null}
-      <Button
-        size="lg"
-        disabled={state.busy || !state.password.trim()}
-        onPress={connect}
-        testID="installation-unlock"
-      >
-        {state.busy ? "Connecting..." : "Connect"}
-      </Button>
+    </View>
+  );
+}
+
+const PasswordCopyIcon = withUnistyles(Copy, (theme) => ({ color: theme.colors.foreground }));
+
+// The coordinator reports the path only when the file exists. The command runs
+// on the Host; the password itself never passes through this page.
+function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: boolean }) {
+  const [hovered, setHovered] = useState(false);
+  const enter = useCallback(() => setHovered(true), []);
+  const leave = useCallback(() => setHovered(false), []);
+  const command = passwordCopyCommand(passwordFile);
+  const toast = useToast();
+  const copy = useCallback(async () => {
+    try {
+      await copyToClipboard(command);
+      toast.show("Command copied", {
+        variant: "success",
+        testID: "installation-command-copied",
+      });
+    } catch {
+      toast.error("Could not copy. Select the command and copy it manually.");
+    }
+  }, [command, toast]);
+  return (
+    <View
+      style={[styles.passwordHelp, wide && styles.passwordHelpWide]}
+      testID="installation-password-hint"
+    >
+      <Text style={styles.passwordHelpTitle}>Find your password</Text>
+      <Text style={styles.passwordHelpText}>
+        Run this command in Terminal on the computer hosting Vorteo. Then paste it into the owner
+        password field.
+      </Text>
+      <View style={styles.passwordCommandHover} onPointerEnter={enter} onPointerLeave={leave}>
+        <Pressable
+          style={styles.passwordCommand}
+          accessibilityRole="button"
+          accessibilityLabel="Copy command"
+          onPress={copy}
+          testID="installation-password-copy-command"
+        >
+          <Text
+            selectable
+            style={styles.passwordCommandText}
+            testID="installation-password-command"
+          >
+            {command}
+          </Text>
+          <View
+            style={[styles.passwordCopy, hovered && styles.passwordCopyHighlighted]}
+            pointerEvents="none"
+          >
+            <PasswordCopyIcon size={18} />
+          </View>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -363,12 +470,16 @@ function InstallationPanel({
   const missingRequest =
     requestId &&
     state.lastUpdatedAt &&
-    ![...state.jobs, ...state.helperJobs, ...state.monitorJobs].some((job) => job.id === requestId);
+    ![...state.jobs, ...state.helperJobs, ...state.monitorJobs, ...state.brokerJobs].some(
+      (job) => job.id === requestId,
+    );
   const conflicts = Object.values(state.profileSharing?.sources ?? {}).some(
     (source) => source.error || source.conflicts.length,
   );
   const toggleHistory = useCallback(() => setHistoryVisible((value) => !value), []);
   const toggleSharing = useCallback(() => setSharingVisible((value) => !value), []);
+  // Profile sharing synchronizes Host and Dev; a Host-only installation has nothing to share.
+  const hasDev = installationHasDev(readExecutionInstallation());
   let sharingLabel = state.profileSharing ? "Synchronized" : "Unavailable";
   let sharingVariant: StatusBadgeVariant = state.profileSharing ? "success" : "muted";
   if (conflicts) {
@@ -410,6 +521,14 @@ function InstallationPanel({
               onCancel={model.cancelMaintenanceService}
             />
             <DaemonAutomationControl model={model} state={state} />
+            {state.brokerJobs.map((job) => (
+              <BrokerRequest
+                key={`${job.id}:${job.revision}`}
+                job={job}
+                model={model}
+                busy={state.busy}
+              />
+            ))}
             {state.monitorJobs.map((job) => (
               <MonitorRequest
                 key={`${job.id}:${job.revision}`}
@@ -445,29 +564,33 @@ function InstallationPanel({
             {state.lastUpdatedAt && active.length === 0 ? (
               <Text style={[styles.textInset, styles.text]}>No pending restart requests</Text>
             ) : null}
-            <View style={[styles.cardBody, settingsStyles.rowBorder]}>
-              <View style={styles.requestHeader}>
-                <Button
-                  variant="ghost"
-                  size={controlSize}
-                  onPress={toggleSharing}
-                  {...disclosureProps(sharingVisible)}
-                  testID="installation-sharing-toggle"
-                >
-                  {sharingVisible ? "Hide profile sharing" : "Profile sharing"}
-                </Button>
-                <StatusBadge label={sharingLabel} variant={sharingVariant} />
+            <SafetySnapshotsCard client={panelClient} />
+            <InstallationUpgradeCard client={panelClient} />
+            {hasDev ? (
+              <View style={[styles.cardBody, settingsStyles.rowBorder]}>
+                <View style={styles.requestHeader}>
+                  <Button
+                    variant="ghost"
+                    size={controlSize}
+                    onPress={toggleSharing}
+                    {...disclosureProps(sharingVisible)}
+                    testID="installation-sharing-toggle"
+                  >
+                    {sharingVisible ? "Hide profile sharing" : "Profile sharing"}
+                  </Button>
+                  <StatusBadge label={sharingLabel} variant={sharingVariant} />
+                </View>
+                {sharingVisible ? (
+                  <SettingsExpansion testID="installation-sharing-content">
+                    <ProfileSharingStatusView
+                      status={state.profileSharing}
+                      model={model}
+                      busy={state.busy}
+                    />
+                  </SettingsExpansion>
+                ) : null}
               </View>
-              {sharingVisible ? (
-                <SettingsExpansion testID="installation-sharing-content">
-                  <ProfileSharingStatusView
-                    status={state.profileSharing}
-                    model={model}
-                    busy={state.busy}
-                  />
-                </SettingsExpansion>
-              ) : null}
-            </View>
+            ) : null}
             <InstallationHistory
               history={visibleHistory}
               model={model}
@@ -606,13 +729,99 @@ function RequestReadiness({
   );
 }
 
-function DaemonAutomationControl({
+function FullMaintenanceDelegation({
   model,
   state,
 }: {
   model: InstallationPanelModel;
   state: ReturnType<InstallationPanelModel["getState"]>;
 }) {
+  const delegation = state.maintenanceDelegation;
+  const change = useCallback(
+    () => void model.changeMaintenanceDelegation(!delegation?.enabled),
+    [model, delegation?.enabled],
+  );
+  const changeManagement = useCallback(
+    () => void model.changeMaintenanceDelegation(true, !delegation?.managementEnabled),
+    [model, delegation?.managementEnabled],
+  );
+  if (!delegation?.available) return null;
+  return (
+    <View>
+      <Text style={styles.text}>
+        {delegation.enabled
+          ? "Full maintenance delegation is enabled."
+          : "Full maintenance delegation is off."}{" "}
+        Trusted Host requests can cover all supported updates, restarts and exact recovery plans.
+        Degraded Docker recovery may interrupt unknown work. Plan checks and cancellation remain;
+        failed operations stop for inspection.
+      </Text>
+      <Button
+        size="md"
+        disabled={state.busy || Boolean(state.maintenanceDelegationError)}
+        onPress={change}
+        testID="maintenance-delegation-change"
+      >
+        {delegation.enabled
+          ? "Revoke full maintenance delegation"
+          : "Delegate all supported maintenance"}
+      </Button>
+      {delegation.managementAvailable ? (
+        <View>
+          <Text style={styles.text}>
+            Delegate installation management to trusted Host agents. This enables supported
+            automatic maintenance and cancellation of pending or queued requests, with durable
+            receipts. Exact manual-review jobs still require your decision. Agents cannot change
+            this grant, accounts or credentials. You can revoke management here at any time.
+          </Text>
+          <Button
+            size="md"
+            disabled={state.busy || Boolean(state.maintenanceDelegationError)}
+            onPress={changeManagement}
+            testID="installation-management-change"
+          >
+            {delegation.managementEnabled
+              ? "Revoke installation management"
+              : "Delegate installation management"}
+          </Button>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+const MAINTENANCE_PERMISSIONS = [
+  [
+    "host",
+    "Host",
+    "Allows routine Host updates, build scripts and daemon restarts without another approval. Current turns finish before replacement; Host connections may briefly disconnect.",
+  ],
+  [
+    "container-daemon",
+    "Dev",
+    "Allows routine Dev updates, build scripts and daemon restarts without another approval. Current turns finish before replacement; Dev connections may briefly disconnect.",
+  ],
+  [
+    "coordinator",
+    "Coordinator",
+    "Allows maintenance of the service that manages installation requests. Maintenance controls may briefly be unavailable. Execution requires verified independent recovery and an exact compatible rollback plan.",
+  ],
+  [
+    "supervisor",
+    "Supervisor",
+    "Allows maintenance of the process manager that keeps daemons running. Its managed daemon may also be interrupted. Execution requires supported admission, process preservation and verified recovery.",
+  ],
+] as const;
+
+export function DaemonAutomationControl({
+  model,
+  state,
+}: {
+  model: InstallationPanelModel;
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  // Host-only installations have no Dev daemon to authorize.
+  const hasDev = installationHasDev(readExecutionInstallation());
   if (!state.daemonAutomation)
     return (
       <View
@@ -629,59 +838,50 @@ function DaemonAutomationControl({
   return (
     <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="daemon-automation-preference">
       <Text style={settingsStyles.rowTitle}>Automatic maintenance authorization</Text>
-      {(
-        [
-          [
-            "host",
-            "Host",
-            "Allows routine Host updates, build scripts and daemon restarts without another approval. Current turns finish before replacement; Host connections may briefly disconnect.",
-          ],
-          [
-            "container-daemon",
-            "Dev",
-            "Allows routine Dev updates, build scripts and daemon restarts without another approval. Current turns finish before replacement; Dev connections may briefly disconnect.",
-          ],
-          [
-            "coordinator",
-            "Coordinator",
-            "Allows maintenance of the service that manages installation requests. Maintenance controls may briefly be unavailable. Execution requires verified independent recovery and an exact compatible rollback plan.",
-          ],
-          [
-            "supervisor",
-            "Supervisor",
-            "Allows maintenance of the process manager that keeps daemons running. Its managed daemon may also be interrupted. Execution requires supported admission, process preservation and verified recovery.",
-          ],
-        ] as const
-      ).map(([service, label, explanation]) => {
-        return (
-          <MaintenancePermission
-            key={service}
-            service={service}
-            label={label}
-            explanation={explanation}
-            model={model}
-            checked={Boolean(state.daemonAutomation?.services?.[service])}
-            disabled={state.busy || !state.daemonAutomation?.services}
-            readiness={
-              state.maintenanceStatus?.services?.find((item) => item.service === service)?.reason ??
-              "Checking maintenance readiness..."
-            }
-          />
-        );
-      })}
+      <FullMaintenanceDelegation model={model} state={state} />
+      {MAINTENANCE_PERMISSIONS.filter(([service]) => service !== "container-daemon" || hasDev).map(
+        ([service, label, explanation]) => {
+          return (
+            <MaintenancePermission
+              key={service}
+              service={service}
+              label={label}
+              explanation={explanation}
+              model={model}
+              checked={Boolean(
+                state.maintenanceDelegation?.enabled || state.daemonAutomation?.services?.[service],
+              )}
+              disabled={
+                state.busy ||
+                Boolean(state.maintenanceDelegation?.enabled) ||
+                !state.daemonAutomation?.services
+              }
+              readiness={
+                state.maintenanceStatus?.services?.find((item) => item.service === service)
+                  ?.reason ?? "Checking maintenance readiness..."
+              }
+            />
+          );
+        },
+      )}
       {!state.daemonAutomation.services ? (
         <Text style={styles.text}>
           Update the coordinator to configure separate service permissions. Existing permissions
           remain in effect.
         </Text>
       ) : null}
-      {state.daemonAutomation.legacyHostOnly ? (
+      {state.daemonAutomation.legacyHostOnly && !state.maintenanceDelegation?.enabled ? (
         <Text style={styles.text}>
           Existing Host-only daemon permissions are retained. Coordinator and supervisor permissions
           require their own opt-in.
         </Text>
       ) : null}
       <RequestReadiness status={state.maintenanceStatus} />
+      {state.maintenanceDelegationError ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {state.maintenanceDelegationError}
+        </Text>
+      ) : null}
       {state.daemonAutomationError ? (
         <Text accessibilityRole="alert" style={styles.error}>
           {state.daemonAutomationError}
@@ -718,7 +918,9 @@ function InstallationOwnerAccess({
   return (
     <View style={styles.cardBody}>
       <View style={styles.requestHeader}>
-        <Text style={settingsStyles.rowTitle}>Host and container</Text>
+        <Text style={settingsStyles.rowTitle}>
+          {installationHasDev(readExecutionInstallation()) ? "Host and container" : "Host"}
+        </Text>
         <View style={styles.actions}>
           <StatusBadge
             label={state.initialized ? ownerLabel : "Checking access"}
@@ -962,6 +1164,121 @@ function HelperActionError({ model }: { model: InstallationPanelModel }) {
         Dismiss
       </Button>
     </View>
+  );
+}
+
+function BrokerRequest({
+  job,
+  model,
+  busy,
+}: {
+  job: BrokerReviewJob;
+  model: InstallationPanelModel;
+  busy: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const size = useVortonTouch() ? "md" : "sm";
+  const toggle = useCallback(() => setExpanded((value) => !value), []);
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={`broker-request-${job.id}`}>
+      <View style={styles.requestHeader}>
+        <Text style={settingsStyles.rowTitle}>
+          {job.target === "preview-broker-deployment"
+            ? "Preview broker consumer deployment"
+            : "Preview broker channel trust"}
+        </Text>
+        <StatusBadge
+          label={job.stage === "recovery_required" ? "Needs inspection" : job.status}
+          variant={job.stage === "recovery_required" ? "warning" : "muted"}
+        />
+      </View>
+      <Text style={styles.text}>{brokerReviewSummary(job)}</Text>
+      <Text style={styles.text}>{job.reason}</Text>
+      <Button variant="ghost" size={size} onPress={toggle} {...disclosureProps(expanded)}>
+        Details
+      </Button>
+      {expanded ? (
+        <SettingsExpansion>
+          <Text selectable style={styles.text}>
+            {job.detail}
+            {"\n"}Source: {job.plan.sourceCommit}
+            {"\n"}Plan: {job.planSha256}
+            {job.target === "preview-broker-deployment"
+              ? job.plan.targets.map(
+                  (item) =>
+                    `\nDeployment: ${item.root}\n` +
+                    Object.entries(item.files)
+                      .map(
+                        ([name, file]) =>
+                          `${name}: ${file.expected.kind === "present" ? file.expected.sha256 : "absent"} -> ${file.candidate.sha256}`,
+                      )
+                      .join("\n"),
+                )
+              : job.plan.brokers.map(
+                  (item) =>
+                    `\nConfig: ${item.configPath}\nBefore: ${item.expectedSha256}\nAfter: ${item.candidateSha256}\nAPFS volume: ${item.anchor.volumeUUID}`,
+                )}
+            {job.target === "preview-broker-deployment"
+              ? job.plan.registrations.map(
+                  (item) =>
+                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}`,
+                )
+              : null}
+            {job.target === "preview-broker-deployment"
+              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\nResume is allowed only while legacy channel identity still refuses request consumption.`
+              : null}
+            {job.target === "preview-broker-deployment"
+              ? job.plan.manualParticipants.map(
+                  (item) =>
+                    `\nManual participant: PID ${item.pid}; birth ${item.birth.join(":")}; UID ${item.uid}; argv ${JSON.stringify(item.argv)}`,
+                )
+              : null}
+            {"\n"}Evidence and backups: {job.plan.evidenceDirectory}
+            {"\n"}Sequential replacements. Backups and partial evidence are retained; no automatic
+            rollback.
+          </Text>
+        </SettingsExpansion>
+      ) : null}
+      {["pending", "approved"].includes(job.status) ? (
+        <ActionFooter style={styles.actions}>
+          {(["approve", "cancel"] as BrokerAction[]).map((action) => (
+            <BrokerActionButton key={action} job={job} model={model} action={action} busy={busy} />
+          ))}
+        </ActionFooter>
+      ) : null}
+    </View>
+  );
+}
+
+function BrokerActionButton({
+  job,
+  model,
+  action,
+  busy,
+}: {
+  job: BrokerReviewJob;
+  model: InstallationPanelModel;
+  action: BrokerAction;
+  busy: boolean;
+}) {
+  const size = useVortonTouch() ? "md" : "sm";
+  const onPress = useCallback(() => {
+    void model.decideBroker(job, action);
+  }, [model, job, action]);
+  const approveLabel =
+    job.target === "preview-broker-deployment"
+      ? "Approve consumer deployment"
+      : "Approve channel identity migration";
+  return (
+    <RestartActionButton
+      size={size}
+      testID={`broker-${job.id}-${action}`}
+      variant={action === "approve" ? "destructive" : "outline"}
+      disabledReason={brokerActionDisabledReason(job, action, { busy, unlocked: true })}
+      onPress={onPress}
+    >
+      {action === "approve" ? approveLabel : "Cancel"}
+    </RestartActionButton>
   );
 }
 
@@ -1912,6 +2229,10 @@ function restartSummaryNeedsAction(summary: RestartSummary) {
     summary.nativeHelper?.requested,
     summary.nativeHelper?.recovery,
     summary.sessionHost?.requested,
+    summary.previewBrokerDeployment?.requested,
+    summary.previewBrokerDeployment?.recovery,
+    summary.previewBroker?.requested,
+    summary.previewBroker?.recovery,
     summary.previewMonitor?.requested,
     summary.previewMonitor?.recovery,
   ].some((count) => (count ?? 0) > 0);
@@ -1953,6 +2274,10 @@ function RestartBanner({ model }: { model: InstallationPanelModel }) {
     (job) =>
       ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
   );
+  const brokers = state.brokerJobs.filter(
+    (job) =>
+      ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
+  );
   const monitors = state.monitorJobs.filter(
     (job) =>
       ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
@@ -1960,7 +2285,8 @@ function RestartBanner({ model }: { model: InstallationPanelModel }) {
   const services = (state.serviceQueue?.jobs ?? []).filter((job) =>
     ["pending", "approved", "running", "failed"].includes(job.status),
   );
-  if (!jobs.length && !helpers.length && !monitors.length && !services.length) return null;
+  if (!jobs.length && !helpers.length && !monitors.length && !brokers.length && !services.length)
+    return null;
   return (
     <View testID="installation-restart-banner">
       {state.error ? (
@@ -1984,6 +2310,22 @@ function RestartBanner({ model }: { model: InstallationPanelModel }) {
           reviewLabel="Review maintenance"
           onReview={open}
         />
+      ))}
+      {brokers.map((job) => (
+        <View key={job.id}>
+          <MaintenanceNotice
+            needsAction={job.status === "pending" || job.stage === "recovery_required"}
+            revision={`${job.id}:${job.revision}:${job.status}:${job.stage}`}
+            title={
+              job.target === "preview-broker-deployment"
+                ? "Preview broker consumer deployment"
+                : "Preview broker trust migration"
+            }
+            description={brokerReviewSummary(job)}
+            reviewLabel="Review broker"
+            onReview={open}
+          />
+        </View>
       ))}
       {monitors.map((job) => (
         <View key={job.id}>
@@ -2062,6 +2404,61 @@ const styles = StyleSheet.create((theme) => ({
   passwordInput: { flexGrow: 1, flexBasis: 200 },
   textInset: { padding: theme.spacing[4] },
   cardBody: { padding: theme.spacing[4], gap: theme.spacing[2] },
+  welcomeForm: { gap: theme.spacing[4] },
+  welcomeFormWide: { flexDirection: "row", gap: theme.spacing[6], alignItems: "stretch" },
+  welcomeSignIn: { flex: 1, minWidth: 0, gap: theme.spacing[4] },
+  passwordHelpWide: {
+    flex: 1,
+    minWidth: 0,
+    marginTop: 0,
+    paddingTop: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 1,
+    borderLeftColor: theme.colors.border,
+    paddingLeft: theme.spacing[6],
+  },
+  passwordCommandHover: { position: "relative" },
+  passwordCopyHighlighted: { backgroundColor: theme.colors.surface2 },
+  passwordCopy: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 44,
+    height: 44,
+    paddingHorizontal: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.borderRadius.md,
+  },
+  passwordHelp: {
+    marginTop: theme.spacing[2],
+    paddingTop: theme.spacing[6],
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    gap: theme.spacing[3],
+  },
+  passwordHelpTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.semibold,
+  },
+  passwordHelpText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.base,
+    lineHeight: theme.fontSize.base * 1.5,
+  },
+  passwordCommand: {
+    paddingRight: 52,
+    minHeight: 44,
+    padding: theme.spacing[4],
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface0,
+  },
+  passwordCommandText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    fontFamily: theme.fontFamily.mono,
+  },
   historyItem: { gap: theme.spacing[2] },
   sharedWorkflows: { gap: theme.spacing[4] },
   requestHeader: {

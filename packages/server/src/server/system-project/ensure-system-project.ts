@@ -41,6 +41,8 @@ export interface EnsureSystemProjectResult {
   createdProject: boolean;
   created: string[];
   adopted: string[];
+  /** Role workspaces whose title was brought back to the manifest's. */
+  retitled: string[];
   retired: string[];
   absorbed: string[];
   archivedProjects: string[];
@@ -55,18 +57,62 @@ export async function seedSystemProjectAtStartup(
   input: Omit<EnsureSystemProjectInput, "environment"> & {
     enabled: boolean | undefined;
     sharedProviderPreferences: { installation?: { environment: "host" | "container" } } | undefined;
+    /**
+     * Set when the daemon belongs to an installation that has not bound it yet. It then
+     * seeds nothing, so it never acts as a standalone install, and the caller seeds again
+     * once the binding arrives.
+     */
+    installationManaged?: boolean;
+    /** Called once the project and its workspaces exist, with the environment they serve. */
+    onSeeded?: (environment: SystemEnvironment) => void;
   },
-): Promise<void> {
-  if (input.enabled === false) return;
-  const { enabled: _enabled, sharedProviderPreferences, ...rest } = input;
+): Promise<"seeded" | "awaiting-binding" | "disabled"> {
+  if (input.enabled === false) return "disabled";
+  const {
+    enabled: _enabled,
+    sharedProviderPreferences,
+    installationManaged,
+    onSeeded,
+    ...rest
+  } = input;
+  if (installationManaged && !sharedProviderPreferences?.installation) {
+    input.logger.info("Vorteo System project waits for this daemon's installation binding");
+    return "awaiting-binding";
+  }
+  const environment = sharedProviderPreferences?.installation?.environment ?? "single";
   try {
-    await ensureSystemProject({
-      ...rest,
-      environment: sharedProviderPreferences?.installation?.environment ?? "single",
-    });
+    await ensureSystemProject({ ...rest, environment });
   } catch (error) {
     input.logger.error({ err: error }, "Vorteo System project setup failed");
+    return "seeded";
   }
+  onSeeded?.(environment);
+  return "seeded";
+}
+
+type SeedInput = Parameters<typeof seedSystemProjectAtStartup>[0];
+
+/** Seeds now, or once, as the assigned environment, when the installation binding arrives. */
+export async function startSystemProjectSeeding(
+  input: SeedInput & { onBindingChange: (handler: (value: unknown) => void) => () => void },
+): Promise<void> {
+  const { onBindingChange, ...seed } = input;
+  if ((await seedSystemProjectAtStartup(seed)) !== "awaiting-binding") return;
+  const stop = onBindingChange((value) => {
+    const preferences = value as SeedInput["sharedProviderPreferences"];
+    if (!preferences?.installation) return;
+    stop();
+    void seedSystemProjectAtStartup({ ...seed, sharedProviderPreferences: preferences });
+  });
+}
+
+/**
+ * An installation-managed daemon has no binding until the coordinator sends one, through
+ * `VORTEO_INSTALLATION_CLIENT_CONFIG` (paired) or `PASEO_INSTALLATION_PENDING` (created by
+ * the one-command installer before the Host exists).
+ */
+export function isInstallationManaged(env: Record<string, string | undefined>): boolean {
+  return Boolean(env.VORTEO_INSTALLATION_CLIENT_CONFIG) || env.PASEO_INSTALLATION_PENDING === "1";
 }
 
 // One daemon owns one PASEO_HOME; this only stops overlapping calls in-process
@@ -108,6 +154,7 @@ async function ensureUnlocked(input: EnsureSystemProjectInput): Promise<EnsureSy
     createdProject,
     created: [],
     adopted: [],
+    retitled: [],
     retired: [],
     absorbed: [],
     archivedProjects: [],
@@ -121,7 +168,11 @@ async function ensureUnlocked(input: EnsureSystemProjectInput): Promise<EnsureSy
   );
 
   for (const role of roles) {
-    if (members.some((member) => member.systemMembership?.role === role.role)) continue;
+    const member = members.find((candidate) => candidate.systemMembership?.role === role.role);
+    if (member) {
+      await retitleMember(input, member, role, result, now);
+      continue;
+    }
     const adoptId = config.adopt?.[role.role];
     const candidate = adoptId ? workspaces.find((w) => w.workspaceId === adoptId) : undefined;
     const refusal = adoptId ? adoptionRefusal(candidate) : null;
@@ -150,29 +201,28 @@ async function ensureUnlocked(input: EnsureSystemProjectInput): Promise<EnsureSy
   }
 
   // A role that leaves the manifest keeps its workspace and history, but the owner
-  // can now archive it like any other.
+  // can now archive it like any other. A container joins an installation after its
+  // standalone first start, and the Host's runner then covers it, so its retired
+  // runners are archived rather than left beside the Host's: still recoverable,
+  // never deleted.
   const activeRoles = new Set(roles.map((role) => role.role));
   for (const member of members) {
     if (activeRoles.has(member.systemMembership!.role)) continue;
     const { systemMembership: _retired, ...retained } = member;
+    const updatedAt = now();
     await input.workspaceRegistry.writeSystemWorkspace({
       ...retained,
       standing: false,
       protected: false,
-      updatedAt: now(),
+      updatedAt,
+      ...(input.environment === "container" && !retained.archivedAt
+        ? { archivedAt: updatedAt }
+        : {}),
     });
     result.retired.push(member.workspaceId);
   }
 
-  if (
-    result.createdProject ||
-    result.created.length ||
-    result.adopted.length ||
-    result.retired.length ||
-    result.absorbed.length ||
-    result.archivedProjects.length
-  )
-    input.logger.info(result, "Vorteo System project reconciled");
+  if (changedAnything(result)) input.logger.info(result, "Vorteo System project reconciled");
   return result;
 }
 
@@ -301,6 +351,40 @@ async function ensureProject(
   };
   await input.projectRegistry.writeSystemProject(project);
   return { project, createdProject: true };
+}
+
+function changedAnything(result: EnsureSystemProjectResult): boolean {
+  return (
+    result.createdProject ||
+    [
+      result.created,
+      result.adopted,
+      result.retitled,
+      result.retired,
+      result.absorbed,
+      result.archivedProjects,
+    ].some((ids) => ids.length > 0)
+  );
+}
+
+/**
+ * System workspaces cannot be renamed, so the manifest is the only source of a title.
+ * Carries a manifest rename onto a workspace created under the old title.
+ */
+async function retitleMember(
+  input: EnsureSystemProjectInput,
+  member: PersistedWorkspaceRecord,
+  role: SystemRole,
+  result: EnsureSystemProjectResult,
+  now: () => string,
+): Promise<void> {
+  if (member.title === role.title) return;
+  await input.workspaceRegistry.writeSystemWorkspace({
+    ...member,
+    title: role.title,
+    updatedAt: now(),
+  });
+  result.retitled.push(member.workspaceId);
 }
 
 function adoptionRefusal(candidate: PersistedWorkspaceRecord | undefined): string | null {

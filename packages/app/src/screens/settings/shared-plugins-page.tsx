@@ -8,7 +8,7 @@ import type { InstallationSettingsUpdate } from "@getpaseo/protocol/installation
 import { formatPluginIdentity } from "@getpaseo/protocol/plugin-source-reference";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
-import { Alert } from "@/components/ui/alert";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { Switch } from "@/components/ui/switch";
@@ -40,7 +40,11 @@ function useSharedPluginForm(plugin: InstallationPlugin | null) {
   const source = plugin?.source;
   const [model] = useState(() =>
     openSharedPluginForm(
-      { resolve: resolveInstallationPluginSource, save, reportConnectionLost: reportActionError },
+      {
+        resolve: resolveInstallationPluginSource,
+        save,
+        reportConnectionLost: reportActionError,
+      },
       {
         source: source && source.kind !== "directory" ? formatPluginIdentity(source.identity) : "",
         updateId: plugin?.id,
@@ -144,7 +148,7 @@ function SharedPluginForm({
             <SettingsRow label={resolved.id} hint={revision} />
           </SettingsCard>
         ) : null}
-        {state.error ? <Alert variant="error" description={state.error} /> : null}
+        <SettingsStatusLine message={state.error} />
       </View>
     </AdaptiveModalSheet>
   );
@@ -369,7 +373,9 @@ function SharedPluginCard({
 
 export function SharedPluginsPage() {
   const { data, installation, save } = useInstallationSettings();
-  const [form, setForm] = useState<{ plugin: InstallationPlugin | null } | null>(null);
+  const [form, setForm] = useState<{
+    plugin: InstallationPlugin | null;
+  } | null>(null);
   const reportActionError = useReportActionError();
   const mutation = useMutation({
     mutationFn: (update: InstallationSettingsUpdate) => save(update),
@@ -383,7 +389,11 @@ export function SharedPluginsPage() {
   const close = useCallback(() => setForm(null), []);
   const toggle = useCallback(
     (pluginsEnabled: boolean) => {
-      if (data) mutation.mutate({ expectedRevision: data.revision, settings: { pluginsEnabled } });
+      if (data)
+        mutation.mutate({
+          expectedRevision: data.revision,
+          settings: { pluginsEnabled },
+        });
     },
     [data, mutation],
   );
@@ -396,7 +406,12 @@ export function SharedPluginsPage() {
     [add],
   );
   const settings = data?.settings;
-  if (!installation || !data || !settings) return null;
+  if (!installation || !data || !settings)
+    return (
+      <View style={reservedLayout1}>
+        <SettingsStatusLine message="Loading plugins..." />
+      </View>
+    );
   const plugins = settings.plugins;
   if (!plugins)
     return <Text style={settingsStyles.rowHint}>Reading existing plugin catalogs...</Text>;
@@ -417,7 +432,7 @@ export function SharedPluginsPage() {
             />
           </SettingsRow>
         </SettingsCard>
-        {isRejected ? <Alert variant="error" description={toErrorMessage(mutation.error)} /> : null}
+        <SettingsStatusLine message={isRejected ? toErrorMessage(mutation.error) : null} />
         {plugins.length === 0 ? (
           <Text style={settingsStyles.rowHint}>No plugins installed</Text>
         ) : null}
@@ -442,5 +457,12 @@ export function SharedPluginsPage() {
 
 const styles = StyleSheet.create((theme) => ({
   form: { gap: theme.spacing[4] },
-  controls: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: theme.spacing[2] },
+  controls: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: theme.spacing[2],
+  },
 }));
+
+const reservedLayout1 = { minHeight: 160 } as const;

@@ -251,6 +251,9 @@ export const zhCN: TranslationResources = {
   },
   agentPanel: {
     states: {
+      providerUnavailable: en.agentPanel.states.providerUnavailable,
+      providerRecovery: en.agentPanel.states.providerRecovery,
+      loadingProviders: en.agentPanel.states.loadingProviders,
       notFound: "未找到 Agent",
       failedToLoad: "加载 Agent 失败",
       reconnecting: "正在重新连接主机",
@@ -1175,6 +1178,11 @@ export const zhCN: TranslationResources = {
       description: "添加 setup 命令，让新的 worktree 自动安装依赖并完成准备。",
       openProjectSettings: "打开 project 设置",
     },
+    focus: {
+      focusItem: "聚焦 {{name}}",
+      allProjects: "所有项目",
+      breadcrumb: "侧边栏聚焦路径",
+    },
     folders: {
       actions: {
         menu: "文件夹操作",
@@ -1956,6 +1964,7 @@ export const zhCN: TranslationResources = {
     used: "已使用 {{percentage}}%",
     tokens: "{{used}} / {{max}} tokens",
     sessionCost: "会话费用 {{cost}}",
+    sessionCostEstimated: "预估会话费用 ~{{cost}}",
     accessibility: "上下文窗口已使用 {{percentage}}%",
     breakdown: {
       used: "已使用",
@@ -2200,6 +2209,7 @@ export const zhCN: TranslationResources = {
       theme: {
         title: "主题",
         accessibilityLabel: "主题：{{value}}",
+        pluginThemes: "插件主题",
         options: {
           light: "Light",
           dark: "Dark",
@@ -2697,7 +2707,7 @@ export const zhCN: TranslationResources = {
       system: {
         title: "关于 Vorteo System",
         description:
-          "此项目用于改进此 Vorteo 安装。它基于构建此安装所用的检出代码，同时包含由守护进程管理的维护工作区，例如 Optimization Runner。守护进程会重新创建并依赖它，因此无法移除或重命名。",
+          "此项目用于改进此 Vorteo 安装。它基于构建此安装所用的检出代码，同时包含由守护进程管理的维护工作区，例如 Vorteo :: Optimizer。守护进程会重新创建并依赖它，因此无法移除或重命名。",
       },
       readFailures: {
         invalidTitle: "无法解析 paseo.json",

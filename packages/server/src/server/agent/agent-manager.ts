@@ -1,3 +1,4 @@
+import { pendingCodexAsyncQuestions } from "./providers/codex/async-questions.js";
 import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
   blockedReviewDue,
@@ -44,7 +45,7 @@ import { projectTimelineRows } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { managedWorkerLimit } from "./worker-limit.js";
 import { countRunningWorkers } from "./worker-activity.js";
@@ -143,7 +144,7 @@ import {
   type PendingForegroundRun,
 } from "./agent-run-state.js";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
-import { isSystemInjectedEnvelope } from "./agent-prompt.js";
+import { hasArmedFinishNotification, isSystemInjectedEnvelope } from "./agent-prompt.js";
 import {
   buildSwitchHistory,
   prependSwitchHistory,
@@ -191,6 +192,8 @@ export interface AgentProfileSwitchInput {
   config: AgentSessionConfig;
   reason: ProfileSwitchTimelineItem["reason"];
   carriedContextChars: number;
+  /** Captured without resuming the unavailable source account. Rechecked under the lifecycle lock. */
+  storedSource?: { record: StoredAgentRecord; rows: AgentTimelineRow[] };
 }
 
 function describeProfileEndpoint(
@@ -510,6 +513,33 @@ export type AttentionState =
       attentionReason: "finished" | "error" | "permission";
       attentionTimestamp: Date;
     };
+
+/** What an idle-release pass observed; the release is refused if the agent changed since. */
+export interface IdleSessionObservation {
+  updatedAt: number;
+  session: unknown;
+}
+
+function matchesIdleObservation(
+  agent: { updatedAt: Date; session: unknown },
+  expected: IdleSessionObservation,
+): boolean {
+  return agent.updatedAt.getTime() === expected.updatedAt && agent.session === expected.session;
+}
+
+/** Quota, usage-limit and controller custody each expect the agent's current session to stay. */
+function hasQuotaOrControllerHold(config: AgentSessionConfig): boolean {
+  const usageLimitHeld = Boolean(config.usageLimitHold && !config.usageLimitHold.releasedAt);
+  return Boolean(config.quotaPausedAt || config.controllerExecutionId) || usageLimitHeld;
+}
+
+/** An active goal continues by itself inside the provider; a usage-limited one resumes there. */
+function hasLiveGoal(session: Pick<AgentSession, "goals">): boolean {
+  const state = session.goals?.state;
+  if (!state) return false;
+  if (state.status !== "ready") return true;
+  return state.goal?.status === "active" || state.goal?.status === "usageLimited";
+}
 
 function resolveInitialAttention(input: AttentionState | undefined): AttentionState {
   if (input == null || !input.requiresAttention) {
@@ -884,6 +914,15 @@ export class AgentManager {
     reader: NonNullable<AgentManager["quotaReserveObservationReader"]>,
   ): void {
     this.quotaReserveObservationReader = reader;
+  }
+
+  private usageLimitObserver:
+    | ((provider: AgentProvider, stop: Extract<AgentStreamEvent, { type: "turn_failed" }>) => void)
+    | null = null;
+
+  /** Receives each live usage-limit stop, including internal and structured-generation runs. */
+  setUsageLimitObserver(observer: NonNullable<AgentManager["usageLimitObserver"]>): void {
+    this.usageLimitObserver = observer;
   }
 
   private async readQuotaReserveObservation(provider: AgentProvider) {
@@ -1434,6 +1473,8 @@ export class AgentManager {
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
+  /** Agents whose idle session is being released; no run may start until the close settles. */
+  private readonly automaticCloses = new Set<string>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
@@ -1810,7 +1851,7 @@ export class AgentManager {
     prompt: AgentPromptInput,
     item: QueueItem,
   ): AsyncGenerator<AgentStreamEvent> | null {
-    if (this.isRestartDraining()) return null;
+    if (this.isRestartDraining() || this.automaticCloses.has(agentId)) return null;
     const agent = this.getAgent(agentId);
     const stored = this.registry?.getLoadedRecord(agentId);
     if (!agent || stored?.archivedAt || agent.lifecycle !== "idle") return null;
@@ -2718,6 +2759,34 @@ export class AgentManager {
     return agent ? { ...agent } : null;
   }
 
+  /**
+   * True when a registered, idle agent's provider history never loaded. A run in flight
+   * may hold rows the provider has not written yet, so the retry waits for it to finish.
+   */
+  needsTimelineHydration(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.historyPrimed || agent.session === null) return false;
+    if (agent.config.controllerExecutionId || this.hasInFlightRun(agentId)) return false;
+    return this.timelineStore.has(agentId);
+  }
+
+  /**
+   * Retries a history load that failed after the agent was registered. Turns recorded
+   * since the failure are also in the provider's transcript, so when any exist the replay
+   * replaces the timeline under a new epoch; clients then reset instead of keeping only
+   * the recent rows.
+   */
+  async retryTimelineHydration(
+    agentId: string,
+    options: { broadcast: () => boolean },
+  ): Promise<void> {
+    const replace = this.timelineStore.getLastItem(agentId) !== null;
+    await this.hydrateTimelineFromProvider(agentId, {
+      broadcast: options.broadcast,
+      ...(replace ? { force: true } : {}),
+    });
+  }
+
   async waitForAgentClose(agentId: string): Promise<void> {
     // Loading during reload must wait for the replacement, not resume another writer.
     await this.lifecycleMutationTails.get(agentId);
@@ -2778,10 +2847,18 @@ export class AgentManager {
   async fetchSavedTimeline(
     id: string,
     options?: AgentTimelineFetchOptions,
+    loadLegacyRows?: () => Promise<AgentTimelineRow[]>,
   ): Promise<AgentTimelineFetchResult> {
     // Reading committed history must not require starting its original provider.
-    if (!this.durableTimelineStore) throw new Error("Saved timeline storage is unavailable");
-    return this.durableTimelineStore.fetchCommitted(id, options);
+    if (this.durableTimelineStore) return this.durableTimelineStore.fetchCommitted(id, options);
+    if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
+    const rows = await loadLegacyRows();
+    // Native transcripts predate durable timelines. Keep pagination stable across reads,
+    // and reset cursors if the transcript changes, without registering a live session.
+    const epoch = createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+    const saved = new InMemoryAgentTimelineStore();
+    saved.initialize(id, { rows, epoch });
+    return saved.fetch(id, options);
   }
 
   listProviderSubagents(parentAgentId: string): ProviderSubagentDescriptor[] {
@@ -3353,6 +3430,33 @@ export class AgentManager {
     }
   }
 
+  async readStoredSwitchHistory(
+    record: StoredAgentRecord,
+    history: AsyncIterable<AgentStreamEvent>,
+  ): Promise<AgentTimelineRow[]> {
+    const events: AgentStreamEvent[] = [];
+    for await (const event of history) events.push(event);
+    if (record.persistence && !events.some((event) => event.type === "timeline"))
+      throw new ProfileSwitchError(
+        "The original transcript could not be read. Restore access to the original account and retry; this thread has not changed.",
+      );
+    const rows: AgentTimelineRow[] = [];
+    for await (const rawEvent of this.streamHistoryWithSubmissions(record, events, {
+      passive: true,
+    })) {
+      const event = limitAgentStreamEventContent(rawEvent);
+      if (event.type !== "timeline") continue;
+      if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) continue;
+      rows.push({
+        seq: rows.length + 1,
+        timestamp: event.timestamp ?? record.createdAt,
+        item: event.item,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+      });
+    }
+    return rows;
+  }
+
   /** Recorded text that a profile switch carries into the next session. */
   async readSwitchContext(agentId: string): Promise<string> {
     const agent = this.requireSessionAgent(agentId);
@@ -3376,15 +3480,11 @@ export class AgentManager {
     input: AgentProfileSwitchInput,
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();
-    const existing = this.requireSessionAgent(agentId);
-    const isBusy = this.hasInFlightRun(agentId) || existing.pendingPermissions.size > 0;
-    if (isBusy)
-      throw new ProfileSwitchError(
-        "Wait for the current turn and any permission requests to finish before switching.",
-      );
-    if (existing.internal || existing.config.controllerExecutionId)
-      throw new ProfileSwitchError("This thread is managed by Vorteo and cannot switch accounts.");
-    await this.hydrateTimelineFromLegacyProviderHistory(existing);
+    const {
+      existing,
+      source,
+      rows: sourceRows,
+    } = await this.resolveProfileSwitchSource(agentId, input.storedSource);
 
     this.requireEnabledProvider(input.config.provider);
     const client = await this.requireAvailableClient({ provider: input.config.provider });
@@ -3400,7 +3500,7 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       undefined,
-      { reason: "create", purpose: "interactive", workspaceId: existing.workspaceId },
+      { reason: "create", purpose: "interactive", workspaceId: source.workspaceId },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
 
@@ -3411,8 +3511,8 @@ export class AgentManager {
         switchId: randomUUID(),
         reason: input.reason,
         from: describeProfileEndpoint(
-          existing.config,
-          existing.runtimeInfo?.model ?? existing.config.model,
+          source.config,
+          source.runtimeInfo?.model ?? source.config.model,
         ),
         to: describeProfileEndpoint(storedConfig, storedConfig.model),
         carriedContextChars: input.carriedContextChars,
@@ -3421,18 +3521,20 @@ export class AgentManager {
     // The record only references this history once registration commits the switch.
     await this.requireRegistry().writeSwitchHistory(
       agentId,
-      buildSwitchHistory(this.timelineStore.getRows(agentId), record),
+      buildSwitchHistory(sourceRows, record),
     );
 
     let session: AgentSession | undefined;
     let closedExisting: ManagedAgentClosed | undefined;
     let handedToRegistration = false;
     try {
-      await this.closeReloadedSession(existing.session, agentId);
-      await this.drainSessionEvents(agentId);
-      this.cancelRunningProviderSubagents(agentId);
-      closedExisting = this.prepareAgentForClosure(existing, "agent switched profile");
-      await this.persistSnapshot(closedExisting);
+      if (existing) {
+        await this.closeReloadedSession(existing.session, agentId);
+        await this.drainSessionEvents(agentId);
+        this.cancelRunningProviderSubagents(agentId);
+        closedExisting = this.prepareAgentForClosure(existing, "agent switched profile");
+        await this.persistSnapshot(closedExisting);
+      }
       this.assertAcceptingAgentRegistrations();
 
       this.paseoToolPolicies.set(agentId, paseoToolPolicy);
@@ -3442,16 +3544,17 @@ export class AgentManager {
 
       handedToRegistration = true;
       await this.registerSession(session, storedConfig, agentId, {
-        labels: existing.labels,
-        workspaceId: existing.workspaceId,
-        owner: existing.owner,
-        createdAt: existing.createdAt,
-        updatedAt: existing.updatedAt,
-        lastUserMessageAt: existing.lastUserMessageAt,
+        labels: source.labels,
+        workspaceId: source.workspaceId,
+        owner: source.owner,
+        createdAt: source.createdAt,
+        updatedAt: source.updatedAt,
+        lastUserMessageAt: source.lastUserMessageAt,
         historyPrimed: true,
-        attention: existing.attention,
+        ...(input.storedSource ? { timelineRows: sourceRows } : {}),
+        attention: source.attention,
         restoring: true,
-        profileSwitches: [...(existing.profileSwitches ?? []), record],
+        profileSwitches: [...(source.profileSwitches ?? []), record],
       });
     } catch (error) {
       if (closedExisting) {
@@ -3476,6 +3579,51 @@ export class AgentManager {
       "agent.profile.switched",
     );
     return this.requireAgent(agentId);
+  }
+
+  private async resolveProfileSwitchSource(
+    agentId: string,
+    storedSource: AgentProfileSwitchInput["storedSource"],
+  ) {
+    const existing = this.agents.get(agentId);
+    const stored = await this.requireRegistry().get(agentId);
+    if (stored?.archivedAt)
+      throw new ProfileSwitchError("Restore this thread before switching accounts.");
+    if (!existing && !storedSource)
+      throw new ProfileSwitchError("Reload this thread before switching accounts.");
+    if (storedSource && !isDeepStrictEqual(stored, storedSource.record))
+      throw new ProfileSwitchError(
+        "The thread changed during recovery. Retry to read its latest state.",
+      );
+    const source = existing ?? this.profileSwitchSource(storedSource?.record);
+    const isBusy = this.hasInFlightRun(agentId) || (existing?.pendingPermissions.size ?? 0) > 0;
+    if (isBusy)
+      throw new ProfileSwitchError(
+        "Wait for the current turn and any permission requests to finish before switching.",
+      );
+    if (source.internal || source.config.controllerExecutionId)
+      throw new ProfileSwitchError("This thread is managed by Vorteo and cannot switch accounts.");
+    if (existing) await this.hydrateTimelineFromLegacyProviderHistory(existing);
+    const rows = storedSource?.rows ?? this.timelineStore.getRows(agentId);
+
+    return { existing, source, rows };
+  }
+
+  private profileSwitchSource(record: StoredAgentRecord | undefined) {
+    if (!record) throw new ProfileSwitchError("The source thread is missing. Reload and retry.");
+    return {
+      config: { ...buildStoredAgentConfig(record), title: record.title ?? undefined },
+      runtimeInfo: undefined,
+      internal: record.internal,
+      workspaceId: record.workspaceId,
+      owner: record.owner,
+      labels: record.labels,
+      createdAt: new Date(record.createdAt),
+      updatedAt: new Date(record.updatedAt),
+      lastUserMessageAt: record.lastUserMessageAt ? new Date(record.lastUserMessageAt) : null,
+      attention: extractAttention(record),
+      profileSwitches: record.profileSwitches,
+    };
   }
 
   private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {
@@ -3531,16 +3679,20 @@ export class AgentManager {
     }
   }
 
-  closeAgent(agentId: string): Promise<void> {
+  closeAgent(agentId: string, options?: { onlyIfIdle: boolean }): Promise<void> {
     const existing = this.inFlightAgentCloses.get(agentId);
     if (existing) {
+      if (options?.onlyIfIdle)
+        return Promise.reject(new Error("An explicit close is already in progress."));
       return existing;
     }
 
     const close = this.runLifecycleMutation(agentId, async () => {
       // A preceding reload or archive may already have closed the durable agent.
-      if (this.agents.has(agentId)) await this.closeAgentRuntime(agentId);
+      if (this.agents.has(agentId)) await this.closeAgentRuntime(agentId, options?.onlyIfIdle);
     });
+    // Automatic refusals must not become the result of an ordinary explicit close.
+    if (options?.onlyIfIdle) return close;
     this.inFlightAgentCloses.set(agentId, close);
     const clearClose = () => {
       if (this.inFlightAgentCloses.get(agentId) === close) {
@@ -3551,7 +3703,60 @@ export class AgentManager {
     return close;
   }
 
-  private async closeAgentRuntime(agentId: string): Promise<void> {
+  /**
+   * Closes an idle agent's provider session so its process exits; the agent reopens on demand
+   * the way an unloaded agent does after a restart. Leaves the agent loaded, returning false,
+   * whenever something still relies on the live session or the agent changed since the caller
+   * observed it idle.
+   */
+  async releaseIdleSession(agentId: string, expected?: IdleSessionObservation): Promise<boolean> {
+    const queue = this.messageQueueControl;
+    if (this.automaticCloses.has(agentId)) return false;
+    if (!queue?.read || !this.isIdleReleasable(agentId, expected)) return false;
+    const snapshot = await queue.read(agentId);
+    const queueBusy =
+      snapshot.paused || snapshot.items.length > 0 || Boolean(snapshot.deliveryError);
+    if (queueBusy || (await queue.restartContinuationHeld?.(agentId))) return false;
+    // Final check, then reserve the agent in the same synchronous step. Run admission
+    // (streamAgent, queued delivery) refuses an agent with a reserved run, so no turn can start
+    // on a session while it closes; a refused queue item is delivered after the agent reopens.
+    if (!this.isIdleReleasable(agentId, expected)) return false;
+    // The marker, unlike the reservation, cannot be settled by a Stop or a replacement's
+    // cancellation timeout, so admission stays closed until the close itself settles.
+    this.automaticCloses.add(agentId);
+    const reservation = this.runs.createPendingRun(agentId);
+    const hosted = Boolean(this.agents.get(agentId)?.session?.isDurablyHosted?.());
+    try {
+      // The host additionally refuses atomically if its session is no longer idle.
+      await this.closeAgent(agentId, hosted ? { onlyIfIdle: true } : undefined);
+      return true;
+    } catch (error) {
+      if (!hosted) throw error;
+      return false;
+    } finally {
+      // A completed close clears the agent's runs; otherwise drop only our own reservation.
+      if (this.runs.getRun(agentId) === reservation) this.runs.clearAgentRun(agentId);
+      this.automaticCloses.delete(agentId);
+    }
+  }
+
+  private isIdleReleasable(agentId: string, expected?: IdleSessionObservation): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent?.session || agent.lifecycle !== "idle" || agent.internal) return false;
+    // A newer update or a reopened session restarts the idle period the caller measured.
+    if (expected && !matchesIdleObservation(agent, expected)) return false;
+    if (this.isRestartDraining() || this.inFlightAgentCloses.has(agentId)) return false;
+    if (this.lifecycleMutationTails.has(agentId) || this.hasInFlightRun(agentId)) return false;
+    const awaitingPermission =
+      agent.pendingPermissions.size > 0 || agent.inFlightPermissionResponses.size > 0;
+    if (agent.activeTurnId || awaitingPermission || agent.pendingReplacement) return false;
+    if (this.controllerSessions.has(agentId) || agent.owner || agent.queueGoalHold) return false;
+    // Closing a watched child would send its caller a "was closed" notification.
+    if (hasArmedFinishNotification(this, agentId)) return false;
+    return !hasQuotaOrControllerHold(agent.config) && !hasLiveGoal(agent.session);
+  }
+
+  private async closeAgentRuntime(agentId: string, onlyIfIdle = false): Promise<void> {
     const agent = this.requireAgent(agentId);
     await this.assertControllerSettled(agent);
     this.logger.trace(
@@ -3569,7 +3774,13 @@ export class AgentManager {
     await this.drainSessionEvents(agentId);
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
-    await agent.session.close();
+    if (onlyIfIdle) {
+      if (!agent.session.isDurablyHosted?.() || !agent.session.closeIfIdle)
+        throw new Error("Hosted conditional idle close is unavailable.");
+      await agent.session.closeIfIdle();
+    } else {
+      await agent.session.close();
+    }
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
 
@@ -3764,7 +3975,9 @@ export class AgentManager {
         availableModes: [],
         features: record.features,
         currentModeId: record.lastModeId ?? null,
-        pendingPermissions: new Map(),
+        pendingPermissions: new Map(
+          pendingCodexAsyncQuestions(record.persistence).map((request) => [request.id, request]),
+        ),
         bufferedPermissionResolutions: new Map(),
         inFlightPermissionResponses: new Set(),
         pendingReplacement: false,
@@ -4724,6 +4937,7 @@ export class AgentManager {
   ): AsyncGenerator<AgentStreamEvent> {
     this.assertAcceptingAgentRegistrations();
     const existingAgent = this.requireSessionAgent(agentId);
+    this.assertNotAutomaticallyClosing(agentId);
     this.assertQuotaNotPaused(agentId);
     this.takeOverUsageLimitHold(existingAgent, options);
     const parentId = existingAgent.labels[PARENT_AGENT_ID_LABEL];
@@ -4944,6 +5158,8 @@ export class AgentManager {
   ): Promise<AsyncGenerator<AgentStreamEvent>> {
     this.assertAcceptingAgentRegistrations();
     const snapshot = this.requireAgent(agentId);
+    // Refuse before cancelling: cancelling the release's reservation must not reopen admission.
+    this.assertNotAutomaticallyClosing(agentId);
     this.assertQuotaNotPaused(agentId);
     if (
       snapshot.lifecycle !== "running" &&
@@ -5516,6 +5732,8 @@ export class AgentManager {
 
   async rewind(agentId: string, messageId: string, mode: RewindMode): Promise<void> {
     const agent = this.requireSessionAgent(agentId);
+    // Rewind cancels any reservation, so it must not run while an idle release is closing.
+    this.assertNotAutomaticallyClosing(agentId);
     const submittedRow = this.timelineStore
       .getRows(agentId)
       .find(
@@ -6152,7 +6370,9 @@ export class AgentManager {
       activeForegroundTurnId: null,
       activeTurnId: null,
       activeTurnStartedAt: null,
-      pendingPermissions: new Map(),
+      pendingPermissions: new Map(
+        pendingCodexAsyncQuestions(agent.persistence).map((request) => [request.id, request]),
+      ),
       bufferedPermissionResolutions: new Map(),
       inFlightPermissionResponses: new Set(),
       pendingReplacement: false,
@@ -6447,10 +6667,9 @@ export class AgentManager {
   }
 
   private async *streamHistoryWithSubmissions(
-    agent: ActiveManagedAgent,
-    history:
-      | AsyncIterable<AgentStreamEvent>
-      | Iterable<AgentStreamEvent> = agent.session.streamHistory(),
+    agent: Pick<ActiveManagedAgent, "id" | "provider" | "profileSwitches" | "goalSubmissions">,
+    history: AsyncIterable<AgentStreamEvent> | Iterable<AgentStreamEvent>,
+    options?: { passive: boolean },
   ): AsyncGenerator<AgentStreamEvent> {
     history = prependSwitchHistory(await this.readSwitchHistory(agent), agent.provider, history);
     if (!agent.goalSubmissions?.length && !this.messageQueueControl) {
@@ -6459,13 +6678,13 @@ export class AgentManager {
     }
     const events: AgentStreamEvent[] = [];
     for await (const event of history) events.push(event);
-    await this.messageQueueControl?.reconcileHistory(agent.id, events);
-    const queued = (await this.messageQueueControl?.acceptedHistory(agent.id)) ?? [];
+    if (!options?.passive) await this.messageQueueControl?.reconcileHistory(agent.id, events);
+    const queued = (await this.messageQueueControl?.acceptedHistory(agent.id, options)) ?? [];
     const withGoals = mergeGoalHistory(events, agent.goalSubmissions ?? [], agent.provider);
     yield* mergeQueueHistory(withGoals, queued, agent.provider);
   }
 
-  private async readSwitchHistory(agent: ActiveManagedAgent) {
+  private async readSwitchHistory(agent: Pick<ActiveManagedAgent, "id" | "profileSwitches">) {
     const latest = agent.profileSwitches?.at(-1);
     if (!latest || !this.registry) return null;
     try {
@@ -6514,7 +6733,10 @@ export class AgentManager {
   ): Promise<void> {
     const historyEvents: Extract<AgentStreamEvent, { type: "timeline" }>[] = [];
     const providerSubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
-    for await (const rawEvent of this.streamHistoryWithSubmissions(agent)) {
+    for await (const rawEvent of this.streamHistoryWithSubmissions(
+      agent,
+      agent.session.streamHistory(),
+    )) {
       const event = limitAgentStreamEventContent(rawEvent);
       if (event.type === "timeline") {
         if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
@@ -6834,7 +7056,7 @@ export class AgentManager {
         flags.shouldDispatchEvent = false;
         return undefined;
       case "usage_updated":
-        agent.lastUsage = event.usage;
+        agent.lastUsage = withReportedCost(event.usage, agent.lastUsage);
         this.emitState(agent);
         return undefined;
       case "mode_changed":
@@ -7048,6 +7270,7 @@ export class AgentManager {
     );
     if (terminalDisposition === "stale") return;
     if (event.code === "quota_exhausted" && !options?.fromHistory) {
+      this.usageLimitObserver?.(agent.provider, event);
       this.holdForUsageLimit(agent, event.usageLimit);
       await this.pauseQuotaTeam(agent);
     }
@@ -7945,6 +8168,11 @@ export class AgentManager {
     return agent;
   }
 
+  private assertNotAutomaticallyClosing(agentId: string): void {
+    if (this.automaticCloses.has(agentId))
+      throw new Error(`Agent ${agentId} is closing its idle session; send again in a moment`);
+  }
+
   private requireSessionAgent(id: string): ActiveManagedAgent {
     const agent = this.requireAgent(id);
     if (agent.config.controllerExecutionId)
@@ -7998,4 +8226,15 @@ export function commandMayHaveChangedExternalState(command: string): boolean {
     // ahead/behind counts can drift stale until the next refresh.
     /\bgit\s+fetch\b/.test(normalized)
   );
+}
+
+/**
+ * A streamed usage update replaces the last one, so a field it omits is cleared, as compaction
+ * clears the used context. The provider's reported cost is the exception: Claude reports it only
+ * when a turn completes, so it carries over until the next report. An estimate does not carry
+ * over, since a provider that estimates sends one with every update it can price.
+ */
+function withReportedCost(usage: AgentUsage, previous: AgentUsage | undefined): AgentUsage {
+  if (usage.totalCostUsd !== undefined || previous?.totalCostUsd === undefined) return usage;
+  return { ...usage, totalCostUsd: previous.totalCostUsd };
 }

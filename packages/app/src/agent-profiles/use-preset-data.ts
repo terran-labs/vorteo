@@ -1,3 +1,4 @@
+import { isProviderSelectable } from "./provider-availability";
 import { useMemo } from "react";
 import { useFetchQueries } from "@/data/query";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
@@ -18,7 +19,10 @@ export function usePresetData(serverId: string | null, active: boolean) {
   );
   const enabled = Boolean(active && connected && client && supportsResets);
   const { entries } = useProvidersSnapshot(serverId, { cwd: null });
-  const providers = useMemo(() => resetProviderIds(entries), [entries]);
+  const providers = useMemo(
+    () => resetProviderIds(entries?.filter(isProviderSelectable)),
+    [entries],
+  );
   const resets = useFetchQueries(
     providers.map((providerId) =>
       providerResetQueryOptions({
@@ -31,9 +35,10 @@ export function usePresetData(serverId: string | null, active: boolean) {
       }),
     ),
   );
+  const hasSelectableProviders = Boolean(entries?.some(isProviderSelectable));
   const { view } = useProviderUsage(serverId, {
-    enabled: active,
-    pollActivity: active,
+    enabled: active && hasSelectableProviders,
+    pollActivity: active && hasSelectableProviders,
   });
   return {
     view,

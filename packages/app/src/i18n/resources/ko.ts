@@ -252,6 +252,9 @@ export const ko: TranslationResources = {
   },
   agentPanel: {
     states: {
+      providerUnavailable: en.agentPanel.states.providerUnavailable,
+      providerRecovery: en.agentPanel.states.providerRecovery,
+      loadingProviders: en.agentPanel.states.loadingProviders,
       notFound: "에이전트를 찾을 수 없습니다",
       failedToLoad: "에이전트를 불러오지 못했습니다",
       reconnecting: "호스트에 다시 연결하는 중",
@@ -1192,6 +1195,11 @@ export const ko: TranslationResources = {
         "새 워크트리가 의존성을 설치하고 자동으로 준비될 수 있도록 설정 명령을 추가하세요.",
       openProjectSettings: "프로젝트 설정 열기",
     },
+    focus: {
+      focusItem: "{{name}}에 집중",
+      allProjects: "모든 프로젝트",
+      breadcrumb: "사이드바 집중 경로",
+    },
     folders: {
       actions: {
         menu: "폴더 작업",
@@ -1990,6 +1998,7 @@ export const ko: TranslationResources = {
     used: "{{percentage}}% 사용됨",
     tokens: "{{used}} / {{max}} 토큰",
     sessionCost: "세션 비용 {{cost}}",
+    sessionCostEstimated: "예상 세션 비용 ~{{cost}}",
     accessibility: "컨텍스트 윈도우 {{percentage}}% 사용됨",
     breakdown: {
       used: "사용됨",
@@ -2238,6 +2247,7 @@ export const ko: TranslationResources = {
       theme: {
         title: "테마",
         accessibilityLabel: "테마: {{value}}",
+        pluginThemes: "플러그인 테마",
         options: {
           light: "라이트",
           dark: "다크",
@@ -2747,7 +2757,7 @@ export const ko: TranslationResources = {
       system: {
         title: "Vorteo System 정보",
         description:
-          "이 프로젝트는 이 Vorteo 설치를 발전시키기 위한 곳입니다. 설치를 빌드한 체크아웃을 기반으로 하며, Optimization Runner처럼 데몬이 관리하는 유지 관리 워크스페이스도 담고 있습니다. 데몬이 다시 만들고 의존하므로 제거하거나 이름을 바꿀 수 없습니다.",
+          "이 프로젝트는 이 Vorteo 설치를 발전시키기 위한 곳입니다. 설치를 빌드한 체크아웃을 기반으로 하며, Vorteo :: Optimizer처럼 데몬이 관리하는 유지 관리 워크스페이스도 담고 있습니다. 데몬이 다시 만들고 의존하므로 제거하거나 이름을 바꿀 수 없습니다.",
       },
       readFailures: {
         invalidTitle: "paseo.json을 파싱할 수 없습니다",

@@ -35,6 +35,7 @@ import {
   useEffect,
   useRef,
   type ReactElement,
+  type ReactNode,
   type MutableRefObject,
   type Ref,
   type ComponentProps,
@@ -167,7 +168,7 @@ import {
   getCurrentProjectRemoveReadiness,
   removeProjectFromHosts,
 } from "@/projects/project-remove";
-import { isNative as platformIsNative, getIsElectron } from "@/constants/platform";
+import { isNative as platformIsNative, isWeb, getIsElectron } from "@/constants/platform";
 import { getDesktopHost } from "@/desktop/host";
 import { OpenInFileManagerMenuItem } from "@/workspace/open-in-file-manager/menu-item";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
@@ -176,13 +177,61 @@ import { useHostBadges } from "@/hosts/use-host-badges";
 import { useSidebarRowItems } from "@/components/sidebar/display-preferences/model";
 import { PullRequestStateIcon } from "@/git/pull-request-state-icon";
 import {
+  placeSidebarEntry,
   reorderSidebarRows,
   useCreateSidebarFolderAction,
   useMoveToSidebarFolderAction,
   useSidebarFoldersSupported,
 } from "@/sidebar-folders/actions";
-import { SidebarFolderDropProvider, useSidebarFolderDrop } from "@/sidebar-folders/drop-context";
-import { SidebarFolderRow, sidebarDepthStyle } from "@/sidebar-folders/folder-row";
+import { SidebarFolderMenuButton, SidebarFolderRow } from "@/sidebar-folders/folder-row";
+import { sidebarFolderEntry } from "@getpaseo/protocol/sidebar-folders";
+import {
+  SIDEBAR_ROW_INSET,
+  sidebarIndentStyle,
+  sidebarNestingStyle,
+} from "@/components/sidebar/indent";
+import { SidebarSectionRow } from "@/components/sidebar/container-row";
+import { SidebarFocusButton } from "@/sidebar-focus/focus-button";
+import { reorderKeys, useSidebarTreeDrop } from "@/sidebar-drop/tree-drop";
+import {
+  describeRootRow,
+  folderIdOfEntry,
+  projectDropTop,
+  projectFolderDropTop,
+  sectionDropTop,
+  sectionWorkspaceDescriber,
+  treeRowExternalDrop,
+  workRowDescriber,
+} from "@/sidebar-drop/rows";
+import type { SidebarDropPlacement, SidebarDropRow } from "@/sidebar-drop/resolve";
+import {
+  dragViewCollapsedProjects,
+  dragViewFolderState,
+  useSidebarDragSession,
+} from "@/sidebar-drop/session";
+import { SidebarFocusBreadcrumb } from "@/sidebar-focus/breadcrumb";
+import {
+  SidebarFocusProvider,
+  useSidebarFocusAction,
+  useSidebarFocusController,
+  useSidebarRowFocus,
+  type SidebarRowFocus,
+} from "@/sidebar-focus/context";
+import {
+  buildSidebarFocusWorld,
+  expandSidebarFocusPath,
+  focusTreeRows,
+  isSidebarSectionShown,
+  sidebarFocusProjectKey,
+  sidebarFocusRootDropTop,
+  sidebarFocusRootRows,
+  sidebarProjectBlockLevels,
+  sidebarFocusTrail,
+  type SidebarFocusSection,
+  type SidebarFocusTarget,
+  type SidebarFocusWorld,
+  type SidebarProjectBlockFocus,
+} from "@/sidebar-focus/model";
 import {
   EMPTY_SIDEBAR_FOLDER_STATE,
   useSidebarFolderStore,
@@ -208,6 +257,8 @@ function treeRowItems<T>(rows: readonly SidebarTreeRow<T>[]): T[] {
 }
 
 const WORKSPACE_STATUS_DOT_WIDTH = 14;
+// A project's direct children (workspaces, folders, Standing, Factory) sit one level in; the
+// workspaces inside Standing, Factory and project folders sit one level further per step.
 const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedPlus = withUnistyles(Plus);
@@ -289,6 +340,11 @@ interface SidebarWorkspaceListProps {
   dragGestureHostActive?: boolean;
   /** False where the list shows a single project, such as the compact rail's flyout. */
   rootFolders?: boolean;
+  /**
+   * Where focus shows in another list, as from the compact rail's flyout: Focus buttons focus
+   * their item in the sidebar's store, then call this so the sidebar can show it.
+   */
+  onFocusElsewhere?: () => void;
 }
 
 interface ProjectHeaderRowProps {
@@ -345,6 +401,8 @@ interface WorkspaceRowInnerProps {
   isPinned?: boolean;
   onTogglePin?: () => void;
   reserveIdleStatusIndicatorSpace?: boolean;
+  /** Hierarchy level inside project mode; see `sidebarIndent`. */
+  indentLevel?: number;
 }
 
 export function PrBadge({ hint, style }: { hint: PrHint; style?: StyleProp<ViewStyle> }) {
@@ -502,12 +560,14 @@ function ProjectRowTrailingActions({
   onRemoveProject,
   removeProjectStatus,
   removeProjectBlockedReason,
+  focus,
 }: {
   projectViewKey: string;
   displayName: string;
   worktreeTarget: SidebarProjectHostTarget | null;
   settingsTarget: { serverId: string; projectId: string } | null;
   projectPath: string;
+  focus: SidebarRowFocus;
   isHovered: boolean;
   isMobileBreakpoint: boolean;
   isProjectActive: boolean;
@@ -548,6 +608,13 @@ function ProjectRowTrailingActions({
             removeProjectBlockedReason={removeProjectBlockedReason}
           />
         </View>
+      ) : null}
+      {focus.buttonAction ? (
+        <SidebarFocusButton
+          name={displayName}
+          onPress={focus.buttonAction}
+          testID={`sidebar-project-focus-${projectViewKey}`}
+        />
       ) : null}
     </View>
   );
@@ -1071,6 +1138,32 @@ function ProjectTaskSummaryView({
   );
 }
 
+/** A folded project shows its task summary; the focus button joins it on hover. */
+function ProjectCollapsedTrailing({
+  summary,
+  projectViewKey,
+  displayName,
+  focusAction,
+}: {
+  summary: ProjectTaskSummary;
+  projectViewKey: string;
+  displayName: string;
+  focusAction: (() => void) | null;
+}) {
+  return (
+    <>
+      <ProjectTaskSummaryView summary={summary} projectViewKey={projectViewKey} />
+      {focusAction ? (
+        <SidebarFocusButton
+          name={displayName}
+          onPress={focusAction}
+          testID={`sidebar-project-focus-${projectViewKey}`}
+        />
+      ) : null}
+    </>
+  );
+}
+
 function ProjectHeaderRow({
   taskSummary,
   project,
@@ -1114,6 +1207,11 @@ function ProjectHeaderRow({
     drag,
     menuController,
   });
+  const focusTarget = useMemo<SidebarFocusTarget>(
+    () => ({ kind: "project", projectKey: project.viewKey }),
+    [project.viewKey],
+  );
+  const rowFocus = useSidebarRowFocus({ target: focusTarget, isHovered });
   const {
     role: _dragRole,
     tabIndex: _dragTabIndex,
@@ -1170,7 +1268,7 @@ function ProjectHeaderRow({
         projectViewKey={project.viewKey}
         backdrop={getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered })}
         chevron={chevron}
-        showChevron={(isHovered || touch) && chevron !== null}
+        showChevron={isHovered && chevron !== null}
         isArchiving={isArchiving}
       />
 
@@ -1186,7 +1284,12 @@ function ProjectHeaderRow({
   const trailingContent = (
     <>
       {taskSummary ? (
-        <ProjectTaskSummaryView summary={taskSummary} projectViewKey={project.viewKey} />
+        <ProjectCollapsedTrailing
+          summary={taskSummary}
+          projectViewKey={project.viewKey}
+          displayName={displayName}
+          focusAction={rowFocus.hoverAction}
+        />
       ) : (
         <ProjectRowTrailingActions
           projectViewKey={project.viewKey}
@@ -1202,6 +1305,7 @@ function ProjectHeaderRow({
           onRemoveProject={onRemoveProject}
           removeProjectStatus={removeProjectStatus}
           removeProjectBlockedReason={removeProjectBlockedReason}
+          focus={rowFocus}
         />
       )}
       {showShortcutBadge && shortcutNumber !== null ? (
@@ -1314,6 +1418,7 @@ function WorkspaceRowInner({
   isPinned,
   onTogglePin,
   reserveIdleStatusIndicatorSpace = true,
+  indentLevel = 1,
 }: WorkspaceRowInnerProps) {
   const density = useSidebarRowDensity();
   const isCompact = useIsCompactFormFactor();
@@ -1400,7 +1505,7 @@ function WorkspaceRowInner({
               style={[
                 workspaceRowStyle,
                 density,
-                !leadingProjectName && sidebarWorkspaceRowStyles.projectIndented,
+                !leadingProjectName && sidebarIndentStyle(indentLevel),
               ]}
               highlightStyle={styles.workspaceRowPressed}
               onPressIn={handleWorkspacePressIn}
@@ -1470,11 +1575,13 @@ function WorkspaceRowWithMenu({
   onToggleWorkspacePin,
   reserveIdleStatusIndicatorSpace = true,
   isCreating = false,
+  indentLevel,
 }: {
   workspace: SidebarWorkspaceEntry;
   hostBadge?: HostBadgeModel | null;
   leadingProjectName?: string | null;
   leadingProjectIconDataUri?: string | null;
+  indentLevel?: number;
   selected: boolean;
   shortcutNumber: number | null;
   showShortcutBadge: boolean;
@@ -1548,6 +1655,7 @@ function WorkspaceRowWithMenu({
         isPinned={isPinned}
         onTogglePin={onTogglePin}
         reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
+        indentLevel={indentLevel}
       />
       <WorkspaceRenameModal
         visible={isRenameOpen}
@@ -1572,6 +1680,7 @@ interface WorkspaceRowItemProps {
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
   reserveIdleStatusIndicatorSpace?: boolean;
   isCreating?: boolean;
+  indentLevel?: number;
   selectionEnabled: boolean;
   activeWorkspaceSelection: ActiveWorkspaceSelection | null;
   onWorkspacePress?: () => void;
@@ -1593,6 +1702,7 @@ function WorkspaceRowItem({
   onToggleWorkspacePin,
   reserveIdleStatusIndicatorSpace = true,
   isCreating = false,
+  indentLevel,
   selectionEnabled,
   activeWorkspaceSelection,
   onWorkspacePress,
@@ -1621,6 +1731,7 @@ function WorkspaceRowItem({
       onToggleWorkspacePin={onToggleWorkspacePin}
       reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
       isCreating={isCreating}
+      indentLevel={indentLevel}
       selected={isWorkspaceSelected({
         selection: activeWorkspaceSelection,
         serverId: workspace.serverId,
@@ -1664,6 +1775,7 @@ function areWorkspaceRowItemPropsEqual(
     previous.onToggleWorkspacePin === next.onToggleWorkspacePin &&
     previous.reserveIdleStatusIndicatorSpace === next.reserveIdleStatusIndicatorSpace &&
     previous.isCreating === next.isCreating &&
+    previous.indentLevel === next.indentLevel &&
     previous.onWorkspacePress === next.onWorkspacePress &&
     previous.drag === next.drag &&
     previous.isDragging === next.isDragging &&
@@ -1690,6 +1802,7 @@ function WorkspaceRow({
   onToggleWorkspacePin,
   reserveIdleStatusIndicatorSpace = true,
   isCreating = false,
+  indentLevel,
   selected,
 }: {
   workspaceEntry: SidebarWorkspaceEntry | null;
@@ -1707,6 +1820,7 @@ function WorkspaceRow({
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
   reserveIdleStatusIndicatorSpace?: boolean;
   isCreating?: boolean;
+  indentLevel?: number;
   selected: boolean;
 }) {
   if (!workspaceEntry) {
@@ -1731,275 +1845,169 @@ function WorkspaceRow({
       onToggleWorkspacePin={onToggleWorkspacePin}
       reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
       isCreating={isCreating}
+      indentLevel={indentLevel}
     />
   );
 }
 
-function ProjectBlock({
-  project,
-  workspaceEntriesByKey,
-  collapsed,
-  displayName,
-  iconDataUri,
-  selectionEnabled,
-  showShortcutBadges,
-  shortcutIndexByWorkspaceKey,
+/** Standing or Factory workspaces, which reorder only within their section. */
+function SectionWorkspaceList({
+  projectKey,
+  section,
+  items,
+  level,
+  externalDrop,
+  renderItem,
+  onReorder,
+  extraData,
+  nestable,
   parentGestureRef,
-  onToggleCollapsed,
-  onWorkspacePress,
-  onWorkspaceReorder,
-  onWorktreeCreated,
-  drag,
-  isDragging,
-  dragHandleProps,
-  useNestable,
   dragGestureHostActive,
-  creatingWorkspaceIds,
-  activeWorkspaceSelection,
-  hostBadgeByServerId,
-  supportsMultiplicityByServerId,
-  supportsPinningByServerId,
-  onToggleWorkspacePin,
-  folderState,
-  hideEmptyFolders,
 }: {
-  project: SidebarProjectEntry;
-  workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
-  collapsed: boolean;
-  displayName: string;
-  iconDataUri: string | null;
-  selectionEnabled: boolean;
-  showShortcutBadges: boolean;
-  shortcutIndexByWorkspaceKey: Map<string, number>;
+  projectKey: string;
+  section: SidebarFocusSection;
+  items: SidebarWorkspacePlacement[];
+  /** Hierarchy level of the section's workspaces. */
+  level: number;
+  externalDrop: ComponentProps<typeof DraggableList<SidebarWorkspacePlacement>>["externalDrop"];
+  renderItem: (info: DraggableRenderItemInfo<SidebarWorkspacePlacement>) => ReactElement;
+  onReorder: (workspaces: SidebarWorkspacePlacement[]) => void;
+  extraData: string;
+  nestable: boolean;
   parentGestureRef?: MutableRefObject<GestureType | undefined>;
-  onToggleCollapsed: (projectViewKey: string) => void;
-  onWorkspacePress?: () => void;
-  onWorkspaceReorder: (projectViewKey: string, workspaces: SidebarWorkspacePlacement[]) => void;
-  onWorktreeCreated?: (workspaceId: string) => void;
-  drag: () => void;
-  isDragging: boolean;
-  dragHandleProps?: DraggableListDragHandleProps;
-  useNestable: boolean;
   dragGestureHostActive?: boolean;
-  creatingWorkspaceIds: ReadonlySet<string>;
-  activeWorkspaceSelection: ActiveWorkspaceSelection | null;
-  hostBadgeByServerId: ReadonlyMap<string, HostBadgeModel>;
-  supportsMultiplicityByServerId: ReadonlyMap<string, boolean>;
-  supportsPinningByServerId: ReadonlyMap<string, boolean>;
-  onToggleWorkspacePin: ToggleSidebarWorkspacePin;
-  /** Null when the sidebar host cannot store folders. */
-  folderState: SidebarFolderState | null;
-  hideEmptyFolders: boolean;
 }) {
-  const externalDrop = useWorkspaceProjectDrop(project.viewKey);
-  const folderScope = useMemo(() => projectFolderScope(project.viewKey), [project.viewKey]);
-  const workExternalDrop = useSidebarFolderDrop({
-    scope: folderScope,
-    enabled: folderState !== null,
-    existing: externalDrop,
+  const describe = useMemo(
+    () => sectionWorkspaceDescriber(projectKey, section),
+    [projectKey, section],
+  );
+  const top = useMemo(() => sectionDropTop(projectKey, section), [projectKey, section]);
+  const handleDrop = useCallback(
+    (dragged: SidebarDropRow, placement: SidebarDropPlacement) => {
+      const keys = reorderKeys(items.map(workspaceKeyExtractor), dragged.key, placement);
+      const byKey = new Map(items.map((item) => [item.workspaceKey, item]));
+      onReorder(keys.flatMap((key) => byKey.get(key) ?? []));
+    },
+    [items, onReorder],
+  );
+  const treeDrop = useSidebarTreeDrop({
+    items,
+    describe,
+    top,
+    baseLevel: level,
+    outside: "cancel",
+    onDrop: handleDrop,
   });
-  const taskSummary = useMemo(
-    () => aggregateProjectTasks(project.viewKey, workspaceEntriesByKey),
-    [project.viewKey, workspaceEntriesByKey],
+  return (
+    <DraggableList
+      externalDrop={externalDrop}
+      treeDrop={isWeb ? treeDrop : undefined}
+      testID={`sidebar-${section}-list-${projectKey}`}
+      data={items}
+      keyExtractor={workspaceKeyExtractor}
+      renderItem={renderItem}
+      onDragEnd={onReorder}
+      extraData={extraData}
+      scrollEnabled={false}
+      useDragHandle
+      nestable={nestable}
+      simultaneousGestureRef={parentGestureRef}
+      gestureHostPresented={dragGestureHostActive}
+      containerStyle={styles.workspaceListContainer}
+    />
   );
-  const showTaskSummary = collapsed;
-  const factoryHostIds = useMemo(
-    () => Array.from(new Set(project.workspaces.map((workspace) => workspace.serverId))),
-    [project.workspaces],
-  );
-  const supportsFactory = useHostFeatureMap(factoryHostIds, "factoryWorkspaceMembership");
-  const groups = useMemo(
-    () => splitFactoryWorkspaces(project.workspaces, workspaceEntriesByKey, supportsFactory),
-    [project.workspaces, workspaceEntriesByKey, supportsFactory],
-  );
-  // Folders organize ordinary workspaces only; Factory and Standing keep their own sections.
-  const workRows = useMemo(
-    () =>
-      buildSidebarTreeRows({
-        state: folderState ?? EMPTY_SIDEBAR_FOLDER_STATE,
-        scope: folderScope,
-        items: groups.work,
-        getKey: workspaceKeyExtractor,
-        hideEmptyFolders,
-      }),
-    [folderState, folderScope, groups.work, hideEmptyFolders],
-  );
-  const standingKey = `standing:${project.viewKey}`;
-  const standingCollapsed = useSidebarCollapsedSectionsStore((state) =>
-    state.collapsedWorkspaceGroupKeys.has(standingKey),
+}
+
+/** A project's Standing or Factory section: its folder-like heading and its workspaces. */
+function ProjectSection({
+  projectKey,
+  section,
+  title,
+  items,
+  focus,
+  level,
+  itemLevel,
+  beforeList,
+  renderList,
+}: {
+  projectKey: string;
+  section: SidebarFocusSection;
+  title: string;
+  items: SidebarWorkspacePlacement[];
+  focus: SidebarProjectBlockFocus | null;
+  /** Level of the heading; null while this section is focused, which hides it. */
+  level: number | null;
+  /** Level of the section's workspaces. */
+  itemLevel: number;
+  beforeList?: ReactNode;
+  renderList: (items: SidebarWorkspacePlacement[]) => ReactElement;
+}) {
+  const touch = useVortonTouch();
+  const compact = useIsCompactFormFactor();
+  const groupKey = `${section}:${projectKey}`;
+  const storedCollapsed = useSidebarCollapsedSectionsStore((state) =>
+    state.collapsedWorkspaceGroupKeys.has(groupKey),
   );
   const toggleGroupCollapsed = useSidebarCollapsedSectionsStore(
     (state) => state.toggleWorkspaceGroupCollapsed,
   );
-  const toggleStanding = useCallback(
-    () => toggleGroupCollapsed(standingKey),
-    [toggleGroupCollapsed, standingKey],
+  const toggle = useCallback(
+    () => toggleGroupCollapsed(groupKey),
+    [toggleGroupCollapsed, groupKey],
   );
-  const standingGroup = useLimitedSidebarGroup(groups.standing);
-  const factoryKey = `factory:${project.viewKey}`;
-  const factoryCollapsed = useSidebarCollapsedSectionsStore((state) =>
-    state.collapsedWorkspaceGroupKeys.has(factoryKey),
+  const group = useLimitedSidebarGroup(items);
+  const target = useMemo<SidebarFocusTarget>(
+    () => ({ kind: "section", projectKey, section }),
+    [projectKey, section],
   );
-  const toggleFactory = useCallback(
-    () => toggleGroupCollapsed(factoryKey),
-    [toggleGroupCollapsed, factoryKey],
+  const focusAction = useSidebarFocusAction(target);
+  // Sections have no menu, so touch layouts keep the focus button visible.
+  const hoverUnavailable = touch || compact || platformIsNative;
+  const testID = `sidebar-${section}-section-${projectKey}`;
+  const trailing = useCallback(
+    (isHovered: boolean) =>
+      focusAction && (isHovered || hoverUnavailable) ? (
+        <SidebarFocusButton name={title} onPress={focusAction} testID={`${testID}-focus`} />
+      ) : null,
+    [focusAction, hoverUnavailable, title, testID],
   );
-  const factoryGroup = useLimitedSidebarGroup(groups.factory);
-  const installedPlugins = useInstalledPlugins();
-  const overviewTargets = useMemo(
-    () =>
-      factoryOverviewTargets(
-        groups.factory,
-        workspaceEntriesByKey,
-        new Set(
-          installedPlugins
-            .filter(
-              (plugin) =>
-                plugin.id === "factory" &&
-                plugin.surfaces.some((surface) => surface.id === "overview"),
-            )
-            .map((plugin) => plugin.serverId),
-        ),
-      ),
-    [groups.factory, workspaceEntriesByKey, installedPlugins],
-  );
-
-  const {
-    visibleItems: visibleWorkRows,
-    expanded: workspacesExpanded,
-    canToggle: canToggleWorkspaces,
-    toggleExpanded: toggleWorkspacesExpanded,
-  } = useLimitedSidebarGroup(workRows);
-  const rowModel = useMemo(
-    () =>
-      buildSidebarProjectRowModel({
-        project,
-        collapsed,
-        supportsMultiplicityByServerId,
-      }),
-    [collapsed, project, supportsMultiplicityByServerId],
-  );
-
-  // Collapsed rows hide their workspace rows, so the project row carries the most urgent
-  // status among them; expanded rows leave the signal to the child rows themselves.
-  const aggregateStatusBucket = useSidebarProjectStatusBucket({
-    workspaces: project.workspaces,
-    enabled: collapsed,
-  });
-
-  const active = isProjectSelectedByRoute({
-    selection: activeWorkspaceSelection,
-    project,
-    enabled: selectionEnabled,
-  });
-
-  const renderWorkspaceRow = useCallback(
-    (
-      item: SidebarWorkspacePlacement,
-      input?: {
-        drag?: () => void;
-        isDragging?: boolean;
-        dragHandleProps?: DraggableListDragHandleProps;
-      },
-    ) => {
-      return (
-        <MemoWorkspaceRowItem
-          workspace={item}
-          workspaceEntry={workspaceEntriesByKey.get(item.workspaceKey) ?? null}
-          hostBadge={hostBadgeByServerId.get(item.serverId) ?? null}
-          shortcutNumber={shortcutIndexByWorkspaceKey.get(item.workspaceKey) ?? null}
-          showShortcutBadge={showShortcutBadges}
-          canCopyBranchName={project.projectKind === "git"}
-          canPin={supportsPinningByServerId.get(item.serverId) === true}
-          onToggleWorkspacePin={onToggleWorkspacePin}
-          isCreating={creatingWorkspaceIds.has(item.workspaceId)}
-          selectionEnabled={selectionEnabled}
-          activeWorkspaceSelection={activeWorkspaceSelection}
-          onWorkspacePress={onWorkspacePress}
-          drag={input?.drag}
-          isDragging={input?.isDragging}
-          dragHandleProps={input?.dragHandleProps}
+  if (items.length === 0 || !isSidebarSectionShown(focus, section)) return null;
+  // A focused section is the top level: its heading gives way to the breadcrumb and its
+  // workspaces stay open.
+  const collapsed = level !== null && storedCollapsed;
+  return (
+    <>
+      {level === null ? null : (
+        <SidebarSectionRow
+          title={title}
+          count={items.length}
+          collapsed={collapsed}
+          onToggle={toggle}
+          level={level}
+          testID={testID}
+          trailing={trailing}
         />
-      );
-    },
-    [
-      project.projectKind,
-      onToggleWorkspacePin,
-      supportsPinningByServerId,
-      activeWorkspaceSelection,
-      creatingWorkspaceIds,
-      hostBadgeByServerId,
-      onWorkspacePress,
-      selectionEnabled,
-      shortcutIndexByWorkspaceKey,
-      showShortcutBadges,
-      workspaceEntriesByKey,
-    ],
+      )}
+      {collapsed ? null : (
+        <>
+          {beforeList}
+          {renderList(group.visibleItems)}
+          {group.canToggle ? (
+            <SidebarGroupToggleRow
+              expanded={group.expanded}
+              onPress={group.toggleExpanded}
+              level={itemLevel}
+              testID={`sidebar-${section}-show-more-${projectKey}`}
+            />
+          ) : null}
+        </>
+      )}
+    </>
   );
+}
 
-  const renderWorkspace = useCallback(
-    ({
-      item,
-      drag: workspaceDrag,
-      isActive,
-      dragHandleProps: workspaceDragHandleProps,
-    }: DraggableRenderItemInfo<SidebarWorkspacePlacement>) => {
-      return renderWorkspaceRow(item, {
-        drag: workspaceDrag,
-        isDragging: isActive,
-        dragHandleProps: workspaceDragHandleProps,
-      });
-    },
-    [renderWorkspaceRow],
-  );
-
-  const handleWorkspaceDragEnd = useCallback(
-    (workspaces: SidebarWorkspacePlacement[]) => {
-      onWorkspaceReorder(project.viewKey, workspaces);
-    },
-    [onWorkspaceReorder, project.viewKey],
-  );
-
-  const renderWorkRow = useCallback(
-    ({
-      item: row,
-      drag: rowDrag,
-      isActive,
-      dragHandleProps: rowDragHandleProps,
-    }: DraggableRenderItemInfo<SidebarTreeRow<SidebarWorkspacePlacement>>) => {
-      if (row.kind === "folder") {
-        return (
-          <SidebarFolderRow
-            row={row}
-            scope={folderScope}
-            drag={rowDrag}
-            isDragging={isActive}
-            dragHandleProps={rowDragHandleProps}
-          />
-        );
-      }
-      const workspaceRow = renderWorkspaceRow(row.item, {
-        drag: rowDrag,
-        isDragging: isActive,
-        dragHandleProps: rowDragHandleProps,
-      });
-      return row.depth > 0 ? (
-        <View style={sidebarDepthStyle(row.depth)}>{workspaceRow}</View>
-      ) : (
-        workspaceRow
-      );
-    },
-    [folderScope, renderWorkspaceRow],
-  );
-
-  const handleWorkRowsDragEnd = useCallback(
-    (rows: SidebarTreeRow<SidebarWorkspacePlacement>[], movedKey: string) => {
-      if (folderState) reorderSidebarRows({ scope: folderScope, rows, movedKey });
-      else onWorkspaceReorder(project.viewKey, treeRowItems(rows));
-    },
-    [folderScope, folderState, onWorkspaceReorder, project.viewKey],
-  );
-
+/** Removing a project from every host it is on, with its confirmation and failure toasts. */
+function useProjectRemoval(project: SidebarProjectEntry, displayName: string) {
   const toast = useToast();
   const { t } = useTranslation();
   const [isRemovingProject, setIsRemovingProject] = useState(false);
@@ -2059,6 +2067,430 @@ function ProjectBlock({
     })();
   }, [isRemovingProject, displayName, t, toast, project.hosts, project.workspaces]);
 
+  return { handleRemoveProject, isRemovingProject, isSystemProject };
+}
+
+/**
+ * The focused project's own actions, which its hidden row would otherwise carry: new
+ * workspace and the project menu. They sit on the breadcrumb's last segment.
+ */
+function ProjectFocusActions({
+  project,
+  supportsMultiplicityByServerId,
+  onWorkspacePress,
+}: {
+  project: SidebarProjectEntry;
+  supportsMultiplicityByServerId: ReadonlyMap<string, boolean>;
+  onWorkspacePress?: () => void;
+}) {
+  const { t } = useTranslation();
+  const displayName = project.projectName;
+  const localDaemonServerId = useLocalDaemonServerId();
+  const rowModel = useMemo(
+    () =>
+      buildSidebarProjectRowModel({ project, collapsed: false, supportsMultiplicityByServerId }),
+    [project, supportsMultiplicityByServerId],
+  );
+  const worktreeTarget =
+    rowModel.trailingAction.kind === "new_workspace" ? rowModel.trailingAction.target : null;
+  const handleBeginWorkspaceSetup = useSidebarNewWorkspaceRoute({
+    project,
+    displayName,
+    target: worktreeTarget,
+    onBeforeNavigate: onWorkspacePress,
+  });
+  const { handleRemoveProject, isRemovingProject, isSystemProject } = useProjectRemoval(
+    project,
+    displayName,
+  );
+  return (
+    <View style={[styles.projectTrailingActions, styles.projectTrailingActionsVorton]}>
+      {worktreeTarget ? (
+        <NewWorktreeButton
+          displayName={displayName}
+          onPress={handleBeginWorkspaceSetup}
+          visible
+          testID={`sidebar-focus-new-worktree-${project.viewKey}`}
+        />
+      ) : null}
+      <ProjectKebabMenu
+        projectViewKey={project.viewKey}
+        projectName={displayName}
+        settingsTarget={project.hosts[0] ?? null}
+        projectPath={resolveSidebarProjectLocalPath(project, localDaemonServerId)}
+        onRemoveProject={handleRemoveProject}
+        removeProjectStatus={isRemovingProject ? "pending" : "idle"}
+        removeProjectBlockedReason={
+          isSystemProject ? t("sidebar.project.actions.removeBlockedSystem") : null
+        }
+      />
+    </View>
+  );
+}
+
+/** Actions of the focused item, whose own row the focused view hides. */
+function SidebarFocusActions({
+  focus,
+  world,
+  projects,
+  supportsMultiplicityByServerId,
+  onWorkspacePress,
+}: {
+  focus: SidebarFocusTarget;
+  world: SidebarFocusWorld;
+  projects: readonly SidebarProjectEntry[];
+  supportsMultiplicityByServerId: ReadonlyMap<string, boolean>;
+  onWorkspacePress?: () => void;
+}) {
+  if (focus.kind === "folder") {
+    const folder = world.folders[focus.folderId];
+    return folder ? <SidebarFolderMenuButton folder={folder} /> : null;
+  }
+  if (focus.kind === "section") return null;
+  const project = projects.find((entry) => entry.viewKey === focus.projectKey);
+  return project ? (
+    <ProjectFocusActions
+      project={project}
+      supportsMultiplicityByServerId={supportsMultiplicityByServerId}
+      onWorkspacePress={onWorkspacePress}
+    />
+  ) : null;
+}
+
+function ProjectBlock({
+  project,
+  workspaceEntriesByKey,
+  collapsed,
+  displayName,
+  iconDataUri,
+  selectionEnabled,
+  showShortcutBadges,
+  shortcutIndexByWorkspaceKey,
+  parentGestureRef,
+  onToggleCollapsed,
+  onWorkspacePress,
+  onWorkspaceReorder,
+  onWorktreeCreated,
+  drag,
+  isDragging,
+  dragHandleProps,
+  useNestable,
+  dragGestureHostActive,
+  creatingWorkspaceIds,
+  activeWorkspaceSelection,
+  hostBadgeByServerId,
+  supportsMultiplicityByServerId,
+  supportsPinningByServerId,
+  onToggleWorkspacePin,
+  folderState,
+  hideEmptyFolders,
+  focus,
+}: {
+  project: SidebarProjectEntry;
+  workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
+  collapsed: boolean;
+  displayName: string;
+  iconDataUri: string | null;
+  selectionEnabled: boolean;
+  showShortcutBadges: boolean;
+  shortcutIndexByWorkspaceKey: Map<string, number>;
+  parentGestureRef?: MutableRefObject<GestureType | undefined>;
+  onToggleCollapsed: (projectViewKey: string) => void;
+  onWorkspacePress?: () => void;
+  onWorkspaceReorder: (projectViewKey: string, workspaces: SidebarWorkspacePlacement[]) => void;
+  onWorktreeCreated?: (workspaceId: string) => void;
+  drag: () => void;
+  isDragging: boolean;
+  dragHandleProps?: DraggableListDragHandleProps;
+  useNestable: boolean;
+  dragGestureHostActive?: boolean;
+  creatingWorkspaceIds: ReadonlySet<string>;
+  activeWorkspaceSelection: ActiveWorkspaceSelection | null;
+  hostBadgeByServerId: ReadonlyMap<string, HostBadgeModel>;
+  supportsMultiplicityByServerId: ReadonlyMap<string, boolean>;
+  supportsPinningByServerId: ReadonlyMap<string, boolean>;
+  onToggleWorkspacePin: ToggleSidebarWorkspacePin;
+  /** Null when the sidebar host cannot store folders. */
+  folderState: SidebarFolderState | null;
+  hideEmptyFolders: boolean;
+  focus: SidebarProjectBlockFocus | null;
+}) {
+  const externalDrop = useWorkspaceProjectDrop(project.viewKey);
+  const folderScope = useMemo(() => projectFolderScope(project.viewKey), [project.viewKey]);
+  const workExternalDrop = useMemo(() => treeRowExternalDrop(externalDrop), [externalDrop]);
+  const taskSummary = useMemo(
+    () => aggregateProjectTasks(project.viewKey, workspaceEntriesByKey),
+    [project.viewKey, workspaceEntriesByKey],
+  );
+  const showTaskSummary = collapsed;
+  const factoryHostIds = useMemo(
+    () => Array.from(new Set(project.workspaces.map((workspace) => workspace.serverId))),
+    [project.workspaces],
+  );
+  const supportsFactory = useHostFeatureMap(factoryHostIds, "factoryWorkspaceMembership");
+  const groups = useMemo(
+    () => splitFactoryWorkspaces(project.workspaces, workspaceEntriesByKey, supportsFactory),
+    [project.workspaces, workspaceEntriesByKey, supportsFactory],
+  );
+  // Folders organize ordinary workspaces only; Factory and Standing keep their own sections.
+  const workRows = useMemo(() => {
+    if (focus?.kind === "section") return [];
+    const rows = buildSidebarTreeRows({
+      state: folderState ?? EMPTY_SIDEBAR_FOLDER_STATE,
+      scope: folderScope,
+      items: groups.work,
+      getKey: workspaceKeyExtractor,
+      hideEmptyFolders,
+    });
+    return focus?.kind === "folder"
+      ? focusTreeRows(rows, sidebarFolderEntry(focus.folderId))
+      : rows;
+  }, [focus, folderState, folderScope, groups.work, hideEmptyFolders]);
+  // Focused contents become the top level, so their rows lose the project's step in.
+  const { showHeader, childLevel, sectionLevel, sectionItemLevel } =
+    sidebarProjectBlockLevels(focus);
+  const installedPlugins = useInstalledPlugins();
+  const overviewTargets = useMemo(
+    () =>
+      factoryOverviewTargets(
+        groups.factory,
+        workspaceEntriesByKey,
+        new Set(
+          installedPlugins
+            .filter(
+              (plugin) =>
+                plugin.id === "factory" &&
+                plugin.surfaces.some((surface) => surface.id === "overview"),
+            )
+            .map((plugin) => plugin.serverId),
+        ),
+      ),
+    [groups.factory, workspaceEntriesByKey, installedPlugins],
+  );
+
+  const {
+    visibleItems: visibleWorkRows,
+    expanded: workspacesExpanded,
+    canToggle: canToggleWorkspaces,
+    toggleExpanded: toggleWorkspacesExpanded,
+  } = useLimitedSidebarGroup(workRows);
+  const rowModel = useMemo(
+    () =>
+      buildSidebarProjectRowModel({
+        project,
+        collapsed,
+        supportsMultiplicityByServerId,
+      }),
+    [collapsed, project, supportsMultiplicityByServerId],
+  );
+
+  // Collapsed rows hide their workspace rows, so the project row carries the most urgent
+  // status among them; expanded rows leave the signal to the child rows themselves.
+  const aggregateStatusBucket = useSidebarProjectStatusBucket({
+    workspaces: project.workspaces,
+    enabled: collapsed,
+  });
+
+  const active = isProjectSelectedByRoute({
+    selection: activeWorkspaceSelection,
+    project,
+    enabled: selectionEnabled,
+  });
+
+  const renderWorkspaceRow = useCallback(
+    (
+      item: SidebarWorkspacePlacement,
+      input?: {
+        drag?: () => void;
+        isDragging?: boolean;
+        dragHandleProps?: DraggableListDragHandleProps;
+        indentLevel?: number;
+      },
+    ) => {
+      return (
+        <MemoWorkspaceRowItem
+          workspace={item}
+          workspaceEntry={workspaceEntriesByKey.get(item.workspaceKey) ?? null}
+          hostBadge={hostBadgeByServerId.get(item.serverId) ?? null}
+          shortcutNumber={shortcutIndexByWorkspaceKey.get(item.workspaceKey) ?? null}
+          showShortcutBadge={showShortcutBadges}
+          canCopyBranchName={project.projectKind === "git"}
+          canPin={supportsPinningByServerId.get(item.serverId) === true}
+          onToggleWorkspacePin={onToggleWorkspacePin}
+          isCreating={creatingWorkspaceIds.has(item.workspaceId)}
+          selectionEnabled={selectionEnabled}
+          activeWorkspaceSelection={activeWorkspaceSelection}
+          onWorkspacePress={onWorkspacePress}
+          drag={input?.drag}
+          isDragging={input?.isDragging}
+          dragHandleProps={input?.dragHandleProps}
+          indentLevel={input?.indentLevel}
+        />
+      );
+    },
+    [
+      project.projectKind,
+      onToggleWorkspacePin,
+      supportsPinningByServerId,
+      activeWorkspaceSelection,
+      creatingWorkspaceIds,
+      hostBadgeByServerId,
+      onWorkspacePress,
+      selectionEnabled,
+      shortcutIndexByWorkspaceKey,
+      showShortcutBadges,
+      workspaceEntriesByKey,
+    ],
+  );
+
+  const renderWorkspace = useCallback(
+    ({
+      item,
+      drag: workspaceDrag,
+      isActive,
+      dragHandleProps: workspaceDragHandleProps,
+    }: DraggableRenderItemInfo<SidebarWorkspacePlacement>) => {
+      return renderWorkspaceRow(item, {
+        drag: workspaceDrag,
+        isDragging: isActive,
+        dragHandleProps: workspaceDragHandleProps,
+        indentLevel: sectionItemLevel,
+      });
+    },
+    [renderWorkspaceRow, sectionItemLevel],
+  );
+
+  const handleWorkspaceDragEnd = useCallback(
+    (workspaces: SidebarWorkspacePlacement[]) => {
+      onWorkspaceReorder(project.viewKey, workspaces);
+    },
+    [onWorkspaceReorder, project.viewKey],
+  );
+  const selectionKey = activeWorkspaceSelectionKey(activeWorkspaceSelection);
+  const renderSectionList = useCallback(
+    (section: SidebarFocusSection, items: SidebarWorkspacePlacement[]) => (
+      <SectionWorkspaceList
+        projectKey={project.viewKey}
+        section={section}
+        items={items}
+        level={sectionItemLevel}
+        externalDrop={externalDrop}
+        renderItem={renderWorkspace}
+        onReorder={handleWorkspaceDragEnd}
+        extraData={selectionKey}
+        nestable={useNestable}
+        parentGestureRef={parentGestureRef}
+        dragGestureHostActive={dragGestureHostActive}
+      />
+    ),
+    [
+      sectionItemLevel,
+      externalDrop,
+      project.viewKey,
+      renderWorkspace,
+      handleWorkspaceDragEnd,
+      selectionKey,
+      useNestable,
+      parentGestureRef,
+      dragGestureHostActive,
+    ],
+  );
+  const renderFactoryList = useCallback(
+    (items: SidebarWorkspacePlacement[]) => renderSectionList("factory", items),
+    [renderSectionList],
+  );
+  const renderStandingList = useCallback(
+    (items: SidebarWorkspacePlacement[]) => renderSectionList("standing", items),
+    [renderSectionList],
+  );
+
+  const renderWorkRow = useCallback(
+    ({
+      item: row,
+      drag: rowDrag,
+      isActive,
+      dragHandleProps: rowDragHandleProps,
+    }: DraggableRenderItemInfo<SidebarTreeRow<SidebarWorkspacePlacement>>) => {
+      if (row.kind === "folder") {
+        return (
+          <SidebarFolderRow
+            row={row}
+            scope={folderScope}
+            level={childLevel + row.depth}
+            drag={rowDrag}
+            isDragging={isActive}
+            dragHandleProps={rowDragHandleProps}
+          />
+        );
+      }
+      return renderWorkspaceRow(row.item, {
+        drag: rowDrag,
+        isDragging: isActive,
+        dragHandleProps: rowDragHandleProps,
+        indentLevel: childLevel + row.depth,
+      });
+    },
+    [childLevel, folderScope, renderWorkspaceRow],
+  );
+
+  const describeWorkRow = useMemo(() => workRowDescriber(project.viewKey), [project.viewKey]);
+  // A focused project folder receives the drops at its contents' top level.
+  const focusFolderId = focus?.kind === "folder" ? focus.folderId : null;
+  const workDropTop = useMemo(
+    () =>
+      focusFolderId === null
+        ? projectDropTop(project.viewKey)
+        : projectFolderDropTop(project.viewKey, focusFolderId),
+    [project.viewKey, focusFolderId],
+  );
+  const handleWorkDrop = useCallback(
+    (dragged: SidebarDropRow, placement: SidebarDropPlacement) => {
+      if (folderState) {
+        const container = placement.container;
+        placeSidebarEntry({
+          scope: folderScope,
+          entry: dragged.key,
+          targetFolderId:
+            container === null || container === project.viewKey ? null : folderIdOfEntry(container),
+          before: placement.beforeKey,
+          after: placement.afterKey,
+          keys: groups.work.map(workspaceKeyExtractor),
+        });
+        return;
+      }
+      const items = treeRowItems(visibleWorkRows);
+      const keys = reorderKeys(items.map(workspaceKeyExtractor), dragged.key, placement);
+      const byKey = new Map(items.map((item) => [item.workspaceKey, item]));
+      onWorkspaceReorder(
+        project.viewKey,
+        keys.flatMap((key) => byKey.get(key) ?? []),
+      );
+    },
+    [folderState, folderScope, project.viewKey, groups.work, visibleWorkRows, onWorkspaceReorder],
+  );
+  const workTreeDrop = useSidebarTreeDrop({
+    items: visibleWorkRows,
+    describe: describeWorkRow,
+    top: workDropTop,
+    baseLevel: childLevel,
+    outside: "cancel",
+    onDrop: handleWorkDrop,
+  });
+
+  const handleWorkRowsDragEnd = useCallback(
+    (rows: SidebarTreeRow<SidebarWorkspacePlacement>[], movedKey: string) => {
+      if (folderState) reorderSidebarRows({ scope: folderScope, rows, movedKey });
+      else onWorkspaceReorder(project.viewKey, treeRowItems(rows));
+    },
+    [folderScope, folderState, onWorkspaceReorder, project.viewKey],
+  );
+
+  const { t } = useTranslation();
+  const { handleRemoveProject, isRemovingProject, isSystemProject } = useProjectRemoval(
+    project,
+    displayName,
+  );
+
   const handleToggleCollapsed = useCallback(() => {
     onToggleCollapsed(project.viewKey);
   }, [onToggleCollapsed, project.viewKey]);
@@ -2070,6 +2502,7 @@ function ProjectBlock({
         <>
           <DraggableList
             externalDrop={workExternalDrop}
+            treeDrop={isWeb ? workTreeDrop : undefined}
             testID={`sidebar-workspace-list-${project.viewKey}`}
             data={visibleWorkRows}
             keyExtractor={treeRowKeyExtractor}
@@ -2087,92 +2520,37 @@ function ProjectBlock({
             <SidebarGroupToggleRow
               expanded={workspacesExpanded}
               onPress={toggleWorkspacesExpanded}
+              level={childLevel}
               testID={`sidebar-project-show-more-${project.viewKey}`}
             />
           ) : null}
-          {groups.factory.length > 0 ? (
-            <>
-              <PinnedSectionHeader
-                title="Factory"
-                count={groups.factory.length}
-                indented
-                testID={`sidebar-factory-section-${project.viewKey}`}
-                collapsed={factoryCollapsed}
-                onToggle={toggleFactory}
+          <ProjectSection
+            projectKey={project.viewKey}
+            section="factory"
+            title="Factory"
+            items={groups.factory}
+            focus={focus}
+            level={sectionLevel}
+            itemLevel={sectionItemLevel}
+            beforeList={overviewTargets.map((target) => (
+              <FactoryOverviewRow
+                key={`${target.serverId}:${target.projectId}`}
+                target={target}
+                multiple={overviewTargets.length > 1}
               />
-              {!factoryCollapsed ? (
-                <>
-                  {overviewTargets.map((target) => (
-                    <FactoryOverviewRow
-                      key={`${target.serverId}:${target.projectId}`}
-                      target={target}
-                      multiple={overviewTargets.length > 1}
-                    />
-                  ))}
-                  <DraggableList
-                    externalDrop={externalDrop}
-                    testID={`sidebar-factory-list-${project.viewKey}`}
-                    data={factoryGroup.visibleItems}
-                    keyExtractor={workspaceKeyExtractor}
-                    renderItem={renderWorkspace}
-                    onDragEnd={handleWorkspaceDragEnd}
-                    extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
-                    scrollEnabled={false}
-                    useDragHandle
-                    nestable={useNestable}
-                    simultaneousGestureRef={parentGestureRef}
-                    gestureHostPresented={dragGestureHostActive}
-                    containerStyle={styles.workspaceListContainer}
-                  />
-                  {factoryGroup.canToggle ? (
-                    <SidebarGroupToggleRow
-                      expanded={factoryGroup.expanded}
-                      onPress={factoryGroup.toggleExpanded}
-                      testID={`sidebar-factory-show-more-${project.viewKey}`}
-                    />
-                  ) : null}
-                </>
-              ) : null}
-            </>
-          ) : null}
-          {groups.standing.length > 0 ? (
-            <>
-              <PinnedSectionHeader
-                title="Standing"
-                count={groups.standing.length}
-                indented
-                testID={`sidebar-standing-section-${project.viewKey}`}
-                collapsed={standingCollapsed}
-                onToggle={toggleStanding}
-              />
-              {!standingCollapsed ? (
-                <>
-                  <DraggableList
-                    externalDrop={externalDrop}
-                    testID={`sidebar-standing-list-${project.viewKey}`}
-                    data={standingGroup.visibleItems}
-                    keyExtractor={workspaceKeyExtractor}
-                    renderItem={renderWorkspace}
-                    onDragEnd={handleWorkspaceDragEnd}
-                    extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
-                    scrollEnabled={false}
-                    useDragHandle
-                    nestable={useNestable}
-                    simultaneousGestureRef={parentGestureRef}
-                    gestureHostPresented={dragGestureHostActive}
-                    containerStyle={styles.workspaceListContainer}
-                  />
-                  {standingGroup.canToggle ? (
-                    <SidebarGroupToggleRow
-                      expanded={standingGroup.expanded}
-                      onPress={standingGroup.toggleExpanded}
-                      testID={`sidebar-standing-show-more-${project.viewKey}`}
-                    />
-                  ) : null}
-                </>
-              ) : null}
-            </>
-          ) : null}
+            ))}
+            renderList={renderFactoryList}
+          />
+          <ProjectSection
+            projectKey={project.viewKey}
+            section="standing"
+            title="Standing"
+            items={groups.standing}
+            focus={focus}
+            level={sectionLevel}
+            itemLevel={sectionItemLevel}
+            renderList={renderStandingList}
+          />
         </>
       );
     } else if (rowModel.trailingAction.kind === "new_workspace") {
@@ -2188,38 +2566,44 @@ function ProjectBlock({
   }
 
   return (
-    <ProjectDropTarget projectKey={project.viewKey}>
-      <View role="group" accessibilityLabel={displayName} style={undefined}>
-        <ProjectHeaderRow
-          taskSummary={showTaskSummary ? taskSummary : undefined}
-          project={project}
-          displayName={displayName}
-          iconDataUri={iconDataUri}
-          statusBucket={aggregateStatusBucket}
-          selected={false}
-          chevron={rowModel.chevron}
-          onPress={handleToggleCollapsed}
-          worktreeTarget={
-            rowModel.trailingAction.kind === "new_workspace" ? rowModel.trailingAction.target : null
-          }
-          isProjectActive={active}
-          onWorkspacePress={onWorkspacePress}
-          onWorktreeCreated={onWorktreeCreated}
-          drag={drag}
-          isDragging={isDragging}
-          isArchiving={isRemovingProject}
-          menuController={null}
-          onRemoveProject={handleRemoveProject}
-          removeProjectStatus={isRemovingProject ? "pending" : "idle"}
-          removeProjectBlockedReason={
-            isSystemProject ? t("sidebar.project.actions.removeBlockedSystem") : null
-          }
-          dragHandleProps={dragHandleProps}
-        />
+    <View role="group" accessibilityLabel={displayName} style={undefined}>
+      {showHeader ? (
+        // Only the header takes workspaces from other projects, so rows between projects
+        // never move a workspace by accident.
+        <ProjectDropTarget projectKey={project.viewKey}>
+          <ProjectHeaderRow
+            taskSummary={showTaskSummary ? taskSummary : undefined}
+            project={project}
+            displayName={displayName}
+            iconDataUri={iconDataUri}
+            statusBucket={aggregateStatusBucket}
+            selected={false}
+            chevron={rowModel.chevron}
+            onPress={handleToggleCollapsed}
+            worktreeTarget={
+              rowModel.trailingAction.kind === "new_workspace"
+                ? rowModel.trailingAction.target
+                : null
+            }
+            isProjectActive={active}
+            onWorkspacePress={onWorkspacePress}
+            onWorktreeCreated={onWorktreeCreated}
+            drag={drag}
+            isDragging={isDragging}
+            isArchiving={isRemovingProject}
+            menuController={null}
+            onRemoveProject={handleRemoveProject}
+            removeProjectStatus={isRemovingProject ? "pending" : "idle"}
+            removeProjectBlockedReason={
+              isSystemProject ? t("sidebar.project.actions.removeBlockedSystem") : null
+            }
+            dragHandleProps={dragHandleProps}
+          />
+        </ProjectDropTarget>
+      ) : null}
 
-        {projectChildren}
-      </View>
-    </ProjectDropTarget>
+      {projectChildren}
+    </View>
   );
 }
 
@@ -2253,6 +2637,7 @@ function areProjectBlockPropsEqual(previous: ProjectBlockProps, next: ProjectBlo
     previous.creatingWorkspaceIds === next.creatingWorkspaceIds &&
     previous.folderState === next.folderState &&
     previous.hideEmptyFolders === next.hideEmptyFolders &&
+    previous.focus === next.focus &&
     areProjectBlockSelectionsEqual(previous, next)
   );
 }
@@ -2310,6 +2695,7 @@ export function SidebarWorkspaceList({
   parentGestureRef,
   dragGestureHostActive,
   rootFolders = true,
+  onFocusElsewhere,
 }: SidebarWorkspaceListProps) {
   const pathname = usePathname();
   const hosts = useHosts();
@@ -2418,6 +2804,7 @@ export function SidebarWorkspaceList({
         onToggleWorkspacePin={onToggleWorkspacePin}
         onPinnedWorkspaceReorder={handlePinnedWorkspaceReorder}
         rootFolders={rootFolders}
+        onFocusElsewhere={onFocusElsewhere}
       />
     );
 
@@ -2500,11 +2887,133 @@ function SidebarGroupedModeList({
 function ProjectModeList(props: Parameters<typeof ProjectModeListContent>[0]) {
   return (
     <ProjectMoveProvider projects={props.projects}>
-      <SidebarFolderDropProvider>
-        <ProjectModeListContent {...props} />
-      </SidebarFolderDropProvider>
+      <ProjectModeListContent {...props} />
     </ProjectMoveProvider>
   );
+}
+
+/**
+ * What project mode shows beyond the stored sidebar: the device-local focus and the folding a
+ * drag applies to its own view.
+ */
+function useProjectModeView(input: {
+  projects: SidebarProjectEntry[];
+  workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
+  folderState: SidebarFolderState | null;
+  hideEmptyFolders: boolean;
+  rootFolders: boolean;
+  collapsedProjectKeys: ReadonlySet<string>;
+  onFocusElsewhere?: () => void;
+}) {
+  const {
+    projects,
+    workspaceEntriesByKey,
+    folderState,
+    hideEmptyFolders,
+    rootFolders,
+    collapsedProjectKeys,
+    onFocusElsewhere,
+  } = input;
+  const focusHostIds = useMemo(
+    () =>
+      Array.from(
+        new Set(projects.flatMap((project) => project.workspaces.map((entry) => entry.serverId))),
+      ),
+    [projects],
+  );
+  const supportsFactoryByServerId = useHostFeatureMap(focusHostIds, "factoryWorkspaceMembership");
+  const focusWorld = useMemo(
+    () =>
+      buildSidebarFocusWorld({
+        folderState: folderState ?? EMPTY_SIDEBAR_FOLDER_STATE,
+        projects: projects.map((project) => {
+          const groups = splitFactoryWorkspaces(
+            project.workspaces,
+            workspaceEntriesByKey,
+            supportsFactoryByServerId,
+          );
+          const sections: SidebarFocusSection[] = [];
+          if (groups.standing.length > 0) sections.push("standing");
+          if (groups.factory.length > 0) sections.push("factory");
+          return {
+            key: project.viewKey,
+            name: project.projectName,
+            sections,
+            workspaceKeys: project.workspaces.map(workspaceKeyExtractor),
+          };
+        }),
+        hideEmptyFolders,
+      }),
+    [folderState, projects, workspaceEntriesByKey, supportsFactoryByServerId, hideEmptyFolders],
+  );
+  // The compact rail's single-project flyout has no room for a focused view: it never shows
+  // focus itself, and its Focus buttons focus the sidebar instead.
+  const focusController = useSidebarFocusController({ world: focusWorld, enabled: rootFolders });
+  const focusElsewhere = useMemo(() => {
+    if (rootFolders || !onFocusElsewhere) return null;
+    return {
+      focus: null,
+      focusOn: (target: SidebarFocusTarget | null) => {
+        focusController.focusOn(target);
+        onFocusElsewhere();
+      },
+    };
+  }, [rootFolders, onFocusElsewhere, focusController]);
+  const focus = focusController.focus;
+  const { t } = useTranslation();
+  const focusTrail = useMemo(
+    () =>
+      focus
+        ? sidebarFocusTrail({
+            target: focus,
+            world: focusWorld,
+            labels: {
+              allProjects: t("sidebar.focus.allProjects"),
+              standing: "Standing",
+              factory: "Factory",
+            },
+          })
+        : null,
+    [focus, focusWorld, t],
+  );
+  // Focus unfolds the folders on its path in this view only; stored folding never changes.
+  const viewFolderState = useMemo(
+    () =>
+      focus && folderState ? expandSidebarFocusPath(folderState, focus, focusWorld) : folderState,
+    [focus, folderState, focusWorld],
+  );
+  const dragSession = useSidebarDragSession((state) => state.session);
+  // A drag folds the view, never the stored state, so its end restores folding exactly.
+  const listFolderState = useMemo(
+    () => (viewFolderState ? dragViewFolderState(viewFolderState, dragSession) : null),
+    [viewFolderState, dragSession],
+  );
+  const listCollapsedProjectKeys = useMemo(
+    () =>
+      dragViewCollapsedProjects(
+        collapsedProjectKeys,
+        projects.map(projectViewKeyExtractor),
+        dragSession,
+      ),
+    [collapsedProjectKeys, projects, dragSession],
+  );
+  const focusProjectKey = focus ? sidebarFocusProjectKey(focus, focusWorld) : null;
+  const projectBlockFocus = useMemo((): SidebarProjectBlockFocus | null => {
+    if (!focus || focusProjectKey === null) return null;
+    if (focus.kind === "folder") return { kind: "folder", folderId: focus.folderId };
+    if (focus.kind === "section") return { kind: "section", section: focus.section };
+    return { kind: "project" };
+  }, [focus, focusProjectKey]);
+  return {
+    focusContext: rootFolders ? focusController : focusElsewhere,
+    focus,
+    focusWorld,
+    focusTrail,
+    listFolderState,
+    listCollapsedProjectKeys,
+    focusProjectKey,
+    projectBlockFocus,
+  };
 }
 
 function ProjectModeListContent({
@@ -2534,6 +3043,7 @@ function ProjectModeListContent({
   onToggleWorkspacePin,
   onPinnedWorkspaceReorder,
   rootFolders = true,
+  onFocusElsewhere,
 }: Omit<
   SidebarWorkspaceListProps,
   | "workspaceGroups"
@@ -2575,9 +3085,24 @@ function ProjectModeListContent({
   );
   // A filter narrows what is listed, so folders it leaves empty would be noise.
   const hideEmptyFolders = hasActiveHostFilter || hasActiveProjectFilter || hasActiveLabelFilter;
-  const rootExternalDrop = useSidebarFolderDrop<SidebarProjectEntry>({
-    scope: ROOT_FOLDER_SCOPE,
-    enabled: rootFolderState !== null,
+
+  const {
+    focusContext,
+    focus,
+    focusWorld,
+    focusTrail,
+    listFolderState,
+    listCollapsedProjectKeys,
+    focusProjectKey,
+    projectBlockFocus,
+  } = useProjectModeView({
+    projects,
+    workspaceEntriesByKey,
+    folderState,
+    hideEmptyFolders,
+    rootFolders,
+    collapsedProjectKeys,
+    onFocusElsewhere,
   });
 
   const getProjectOrder = useSidebarOrderStore((state) => state.getProjectOrder);
@@ -2658,25 +3183,28 @@ function ProjectModeListContent({
     });
   }, [creatingWorkspaceIds, projects]);
 
-  const rootRows = useMemo(
-    () =>
-      buildSidebarTreeRows({
-        state: rootFolderState ?? EMPTY_SIDEBAR_FOLDER_STATE,
-        scope: ROOT_FOLDER_SCOPE,
-        items: unpinnedProjects,
-        getKey: projectViewKeyExtractor,
-        hideEmptyFolders,
-      }),
-    [rootFolderState, unpinnedProjects, hideEmptyFolders],
-  );
+  const rootRows = useMemo(() => {
+    // Focus hides Pinned, so pinned chats stay in their projects while focused.
+    const rows = buildSidebarTreeRows({
+      state: (rootFolders ? listFolderState : null) ?? EMPTY_SIDEBAR_FOLDER_STATE,
+      scope: ROOT_FOLDER_SCOPE,
+      items: focus ? projects : unpinnedProjects,
+      getKey: projectViewKeyExtractor,
+      hideEmptyFolders,
+    });
+    return focus ? sidebarFocusRootRows(rows, focus, focusWorld) : rows;
+  }, [
+    rootFolders,
+    listFolderState,
+    focus,
+    focusWorld,
+    projects,
+    unpinnedProjects,
+    hideEmptyFolders,
+  ]);
 
-  const handleProjectDragEnd = useCallback(
-    (rows: SidebarTreeRow<SidebarProjectEntry>[], movedKey: string) => {
-      if (rootFolderState) {
-        reorderSidebarRows({ scope: ROOT_FOLDER_SCOPE, rows, movedKey });
-        return;
-      }
-      const reorderedProjectKeys = treeRowItems(rows).map((project) => project.viewKey);
+  const saveProjectOrder = useCallback(
+    (reorderedProjectKeys: string[]) => {
       const currentProjectOrder = getProjectOrder();
       if (
         !hasVisibleOrderChanged({
@@ -2694,8 +3222,51 @@ function ProjectModeListContent({
         }),
       );
     },
-    [getProjectOrder, rootFolderState, setProjectOrder],
+    [getProjectOrder, setProjectOrder],
   );
+
+  const handleProjectDragEnd = useCallback(
+    (rows: SidebarTreeRow<SidebarProjectEntry>[], movedKey: string) => {
+      if (rootFolderState) {
+        reorderSidebarRows({ scope: ROOT_FOLDER_SCOPE, rows, movedKey });
+        return;
+      }
+      saveProjectOrder(treeRowItems(rows).map(projectViewKeyExtractor));
+    },
+    [rootFolderState, saveProjectOrder],
+  );
+
+  const handleRootDrop = useCallback(
+    (dragged: SidebarDropRow, placement: SidebarDropPlacement) => {
+      if (rootFolderState) {
+        placeSidebarEntry({
+          scope: ROOT_FOLDER_SCOPE,
+          entry: dragged.key,
+          targetFolderId:
+            placement.container === null ? null : folderIdOfEntry(placement.container),
+          before: placement.beforeKey,
+          after: placement.afterKey,
+          keys: projects.map(projectViewKeyExtractor),
+        });
+        return;
+      }
+      const keys = treeRowItems(rootRows).map(projectViewKeyExtractor);
+      saveProjectOrder(reorderKeys(keys, dragged.key, placement));
+    },
+    [rootFolderState, rootRows, projects, saveProjectOrder],
+  );
+  const rootDropTop = useMemo(
+    () => (focus ? sidebarFocusRootDropTop(focus, focusWorld) : null),
+    [focus, focusWorld],
+  );
+  const rootTreeDrop = useSidebarTreeDrop({
+    items: rootRows,
+    describe: describeRootRow,
+    top: rootDropTop,
+    baseLevel: 0,
+    outside: "clamp",
+    onDrop: handleRootDrop,
+  });
 
   const handleWorkspaceReorder = useCallback(
     (projectViewKey: string, reorderedWorkspaces: SidebarWorkspacePlacement[]) => {
@@ -2761,7 +3332,7 @@ function ProjectModeListContent({
           key={item.viewKey}
           project={item}
           workspaceEntriesByKey={workspaceEntriesByKey}
-          collapsed={collapsedProjectKeys.has(item.viewKey)}
+          collapsed={focusProjectKey !== item.viewKey && listCollapsedProjectKeys.has(item.viewKey)}
           displayName={item.projectName}
           iconDataUri={projectIconByProjectViewKey.get(item.viewKey) ?? null}
           selectionEnabled={selectionEnabled}
@@ -2783,15 +3354,18 @@ function ProjectModeListContent({
           supportsMultiplicityByServerId={supportsMultiplicityByServerId}
           supportsPinningByServerId={supportsPinningByServerId}
           onToggleWorkspacePin={onToggleWorkspacePin}
-          folderState={folderState}
+          folderState={listFolderState}
           hideEmptyFolders={hideEmptyFolders}
+          focus={focusProjectKey === item.viewKey ? projectBlockFocus : null}
         />
       );
     },
     [
-      folderState,
+      listFolderState,
+      listCollapsedProjectKeys,
+      focusProjectKey,
+      projectBlockFocus,
       hideEmptyFolders,
-      collapsedProjectKeys,
       activeWorkspaceSelection,
       handleWorktreeCreated,
       handleWorkspaceReorder,
@@ -2824,6 +3398,7 @@ function ProjectModeListContent({
           <SidebarFolderRow
             row={row}
             scope={ROOT_FOLDER_SCOPE}
+            level={row.depth}
             drag={drag}
             isDragging={isActive}
             dragHandleProps={dragHandleProps}
@@ -2831,7 +3406,7 @@ function ProjectModeListContent({
         );
       }
       const block = renderProjectBlock(row.item, { drag, isDragging: isActive, dragHandleProps });
-      return row.depth > 0 ? <View style={sidebarDepthStyle(row.depth)}>{block}</View> : block;
+      return row.depth > 0 ? <View style={sidebarNestingStyle(row.depth)}>{block}</View> : block;
     },
     [renderProjectBlock],
   );
@@ -2882,13 +3457,27 @@ function ProjectModeListContent({
     ],
   );
 
+  const focusActions = useMemo(
+    () =>
+      focus ? (
+        <SidebarFocusActions
+          focus={focus}
+          world={focusWorld}
+          projects={projects}
+          supportsMultiplicityByServerId={supportsMultiplicityByServerId}
+          onWorkspacePress={onWorkspacePress}
+        />
+      ) : null,
+    [focus, focusWorld, projects, supportsMultiplicityByServerId, onWorkspacePress],
+  );
+
   const projectBody =
     projects.length === 0 ? (
       <SidebarProjectEmptyState onAddProject={onAddProject} onImportSession={onImportSession} />
     ) : (
       <DraggableList
         testID="sidebar-project-list"
-        externalDrop={rootExternalDrop}
+        treeDrop={isWeb ? rootTreeDrop : undefined}
         data={rootRows}
         keyExtractor={treeRowKeyExtractor}
         renderItem={renderProject}
@@ -2906,7 +3495,7 @@ function ProjectModeListContent({
   const content = (
     <>
       {listTopComponent}
-      {pinnedChats.length > 0 ? (
+      {pinnedChats.length > 0 && focus === null ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
           <PinnedSectionHeader collapsed={pinnedCollapsed} onToggle={togglePinnedCollapsed} />
           {pinnedCollapsed ? null : (
@@ -2949,41 +3538,44 @@ function ProjectModeListContent({
       sidebarFilterEmpty
         ? listHeaderComponent
         : null}
+      {focusTrail ? <SidebarFocusBreadcrumb trail={focusTrail} actions={focusActions} /> : null}
       {sidebarFilterEmpty ? <SidebarFilterEmptyState /> : projectBody}
       {listFooterComponent}
     </>
   );
 
   return (
-    <View style={styles.container}>
-      {platformIsNative ? (
-        <NestableScrollContainer
-          {...nativeScrollGestureProps}
-          style={styles.list}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-          onContentSizeChange={onContentSizeChange}
-          testID="sidebar-project-workspace-list-scroll"
-        >
-          <NestableScrollDivider onChange={onScrolledChange} />
-          {content}
-        </NestableScrollContainer>
-      ) : (
-        <ScrollView
-          style={styles.list}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-          onContentSizeChange={onContentSizeChange}
-          testID="sidebar-project-workspace-list-scroll"
-        >
-          {content}
-        </ScrollView>
-      )}
-    </View>
+    <SidebarFocusProvider value={focusContext}>
+      <View style={styles.container}>
+        {platformIsNative ? (
+          <NestableScrollContainer
+            {...nativeScrollGestureProps}
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+            onContentSizeChange={onContentSizeChange}
+            testID="sidebar-project-workspace-list-scroll"
+          >
+            <NestableScrollDivider onChange={onScrolledChange} />
+            {content}
+          </NestableScrollContainer>
+        ) : (
+          <ScrollView
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+            onContentSizeChange={onContentSizeChange}
+            testID="sidebar-project-workspace-list-scroll"
+          >
+            {content}
+          </ScrollView>
+        )}
+      </View>
+    </SidebarFocusProvider>
   );
 }
 
@@ -3065,7 +3657,7 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     paddingVertical: theme.spacing[2],
     paddingHorizontal: theme.spacing[2],
-    paddingLeft: 6,
+    paddingLeft: SIDEBAR_ROW_INSET,
     borderRadius: theme.borderRadius.lg,
     marginBottom: theme.spacing[1],
     flexDirection: "row",

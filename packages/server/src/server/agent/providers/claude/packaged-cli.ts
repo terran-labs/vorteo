@@ -125,6 +125,11 @@ export async function managedClaudeCli(): Promise<string | null> {
     .then((command) => {
       selectedCommand = command;
       return command;
+    })
+    .catch((error: unknown) => {
+      // A repaired release must not need a process restart to be seen.
+      selection = undefined;
+      throw error;
     });
   return selection;
 }

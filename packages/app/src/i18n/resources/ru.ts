@@ -254,6 +254,9 @@ export const ru: TranslationResources = {
   },
   agentPanel: {
     states: {
+      providerUnavailable: en.agentPanel.states.providerUnavailable,
+      providerRecovery: en.agentPanel.states.providerRecovery,
+      loadingProviders: en.agentPanel.states.loadingProviders,
       notFound: "Агент не найден",
       failedToLoad: "Не удалось загрузить агента",
       reconnecting: "Повторное подключение к хосту",
@@ -1203,6 +1206,11 @@ export const ru: TranslationResources = {
         "Добавьте команды настройки для автоматической установки зависимостей и подготовки новых worktree.",
       openProjectSettings: "Открыть настройки проекта",
     },
+    focus: {
+      focusItem: "Сфокусироваться на {{name}}",
+      allProjects: "Все проекты",
+      breadcrumb: "Путь фокуса боковой панели",
+    },
     folders: {
       actions: {
         menu: "Действия с папкой",
@@ -2013,6 +2021,7 @@ export const ru: TranslationResources = {
     used: "Использовано: {{percentage}}%",
     tokens: "Токены: {{used}} / {{max}}",
     sessionCost: "Стоимость сессии: {{cost}}",
+    sessionCostEstimated: "Оценка стоимости сессии: ~{{cost}}",
     accessibility: "Использовано {{percentage}}% контекстного окна",
     breakdown: {
       used: "Использовано",
@@ -2265,6 +2274,7 @@ export const ru: TranslationResources = {
       theme: {
         title: "Тема",
         accessibilityLabel: "Тема: {{value}}",
+        pluginThemes: "Темы плагинов",
         options: {
           light: "Светлая",
           dark: "Тёмная",
@@ -2783,7 +2793,7 @@ export const ru: TranslationResources = {
       system: {
         title: "О Vorteo System",
         description:
-          "Этот проект нужен для развития этой установки Vorteo. Он основан на копии исходного кода, из которой собрана установка, и также содержит служебные рабочие пространства, которыми управляет демон, например Optimization Runner. Демон пересоздаёт его и полагается на него, поэтому проект нельзя удалить или переименовать.",
+          "Этот проект нужен для развития этой установки Vorteo. Он основан на копии исходного кода, из которой собрана установка, и также содержит служебные рабочие пространства, которыми управляет демон, например Vorteo :: Optimizer. Демон пересоздаёт его и полагается на него, поэтому проект нельзя удалить или переименовать.",
       },
       readFailures: {
         invalidTitle: "Не удалось разобрать paseo.json",

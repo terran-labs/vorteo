@@ -1,7 +1,7 @@
 import { getServerId } from "../support/helpers/server-id";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { SharedProviderPreferences } from "@getpaseo/protocol/messages";
-import { expect, test } from "../support/fixtures";
+import { expect, test, type Page } from "../support/fixtures";
 import { chooseNewTaskForProfile } from "../support/helpers/model-profile";
 import { expectRememberedProfile } from "../support/helpers/model-memory";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
@@ -14,6 +14,12 @@ import {
 } from "../support/helpers/command-center-agent-controls";
 import { expectComposerVisible } from "../support/helpers/composer";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
+
+/** Page saves return to the provider address; reopen its profile controls. */
+async function openProviderProfiles(page: Page, label: string) {
+  await page.getByRole("button", { name: `${label} provider details`, exact: true }).click();
+  await page.getByTestId("provider-settings-tabs").getByText("Profiles", { exact: true }).click();
+}
 
 test("shared choices survive account changes and protect an open editor", async ({ page }) => {
   const client = await connectDaemonClient<DaemonClient>({ clientIdPrefix: "shared-preferences" });
@@ -83,13 +89,16 @@ test("shared choices survive account changes and protect an open editor", async 
     await page.getByTestId("preset-account-shared-one").click();
     await page.getByTestId("preset-manage-profiles").click();
     await expect(page.getByTestId("shared-provider-settings")).toBeVisible();
-    // Preferred choices sit in a collapsed row of Model defaults.
+    // Preferred choices use the defaults page and its explicit save bar.
     await page
       .getByTestId("shared-provider-settings")
       .getByText("Preferred models and reasoning", { exact: true })
       .click();
+    await expect(page.getByTestId("agent-profile-page")).toBeVisible();
     await page.getByRole("button", { name: /^Preferred reasoning/ }).click();
     await page.getByRole("button", { name: "High", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await page.getByTestId("agent-profile-save-button").click();
     await expect
       .poll(
         async () =>
@@ -97,11 +106,16 @@ test("shared choices survive account changes and protect an open editor", async 
             .preferredThinkingOptions,
       )
       .toEqual(["medium"]);
+    await expect(page.getByTestId("agent-profile-page")).toHaveCount(0);
+    await openProviderProfiles(page, "Shared account one");
     await page.getByRole("button", { name: "Edit defaults", exact: true }).click();
     // The shared scope label moved from the settings section into the defaults editor.
-    await expect(page.getByTestId("agent-profile-edit-modal")).toContainText(
+    await expect(page.getByTestId("agent-profile-page")).toContainText(
       /Applies to all codex accounts/i,
     );
+    await page
+      .getByRole("textbox", { name: "Launch instructions", exact: true })
+      .fill("Keep this unsaved draft");
     const current = (await client.getDaemonConfig()).config.sharedProviderPreferences!;
     await client.patchDaemonConfig({
       sharedProviderPreferences: {
@@ -122,24 +136,14 @@ test("shared choices survive account changes and protect an open editor", async 
         "Provider preferences changed on another device. Reload the editor before saving.",
       ),
     ).toBeVisible();
-    await expect(page.getByTestId("agent-profile-submit-error")).toBeInViewport({ ratio: 1 });
+    await expect(
+      page.getByRole("textbox", { name: "Launch instructions", exact: true }),
+    ).toHaveValue("Keep this unsaved draft");
     await expect(page.getByTestId("agent-profile-save-button")).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: test.info().outputPath("shared-preferences-conflict.png") });
-    await page.getByTestId("agent-profile-cancel-button").click();
+    page.once("dialog", (dialog) => void dialog.accept());
+    await page.getByTestId("agent-profile-back-button").click();
     await page.keyboard.press("Escape");
-    await page.setViewportSize({ width: 390, height: 844 });
-    // Since 58a0cbbc9 the compact picker uses collapsible sections instead of an accounts page
-    // with a back button; account-profile-picker.spec.ts covers their geometry.
-    await page.getByTestId("agent-preset-selector").click();
-    await page.getByTestId("preset-section-account").click();
-    await page.getByTestId("preset-account-shared-two").click();
-    await expect(page.getByTestId("preset-choices-shared-two")).toBeVisible();
-    await page.screenshot({ path: test.info().outputPath("shared-preferences-mobile.png") });
-    await page.mouse.click(195, 150);
-    await expect(page.getByTestId("preset-manage-profiles")).toHaveCount(0);
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await expect(page.getByTestId("sidebar-footer-overflow")).toBeVisible();
-    await expect(page.getByTestId("agent-preset-selector")).toBeVisible();
   } finally {
     await workspace.cleanup();
     const current = (await client.getDaemonConfig()).config.sharedProviderPreferences!;
@@ -386,12 +390,15 @@ for (const viewport of [
         await page.getByTestId("preset-manage-profiles").click();
       }
       await page.getByRole("button", { name: "Edit defaults", exact: true }).click();
-      await expect(page.getByTestId("agent-profile-edit-modal")).toBeVisible();
+      await expect(page.getByTestId("agent-profile-page")).toBeVisible();
       await expect(page.getByTestId("agent-profile-worker-account-field")).toHaveCount(0);
       await expect(page.getByTestId("agent-profile-worker-field")).toHaveCount(0);
-      await page.getByTestId("agent-profile-cancel-button").click();
-      await expect(page.getByTestId("agent-profile-edit-modal")).toHaveCount(0);
+      await page.getByTestId("agent-profile-back-button").click();
+      await expect(page.getByTestId("agent-profile-page")).toHaveCount(0);
+      await openProviderProfiles(page, "Worker account one");
       await page.getByTestId("agent-profile-edit-supervisor").click();
+      await expect(page.getByTestId("agent-profile-page")).toBeVisible();
+      await page.getByRole("switch", { name: "Enable workers", exact: true }).click();
       await page.getByTestId("agent-profile-worker-account-field").getByRole("button").click();
       await page.getByText("Worker account two", { exact: true }).last().click();
       await expect(page.getByTestId("agent-profile-save-button")).toBeDisabled();
@@ -411,7 +418,8 @@ for (const viewport of [
           workerProfileId: "shared-profile/codex/worker",
           workerAccount: "workers-two",
         });
-      await expect(page.getByTestId("agent-profile-edit-modal")).toHaveCount(0);
+      await expect(page.getByTestId("agent-profile-page")).toHaveCount(0);
+      await openProviderProfiles(page, "Worker account one");
       await page.getByTestId("agent-profile-edit-supervisor").click();
       await expect(page.getByTestId("agent-profile-worker-account-field")).toContainText(
         "Worker account two",
@@ -419,9 +427,10 @@ for (const viewport of [
       await expect(page.getByTestId("agent-profile-worker-field")).toContainText("Worker");
       await page.getByTestId("agent-profile-worker-field").scrollIntoViewIfNeeded();
       await expect(page.getByTestId("agent-profile-worker-account-field")).toBeInViewport();
-      await expect(page.getByTestId("agent-profile-save-button")).toBeInViewport();
+      await expect(page.getByTestId("profile-save-bar")).toHaveCount(0);
+      await expect(page.getByTestId("agent-profile-back-button")).toBeVisible();
       await page.screenshot({ path: test.info().outputPath("profile-worker-account.png") });
-      await page.getByTestId("agent-profile-cancel-button").click();
+      await page.getByTestId("agent-profile-back-button").click();
     } finally {
       await workspace.cleanup();
       const current = (await client.getDaemonConfig()).config.sharedProviderPreferences!;

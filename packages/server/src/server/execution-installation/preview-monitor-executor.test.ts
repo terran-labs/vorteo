@@ -6,6 +6,7 @@ import { expect, test } from "vitest";
 import {
   createPreviewMonitorExecutor,
   monitorCommand,
+  verifyExecutable,
   type MonitorCommand,
 } from "./preview-monitor-executor.js";
 import type {
@@ -13,6 +14,23 @@ import type {
   PreviewMonitorPlan,
 } from "@getpaseo/protocol/preview-monitor-maintenance";
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+test("protected executable verification streams beyond the document limit without execution", async () => {
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "executable-stream-")));
+  try {
+    const executable = path.join(dir, "inert-binary");
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 0x61);
+    await writeFile(executable, bytes, { mode: 0o700 });
+    const pin = { path: executable, sha256: createHash("sha256").update(bytes).digest("hex") };
+    await expect(verifyExecutable(pin, [])).resolves.toBeUndefined();
+    await expect(verifyExecutable({ ...pin, sha256: "0".repeat(64) }, [])).rejects.toThrow(
+      "changed",
+    );
+    await chmod(executable, 0o600);
+    await expect(verifyExecutable(pin, [])).rejects.toThrow("mode");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 async function fixture(change: (command: MonitorCommand) => string | undefined = () => undefined) {
   const dir = await realpath(await mkdtemp(path.join(tmpdir(), "monitor-executor-")));
   const file = async (name: string, bytes: string) => {

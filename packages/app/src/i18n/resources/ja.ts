@@ -254,6 +254,9 @@ export const ja: TranslationResources = {
   },
   agentPanel: {
     states: {
+      providerUnavailable: en.agentPanel.states.providerUnavailable,
+      providerRecovery: en.agentPanel.states.providerRecovery,
+      loadingProviders: en.agentPanel.states.loadingProviders,
       notFound: "エージェントが見つかりません",
       failedToLoad: "エージェントの読み込みに失敗しました",
       reconnecting: "ホストに再接続中",
@@ -1199,6 +1202,11 @@ export const ja: TranslationResources = {
         "新しいワークツリーが依存関係をインストールして自動的に準備できるようにセットアップコマンドを追加してください。",
       openProjectSettings: "プロジェクト設定を開く",
     },
+    focus: {
+      focusItem: "{{name}} にフォーカス",
+      allProjects: "すべてのプロジェクト",
+      breadcrumb: "サイドバーのフォーカス経路",
+    },
     folders: {
       actions: {
         menu: "フォルダの操作",
@@ -2000,6 +2008,7 @@ export const ja: TranslationResources = {
     used: "{{percentage}}%使用",
     tokens: "{{used}} / {{max}}トークン",
     sessionCost: "セッションコスト: {{cost}}",
+    sessionCostEstimated: "推定セッションコスト: ~{{cost}}",
     accessibility: "コンテキストウィンドウ{{percentage}}%使用",
     breakdown: {
       used: "使用中",
@@ -2246,6 +2255,7 @@ export const ja: TranslationResources = {
       theme: {
         title: "テーマ",
         accessibilityLabel: "テーマ: {{value}}",
+        pluginThemes: "プラグインのテーマ",
         options: {
           light: "ライト",
           dark: "ダーク",
@@ -2759,7 +2769,7 @@ export const ja: TranslationResources = {
       system: {
         title: "Vorteo System について",
         description:
-          "このプロジェクトは、この Vorteo インストールを改良するためのものです。インストールのビルド元となったチェックアウトを基にしており、Optimization Runner など、デーモンが管理する保守用ワークスペースも含みます。デーモンが再作成し、依存しているため、削除や名前の変更はできません。",
+          "このプロジェクトは、この Vorteo インストールを改良するためのものです。インストールのビルド元となったチェックアウトを基にしており、Vorteo :: Optimizer など、デーモンが管理する保守用ワークスペースも含みます。デーモンが再作成し、依存しているため、削除や名前の変更はできません。",
       },
       readFailures: {
         invalidTitle: "paseo.jsonを解析できませんでした",

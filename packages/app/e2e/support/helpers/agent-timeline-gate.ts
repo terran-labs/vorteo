@@ -29,6 +29,7 @@ export interface DaemonHydrationGate {
 }
 
 export interface RewindCompletionGate {
+  isPromptAccepted(prompt: string): boolean;
   clearTimelineStreamCount(): void;
   release(): void;
   timelineStreamCount(): number;
@@ -192,6 +193,8 @@ export async function holdRewindCompletion(
   agentId: string,
 ): Promise<RewindCompletionGate> {
   let released = false;
+  const submittedPrompts = new Map<string, string>();
+  const acceptedPrompts = new Set<string>();
   let timelineStreamCount = 0;
   const delayedForwards: Array<() => void> = [];
   let resolveDelayedResponse: (() => void) | null = null;
@@ -199,12 +202,39 @@ export async function holdRewindCompletion(
     resolveDelayedResponse = resolve;
   });
 
+  function recordAcceptance(
+    sessionMessage: Record<string, unknown> | null,
+    payload: Record<string, unknown> | null,
+  ): void {
+    if (
+      sessionMessage?.type === "send_agent_message_response" &&
+      payload?.agentId === agentId &&
+      payload.accepted === true &&
+      typeof payload.requestId === "string"
+    ) {
+      const prompt = submittedPrompts.get(payload.requestId);
+      if (prompt !== undefined) acceptedPrompts.add(prompt);
+    }
+  }
+
   await page.routeWebSocket(daemonWsRoutePattern(), (ws) => {
     const server = ws.connectToServer();
-    ws.onMessage((message) => server.send(message));
+    ws.onMessage((message) => {
+      const request = getSessionMessage(message);
+      if (
+        request?.type === "send_agent_message_request" &&
+        request.agentId === agentId &&
+        typeof request.requestId === "string" &&
+        typeof request.text === "string"
+      ) {
+        submittedPrompts.set(request.requestId, request.text);
+      }
+      server.send(message);
+    });
     server.onMessage((message) => {
       const sessionMessage = getSessionMessage(message);
       const payload = sessionMessage ? getPayload(sessionMessage) : null;
+      recordAcceptance(sessionMessage, payload);
       const streamEvent = payload?.event;
       if (
         sessionMessage?.type === "agent_stream" &&
@@ -232,6 +262,7 @@ export async function holdRewindCompletion(
   });
 
   return {
+    isPromptAccepted: (prompt) => acceptedPrompts.has(prompt),
     clearTimelineStreamCount() {
       timelineStreamCount = 0;
     },

@@ -14,7 +14,7 @@ import type { CoordinatorBootstrapRequest } from "@getpaseo/protocol/coordinator
 import { MaintenanceServiceJobSchema } from "@getpaseo/protocol/maintenance-service";
 import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
 import { InstallationEnrollmentStatusSchema } from "@getpaseo/protocol/installation-enrollment";
-import { DaemonAutomation } from "./daemon-automation.js";
+import { DaemonAutomation, coordinatorAutomaticAuthority } from "./daemon-automation.js";
 import {
   coordinatorPlanDigest,
   type BootstrapReconciliationLedger,
@@ -593,7 +593,7 @@ test("shared settings require owner access and persist revisioned writes before 
     settings: { appendSystemPrompt: "Shared owner instructions" },
   };
   const patch = () =>
-    fetch(`${url}/api/installation/owner/settings`, {
+    requestWithHost(`${url}/api/installation/owner/settings`, {
       method: "PATCH",
       headers: {
         Host: "owner.example.test",
@@ -633,7 +633,7 @@ test("project policies reach only owner clients and daemons that ask for them", 
   const cookie = unlock.headers.get("set-cookie")?.split(";")[0];
   if (!cookie) throw new Error("Missing owner cookie");
   async function readOwnerSettings(headers: Record<string, string>) {
-    const response = await fetch(`${url}/api/installation/owner/settings/read`, {
+    const response = await requestWithHost(`${url}/api/installation/owner/settings/read`, {
       method: "POST",
       headers: {
         Host: "owner.example.test",
@@ -786,6 +786,36 @@ test("delegated requests are labeled only for clients that ask and only for Host
     (await query("?delegatedRequests=1")).find((job) => job.id === host.id),
   ).not.toHaveProperty("delegatedTo");
 });
+
+// Node fetch does not preserve a supplied Host on every supported runtime.
+// These origin tests need the actual authority on the wire, not a URL substitution.
+function requestWithHost(
+  url: string,
+  input: { method: string; headers: Record<string, string>; body?: string; redirect?: "manual" },
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(
+      url,
+      { method: input.method, headers: input.headers },
+      (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        incoming.on("error", reject);
+        incoming.on("end", () => {
+          const headers = new Headers();
+          for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+            headers.append(incoming.rawHeaders[index]!, incoming.rawHeaders[index + 1]!);
+          }
+          const status = incoming.statusCode ?? 500;
+          const body = [204, 304].includes(status) ? null : Buffer.concat(chunks);
+          resolve(new Response(body, { status, headers }));
+        });
+      },
+    );
+    outgoing.on("error", reject);
+    outgoing.end(input.body);
+  });
+}
 
 async function fixture(
   profiles?: InstallationProfiles,
@@ -956,7 +986,7 @@ async function fixture(
     origin = config.public.origin,
     cookie?: string,
   ) {
-    return fetch(`http://127.0.0.1:${address.port}${route}`, {
+    return requestWithHost(`http://127.0.0.1:${address.port}${route}`, {
       method: body === undefined ? "GET" : "POST",
       headers: {
         Host: "owner.example.test",
@@ -1048,7 +1078,8 @@ test("owner canonical profile GET/PATCH use independent revisions and reject sta
   const unlock = await request("/api/installation/owner/unlock", "owner-test-password", {});
   const cookie = unlock.headers.get("set-cookie")?.split(";")[0];
   if (!cookie) throw new Error("missing owner cookie");
-  const noOrigin = await fetch(`${url}${route}`, {
+  const noOrigin = await requestWithHost(`${url}${route}`, {
+    method: "GET",
     headers: { Host: "owner.example.test", Cookie: cookie },
   });
   expect(noOrigin.status).toBe(403);
@@ -1059,7 +1090,7 @@ test("owner canonical profile GET/PATCH use independent revisions and reject sta
   const providers = structuredClone(snapshot.providers);
   providers.codex.workflows[0].excludedEnvironments = ["host"];
   async function patch(expectedRevision: number) {
-    return fetch(`${url}${route}`, {
+    return requestWithHost(`${url}${route}`, {
       method: "PATCH",
       headers: {
         Host: "owner.example.test",
@@ -1392,7 +1423,7 @@ test("legacy owner clients can read removed providers but cannot resurrect them"
     "Content-Type": "application/json",
   };
   const legacy = await (
-    await fetch(`${url}/api/installation/owner/settings/read`, {
+    await requestWithHost(`${url}/api/installation/owner/settings/read`, {
       method: "POST",
       headers,
       body: "{}",
@@ -1400,7 +1431,7 @@ test("legacy owner clients can read removed providers but cannot resurrect them"
   ).json();
   expect(legacy.settings.providerDefinitions[0]).not.toHaveProperty("removed");
   expect(legacy.settings.providerDefinitions[0].policy.enabled).toBe(false);
-  const rejected = await fetch(`${url}/api/installation/owner/settings`, {
+  const rejected = await requestWithHost(`${url}/api/installation/owner/settings`, {
     method: "PATCH",
     headers,
     body: JSON.stringify({
@@ -1411,14 +1442,14 @@ test("legacy owner clients can read removed providers but cannot resurrect them"
   expect(rejected.status).toBe(409);
   expect(settings.snapshot().settings!.providerDefinitions![0].removed).toBe(true);
   const aware = await (
-    await fetch(`${url}/api/installation/owner/settings/read`, {
+    await requestWithHost(`${url}/api/installation/owner/settings/read`, {
       method: "POST",
       headers: { ...headers, "X-Vorteo-Provider-Removal": "1" },
       body: "{}",
     })
   ).json();
   expect(aware.settings.providerDefinitions[0].removed).toBe(true);
-  const restored = await fetch(`${url}/api/installation/owner/settings`, {
+  const restored = await requestWithHost(`${url}/api/installation/owner/settings`, {
     method: "PATCH",
     headers: { ...headers, "X-Vorteo-Provider-Removal": "1" },
     body: JSON.stringify({
@@ -4227,4 +4258,384 @@ test("native recovery origin serves the interface and authenticated controls ind
     403,
   );
   expect(calls).toEqual([]);
+});
+
+test("full maintenance delegation requires owner origin and credential and supports exact revocation", async () => {
+  const f = await fixture();
+  const query = "/api/installation/owner/maintenance-delegation/query";
+  const change = "/api/installation/owner/maintenance-delegation/change";
+  for (const token of ["guest-agent-test-token", "host-agent-test-token"])
+    expect((await f.request(change, token, { expectedRevision: null, enabled: true })).status).toBe(
+      401,
+    );
+  expect(
+    (
+      await f.request(
+        change,
+        "owner-test-password",
+        { expectedRevision: null, enabled: true },
+        "https://foreign.example.test",
+      )
+    ).status,
+  ).toBe(403);
+  const initial = await (await f.request(query, "owner-test-password", {})).json();
+  expect(initial).toEqual({ available: true, revision: null, enabled: false, activatedAt: null });
+  const response = await f.request(change, "owner-test-password", {
+    expectedRevision: initial.revision,
+    enabled: true,
+  });
+  expect(response.status).toBe(200);
+  const saved = await response.json();
+  expect(saved.enabled).toBe(true);
+  expect(
+    (await f.request(change, "owner-test-password", { expectedRevision: null, enabled: false }))
+      .status,
+  ).toBe(409);
+  const caps = await (
+    await f.request("/api/installation/capabilities", "host-agent-test-token")
+  ).json();
+  expect(caps.maintenanceDelegation).toEqual({ available: true, enabled: true });
+  expect(caps.sessionHostJob.ownerApprovalRequired).toBe(false);
+  const revoked = await f.request(change, "owner-test-password", {
+    expectedRevision: saved.revision,
+    enabled: false,
+  });
+  expect(revoked.status).toBe(200);
+  const after = await (
+    await f.request("/api/installation/capabilities", "host-agent-test-token")
+  ).json();
+  expect(after.maintenanceDelegation.enabled).toBe(false);
+  expect(after.sessionHostJob.ownerApprovalRequired).toBe(true);
+  expect(f.calls).toEqual([]);
+});
+
+test("retained broad delegation cannot bypass enrolled maintenance admission", async () => {
+  let retained: InstallationConfig | undefined;
+  const f = await fixture(
+    undefined,
+    undefined,
+    undefined,
+    false,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    (config) => {
+      retained = config;
+      writeFileSync(
+        path.join(config.stateDir, "owner-delegation.json"),
+        JSON.stringify({
+          version: 1,
+          delegatedRequesterPrefixes: [],
+          hostUpdateServiceRestart: false,
+          maintenanceApprovedAfter: "2026-01-01T00:00:00.000Z",
+        }),
+        { mode: 0o600 },
+      );
+      enrollDashboardFixture(config);
+    },
+  );
+  if (!retained) throw new Error("Missing fixture config");
+  expect(coordinatorAutomaticAuthority(retained)).toBeNull();
+  const caps = await (
+    await f.request("/api/installation/capabilities", "host-agent-test-token")
+  ).json();
+  expect(caps.maintenanceDelegation).toEqual({ available: false, enabled: false });
+  expect(caps.sessionHostJob.ownerApprovalRequired).toBe(true);
+  expect(
+    (
+      await f.request(
+        "/api/installation/owner/maintenance-delegation/change",
+        "owner-test-password",
+        { expectedRevision: null, enabled: true },
+      )
+    ).status,
+  ).toBe(409);
+  expect(f.calls).toEqual([]);
+});
+
+test.each(["127.0.0.1", "localhost"])(
+  "local installation at %s binds descriptor, authentication and cookies",
+  async (hostname) => {
+    const f = await fixture();
+    const port = new URL(f.url).port;
+    const host = `${hostname}:${port}`;
+    const origin = `http://${host}`;
+    const route = "/api/installation/owner/";
+    const request = (
+      suffix: string,
+      token?: string,
+      cookie?: string,
+      requestOrigin = origin,
+      requestHost = host,
+      extra: Record<string, string> = {},
+    ) =>
+      requestWithHost(f.url + suffix, {
+        method: suffix === "/" ? "GET" : "POST",
+        headers: {
+          Host: requestHost,
+          Origin: requestOrigin,
+          "Content-Type": "application/json",
+          ...extra,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+        ...(suffix === "/" ? {} : { body: "{}" }),
+        redirect: "manual",
+      });
+    const page = await request("/");
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain(`"origin":"${origin}"`);
+    expect(html).toContain('"endpoint":"127.0.0.1:6771","useTls":false');
+    expect(html).toContain('"endpoint":"guest.example.test","useTls":true');
+    expect(html).not.toContain("host-daemon-test-password");
+    expect((await request(route + "unlock")).status).toBe(401);
+    expect((await request(route + "unlock", "host-agent-test-token")).status).toBe(401);
+    for (const hostile of [
+      "null",
+      "https://owner.example.test",
+      "http://evil.test",
+      `http://${hostname}:1`,
+    ]) {
+      expect(
+        (await request(route + "unlock", "owner-test-password", undefined, hostile)).status,
+      ).toBe(403);
+    }
+    expect((await request("/", undefined, undefined, origin, `${hostname}:1`)).status).toBe(403);
+    for (const headers of [
+      { Forwarded: `host=${host}` },
+      { "X-Forwarded-Host": host },
+      { "X-Forwarded-For": "127.0.0.1" },
+      { "X-Forwarded-Proto": "http" },
+    ]) {
+      expect((await request("/", undefined, undefined, origin, host, headers)).status).toBe(403);
+    }
+    const login = await request(route + "unlock", "owner-test-password");
+    expect(login.status).toBe(200);
+    const connection = InstallationUnlockSchema.parse(await login.json());
+    expect(connection.connections).toEqual([
+      {
+        kind: "host",
+        serverId: "host-id",
+        endpoint: "127.0.0.1:6771",
+        useTls: false,
+        password: "host-daemon-test-password",
+      },
+      {
+        kind: "container",
+        serverId: "guest-id",
+        endpoint: "guest.example.test",
+        useTls: true,
+        password: "guest-daemon-test-password",
+      },
+    ]);
+    const setCookie = login.headers.get("set-cookie");
+    expect(setCookie).toContain(`vorteo-owner-local-${port}=`);
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Strict");
+    expect(setCookie).not.toMatch(/; Secure|Domain=/);
+    if (!setCookie) throw new Error("Missing local cookie");
+    const cookie = setCookie.split(";")[0]!;
+    expect((await request(route + "session", undefined, cookie)).status).toBe(200);
+    expect(await (await request(route + "session", undefined, cookie)).json()).toMatchObject({
+      authenticated: true,
+    });
+    expect((await request(route + "connections", undefined, cookie)).status).toBe(200);
+    const otherHost = `${hostname === "localhost" ? "127.0.0.1" : "localhost"}:${port}`;
+    expect(
+      (await request(route + "connections", undefined, cookie, `http://${otherHost}`, otherHost))
+        .status,
+    ).toBe(401);
+    expect(
+      (
+        await f.request(
+          route + "connections",
+          undefined,
+          {},
+          undefined,
+          cookie.replace(`vorteo-owner-local-${port}`, "__Host-vorteo-owner"),
+        )
+      ).status,
+    ).toBe(401);
+    const publicLogin = await f.request(route + "unlock", "owner-test-password", {});
+    const publicCookie = publicLogin.headers.get("set-cookie")!.split(";")[0]!;
+    expect(
+      (
+        await request(
+          route + "connections",
+          undefined,
+          publicCookie.replace("__Host-vorteo-owner", `vorteo-owner-local-${port}`),
+        )
+      ).status,
+    ).toBe(401);
+    expect((await request(route + "lock", undefined, cookie)).status).toBe(200);
+    expect((await request(route + "connections", undefined, cookie)).status).toBe(401);
+    expect(
+      (await f.request(route + "connections", undefined, {}, undefined, publicCookie)).status,
+    ).toBe(200);
+    expect(f.calls).toEqual([]);
+  },
+);
+
+test("a Host-only installation exposes one connection and refuses Dev credentials and targets", async () => {
+  const { request } = await fixture(
+    undefined,
+    undefined,
+    undefined,
+    false,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    (config) => {
+      delete config.container;
+      config.public.environments = config.public.environments.filter(
+        (environment) => environment.kind === "host",
+      );
+    },
+  );
+  const unlock = await request("/api/installation/owner/unlock", "owner-test-password", {});
+  expect(unlock.status).toBe(200);
+  const cookie = unlock.headers.get("set-cookie")?.split(";")[0];
+  if (!cookie) throw new Error("Missing owner cookie");
+  const connections = await (
+    await request("/api/installation/owner/connections", undefined, {}, undefined, cookie)
+  ).json();
+  expect(connections.connections.map((item: { kind: string }) => item.kind)).toEqual(["host"]);
+  expect((await request("/api/installation/capabilities", "guest-agent-test-token")).status).toBe(
+    401,
+  );
+  const restart = await request(
+    "/api/installation/owner/restarts",
+    undefined,
+    { target: "container-daemon", reason: "Dev restart" },
+    undefined,
+    cookie,
+  );
+  expect(restart.status).toBe(409);
+});
+
+test("the gate route authority reaches agent routes only", async () => {
+  const { url } = await fixture(
+    undefined,
+    undefined,
+    undefined,
+    false,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    (config) => {
+      config.access = {
+        remote: "tailscale",
+        gateRoute: { authority: "host.docker.internal:7000" },
+      };
+    },
+  );
+  const viaGate = (route: string, method = "GET") =>
+    requestWithHost(`${url}${route}`, {
+      method,
+      headers: { Host: "host.docker.internal:7000", "Content-Type": "application/json" },
+      ...(method === "POST" ? { body: "{}" } : {}),
+    });
+  expect((await viaGate("/api/installation/health")).status).toBe(200);
+  expect((await viaGate("/")).status).toBe(403);
+  expect((await viaGate("/api/installation/owner/unlock", "POST")).status).toBe(403);
+  const other = await requestWithHost(`${url}/api/installation/health`, {
+    method: "GET",
+    headers: { Host: "elsewhere.docker.internal:7000" },
+  });
+  expect(other.status).toBe(403);
+});
+
+test("management cancellation requires explicit Host authority and exact retained work", async () => {
+  const f = await fixture();
+  const request = await f.request("/api/installation/restart-requests", "host-agent-test-token", {
+    target: "host",
+    reason: "test managed cancellation",
+    requireOwnerApproval: true,
+  });
+  const job = await request.json();
+  const route = "/api/installation/management/requests";
+  expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  const query = "/api/installation/owner/maintenance-delegation/query?management=1";
+  const initial = await (await f.request(query, "owner-test-password", {})).json();
+  const legacy = await (
+    await f.request(
+      "/api/installation/owner/maintenance-delegation/change?management=1",
+      "owner-test-password",
+      { expectedRevision: initial.revision, enabled: true },
+    )
+  ).json();
+  expect(legacy.managementEnabled).toBe(false);
+  expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  const grant = await (
+    await f.request(
+      "/api/installation/owner/maintenance-delegation/change?management=1",
+      "owner-test-password",
+      { expectedRevision: legacy.revision, enabled: true, management: true },
+    )
+  ).json();
+  expect(grant.managementEnabled).toBe(true);
+  expect((await f.request(route, "guest-agent-test-token")).status).toBe(403);
+  const snapshot = await (await f.request(route, "host-agent-test-token")).json();
+  const retained = snapshot.jobs.find((item: { id: string }) => item.id === job.id);
+  const input = {
+    receiptId: randomUUID(),
+    authorityRevision: snapshot.authority.revision,
+    kind: retained.kind,
+    id: retained.id,
+    revision: retained.revision,
+    jobSha256: retained.jobSha256,
+  };
+  const cancel = "/api/installation/management/cancel";
+  const stale = await f.request(cancel, "host-agent-test-token", {
+    ...input,
+    revision: randomUUID(),
+  });
+  expect(stale.status, JSON.stringify(await stale.json())).toBe(409);
+  expect(
+    (await f.request(cancel, "host-agent-test-token", { ...input, decision: "approve" })).status,
+  ).toBe(400);
+  const clientFile = path.join(f.root, "management-client.json");
+  const decisionFile = path.join(f.root, "management-decision.json");
+  writeFileSync(
+    clientFile,
+    JSON.stringify({ origin: f.url, kind: "host-agent", token: "host-agent-test-token" }),
+  );
+  writeFileSync(decisionFile, JSON.stringify(input));
+  const cli = await promisify(execFile)(process.execPath, [
+    path.resolve(import.meta.dirname, "../../../../../scripts/installation-agent.mjs"),
+    "--config",
+    clientFile,
+    "management-cancel",
+    "--request-file",
+    decisionFile,
+  ]);
+  expect(JSON.parse(cli.stdout)).toMatchObject({
+    actor: "host-agent",
+    status: "completed",
+    result: { id: job.id, status: "rejected" },
+  });
+  const receipt = await f.request(
+    `/api/installation/management/receipts/${input.receiptId}`,
+    "host-agent-test-token",
+  );
+  expect(await receipt.json()).toMatchObject({
+    status: "completed",
+    result: { status: "rejected" },
+  });
+  expect((await f.request(cancel, "host-agent-test-token", input)).status).toBe(409);
+  await f.request(
+    "/api/installation/owner/maintenance-delegation/change?management=1",
+    "owner-test-password",
+    {
+      expectedRevision: grant.revision,
+      enabled: true,
+      management: false,
+    },
+  );
+  expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  expect(f.calls).toEqual([]);
 });

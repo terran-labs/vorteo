@@ -252,6 +252,9 @@ export const ar: TranslationResources = {
   },
   agentPanel: {
     states: {
+      providerUnavailable: en.agentPanel.states.providerUnavailable,
+      providerRecovery: en.agentPanel.states.providerRecovery,
+      loadingProviders: en.agentPanel.states.loadingProviders,
       notFound: "لم يتم العثور على Agent",
       failedToLoad: "فشل تحميل الوكيل",
       reconnecting: "جارٍ إعادة الاتصال بالمضيف",
@@ -1185,6 +1188,11 @@ export const ar: TranslationResources = {
         "أضف أوامر الإعداد حتى تتمكن أشجار العمل الجديدة من تثبيت التبعيات وإعداد نفسها تلقائيًا.",
       openProjectSettings: "افتح إعدادات المشروع",
     },
+    focus: {
+      focusItem: "التركيز على {{name}}",
+      allProjects: "كل المشاريع",
+      breadcrumb: "مسار التركيز في الشريط الجانبي",
+    },
     folders: {
       actions: {
         menu: "إجراءات المجلد",
@@ -1980,6 +1988,7 @@ export const ar: TranslationResources = {
     used: "تم استخدام{{percentage}}%",
     tokens: "رموز{{used}}/{{max}}",
     sessionCost: "تكلفة الجلسة{{cost}}",
+    sessionCostEstimated: "تكلفة الجلسة التقديرية ~{{cost}}",
     accessibility: "تم استخدام نافذة السياق{{percentage}}%",
     breakdown: {
       used: "مستخدم",
@@ -2227,6 +2236,7 @@ export const ar: TranslationResources = {
       theme: {
         title: "سمة",
         accessibilityLabel: "الموضوع:{{value}}",
+        pluginThemes: "سمات الإضافات",
         options: {
           light: "ضوء",
           dark: "مظلم",
@@ -2732,7 +2742,7 @@ export const ar: TranslationResources = {
       system: {
         title: "حول Vorteo System",
         description:
-          "هذا المشروع مخصص لتطوير تثبيت Vorteo هذا. يعتمد على النسخة المصدرية التي بُني منها التثبيت، ويحتوي أيضًا على مساحات عمل الصيانة التي يديرها البرنامج الخفي، مثل Optimization Runner. يعيد البرنامج الخفي إنشاءه ويعتمد عليه، لذا لا يمكن إزالته أو إعادة تسميته.",
+          "هذا المشروع مخصص لتطوير تثبيت Vorteo هذا. يعتمد على النسخة المصدرية التي بُني منها التثبيت، ويحتوي أيضًا على مساحات عمل الصيانة التي يديرها البرنامج الخفي، مثل Vorteo :: Optimizer. يعيد البرنامج الخفي إنشاءه ويعتمد عليه، لذا لا يمكن إزالته أو إعادة تسميته.",
       },
       readFailures: {
         invalidTitle: "تعذر تحليل paseo.json",

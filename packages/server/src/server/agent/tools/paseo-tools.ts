@@ -164,6 +164,17 @@ export interface PaseoToolHostDependencies {
   logger: Logger;
 }
 
+// Features that hand an agent the owner's logged-in browser. Owner decision: only the owner's
+// thread controls may turn them on, so agent tools refuse enabling them and scheduled runs
+// never inherit them from the thread that created the schedule. Turning them off stays allowed.
+const OWNER_ONLY_FEATURE_IDS = ["chrome"] as const;
+
+function withoutOwnerOnlyFeatures(featureValues: Record<string, unknown>): Record<string, unknown> {
+  const filtered = { ...featureValues };
+  for (const featureId of OWNER_ONLY_FEATURE_IDS) delete filtered[featureId];
+  return filtered;
+}
+
 function parseTimestamp(value: string | null | undefined): number {
   if (!value) {
     return 0;
@@ -663,6 +674,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       : new Date(Date.now() + parseDurationString(expiresIn)).toISOString();
   };
 
+  const assertAgentCanSetFeatures = (features: Record<string, unknown> | undefined): void => {
+    for (const featureId of OWNER_ONLY_FEATURE_IDS) {
+      if (features?.[featureId]) {
+        throw new Error(
+          `Agents cannot turn on ${featureId}. Only the owner can, from the thread's controls.`,
+        );
+      }
+    }
+  };
+
   const resolveCallerAgent = () => {
     if (!callerAgentId) {
       return null;
@@ -753,7 +774,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         ? { providerOptions: callerAgent.config.providerOptions }
         : {}),
       ...(callerAgent.config.featureValues
-        ? { featureValues: callerAgent.config.featureValues }
+        ? { featureValues: withoutOwnerOnlyFeatures(callerAgent.config.featureValues) }
         : {}),
       ...(callerAgent.config.systemPrompt ? { systemPrompt: callerAgent.config.systemPrompt } : {}),
       ...(callerAgent.config.mcpServers ? { mcpServers: callerAgent.config.mcpServers } : {}),
@@ -889,7 +910,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       features: z
         .record(z.string(), z.unknown())
         .optional()
-        .describe("Provider-specific feature values, for example { fast_mode: true } for Codex."),
+        .describe(
+          "Provider-specific feature values, for example { fast_mode: true } for Codex. Agents cannot turn on chrome; only the owner can, from the thread's controls.",
+        ),
     })
     .strict();
   const UpdateAgentSettingsInputSchema = z
@@ -904,7 +927,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       features: z
         .record(z.string(), z.unknown())
         .optional()
-        .describe("Provider-specific feature values, for example { fast_mode: true } for Codex."),
+        .describe(
+          "Provider-specific feature values, for example { fast_mode: true } for Codex. Agents cannot turn on chrome; only the owner can, from the thread's controls.",
+        ),
     })
     .strict();
   const InspectProviderSettingsInputSchema = z
@@ -1522,6 +1547,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         requestedBackground = resolvedArgs.parsedArgs.background;
         notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
       }
+      assertAgentCanSetFeatures(parsedArgs.settings?.features);
       const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
       const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
       const {
@@ -2295,6 +2321,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({ agentId, name, labels, settings }) => {
+      assertAgentCanSetFeatures(settings?.features);
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
       }

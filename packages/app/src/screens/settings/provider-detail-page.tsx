@@ -1,13 +1,18 @@
+import { useRetainedUsage } from "@/components/settings/use-retained-usage";
+import { useToast } from "@/contexts/toast-context";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 /**
- * One provider's page under Accounts & profiles.
+ * One provider's details, expanded in place under its row in Accounts &
+ * profiles.
  *
  * A connection belongs to the installation, not to an environment: rows show
  * one combined status ("Ready everywhere") and environments only appear when
  * something differs or the owner opens Environment access. Profiles and model
  * defaults for the provider sit below its connections, and removing the
- * provider is a quiet row at the bottom of the page.
+ * provider is a quiet row at the bottom. The row above keeps the provider's
+ * name and its on and off switch.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useMutation } from "@tanstack/react-query";
@@ -34,12 +39,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { selectProfileCatalogSources } from "@/execution-installation/profile-catalog";
-import { readExecutionInstallation } from "@/execution-installation/policy";
 import {
   requestInstallationSettings,
   useInstallationSettings,
 } from "@/execution-installation/settings";
-import { InstallationSettingsStatus } from "@/execution-installation/settings-status";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { ProviderLoginPanel } from "@/provider-usage/login-panel";
@@ -60,7 +63,6 @@ import type { Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 import { useReportActionError } from "@/hooks/use-action-error";
-import { returnFromSettings } from "@/navigation/settings-navigation";
 import { ProvidersSection } from "./providers-section";
 import {
   classifyEnvironment,
@@ -73,6 +75,7 @@ import {
   type ProviderAccount,
   type ProviderFamily,
 } from "./shared-providers-model";
+import { useProviderDetection } from "./use-provider-detection";
 
 const ThemedMore = withUnistyles(MoreHorizontal);
 const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -84,14 +87,16 @@ export function hostRejection(error: Error | null): Error | null {
   return error;
 }
 
-/** An `onError` handler that toasts lost connections and leaves rejections to the page. */
+/** Report mutation failures without inserting feedback into the page. */
 export function useConnectionLostReporter() {
   const reportActionError = useReportActionError();
+  const toast = useToast();
   return useCallback(
     (failure: Error) => {
       if (isConnectionError(failure)) reportActionError(failure);
+      else toast.error(toErrorMessage(failure));
     },
-    [reportActionError],
+    [reportActionError, toast],
   );
 }
 
@@ -135,7 +140,10 @@ function useEnvironmentState(
   const localId = serverId ? provider.bindings[serverId] : undefined;
   const connected = useHostRuntimeIsConnected(serverId ?? "");
   const catalog = useProvidersSnapshot(localId ? serverId : null);
-  const { view } = useProviderUsage(serverId, { enabled: Boolean(localId && connected) });
+  const usageSupported = useHostFeature(serverId, "providerUsageList");
+  const { view } = useProviderUsage(serverId, {
+    enabled: Boolean(localId && connected),
+  });
   if (!environment) return null;
   const usage =
     view.kind === "ready"
@@ -145,39 +153,32 @@ function useEnvironmentState(
   return {
     environment,
     usage,
+    usageSupported: Boolean(localId && usageSupported),
+    usageFailed: view.kind === "error" || (view.kind === "ready" && Boolean(view.refreshError)),
     ...classifyEnvironment({
       bound: Boolean(localId),
       excluded: isExcluded(settings, environment.serverId, provider.id),
       connected,
       needsSignIn: Boolean(usage?.authRecovery),
       entry,
-      settled: !catalog.isLoading && !catalog.isFetching,
+      settled: !catalog.isLoading,
     }),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Page
+// Details
 // ---------------------------------------------------------------------------
 
-export function ProviderDetailPage({ providerType }: { providerType: string }) {
-  if (!readExecutionInstallation())
-    return <Alert description="Provider pages need a configured installation." />;
-  return (
-    <View style={styles.page}>
-      <InstallationSettingsStatus>
-        <ProviderDetail providerType={providerType} />
-      </InstallationSettingsStatus>
-    </View>
-  );
-}
-
-function ProviderDetail({ providerType }: { providerType: string }) {
+/** Rendered inside the provider list, which already waits for installation settings. */
+export function ProviderDetail({ providerType }: { providerType: string }) {
   const { data, installation, save } = useInstallationSettings();
   const environments = useMemo(() => installation?.environments ?? [], [installation]);
   const reportConnectionLost = useConnectionLostReporter();
-  const change = useMutation({ mutationFn: save, onError: reportConnectionLost });
-  const changeRejection = hostRejection(change.error);
+  const change = useMutation({
+    mutationFn: save,
+    onError: reportConnectionLost,
+  });
   const definitions = useMemo(
     () =>
       (change.isPending ? change.variables?.settings.providerDefinitions : undefined) ??
@@ -185,13 +186,21 @@ function ProviderDetail({ providerType }: { providerType: string }) {
       null,
     [data, change.isPending, change.variables],
   );
+  const detection = useProviderDetection(environments);
   const family = useMemo(
-    () => groupInstallationProviders(definitions ?? []).find((entry) => entry.id === providerType),
-    [definitions, providerType],
+    () =>
+      groupInstallationProviders(definitions ?? [], "active", detection).find(
+        (entry) => entry.id === providerType,
+      ),
+    [definitions, providerType, detection],
   );
   const canRemove = useProviderRemovalCapability(environments);
   if (!data?.settings || !definitions)
-    return <Alert description="Complete shared provider migration to manage this provider." />;
+    return (
+      <View style={reservedLayout1}>
+        <SettingsStatusLine message="Loading provider settings..." />
+      </View>
+    );
   if (!family) {
     const removed = groupInstallationProviders(definitions, "removed").some(
       (entry) => entry.id === providerType,
@@ -200,24 +209,21 @@ function ProviderDetail({ providerType }: { providerType: string }) {
       <Alert
         description={
           removed
-            ? `${providerTypeLabel(providerType)} was removed. Restore it from Add provider in Accounts & profiles.`
-            : `${providerTypeLabel(providerType)} is not in this installation. Add it from Accounts & profiles.`
+            ? `${providerTypeLabel(
+                providerType,
+              )} was removed. Restore it from Add provider in Accounts & profiles.`
+            : `${providerTypeLabel(
+                providerType,
+              )} is not in this installation. Add it from Accounts & profiles.`
         }
       />
     );
   }
-  const snapshot = data as InstallationSettingsSnapshot & { settings: InstallationSettings };
+  const snapshot = data as InstallationSettingsSnapshot & {
+    settings: InstallationSettings;
+  };
   return (
-    <>
-      {changeRejection ? (
-        <Alert variant="error" description={toErrorMessage(changeRejection)} />
-      ) : null}
-      <ProviderEnabledCard
-        family={family}
-        snapshot={snapshot}
-        busy={change.isPending}
-        save={change.mutate}
-      />
+    <View style={styles.page}>
       <ConnectionsSection
         family={family}
         snapshot={snapshot}
@@ -236,49 +242,6 @@ function ProviderDetail({ providerType }: { providerType: string }) {
           saveAsync={change.mutateAsync}
         />
       ) : null}
-    </>
-  );
-}
-
-function ProviderEnabledCard({
-  family,
-  snapshot,
-  busy,
-  save,
-}: {
-  family: ProviderFamily;
-  snapshot: InstallationSettingsSnapshot & { settings: InstallationSettings };
-  busy: boolean;
-  save(update: InstallationSettingsUpdate): void;
-}) {
-  const toggle = useCallback(
-    (enabled: boolean) =>
-      save({
-        expectedRevision: snapshot.revision,
-        settings: {
-          providerDefinitions: snapshot.settings.providerDefinitions?.map((entry) =>
-            entry.providerType === family.id && !entry.removed
-              ? { ...entry, policy: { ...entry.policy, enabled } }
-              : entry,
-          ),
-        },
-      }),
-    [save, snapshot, family.id],
-  );
-  return (
-    <View style={[settingsStyles.card, styles.firstCard]} testID="provider-detail-enabled">
-      <View style={settingsStyles.row}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>Use {family.name}</Text>
-          <Text style={settingsStyles.rowHint}>Available for new chats in every environment</Text>
-        </View>
-        <Switch
-          value={family.enabled}
-          onValueChange={toggle}
-          disabled={busy}
-          accessibilityLabel={`Enable ${family.name} everywhere`}
-        />
-      </View>
     </View>
   );
 }
@@ -325,7 +288,10 @@ function ConnectionsSection({
         settings: {
           providerDefinitions: snapshot.settings.providerDefinitions?.map((provider) =>
             ids.has(provider.id)
-              ? { ...provider, policy: { ...provider.policy, label: name.trim() } }
+              ? {
+                  ...provider,
+                  policy: { ...provider.policy, label: name.trim() },
+                }
               : provider,
           ),
         },
@@ -415,6 +381,10 @@ function primaryDefinition(account: ProviderAccount, environments: InstallationE
   );
 }
 
+function isUsageValid(state: EnvironmentState | undefined): boolean {
+  return Boolean(state && state.kind !== "attention" && !state.usageFailed);
+}
+
 function ConnectionRow({
   account,
   snapshot,
@@ -445,7 +415,20 @@ function ConnectionRow({
   const devState = useEnvironmentState(provider, dev, snapshot.settings);
   const states = [hostState, devState].filter((state): state is EnvironmentState => !!state);
   const status = describeConnectionStatus(states);
-  const usage = states.find((state) => state.kind === "ready" && state.usage)?.usage;
+  const usageState = states.find((state) => state.kind !== "none" && state.kind !== "excluded");
+  const usageServerId = usageState?.environment.serverId;
+  const { usage, reservedWindows } = useRetainedUsage({
+    identity: JSON.stringify([
+      account.id,
+      provider.id,
+      usageServerId,
+      provider.bindings[usageServerId ?? ""],
+    ]),
+    supported: Boolean(usageState?.usageSupported),
+    valid: isUsageValid(usageState),
+    latest: usageState?.usage,
+  });
+  const usageSpace = useMemo(() => ({ minHeight: reservedWindows * 32 }), [reservedWindows]);
   const error = states.find((state) => state.error)?.error ?? null;
   const name = account.name === "Default connection" ? providerName(provider) : account.name;
   // Sign-ins run on Host; the Dev container receives access from there.
@@ -517,13 +500,15 @@ function ConnectionRow({
           />
         </View>
       </View>
-      {usage?.windows.length ? (
-        <View style={styles.usage} testID={`provider-connection-usage-${account.id}`}>
-          {usage.windows.map((window) => (
-            <ProviderUsageWindowBar key={window.id} window={window} />
-          ))}
-        </View>
-      ) : null}
+      <View style={usageSpace}>
+        {usage?.windows.length ? (
+          <View style={styles.usage} testID={`provider-connection-usage-${account.id}`}>
+            {usage.windows.map((window) => (
+              <ProviderUsageWindowBar key={window.id} window={window} />
+            ))}
+          </View>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -572,21 +557,13 @@ function ConnectionStatusLines({
       >
         {status}
       </Text>
-      {error ? (
-        <Text style={settingsStyles.rowHint} numberOfLines={2}>
-          {error}
-        </Text>
-      ) : null}
-      {delivery ? (
-        <Text style={settingsStyles.rowHint} testID={`provider-connection-keys-${accountId}`}>
-          {delivery}
-        </Text>
-      ) : null}
-      {signIns.length ? (
-        <Text style={settingsStyles.rowHint}>
-          {`${signIns.join(" · ")}. Codex keeps a separate sign-in in each environment.`}
-        </Text>
-      ) : null}
+      <SettingsStatusLine message={error} />
+      <SettingsStatusLine message={delivery} />
+      <SettingsStatusLine
+        message={
+          signIns.length ? `${signIns.join(" · ")}. Sign in separately in each environment.` : null
+        }
+      />
     </View>
   );
 }
@@ -729,7 +706,6 @@ function ApiKeysSheet({
     onError: reportConnectionLost,
   });
   const save = useCallback(() => saving.mutate(), [saving]);
-  const error = hostRejection(saving.error ?? clearing.error);
   const labelFor = (serverId: string) => {
     const environment = environments.find((entry) => entry.serverId === serverId);
     return environment ? environmentLabel(environment) : serverId;
@@ -740,11 +716,13 @@ function ApiKeysSheet({
         Save a key once. Vorteo stores it on Host and delivers it to every environment within a few
         seconds. Saved values are never shown again.
       </Text>
-      {error ? <Alert variant="error" description={toErrorMessage(error)} /> : null}
+
       {status?.conflicts.map((conflict) => (
         <Alert
           key={conflict.name}
-          description={`${conflict.name} has different values in ${conflict.serverIds.map(labelFor).join(" and ")}. Set it here to use one value everywhere.`}
+          description={`${conflict.name} has different values in ${conflict.serverIds
+            .map(labelFor)
+            .join(" and ")}. Set it here to use one value everywhere.`}
         />
       ))}
       {status?.secrets.length ? (
@@ -753,7 +731,9 @@ function ApiKeysSheet({
             <SecretRow
               key={secret.name}
               name={secret.name}
-              detail={`${secret.last4 ? `Ends in ${secret.last4} · ` : ""}${secret.source === "imported" ? "Imported" : "Saved"} ${new Date(secret.updatedAt).toLocaleString()}`}
+              detail={`${secret.last4 ? `Ends in ${secret.last4} · ` : ""}${
+                secret.source === "imported" ? "Imported" : "Saved"
+              } ${new Date(secret.updatedAt).toLocaleString()}`}
               first={index === 0}
               busy={clearing.isPending}
               onClear={clearing.mutate}
@@ -958,11 +938,7 @@ function EnvironmentAccessRow({
         <View style={settingsStyles.rowContent}>
           <Text style={settingsStyles.rowTitle}>{location}</Text>
           <Text style={settingsStyles.rowHint}>{state?.label ?? "Checking"}</Text>
-          {state?.error && !excluded ? (
-            <Text style={settingsStyles.rowHint} numberOfLines={3}>
-              {state.error}
-            </Text>
-          ) : null}
+          <SettingsStatusLine message={!excluded ? state?.error : null} />
         </View>
         <View style={styles.controls}>
           {localId ? (
@@ -1022,6 +998,11 @@ function ProviderConnectionActions({
     },
     onError: reportConnectionLost,
   });
+  const toast = useToast();
+  useEffect(() => {
+    if (restoration.isSuccess)
+      toast.show("Connection restored. Sign in if needed, then turn it back on.");
+  }, [restoration.isSuccess, toast]);
   const { mutate: restoreBinding } = restoration;
   const restore = useCallback(() => restoreBinding(), [restoreBinding]);
   const removal = useMutation({
@@ -1070,43 +1051,37 @@ function ProviderConnectionActions({
   const { mutate } = removal;
   const remove = useCallback(() => mutate(), [mutate]);
   const error = hostRejection(removal.error ?? restoration.error);
-  if (!canRemove && !removed && !error && !restoration.isSuccess) return null;
+  if (!canRemove && !removed) return null;
   return (
-    <View style={styles.removal}>
-      {removed && supported ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!connected || restoration.isPending}
-          onPress={restore}
-          testID={`shared-provider-restore-${provider.id}-${environment.serverId}`}
-        >
-          {restoration.isPending ? "Restoring" : `Restore in ${location}`}
-        </Button>
-      ) : null}
-      {restoration.isSuccess ? (
-        <Text style={settingsStyles.rowHint}>
-          Connection restored. Sign in if needed, then turn it back on above.
-        </Text>
-      ) : null}
-      {canRemove && supported ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!connected || removal.isPending}
-          onPress={remove}
-          testID={`shared-provider-remove-${provider.id}-${environment.serverId}`}
-        >
-          {removal.isPending ? "Removing" : `Remove from ${location}`}
-        </Button>
-      ) : null}
-      {error ? (
-        <Alert
-          variant="error"
-          testID={`shared-provider-remove-error-${provider.id}-${environment.serverId}`}
-          description={toErrorMessage(error)}
-        />
-      ) : null}
+    <View>
+      <SettingsStatusLine
+        testID={`shared-provider-remove-error-${provider.id}-${environment.serverId}`}
+        message={error ? toErrorMessage(error) : null}
+      />
+      <View style={styles.removal}>
+        {removed && supported ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!connected || restoration.isPending}
+            onPress={restore}
+            testID={`shared-provider-restore-${provider.id}-${environment.serverId}`}
+          >
+            {restoration.isPending ? "Restoring" : `Restore in ${location}`}
+          </Button>
+        ) : null}
+        {canRemove && supported ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!connected || removal.isPending}
+            onPress={remove}
+            testID={`shared-provider-remove-${provider.id}-${environment.serverId}`}
+          >
+            {removal.isPending ? "Removing" : `Remove from ${location}`}
+          </Button>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -1132,8 +1107,16 @@ function ProviderProfiles({
   // Profiles read models from whichever environment has this provider ready.
   const target =
     selectProfileCatalogSources([
-      { serverId: hostId, entries: hostCatalog.entries, providers: hostConfig?.providers },
-      { serverId: devId, entries: devCatalog.entries, providers: devConfig?.providers },
+      {
+        serverId: hostId,
+        entries: hostCatalog.entries,
+        providers: hostConfig?.providers,
+      },
+      {
+        serverId: devId,
+        entries: devCatalog.entries,
+        providers: devConfig?.providers,
+      },
     ]).get(providerType) ?? (hostId ? { serverId: hostId, provider: providerType } : null);
   if (!target) return null;
   return <SharedProviderSection serverId={target.serverId} provider={target.provider} />;
@@ -1163,12 +1146,15 @@ function RemoveProviderRow({
       settings: {
         providerDefinitions: snapshot.settings.providerDefinitions?.map((entry) =>
           entry.providerType === family.id
-            ? { ...entry, removed: true, policy: { ...entry.policy, enabled: false } }
+            ? {
+                ...entry,
+                removed: true,
+                policy: { ...entry.policy, enabled: false },
+              }
             : entry,
         ),
       },
     });
-    returnFromSettings({ kind: "provider", providerType: family.id });
   }, [family, snapshot, saveAsync]);
   const onPress = useCallback(() => {
     // The page's save mutation already reports a failed removal.
@@ -1196,12 +1182,28 @@ function RemoveProviderRow({
 
 const styles = StyleSheet.create((theme) => ({
   page: { gap: theme.spacing[2] },
-  firstCard: { marginBottom: theme.spacing[4] },
-  connection: { flexDirection: "column", alignItems: "stretch", gap: theme.spacing[2] },
-  connectionHeading: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
-  controls: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
+  connection: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: theme.spacing[2],
+  },
+  connectionHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  controls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
   usage: { gap: theme.spacing[2] },
-  removal: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: theme.spacing[2] },
+  removal: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
   menuButton: {
     width: 28,
     height: 28,
@@ -1219,3 +1221,5 @@ const styles = StyleSheet.create((theme) => ({
   removeRowHovered: { opacity: 0.8 },
   removeText: { color: theme.colors.destructive, fontSize: theme.fontSize.sm },
 }));
+
+const reservedLayout1 = { minHeight: 240 } as const;

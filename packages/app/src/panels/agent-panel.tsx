@@ -1,3 +1,5 @@
+import { AgentLoadRecovery, AgentProviderRecoveryFooter } from "@/profile-switch/load-recovery";
+import { useHostFeature } from "@/runtime/host-features";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardDock } from "@/components/keyboard-dock";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
@@ -100,6 +102,7 @@ interface ChatAgentStateShape {
   serverId: string | null;
   id: string | null;
   provider?: Agent["provider"];
+  providerUnavailable?: boolean;
   status: Agent["status"] | null;
   cwd: string | null;
   workspaceId?: string;
@@ -159,6 +162,7 @@ function selectChatAgentState(
     serverId: agent.serverId,
     id: agent.id,
     provider: agent.provider,
+    providerUnavailable: agent.providerUnavailable,
     status: agent.status,
     cwd: agent.cwd,
     workspaceId: agent.workspaceId,
@@ -186,6 +190,7 @@ function buildChatAgentFromState(
     serverId: state.serverId,
     id: state.id,
     provider: state.provider,
+    providerUnavailable: state.providerUnavailable,
     status: state.status,
     cwd: state.cwd,
     workspaceId: state.workspaceId,
@@ -200,13 +205,33 @@ function buildChatAgentFromState(
   };
 }
 
-function AgentLoadErrorView({ message, onRetry }: { message: string; onRetry: () => void }) {
+function AgentLoadErrorView({
+  message,
+  onRetry,
+  serverId,
+  agentId,
+}: {
+  message: string;
+  onRetry: () => void;
+  serverId: string;
+  agentId?: string;
+}) {
+  const canRecover = useHostFeature(serverId, "agentProviderRecovery");
+  const providerUnavailable =
+    /references unavailable provider|provider .* (?:is disabled|is not available)/i.test(message);
   const { t } = useTranslation();
   return (
     <View style={styles.container} testID="agent-load-error">
       <View style={styles.errorContainer}>
-        <Text style={styles.errorText}>{t("agentPanel.states.failedToLoad")}</Text>
-        <Text style={styles.statusText}>{message}</Text>
+        <Text style={styles.errorText}>
+          {providerUnavailable
+            ? t("agentPanel.states.providerUnavailable")
+            : t("agentPanel.states.failedToLoad")}
+        </Text>
+        {providerUnavailable ? null : <Text style={styles.statusText}>{message}</Text>}
+        {canRecover && agentId ? (
+          <AgentLoadRecovery serverId={serverId} agentId={agentId} onRecovered={onRetry} />
+        ) : null}
         <View style={styles.errorAction}>
           <Button size="sm" variant="secondary" onPress={onRetry} testID="agent-load-error-retry">
             {t("common.actions.retry")}
@@ -222,6 +247,8 @@ function renderChatAgentNonReadyView(args: {
   effectiveAgent: AgentScreenAgent | null;
   t: TFunction;
   onRetryLoad: () => void;
+  serverId: string;
+  agentId?: string;
 }): React.ReactElement | null {
   const { viewState, effectiveAgent, t, onRetryLoad } = args;
   if (viewState.tag === "not_found") {
@@ -234,7 +261,14 @@ function renderChatAgentNonReadyView(args: {
     );
   }
   if (viewState.tag === "error") {
-    return <AgentLoadErrorView message={viewState.message} onRetry={onRetryLoad} />;
+    return (
+      <AgentLoadErrorView
+        message={viewState.message}
+        onRetry={onRetryLoad}
+        serverId={args.serverId}
+        agentId={args.agentId}
+      />
+    );
   }
   if (viewState.tag === "boot" || !effectiveAgent) {
     return (
@@ -632,7 +666,8 @@ function AgentPanelBody({
     if (!client || !isConnected || !hasSession) {
       return;
     }
-    if (lookupState.tag === "loading" || lookupState.tag === "not_found") {
+    // Keep a failed lookup stable while the owner chooses recovery or Retry.
+    if (lookupState.tag !== "idle") {
       return;
     }
 
@@ -681,7 +716,14 @@ function AgentPanelBody({
   }
 
   if (lookupState.tag === "error") {
-    return <AgentLoadErrorView message={lookupState.message} onRetry={retryAgentLookup} />;
+    return (
+      <AgentLoadErrorView
+        message={lookupState.message}
+        onRetry={retryAgentLookup}
+        serverId={serverId}
+        agentId={agentId}
+      />
+    );
   }
 
   const agent: AgentScreenAgent | null =
@@ -690,6 +732,7 @@ function AgentPanelBody({
           serverId: agentState.serverId,
           id: agentState.id,
           provider: agentState.provider,
+          providerUnavailable: agentState.providerUnavailable,
           status: agentState.status,
           cwd: agentState.cwd,
           workspaceId: agentState.workspaceId,
@@ -1056,6 +1099,8 @@ function ChatAgentContent({
     effectiveAgent,
     t,
     onRetryLoad: retryAgentLoad,
+    serverId,
+    agentId,
   });
   if (nonReadyView) return nonReadyView;
   invariant(agentId, "agent id is defined when agent content is ready");
@@ -1205,30 +1250,39 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     ],
   );
   const composerSection = useMemo(
-    () => (
-      <RenderProfile id={`AgentComposerSection:${agentId}`}>
-        <AgentComposerSection
-          agentId={agentId}
+    () =>
+      effectiveAgent.providerUnavailable && !agentState.archivedAt ? (
+        <AgentProviderRecoveryFooter
           serverId={serverId}
-          isPaneFocused={isPaneFocused}
-          isArchivingCurrentAgent={isArchivingCurrentAgent}
-          archivedAt={agentState.archivedAt}
-          cwd={cwd}
-          isSubmitLoading={false}
-          agentInputDraft={agentInputDraft}
-          onAttentionInputFocus={onAttentionInputFocus}
-          onAttentionPromptSend={onAttentionPromptSend}
-          onComposerHeightChange={handleComposerHeightChange}
-          onMessageSent={handleMessageSent}
+          agentId={agentId}
+          onRecovered={retryTimelineSync}
         />
-      </RenderProfile>
-    ),
+      ) : (
+        <RenderProfile id={`AgentComposerSection:${agentId}`}>
+          <AgentComposerSection
+            agentId={agentId}
+            serverId={serverId}
+            isPaneFocused={isPaneFocused}
+            isArchivingCurrentAgent={isArchivingCurrentAgent}
+            archivedAt={agentState.archivedAt}
+            cwd={cwd}
+            isSubmitLoading={false}
+            agentInputDraft={agentInputDraft}
+            onAttentionInputFocus={onAttentionInputFocus}
+            onAttentionPromptSend={onAttentionPromptSend}
+            onComposerHeightChange={handleComposerHeightChange}
+            onMessageSent={handleMessageSent}
+          />
+        </RenderProfile>
+      ),
     [
       agentId,
       serverId,
       isPaneFocused,
       isArchivingCurrentAgent,
       agentState.archivedAt,
+      effectiveAgent.providerUnavailable,
+      retryTimelineSync,
       cwd,
       agentInputDraft,
       onAttentionInputFocus,
@@ -1424,6 +1478,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
   return (
     <AgentStreamView
       showTaskCards
+      readOnly={agent.providerUnavailable}
       composer={composer}
       ref={streamViewRef}
       agentId={agent.id}

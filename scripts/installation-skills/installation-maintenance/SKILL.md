@@ -9,7 +9,7 @@ Use the installed client command below. It carries a scoped agent credential. It
 
 `INSTALLATION_CLIENT_COMMAND`
 
-Only the builds coordinator thread runs this client's `request-*` commands; they refuse without `VORTEO_BUILDS=1`. Every other agent hands its branch to the builds coordinator instead (AGENTS.md, Builds coordinator).
+Only the builds coordinator thread runs this client's `request-*` and `management-cancel` commands; they refuse without `VORTEO_BUILDS=1`. Every other agent hands its branch to the builds coordinator instead (AGENTS.md, Builds coordinator).
 
 ## Who approves a request
 
@@ -32,6 +32,14 @@ If a Host request stays `pending` after preparation completes, something require
 ### When a request needs an owner-authorized decision
 
 If the owner has delegated approvals to an installation lead, give the lead the request ID, the exact `approvalUrl` and a short description of the target and interruption; the lead decides with the owner's authority. Otherwise present them to the owner, whose click on the matching button in Installation controls is the approval. Do not require a verbal reply before or after it. Observe the recorded decision and continue automatically when approved. Only the delegated lead approves on the owner's behalf. A changed source, plan or request revision needs its own approval.
+
+## Delegated installation management
+
+When `capabilities.installationManagement.enabled` is true, the owner has explicitly enabled management for the authenticated Host client. An older full maintenance grant does not confer this permission. Use `management-status` to read the current authority revision and exact retained request identities. To cancel, write a private JSON file with a fresh `receiptId`, the returned `authorityRevision`, and the selected request's `kind`, `id`, `revision` and `jobSha256`; submit it once with `management-cancel --request-file <file>`.
+
+Read `management-receipt <receipt-id>` and the retained request after a lost response. An uncertain receipt requires observation, never replay. Cancellation reuses the existing lifecycle checks and cannot stop claimed execution. It does not authorize resubmitting a manual-review request as automatically approved. Preserve the owner's manual-review constraint on replacements.
+
+The management surface cannot approve manual-review work, grant itself permission, or manage owner credentials and account connections. Use existing automatic admission for supported fresh maintenance covered by the owner's grant. If management is unavailable or disabled, prepare the supported upgrade or exact owner opt-in; do not use an owner password, browser session or direct journal edit. Enrolled installations require their own exact scope and never inherit a legacy grant.
 
 ## Restart requests
 

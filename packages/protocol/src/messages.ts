@@ -600,6 +600,7 @@ const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
   cachedInputTokens: z.number().optional(),
   outputTokens: z.number().optional(),
   totalCostUsd: z.number().optional(),
+  estimatedCostUsd: z.number().optional(),
   contextWindowMaxTokens: z.number().optional(),
   contextWindowUsedTokens: z.number().optional(),
 });
@@ -2212,6 +2213,9 @@ export const AgentTimelineListPromptsRequestMessageSchema = z.object({
   type: z.literal("agent.timeline.list_prompts.request"),
   agentId: z.string(),
   requestId: z.string(),
+  // COMPAT(agentTimelinePromptIndexAfterSeq): added in v0.11.0, send only to daemons that
+  // advertise the capability; older daemons drop it and return the complete index.
+  afterSeq: z.number().int().nonnegative().optional(),
 });
 
 export const ProviderSubagentListRequestMessageSchema = z.object({
@@ -4059,6 +4063,8 @@ export const ServerInfoStatusPayloadSchema = z
         rewind: z.boolean().optional(),
         // COMPAT(agentTimelinePromptIndex): added in v0.2.X, drop the gate when floor >= v0.2.X.
         agentTimelinePromptIndex: z.boolean().optional(),
+        // COMPAT(agentTimelinePromptIndexAfterSeq): added in v0.11.0, remove gate after 2027-04-29.
+        agentTimelinePromptIndexAfterSeq: z.boolean().optional(),
         // COMPAT(agentHistorySearch): added in v0.3.0, remove gate after 2027-02-07.
         agentHistorySearch: z.boolean().optional(),
         // COMPAT(checkoutRefresh): added in v0.1.86, remove gate after 2026-11-29.
@@ -4106,6 +4112,8 @@ export const ServerInfoStatusPayloadSchema = z
         codexAccountCreation: z.boolean().optional(),
         claudeAccountCreation: z.boolean().optional(),
         claudeFullSignIn: z.boolean().optional(),
+        // COMPAT(codexInstallationSignIn): receives Host-owned Codex sign-in projections.
+        codexInstallationSignIn: z.boolean().optional(),
         // COMPAT(providerSecretDelivery): receives coordinator-held provider API keys and tokens.
         providerSecretDelivery: z.boolean().optional(),
         providerCredentialRemoval: z.boolean().optional(),
@@ -4141,6 +4149,8 @@ export const ServerInfoStatusPayloadSchema = z
         coordinatorBootstrapRecoveryBootPlan: z.boolean().optional(),
         coordinatorBootstrapAutomaticReconciliation: z.boolean().optional(),
         coordinatorBootstrapAutomaticStatus: z.boolean().optional(),
+        // COMPAT(coordinatorDispatchStatus): added 2026-11-02; failure, readiness and stall views.
+        coordinatorBootstrapDispatchStatus: z.boolean().optional(),
         coordinatorBootstrapAuthenticatedSubmission: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
         agentThinkingUpdate: z.boolean().optional(),
@@ -4249,6 +4259,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentConfigApply: z.boolean().optional(),
         // COMPAT(agentProfileSwitch): added in Vorteo 2026-10, remove gate after 2027-04-22.
         agentProfileSwitch: z.boolean().optional(),
+        // COMPAT(agentProviderRecovery): added in Vorteo 2026-10, remove gate after 2027-04-28.
+        agentProviderRecovery: z.boolean().optional(),
         // COMPAT(localProjectConfig): added in Vorteo 2026-10, remove gate after 2027-04-22.
         // The daemon merges untracked paseo.local.json script entries over paseo.json.
         localProjectConfig: z.boolean().optional(),

@@ -20,6 +20,8 @@ import {
   bootstrapStatus,
   bootstrapAutomaticDetail,
   bootstrapRequiresOwnerAction,
+  bootstrapDispatchDetail,
+  bootstrapRecentDispatchFailure,
   currentBootstrapRequests,
   preclaimRecoveryStatus,
   preclaimRecoveryNeedsAttention,
@@ -365,8 +367,11 @@ function CoordinatorStatus({
   checking: boolean;
 }) {
   const automaticDetail = bootstrapAutomaticDetail(request);
+  const dispatchDetail = bootstrapDispatchDetail(request);
   const failed =
     request.execution?.stage === "recovery_required" ||
+    request.dispatchStatus?.failure !== undefined ||
+    request.dispatchStatus?.stalled !== undefined ||
     (request.automaticStatus !== undefined && bootstrapRequiresOwnerAction(request));
   return (
     <>
@@ -378,6 +383,15 @@ function CoordinatorStatus({
         />
       </View>
       <CoordinatorElapsed request={request} />
+      {dispatchDetail ? (
+        <Text
+          accessibilityLiveRegion="polite"
+          style={styles.text}
+          testID="coordinator-dispatch-detail"
+        >
+          {dispatchDetail}
+        </Text>
+      ) : null}
       {automaticDetail ? (
         <Text accessibilityLiveRegion="polite" style={styles.text}>
           {automaticDetail}
@@ -543,7 +557,9 @@ function BootstrapRequestCard({
 export function BootstrapBanner({ model }: { model: BootstrapPanelModel }) {
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const router = useRouter();
-  const request = currentBootstrapRequests(state.requests).find(bootstrapNeedsAttention);
+  const request = currentBootstrapRequests(state.requests).find(
+    (item) => bootstrapNeedsAttention(item) || bootstrapRecentDispatchFailure(item),
+  );
   const requestId = request?.id;
   const open = useCallback(
     () =>
@@ -558,13 +574,13 @@ export function BootstrapBanner({ model }: { model: BootstrapPanelModel }) {
     <View testID="coordinator-bootstrap-banner">
       <MaintenanceNotice
         needsAction={bootstrapRequiresOwnerAction(request) || !!state.error}
-        revision={`${request.id}:${request.revision}:${request.status}:${request.execution?.stage ?? ""}:${request.automaticStatus?.state ?? ""}`}
+        revision={`${request.id}:${request.revision}:${request.status}:${request.execution?.stage ?? ""}:${request.automaticStatus?.state ?? ""}:${request.dispatchStatus?.stalled ? "stalled" : ""}`}
         title="Coordinator update"
         description={
           state.error ??
           (state.busy
             ? "Host is processing your decision and checking the prepared update. This can take several minutes; do not submit it again."
-            : bootstrapStatus(request))
+            : (bootstrapDispatchDetail(request) ?? bootstrapStatus(request)))
         }
         reviewLabel="Review update"
         onReview={open}

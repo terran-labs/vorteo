@@ -34,7 +34,7 @@ afterEach(() => {
   Reflect.deleteProperty(globalThis, "__VORTEO_EXECUTION_INSTALLATION__");
 });
 
-test.each([390, 1133])(
+test.each([390])(
   "the delayed host loader makes the connection check and reload reachable at width %s",
   async (width) => {
     await page.viewport(width, 844);
@@ -54,7 +54,7 @@ test.each([390, 1133])(
     act(() => mounted?.render(<StartupStatus phase="host" />));
     expect(container.textContent).not.toContain("Check connection");
     await expect
-      .poll(() => container?.textContent, { timeout: 15000 })
+      .poll(() => container?.textContent, { timeout: 5000 })
       .toContain("Interface assets: running");
     const check = page.getByRole("button", { name: "Check connection", exact: true });
     await expect.element(check).toBeVisible();

@@ -251,6 +251,11 @@ export interface AgentUsage {
   cachedInputTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
+  /**
+   * Estimated session cost from token counts and list prices, for providers that report no
+   * cost. Clients show it as an estimate when totalCostUsd is absent.
+   */
+  estimatedCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
 }
@@ -842,6 +847,8 @@ export interface AgentSession {
   interrupt(): Promise<void>;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
+  /** Hosted-only automatic release; rejects unless the host atomically admits an idle close. */
+  closeIfIdle?(): Promise<void>;
   /**
    * Runtime-only: true while the provider runs outside this worker, in the durable session host,
    * and this worker is attached. A worker restart then leaves its turn running.

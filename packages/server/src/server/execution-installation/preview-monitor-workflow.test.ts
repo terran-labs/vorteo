@@ -2,6 +2,7 @@ import { createInstallationServer } from "./server.js";
 import { hashDaemonPassword } from "../auth.js";
 import pino from "pino";
 import { randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { expect, test, vi } from "vitest";
 import {
   RestartJobSchema,
@@ -12,7 +13,12 @@ import type {
   PreviewMonitorPlan,
   PreviewMonitorJob,
 } from "@getpaseo/protocol/preview-monitor-maintenance";
-import { InstallationRestarts, type RestartExecutor, type RestartJournal } from "./restarts.js";
+import {
+  InstallationRestarts,
+  type RestartExecutor,
+  type RestartJournal,
+  type RestartApprovalPolicy,
+} from "./restarts.js";
 import { parseLifecycleJournal, type LifecycleJob } from "./lifecycle-journal.js";
 import { assertFrozenCoordinatorIdle } from "./coordinator-bootstrap.js";
 const plan = (): PreviewMonitorPlan => ({
@@ -27,7 +33,7 @@ const plan = (): PreviewMonitorPlan => ({
   expected: { sha256: "d".repeat(64), uid: 0, gid: 0, mode: 0o755 },
   ancestrySha256: "e".repeat(64),
 });
-function fixture(extras: Partial<RestartExecutor> = {}) {
+function fixture(extras: Partial<RestartExecutor> = {}, policy: RestartApprovalPolicy = {}) {
   let records: LifecycleJob[] = [];
   const journal: RestartJournal = {
     read: () => structuredClone(records),
@@ -45,6 +51,7 @@ function fixture(extras: Partial<RestartExecutor> = {}) {
   };
   const queue = new InstallationRestarts(journal, executor, Date.now, {
     hostRequestsAfter: "2026-01-01T00:00:00.000Z",
+    ...policy,
   });
   return {
     queue,
@@ -278,7 +285,7 @@ test("real HTTP routes isolate Host request access from owner-only exact buttons
     body?: unknown,
     origin = "https://owner.example.test",
   ) =>
-    fetch(`http://127.0.0.1:${address.port}/api/installation/${route}`, {
+    requestWithHost(`http://127.0.0.1:${address.port}/api/installation/${route}`, {
       method: body === undefined ? "GET" : "POST",
       headers: {
         ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -344,3 +351,56 @@ test("real HTTP routes isolate Host request access from owner-only exact buttons
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("delegated monitor replacement rechecks authority after asynchronous plan validation", async () => {
+  let activation: string | null = "2026-01-01T00:00:00.000Z";
+  let validations = 0;
+  const f = fixture(
+    {
+      validateMonitorPlan: async () => {
+        if (++validations === 2) activation = null;
+      },
+    },
+    {
+      maintenanceRequestsAfter: () => activation,
+      authority: () => "a".repeat(64),
+      cancellationDelayMs: 0,
+    },
+  );
+  await f.prepare();
+  await f.queue.drain();
+  expect(f.install).not.toHaveBeenCalled();
+  expect(f.queue.listMonitors()[0]?.status).toBe("rejected");
+  expect(f.queue.listMonitors()[0]).not.toHaveProperty("delegatedApproval");
+});
+
+// Node fetch does not preserve a supplied Host on every supported runtime, so the request
+// would reach the loopback authority and fail its local origin check. These routes need the
+// configured public authority on the wire (as in server.e2e.test.ts).
+function requestWithHost(
+  url: string,
+  input: { method: string; headers: Record<string, string>; body?: string },
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(
+      url,
+      { method: input.method, headers: input.headers },
+      (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        incoming.on("error", reject);
+        incoming.on("end", () => {
+          const headers = new Headers();
+          for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+            headers.append(incoming.rawHeaders[index]!, incoming.rawHeaders[index + 1]!);
+          }
+          const status = incoming.statusCode ?? 500;
+          const body = [204, 304].includes(status) ? null : Buffer.concat(chunks);
+          resolve(new Response(body, { status, headers }));
+        });
+      },
+    );
+    outgoing.on("error", reject);
+    outgoing.end(input.body);
+  });
+}

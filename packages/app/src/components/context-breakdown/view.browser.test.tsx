@@ -5,6 +5,7 @@ import type { AgentContextBreakdown } from "@getpaseo/protocol/agent-context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n as testI18n } from "@/i18n/i18next";
 import type { ContextBreakdownView } from "./use-context-breakdown";
+import type { SessionCost } from "@/components/context-window-meter.utils";
 
 // Load translations so rows expose their real labels.
 void testI18n;
@@ -58,7 +59,12 @@ afterEach(() => {
   }
 });
 
-function mount(view: ContextBreakdownView, interactive = true, loading = false) {
+function mount(
+  view: ContextBreakdownView,
+  interactive = true,
+  loading = false,
+  sessionCost: SessionCost | null = { amount: "$4.20", estimated: false },
+) {
   const container = document.createElement("div");
   container.style.width = "320px";
   container.style.padding = "16px";
@@ -72,7 +78,7 @@ function mount(view: ContextBreakdownView, interactive = true, loading = false) 
         percentage={14}
         usedTokens={140_500}
         maxTokens={1_000_000}
-        sessionCost="$4.20"
+        sessionCost={sessionCost}
         interactive={interactive}
       />,
     ),
@@ -101,6 +107,12 @@ describe("ContextBreakdown", () => {
     expect(view.getByText("Free space")).toBeTruthy();
     expect(view.getByText("This provider reports totals only.")).toBeTruthy();
     expect(container.querySelectorAll("circle")).toHaveLength(3);
+  });
+
+  it("labels a reported cost plainly and an estimated cost as an estimate", () => {
+    expect(mount({ kind: "totals" }).view.getByText("Session cost $4.20")).toBeTruthy();
+    const estimated = mount({ kind: "totals" }, true, false, { amount: "$1.48", estimated: true });
+    expect(estimated.view.getByText("Estimated session cost ~$1.48")).toBeTruthy();
   });
 
   it("shows one loading pulse instead of rows while anything loads", () => {

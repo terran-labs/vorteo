@@ -28,6 +28,17 @@ export function formatResetLabel(iso: string | null | undefined): string | null 
   return rel === "now" ? "resetting now" : `resets ${rel}`;
 }
 
+/** "in 6 days", "in 9h", "in 12m" or "now"; null when the time is unreadable. */
+export function formatResetIn(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const rel = relativeDuration(iso);
+  if (!rel) return null;
+  if (rel === "now") return "now";
+  const days = /^(\d+)d$/.exec(rel)?.[1];
+  if (days) return `in ${days} ${days === "1" ? "day" : "days"}`;
+  return `in ${rel}`;
+}
+
 export function formatAgo(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const diffMs = Date.now() - new Date(iso).getTime();

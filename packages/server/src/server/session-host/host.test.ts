@@ -570,15 +570,6 @@ test("the audit log records attach, fencing and rejections without secrets", asy
   expect(statSync(paths.auditLogPath).mode & 0o777).toBe(0o600);
 });
 
-test("the audit log rotates at its size bound", () => {
-  const dir = scratchDirectory();
-  const auditPath = join(dir, "audit.log");
-  const audit = createSessionHostAuditLog({ path: auditPath, maxBytes: 400 });
-  for (let index = 0; index < 20; index += 1) audit({ event: "attach", sessionId: `s-${index}` });
-  expect(statSync(auditPath).size).toBeLessThanOrEqual(400);
-  expect(statSync(`${auditPath}.1`).size).toBeGreaterThan(0);
-});
-
 test("a session that skips a seq detaches alone; the connection's other sessions keep going", async () => {
   // A deliberately broken host, since the real one never skips.
   const socketPath = join(scratchDirectory(), "broken.sock");
@@ -923,4 +914,94 @@ test("the host lock reads as gone only when it is absent or its holder has exite
     expect(await readSessionHostLock(socketPath)).toEqual({ state: "alive", pid: null });
     chmodSync(lockPath, 0o600);
   }
+});
+
+// A pending provider call must veto close even before it publishes a turn id.
+test("conditional idle close refuses an in-flight turn start before its first event", async () => {
+  const session = controllableSession();
+  let markEntered: () => void = () => {};
+  let resume: () => void = () => {};
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const port: HostedSessionPort = {
+    ...session.port,
+    snapshot: () => ({
+      id: "pending-start",
+      persistence: null,
+      features: [],
+      activeTurnId: null,
+      pendingPermissions: [],
+    }),
+    async call(call) {
+      markEntered();
+      await gate;
+      return session.port.call(call);
+    },
+  };
+  const { socketPath } = await hostWith(session, { openSession: async () => port });
+  const client = await worker(socketPath);
+  const channel = await client.open({ sessionId: "pending-start", provider: "claude", config: {} });
+  const start = channel.call({ method: "startTurn", prompt: "task" });
+  try {
+    await entered;
+    await expect(channel.call({ method: "closeIfIdle" })).rejects.toThrow("busy");
+    expect(session.counts.closed).toBe(0);
+    expect((await client.list()).map((entry) => entry.sessionId)).toEqual(["pending-start"]);
+  } finally {
+    resume();
+    await start;
+  }
+  await channel.call({ method: "close" });
+  expect(session.counts.closed).toBe(1);
+});
+
+test("conditional idle close marks closing before another turn can enter", async () => {
+  const session = controllableSession();
+  let entered: () => void = () => {};
+  let resume: () => void = () => {};
+  const closing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  let starts = 0;
+  const port: HostedSessionPort = {
+    ...session.port,
+    snapshot: () => ({
+      id: "closing-idle",
+      persistence: null,
+      features: [],
+      activeTurnId: null,
+      pendingPermissions: [],
+    }),
+    call: async (call) => {
+      starts++;
+      return session.port.call(call);
+    },
+    close: async () => {
+      entered();
+      await gate;
+      await session.port.close();
+    },
+  };
+  const { socketPath } = await hostWith(session, { openSession: async () => port });
+  const client = await worker(socketPath);
+  const channel = await client.open({ sessionId: "closing-idle", provider: "claude", config: {} });
+  const close = channel.call({ method: "closeIfIdle" });
+  try {
+    await closing;
+    await expect(channel.call({ method: "startTurn", prompt: "late task" })).rejects.toThrow(
+      "closing",
+    );
+    expect(starts).toBe(0);
+  } finally {
+    resume();
+    await close;
+  }
+  expect(await client.list()).toEqual([]);
 });

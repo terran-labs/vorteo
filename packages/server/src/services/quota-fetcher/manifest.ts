@@ -73,6 +73,7 @@ export function createProviderUsageFetchers(
           displayName: configured?.label,
           strictClaudeHome: claudeHome !== undefined,
           signIn: claudeSignInMode(configured?.env),
+          limitObservations: options.claudeLimitObservations,
         }),
       ];
     }
@@ -102,6 +103,7 @@ export function createProviderUsageFetchers(
           claudeHome: provider.env?.CLAUDE_CONFIG_DIR,
           strictClaudeHome: true,
           signIn: claudeSignInMode(provider.env),
+          limitObservations: options.claudeLimitObservations,
         }),
       );
       continue;

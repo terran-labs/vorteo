@@ -62,6 +62,8 @@ export interface SettingsScrollRequest {
   pane: string | null;
   entry: ResolvedSettingsEntry | null;
   animated: boolean;
+  /** A row's DOM id inside the pane, for items a deep link opens in place. Web only. */
+  anchorId?: string | null;
   nonce: number;
 }
 
@@ -94,8 +96,7 @@ const JUMP_INSET = 16;
 /** A programmatic scroll is over once no scroll event arrives for this long. */
 const SCROLL_SETTLE_MS = 150;
 const MAX_RESULTS_SHOWN = 8;
-/** How long a jump target stays pinned while panes above it load. */
-const PIN_MS = 3000;
+const ROW_WAIT_MS = 3000;
 
 export interface SettingsSearchControls {
   query: string;
@@ -129,6 +130,12 @@ function sectionDomId(section: SettingsSectionId): string {
   return `settings-page-section-${section}`;
 }
 
+/** The row a request lands on inside its pane, on web, once it has rendered. */
+function requestRow(target: SettingsScrollRequest): HTMLElement | null {
+  if (target.anchorId) return document.getElementById(target.anchorId);
+  return target.entry ? findSettingRow(target.entry.pane, target.entry.label) : null;
+}
+
 interface Box {
   y: number;
   height: number;
@@ -139,10 +146,7 @@ interface Box {
  * section in view, jumps scroll instead of navigating, and sections below the
  * target mount progressively so the first one appears without waiting on all.
  *
- * Section heights change as their data loads. The page keeps the reader's
- * place by tracking the top of the section they are reading and scrolling by
- * however far it moves, so panes above resolving their data (even several at
- * once) never shove the content under the cursor.
+ * Native scroll anchoring preserves the reader's position as content loads.
  */
 export function SettingsScrollPage({
   sections,
@@ -166,14 +170,29 @@ export function SettingsScrollPage({
   const programmatic = useRef(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pending = useRef<SettingsScrollRequest | null>(request);
+  const paneArrival = useRef<SettingsScrollRequest | null>(null);
   const activeSection = useRef<SettingsSectionId | null>(null);
-  const pinned = useRef<{ request: SettingsScrollRequest; until: number } | null>(null);
-  /** The section the reader is in and where its top sat when last measured. */
-  const anchor = useRef<{ section: SettingsSectionId; y: number } | null>(null);
-  /** Where the page last scrolled itself, to tell its own scrolls from the reader's. */
-  const ownScrollY = useRef<number | null>(null);
   const [viewport, setViewport] = useState(0);
   const searching = query.trim().length > 0;
+  const previousSearch = useRef(searching);
+  const waitingForLayout = useRef(false);
+  const rowDeadline = useRef(Date.now() + ROW_WAIT_MS);
+  const browserAnchoring = useRef(true);
+  const previousRequest = useRef(request);
+  // Invalidate before child layout callbacks run. A query clear and navigation request
+  // can share one render, so retain the request and wait for restored measurements.
+  if (previousSearch.current !== searching) {
+    previousSearch.current = searching;
+    sectionBoxes.current.clear();
+    paneBoxes.current.clear();
+    activeSection.current = null;
+    waitingForLayout.current = true;
+  }
+  if (previousRequest.current !== request) {
+    previousRequest.current = request;
+    pending.current = request;
+    rowDeadline.current = Date.now() + ROW_WAIT_MS;
+  }
 
   const targetIndex = Math.max(
     0,
@@ -196,12 +215,13 @@ export function SettingsScrollPage({
     if (targetIndex + 1 > mountedCount) setMountedCount(targetIndex + 2);
   }, [mountedCount, targetIndex]);
 
-  // Browsers anchor scroll position themselves; turn that off so it does not
-  // stack with the page's own compensation.
+  // Let the browser preserve the reader's position as content loads.
   useEffect(() => {
     if (!isWeb) return;
     const node = scrollRef.current?.getScrollableNode() as HTMLElement | undefined;
-    if (node) node.style.overflowAnchor = "none";
+    browserAnchoring.current =
+      typeof CSS !== "undefined" && CSS.supports("overflow-anchor", "auto");
+    if (node && browserAnchoring.current) node.style.overflowAnchor = "auto";
   }, []);
 
   const markProgrammatic = useCallback(() => {
@@ -215,7 +235,6 @@ export function SettingsScrollPage({
   const scrollTo = useCallback(
     (y: number, animated: boolean) => {
       markProgrammatic();
-      ownScrollY.current = animated ? null : Math.max(0, y);
       scrollRef.current?.scrollTo({ y: Math.max(0, y), animated });
     },
     [markProgrammatic],
@@ -225,9 +244,17 @@ export function SettingsScrollPage({
     (section: SettingsSectionId) => {
       if (activeSection.current === section) return;
       activeSection.current = section;
+      // The jump inset can leave the preceding section visible. Do not let the browser
+      // anchor one of its loading rows and push the section the reader actually opened.
+      if (isWeb) {
+        for (const candidate of sections) {
+          const element = document.getElementById(sectionDomId(candidate.id));
+          if (element) element.style.overflowAnchor = candidate.id === section ? "auto" : "none";
+        }
+      }
       onActiveSectionChange(section);
     },
-    [onActiveSectionChange],
+    [onActiveSectionChange, sections],
   );
 
   /**
@@ -243,7 +270,10 @@ export function SettingsScrollPage({
           target.pane ? settingsPaneDomId(target.pane) : sectionDomId(target.section),
         );
         if (!node || !element || element.offsetHeight === 0) return null;
-        const row = target.entry ? findSettingRow(target.entry.pane, target.entry.label) : null;
+        const row = requestRow(target);
+        // Loading-only panes are not useful destinations yet.
+        if (!row && target.pane && element.querySelector('[data-settings-loading="true"]'))
+          return null;
         const inset = row ? JUMP_INSET * 4 : JUMP_INSET;
         return { y: rowOffsetWithin(row ?? element, node) - inset, row };
       }
@@ -256,67 +286,50 @@ export function SettingsScrollPage({
     [],
   );
 
-  /**
-   * A section's top within the scroll content. Web reads the DOM because its
-   * layout events miss position-only moves; native uses the recorded boxes.
-   */
-  const sectionTop = useCallback((section: SettingsSectionId): number | undefined => {
-    if (isWeb) {
-      const node = scrollRef.current?.getScrollableNode() as HTMLElement | undefined;
-      const element = document.getElementById(sectionDomId(section));
-      if (node && element) return rowOffsetWithin(element, node);
-    }
-    return sectionBoxes.current.get(section)?.y;
-  }, []);
-
-  const recordAnchor = useCallback(
-    (section: SettingsSectionId | null) => {
-      if (!section) return;
-      const y = sectionTop(section);
-      anchor.current = y === undefined ? null : { section, y };
-    },
-    [sectionTop],
-  );
-
   /** Brings the pending request into view once its target has rendered. */
   const resolvePending = useCallback(() => {
     const next = pending.current;
-    if (!next) return;
+    if (!next || searching || waitingForLayout.current) return;
+    if (!sectionBoxes.current.has(next.section)) return;
+    if (next.pane && !paneBoxes.current.has(next.pane)) return;
     const offset = targetOffset(next);
     if (!offset) return;
-    pending.current = null;
-    pinned.current = { request: next, until: Date.now() + PIN_MS };
+    const awaitingRow = isWeb && Boolean(next.anchorId || next.entry) && !offset.row;
+    if (!awaitingRow || Date.now() >= rowDeadline.current) pending.current = null;
+    // Show a ready pane immediately, then refine once if its row arrives. Layout events
+    // while waiting must not repeatedly pull the reader back to the pane top.
+    if (awaitingRow && paneArrival.current === next) return;
+    paneArrival.current = next;
     reportActive(next.section);
     scrollTo(offset.y, next.animated);
-    recordAnchor(next.section);
     if (offset.row) flashSettingRow(offset.row);
-  }, [recordAnchor, reportActive, scrollTo, targetOffset]);
-
-  /**
-   * Panes above a fresh jump target are often still loading. Until they settle
-   * or the reader scrolls, keep the target where the jump put it.
-   */
-  const holdPinnedTarget = useCallback((): boolean => {
-    const pin = pinned.current;
-    if (!pin) return false;
-    if (Date.now() > pin.until) {
-      pinned.current = null;
-      return false;
-    }
-    const offset = targetOffset(pin.request);
-    if (offset && Math.abs(offset.y - scrollY.current) > 1) {
-      scrollY.current = offset.y;
-      scrollTo(offset.y, false);
-    }
-    // Keep the anchor current so compensation after the pin starts from here.
-    recordAnchor(pin.request.section);
-    return true;
-  }, [recordAnchor, scrollTo, targetOffset]);
+  }, [reportActive, scrollTo, targetOffset, searching]);
 
   useEffect(() => {
-    pending.current = request;
     resolvePending();
+    const timer = setTimeout(
+      () => {
+        resolvePending();
+        // A missing pane must not leave a row request armed indefinitely.
+        if (pending.current === request && (request.anchorId || request.entry))
+          pending.current = null;
+      },
+      Math.max(0, rowDeadline.current - Date.now()),
+    );
+    return () => clearTimeout(timer);
   }, [request, resolvePending]);
+
+  // A reader gesture cancels a delayed row jump, rather than pulling them back later.
+  useEffect(() => {
+    if (!isWeb) return;
+    const node = scrollRef.current?.getScrollableNode() as HTMLElement | undefined;
+    const cancel = () => {
+      pending.current = null;
+    };
+    const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    events.forEach((name) => node?.addEventListener(name, cancel, { passive: true }));
+    return () => events.forEach((name) => node?.removeEventListener(name, cancel));
+  }, []);
 
   const updateActive = useCallback(() => {
     if (programmatic.current || searching) return;
@@ -337,44 +350,17 @@ export function SettingsScrollPage({
     if (current) reportActive(current);
   }, [reportActive, searching, sections]);
 
-  const releaseToReader = useCallback(() => {
-    pinned.current = null;
-    ownScrollY.current = null;
-    programmatic.current = false;
+  const cancelPending = useCallback(() => {
+    pending.current = null;
   }, []);
-
-  // Wheel, touch, pointer and key input mean the reader is scrolling, even in
-  // the middle of an animated jump.
-  useEffect(() => {
-    if (!isWeb) return;
-    const node = scrollRef.current?.getScrollableNode() as HTMLElement | undefined;
-    if (!node) return;
-    const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
-    for (const name of events) node.addEventListener(name, releaseToReader, { passive: true });
-    return () => {
-      for (const name of events) node.removeEventListener(name, releaseToReader);
-    };
-  }, [releaseToReader]);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const y = event.nativeEvent.contentOffset.y;
-      scrollY.current = y;
-      // An instant jump lands exactly where the page put it; any other
-      // position means the reader, keyboard focus or a script moved the page.
-      const own = ownScrollY.current;
-      // A jump past the current end of the content lands short while sections
-      // below are still mounting. That is the page, not the reader, so keep the
-      // target pinned and let layout finish the jump.
-      const clamped =
-        own !== null && y < own && y + viewportHeight.current >= contentHeight.current - 2;
-      if (own !== null && Math.abs(y - own) > 2 && !clamped) releaseToReader();
-      else if (programmatic.current) markProgrammatic();
-      else pinned.current = null;
+      scrollY.current = event.nativeEvent.contentOffset.y;
+      if (programmatic.current) markProgrammatic();
       updateActive();
-      recordAnchor(activeSection.current);
     },
-    [markProgrammatic, recordAnchor, releaseToReader, updateActive],
+    [markProgrammatic, updateActive],
   );
 
   const handleViewportLayout = useCallback((event: LayoutChangeEvent) => {
@@ -386,40 +372,33 @@ export function SettingsScrollPage({
     contentHeight.current = height;
   }, []);
 
-  /**
-   * Something above the reader grew or shrank, so the top of the section they
-   * are reading moved: scroll by the same amount so the visible content stays
-   * put. Several sections can change in one layout pass; measuring the
-   * reader's section covers all of them at once.
-   */
   const handleSectionLayout = useCallback(
     (id: SettingsSectionId, box: Box) => {
-      sectionBoxes.current.set(id, box);
-      if (holdPinnedTarget()) {
-        resolvePending();
-        return;
-      }
-      const current = anchor.current;
-      if (current && !pending.current && !searching) {
-        const y = sectionTop(current.section);
-        if (y !== undefined && y !== current.y) {
-          anchor.current = { section: current.section, y };
-          scrollY.current += y - current.y;
+      if (previousSearch.current !== searching) return;
+      const old = sectionBoxes.current.get(id);
+      // WebKit without overflow-anchor needs only the height delta above the reader.
+      // Native maintainVisibleContentPosition tracks whole sections, not rows within a pane.
+      if (isWeb && !browserAnchoring.current && old && !searching && !pending.current) {
+        const active = sectionBoxes.current.get(activeSection.current!);
+        if (active && old.y < active.y && old.height !== box.height) {
+          scrollY.current += box.height - old.height;
           scrollTo(scrollY.current, false);
         }
       }
+      sectionBoxes.current.set(id, box);
+      waitingForLayout.current = false;
       resolvePending();
     },
-    [holdPinnedTarget, resolvePending, scrollTo, searching, sectionTop],
+    [resolvePending, scrollTo, searching],
   );
 
   const handlePaneLayout = useCallback(
     (id: string, box: Box) => {
+      if (previousSearch.current !== searching) return;
       paneBoxes.current.set(id, box);
-      holdPinnedTarget();
       resolvePending();
     },
-    [holdPinnedTarget, resolvePending],
+    [resolvePending, searching],
   );
 
   // Tint matching rows while a search is active, after the panes render.
@@ -446,12 +425,7 @@ export function SettingsScrollPage({
     [matchedPanes, resultPanes, searching],
   );
 
-  const lastSection = sections.at(-1);
-  const lastBox = lastSection ? sectionBoxes.current.get(lastSection.id) : undefined;
-  // Room for the last section's heading to reach the top when it is chosen.
-  const trailingSpace = searching
-    ? JUMP_INSET * 4
-    : Math.max(JUMP_INSET * 4, viewport - (lastBox?.height ?? 0) - JUMP_INSET);
+  const trailingSpace = searching ? JUMP_INSET * 4 : viewport;
   const contentStyle = useMemo(
     () => ({ paddingBottom: trailingSpace + bottomInset }),
     [bottomInset, trailingSpace],
@@ -466,10 +440,12 @@ export function SettingsScrollPage({
       style={styles.scroll}
       contentContainerStyle={contentStyle}
       onScroll={handleScroll}
+      onScrollBeginDrag={cancelPending}
       scrollEventThrottle={16}
       onLayout={handleViewportLayout}
       onContentSizeChange={handleContentSizeChange}
       keyboardShouldPersistTaps="handled"
+      maintainVisibleContentPosition={isWeb ? undefined : nativeVisiblePosition}
       automaticallyAdjustKeyboardInsets
       testID="settings-scroll-page"
     >
@@ -504,6 +480,7 @@ export function SettingsScrollPage({
         return (
           <SectionBlock
             key={section.id}
+            layoutEpoch={searching}
             section={section}
             hidden={hidden}
             panes={section.panes}
@@ -519,6 +496,7 @@ export function SettingsScrollPage({
 }
 
 function SectionBlock({
+  layoutEpoch,
   section,
   hidden,
   panes,
@@ -527,6 +505,7 @@ function SectionBlock({
   onSectionLayout,
   onPaneLayout,
 }: {
+  layoutEpoch: boolean;
   section: SettingsPageSection;
   hidden: boolean;
   panes: readonly SettingsPaneDefinition[];
@@ -542,10 +521,17 @@ function SectionBlock({
     },
     [onSectionLayout, section.id],
   );
+  const layoutRef = useRef<View>(null);
+  useLayoutEffect(() => {
+    layoutRef.current?.measure((_x, y, _width, height) =>
+      onSectionLayout(section.id, { y, height }),
+    );
+  }, [layoutEpoch, onSectionLayout, section.id]);
   // Hidden sections stay mounted so their state survives a search.
   const style = useMemo(() => [styles.column, styles.section, hidden && styles.hidden], [hidden]);
   return (
     <View
+      ref={layoutRef}
       style={style}
       onLayout={handleLayout}
       testID={`settings-page-section-${section.id}`}
@@ -561,6 +547,7 @@ function SectionBlock({
       {panes.map((pane) => (
         <PaneBlock
           key={pane.id}
+          layoutEpoch={layoutEpoch}
           pane={pane}
           hidden={!paneVisible(pane)}
           renderPane={renderPane}
@@ -572,11 +559,13 @@ function SectionBlock({
 }
 
 function PaneBlock({
+  layoutEpoch,
   pane,
   hidden,
   renderPane,
   onPaneLayout,
 }: {
+  layoutEpoch: boolean;
   pane: SettingsPaneDefinition;
   hidden: boolean;
   renderPane: (paneId: string) => ReactNode;
@@ -589,8 +578,13 @@ function PaneBlock({
     },
     [onPaneLayout, pane.id],
   );
+  const layoutRef = useRef<View>(null);
+  useLayoutEffect(() => {
+    layoutRef.current?.measure((_x, y, _width, height) => onPaneLayout(pane.id, { y, height }));
+  }, [layoutEpoch, onPaneLayout, pane.id]);
   return (
     <View
+      ref={layoutRef}
       nativeID={settingsPaneDomId(pane.id)}
       onLayout={handleLayout}
       style={hidden ? styles.hidden : undefined}
@@ -721,3 +715,5 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
   },
 }));
+
+const nativeVisiblePosition = { minIndexForVisible: 0 };

@@ -9,18 +9,24 @@ import {
   submitMessage,
 } from "../support/helpers/composer";
 import { expectNearBottom, scrollChatAwayFromBottom } from "../support/helpers/agent-bottom-anchor";
-import { holdRewindCompletion } from "../support/helpers/agent-timeline-gate";
+import {
+  holdRewindCompletion,
+  type RewindCompletionGate,
+} from "../support/helpers/agent-timeline-gate";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 
 async function completeSubmittedTurn(
   page: Page,
   agent: Awaited<ReturnType<typeof seedMockAgentWorkspace>>,
   prompt: string,
+  gate: RewindCompletionGate,
 ): Promise<Locator> {
   await submitMessage(page, prompt);
   const userMessage = page.getByTestId("user-message").filter({ hasText: prompt });
   await expect(userMessage).toBeVisible();
 
+  // An optimistic prompt can render before this request starts its foreground run.
+  await expect.poll(() => gate.isPromptAccepted(prompt)).toBe(true);
   const finish = await agent.client.waitForFinish(agent.agentId, 30_000);
   expect(finish.status).toBe("idle");
   await expect(page.getByText("(end of synthetic stream)", { exact: true }).last()).toBeVisible();
@@ -62,8 +68,8 @@ test.describe("Agent message rewind", () => {
       const rewindCompletion = await holdRewindCompletion(page, agent.agentId);
       await openAgentRoute(page, agent);
       await expectComposerVisible(page);
-      await completeSubmittedTurn(page, agent, retainedPrompt);
-      const userMessage = await completeSubmittedTurn(page, agent, rewoundPrompt);
+      await completeSubmittedTurn(page, agent, retainedPrompt, rewindCompletion);
+      const userMessage = await completeSubmittedTurn(page, agent, rewoundPrompt, rewindCompletion);
       await scrollChatAwayFromBottom(page, {
         deltaY: -900,
         minDistanceFromBottom: 300,

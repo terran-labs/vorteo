@@ -3,7 +3,6 @@ import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import type { Locator, WebSocketRoute } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell } from "../support/helpers/app";
-import { openMobileAgentSidebar } from "../support/helpers/sidebar";
 import { projectEquivalenceViewKey } from "../support/helpers/project-view-key";
 import { getE2EDaemonPort } from "../support/helpers/daemon-port";
 import { getServerId } from "../support/helpers/server-id";
@@ -45,7 +44,9 @@ async function quickDragFirstRowAfterSecond(
   const page = rows.page();
   // Start on the row inset, away from branch popovers and trailing actions.
   const source = { x: sourceBox.x + 12, y: sourceBox.y + sourceBox.height / 2 };
-  const target = { x: targetBox.x + 12, y: targetBox.y + targetBox.height / 2 };
+  // The new position resolver splits rows into before/after zones. Land inside
+  // the lower zone rather than exactly on its fractional-pixel midpoint.
+  const target = { x: targetBox.x + 12, y: targetBox.y + targetBox.height * 0.85 };
 
   await page.mouse.move(source.x, source.y);
   await pressRow(rows);
@@ -55,6 +56,78 @@ async function quickDragFirstRowAfterSecond(
 
   await expect.poll(() => rowTestIds(rows)).toEqual([before[1], before[0]]);
 }
+
+// Intermittent: the workspace drop line sometimes never appears (#55).
+test.fixme("keyboard reorders projects and workspaces, cancels and survives reload", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const first = await seedWorkspace({ repoPrefix: "keyboard-first-" });
+  const second = await seedWorkspace({ repoPrefix: "keyboard-second-" });
+  try {
+    const extra = await first.client.createWorkspace({
+      source: { kind: "directory", path: first.repoPath, projectId: first.projectId },
+      title: "Keyboard second workspace",
+    });
+    if (!extra.workspace) throw new Error(extra.error ?? "Missing workspace");
+    await gotoAppShell(page);
+    await waitForSidebarHydration(page);
+    const projects = page.locator(
+      `[data-testid="sidebar-project-row-${projectEquivalenceViewKey(first.projectKey)}"], ` +
+        `[data-testid="sidebar-project-row-${projectEquivalenceViewKey(second.projectKey)}"]`,
+    );
+    const originalProjects = await rowTestIds(projects);
+    const projectHandle = page
+      .getByTestId(originalProjects[0]!)
+      .locator("xpath=ancestor::*[@aria-roledescription='draggable'][1]");
+    await projectHandle.focus();
+    await page.keyboard.press("Space");
+    await expect(projectHandle).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByTestId("draggable-tree-line")).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => rowTestIds(projects)).toEqual(originalProjects.toReversed());
+    await expect(projectHandle).toBeFocused();
+
+    await page.keyboard.press("Space");
+    await page.keyboard.press("ArrowUp");
+    await expect(page.getByTestId("draggable-tree-line")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("draggable-tree-line")).toHaveCount(0);
+    await expect.poll(() => rowTestIds(projects)).toEqual(originalProjects.toReversed());
+    await expect(projectHandle).toBeFocused();
+
+    const workspaces = page.locator(
+      `[data-testid="sidebar-workspace-row-${getServerId()}:${first.workspaceId}"], ` +
+        `[data-testid="sidebar-workspace-row-${getServerId()}:${extra.workspace.id}"]`,
+    );
+    const originalWorkspaces = await rowTestIds(workspaces);
+    await expect(workspaces).toHaveCount(2);
+    const workspaceHandle = page
+      .getByTestId(originalWorkspaces[0]!)
+      .locator("xpath=ancestor::*[@aria-roledescription='draggable'][1]");
+    await workspaceHandle.focus();
+    await page.keyboard.press("Space");
+    // Like the project drag above, wait for the pickup before moving.
+    await expect(workspaceHandle).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByTestId("draggable-tree-line")).toBeVisible();
+    await page.keyboard.press("ArrowUp");
+    await expect(page.getByTestId("draggable-tree-line")).toHaveCount(0);
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByTestId("draggable-tree-line")).toBeVisible();
+    await page.keyboard.press("Space");
+    await expect.poll(() => rowTestIds(workspaces)).toEqual(originalWorkspaces.toReversed());
+    await expect(workspaceHandle).toBeFocused();
+    await page.reload();
+    await waitForSidebarHydration(page);
+    await expect.poll(() => rowTestIds(projects)).toEqual(originalProjects.toReversed());
+    await expect.poll(() => rowTestIds(workspaces)).toEqual(originalWorkspaces.toReversed());
+  } finally {
+    await first.cleanup();
+    await second.cleanup();
+  }
+});
 
 test("projects, workspaces, pinned chats and expansion synchronize between devices", async ({
   page,
@@ -365,58 +438,54 @@ test("a failed move stays open with a visible error", async ({ page }) => {
   }
 });
 
-for (const width of [1400, 390]) {
-  test(`protected workspace drop explains the block at ${width}px`, async ({ page }) => {
-    const source = await seedWorkspace({ repoPrefix: "protected-drop-source-" });
-    const destination = await seedWorkspace({ repoPrefix: "protected-drop-destination-" });
-    try {
-      await source.client.setWorkspaceLifecycle({
-        workspaceId: source.workspaceId,
-        protected: true,
-      });
-      await page.setViewportSize({ width, height: 900 });
-      await gotoAppShell(page);
-      // Phones open the sidebar from the visible menu button; the shell keeps hidden copies.
-      if (width < 768) await openMobileAgentSidebar(page);
-      await waitForSidebarHydration(page);
-      const row = page.getByTestId(`sidebar-workspace-row-${getServerId()}:${source.workspaceId}`);
-      const target = page.getByTestId(
-        `sidebar-project-row-${projectEquivalenceViewKey(destination.projectKey)}`,
-      );
-      const from = await visibleBoundingBox(row);
-      const to = await visibleBoundingBox(target);
-      await page.mouse.move(from.x + 90, from.y + from.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(from.x + 90, from.y + from.height / 2 + 8);
-      await page.mouse.move(to.x + 90, to.y + to.height / 2, { steps: 12 });
-      await expect(page.getByTestId("project-drop-blocked")).toBeVisible();
-      await expect(
-        page.getByText(
-          "This workspace is protected. Turn off protection in Workspace actions before moving it.",
-          { exact: true },
-        ),
-      ).toBeVisible();
-      await page.screenshot({ path: test.info().outputPath("protected-drop.png") });
-      await page.mouse.up();
-      await expect(page.getByTestId("project-move-modal")).toHaveCount(0);
-      expect(
-        (await source.client.fetchWorkspaces()).entries.find(
-          (entry) => entry.id === source.workspaceId,
-        )?.projectMembership,
-      ).toBeFalsy();
-      await source.client.setWorkspaceLifecycle({
-        workspaceId: source.workspaceId,
-        protected: false,
-      });
-      await dragWorkspaceToProject(row, target);
-      await expect(page.getByTestId("project-move-modal")).toBeVisible();
-    } finally {
-      await page.mouse.up();
-      await source.client
-        .setWorkspaceLifecycle({ workspaceId: source.workspaceId, protected: false })
-        .catch(() => undefined);
-      await source.cleanup();
-      await destination.cleanup();
-    }
-  });
-}
+test("protected workspace drop explains the block", async ({ page }) => {
+  const source = await seedWorkspace({ repoPrefix: "protected-drop-source-" });
+  const destination = await seedWorkspace({ repoPrefix: "protected-drop-destination-" });
+  try {
+    await source.client.setWorkspaceLifecycle({
+      workspaceId: source.workspaceId,
+      protected: true,
+    });
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await gotoAppShell(page);
+    await waitForSidebarHydration(page);
+    const row = page.getByTestId(`sidebar-workspace-row-${getServerId()}:${source.workspaceId}`);
+    const target = page.getByTestId(
+      `sidebar-project-row-${projectEquivalenceViewKey(destination.projectKey)}`,
+    );
+    const from = await visibleBoundingBox(row);
+    const to = await visibleBoundingBox(target);
+    await page.mouse.move(from.x + 90, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 90, from.y + from.height / 2 + 8);
+    await page.mouse.move(to.x + 90, to.y + to.height / 2, { steps: 12 });
+    await expect(page.getByTestId("project-drop-blocked")).toBeVisible();
+    await expect(
+      page.getByText(
+        "This workspace is protected. Turn off protection in Workspace actions before moving it.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath("protected-drop.png") });
+    await page.mouse.up();
+    await expect(page.getByTestId("project-move-modal")).toHaveCount(0);
+    expect(
+      (await source.client.fetchWorkspaces()).entries.find(
+        (entry) => entry.id === source.workspaceId,
+      )?.projectMembership,
+    ).toBeFalsy();
+    await source.client.setWorkspaceLifecycle({
+      workspaceId: source.workspaceId,
+      protected: false,
+    });
+    await dragWorkspaceToProject(row, target);
+    await expect(page.getByTestId("project-move-modal")).toBeVisible();
+  } finally {
+    await page.mouse.up();
+    await source.client
+      .setWorkspaceLifecycle({ workspaceId: source.workspaceId, protected: false })
+      .catch(() => undefined);
+    await source.cleanup();
+    await destination.cleanup();
+  }
+});

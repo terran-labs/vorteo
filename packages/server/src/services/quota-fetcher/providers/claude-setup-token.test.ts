@@ -7,6 +7,7 @@ import { ClaudeQuotaProvider } from "./claude.js";
 import { ClaudeAgentClient } from "../../../server/agent/providers/claude/agent.js";
 import type { AgentClient } from "../../../server/agent/agent-sdk-types.js";
 import { ProviderResetService } from "../reset-service.js";
+import { ClaudeLimitObservations } from "../../../server/agent/providers/claude/limit-observation.js";
 import { ResetCreditStore } from "../reset-store.js";
 const homes: string[] = [];
 afterEach(async () => {
@@ -85,5 +86,55 @@ test("managed installation usage cannot read native credentials before first del
   expect(await provider.fetchUsage()).toMatchObject({ status: "unavailable" });
   expect(readFile).not.toHaveBeenCalled();
   expect(keychain).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test("a setup-token account shows its last limit stop as an exhausted window until the reset", async () => {
+  const home = await fs.mkdtemp(join(tmpdir(), "claude-limit-observation-"));
+  homes.push(home);
+  await fs.mkdir(join(home, ".vorteo-auth"));
+  let now = Date.parse("2026-11-02T18:00:00.000Z");
+  const observations = new ClaudeLimitObservations({ now: () => now });
+  const fetch = vi.fn();
+  const provider = new ClaudeQuotaProvider({
+    logger,
+    providerId: "claude-two",
+    displayName: "Claude 2",
+    claudeHome: home,
+    strictClaudeHome: true,
+    fetch,
+    limitObservations: observations,
+  });
+  observations.record("claude-two", {
+    error: "You've hit your weekly limit · resets 11pm (America/Los_Angeles)",
+  });
+  expect(await provider.fetchUsage()).toEqual({
+    providerId: "claude-two",
+    displayName: "Claude 2",
+    status: "available",
+    planLabel: null,
+    windows: [
+      {
+        id: "weekly",
+        label: "Weekly",
+        usedPct: 100,
+        remainingPct: 0,
+        resetsAt: "2026-11-03T07:00:00.000Z",
+        tone: "danger",
+      },
+    ],
+    balances: [],
+    details: [
+      expect.objectContaining({ id: "claude-setup-token" }),
+      { id: "claude-limit-observation", label: "Source", value: "From last limit message" },
+    ],
+    error: null,
+  });
+  now = Date.parse("2026-11-03T07:00:00.000Z");
+  expect(await provider.fetchUsage()).toMatchObject({
+    status: "unavailable",
+    windows: [],
+    details: [expect.objectContaining({ id: "claude-setup-token" })],
+  });
   expect(fetch).not.toHaveBeenCalled();
 });

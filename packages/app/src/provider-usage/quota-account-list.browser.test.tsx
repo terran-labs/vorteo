@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { page } from "vitest/browser";
 import { usePanelStore } from "@/stores/panel-store";
 import { QuotaAccountList } from "./quota-account-list";
+import { QuotaFooter } from "./quota-footer";
 import { quotaAccounts } from "./global-quota";
 import type { ProviderUsage, ProviderUsageView } from "./types";
 
@@ -32,6 +33,7 @@ const now = Date.now();
 const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
 const fetchedAt = at(-2);
 
+// The daemon fills remainingPct from usedPct for every window, so fixtures carry both.
 const providers: ProviderUsage[] = [
   {
     providerId: "codex-2",
@@ -45,12 +47,19 @@ const providers: ProviderUsage[] = [
         id: "session",
         label: "5-hour",
         usedPct: 94,
+        remainingPct: 6,
         resetsAt: at(107),
         runsOutAt: at(38),
         shortfallPct: 40,
       },
-      { id: "weekly", label: "Weekly", usedPct: 71, resetsAt: at(57 * 60) },
-      { id: "code_review", label: "Code review", usedPct: 12, resetsAt: at(57 * 60) },
+      { id: "weekly", label: "Weekly", usedPct: 71, remainingPct: 29, resetsAt: at(57 * 60) },
+      {
+        id: "code_review",
+        label: "Code review",
+        usedPct: 12,
+        remainingPct: 88,
+        resetsAt: at(57 * 60),
+      },
     ],
     balances: [{ id: "credits", label: "Credits", remaining: 0, unit: "credits" }],
   },
@@ -62,8 +71,8 @@ const providers: ProviderUsage[] = [
     planLabel: "Plus",
     fetchedAt: at(-200),
     windows: [
-      { id: "session", label: "5-hour", usedPct: 40, resetsAt: at(-20) },
-      { id: "weekly", label: "Weekly", usedPct: 22, resetsAt: at(122 * 60) },
+      { id: "session", label: "5-hour", usedPct: 40, remainingPct: 60, resetsAt: at(-20) },
+      { id: "weekly", label: "Weekly", usedPct: 22, remainingPct: 78, resetsAt: at(122 * 60) },
     ],
   },
   {
@@ -73,11 +82,29 @@ const providers: ProviderUsage[] = [
     planLabel: "Max 20x",
     fetchedAt,
     windows: [
-      { id: "five_hour", label: "Session", usedPct: 23, resetsAt: at(243) },
-      { id: "weekly", label: "Weekly", usedPct: 48, resetsAt: at(43 * 60) },
-      { id: "weekly_model_opus", label: "Weekly · Opus", usedPct: 64, resetsAt: at(43 * 60) },
+      { id: "five_hour", label: "Session", usedPct: 23, remainingPct: 77, resetsAt: at(243) },
+      { id: "weekly", label: "Weekly", usedPct: 48, remainingPct: 52, resetsAt: at(43 * 60) },
+      {
+        id: "weekly_model_opus",
+        label: "Weekly · Opus",
+        usedPct: 64,
+        remainingPct: 36,
+        resetsAt: at(43 * 60),
+      },
     ],
     details: [{ id: "extra_usage", label: "Extra usage", value: "Enabled" }],
+  },
+  {
+    providerId: "claude-4",
+    displayName: "Claude 4",
+    status: "available",
+    planLabel: null,
+    fetchedAt,
+    windows: [{ id: "weekly", label: "Weekly", remainingPct: 0, resetsAt: at(9 * 60) }],
+    details: [
+      { id: "claude-setup-token", label: "Sign-in", value: "Setup token" },
+      { id: "claude-limit-observation", label: "Source", value: "From last limit message" },
+    ],
   },
 ];
 
@@ -118,41 +145,87 @@ async function render(width: number) {
             view={view}
             now={now}
           />
+          <QuotaFooter view={view} onOpenUsage={vi.fn()} />
         </div>
       </QueryClientProvider>,
     );
   });
 }
 
-for (const width of [1280, 390]) {
-  test(`quota accounts show every window with absolute resets at ${width}px`, async () => {
+for (const width of [390]) {
+  test(`quota accounts show runway lanes that expand into every window at ${width}px`, async () => {
     await render(width);
-    // Accounts needing attention open with one bar per window, the pace warning included.
+    // The healthiest account leads, with the runner-up beneath it.
+    await expect.element(page.getByTestId("global-quota-best")).toBeVisible();
+    expect(page.getByTestId("global-quota-best").element().textContent).toContain("Claude 1");
+    expect(page.getByTestId("global-quota-best-then").element().textContent).toContain("Codex 2");
+
+    // Every account is one lane and one summary line until opened.
+    for (const id of ["codex-2", "codex-3", "claude-1"]) {
+      await expect.element(page.getByTestId(`global-quota-lane-${id}`)).toBeVisible();
+      await expect.element(page.getByTestId(`global-quota-summary-${id}`)).toBeVisible();
+    }
+    await expect.element(page.getByTestId("global-quota-lane-codex-2-low")).toBeVisible();
+    expect(
+      container!.querySelectorAll('[data-testid="global-quota-lane-codex-2-reset"]').length,
+    ).toBe(2);
+    expect(page.getByTestId("global-quota-summary-codex-2").element().textContent).toMatch(
+      /^6% left · resets /,
+    );
+    expect(page.getByTestId("global-quota-window-codex-2-weekly").query()).toBeNull();
+    expect(container!.querySelectorAll('[role="progressbar"]').length).toBe(0);
+
+    // A disconnected account keeps its Reconnect control visible while collapsed.
+    const signIn = page.getByTestId("global-quota-account-codex-3");
+    expect(signIn.element().textContent).toContain("Reconnect");
+    expect(page.getByTestId("global-quota-summary-codex-3").element().textContent).toBe(
+      "Account disconnected",
+    );
+
+    // Opening an account shows one bar per window with absolute resets and the pace warning.
+    await page.getByTestId("global-quota-toggle-codex-2").click();
     for (const id of ["session", "weekly", "code_review"]) {
       await expect.element(page.getByTestId(`global-quota-window-codex-2-${id}`)).toBeVisible();
     }
     await expect.element(page.getByTestId("global-quota-pace-codex-2-session")).toBeVisible();
-    await expect.element(page.getByText("separate", { exact: true })).toBeVisible();
-    expect(container!.textContent).not.toContain("Usage unavailable");
-    await expect.element(page.getByText("Account disconnected.", { exact: false })).toBeVisible();
-    expect(container!.querySelectorAll('[role="progressbar"]').length).toBe(5);
-
+    expect(
+      page.getByTestId("global-quota-window-codex-2-code_review").element().textContent,
+    ).toContain("separate");
+    expect(page.getByTestId("global-quota-detail-codex-2").element().textContent).toContain("Pro");
+    expect(usePanelStore.getState().quotaAccountExpanded["codex-2"]).toBe(true);
     // Every reset names its zone: "Resets Thu Oct 22, 5:29 AM PDT · 1h 47m".
     const resets = [...container!.querySelectorAll("div, span")]
       .map((node) => node.textContent ?? "")
       .filter((text) => /^Resets \w{3} \w{3} \d{1,2}, \d{1,2}:\d{2}/.test(text));
     expect(resets.length).toBeGreaterThan(0);
-    expect(container!.textContent).not.toContain("Updated");
-    expect(container!.textContent).not.toContain("next check");
 
-    // A healthy account starts as one summary line and remembers being opened.
-    await expect.element(page.getByTestId("global-quota-summary-claude-1")).toBeVisible();
-    expect(page.getByTestId("global-quota-window-claude-1-weekly").query()).toBeNull();
-    await page.getByTestId("global-quota-toggle-claude-1").click();
+    await page.getByTestId("global-quota-toggle-codex-3").click();
+    await expect.element(page.getByText("Account disconnected.", { exact: false })).toBeVisible();
+    expect(container!.textContent).not.toContain("Usage unavailable");
+
+    // An observed limit is out until its reset, then unknown, and says where it came from.
+    await expect.element(page.getByTestId("global-quota-lane-claude-4-out")).toBeVisible();
     await expect
-      .element(page.getByTestId("global-quota-window-claude-1-weekly_model_opus"))
-      .toBeVisible();
-    expect(usePanelStore.getState().quotaAccountExpanded["claude-1"]).toBe(true);
+      .element(page.getByTestId("global-quota-lane-claude-4-unknown"))
+      .toBeInTheDocument();
+    expect(page.getByTestId("global-quota-label-claude-4").element().textContent).toBe("Out");
+    await page.getByTestId("global-quota-toggle-claude-4").click();
+    await expect
+      .element(page.getByTestId("global-quota-observed-claude-4"))
+      .toHaveTextContent("From last limit message");
+    expect(
+      page
+        .getByTestId("global-quota-detail-claude-4")
+        .element()
+        .textContent?.match(/From last limit message/g),
+    ).toHaveLength(1);
+
+    // The key explains the lanes and names the time zone.
+    expect(page.getByTestId("global-quota-key").query()).toBeNull();
+    await page.getByTestId("global-quota-key-toggle").click();
+    await expect.element(page.getByTestId("global-quota-key")).toBeVisible();
+    expect(page.getByTestId("global-quota-key").element().textContent).toContain("Times in ");
+    expect(page.getByTestId("global-quota-freshness").element().textContent).toBe("Live · 2m ago");
 
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     await page.screenshot({ path: `.vitest-screenshots/global-quota-card-${width}.png` });

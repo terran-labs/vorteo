@@ -38,6 +38,24 @@ function workspace(id: string, projectId: string, root: string): WorkspaceDescri
 }
 
 describe("buildWorkspaceStructureProjects", () => {
+  test("an empty Vorteo System project has no row until it holds a workspace", () => {
+    const system = project({ id: "prj_system", key: "system:srv_dev", root: "/home/paseo/system" });
+    const empty = buildWorkspaceStructureProjects({
+      sessions: [{ serverId: "srv_dev", projects: [system], workspaces: [] }],
+    });
+    expect(empty).toEqual([]);
+    const occupied = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "srv_dev",
+          projects: [system],
+          workspaces: [workspace("wks_source", "prj_system", "/home/paseo/system")],
+        },
+      ],
+    });
+    expect(occupied).toHaveLength(1);
+  });
+
   test("moves a workspace between projects without changing its environment or directory", () => {
     const moved = workspace("ws-host", "host-files", "/host/files");
     moved.projectMembership = { key: "remote:github.com/acme/app", name: "App" };
@@ -318,6 +336,35 @@ describe("shared Projects folder placements", () => {
     });
     expect(result).toHaveLength(1);
     expect(result[0]!.workspaceKeys).toContain("dev:assigned");
+  });
+
+  test("keeps one System row when the Dev System project is hidden for being empty", () => {
+    const root = "/Users/me/dev/vorteo";
+    const hostSystem = project({ id: "host-system", key: "system:host", root });
+    const hostWorkspaces = [workspace("native", "host-system", root)];
+    const recorded = workspace("recorded", "host-system", root);
+    // Recorded while the Dev project still had a row and both merged under its key.
+    recorded.projectMembership = { key: "system:dev", name: "Vorteo System" };
+    hostWorkspaces.push(recorded);
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host",
+          projectsRoot: "/Users/me/dev",
+          projects: [hostSystem],
+          workspaces: hostWorkspaces,
+        },
+        {
+          serverId: "dev",
+          projectsRoot: "/Users/me/dev",
+          projects: [project({ id: "dev-system", key: "system:dev", root })],
+          workspaces: [],
+        },
+      ],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ viewKey: "system:dev" });
+    expect(result[0]!.workspaceKeys.sort()).toEqual(["host:native", "host:recorded"]);
   });
 
   test("keeps placements separate when the Projects folder differs or is absent", () => {

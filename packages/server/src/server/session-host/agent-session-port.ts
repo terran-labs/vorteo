@@ -80,7 +80,13 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
       goals: session.goals
         ? (toHostedJson(session.goals.state) as HostedSessionSnapshot["goals"])
         : null,
-      capabilities: toHostedJson(session.capabilities) as HostedSessionSnapshot["capabilities"],
+      // This adapter ships with the host that implements atomic conditional close and answers
+      // context breakdown calls.
+      capabilities: {
+        ...(toHostedJson(session.capabilities) as HostedSessionSnapshot["capabilities"]),
+        conditionalIdleClose: true,
+        contextBreakdown: true,
+      },
     };
   }
 
@@ -128,7 +134,9 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
 
   /** One handler per call; each returns the provider's answer for the host to encode. */
   const handlers: {
-    [M in Exclude<SessionHostMethod, "close">]: (call: CallOf<M>) => Promise<unknown>;
+    [M in Exclude<SessionHostMethod, "close" | "closeIfIdle">]: (
+      call: CallOf<M>,
+    ) => Promise<unknown>;
   } = {
     async startTurn(call) {
       const result = await session.startTurn(
@@ -181,6 +189,9 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
     async listCommands() {
       return (await session.listCommands?.()) ?? [];
     },
+    async getContextBreakdown() {
+      return (await session.getContextBreakdown?.()) ?? null;
+    },
     async streamHistory(call) {
       return historyPage(call.cursor);
     },
@@ -227,7 +238,9 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
     },
   };
 
-  function dispatch(call: Exclude<SessionHostCall, { method: "close" }>): Promise<unknown> {
+  function dispatch(
+    call: Exclude<SessionHostCall, { method: "close" | "closeIfIdle" }>,
+  ): Promise<unknown> {
     const handler = handlers[call.method] as (call: SessionHostCall) => Promise<unknown>;
     return handler(call);
   }

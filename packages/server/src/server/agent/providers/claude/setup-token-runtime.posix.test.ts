@@ -108,3 +108,31 @@ test("a managed daemon cannot use an unbound token or fall back before first del
     vi.unstubAllEnvs();
   }
 });
+
+test("a managed daemon detects the native CLI login without weakening bound-account delivery", async () => {
+  const home = await mkdtemp(join(tmpdir(), "claude-native-test-"));
+  homes.push(home);
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
+  vi.stubEnv("VORTEO_INSTALLATION_CLIENT_CONFIG", "/synthetic/installation-client.json");
+  expect(await readClaudeSetupToken({})).toBeNull();
+  const run = vi.fn(async () => ({
+    stdout: JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" }),
+    stderr: "",
+  }));
+  await requireClaudeAuthentication({ executable: "/not-executed", args: [], run });
+  expect(run).toHaveBeenCalledOnce();
+  await expect(readClaudeSetupToken({ CLAUDE_CONFIG_DIR: join(home, "bound") })).rejects.toThrow(
+    "Claude",
+  );
+  // A Dev image exports the daemon's own directory; threads on the native account inherit it.
+  vi.stubEnv("CLAUDE_CONFIG_DIR", join(home, ".claude"));
+  expect(await readClaudeSetupToken({ CLAUDE_CONFIG_DIR: join(home, ".claude") })).toBeNull();
+  await expect(readClaudeSetupToken({ CLAUDE_CONFIG_DIR: join(home, "bound") })).rejects.toThrow(
+    "Claude",
+  );
+  vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
+  await mkdir(join(home, ".claude"));
+  await claudeSetupTokenStore(join(home, ".claude")).write(token);
+  await expect(readClaudeSetupToken({})).rejects.toThrow("Claude");
+});

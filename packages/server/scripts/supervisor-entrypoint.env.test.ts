@@ -105,6 +105,7 @@ posixTest(
     import {InstallationRestarts} from ${JSON.stringify(new URL("restarts.js", execution).href)};
     import {FileBootstrapRequestJournal} from ${JSON.stringify(new URL("coordinator-bootstrap-journal.js", execution).href)};
     import {randomUUID} from 'node:crypto';
+    import {setTimeout as delay} from 'node:timers/promises';
     import {runSupervisor} from ${JSON.stringify(supervisor)};
     import {DaemonClient} from ${JSON.stringify(clientModule)};
     const ready = []; let waiting = null;
@@ -132,7 +133,14 @@ posixTest(
     (async()=>{
       client = await connect(await nextReady());
       const id=randomUUID(),generation=randomUUID();
-      await client.restartServer(undefined,undefined,{idleMode:'drain',restartDrainId:id});
+      // Drain acknowledgement waits for durable continuation capture, even with no agents.
+      const captureDeadline=Date.now()+5000;
+      let drained=await client.restartServer(undefined,undefined,{idleMode:'drain',restartDrainId:id});
+      while (!drained.accepted && Date.now()<captureDeadline) {
+        await delay(10);
+        drained=await client.restartServer(undefined,undefined,{idleMode:'drain',restartDrainId:id});
+      }
+      assert.equal(drained.accepted,true,JSON.stringify(drained));
       const inspected=await client.restartServer(undefined,undefined,{idleMode:'inspect'});
       assert.equal(inspected.impact.restartDrainId,id);
       assert.equal(inspected.impact.agents.length,0);

@@ -1,4 +1,17 @@
 import {
+  PreviewBrokerDeploymentJobSchema,
+  type PreviewBrokerDeploymentJob,
+} from "@getpaseo/protocol/preview-broker-deployment";
+import {
+  PreviewBrokerJobSchema,
+  type PreviewBrokerJob,
+} from "@getpaseo/protocol/preview-broker-maintenance";
+import type { BrokerAction } from "./preview-broker-review";
+import {
+  MaintenanceDelegationStatusSchema,
+  type MaintenanceDelegationStatus,
+} from "@getpaseo/protocol/maintenance-approval";
+import {
   NativeHelperJobSchema,
   type NativeHelperJob,
 } from "@getpaseo/protocol/native-helper-maintenance";
@@ -28,6 +41,22 @@ import {
   InstructionRequestQuerySchema,
   type InstructionRequestQuery,
 } from "@getpaseo/protocol/instruction-requests";
+
+import {
+  InstallationSnapshotSchema,
+  InstallationUpgradeSchema,
+  SnapshotListSchema,
+  SnapshotRestoreStatusSchema,
+  UpgradeStatusSchema,
+  type InstallationSnapshot,
+  type InstallationUpgrade,
+  type ReleaseTag,
+  type SnapshotList,
+  type SnapshotPartKind,
+  type SnapshotRestoreStatus,
+  type UpgradeDecision,
+  type UpgradeStatus,
+} from "@getpaseo/protocol/installation-upgrades";
 
 type InstructionRequestView = InstructionRequestQuery["requests"][number];
 import type { MonitorAction } from "./preview-monitor-review";
@@ -136,6 +165,12 @@ const SESSION_HOST_OVERVIEW_READER: z.ZodType<SessionHostOverview> = tolerant(
   }),
 );
 
+const SNAPSHOT_LIST_READER = tolerant(SnapshotListSchema);
+const SNAPSHOT_READER = tolerant(InstallationSnapshotSchema);
+const SNAPSHOT_RESTORE_READER = tolerant(SnapshotRestoreStatusSchema);
+const UPGRADE_STATUS_READER = tolerant(UpgradeStatusSchema);
+const UPGRADE_READER = tolerant(InstallationUpgradeSchema);
+
 export class InstallationClient {
   private password: string | null = null;
   private helperRetryAt = 0;
@@ -148,6 +183,8 @@ export class InstallationClient {
   private devRepairSupported = false;
   private devRepairAvailable = false;
   private monitorRetryAt = 0;
+  private brokerRetryAt = 0;
+  private brokerDeploymentRetryAt = 0;
   private sessionHostRetryAt = 0;
   private sessionHostSupported = false;
   sessionsSupported = false;
@@ -219,6 +256,77 @@ export class InstallationClient {
     return RestartSummarySchema.parse(await response.json());
   }
 
+  async listBrokers(): Promise<PreviewBrokerJob[]> {
+    if (this.password === null) throw new Error("Unlock installation controls first");
+    const now = this.ports.now ?? Date.now;
+    if (now() < this.brokerRetryAt) return [];
+    try {
+      return z
+        .strictObject({ jobs: z.array(PreviewBrokerJobSchema) })
+        .parse(await this.request("broker-rebinds/query", {})).jobs;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable) {
+        this.brokerRetryAt = now() + 60_000;
+        return [];
+      }
+      throw error;
+    }
+  }
+  async decideBroker(job: PreviewBrokerJob, decision: BrokerAction): Promise<PreviewBrokerJob> {
+    const result = PreviewBrokerJobSchema.parse(
+      await this.request("broker-rebinds/decision", {
+        operation: job.operation,
+        id: job.id,
+        revision: job.revision,
+        planSha256: job.planSha256,
+        decision,
+      }),
+    );
+    if (
+      result.id !== job.id ||
+      result.revision !== job.revision ||
+      result.planSha256 !== job.planSha256
+    )
+      throw new Error("Broker receipt changed. Refresh before another action.");
+    return result;
+  }
+  async listBrokerDeployments(): Promise<PreviewBrokerDeploymentJob[]> {
+    if (this.password === null) throw new Error("Unlock installation controls first");
+    const now = this.ports.now ?? Date.now;
+    if (now() < this.brokerDeploymentRetryAt) return [];
+    try {
+      return z
+        .strictObject({ jobs: z.array(PreviewBrokerDeploymentJobSchema) })
+        .parse(await this.request("broker-deployments/query", {})).jobs;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable) {
+        this.brokerDeploymentRetryAt = now() + 60_000;
+        return [];
+      }
+      throw error;
+    }
+  }
+  async decideBrokerDeployment(
+    job: PreviewBrokerDeploymentJob,
+    decision: BrokerAction,
+  ): Promise<PreviewBrokerDeploymentJob> {
+    const result = PreviewBrokerDeploymentJobSchema.parse(
+      await this.request("broker-deployments/decision", {
+        operation: job.operation,
+        id: job.id,
+        revision: job.revision,
+        planSha256: job.planSha256,
+        decision,
+      }),
+    );
+    if (
+      result.id !== job.id ||
+      result.revision !== job.revision ||
+      result.planSha256 !== job.planSha256
+    )
+      throw new Error("Broker receipt changed. Refresh before another action.");
+    return result;
+  }
   async listMonitors(): Promise<PreviewMonitorJob[]> {
     if (this.password === null) throw new Error("Unlock installation controls first");
     const now = this.ports.now ?? Date.now;
@@ -518,6 +626,41 @@ export class InstallationClient {
     }
   }
 
+  private maintenanceDelegationSupported = false;
+
+  async maintenanceDelegation(): Promise<MaintenanceDelegationStatus | null> {
+    try {
+      const status = MaintenanceDelegationStatusSchema.parse(
+        await this.request("maintenance-delegation/query?management=1", {}),
+      );
+      this.maintenanceDelegationSupported = true;
+      return status;
+    } catch (error) {
+      // COMPAT(fullMaintenanceDelegation): v877; older coordinators retain their service controls.
+      if (error instanceof InstallationRouteUnavailable && !this.maintenanceDelegationSupported)
+        return null;
+      throw error;
+    }
+  }
+
+  async changeMaintenanceDelegation(
+    status: MaintenanceDelegationStatus,
+    enabled: boolean,
+    management?: boolean,
+  ): Promise<MaintenanceDelegationStatus> {
+    if (!this.maintenanceDelegationSupported || !status.available)
+      throw new InstallationRouteUnavailable("Full maintenance delegation is unavailable");
+    if (management !== undefined && !status.managementAvailable)
+      throw new InstallationRouteUnavailable("Installation management is unavailable");
+    return MaintenanceDelegationStatusSchema.parse(
+      await this.request("maintenance-delegation/change?management=1", {
+        expectedRevision: status.revision,
+        enabled,
+        ...(management !== undefined ? { management } : {}),
+      }),
+    );
+  }
+
   async daemonAutomation(): Promise<DaemonAutomationPreference | null> {
     try {
       let response: unknown;
@@ -572,6 +715,67 @@ export class InstallationClient {
     ProfileSharingStatusSchema.parse(await this.request("profiles/resolve", input));
   }
 
+  /** Null when the coordinator predates safety snapshots, so the panel hides the card. */
+  async snapshots(): Promise<SnapshotList | null> {
+    try {
+      return SNAPSHOT_LIST_READER.parse(await this.request("snapshots/query", {}));
+    } catch (error) {
+      // COMPAT(installationUpgrades): older coordinators answer 404 for snapshot routes.
+      if (error instanceof InstallationRouteUnavailable) return null;
+      throw error;
+    }
+  }
+
+  async takeSnapshot(): Promise<InstallationSnapshot> {
+    return SNAPSHOT_READER.parse(await this.request("snapshots", {}));
+  }
+
+  /** `parts` must be exactly the parts the owner confirmed; the coordinator rejects any other set. */
+  async restoreSnapshot(
+    snapshot: InstallationSnapshot,
+    parts: readonly SnapshotPartKind[],
+  ): Promise<SnapshotRestoreStatus> {
+    const status = SNAPSHOT_RESTORE_READER.parse(
+      await this.request("snapshots/restore", { id: snapshot.id, parts: [...parts] }),
+    );
+    if (status.snapshotId !== snapshot.id)
+      throw new Error("Restore receipt names another snapshot. Refresh before another action.");
+    return status;
+  }
+
+  /** Null when the coordinator predates release upgrades, so the interface keeps its agent task. */
+  async upgradeStatus(): Promise<UpgradeStatus | null> {
+    try {
+      return UPGRADE_STATUS_READER.parse(await this.request("upgrades/query", {}));
+    } catch (error) {
+      // COMPAT(installationUpgrades): older coordinators answer 404 for upgrade routes.
+      if (error instanceof InstallationRouteUnavailable) return null;
+      throw error;
+    }
+  }
+
+  async requestUpgrade(release: ReleaseTag): Promise<InstallationUpgrade> {
+    const upgrade = UPGRADE_READER.parse(await this.request("upgrades", { release }));
+    if (upgrade.release !== release)
+      throw new Error("Upgrade receipt names another release. Refresh before another action.");
+    return upgrade;
+  }
+
+  async decideUpgrade(
+    upgrade: InstallationUpgrade,
+    decision: UpgradeDecision["decision"],
+  ): Promise<InstallationUpgrade> {
+    const result = UPGRADE_READER.parse(
+      await this.request(`upgrades/${upgrade.id}/decision`, {
+        revision: upgrade.revision,
+        decision,
+      }),
+    );
+    if (result.id !== upgrade.id)
+      throw new Error("Upgrade receipt changed. Refresh before another action.");
+    return result;
+  }
+
   private request(path: string, body: unknown): Promise<unknown> {
     if (this.password === null) throw new Error("Unlock installation controls first");
     const resource =
@@ -609,6 +813,8 @@ export async function requestInstallationOwner(
       "dev-repair/query",
       "session-host/query",
       "instruction-requests/query",
+      "snapshots/query",
+      "upgrades/query",
       "claude/oauth/read",
     ].includes(path) &&
     response.ok &&

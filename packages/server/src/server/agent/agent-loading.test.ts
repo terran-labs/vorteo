@@ -199,3 +199,212 @@ test("loads an archived agent's history after its working directory is removed",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+interface FlakyHistoryClient {
+  client: AgentClient;
+  historyReads: () => number;
+  failNextReads: (count: number) => void;
+  holdNextRead: () => () => void;
+}
+
+function createFlakyHistoryClient(baseClient: AgentClient): FlakyHistoryClient {
+  let reads = 0;
+  let failures = 0;
+  let gate: Promise<void> | null = null;
+  const client: AgentClient = {
+    provider: baseClient.provider,
+    capabilities: baseClient.capabilities,
+    createSession: async (config, launchContext) =>
+      await baseClient.createSession(config, launchContext),
+    resumeSession: async (handle, overrides, launchContext, options) => {
+      const session = await baseClient.resumeSession(handle, overrides, launchContext, options);
+      const readHistory = session.streamHistory.bind(session);
+      session.streamHistory = async function* () {
+        reads += 1;
+        if (gate) {
+          const held = gate;
+          gate = null;
+          await held;
+        }
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error("Session host connection closed.");
+        }
+        yield* readHistory();
+      };
+      return session;
+    },
+    fetchCatalog: async (options) => await baseClient.fetchCatalog(options),
+    isAvailable: async () => await baseClient.isAvailable(),
+  };
+  return {
+    client,
+    historyReads: () => reads,
+    failNextReads: (count) => {
+      failures = count;
+    },
+    holdNextRead: () => {
+      let release = () => {};
+      gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
+  };
+}
+
+function replyText(items: ReturnType<AgentManager["getTimeline"]>): string {
+  return items.map((item) => (item.type === "assistant_message" ? item.text : "")).join("");
+}
+
+/** Records a finished turn, then drops the manager the way a daemon restart does. */
+async function createStoredAgentWithReply(params: {
+  client: AgentClient;
+  storage: AgentStorage;
+  agentId: string;
+  cwd: string;
+}): Promise<number> {
+  const { client, storage, agentId, cwd } = params;
+  const logger = createTestLogger();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const agent = await manager.createAgent({ provider: "codex", cwd }, agentId, {
+    workspaceId: "workspace-history",
+  });
+  await startAgentRun(manager, agent.id, "summarize the change", logger, {});
+  const finished = await manager.waitForAgentEvent(agent.id);
+  expect(finished.status).toBe("idle");
+  const rowCount = manager.getTimeline(agent.id).length;
+  await manager.closeAgent(agent.id);
+  await manager.flush();
+  await storage.flush();
+  return rowCount;
+}
+
+test("a registered agent whose history failed to load retries it on the next load", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-history-retry-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const baseClient = createTestAgentClients().codex;
+  if (!baseClient) throw new Error("expected Codex test client");
+  const flaky = createFlakyHistoryClient(baseClient);
+  const manager = new AgentManager({ clients: { codex: flaky.client }, registry: storage, logger });
+  const agentId = "00000000-0000-4000-8000-000000000601";
+  const deps = { agentManager: manager, agentStorage: storage, logger };
+
+  try {
+    const rowCount = await createStoredAgentWithReply({
+      client: baseClient,
+      storage,
+      agentId,
+      cwd: root,
+    });
+    expect(rowCount).toBeGreaterThan(0);
+
+    flaky.failNextReads(2);
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("Session host connection");
+    // Resume registered the agent before its history read failed.
+    expect(manager.getAgent(agentId)).not.toBeNull();
+    expect(manager.getTimeline(agentId)).toEqual([]);
+    expect(manager.needsTimelineHydration(agentId)).toBe(true);
+
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("Session host connection");
+    expect(flaky.historyReads()).toBe(2);
+
+    await ensureAgentLoaded(agentId, deps);
+    expect(flaky.historyReads()).toBe(3);
+    expect(manager.getTimeline(agentId)).toHaveLength(rowCount);
+    expect(manager.fetchTimeline(agentId).rows.length).toBeGreaterThan(0);
+    expect(manager.needsTimelineHydration(agentId)).toBe(false);
+
+    // Primed agents return from memory without another provider read.
+    await ensureAgentLoaded(agentId, deps);
+    expect(flaky.historyReads()).toBe(3);
+    expect(manager.getTimeline(agentId)).toHaveLength(rowCount);
+  } finally {
+    await manager.closeAgent(agentId).catch(() => undefined);
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent loads share one history retry", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-history-concurrent-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const baseClient = createTestAgentClients().codex;
+  if (!baseClient) throw new Error("expected Codex test client");
+  const flaky = createFlakyHistoryClient(baseClient);
+  const manager = new AgentManager({ clients: { codex: flaky.client }, registry: storage, logger });
+  const agentId = "00000000-0000-4000-8000-000000000602";
+  const deps = { agentManager: manager, agentStorage: storage, logger };
+
+  try {
+    const rowCount = await createStoredAgentWithReply({
+      client: baseClient,
+      storage,
+      agentId,
+      cwd: root,
+    });
+
+    flaky.failNextReads(1);
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("Session host connection");
+
+    const release = flaky.holdNextRead();
+    const first = ensureAgentLoaded(agentId, deps);
+    const second = ensureAgentLoaded(agentId, deps);
+    release();
+    const [firstAgent, secondAgent] = await Promise.all([first, second]);
+
+    expect(firstAgent.id).toBe(agentId);
+    expect(secondAgent.id).toBe(agentId);
+    expect(flaky.historyReads()).toBe(2);
+    expect(manager.getTimeline(agentId)).toHaveLength(rowCount);
+  } finally {
+    await manager.closeAgent(agentId).catch(() => undefined);
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a retry after new turns replaces the partial timeline with the full history", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-history-partial-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const baseClient = createTestAgentClients().codex;
+  if (!baseClient) throw new Error("expected Codex test client");
+  const flaky = createFlakyHistoryClient(baseClient);
+  const manager = new AgentManager({ clients: { codex: flaky.client }, registry: storage, logger });
+  const agentId = "00000000-0000-4000-8000-000000000603";
+  const deps = { agentManager: manager, agentStorage: storage, logger };
+
+  try {
+    await createStoredAgentWithReply({ client: baseClient, storage, agentId, cwd: root });
+
+    flaky.failNextReads(1);
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("Session host connection");
+
+    // The owner keeps chatting: only the new turn reaches the in-memory timeline.
+    await startAgentRun(manager, agentId, "and the tests?", logger, {});
+    const running = manager.waitForAgentEvent(agentId);
+    // A run in flight may hold rows the provider has not written yet.
+    expect(manager.needsTimelineHydration(agentId)).toBe(false);
+    expect((await running).status).toBe("idle");
+    const partialText = replyText(manager.getTimeline(agentId));
+    expect(partialText).not.toBe("");
+    const partialEpoch = manager.fetchTimeline(agentId).epoch;
+    expect(manager.needsTimelineHydration(agentId)).toBe(true);
+
+    await ensureAgentLoaded(agentId, deps);
+    // Both turns give the fake's same reply; the replay restores the earlier one too.
+    expect(replyText(manager.getTimeline(agentId))).toBe(partialText.repeat(2));
+    expect(manager.fetchTimeline(agentId).epoch).not.toBe(partialEpoch);
+    expect(manager.needsTimelineHydration(agentId)).toBe(false);
+  } finally {
+    await manager.closeAgent(agentId).catch(() => undefined);
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});

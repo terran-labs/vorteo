@@ -293,8 +293,37 @@ export const CoordinatorAutomaticStatusSchema = z.strictObject({
   dispatchAfter: z.string().datetime().optional(),
 });
 export type CoordinatorAutomaticStatus = z.infer<typeof CoordinatorAutomaticStatusSchema>;
+// COMPAT(coordinatorDispatchStatus): added 2026-11-02. Returned only to clients that
+// send dispatchStatus: true; older strict clients receive the request unchanged.
+export const CoordinatorDispatchStatusSchema = z.strictObject({
+  /** A dispatch that stopped before its durable claim. The request is canceled. */
+  failure: z
+    .strictObject({
+      failedAt: z.string().datetime(),
+      category: z.enum(["busy", "conflict", "authentication", "error"]),
+      reason: z.string().min(1).max(600),
+    })
+    .optional(),
+  /** Whether a pending or approved, undispatched request could claim right now. */
+  readiness: z
+    .strictObject({
+      state: z.enum(["ready", "blocked"]),
+      checkedAt: z.string().datetime(),
+      blockers: z.array(z.string().min(1).max(300)).max(8),
+    })
+    .optional(),
+  /** An approval with no claim and no live runner past the stall window. */
+  stalled: z
+    .strictObject({
+      since: z.string().datetime(),
+      reason: z.string().min(1).max(600),
+    })
+    .optional(),
+});
+export type CoordinatorDispatchStatus = z.infer<typeof CoordinatorDispatchStatusSchema>;
 export const CoordinatorBootstrapRequestViewSchema = CoordinatorBootstrapRequestSchema.extend({
   automaticStatus: CoordinatorAutomaticStatusSchema.optional(),
+  dispatchStatus: CoordinatorDispatchStatusSchema.optional(),
 });
 export type CoordinatorBootstrapRequestView = z.infer<typeof CoordinatorBootstrapRequestViewSchema>;
 
@@ -373,6 +402,7 @@ export const CoordinatorBootstrapListRequestSchema = z.strictObject({
   sourceUpdateTooling: z.literal(true).optional(),
   bootRecovery: z.literal(true).optional(),
   automaticStatus: z.literal(true).optional(),
+  dispatchStatus: z.literal(true).optional(),
 });
 export const CoordinatorSubmissionProofSchema = z.strictObject({
   policyActivatedAt: z.string().datetime(),
@@ -394,6 +424,7 @@ export const CoordinatorBootstrapPrepareRequestSchema = z.strictObject({
   sourceUpdateTooling: z.literal(true).optional(),
   bootRecovery: z.literal(true).optional(),
   automaticStatus: z.literal(true).optional(),
+  dispatchStatus: z.literal(true).optional(),
   input: CoordinatorBootstrapPreparationSchema,
   submissionProof: CoordinatorSubmissionProofSchema.optional(),
 });
@@ -412,6 +443,7 @@ export const CoordinatorBootstrapDecideRequestSchema = z.strictObject({
   sourceUpdateTooling: z.literal(true).optional(),
   bootRecovery: z.literal(true).optional(),
   automaticStatus: z.literal(true).optional(),
+  dispatchStatus: z.literal(true).optional(),
   input: CoordinatorBootstrapDecisionSchema,
   // Transient owner proof. Never persist it with the request or decision.
   ownerPassword: z.string().min(1).max(1024),

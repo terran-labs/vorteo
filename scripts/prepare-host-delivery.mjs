@@ -44,9 +44,11 @@ export function unionConflicts(text) {
   return output.join("\n");
 }
 
-// Both lines bump the Vorteo version on every commit, so manifests conflict on
-// version strings alone. Those hunks keep the installed side; the version
-// workflow sets the final number when the merge is committed.
+// Lines from before calendar versions bump a counter version on every commit, so
+// manifests conflict on those strings alone. Those hunks keep the installed side.
+// Calendar versions change only at release preparation and are deliberately not
+// masked: keeping the installed side could undo a newer preparation, so a conflict
+// between calendar versions is resolved by hand, taking the newer version.
 const VORTEO_VERSION = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+?)?\.(?:vorteo|vorton)\.\d+/g;
 
 /** Resolves conflict hunks that differ only in Vorteo version strings. */
@@ -202,7 +204,7 @@ function main() {
   } else {
     console.log(`Ready: ${result.checkout} on ${result.branch} at ${result.head.slice(0, 9)}.`);
     console.log(
-      "Push it to GitHub main with scripts/publish-main.mjs, then submit it with the installation client's request-restart --target host --update --repository command.",
+      "Install it with the installation client's request-restart --target host --update --repository command, then deliver it to main the same day through a pull request with scripts/publish-main.mjs.",
     );
   }
 }

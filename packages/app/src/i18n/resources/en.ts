@@ -250,6 +250,10 @@ export const en = {
     states: {
       notFound: "Agent not found",
       failedToLoad: "Failed to load agent",
+      providerUnavailable: "This thread's provider is unavailable",
+      providerRecovery:
+        "Choose a profile to continue this thread. Its saved conversation, tasks and journal stay here.",
+      loadingProviders: "Loading available providers...",
       reconnecting: "Reconnecting to host",
       updating: "Updating messages",
       timelineSyncFailed: "Couldn't refresh agent history.",
@@ -1230,6 +1234,11 @@ export const en = {
         "Add setup commands so new worktrees can install dependencies and prepare themselves automatically.",
       openProjectSettings: "Open project settings",
     },
+    focus: {
+      focusItem: "Focus {{name}}",
+      allProjects: "All projects",
+      breadcrumb: "Sidebar focus path",
+    },
     folders: {
       actions: {
         menu: "Folder actions",
@@ -2062,6 +2071,7 @@ export const en = {
     used: "{{percentage}}% used",
     tokens: "{{used}} / {{max}} tokens",
     sessionCost: "Session cost {{cost}}",
+    sessionCostEstimated: "Estimated session cost ~{{cost}}",
     accessibility: "Context window {{percentage}}% used",
     breakdown: {
       used: "Used",
@@ -2392,12 +2402,12 @@ export const en = {
         confirmedCurrent: "You're up to date",
         checkComplete: "Check complete",
         title: "Vorteo updates",
-        idle: "Check for new commits on main.",
-        current: "This interface is up to date with main.",
-        ahead: "This interface was built ahead of main.",
-        available: "{{count}} new commits are available on main.",
+        idle: "Check for a newer Vorteo release.",
+        current: "This interface is up to date with {{release}}.",
+        ahead: "This interface was built after {{release}}.",
+        available: "{{release}} is available with {{count}} new commits.",
         diverged:
-          "{{count}} incoming commits. This build has changes outside main; an agent can help merge them.",
+          "{{release}} has {{count}} incoming commits. This build has changes outside it; an agent can help merge them.",
         unpublished:
           "This build's commit is not available on GitHub. An agent can check your local checkout.",
         unknown: "This build has no source commit recorded. An agent can check your checkout.",
@@ -2405,7 +2415,7 @@ export const en = {
         failed: "Could not check for updates. {{error}}",
         commit: "Interface commit {{commit}}.",
         interval:
-          "Checks public main every 30 minutes while the app is open. Commits may not be tested releases.",
+          "Checks the latest GitHub release every 30 minutes while the app is open. Releases are published after end-to-end tests pass.",
         check: "Check now",
         changes: "View changes",
         help: "Help me update",
@@ -2446,6 +2456,7 @@ export const en = {
       theme: {
         title: "Theme",
         accessibilityLabel: "Theme: {{value}}",
+        pluginThemes: "Plugin themes",
         options: {
           light: "Light",
           dark: "Dark",
@@ -2955,7 +2966,7 @@ export const en = {
       system: {
         title: "About Vorteo System",
         description:
-          "This project is for evolving this Vorteo installation. It is backed by the checkout the installation was built from, and it also holds upkeep workspaces the daemon manages, such as the Optimization Runner. The daemon recreates and relies on it, so it can't be removed or renamed.",
+          "This project is for evolving this Vorteo installation. It is backed by the checkout the installation was built from, and it also holds upkeep workspaces the daemon manages, such as the Vorteo :: Optimizer. The daemon recreates and relies on it, so it can't be removed or renamed.",
       },
       readFailures: {
         invalidTitle: "paseo.json couldn't be parsed",

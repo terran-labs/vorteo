@@ -26,7 +26,7 @@ try {
     const status = JSON.parse(result.stdout);
 
     assert.strictEqual(status.localDaemon, "running");
-    assert.strictEqual(status.connectedDaemon, "reachable");
+    assert.strictEqual(status.connectedDaemon, "reachable", JSON.stringify(status));
     assert(!("runningAgents" in status), "status should not fetch agent counts");
     assert(!("idleAgents" in status), "status should not fetch agent counts");
     assert.doesNotMatch(status.note ?? "", /Password required|not reachable/i);
@@ -45,7 +45,7 @@ try {
     const status = JSON.parse(result.stdout);
 
     assert.strictEqual(status.localDaemon, "running");
-    assert.strictEqual(status.connectedDaemon, "auth_failed");
+    assert.strictEqual(status.connectedDaemon, "auth_failed", JSON.stringify(status));
     assert.match(status.note, /Incorrect password/i);
     assert.doesNotMatch(status.note, /not reachable/i);
     console.log("✓ wrong password reports auth_failed\n");
@@ -63,7 +63,7 @@ try {
     const status = JSON.parse(result.stdout);
 
     assert.strictEqual(status.localDaemon, "running");
-    assert.strictEqual(status.connectedDaemon, "reachable");
+    assert.strictEqual(status.connectedDaemon, "reachable", JSON.stringify(status));
     assert(!("runningAgents" in status), "status should not fetch agent counts");
     assert(!("idleAgents" in status), "status should not fetch agent counts");
     console.log("✓ password-authenticated status remains reachable\n");

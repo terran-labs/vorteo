@@ -1,3 +1,4 @@
+import { isProviderSelectable, isProviderDetecting } from "./provider-availability";
 import {
   resolveProviderType,
   isSharedWorkflowProfile,
@@ -8,7 +9,10 @@ import type { AgentProfile } from "@getpaseo/protocol/messages";
 import type { AgentProfilePickerRow } from "./internal/use-agent-profile-picker";
 import { resolveProviderLabel } from "@/utils/provider-definitions";
 
-const accountOrder = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+const accountOrder = new Intl.Collator("en", {
+  numeric: true,
+  sensitivity: "base",
+});
 
 export interface AccountPresets {
   provider: string;
@@ -23,29 +27,30 @@ export function accountPresets(input: {
   query: string;
   providers?: Readonly<Record<string, ProviderAncestry>>;
   accountIndependent?: boolean;
+  currentProvider?: string;
 }): AccountPresets[] {
   const groups = new Map<string, AccountPresets>();
   const rows = input.accountIndependent
-    ? (input.entries ?? [])
-        .filter((entry) => entry.enabled)
-        .flatMap((entry) => {
-          const type = resolveProviderType(entry.provider, input.providers ?? {});
-          return input.rows
-            .filter((row) =>
-              isSharedWorkflowProfile(row.id)
-                ? row.provider === type
-                : row.provider === entry.provider,
-            )
-            .map((row) =>
-              Object.assign({}, row, {
-                provider: entry.provider,
-                unavailable: entry.status !== "ready",
-                localEndpoint: entry.models?.find((model) => model.id === row.modelId)
-                  ?.localEndpoint,
-              }),
-            );
-        })
-    : input.rows;
+    ? (input.entries ?? []).filter(isProviderSelectable).flatMap((entry) => {
+        const type = resolveProviderType(entry.provider, input.providers ?? {});
+        return input.rows
+          .filter((row) =>
+            isSharedWorkflowProfile(row.id)
+              ? row.provider === type
+              : row.provider === entry.provider,
+          )
+          .map((row) =>
+            Object.assign({}, row, {
+              provider: entry.provider,
+              unavailable: entry.status !== "ready",
+              localEndpoint: entry.models?.find((model) => model.id === row.modelId)?.localEndpoint,
+            }),
+          );
+      })
+    : input.rows.filter((row) => {
+        const entry = input.entries?.find((item) => item.provider === row.provider);
+        return !entry || isProviderSelectable(entry);
+      });
   for (const row of rows) {
     let group = groups.get(row.provider);
     if (!group) {
@@ -57,6 +62,20 @@ export function accountPresets(input: {
       groups.set(row.provider, group);
     }
     group.rows.push(row);
+  }
+  // Accounts exist independently of saved profiles, including on a fresh install.
+  for (const entry of input.entries ?? []) {
+    if (
+      isProviderSelectable(entry) &&
+      (!isProviderDetecting(entry) || entry.provider === input.currentProvider) &&
+      !groups.has(entry.provider)
+    ) {
+      groups.set(entry.provider, {
+        provider: entry.provider,
+        label: resolveProviderLabel(entry.provider, input.entries),
+        rows: [],
+      });
+    }
   }
   const query = input.query.trim().toLowerCase();
   // Daemons register the same accounts in different orders. Display names provide

@@ -4,7 +4,10 @@ import { Text, View } from "react-native";
 import type { SettingsSectionSlug } from "@/utils/host-routes";
 import { useHosts } from "@/runtime/host-runtime";
 import { readExecutionInstallation } from "@/execution-installation/policy";
-import { InstallationSettingsStatus } from "@/execution-installation/settings-status";
+import {
+  InstallationSettingsStatus,
+  InstallationSettingsSyncStatus,
+} from "@/execution-installation/settings-status";
 import { AgentProfilesSection } from "@/agent-profiles/settings/agent-profiles-section";
 import { Button } from "@/components/ui/button";
 import { settingsStyles } from "@/styles/settings";
@@ -53,6 +56,8 @@ function installationWidePane(section: InstallationSettingsSection) {
     case "providers":
       return (
         <InstallationSettingsStatus>
+          {/* Always rendered, so account sync news never pushes the provider list. */}
+          <InstallationSettingsSyncStatus />
           <SharedProvidersPage />
         </InstallationSettingsStatus>
       );
@@ -62,7 +67,7 @@ function installationWidePane(section: InstallationSettingsSection) {
           <SharedPluginsPage />
         </InstallationSettingsStatus>
       );
-    // Profiles and usage live on each provider's page.
+    // Profiles and usage live in each provider's details.
     case "profiles":
     case "usage":
       return null;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { relative as relativePath } from "node:path";
 import test from "node:test";
+import { isVersionOnlyChange } from "./ci-neutralize-version-bumps.mjs";
 
 const repoRoot = new URL("../", import.meta.url);
 const ciWorkflowPath = new URL(".github/workflows/ci.yml", repoRoot);
@@ -17,7 +18,7 @@ const gatedCiJobs = new Map([
   ["typecheck", { name: "typecheck", contract: "quality" }],
   ["server-tests-ubuntu", { name: "server-tests (ubuntu-latest)", contracts: ["server", "hub"] }],
   ["server-tests-windows", { name: "server-tests (windows-latest)", contracts: ["server", "hub"] }],
-  ["server-tests-macos", { name: "server-tests (macos-14, file observation)", contract: "server" }],
+  ["server-tests-macos", { name: "server-tests (macos-15, file observation)", contract: "server" }],
   ["desktop-tests-ubuntu", { name: "desktop-tests (ubuntu-latest)", contract: "desktop" }],
   ["desktop-tests-windows", { name: "desktop-tests (windows-latest)", contract: "desktop" }],
   ["app-tests", { name: "app-tests", contract: "app" }],
@@ -128,6 +129,23 @@ test("focused contracts stay inside existing required checks", () => {
   assert.match(desktop, /npm run test --workspace=@getpaseo\/desktop/);
   assert.ok(!jobs.has("desktop-browser-bridge"));
   assert.ok(!jobs.has("playwright-desktop"));
+});
+
+test("PR routing ignores manifests whose only change is the Vorteo version", () => {
+  const changes = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("changes")?.join("\n") ?? "";
+  assert.match(changes, /node scripts\/ci-neutralize-version-bumps\.mjs[\s\S]*dorny\/paths-filter/);
+  assert.match(changes, /token: ""/);
+
+  const base =
+    '{\n  "version": "1.0.0-vorteo.1",\n  "dependencies": { "@getpaseo/client": "1.0.0-vorteo.1" }\n}\n';
+  const bumped = base.replaceAll("vorteo.1", "vorteo.2");
+  assert.equal(isVersionOnlyChange(base, bumped, "1.0.0-vorteo.1", "1.0.0-vorteo.2"), true);
+  const withDependency = bumped.replace("}\n}", '}, "zod": "4.0.0"\n}');
+  assert.equal(
+    isVersionOnlyChange(base, withDependency, "1.0.0-vorteo.1", "1.0.0-vorteo.2"),
+    false,
+  );
+  assert.equal(isVersionOnlyChange(base, base, "1.0.0-vorteo.1", "1.0.0-vorteo.1"), false);
 });
 
 test("server builds exclude test utilities at every domain depth", () => {

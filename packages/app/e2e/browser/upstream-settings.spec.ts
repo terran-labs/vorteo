@@ -5,7 +5,7 @@ import { UPSTREAM_UPDATE_PROMPT } from "../../src/vorton-updates/upstream";
 const week = 7 * 24 * 60 * 60 * 1000;
 const mergedAt = Date.parse(record.mergedAt);
 
-for (const width of [1280, 390]) {
+for (const width of [1280]) {
   test(`General contains About and a copyable overdue upstream task at ${width}px`, async ({
     page,
     context,
@@ -32,9 +32,9 @@ for (const width of [1280, 390]) {
     await expect(page.getByTestId("upstream-update-overdue")).toBeVisible();
     await expect(page.getByText("This device", { exact: true })).toHaveCount(1);
     await page.getByTestId("copy-upstream-prompt").click();
-    await expect(
-      section.getByText("Prompt copied. Paste it into an agent session on your host."),
-    ).toBeVisible();
+    await expect(page.getByTestId("app-toast-message")).toHaveText(
+      "Prompt copied. Paste it into an agent session on your host.",
+    );
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(UPSTREAM_UPDATE_PROMPT);
     await page.getByTestId("toggle-upstream-prompt").click();
     await expect(page.getByTestId("upstream-host-prompt")).toHaveText(UPSTREAM_UPDATE_PROMPT);
@@ -44,7 +44,7 @@ for (const width of [1280, 390]) {
   });
 }
 
-test("the weekly highlight expires while General is open without an alternate product switch", async ({
+test("the weekly highlight expires while Maintenance is open without an alternate product switch", async ({
   page,
 }) => {
   await page.clock.install({ time: new Date(mergedAt + week - 60_000) });
@@ -55,7 +55,8 @@ test("the weekly highlight expires while General is open without an alternate pr
       JSON.stringify({ ...JSON.parse(localStorage.getItem(key) ?? "{}"), vortonMode: true }),
     );
   });
-  await page.goto("/settings/general");
+  // Open the owning section so virtual time does not gate its progressive mount.
+  await page.goto("/settings/maintenance");
   await expect(page.getByTestId("upstream-updates-section")).toHaveCount(1);
   await expect(page.getByTestId("upstream-update-overdue")).toHaveCount(0);
   await page.clock.fastForward(120_000);

@@ -89,7 +89,7 @@ export function describeSubagentUsage(usage: AgentUsage | null | undefined): str
     usage.contextWindowUsedTokens !== undefined && usage.contextWindowMaxTokens
       ? `Context ${formatTokenCount(usage.contextWindowUsedTokens)} / ${formatTokenCount(usage.contextWindowMaxTokens)}`
       : null;
-  const cost = usage.totalCostUsd !== undefined ? `$${usage.totalCostUsd.toFixed(2)}` : null;
+  const cost = formatTrackCost(usage);
   return [tokens.length ? `Tokens ${tokens.join(" · ")}` : null, context, cost].filter(
     (line): line is string => Boolean(line),
   );
@@ -191,4 +191,13 @@ export function resolveRowLabel(title: string | null | undefined): string | null
     return null;
   }
   return normalized;
+}
+
+/** The reported cost, or the daemon's estimate marked as one. */
+function formatTrackCost(usage: AgentUsage): string | null {
+  if (usage.totalCostUsd !== undefined) return `$${usage.totalCostUsd.toFixed(2)}`;
+  if (usage.estimatedCostUsd !== undefined) {
+    return `~$${usage.estimatedCostUsd.toFixed(2)} (estimate)`;
+  }
+  return null;
 }

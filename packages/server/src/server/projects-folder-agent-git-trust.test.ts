@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -62,7 +62,7 @@ describe("Projects folder global git trust for agents", () => {
     expect(listed).toEqual(["/somewhere/else", entry]);
   });
 
-  it("writes nothing where the folder is at its own path, outside it, or without aliases", async () => {
+  it("writes nothing for same-owner repositories at the logical root or outside the folder", async () => {
     const { calls, runGit } = fakeGit([]);
     mkdirSync(path.join(base, "elsewhere", ".git"), { recursive: true });
     const hostLike = { root: physical, aliases: ["/Users/guest/dev"] };
@@ -85,6 +85,28 @@ describe("Projects folder global git trust for agents", () => {
       }),
     ).toBeNull();
     expect(calls).toEqual([]);
+  });
+
+  it("trusts a differently owned repository at the logical root without trusting siblings", async () => {
+    const app = path.join(physical, "app");
+    const config = { root: physical, aliases: [] };
+    const { calls, runGit } = fakeGit([]);
+    const currentUid = statSync(app).uid + 1;
+    const entry = gitSafeDirectoryValue(app);
+    expect(await trustProjectsFolderRepositoryForAgents(app, { config, runGit, currentUid })).toBe(
+      entry,
+    );
+    mkdirSync(path.join(base, "outside", ".git"), { recursive: true });
+    expect(
+      await trustProjectsFolderRepositoryForAgents(path.join(base, "outside"), {
+        config,
+        runGit,
+        currentUid,
+      }),
+    ).toBeNull();
+    expect(calls.filter((args) => args.includes("--add"))).toEqual([
+      ["config", "--global", "--add", "safe.directory", entry],
+    ]);
   });
 
   it("logs and resolves to null when git fails", async () => {

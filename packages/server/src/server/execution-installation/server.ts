@@ -1,3 +1,13 @@
+import { InstallationManagement } from "./management.js";
+import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js";
+import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
+import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
+import {
+  SnapshotRestoreRequestSchema,
+  UpgradeDecisionSchema,
+  UpgradeRequestSchema,
+} from "@getpaseo/protocol/installation-upgrades";
+import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
 import {
   lookupWorkerLaunch,
   parseWorkerLaunchLookupQuery,
@@ -34,6 +44,8 @@ import type { ClaudeOAuthRuntime } from "./accounts/claude-oauth-runtime.js";
 import type { ClaudeSetupRuntime } from "./accounts/claude-setup-runtime.js";
 import { mountProviderSecretsRoutes } from "./accounts/provider-secrets-routes.js";
 import type { ProviderSecretsRuntime } from "./accounts/provider-secrets-runtime.js";
+import { mountCodexSignInRoutes } from "./accounts/codex-signin-routes.js";
+import type { CodexSignInRuntime } from "./accounts/codex-signin-runtime.js";
 import {
   SkillSourceSchema,
   InstallationSkillSchema,
@@ -46,6 +58,7 @@ import {
 } from "@getpaseo/protocol/plugin-installation";
 import { OwnerSessions, OWNER_SESSION_MAX_AGE } from "./owner-sessions.js";
 import { createInstallationProfiles } from "./profiles/runtime.js";
+import { createInstallationNameStore } from "./installation-name.js";
 import { ProfileSharingConflict } from "./profiles/merge.js";
 import { ProviderPreferencesValidationError } from "../agent/provider-preferences/validation.js";
 import type { InstallationProfiles } from "./profiles/service.js";
@@ -74,7 +87,7 @@ import {
   supportsAutomaticMaintenance,
   type RestartExecutor,
 } from "./restarts.js";
-import type { InstallationConfig } from "./config.js";
+import { daemonTargets, requireEnvironmentDaemon, type InstallationConfig } from "./config.js";
 import {
   connectInstallationDaemon,
   submitInstallationCoordinator,
@@ -107,7 +120,14 @@ import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
 import { InstallationSourceUpdates } from "./source-updates.js";
 import { FactoryGate, factoryRestartClass } from "./factory-gate.js";
-import { delegatedHandler, readOwnerDelegation, type OwnerDelegation } from "./owner-delegation.js";
+import {
+  delegatedHandler,
+  changeMaintenanceDelegation,
+  maintenanceDelegationStatus,
+  maintenanceDelegationActivation,
+  readOwnerDelegation,
+  type OwnerDelegation,
+} from "./owner-delegation.js";
 
 /**
  * Status answers are reused this long unless a session host job changes. Each answer greets the
@@ -334,6 +354,25 @@ async function loadedDaemonVersion(
   }
 }
 
+/** What differs between Host-only and Host-and-Dev installations, decided once. */
+function installationShape(config: InstallationConfig) {
+  const dev = config.container;
+  return {
+    factoryGate: dev?.factoryGate,
+    restartPolicy: dev ? {} : { daemonTargets: daemonTargets(config) },
+    // Dev in gate mode reaches agent routes through the gate's named route.
+    gateAuthority: dev ? config.access?.gateRoute?.authority : undefined,
+    agentRequesters: dev ? (["host-agent", "container-agent"] as const) : (["host-agent"] as const),
+  };
+}
+
+function optionalReleaseRuntime(
+  files: { configFile: string } | undefined,
+  input: Omit<Parameters<typeof createReleaseUpgradeRuntime>[0], "configFile">,
+) {
+  return files ? createReleaseUpgradeRuntime({ ...input, configFile: files.configFile }) : null;
+}
+
 export function createInstallationServer(
   config: InstallationConfig,
   executor: RestartExecutor,
@@ -347,6 +386,9 @@ export function createInstallationServer(
   coordinatorRequests?: BootstrapReconciliationLedger,
   claudeOAuth?: ClaudeOAuthRuntime,
   providerSecrets?: ProviderSecretsRuntime,
+  // The private configuration file, captured by safety snapshots. Omitted in tests.
+  files?: { configFile: string },
+  codexSignIn?: CodexSignInRuntime,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -372,15 +414,14 @@ export function createInstallationServer(
   const standingRuntime = createDaemonStandingRuntime(config, updates);
   function assertUpdateReadiness(target: RestartJob["target"]): void {
     standingRuntime.assertRegistrationReadiness(target);
-    if (target === "container-daemon" && config.container.persistentRegistration)
+    if (target === "container-daemon" && config.container?.persistentRegistration)
       throw new RestartRequestError(
         "Dev source updates require independently verified transition-phase readiness",
       );
   }
   // Factory's read-only checks around every Dev worker replacement, once configured.
-  const factoryGate = config.container.factoryGate
-    ? new FactoryGate(config.container.factoryGate)
-    : null;
+  const shape = installationShape(config);
+  const factoryGate = shape.factoryGate ? new FactoryGate(shape.factoryGate) : null;
   const restartExecutor: RestartExecutor = {
     ...executor,
     ...(factoryGate
@@ -459,6 +500,7 @@ export function createInstallationServer(
     config.stateDir,
     Boolean(config.restartApprovalPolicy),
     config.restartApprovalPolicy?.hostRequestsAfter,
+    daemonTargets(config),
   );
   // Host release selection runs only through this queue, so it never starts unguarded.
   ensureSessionHostReleaseGuard(config);
@@ -471,9 +513,14 @@ export function createInstallationServer(
       standingDecision: standingRuntime.standingDecision,
       serviceAuthority: standingRuntime.serviceAuthority,
       daemonRequestsAfter: (target) => daemonAutomation.activation(target),
+      maintenanceRequestsAfter: () =>
+        daemonAutomation.legacyPolicyAvailable()
+          ? maintenanceDelegationActivation(config.stateDir)
+          : null,
       supervisorRequestsAfter: () => daemonAutomation.activation("supervisor") ?? null,
       cancellationDelayMs: 30_000,
       hostUpdateServiceRestart: () => readOwnerDelegation(config.stateDir).hostUpdateServiceRestart,
+      ...shape.restartPolicy,
       authority: () =>
         createHash("sha256")
           .update(
@@ -482,6 +529,12 @@ export function createInstallationServer(
               host: config.hostAgentTokenHash,
               container: config.containerAgentTokenHash,
               policy: "host-only-service-permissions-v2",
+              ...(maintenanceDelegationActivation(config.stateDir)
+                ? {
+                    maintenanceApprovedAfter: maintenanceDelegationActivation(config.stateDir),
+                    owner: config.ownerPasswordHash,
+                  }
+                : {}),
               // Absent when off, so existing grants keep their authority.
               ...(readOwnerDelegation(config.stateDir).hostUpdateServiceRestart
                 ? { hostUpdateServiceRestart: true }
@@ -495,6 +548,16 @@ export function createInstallationServer(
       progress: (message, fields) => logger.info(fields, message),
     },
   );
+  const releaseRuntime = optionalReleaseRuntime(files, {
+    config,
+    restarts,
+    hostUpdates: updates.host,
+    logger,
+  });
+  const requireReleaseRuntime = () => {
+    if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
+    return releaseRuntime;
+  };
   const startupReleased = () => {
     if (startupFence && !startupFence.released()) return false;
     restarts.activate();
@@ -576,6 +639,13 @@ export function createInstallationServer(
         discoverMaintenanceServices();
         await standingRuntime.refresh(restarts.list());
         await restarts.drain();
+        // An installation from before the installer moves to its layout after a Host update.
+        releaseRuntime?.adoptAfterSourceUpdate();
+        // Upgrades wait on long builds and on Host update jobs this drain advances,
+        // so they run beside it under their own guard.
+        void releaseRuntime?.upgrades
+          ?.drain()
+          .catch((error) => logger.error({ err: error }, "Installation upgrade failed"));
         if (coordinatorRequests && !coordinatorReconciliation) {
           coordinatorReconciliation = reconcileInstallationCoordinator(config, coordinatorRequests)
             .catch(() => logger.warn("Automatic coordinator reconciliation remains unconfirmed"))
@@ -592,19 +662,23 @@ export function createInstallationServer(
   };
   const sessions = new OwnerSessions(path.join(config.stateDir, "owner-sessions.json"));
   const secureCookies = new URL(config.public.origin).protocol === "https:";
-  const cookieName = secureCookies ? "__Host-vorteo-owner" : "vorteo-owner";
-  const cookieOptions = {
+  const publicCookieName = secureCookies ? "__Host-vorteo-owner" : "vorteo-owner";
+  const localOrigin = (req: Request) => localInstallationOrigin(config, req);
+  const sessionOrigin = (req: Request) => localOrigin(req) ?? undefined;
+  const cookieName = (req: Request) =>
+    localOrigin(req) ? `vorteo-owner-local-${config.listenPort}` : publicCookieName;
+  const cookieOptions = (req: Request) => ({
     httpOnly: true,
-    secure: secureCookies,
+    secure: localOrigin(req) ? false : secureCookies,
     sameSite: "strict" as const,
     path: "/",
-  };
+  });
   const sessionToken = (req: Request): string | undefined =>
     req.headers.cookie
       ?.split(";")
       .map((part) => part.trim())
-      .find((part) => part.startsWith(`${cookieName}=`))
-      ?.slice(cookieName.length + 1);
+      .find((part) => part.startsWith(`${cookieName(req)}=`))
+      ?.slice(cookieName(req).length + 1);
   const configuredPasswordFile =
     config.ownerPasswordFile ?? path.resolve(config.stateDir, "../..", "owner-password");
   const app = express();
@@ -616,7 +690,15 @@ export function createInstallationServer(
     recoveryHost !== null && req.headers.host === recoveryHost;
   const ownerOriginMatches = (req: Request) =>
     req.header("origin") ===
-    (isRecoveryRequest(req) ? config.recoveryOrigin : config.public.origin);
+    (localOrigin(req) ?? (isRecoveryRequest(req) ? config.recoveryOrigin : config.public.origin));
+  // Dev in gate mode reaches agent routes through the gate's named route. That
+  // authority never serves the owner interface, owner routes or HTML.
+  const gateAuthority = shape.gateAuthority;
+  const isGateRouteRequest = (req: Request) =>
+    gateAuthority !== undefined &&
+    req.headers.host === gateAuthority &&
+    req.path.startsWith("/api/installation/") &&
+    !req.path.startsWith("/api/installation/owner");
   const redirectHosts = new Set(
     (config.redirectOrigins ?? []).map((origin) => new URL(origin).host),
   );
@@ -639,7 +721,10 @@ export function createInstallationServer(
       `127.0.0.1:${config.listenPort}`,
       `localhost:${config.listenPort}`,
     ]);
-    if (!allowedHosts.has(req.headers.host ?? "")) {
+    const isLocalHost =
+      host === `127.0.0.1:${config.listenPort}` || host === `localhost:${config.listenPort}`;
+    const refused = !allowedHosts.has(host) || (isLocalHost && !localOrigin(req));
+    if (refused && !isGateRouteRequest(req)) {
       res.sendStatus(403);
       return;
     }
@@ -689,10 +774,14 @@ export function createInstallationServer(
     }
   });
   let uploads = 0;
+  // A Host-only installation has no Dev agents, so its unused Dev credential never authenticates.
+  const matchesContainerAgent = (token: string | null) =>
+    config.container !== undefined && matchesToken(token, config.containerAgentTokenHash);
+  const agentRequesters = shape.agentRequesters;
   function authenticateUpdate(req: Request, res: Response, next: NextFunction) {
     const token = extractHttpBearerToken(req.header("authorization"));
     const host = matchesToken(token, config.hostAgentTokenHash);
-    const container = matchesToken(token, config.containerAgentTokenHash);
+    const container = matchesContainerAgent(token);
     if (!host && !container) {
       res.sendStatus(401);
       return;
@@ -700,10 +789,37 @@ export function createInstallationServer(
     res.locals.updateRequester = host ? "host-agent" : "container-agent";
     next();
   }
+  const management = new InstallationManagement(config.stateDir, restarts, coordinatorRequests);
+  function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
+    if (res.locals.updateRequester !== "host-agent" || !management.authority()) {
+      res.status(403).json({ error: "Explicit Host installation management grant required" });
+      return;
+    }
+    next();
+  }
+  app.get(
+    "/api/installation/management/requests",
+    authenticateUpdate,
+    requireManagementHost,
+    (_req, res) => res.json(management.snapshot()),
+  );
+  app.get(
+    "/api/installation/management/receipts/:id",
+    authenticateUpdate,
+    requireManagementHost,
+    (req, res) => res.json(management.receipt(req.params.id)),
+  );
+  app.post(
+    "/api/installation/management/cancel",
+    authenticateUpdate,
+    requireManagementHost,
+    express.json({ limit: "16kb" }),
+    (req, res) => res.json(management.cancel(req.body)),
+  );
   async function updateCapability(target: RestartJob["target"]) {
     try {
       standingRuntime.assertRegistrationReadiness(target);
-      if (target === "container-daemon" && config.container.persistentRegistration)
+      if (target === "container-daemon" && config.container?.persistentRegistration)
         return {
           available: false,
           reason: "Dev source updates require independently verified transition-phase readiness.",
@@ -738,7 +854,7 @@ export function createInstallationServer(
       readiness: supervisorBlocker ? "blocked" : "ready",
       reason:
         supervisorBlocker ??
-        "The protected supervisor plan is available through the tracked queue. Only a separate supervisor permission can authorize it automatically.",
+        "The protected supervisor plan is available through the tracked queue. A separate supervisor permission or explicit full maintenance delegation can authorize it automatically.",
     };
   }
   async function coordinatorCapability() {
@@ -746,7 +862,11 @@ export function createInstallationServer(
     if (!coordinatorRequests)
       return {
         ...unavailable,
-        reason: "Update the coordinator to expose its durable maintenance ledger.",
+        // The ledger binds the launchd Host service; systemd Hosts have no coordinator maintenance yet.
+        reason:
+          "systemdService" in config.host
+            ? "Coordinator maintenance is not available on a systemd Host yet."
+            : "Update the coordinator to expose its durable maintenance ledger.",
       };
     try {
       const open = openBootstrapRequests(coordinatorRequests.list());
@@ -793,14 +913,19 @@ export function createInstallationServer(
     const impacts = await restarts.impacts();
     const paths: InstallationMaintenanceStatus["paths"] = [];
     const executorReady = supportsAutomaticMaintenance(executor);
-    for (const target of ["host", "container-daemon"] as const) {
+    for (const target of daemonTargets(config)) {
       const sourceUpdate = await updateCapability(target);
       const selectedSource = sourceUpdate.available ? forTarget(target).source().baseCommit : null;
       const impact = impacts.find((item) => item.target === target);
       const recoveryBlocker = restarts.maintenanceBlocker(target);
-      for (const requester of ["host-agent", "container-agent"] as const) {
+      for (const requester of agentRequesters) {
         const automatic =
-          requester === "host-agent" && Boolean(daemonAutomation.effectiveActivation(target));
+          requester === "host-agent" &&
+          Boolean(
+            daemonAutomation.effectiveActivation(target) ||
+            (daemonAutomation.legacyPolicyAvailable() &&
+              maintenanceDelegationActivation(config.stateDir)),
+          );
         for (const operation of ["restart", "source-update"] as const) {
           let blocker: string | null = null;
           if (recoveryBlocker) blocker = recoveryBlocker;
@@ -830,10 +955,9 @@ export function createInstallationServer(
         }
       }
     }
-    const services: NonNullable<InstallationMaintenanceStatus["services"]> = [
-      "host",
-      "container-daemon",
-    ].map((target) => {
+    const services: NonNullable<InstallationMaintenanceStatus["services"]> = daemonTargets(
+      config,
+    ).map((target) => {
       const entries = paths.filter(
         (item) => item.target === target && item.requester === "host-agent",
       );
@@ -861,32 +985,51 @@ export function createInstallationServer(
     // Host plans need only a Host caller; Dev plans also need a ready, unregistered Dev.
     const advertisedPlan = (operation: ReviewedRestartOperation) =>
       host &&
-      (operation.target === "host" || (devReady && !config.container.persistentRegistration))
+      (operation.target === "host" || (devReady && !config.container?.persistentRegistration))
         ? operation.plan(executor)
         : undefined;
     const supervisorPlan = advertisedPlan(operationFor("supervisorPlanSha256"));
     const permissions = daemonAutomation.servicePermissions();
+    const delegatedMaintenance =
+      host &&
+      daemonAutomation.legacyPolicyAvailable() &&
+      maintenanceDelegationActivation(config.stateDir) !== null;
+    const managementCapability = {
+      available: host && management.available(),
+      enabled: host && management.authority() !== null,
+      cancellation: true,
+      approval: false,
+    };
     const automaticSupported = supportsAutomaticMaintenance(executor);
     // COMPAT(hostAutomaticRestarts): per-target permissions added v543; retain
     // the conservative aggregate until legacy capability clients retire after 2027-04-15.
     const automaticHost = Boolean(
-      permissions.host && permissions["container-daemon"] && automaticSupported && devReady,
+      (delegatedMaintenance || (permissions.host && permissions["container-daemon"])) &&
+      automaticSupported &&
+      devReady,
     );
     void (async () => {
+      const brokerDeploymentAvailable = host && (await restarts.brokerDeploymentAvailable());
+      const brokerCompatible = host ? ((await executor.brokerCompatible?.()) ?? false) : false;
       const monitorCompatible = host ? ((await executor.monitorCompatible?.()) ?? false) : false;
       const coordinator = await coordinatorCapability();
+      const brokerAvailable = Boolean(
+        host && executor.validateBrokerPlan && executor.installBroker && brokerCompatible,
+      );
       return Promise.all(
-        (["host", "container-daemon"] as const).map(async (target) => ({
+        daemonTargets(config).map(async (target) => ({
           target,
           restart: target === "host" || devReady,
           ownerApprovalRequired: !(
             host &&
-            permissions[target] &&
+            (permissions[target] || delegatedMaintenance) &&
             automaticSupported &&
             (target === "host" || devReady)
           ),
           hostAutomaticRestarts: Boolean(
-            permissions[target] && automaticSupported && (target === "host" || devReady),
+            (permissions[target] || delegatedMaintenance) &&
+            automaticSupported &&
+            (target === "host" || devReady),
           ),
           sourceUpdate: await updateCapability(target),
         })),
@@ -900,13 +1043,29 @@ export function createInstallationServer(
             ownerApprovalRequired: !automaticHost || !host,
             hostAutomaticRestarts: automaticHost,
             requireOwnerApproval: host,
+            installationManagement: managementCapability,
+            maintenanceDelegation: {
+              available: host && daemonAutomation.legacyPolicyAvailable(),
+              enabled: delegatedMaintenance,
+            },
             maintenanceServices: {
               available: host && restarts.serviceMaintenanceAvailable(),
               operations: host ? restarts.serviceMaintenanceOperations() : [],
             },
             coordinatorMaintenance: {
               ...coordinator,
-              ownerApprovalRequired: !(host && daemonAutomation.activation("coordinator")),
+              ownerApprovalRequired: !(
+                host &&
+                (daemonAutomation.activation("coordinator") || delegatedMaintenance)
+              ),
+            },
+            previewBrokerDeployment: {
+              available: brokerDeploymentAvailable,
+              ownerApprovalRequired: true,
+            },
+            previewBroker: {
+              available: brokerAvailable,
+              ownerApprovalRequired: true,
             },
             previewMonitor: {
               available: Boolean(
@@ -915,7 +1074,7 @@ export function createInstallationServer(
                 executor.installMonitor &&
                 monitorCompatible,
               ),
-              ownerApprovalRequired: true,
+              ownerApprovalRequired: !delegatedMaintenance,
             },
             nativeHelper: {
               available: Boolean(
@@ -924,11 +1083,11 @@ export function createInstallationServer(
                 executor.installHelper &&
                 executor.verifyHelperRecovery,
               ),
-              ownerApprovalRequired: true,
+              ownerApprovalRequired: !delegatedMaintenance,
             },
             sessionHostJob: {
               available: host && restarts.sessionHostAvailable(),
-              ownerApprovalRequired: true,
+              ownerApprovalRequired: !delegatedMaintenance,
               // COMPAT(sessionHostRestart): clients send the restart operation only when this is set.
               restart: true,
             },
@@ -936,13 +1095,13 @@ export function createInstallationServer(
               available: Boolean(supervisorPlan && executor.restartSupervisor),
               ownerApprovalRequired: !(
                 host &&
-                daemonAutomation.activation("supervisor") &&
+                (daemonAutomation.activation("supervisor") || delegatedMaintenance) &&
                 supportsAutomaticMaintenance(executor)
               ),
               ...(supervisorPlan ? { sha256: supervisorPlan } : {}),
             },
-            // Reviewed plans advertise owner approval, as before; supervisor maintenance is above.
-            ...reviewedPlanCapabilities(advertisedPlan, executor),
+            // Exact plans retain manual review unless the owner grants full delegation.
+            ...reviewedPlanCapabilities(advertisedPlan, executor, delegatedMaintenance),
           }),
         next,
       );
@@ -1133,8 +1292,9 @@ export function createInstallationServer(
     });
   });
   app.use(express.json({ limit: "1mb" }));
+  // The pid lets the coordinator handoff helper tell a restarted coordinator from the old one.
   app.get("/api/installation/health", (_req, res) =>
-    res.json({ installationId: config.public.installationId }),
+    res.json({ installationId: config.public.installationId, pid: process.pid }),
   );
 
   // Only counts are public. Reasons and task identities require owner access.
@@ -1146,6 +1306,8 @@ export function createInstallationServer(
       delegatedHandler(job, delegation, now)?.state === "handling";
     const helpers = restarts.listHelpers();
     const monitors = restarts.listMonitors();
+    const brokers = restarts.listBrokers();
+    const brokerDeployments = restarts.listBrokerDeployments();
     const services = restarts.listServices();
     const sessionHosts = restarts.listSessionHosts();
     res.json({
@@ -1169,6 +1331,26 @@ export function createInstallationServer(
                   ["pending", "approved", "running"].includes(job.status) &&
                   job.reconciliation?.attempts === 3,
               ).length,
+            },
+          }
+        : {}),
+      ...(brokerDeployments.length
+        ? {
+            previewBrokerDeployment: {
+              requested: brokerDeployments.filter((job) => job.status === "pending").length,
+              queued: brokerDeployments.filter((job) => job.status === "approved").length,
+              running: brokerDeployments.filter((job) => job.status === "running").length,
+              recovery: brokerDeployments.filter((job) => job.stage === "recovery_required").length,
+            },
+          }
+        : {}),
+      ...(brokers.length
+        ? {
+            previewBroker: {
+              requested: brokers.filter((j) => j.status === "pending").length,
+              queued: brokers.filter((j) => j.status === "approved").length,
+              running: brokers.filter((j) => j.status === "running").length,
+              recovery: brokers.filter((j) => j.stage === "recovery_required").length,
             },
           }
         : {}),
@@ -1205,7 +1387,7 @@ export function createInstallationServer(
     const token = extractHttpBearerToken(req.header("authorization"));
     let kind: "host" | "container";
     if (matchesToken(token, config.hostAgentTokenHash)) kind = "host";
-    else if (matchesToken(token, config.containerAgentTokenHash)) kind = "container";
+    else if (matchesContainerAgent(token)) kind = "container";
     else {
       res.sendStatus(401);
       return;
@@ -1228,7 +1410,7 @@ export function createInstallationServer(
     const token = extractHttpBearerToken(req.header("authorization"));
     let kind: "host" | "container";
     if (matchesToken(token, config.hostAgentTokenHash)) kind = "host";
-    else if (matchesToken(token, config.containerAgentTokenHash)) kind = "container";
+    else if (matchesContainerAgent(token)) kind = "container";
     else {
       res.sendStatus(401);
       return;
@@ -1256,7 +1438,7 @@ export function createInstallationServer(
   const instructionRequester = (req: Request): InstructionRequestEnvironment | null => {
     const token = extractHttpBearerToken(req.header("authorization"));
     if (matchesToken(token, config.hostAgentTokenHash)) return "host";
-    if (matchesToken(token, config.containerAgentTokenHash)) return "container";
+    if (matchesContainerAgent(token)) return "container";
     return null;
   };
   app.post("/api/installation/instruction-requests", (req, res) => {
@@ -1301,6 +1483,60 @@ export function createInstallationServer(
       return;
     }
     void executor.inspectMonitor().then((state) => res.json(state), next);
+  });
+  app.get("/api/installation/broker-deployment-requests/:id", (req, res) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    const job = restarts.listBrokerDeployments().find((item) => item.id === req.params.id);
+    if (!job) {
+      res.sendStatus(404);
+      return;
+    }
+    res.json(job);
+  });
+  app.post("/api/installation/broker-deployment-requests", (req, res, next) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    void restarts
+      .prepareBrokerDeployment(req.body, "host-agent")
+      .then((job) => res.status(201).json(job), next);
+  });
+  app.get("/api/installation/broker-rebind-requests/:id", (req, res) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    const job = restarts.listBrokers().find((j) => j.id === req.params.id);
+    if (!job) {
+      res.sendStatus(404);
+      return;
+    }
+    res.json(job);
+  });
+  app.post("/api/installation/broker-rebind-requests", (req, res, next) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    if (!executor.validateBrokerPlan || !executor.installBroker || !executor.brokerCompatible) {
+      res.status(503).json({ error: "Preview broker channel maintenance unavailable" });
+      return;
+    }
+    void restarts
+      .prepareBroker(req.body, "host-agent")
+      .then((job) => res.status(201).json(job), next);
   });
   app.get("/api/installation/monitor-requests/:id", (req, res) => {
     if (
@@ -1478,6 +1714,14 @@ export function createInstallationServer(
         decisionAt: request.decisionAt,
         execution: request.execution,
         automaticStatus: coordinatorAutomaticStatus(request, Date.now()),
+        dispatchStatus: coordinatorDispatchStatuses({
+          requests: [request],
+          readLifecycle: () => {
+            if (!coordinatorRequests.readLifecycle) throw new Error("Lifecycle unavailable");
+            return coordinatorRequests.readLifecycle();
+          },
+          now: Date.now(),
+        }).get(request.id),
         approvalUrl: approvalUrl.toString(),
       });
     } catch {
@@ -1513,7 +1757,7 @@ export function createInstallationServer(
     const token = extractHttpBearerToken(req.header("authorization"));
     let requestedBy: "host-agent" | "container-agent";
     if (matchesToken(token, config.hostAgentTokenHash)) requestedBy = "host-agent";
-    else if (matchesToken(token, config.containerAgentTokenHash)) requestedBy = "container-agent";
+    else if (matchesContainerAgent(token)) requestedBy = "container-agent";
     else {
       res.sendStatus(401);
       return;
@@ -1560,7 +1804,7 @@ export function createInstallationServer(
   app.get("/api/installation/restart-requests/:id", (req, res) => {
     const token = extractHttpBearerToken(req.header("authorization"));
     const host = matchesToken(token, config.hostAgentTokenHash);
-    const container = matchesToken(token, config.containerAgentTokenHash);
+    const container = matchesContainerAgent(token);
     if (!host && !container) {
       res.sendStatus(401);
       return;
@@ -1642,7 +1886,7 @@ export function createInstallationServer(
       res.sendStatus(403);
       return;
     }
-    const expiresAt = sessions.expiresAt(sessionToken(req));
+    const expiresAt = sessions.expiresAt(sessionToken(req), sessionOrigin(req));
     res.json({ authenticated: expiresAt !== null, expiresAt });
   });
   app.use("/api/installation/owner", (req, res, next) => {
@@ -1656,7 +1900,7 @@ export function createInstallationServer(
         }
         const token = extractHttpBearerToken(req.header("authorization"));
         if (
-          !sessions.expiresAt(sessionToken(req)) &&
+          !sessions.expiresAt(sessionToken(req), sessionOrigin(req)) &&
           !(await isBearerTokenValidAsync({ password: config.ownerPasswordHash, token }))
         ) {
           res.sendStatus(401);
@@ -1678,6 +1922,27 @@ export function createInstallationServer(
   app.post("/api/installation/owner/maintenance-services/cancel", (req, res) => {
     const input = MaintenanceServiceCancellationSchema.parse(req.body);
     res.json(maintenanceServiceView(restarts.cancelService(input.id, input.revision)));
+  });
+  app.post("/api/installation/owner/broker-deployments/query", (_req, res) =>
+    res.json({ jobs: restarts.listBrokerDeployments() }),
+  );
+  app.post("/api/installation/owner/broker-deployments/decision", (req, res) => {
+    res.json(restarts.decideBrokerDeployment(req.body));
+    void restarts.drain().catch(() => logger.error("Consumer deployment journal failed"));
+  });
+  app.post("/api/installation/owner/broker-deployments/observe", (req, res, next) => {
+    const input = z.strictObject({ id: z.string().uuid() }).parse(req.body);
+    void restarts
+      .observeBrokerDeployment(input.id)
+      .then(() => res.json({ jobs: restarts.listBrokerDeployments() }), next);
+  });
+  app.post("/api/installation/owner/broker-rebinds/query", (_req, res) =>
+    res.json({ jobs: restarts.listBrokers() }),
+  );
+  app.post("/api/installation/owner/broker-rebinds/decision", (req, res) => {
+    const job = restarts.decideBroker(req.body);
+    res.json(job);
+    void restarts.drain().catch(() => logger.error("Broker lifecycle journal failed"));
   });
   app.post("/api/installation/owner/monitors/query", (_req, res) =>
     res.json({ jobs: restarts.listMonitors() }),
@@ -1773,24 +2038,30 @@ export function createInstallationServer(
   });
   if (claudeSetup) mountClaudeSetupRoutes(app, claudeSetup);
   if (claudeOAuth) mountClaudeOAuthRoutes(app, claudeOAuth);
+  if (codexSignIn) mountCodexSignInRoutes(app, codexSignIn);
   if (providerSecrets) mountProviderSecretsRoutes(app, providerSecrets);
   app.post("/api/installation/owner/lock", (req, res) => {
-    sessions.revoke(sessionToken(req));
-    res.clearCookie(cookieName, cookieOptions);
+    sessions.revoke(sessionToken(req), sessionOrigin(req));
+    res.clearCookie(cookieName(req), cookieOptions(req));
     res.json({ locked: true });
   });
-  const sendConnections = (_req: Request, res: Response) => {
-    const connections = config.public.environments.map((environment) => ({
-      ...environment,
-      password: config[environment.kind].password,
+  const environments = (req: Request) =>
+    localOrigin(req) ? localInstallationEnvironments(config) : config.public.environments;
+  const sendConnections = (req: Request, res: Response) => {
+    const connections = environments(req).map((environment) => ({
+      kind: environment.kind,
+      serverId: environment.serverId,
+      endpoint: environment.endpoint,
+      useTls: environment.useTls,
+      password: requireEnvironmentDaemon(config, environment.kind).password,
     }));
     res.json({ installationId: config.public.installationId, connections });
   };
   app.post("/api/installation/owner/connections", sendConnections);
   app.post("/api/installation/owner/unlock", (req, res) => {
-    sessions.revoke(sessionToken(req));
-    res.cookie(cookieName, sessions.create(), {
-      ...cookieOptions,
+    sessions.revoke(sessionToken(req), sessionOrigin(req));
+    res.cookie(cookieName(req), sessions.create(sessionOrigin(req)), {
+      ...cookieOptions(req),
       maxAge: OWNER_SESSION_MAX_AGE * 1000,
     });
     sendConnections(req, res);
@@ -1832,6 +2103,13 @@ export function createInstallationServer(
   app.post("/api/installation/owner/settings/skills/preview", (req, res, next) => {
     const input = z.strictObject({ selection: AgentSkillSelectionSchema }).parse(req.body);
     void settings.previewSkills(input.selection).then((sources) => res.json({ sources }), next);
+  });
+  const installationName = createInstallationNameStore(config.stateDir);
+  app.patch("/api/installation/owner/name", (req, res) => {
+    const input = z.strictObject({ name: z.string().nullable() }).parse(req.body);
+    // An empty name restores the default rather than saving a blank title.
+    const name = installationName.write(input.name?.trim() ? input.name : null);
+    res.json({ name: name ?? null });
   });
   app.patch("/api/installation/owner/settings", (req, res, next) => {
     const input = InstallationSettingsUpdateSchema.parse(req.body);
@@ -1927,6 +2205,42 @@ export function createInstallationServer(
     coordinatorRequests?.revokeAutomatic();
     restarts.refreshApprovalPolicy();
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
+    void drainRestarts();
+  });
+  app.post("/api/installation/owner/maintenance-delegation/query", (req, res) => {
+    const available = daemonAutomation.legacyPolicyAvailable();
+    const status = maintenanceDelegationStatus(config.stateDir);
+    res.json({
+      ...status,
+      available,
+      enabled: available && status.enabled,
+      activatedAt: available ? status.activatedAt : null,
+      ...(req.query.management === "1"
+        ? {
+            managementAvailable: available && management.available(),
+            managementEnabled: available && management.authority() !== null,
+          }
+        : {}),
+    });
+  });
+  app.post("/api/installation/owner/maintenance-delegation/change", (req, res) => {
+    if (!daemonAutomation.legacyPolicyAvailable())
+      throw new RestartRequestError(
+        "Enrolled installations require their exact standing maintenance grant.",
+      );
+    const status = changeMaintenanceDelegation(config.stateDir, req.body);
+    coordinatorRequests?.revokeAutomatic();
+    restarts.refreshApprovalPolicy();
+    res.json({
+      available: true,
+      ...status,
+      ...(req.query.management === "1"
+        ? {
+            managementAvailable: management.available(),
+            managementEnabled: management.authority() !== null,
+          }
+        : {}),
+    });
     void drainRestarts();
   });
   app.post("/api/installation/owner/daemon-automation/query", (_req, res) => {
@@ -2069,25 +2383,71 @@ export function createInstallationServer(
       .drain()
       .catch((error) => logger.error({ err: error }, "Installation restart journal failed"));
   });
-  const webUi = (origin: string) =>
+  app.post("/api/installation/owner/snapshots/query", (_req, res) =>
+    res.json(requireReleaseRuntime().snapshotList()),
+  );
+  app.post("/api/installation/owner/snapshots", (_req, res, next) => {
+    void requireReleaseRuntime()
+      .takeSnapshot()
+      .then((snapshot) => res.status(201).json(snapshot), next);
+  });
+  app.post("/api/installation/owner/snapshots/restore", (req, res, next) => {
+    const request = SnapshotRestoreRequestSchema.parse(req.body);
+    void requireReleaseRuntime()
+      .restore(request)
+      .then((status) => res.status(202).json(status), next);
+  });
+  app.post("/api/installation/owner/upgrades/query", (_req, res) =>
+    res.json(requireReleaseRuntime().upgradeStatus()),
+  );
+  const requireUpgrades = () => {
+    const upgrades = requireReleaseRuntime().upgrades;
+    if (!upgrades) throw new RestartRequestError(requireReleaseRuntime().upgradeStatus().detail);
+    return upgrades;
+  };
+  app.post("/api/installation/owner/upgrades", (req, res, next) => {
+    const { release } = UpgradeRequestSchema.parse(req.body);
+    void requireUpgrades()
+      .request(release)
+      .then((upgrade) => res.status(201).json(upgrade), next);
+  });
+  app.post("/api/installation/owner/upgrades/:id/decision", (req, res) => {
+    const decision = UpgradeDecisionSchema.parse(req.body);
+    res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
+    void drainRestarts();
+  });
+  const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
       enabled: true,
       distDir: config.webDistDir,
       label: "Vorteo",
       logger,
-      installation: {
+      installation: () => ({
         ...config.public,
+        name: installationName.read(),
         origin,
+        environments: local ? localInstallationEnvironments(config) : config.public.environments,
         profileSharing: true,
         idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
         gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
-      },
+      }),
     });
   const canonicalWebUi = webUi(config.public.origin);
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
-  app.use((req, res, next) =>
-    (isRecoveryRequest(req) ? recoveryWebUi : canonicalWebUi)(req, res, next),
-  );
+  const localWebUi = new Map<string, ReturnType<typeof webUi>>();
+  app.use((req, res, next) => {
+    const origin = localOrigin(req);
+    if (origin) {
+      let middleware = localWebUi.get(origin);
+      if (!middleware) {
+        middleware = webUi(origin, true);
+        localWebUi.set(origin, middleware);
+      }
+      middleware(req, res, next);
+      return;
+    }
+    (isRecoveryRequest(req) ? recoveryWebUi : canonicalWebUi)(req, res, next);
+  });
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError) {
       res.status(400).json({ error: "Invalid request" });
@@ -2115,6 +2475,7 @@ export function createInstallationServer(
     if (
       error instanceof ProfileSharingConflict ||
       error instanceof RestartRequestError ||
+      error instanceof BrokerDeploymentRefused ||
       error instanceof BootstrapRequestConflict
     ) {
       res.status(409).json({ error: error.message });
@@ -2125,6 +2486,8 @@ export function createInstallationServer(
   });
   return Object.assign(app, {
     drainRestarts,
+    operationalQueueSummary: () => restarts.operationalSummary(),
+    setOperationalActivitySink: restarts.setOperationalActivitySink.bind(restarts),
     assertRegistrationReadiness: standingRuntime.assertRegistrationReadiness,
     registrationReadiness: standingRuntime.registrationReadiness,
   });

@@ -21,7 +21,10 @@ import {
 } from "./migration.js";
 import { ProfileSharingConflict } from "./merge.js";
 import { validateProviderPreferences } from "../../agent/provider-preferences/validation.js";
-import { isSharedWorkflowProfile } from "@getpaseo/protocol/provider-preferences";
+import {
+  resolveProviderType,
+  isSharedWorkflowProfile,
+} from "@getpaseo/protocol/provider-preferences";
 import type { SharedProviderPreferences } from "@getpaseo/protocol/messages";
 
 const ProvidersSchema = z.record(z.string(), ProviderPreferencesSchema);
@@ -68,12 +71,14 @@ export const ProfileSharingStateSchema = z.object({
   revision: z.number().int().positive(),
   providers: ProvidersSchema,
   sources: z.record(z.string(), SourceSchema),
+  provisionedProviders: z.array(z.string()).default([]),
 });
 export type ProfileSharingState = z.infer<typeof ProfileSharingStateSchema>;
 
 export interface ProfileEnvironment {
   serverId: string;
   kind: "host" | "container";
+  readyProviders?: string[];
   workerAccounts?: boolean;
   uncappedManagedWorkers?: boolean;
   read(): Promise<MutableDaemonConfig>;
@@ -347,15 +352,51 @@ export class InstallationProfiles {
         legacyProfiles: [],
       });
       this.journal.backup(backups);
-      this.commit({ version: 1, revision: 1, providers: imported.providers, sources });
+      this.commit({
+        version: 1,
+        revision: 1,
+        providers: imported.providers,
+        sources,
+        provisionedProviders: [],
+      });
     }
     if (Object.values(this.state?.sources ?? {}).some((source) => !source.projection)) {
       this.upgradeLegacyJournal(configs);
     }
+    this.provisionStarterProfiles(configs);
     this.consolidateLibrary(configs);
     for (const [index, observation] of observations.entries()) {
       await this.reconcileEnvironment(this.environments[index], observation);
     }
+  }
+
+  private provisionStarterProfiles(configs: Record<string, MutableDaemonConfig>): void {
+    if (!this.state) return;
+    const next = structuredClone(this.state);
+    for (const environment of this.environments) {
+      const config = configs[environment.serverId];
+      if (!config) continue;
+      for (const provider of environment.readyProviders ?? []) {
+        const type = resolveProviderType(provider, config.providers);
+        if (next.provisionedProviders.includes(type)) continue;
+        next.provisionedProviders.push(type);
+        const group = next.providers[type] ?? {
+          defaults: {},
+          preferredModels: [],
+          preferredThinkingOptions: [],
+          workflows: [],
+          defaultWorkflowId: null,
+        };
+        // Keep user profiles intact. An empty starter inherits the provider's current
+        // launch defaults, so model catalog changes cannot strand a fresh install.
+        if (group.workflows.length === 0) {
+          group.workflows.push({ id: "starter", name: "Default", provider: type });
+          group.defaultWorkflowId = "starter";
+        }
+        next.providers[type] = group;
+      }
+    }
+    if (!isDeepStrictEqual(next, this.state)) this.commit(next);
   }
 
   private consolidateLibrary(configs: Record<string, MutableDaemonConfig>): void {

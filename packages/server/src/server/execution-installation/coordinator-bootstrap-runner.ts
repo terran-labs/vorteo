@@ -19,6 +19,7 @@ import {
   coordinatorPlanDigest,
 } from "./coordinator-bootstrap.js";
 import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
+import { closeFailedPreclaimDispatch } from "./coordinator-bootstrap-dispatch-failure.js";
 import {
   BootstrapAdmissionSetupSchema,
   readPrivateBootstrapConfiguration,
@@ -533,6 +534,9 @@ export async function runNativeBootstrap(
     role,
   });
   const runnerEvidence = evidence;
+  // Set once this executor holds the exclusive execution lock. Only then can a
+  // pre-claim failure close the approval: no other executor can be dispatching it.
+  let ownershipHeld = false;
   return trace("runner", async () => {
     if (role === "boot-watchdog") {
       await trace("boot-binding", () => verifyBootRunnerBinding(request, setupFile, setup));
@@ -598,6 +602,7 @@ export async function runNativeBootstrap(
       await requireLock();
     };
     await requireOwnership();
+    ownershipHeld = true;
     const executorFile = (generation: string) =>
       path.join(request.plan.state.directory, `coordinator-executor-${generation}.json`);
     const removeCompletedRecovery = async (terminal: CoordinatorBootstrapRequest) => {
@@ -914,6 +919,10 @@ export async function runNativeBootstrap(
     );
     if (result.execution?.stage !== "succeeded")
       throw new BootstrapRequestConflict("Bootstrap did not activate the replacement");
+  }).catch((error: unknown) => {
+    if (role === "executor" && ownershipHeld && !request.execution)
+      closeFailedPreclaimDispatch(requests, request, error);
+    throw error;
   });
 }
 

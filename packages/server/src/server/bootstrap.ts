@@ -145,8 +145,10 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
+import { migrateMovedPaths } from "./migrations/moved-paths.migration.js";
 import { reconcileQuotaReserveStartup } from "./agent/quota-reserve/reconcile-startup.js";
 import { QuotaReservePolling } from "./agent/quota-reserve/polling.js";
+import { ClaudeLimitObservations } from "./agent/providers/claude/limit-observation.js";
 import { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -163,10 +165,16 @@ import { DEFAULT_RELEASE_CHECK_MS, readDurableSessionsSettings } from "./session
 import { createAppliedSeqStore } from "./session-host/applied-store.js";
 import { loadAdoptedAgents, planHostedStartup } from "./session-host/boot-attach.js";
 import { startHostedIdleRelease } from "./session-host/idle-release.js";
+import { startIdleSessionRelease } from "./agent/idle-release.js";
 import { ensureAgentLoaded } from "./agent/agent-loading.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
-import { seedSystemProjectAtStartup } from "./system-project/ensure-system-project.js";
+import {
+  isInstallationManaged,
+  startSystemProjectSeeding,
+} from "./system-project/ensure-system-project.js";
+import type { SystemEnvironment } from "./system-project/manifest.js";
+import { startOptimizerAgent } from "./system-project/optimizer-agent.js";
 import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
 import {
   FileBackedProjectRegistry,
@@ -681,6 +689,21 @@ function startIdleReleaseForUpgrade(
   });
 }
 
+// Before agent storage and the registries load, so they read the moved paths.
+// A failed move keeps the earlier records, which stay usable through their old paths.
+async function migrateMovedCheckouts(config: PaseoDaemonConfig, logger: Logger): Promise<void> {
+  const moves = config.projectsFolder?.movedPaths;
+  if (!moves?.length) return;
+  await migrateMovedPaths({
+    paseoHome: config.paseoHome,
+    agentStoragePath: config.agentStoragePath,
+    moves,
+    logger,
+  }).catch((error: unknown) => {
+    logger.warn({ err: error }, "Could not move records for relocated checkouts");
+  });
+}
+
 export async function createPaseoDaemon(
   config: PaseoDaemonConfig,
   rootLogger: Logger,
@@ -1011,6 +1034,7 @@ export async function createPaseoDaemon(
     serviceProxyListenTarget = parseListenString(config.serviceProxy.standaloneListen);
   }
 
+  await migrateMovedCheckouts(config, logger);
   const agentStorage = new AgentStorage(config.agentStoragePath, logger);
   // Before any registry parses a path, so alias paths load and store in logical form.
   setActiveProjectsFolder(config.projectsFolder);
@@ -1136,9 +1160,14 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   const reserveRecoveryStops = await reconcileQuotaReserveStartup(agentStorage);
   logger.info({ reserveRecoveryStops }, "Quota reserve startup reconciliation completed");
+  const claudeLimitObservations = new ClaudeLimitObservations();
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,
+    claudeLimitObservations,
+  });
+  agentManager.setUsageLimitObserver((provider, stop) => {
+    if (claudeLimitObservations.record(provider, stop)) providerUsageService.invalidate();
   });
   const quotaReservePolling = new QuotaReservePolling({
     agentManager,
@@ -1159,15 +1188,24 @@ export async function createPaseoDaemon(
     workspaceGitService,
     logger,
   });
+  // Settles with the environment once the System project exists; never, when it is off.
+  let resolveSystemSeeded: (environment: SystemEnvironment) => void = () => {};
+  const systemSeeded = new Promise<SystemEnvironment>((resolve) => {
+    resolveSystemSeeded = resolve;
+  });
   // Before reconciliation, so system folders exist when it checks for missing directories.
-  await seedSystemProjectAtStartup({
+  await startSystemProjectSeeding({
     enabled: config.systemProjectEnabled,
     paseoHome: config.paseoHome,
     serverId,
     sharedProviderPreferences: config.sharedProviderPreferences,
+    installationManaged: isInstallationManaged(process.env),
+    onBindingChange: (handler) =>
+      daemonConfigStore.onFieldChange("sharedProviderPreferences", handler),
     projectRegistry,
     workspaceRegistry: archiveWorkspaceRegistry,
     logger,
+    onSeeded: (environment) => resolveSystemSeeded(environment),
   });
   await workspaceLabelService.initialize();
   logger.info({ elapsed: elapsed() }, "Workspace registries bootstrapped");
@@ -1697,6 +1735,10 @@ export async function createPaseoDaemon(
     sessionHostConnector,
     logger,
   );
+  const idleSessionRelease = startIdleSessionRelease({
+    manager: agentManager,
+    logger: logger.child({ module: "idle-session-release" }),
+  });
   await scheduleService.start();
   factoryScheduleInspection.activate(scheduleService);
   agentManager.setAgentArchivedCallback(async (agentId) => {
@@ -1707,6 +1749,25 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  let optimizerAgent: { stop: () => void } | null = null;
+  const startOptimizerSeeding = (environment: SystemEnvironment) =>
+    startOptimizerAgent({
+      paseoHome: config.paseoHome,
+      environment,
+      workspaceRegistry,
+      agentStorage,
+      providers: providerSnapshotManager,
+      readUsage: (options) => providerUsageService.listUsage(options),
+      getSettings: () => daemonConfigStore.get(),
+      // Any settings change, such as a newly connected account or a new default profile.
+      onSettingsChange: (handler) => daemonConfigStore.onChange(() => handler()),
+      createAgent,
+      schedules: scheduleService,
+      logger,
+    });
+  const activateOptimizerAgent = (environment: SystemEnvironment): void => {
+    if (optimizerAgent === null) optimizerAgent = startOptimizerSeeding(environment);
+  };
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -2165,9 +2226,12 @@ export async function createPaseoDaemon(
       scriptHealthMonitor.start();
       blockedTaskReviews.start();
       usageLimitResumes.start();
+      // After listening, so the first Optimizer agent never delays startup.
+      void systemSeeded.then(activateOptimizerAgent);
     } catch (error) {
       blockedTaskReviews.stop();
       usageLimitResumes.stop();
+      idleSessionRelease.stop();
       factoryScheduleInspection.revoke();
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
@@ -2212,6 +2276,9 @@ export async function createPaseoDaemon(
   /** onStep names each awaited stage, so a stalled shutdown reports where it stopped. */
   const stop = async (options?: { onStep?: (step: string) => void }) => {
     const step = options?.onStep ?? (() => {});
+    optimizerAgent?.stop();
+    // A stopped daemon never starts it later, even if seeding settles now.
+    optimizerAgent = { stop: () => {} };
     blockedTaskReviews.stop();
     usageLimitResumes.stop();
     factoryScheduleInspection.revoke();
@@ -2250,6 +2317,7 @@ export async function createPaseoDaemon(
     step("quota reserve polling");
     await quotaReservePolling.stop();
     hostedIdleRelease.stop();
+    idleSessionRelease.stop();
     step("detach hosted sessions");
     // Durably hosted turns keep running in the session host; the next worker takes them over.
     await withTimeout({

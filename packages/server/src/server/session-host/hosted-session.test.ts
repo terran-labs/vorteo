@@ -15,6 +15,7 @@ import {
   ControlledSession,
 } from "../test-utils/controlled-provider-session.js";
 import { createSessionHostConnector, type SessionHostConnector } from "./connector.js";
+import { HostedSessionSnapshotSchema } from "./session-contract.js";
 import { StaleProviderSessionError } from "../agent/stale-provider-session-error.js";
 import { createHostedAgentClient } from "./hosted-agent-client.js";
 import { HostedAgentSession, HostedSessionUnavailableError } from "./hosted-agent-session.js";
@@ -510,4 +511,64 @@ test("a hosted provider calls the agent tool endpoint with the host's token", as
   expect(fixture.hosted[0]!.config.mcpServers?.paseo).toMatchObject({
     headers: { Authorization: "Bearer test-mcp-token" },
   });
+});
+
+test("an old host without conditional close capability keeps its session until explicit close", async () => {
+  const fixture = await hostedFixture();
+  await fixture.client.createSession(config, { agentId: "legacy-idle" });
+  const connection = await connectSessionHost({
+    socketPath: fixture.socketPath,
+    token: fixture.token,
+  });
+  cleanups.push(() => connection.close());
+  const channel = await connection.attach({ sessionId: "legacy-idle", afterSeq: null });
+  const snapshot = HostedSessionSnapshotSchema.parse(channel.attach.snapshot);
+  delete snapshot.capabilities?.conditionalIdleClose;
+  const session = new HostedAgentSession({
+    provider: "claude",
+    capabilities: CONTROLLED_SESSION_CAPABILITIES,
+    channel: { ...channel, attach: { ...channel.attach, snapshot } },
+    reconnect: async () => null,
+    usage: { env: {} },
+    logger,
+  });
+  await expect(session.closeIfIdle()).rejects.toThrow("does not support");
+  expect(session.isDurablyHosted()).toBe(true);
+  expect(fixture.hosted[0]!.closed).toBe(false);
+  expect((await connection.list()).map((entry) => entry.sessionId)).toEqual(["legacy-idle"]);
+  await session.close();
+  expect(fixture.hosted[0]!.closed).toBe(true);
+});
+
+test("the provider's context breakdown crosses the host, and an old host reports none", async () => {
+  const fixture = await hostedFixture();
+  const session = await fixture.client.createSession(config, { agentId: "breakdown" });
+  const breakdown = {
+    totalTokens: 40_000,
+    maxTokens: 1_000_000,
+    categories: [{ name: "Messages", tokens: 30_000, kind: "used" }],
+    groups: [{ id: "skills", items: [{ name: "docs", detail: "plugin", tokens: 500 }] }],
+    observedAt: "2026-11-02T00:00:00.000Z",
+  };
+  const provider: AgentSession = fixture.hosted[0]!;
+  provider.getContextBreakdown = async () => breakdown;
+  expect(await session.getContextBreakdown?.()).toEqual(breakdown);
+
+  const connection = await connectSessionHost({
+    socketPath: fixture.socketPath,
+    token: fixture.token,
+  });
+  cleanups.push(() => connection.close());
+  const channel = await connection.attach({ sessionId: "breakdown", afterSeq: null });
+  const snapshot = HostedSessionSnapshotSchema.parse(channel.attach.snapshot);
+  delete snapshot.capabilities?.contextBreakdown;
+  const legacy = new HostedAgentSession({
+    provider: "claude",
+    capabilities: CONTROLLED_SESSION_CAPABILITIES,
+    channel: { ...channel, attach: { ...channel.attach, snapshot } },
+    reconnect: async () => null,
+    usage: { env: {} },
+    logger,
+  });
+  expect(await legacy.getContextBreakdown()).toBeNull();
 });

@@ -29,8 +29,16 @@ export async function readClaudeSetupToken(
     throw new ClaudeSetupTokenError();
   }
   if (receipt === null) {
-    // A managed installation must not launch against an older native account before delivery.
-    if (process.env.VORTEO_INSTALLATION_CLIENT_CONFIG) throw new ClaudeSetupTokenError();
+    // Bound accounts must wait for delivery. The unconfigured native CLI account
+    // has no delivery record and should use its existing login on this machine.
+    // A Dev image sets CLAUDE_CONFIG_DIR for the whole daemon, so only a directory the
+    // binding chose differently from the daemon's own marks a bound account.
+    const bindingDirectory =
+      env.CLAUDE_CONFIG_DIR !== undefined &&
+      env.CLAUDE_CONFIG_DIR !== process.env.CLAUDE_CONFIG_DIR;
+    const boundAccount = bindingDirectory || credential !== null;
+    if (process.env.VORTEO_INSTALLATION_CLIENT_CONFIG && boundAccount)
+      throw new ClaudeSetupTokenError();
     if (credential) await ensureConsumerSecureDirectory(config);
     return credential;
   }

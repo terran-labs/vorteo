@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { ProviderUsage } from "../../server/messages.js";
 import { createProviderUsageFetchers } from "./manifest.js";
+import type { ClaudeLimitObservationReader } from "../../server/agent/providers/claude/limit-observation.js";
 import type { ProviderApiFetch, ProviderUsageConfigMap, ProviderUsageFetcher } from "./provider.js";
 import { unavailableUsage } from "./usage.js";
 
@@ -10,6 +11,7 @@ export interface ProviderUsageServiceOptions {
   getProviderConfigs?: () => ProviderUsageConfigMap;
   createFetchers?: (providers?: ProviderUsageConfigMap) => ProviderUsageFetcher[];
   fetch?: ProviderApiFetch;
+  claudeLimitObservations?: ClaudeLimitObservationReader;
   cacheTtlMs?: number;
   now?: () => number;
 }
@@ -19,7 +21,7 @@ export interface ProviderUsageListResult {
   providers: ProviderUsage[];
 }
 
-const DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS = 2 * 60 * 1000;
 
 export class ProviderUsageService {
   private readonly logger: Logger;
@@ -46,6 +48,7 @@ export class ProviderUsageService {
             logger: this.logger,
             fetch: options.fetch,
             providers: options.getProviderConfigs?.(),
+            claudeLimitObservations: options.claudeLimitObservations,
           });
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;

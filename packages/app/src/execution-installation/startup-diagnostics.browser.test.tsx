@@ -1,5 +1,6 @@
 import { afterEach, expect, inject, test } from "vitest";
 import { page } from "vitest/browser";
+import { formatDuration } from "@/utils/time";
 
 const frames: HTMLIFrameElement[] = [];
 afterEach(async () => {
@@ -150,55 +151,70 @@ test("a completed startup cancels the delayed automatic probe", async () => {
   const finish: unknown = Reflect.get(doc.defaultView!, "__vorteoFinishBoot");
   if (typeof finish !== "function") throw new Error("Boot completion hook missing");
   finish();
-  await new Promise((resolve) => setTimeout(resolve, 11000));
+  await new Promise((resolve) => setTimeout(resolve, 4000));
   expect(
     await fetch(`${origin}/startup-fixture-stats`).then((response) => response.json()),
   ).toEqual({ startupHealthRequests: 0, heldScriptRequests: 0 });
 }, 15000);
 
-test.each([
-  [390, 620],
-  [1133, 844],
-])(
-  "the real HTML loader exposes bounded diagnostics and controls at width %s and height %s without an app bundle",
-  async (width, height) => {
-    await page.viewport(width, height);
-    const { doc } = await openLoader("/startup-fixture", controlledClock);
-    Reflect.set(
-      doc.defaultView!,
-      "__startupNow",
-      Number(Reflect.get(doc.defaultView!, "__startupNow")) + 11000,
-    );
-    doc.defaultView!.dispatchEvent(new Event("pageshow"));
-    await expect.poll(() => doc.getElementById("boot-help")?.hidden).toBe(false);
-    const help = doc.getElementById("boot-help");
-    if (!help) throw new Error("Diagnostic panel missing");
-    await Promise.all(help.getAnimations().map((animation) => animation.finished));
-    expect(getComputedStyle(help).opacity).toBe("1");
-    const check = doc.querySelector<HTMLButtonElement>("#boot-check");
-    if (!check) throw new Error("Endpoint button missing");
-    check.click();
-    await expect
-      .poll(() => doc.getElementById("boot-diagnostics")?.textContent)
-      .toContain("Passed — installation endpoint responded");
-    expect(check.disabled).toBe(false);
-    expect(doc.getElementById("boot-connection-details")?.textContent).toContain(
-      "Unknown — requires the app connection",
-    );
-    expect(check.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
-    const status = doc.getElementById("boot-status");
-    if (!status) throw new Error("Startup status missing");
-    expect(status.getBoundingClientRect().right).toBeLessThanOrEqual(width);
-    expect(status.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
-    const copy = doc.getElementById("boot-copy");
-    if (!copy) throw new Error("Copy action missing");
-    copy.scrollIntoView({ block: "nearest" });
-    expect(copy.getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
-    expect(copy.getBoundingClientRect().top).toBeGreaterThanOrEqual(0);
-    await page.screenshot({ path: `startup-diagnostics-${width}.png` });
-  },
-  22000,
-);
+test("the real HTML loader exposes bounded diagnostics and controls without an app bundle", async () => {
+  const [width, height] = [390, 620];
+  await page.viewport(width, height);
+  const { doc } = await openLoader("/startup-fixture", controlledClock);
+  Reflect.set(
+    doc.defaultView!,
+    "__startupNow",
+    Number(Reflect.get(doc.defaultView!, "__startupNow")) + 11000,
+  );
+  doc.defaultView!.dispatchEvent(new Event("pageshow"));
+  await expect.poll(() => doc.getElementById("boot-help")?.hidden).toBe(false);
+  const help = doc.getElementById("boot-help");
+  if (!help) throw new Error("Diagnostic panel missing");
+  await Promise.all(help.getAnimations().map((animation) => animation.finished));
+  expect(getComputedStyle(help).opacity).toBe("1");
+  const check = doc.querySelector<HTMLButtonElement>("#boot-check");
+  if (!check) throw new Error("Endpoint button missing");
+  check.click();
+  await expect
+    .poll(() => doc.getElementById("boot-diagnostics")?.textContent)
+    .toContain("Passed — installation endpoint responded");
+  expect(check.disabled).toBe(false);
+  expect(doc.getElementById("boot-connection-details")?.textContent).toContain(
+    "Unknown — requires the app connection",
+  );
+  expect(check.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+  const status = doc.getElementById("boot-status");
+  if (!status) throw new Error("Startup status missing");
+  expect(status.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+  expect(status.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
+  const copy = doc.getElementById("boot-copy");
+  if (!copy) throw new Error("Copy action missing");
+  const saver = doc.getElementById("boot-data-saver");
+  if (!saver) throw new Error("Data saver action missing");
+  const controls = Array.from(help.querySelectorAll("button")).filter((button) => !button.hidden);
+  expect(controls.map((button) => button.textContent?.replace(/\s+/g, " ").trim())).toEqual([
+    "Enable data saver",
+    "Check endpoint",
+    "Copy diagnostics",
+    "Reload",
+  ]);
+  expect(getComputedStyle(doc.getElementById("boot-data-saver-icon")!).visibility).toBe("visible");
+  expect(getComputedStyle(doc.getElementById("boot-data-saver-check")!).visibility).toBe("hidden");
+  status.scrollTop = 0;
+  copy.scrollIntoView({ block: "nearest" });
+  expect(copy.getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+  expect(copy.getBoundingClientRect().top).toBeGreaterThanOrEqual(0);
+  for (const button of controls) {
+    button.focus();
+    const rect = button.getBoundingClientRect();
+    expect(rect.height).toBeGreaterThanOrEqual(44);
+    expect(rect.left).toBeGreaterThanOrEqual(0);
+    expect(rect.right).toBeLessThanOrEqual(width);
+    expect(rect.top).toBeGreaterThanOrEqual(0);
+    expect(rect.bottom).toBeLessThanOrEqual(height);
+    expect(doc.activeElement).toBe(button);
+  }
+}, 22000);
 
 test("script load failures remain actionable and clipboard denial exposes a sanitized selectable report", async () => {
   const { doc, origin } = await openLoader();
@@ -224,84 +240,30 @@ test("script load failures remain actionable and clipboard denial exposes a sani
 const controlledClock =
   "window.__startupNow=Date.now(); Date.now=function(){return window.__startupNow;};";
 
-test.each([
-  [390, 620],
-  [1280, 900],
-])(
-  "ten-second reveal keeps the logo and content on one continuous transition at %s by %s",
-  async (width, height) => {
-    await page.viewport(width, height);
-    const { doc, origin } = await openLoader("/startup-held-fixture", controlledClock);
-    const win = doc.defaultView!;
-    await expect
-      .poll(() => fetch(`${origin}/startup-fixture-stats`).then((r) => r.json()))
-      .toEqual({ startupHealthRequests: 0, heldScriptRequests: 1 });
-    const emblem = doc.querySelector<HTMLElement>(".boot-emblem");
-    const help = doc.querySelector<HTMLElement>("#boot-help");
-    if (!emblem || !help) throw new Error("Startup transition elements missing");
-    const initial = emblem.getBoundingClientRect();
-    const started = Number(Reflect.get(win, "__startupNow"));
-    Reflect.set(win, "__startupNow", started + 9999);
-    win.dispatchEvent(new Event("pageshow"));
-    expect(help.hidden).toBe(true);
-    expect(await fetch(`${origin}/startup-fixture-stats`).then((r) => r.json())).toEqual({
-      startupHealthRequests: 0,
-      heldScriptRequests: 1,
-    });
-    Reflect.set(win, "__startupNow", started + 10000);
-    win.dispatchEvent(new Event("pageshow"));
-    expect(help.hidden).toBe(false);
-    const animations = doc
-      .getAnimations()
-      .filter(
-        (animation) =>
-          animation instanceof win.CSSAnimation &&
-          ["boot-emblem-reveal", "boot-reveal"].includes(animation.animationName),
-      );
-    expect(animations).toHaveLength(2);
-    await Promise.all(animations.map((animation) => animation.ready));
-    expect(animations[0].startTime).toBe(animations[1].startTime);
-    for (const animation of animations) animation.pause();
-    const geometry = [];
-    for (const elapsed of [0, 80, 160, 240, 320]) {
-      for (const animation of animations) animation.currentTime = elapsed;
-      const rect = emblem.getBoundingClientRect();
-      geometry.push({
-        elapsed,
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        bottom: rect.bottom,
-        helpY: help.getBoundingClientRect().y,
-        opacity: Number(win.getComputedStyle(help).opacity),
-      });
-      if ([0, 160, 320].includes(elapsed))
-        await page.screenshot({ path: `startup-transition-${width}-${elapsed}.png` });
-    }
-    expect(geometry[0].width).toBeCloseTo(initial.width, 1);
-    expect(geometry[0].x).toBeCloseTo(initial.x, 1);
-    expect(geometry[0].y).toBeCloseTo(initial.y, 1);
-    expect(geometry[4].width).toBeCloseTo(80, 1);
-    expect(geometry[4].opacity).toBe(1);
-    const finalGap = geometry[4].helpY - geometry[4].bottom;
-    for (const frame of geometry) expect(frame.helpY - frame.bottom).toBeCloseTo(finalGap, 1);
-    for (let index = 1; index < geometry.length; index++) {
-      expect(geometry[index].width).toBeLessThan(geometry[index - 1].width);
-      expect(geometry[index].y).toBeLessThan(geometry[index - 1].y);
-      expect(geometry[index].opacity).toBeGreaterThan(geometry[index - 1].opacity);
-      const shrinkProgress = (initial.width - geometry[index].width) / (initial.width - 80);
-      expect(Math.abs(shrinkProgress - geometry[index].opacity)).toBeLessThan(0.02);
-    }
-    expect(doc.documentElement.scrollWidth).toBeLessThanOrEqual(width);
-    expect(
-      help.querySelector<HTMLButtonElement>("#boot-copy")?.getBoundingClientRect().height,
-    ).toBeGreaterThanOrEqual(44);
-    console.info("Startup reveal geometry", { width, height, geometry });
-    await expect
-      .poll(() => doc.getElementById("boot-diagnostics")?.textContent)
-      .toContain("Passed — installation endpoint responded");
-  },
-);
+test("three-second reveal waits for the threshold and probes only after it", async () => {
+  await page.viewport(390, 620);
+  const { doc, origin } = await openLoader("/startup-held-fixture", controlledClock);
+  const win = doc.defaultView!;
+  await expect
+    .poll(() => fetch(`${origin}/startup-fixture-stats`).then((r) => r.json()))
+    .toEqual({ startupHealthRequests: 0, heldScriptRequests: 1 });
+  const help = doc.querySelector<HTMLElement>("#boot-help");
+  if (!help) throw new Error("Startup diagnostics panel missing");
+  const started = Number(Reflect.get(win, "__startupNow"));
+  Reflect.set(win, "__startupNow", started + 2999);
+  win.dispatchEvent(new Event("pageshow"));
+  expect(help.hidden).toBe(true);
+  expect(await fetch(`${origin}/startup-fixture-stats`).then((r) => r.json())).toEqual({
+    startupHealthRequests: 0,
+    heldScriptRequests: 1,
+  });
+  Reflect.set(win, "__startupNow", started + 3000);
+  win.dispatchEvent(new Event("pageshow"));
+  expect(help.hidden).toBe(false);
+  await expect
+    .poll(() => doc.getElementById("boot-diagnostics")?.textContent)
+    .toContain("Passed — installation endpoint responded");
+});
 
 test("offline startup defers automatic probes and deduplicates repeated online/resume events", async () => {
   const { doc, origin } = await openLoader(
@@ -337,7 +299,7 @@ test("a foreground clock gap starts overdue checks without retrying a slow but p
   const { doc, origin } = await openLoader("/startup-held-fixture", controlledClock);
   const win = doc.defaultView!;
   await fetch(`${origin}/startup-progress-held-script`, { method: "POST" });
-  Reflect.set(win, "__startupNow", Number(Reflect.get(win, "__startupNow")) + 9000);
+  Reflect.set(win, "__startupNow", Number(Reflect.get(win, "__startupNow")) + 2000);
   doc.dispatchEvent(new Event("visibilitychange"));
   expect(await fetch(`${origin}/startup-fixture-stats`).then((r) => r.json())).toEqual({
     startupHealthRequests: 0,
@@ -376,15 +338,20 @@ test("saved data saver skips optional fonts before app code and toggles without 
   const button = doc.getElementById("boot-data-saver");
   if (!button) throw new Error("Data saver control missing");
   expect(button.getAttribute("aria-pressed")).toBe("true");
-  expect(doc.querySelector<HTMLImageElement>(".boot-mark")?.src).toMatch(/^data:image\/svg\+xml/);
+  expect(doc.getElementById("boot-tinted-mark")).not.toBeNull();
   button.click();
   expect(button.getAttribute("aria-pressed")).toBe("false");
   await expect
     .poll(async () => fetch(`${origin}/startup-font-stats`).then((r) => r.json()))
     .toEqual({ requests: 1 });
-  expect(doc.getElementById("boot-data-saver-feedback")?.textContent).toContain("Preference saved");
+  expect(doc.getElementById("boot-data-saver-feedback")?.hidden).toBe(true);
+  expect(button.textContent).toContain("Enable data saver");
+  expect(getComputedStyle(doc.getElementById("boot-data-saver-check")!).visibility).toBe("hidden");
   button.click();
   expect(button.getAttribute("aria-pressed")).toBe("true");
+  expect(getComputedStyle(doc.getElementById("boot-data-saver-check")!).visibility).toBe("visible");
+  expect(button.nextElementSibling?.id).toBe("boot-check");
+  expect(getComputedStyle(doc.getElementById("boot-data-saver-icon")!).visibility).toBe("visible");
   expect(await fetch(`${origin}/startup-fixture-stats`).then((r) => r.json())).toEqual({
     startupHealthRequests: 0,
     heldScriptRequests: 1,
@@ -405,44 +372,89 @@ test("data saver reports session-only success when browser storage refuses savin
   );
 });
 
-test("the inline V vector preserves the original mark silhouette without a logo download", async () => {
-  await page.viewport(390, 620);
-  const { doc, origin } = await openLoader();
-  const candidate = doc.querySelector<HTMLImageElement>(".boot-mark");
-  if (!candidate) throw new Error("Default V mark missing");
-  expect(candidate.src).toMatch(/^data:image\/svg\+xml/);
-  const original = doc.createElement("img");
-  const body = await fetch(`${origin}/startup-original-mark`).then((r) => r.json());
-  original.src = body.dataUrl;
-  await Promise.all([candidate.decode(), original.decode()]);
-  function mask(image: HTMLImageElement) {
-    const canvas = doc.createElement("canvas");
-    canvas.width = 144;
-    canvas.height = 144;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Canvas unavailable");
-    context.drawImage(image, 0, 0, 144, 144);
-    const data = context.getImageData(0, 0, 144, 144).data;
-    return Array.from({ length: 144 * 144 }, (_, i) => data[i * 4 + 3] > 127);
+test("elapsed time uses the shared formatter directly beneath the progress bar", async () => {
+  const { doc } = await openLoader("/startup-fixture", controlledClock);
+  const win = doc.defaultView!;
+  const started = Number(Reflect.get(win, "__startupNow"));
+  expect(doc.getElementById("boot-progress")?.nextElementSibling?.id).toBe("boot-elapsed");
+  expect(doc.getElementById("boot-help")?.textContent).not.toContain("Connection details");
+  expect(doc.getElementById("boot-help")?.textContent).not.toContain("Use system fonts");
+  expect(doc.getElementById("boot-progress-label")).toBeNull();
+  for (const elapsed of [3000, 59000, 60000, 75000, 3600000, 12530000]) {
+    Reflect.set(win, "__startupNow", started + elapsed);
+    win.dispatchEvent(new Event("pageshow"));
+    expect(doc.getElementById("boot-elapsed")?.textContent).toBe(
+      `${formatDuration(elapsed)} elapsed`,
+    );
   }
-  const a = mask(original),
-    b = mask(candidate);
-  let intersection = 0,
-    union = 0;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] || b[i]) union++;
-    if (a[i] && b[i]) intersection++;
-  }
-  expect(union).toBeGreaterThan(100);
-  // The existing traced vector allows antialiasing differences while retaining the V outline.
-  expect(intersection / union).toBeGreaterThanOrEqual(0.95);
-  console.info("V mark silhouette overlap", { intersection, union, ratio: intersection / union });
-  original.style.cssText = "width:144px;height:144px";
-  const comparison = doc.createElement("div");
-  comparison.style.cssText = "display:flex;justify-content:center;gap:16px";
-  comparison.append(original, candidate.cloneNode());
-  const cloned = comparison.lastElementChild as HTMLElement;
-  cloned.style.cssText = "position:static;width:144px;height:144px";
-  doc.getElementById("boot-status")?.append(comparison);
-  await page.screenshot({ path: "v-vector-comparison.png" });
+});
+
+test("fatal bootstrap failure remains visible after healthy probes and style events", async () => {
+  const { doc } = await openLoader();
+  const target = doc.defaultView;
+  if (!target) throw new Error("Startup window missing");
+  const fail = doc.createEvent("CustomEvent");
+  fail.initCustomEvent("vorteo-boot-failed", false, false, "installation-origin-mismatch");
+  target.dispatchEvent(fail);
+  expect(doc.getElementById("boot-status")?.dataset.expanded).toBe("true");
+  expect(doc.getElementById("boot-summary")?.textContent).toContain(
+    "Installation descriptor does not belong to this origin",
+  );
+  const style = doc.createEvent("CustomEvent");
+  style.initCustomEvent("vorteo-boot-styles", false, false, "waiting");
+  target.dispatchEvent(style);
+  doc.getElementById("boot-check")?.click();
+  await expect
+    .poll(() => doc.getElementById("boot-diagnostics")?.textContent)
+    .toContain("Passed — installation endpoint responded");
+  expect(doc.getElementById("boot-summary")?.textContent).toContain(
+    "Installation descriptor does not belong to this origin",
+  );
+  expect(doc.getElementById("boot-summary")?.textContent).not.toContain("still starting");
+  doc.getElementById("boot-copy")?.click();
+  await expect
+    .poll(() => doc.querySelector<HTMLTextAreaElement>("#boot-report")?.value)
+    .toContain('"kind": "installation-origin-mismatch"');
+  const finish = Reflect.get(target, "__vorteoFinishBoot");
+  if (typeof finish !== "function") throw new Error("Missing finish callback");
+  finish();
+  expect(doc.getElementById("boot-overlay")).not.toBeNull();
+});
+
+test("bootstrap failure events never expose arbitrary exception details", async () => {
+  const { doc } = await openLoader();
+  const event = doc.createEvent("CustomEvent");
+  event.initCustomEvent("vorteo-boot-failed", false, false, "secret-token-value");
+  doc.defaultView?.dispatchEvent(event);
+  doc.getElementById("boot-copy")?.click();
+  await expect
+    .poll(() => doc.querySelector<HTMLTextAreaElement>("#boot-report")?.value)
+    .toContain('"bootstrapFailure": null');
+  expect(doc.querySelector<HTMLTextAreaElement>("#boot-report")?.value).not.toContain(
+    "secret-token-value",
+  );
+});
+
+test("bootstrap failure events reject coercible objects without invoking them", async () => {
+  const { doc } = await openLoader();
+  let coerced = false;
+  const event = doc.createEvent("CustomEvent");
+  event.initCustomEvent("vorteo-boot-failed", false, false, {
+    toString() {
+      coerced = true;
+      return "installation-origin-mismatch";
+    },
+    toJSON() {
+      return "private-exception";
+    },
+  });
+  doc.defaultView?.dispatchEvent(event);
+  expect(coerced).toBe(false);
+  doc.getElementById("boot-copy")?.click();
+  await expect
+    .poll(() => doc.querySelector<HTMLTextAreaElement>("#boot-report")?.value)
+    .toContain('"bootstrapFailure": null');
+  expect(doc.querySelector<HTMLTextAreaElement>("#boot-report")?.value).not.toContain(
+    "private-exception",
+  );
 });

@@ -23,6 +23,28 @@ export function getUsagePercentage(maxTokens: number, usedTokens: number): numbe
   return (usedTokens / maxTokens) * 100;
 }
 
+/** A session cost ready to show; `estimated` when the provider reported none. */
+export interface SessionCost {
+  amount: string;
+  estimated: boolean;
+}
+
+/** The provider's reported cost, or the daemon's estimate when the provider reports none. */
+export function resolveSessionCost(
+  totalCostUsd: number | null | undefined,
+  estimatedCostUsd: number | null | undefined,
+): SessionCost | null {
+  if (typeof totalCostUsd === "number") {
+    const amount = formatSessionCost(totalCostUsd);
+    return amount ? { amount, estimated: false } : null;
+  }
+  if (typeof estimatedCostUsd === "number") {
+    const amount = formatSessionCost(estimatedCostUsd);
+    return amount ? { amount, estimated: true } : null;
+  }
+  return null;
+}
+
 export function formatSessionCost(value: number): string | null {
   if (!Number.isFinite(value) || value <= 0) {
     return null;

@@ -6,18 +6,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import json
 import time
 import uuid
-import fcntl
 from host_config import load
 from https_broker import Broker
+from channel_identity import broker_lock, verify_channel, verify_fence
 
 if __name__ == '__main__':
     if sys.platform != 'darwin' or len(sys.argv) != 4:
         raise SystemExit('Run on the Mac host: https-preview.py WORKSPACE_ID SERVICE HTTPS_PORT')
     try:
-        c = load()
-        with (Path(c['deployment']) / 'https-broker.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            broker = Broker(c)
+        c = load(protected=True)
+        with broker_lock(c['deployment']):
+            fresh = load(protected=True)
+            if fresh['deployment'] != c['deployment'] or fresh['channel'] != c['channel']:
+                raise ValueError('Broker topology changed while acquiring lock')
+            verify_fence(fresh)
+            verify_channel(fresh)
+            broker = Broker(fresh)
             broker.runtime.preflight()
             result = broker.handle({'id': str(uuid.uuid4()), 'createdAt': time.time(), 'operation': 'start', 'workspaceId': sys.argv[1], 'service': sys.argv[2], 'preferredPort': int(sys.argv[3])})
             print(json.dumps(result))

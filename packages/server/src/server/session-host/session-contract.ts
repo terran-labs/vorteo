@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentContextBreakdownSchema } from "@getpaseo/protocol/agent-context";
 
 /**
  * The AgentSession contract carried over the session host protocol. A worker built from a later
@@ -96,6 +97,8 @@ export const SessionCallSchema = z.discriminatedUnion("method", [
   z.object({ method: z.literal("getAvailableModes") }).strict(),
   z.object({ method: z.literal("getCurrentMode") }).strict(),
   z.object({ method: z.literal("listCommands") }).strict(),
+  /** The provider's context window breakdown, such as Claude's /context data. */
+  z.object({ method: z.literal("getContextBreakdown") }).strict(),
   /** History is paged so a long conversation never exceeds one frame. */
   z
     .object({
@@ -116,6 +119,7 @@ export const SessionCallSchema = z.discriminatedUnion("method", [
    */
   z.object({ method: z.literal("outOfBand"), prompt: z.string().max(100_000) }).strict(),
   z.object({ method: z.literal("close") }).strict(),
+  z.object({ method: z.literal("closeIfIdle") }).strict(),
 ]);
 export type SessionHostCall = z.infer<typeof SessionCallSchema>;
 export type SessionHostMethod = SessionHostCall["method"];
@@ -159,6 +163,7 @@ export const SessionCallResultSchemas = {
   listCommands: z.array(
     z.looseObject({ name: z.string(), description: z.string(), argumentHint: z.string() }),
   ),
+  getContextBreakdown: AgentContextBreakdownSchema.nullable(),
   streamHistory: HistoryPageSchema,
   revertConversation: z.null(),
   revertFiles: z.null(),
@@ -176,6 +181,7 @@ export const SessionCallResultSchemas = {
     })
     .strict(),
   close: z.null(),
+  closeIfIdle: z.null(),
 } satisfies Record<SessionHostMethod, z.ZodType>;
 
 export type SessionCallResult<M extends SessionHostMethod> = z.infer<

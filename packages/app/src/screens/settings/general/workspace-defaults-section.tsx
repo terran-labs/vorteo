@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { SettingsCard, SettingsSection, SettingsSelect } from "@/components/settings";
-import { Alert } from "@/components/ui/alert";
+import { useToast } from "@/contexts/toast-context";
 import { useAppSettings } from "@/hooks/use-settings";
 import type { WorkspaceDefaults } from "@/hooks/use-settings/storage";
 import { useHosts } from "@/runtime/host-runtime";
@@ -32,10 +32,7 @@ export function WorkspaceDefaultsSection() {
   const { config } = useDaemonConfig(serverId);
   const { entries } = useProvidersSnapshot(serverId);
   const { profiles } = useAgentProfiles(serverId);
-  const [operation, setOperation] = useState<{ pending: boolean; error: string | null }>({
-    pending: false,
-    error: null,
-  });
+  const [pending, setPending] = useState(false);
   const providers = config?.providers ?? {};
   // Accounts that are not installed cannot start a workspace, so they get no default row.
   const accounts = (entries ?? [])
@@ -45,22 +42,24 @@ export function WorkspaceDefaultsSection() {
       label: entry.label ?? entry.provider,
       provider: entry.provider,
     }));
+  const toast = useToast();
   const reportActionError = useReportActionError();
   const save = useCallback(
     async (change: Partial<WorkspaceDefaults>) => {
-      setOperation({ pending: true, error: null });
+      setPending(true);
       try {
         await updateSettings((current) => ({
           workspaceDefaults: { ...current.workspaceDefaults, ...change },
         }));
-        setOperation({ pending: false, error: null });
+        setPending(false);
       } catch (error) {
         const connectionLost = isConnectionError(error);
         if (connectionLost) reportActionError(error);
-        setOperation({ pending: false, error: connectionLost ? null : toErrorMessage(error) });
+        else toast.error(toErrorMessage(error));
+        setPending(false);
       }
     },
-    [updateSettings, reportActionError],
+    [updateSettings, reportActionError, toast],
   );
   const changeEnvironment = useCallback(
     (value: string) => void save({ environment: value || null }),
@@ -75,21 +74,20 @@ export function WorkspaceDefaultsSection() {
       title="New workspace"
       info="Choose the environment and account for new workspaces, and a default profile for each account. Explicit workspace selections take precedence."
     >
-      {operation.error ? <Alert variant="error" description={operation.error} /> : null}
       <SettingsCard>
         <SettingsSelect
           label="Default environment"
           value={defaults.environment ?? ""}
           options={[{ value: "", label: "Automatic" }, ...environments]}
           onValueChange={changeEnvironment}
-          disabled={operation.pending}
+          disabled={pending}
         />
         <SettingsSelect
           label="Default account"
           value={defaults.account ?? ""}
           options={[{ value: "", label: "Automatic" }, ...accounts]}
           onValueChange={changeAccount}
-          disabled={operation.pending}
+          disabled={pending}
         />
         {accounts.map((account) => {
           const type = resolveProviderType(account.provider, providers);
@@ -104,7 +102,7 @@ export function WorkspaceDefaultsSection() {
               choices={choices}
               defaults={defaults}
               save={save}
-              disabled={operation.pending}
+              disabled={pending}
             />
           );
         })}
@@ -131,7 +129,9 @@ function AccountProfileDefault({
 }: AccountProfileDefaultProps) {
   const change = useCallback(
     (value: string) =>
-      void save({ profilesByAccount: { ...defaults.profilesByAccount, [account]: value } }),
+      void save({
+        profilesByAccount: { ...defaults.profilesByAccount, [account]: value },
+      }),
     [save, defaults.profilesByAccount, account],
   );
   return (

@@ -7,6 +7,8 @@ import { ProfileSelectorTile, ProfileLoading } from "./profile-selector-tile";
 import { profileCatalogState, sharedChoiceState, type LaunchChoices } from "./shared-choices";
 import { useCallback, useMemo, useReducer, useState, type ReactNode } from "react";
 import { Keyboard, ScrollView, Text, View, type LayoutChangeEvent } from "react-native";
+import { useRouter } from "expo-router";
+import { buildSettingsSectionRoute } from "@/utils/host-routes";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
@@ -48,6 +50,8 @@ interface AccountPresetMenuProps {
   loading?: boolean;
   error?: string | null;
   accounts: AccountPresets[];
+  defaultProviders?: string[];
+  onAccountDefaults?: (provider: string) => void;
   definitions: readonly AgentProfile[];
   entries: ProviderSnapshotEntry[] | undefined;
   inspectedId: string | undefined;
@@ -288,7 +292,20 @@ function AccountList({
           {toErrorMessage(error)}
         </Text>
       ) : null}
-      {empty ? <Text style={styles.empty}>No matching accounts</Text> : null}
+      {empty ? <ManageAccountsButton /> : null}
+    </View>
+  );
+}
+
+// With no account to choose, the useful next step is connecting one.
+function ManageAccountsButton() {
+  const router = useRouter();
+  const open = useCallback(() => router.push(buildSettingsSectionRoute("accounts")), [router]);
+  return (
+    <View style={styles.manageAccounts}>
+      <Button variant="outline" onPress={open} testID="preset-manage-accounts">
+        Manage accounts
+      </Button>
     </View>
   );
 }
@@ -521,8 +538,8 @@ function AccountButton({
     <ProfileSelectorTile
       singleLine={singleLine}
       leading={icon}
-      badge={renderBadge(group.rows[0])}
-      subtitle={renderAccountDetails(group.rows[0])}
+      badge={group.rows[0] ? renderBadge(group.rows[0]) : undefined}
+      subtitle={group.rows[0] ? renderAccountDetails(group.rows[0]) : "No available profiles"}
       label={group.label}
       selected={active}
       onPress={select}
@@ -539,6 +556,33 @@ interface AccountChoicesProps extends AccountPresetMenuProps {
 }
 
 function AccountChoices(props: AccountChoicesProps) {
+  const useDefaults = useCallback(() => props.onAccountDefaults?.(props.account.provider), [props]);
+  if (
+    !props.loading &&
+    !props.error &&
+    props.onAccountDefaults &&
+    props.defaultProviders?.includes(props.account.provider)
+  ) {
+    return (
+      <View
+        style={[settingsStyles.card, styles.detailCard, props.inline && styles.inlineColumn]}
+        testID="preset-profile-card"
+      >
+        {props.heading}
+        <Text style={styles.summary}>
+          No saved profiles yet. Start with the account default model and settings.
+        </Text>
+        <Button
+          variant="outline"
+          disabled={props.disabled}
+          onPress={useDefaults}
+          testID="preset-account-defaults"
+        >
+          Use account defaults
+        </Button>
+      </View>
+    );
+  }
   const entry = props.entries?.find((candidate) => candidate.provider === props.account.provider);
   const catalogState = profileCatalogState(entry);
   const loading = !props.error && catalogState === "loading";
@@ -869,6 +913,10 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
   },
   summary: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
+  manageAccounts: {
+    padding: theme.spacing[4],
+    alignItems: "flex-start",
+  },
   empty: {
     padding: theme.spacing[4],
     color: theme.colors.foregroundMuted,

@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createPreviewBrokerDeploymentExecutor } from "./preview-broker-deployment-executor.js";
+import { createPreviewBrokerExecutor } from "./preview-broker-executor.js";
 import { inspectMaintenanceObservationRuntime } from "./coordinator-bootstrap-maintenance-observation-runtime.js";
 import { reconcileNativeInitialHostActivation } from "./maintenance/host-supervisor-activation.js";
 import { createNativeMaintenanceServiceExecutor } from "./coordinator-bootstrap-maintenance-service-producer.js";
@@ -7,6 +11,11 @@ import { createNativeMaintenanceServiceRouter } from "./coordinator-bootstrap-ma
 import { initializePackagedClaudeCli } from "../agent/providers/claude/packaged-cli.js";
 import { createPreviewMonitorExecutor } from "./preview-monitor-executor.js";
 import { realpathSync } from "node:fs";
+import { join } from "node:path";
+import { resolveDaemonVersion } from "../daemon-version.js";
+import { createOperationalTelemetry } from "./operational-telemetry.js";
+import { createCoordinatorDispatchNotifier } from "./coordinator-dispatch-notifier.js";
+import { createOperationalStore } from "./operational-telemetry-store.js";
 import { createNativeHelperExecutor } from "./native-helper-executor.js";
 import { createSessionHostExecutor } from "./session-host-job.js";
 import { createNativeSessionHostPorts } from "./session-host-job-native.js";
@@ -18,9 +27,14 @@ import { loadCoordinatorStartupFence } from "./coordinator-bootstrap-startup.js"
 import { createClaudeSetupRuntime } from "./accounts/claude-setup-runtime.js";
 import { createClaudeOAuthRuntime } from "./accounts/claude-oauth-runtime.js";
 import { createProviderSecretsRuntime } from "./accounts/provider-secrets-runtime.js";
+import { createCodexSignInRuntime } from "./accounts/codex-signin-runtime.js";
 import { createInstallationProfiles, startProfileSynchronization } from "./profiles/runtime.js";
 import pino from "pino";
-import { claudeHostRefreshEnabled, readInstallationConfig } from "./config.js";
+import {
+  claudeHostRefreshEnabled,
+  codexHostRefreshEnabled,
+  readInstallationConfig,
+} from "./config.js";
 import { createInstallationServer } from "./server.js";
 import { connectInstallationDaemon, createInstallationRestartExecutor } from "./daemon.js";
 import { createInstallationDaemonConnections } from "./daemon-connections.js";
@@ -121,6 +135,28 @@ if (config.previewMonitor)
       writableMountRoots: () => inspectBootstrapWritableMountRoots(config.previewMonitor!),
     }),
   );
+if (config.previewBrokerDeployment && process.platform === "darwin") {
+  executor.brokerDeployment = createPreviewBrokerDeploymentExecutor({
+    config,
+    configurationFile: {
+      path: realpathSync(configFile),
+      sha256: createHash("sha256").update(readFileSync(configFile)).digest("hex"),
+    },
+    assertActive() {
+      if (startupFence && !startupFence.released())
+        throw new Error("Coordinator startup remains fenced");
+    },
+    writableMountRoots: () => inspectBootstrapWritableMountRoots(config.previewBrokerDeployment!),
+  });
+}
+if (config.previewBroker && process.platform === "darwin")
+  Object.assign(
+    executor,
+    createPreviewBrokerExecutor({
+      config,
+      writableMountRoots: () => inspectBootstrapWritableMountRoots(config.previewBroker!),
+    }),
+  );
 const profiles = createInstallationProfiles(
   config,
   assertRegistrationReadiness,
@@ -138,12 +174,62 @@ function activateSynchronization() {
   if (synchronizing || (startupFence && !startupFence.released())) return;
   stopProfileSynchronization = startProfileSynchronization(profiles, logger);
   stopSettingsReconciliation = startSettingsReconciliation(settings, logger);
+  void telemetry.start().catch(() => {
+    logger.warn("Optional operational telemetry could not start");
+  });
   synchronizing = true;
 }
 const claudeSetup = createClaudeSetupRuntime(config, settings, assertRegistrationReadiness);
 const host = config.public.environments.find((environment) => environment.kind === "host");
 if (!host) throw new Error("Installation Host identity is missing");
 const coordinatorRequests = createHostReconciliationLedger(config, configFile, host.serverId);
+// Off unless a reviewed coordinator update set the installation lead.
+const installationLead = config.installationLead;
+let installationLeadTimer: NodeJS.Timeout | undefined;
+if (installationLead && coordinatorRequests) {
+  const ledger = coordinatorRequests;
+  const notifier = createCoordinatorDispatchNotifier({
+    agentId: installationLead.agentId,
+    stateDirectory: config.stateDir,
+    ports: {
+      list: () => ledger.list(),
+      readLifecycle: () => {
+        if (!ledger.readLifecycle) throw new Error("Installation journal is unavailable");
+        return ledger.readLifecycle();
+      },
+      leadAvailable: async (agentId) => {
+        const client = await daemonConnections.connect("host");
+        try {
+          const lead = await client.fetchAgent({ agentId });
+          return lead !== null && !lead.agent.archivedAt;
+        } finally {
+          await client.close();
+        }
+      },
+      enqueue: async ({ agentId, text, messageId }) => {
+        const client = await daemonConnections.connect("host");
+        try {
+          // The queue delivers only while the lead is idle and skips an archived thread.
+          const result = await client.mutateMessageQueue(agentId, {
+            kind: "enqueue",
+            operationId: messageId,
+            messageId,
+            attachments: [],
+            text,
+          });
+          if (result.error) throw new Error(result.error.message);
+        } finally {
+          await client.close();
+        }
+      },
+      now: Date.now,
+    },
+  });
+  installationLeadTimer = setInterval(() => {
+    void notifier.check().catch(() => logger.warn("Installation lead notification is pending"));
+  }, 60_000);
+  installationLeadTimer.unref();
+}
 const claudeSetupTimer = setInterval(() => {
   if (!synchronizing) return;
   void claudeSetup
@@ -160,7 +246,7 @@ const providerSecretsTimer = setInterval(() => {
     .catch(() => logger.warn("Provider key synchronization is pending"));
 }, 5000);
 providerSecretsTimer.unref();
-// On by default: Host-owned refresh for full sign-in Claude accounts. `false` opts out.
+// Opt-in: Host-owned refresh for full sign-in Claude accounts (`claudeHostRefresh: true`).
 const claudeOAuth = claudeHostRefreshEnabled(config)
   ? createClaudeOAuthRuntime(config, settings, assertRegistrationReadiness)
   : undefined;
@@ -171,6 +257,17 @@ const claudeOAuthTimer = claudeOAuth
     }, 30_000)
   : undefined;
 claudeOAuthTimer?.unref();
+// Opt-in: shared Codex accounts sign in once on the Host (`codexHostRefresh: true`).
+const codexSignIn = codexHostRefreshEnabled(config)
+  ? createCodexSignInRuntime(config, settings, assertRegistrationReadiness)
+  : undefined;
+const codexSignInTimer = codexSignIn
+  ? setInterval(() => {
+      if (!synchronizing) return;
+      void codexSignIn.reconcile().catch(() => logger.warn("Codex sign-in refresh is pending"));
+    }, 30_000)
+  : undefined;
+codexSignInTimer?.unref();
 const app = createInstallationServer(
   config,
   executor,
@@ -183,7 +280,39 @@ const app = createInstallationServer(
   coordinatorRequests,
   claudeOAuth,
   providerSecrets,
+  { configFile: realpathSync(configFile) },
+  codexSignIn,
 );
+const telemetry = createOperationalTelemetry({
+  enabled: config.operationalTelemetryEnabled === true,
+  version: resolveDaemonVersion(),
+  clock: { now: Date.now, monotonic: () => performance.now() },
+  writer: createOperationalStore(join(config.stateDir, "operational-telemetry-v1")),
+  observe() {
+    const cpu = process.cpuUsage();
+    const memory = process.memoryUsage();
+    const connections = daemonConnections.operationalSnapshot();
+    return {
+      coordinator: {
+        cpuUserMicros: cpu.user,
+        cpuSystemMicros: cpu.system,
+        rssBytes: memory.rss,
+        heapUsedBytes: memory.heapUsed,
+        uptimeSeconds: process.uptime(),
+      },
+      diskAvailableBytes: null,
+      queues: app.operationalQueueSummary(),
+      hostConnection: connections.host,
+      devConnection: connections.container,
+    };
+  },
+  schedule(callback, intervalMs) {
+    const timer = setInterval(callback, intervalMs);
+    timer.unref();
+    return () => clearInterval(timer);
+  },
+});
+if (config.operationalTelemetryEnabled === true) app.setOperationalActivitySink(telemetry);
 activateSynchronization();
 const restartTimer = setInterval(() => {
   try {
@@ -201,16 +330,33 @@ server.on("error", (error) => {
   logger.error({ err: error }, "Installation listener failed");
   process.exitCode = 1;
 });
+// Linux Docker bridges cannot reach Host loopback; the gate route then needs this listener.
+// The server admits only the gate authority's agent routes on it, as on loopback.
+const gateListenAddress = config.container ? config.access?.gateRoute?.listenAddress : undefined;
+const gateServer = gateListenAddress
+  ? app.listen(config.listenPort, gateListenAddress, () =>
+      logger.info("Installation gate route listener ready"),
+    )
+  : undefined;
+gateServer?.on("error", (error) => {
+  logger.error({ err: error }, "Installation gate route listener failed");
+  process.exitCode = 1;
+});
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
+    telemetry.stop();
+    clearInterval(installationLeadTimer);
     clearInterval(restartTimer);
     clearInterval(claudeSetupTimer);
     clearInterval(providerSecretsTimer);
     if (claudeOAuthTimer) clearInterval(claudeOAuthTimer);
+    if (codexSignInTimer) clearInterval(codexSignInTimer);
     void claudeSetup.dispose();
     void claudeOAuth?.dispose();
+    void codexSignIn?.dispose();
     stopProfileSynchronization?.();
     stopSettingsReconciliation?.();
     daemonConnections.close();
     server.close();
+    gateServer?.close();
   });

@@ -3,22 +3,13 @@ import { useMemo, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { formatProviderUsageSummary } from "@/provider-usage/compact-summary";
-import { clampPct, formatPct, formatResetLabel } from "@/provider-usage/format";
-import { quotaReading } from "@/provider-usage/quota-reading";
+import { clampPct, formatPct } from "@/provider-usage/format";
+import { quotaReading, resetDescription } from "@/provider-usage/quota-reading";
 import type { ProviderUsageView } from "@/provider-usage/types";
 import { ProviderResetControl } from "@/provider-usage/reset-control";
 import { providerConnectionAction } from "@/provider-usage/connection-action";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
-
-function resetLabel(resetsAt: string | null | undefined): string {
-  return (
-    formatResetLabel(resetsAt)
-      ?.replace(/^resets /, "resets in ")
-      .replace(/(\d+)d$/, (_, days) => `${days} ${days === "1" ? "day" : "days"}`) ??
-    "Reset time unavailable"
-  );
-}
 
 export function PresetUsageRail({
   view,
@@ -86,7 +77,7 @@ export function PresetUsageRail({
           </View>
           {!showStatusBelow ? (
             <Text style={[styles.meta, critical && styles.critical]} numberOfLines={1}>
-              {statusLabel ?? resetLabel(window.resetsAt)}
+              {statusLabel ?? resetDescription(usage, window)}
             </Text>
           ) : null}
         </>

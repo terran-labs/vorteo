@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
+import type { AgentContextBreakdown } from "@getpaseo/protocol/agent-context";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import type {
   AgentCapabilityFlags,
@@ -532,6 +533,17 @@ export class HostedAgentSession implements AgentSession {
     return (await this.invoke({ method: "listCommands" })) as AgentSlashCommand[];
   }
 
+  /**
+   * The provider's breakdown, read in the host where the provider runs. Null from a host that
+   * predates the call, which the client shows as totals only.
+   */
+  async getContextBreakdown(): Promise<AgentContextBreakdown | null> {
+    // COMPAT(hostedContextBreakdown): added in v26.11.207; remove once the host floor supports it.
+    // Never send an unknown method to an old host.
+    if (this.snapshot.capabilities?.contextBreakdown !== true) return null;
+    return await this.invoke({ method: "getContextBreakdown" });
+  }
+
   async revertConversation(input: { messageId: string }): Promise<void> {
     await this.invoke({ method: "revertConversation", messageId: input.messageId });
   }
@@ -542,6 +554,28 @@ export class HostedAgentSession implements AgentSession {
 
   async revertBoth(input: { messageId: string }): Promise<void> {
     await this.invoke({ method: "revertBoth", messageId: input.messageId });
+  }
+
+  async closeIfIdle(): Promise<void> {
+    // COMPAT(conditionalIdleClose): added in v0.11.0-beta.3.vorteo.882; remove once the host floor supports it.
+    // Never send an unknown method to an old host or fall back to unconditional close.
+    if (this.snapshot.capabilities?.conditionalIdleClose !== true)
+      throw new Error("Session host does not support conditional idle close.");
+    if (this.status === "reattaching") throw new HostedSessionReconnectingError();
+    if (this.status !== "attached") throw new HostedSessionUnavailableError(this.status);
+    await this.invoke({ method: "closeIfIdle" });
+    // A refusal must leave attachment, applied record and subscribers intact.
+    await this.forgetApplied();
+    this.finishClose();
+  }
+
+  private finishClose(): void {
+    this.status = "closed";
+    this.wakeRecovery?.();
+    this.unsubscribeChannel();
+    this.clearReleaseTimer();
+    this.subscribers.clear();
+    this.held = [];
   }
 
   async close(): Promise<void> {
@@ -565,12 +599,7 @@ export class HostedAgentSession implements AgentSession {
       );
       throw error;
     } finally {
-      this.status = "closed";
-      this.wakeRecovery?.();
-      this.unsubscribeChannel();
-      this.clearReleaseTimer();
-      this.subscribers.clear();
-      this.held = [];
+      this.finishClose();
     }
   }
 

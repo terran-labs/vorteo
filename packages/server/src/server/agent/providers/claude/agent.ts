@@ -73,7 +73,12 @@ import {
   parseClaudeWorkflowRun,
 } from "./subagents/workflow-replay-source.js";
 import { readClaudeWorkflowResultFile } from "./subagents/workflow-output.js";
-import { buildClaudeFeatures, claudeModelSupportsFastMode } from "./feature-definitions.js";
+import { isClaudeChromeBridgeInstalled } from "./chrome-integration.js";
+import {
+  buildClaudeFeatures,
+  CLAUDE_CHROME_FEATURE_ID,
+  claudeModelSupportsFastMode,
+} from "./feature-definitions.js";
 import {
   buildBinaryDiagnosticRows,
   buildCommandResolutionDiagnosticRows,
@@ -1650,6 +1655,8 @@ export class ClaudeAgentClient implements AgentClient {
     return buildClaudeFeatures({
       modelId: claudeConfig.model,
       fastModeEnabled: claudeConfig.featureValues?.fast_mode === true,
+      chromeAvailable: isClaudeChromeBridgeInstalled(),
+      chromeEnabled: claudeConfig.featureValues?.[CLAUDE_CHROME_FEATURE_ID] === true,
     });
   }
 
@@ -2259,6 +2266,8 @@ class ClaudeAgentSession implements AgentSession {
     return buildClaudeFeatures({
       modelId: this.config.model,
       fastModeEnabled: this.config.featureValues?.fast_mode === true,
+      chromeAvailable: isClaudeChromeBridgeInstalled(),
+      chromeEnabled: this.chromeIntegrationEnabled(),
     });
   }
 
@@ -2602,6 +2611,10 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   async setFeature(featureId: string, value: unknown): Promise<void> {
+    if (featureId === CLAUDE_CHROME_FEATURE_ID) {
+      this.applyChromeFeature(Boolean(value));
+      return;
+    }
     if (featureId !== "fast_mode") {
       throw new Error(`Unknown Claude feature: ${featureId}`);
     }
@@ -2614,6 +2627,33 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     await this.applyFastModeFeature(enabled);
+  }
+
+  // `--chrome` is a launch flag, so the change takes effect when the next turn starts a new CLI
+  // process. The session ID is preserved, so the conversation continues.
+  private applyChromeFeature(enabled: boolean): void {
+    if (enabled && !isClaudeChromeBridgeInstalled()) {
+      throw new Error(
+        "Claude in Chrome is not set up on this machine. Install the extension and run `claude --chrome` once.",
+      );
+    }
+    if (this.chromeIntegrationEnabled() === enabled) return;
+    this.config.featureValues = {
+      ...this.config.featureValues,
+      [CLAUDE_CHROME_FEATURE_ID]: enabled,
+    };
+    this.queryRestartNeeded = true;
+    this.cachedRuntimeInfo = null;
+  }
+
+  private chromeIntegrationEnabled(): boolean {
+    return this.config.featureValues?.[CLAUDE_CHROME_FEATURE_ID] === true;
+  }
+
+  private applyChromeLaunchArg(options: ClaudeOptions): void {
+    if (!this.chromeIntegrationEnabled() || !isClaudeChromeBridgeInstalled()) return;
+    // A null value passes the bare `--chrome` flag to the Claude CLI.
+    options.extraArgs = { ...options.extraArgs, chrome: null };
   }
 
   private async applyFastModeFeature(enabled: boolean, query?: Query): Promise<void> {
@@ -3532,6 +3572,7 @@ class ClaudeAgentSession implements AgentSession {
     if (this.config.mcpServers) {
       base.mcpServers = this.normalizeMcpServers(this.config.mcpServers);
     }
+    this.applyChromeLaunchArg(base);
 
     if (this.config.model) {
       base.model = this.config.model;

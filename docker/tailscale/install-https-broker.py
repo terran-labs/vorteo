@@ -68,7 +68,7 @@ def main():
     source = Path(__file__).resolve().parent
     # Executables, configuration, ledger and lock must not be reachable through any
     # writable agent bind. Protect both direct mounts and ancestor mounts.
-    targets = [root / name for name in ['https_broker.py', 'host_config.py', 'launch_agent.py', 'host-config.json', 'https-broker-ledger.json', 'https-broker.lock']]
+    targets = [root / name for name in ['https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'host-config.json', 'https-broker-ledger.json', 'https-broker.lock']]
     targets += [Path(sys.executable).resolve(), Path(c['docker']).resolve()]
     for target in targets:
         for mount in inspected['Mounts']:
@@ -114,10 +114,10 @@ def main():
     c['channelIdentities'] = {name: [os.stat(channel / name).st_dev, os.stat(channel / name).st_ino] for name in ['', 'inbox', 'receipts', 'origins']}
     backup = root / 'backups' / ('https-broker-' + str(__import__('time').time_ns()))
     backup.mkdir(parents=True, mode=0o700)
-    for name in ['host-config.json', 'https_broker.py', 'host_config.py', 'launch_agent.py', 'host-recovery.py', 'https-preview.py']:
+    for name in ['host-config.json', 'https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'host-recovery.py', 'https-preview.py']:
         if (root / name).exists():
             shutil.copy2(root / name, backup / name)
-    for name in ['https_broker.py', 'host_config.py', 'launch_agent.py', 'https-preview.py', 'host-recovery.py', 'uninstall-https-broker.py']:
+    for name in ['https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'https-preview.py', 'host-recovery.py', 'uninstall-https-broker.py']:
         temp = root / (name + '.install')
         shutil.copyfile(source / name, temp)
         temp.chmod(0o700)

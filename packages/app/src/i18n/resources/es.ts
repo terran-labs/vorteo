@@ -255,6 +255,9 @@ export const es: TranslationResources = {
   },
   agentPanel: {
     states: {
+      providerUnavailable: en.agentPanel.states.providerUnavailable,
+      providerRecovery: en.agentPanel.states.providerRecovery,
+      loadingProviders: en.agentPanel.states.loadingProviders,
       notFound: "Agentno encontrado",
       failedToLoad: "No se pudo cargar el agente",
       reconnecting: "Reconectando al host",
@@ -1222,6 +1225,11 @@ export const es: TranslationResources = {
         "Agregue comandos de configuración para que los nuevos árboles de trabajo puedan instalar dependencias y prepararse automáticamente.",
       openProjectSettings: "Abrir la configuración del proyecto",
     },
+    focus: {
+      focusItem: "Enfocar {{name}}",
+      allProjects: "Todos los proyectos",
+      breadcrumb: "Ruta de enfoque de la barra lateral",
+    },
     folders: {
       actions: {
         menu: "Acciones de carpeta",
@@ -2029,6 +2037,7 @@ export const es: TranslationResources = {
     used: "{{percentage}}% utilizado",
     tokens: "Fichas{{used}}/{{max}}",
     sessionCost: "Costo de la sesión{{cost}}",
+    sessionCostEstimated: "Costo estimado de la sesión ~{{cost}}",
     accessibility: "Ventana de contexto{{percentage}}% utilizada",
     breakdown: {
       used: "Usado",
@@ -2280,6 +2289,7 @@ export const es: TranslationResources = {
       theme: {
         title: "Tema",
         accessibilityLabel: "Tema:{{value}}",
+        pluginThemes: "Temas de plugins",
         options: {
           light: "Luz",
           dark: "Oscuro",
@@ -2792,7 +2802,7 @@ export const es: TranslationResources = {
       system: {
         title: "Acerca de Vorteo System",
         description:
-          "Este proyecto sirve para hacer evolucionar esta instalación de Vorteo. Se basa en el checkout con el que se construyó la instalación y también contiene espacios de trabajo de mantenimiento que gestiona el daemon, como el Optimization Runner. El daemon lo vuelve a crear y depende de él, así que no se puede quitar ni renombrar.",
+          "Este proyecto sirve para hacer evolucionar esta instalación de Vorteo. Se basa en el checkout con el que se construyó la instalación y también contiene espacios de trabajo de mantenimiento que gestiona el daemon, como el Vorteo :: Optimizer. El daemon lo vuelve a crear y depende de él, así que no se puede quitar ni renombrar.",
       },
       readFailures: {
         invalidTitle: "paseo.json no se pudo analizar",

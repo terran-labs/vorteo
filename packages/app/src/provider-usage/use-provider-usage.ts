@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
@@ -17,8 +17,55 @@ export function providerUsageQueryKey(serverId: string | null | undefined) {
   return ["providerUsage", serverId ?? ""] as const;
 }
 
-async function fetchProviderUsage(client: ProviderUsageClient): Promise<ProviderUsageListPayload> {
-  return client.listProviderUsage();
+interface ProviderUsageFetch {
+  client: ProviderUsageClient;
+  queryClient: QueryClient;
+  serverId: string | null | undefined;
+  forceRefresh?: boolean;
+}
+
+async function fetchProviderUsage({
+  client,
+  queryClient,
+  serverId,
+  forceRefresh,
+}: ProviderUsageFetch): Promise<ProviderUsageListPayload> {
+  const next = await client.listProviderUsage(forceRefresh ? { forceRefresh } : undefined);
+  return retainLastKnownUsage(
+    next,
+    queryClient.getQueryData<ProviderUsageListPayload>(providerUsageQueryKey(serverId)),
+  );
+}
+
+/**
+ * Replaces the cached reading with one the daemon reads fresh, bypassing its own cache. A
+ * failure lands in the query state like any other refresh.
+ */
+export async function forceRefreshProviderUsage(
+  input: Omit<ProviderUsageFetch, "forceRefresh">,
+): Promise<void> {
+  const queryKey = providerUsageQueryKey(input.serverId);
+  // An in-flight ordinary read would otherwise be reused and return the daemon's cached reading.
+  await input.queryClient.cancelQueries({ queryKey });
+  await input.queryClient.prefetchQuery({
+    queryKey,
+    queryFn: () => fetchProviderUsage({ ...input, forceRefresh: true }),
+    staleTime: 0,
+  });
+}
+
+/** Refreshes usage past both caches, or does nothing when this host cannot list usage. */
+export function useForceProviderUsageRefresh(serverId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  const client = useHostRuntimeClient(serverId ?? "");
+  const isConnected = useHostRuntimeIsConnected(serverId ?? "");
+  const supportsProviderUsage = useSessionStore(
+    (state) => state.sessions[serverId ?? ""]?.serverInfo?.features?.providerUsageList === true,
+  );
+  return useCallback(async () => {
+    if (!serverId || !client || !isConnected || !supportsProviderUsage) return;
+    await forceRefreshProviderUsage({ client, queryClient, serverId });
+  }, [client, isConnected, queryClient, serverId, supportsProviderUsage]);
 }
 
 interface UseProviderUsageOptions {
@@ -53,11 +100,8 @@ export function useProviderUsage(
     if (!client) {
       throw new Error(providerUsageCopy.clientUnavailable);
     }
-    return retainLastKnownUsage(
-      await fetchProviderUsage(client),
-      queryClient.getQueryData<ProviderUsageListPayload>(queryKey),
-    );
-  }, [client, queryClient, queryKey]);
+    return fetchProviderUsage({ client, queryClient, serverId });
+  }, [client, queryClient, serverId]);
 
   const query = useQuery({
     queryKey,

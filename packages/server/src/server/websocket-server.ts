@@ -5,7 +5,11 @@ import { QueueAttachmentStore } from "./message-queue/attachments.js";
 import { createAgentQueueDelivery } from "./message-queue/agent-delivery.js";
 import { MessageQueueService } from "./message-queue/service.js";
 import { MessageQueueStore } from "./message-queue/store.js";
-import { ProviderLoginService } from "../services/provider-login/service.js";
+import {
+  CLAUDE_START_FAILURE,
+  CODEX_START_FAILURE,
+  ProviderLoginService,
+} from "../services/provider-login/service.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -502,12 +506,36 @@ const WS_CLOSE_HELLO_TIMEOUT = 4001;
 const WS_CLOSE_INVALID_HELLO = 4002;
 const WS_CLOSE_INCOMPATIBLE_PROTOCOL = 4003;
 const WS_CLOSE_SERVER_SHUTDOWN = 1001;
+/** A peer that never answers the close frame would otherwise hold shutdown for ws's 30 s timeout. */
+export const WS_SHUTDOWN_CLOSE_TIMEOUT_MS = 1_000;
 const WS_PROTOCOL_VERSION = 1;
 const WS_RUNTIME_METRICS_FLUSH_MS = 30_000;
 const OWNER_SESSION_ADMISSION: SessionAdmission = {
   principalId: "owner",
   permissions: OWNER_PERMISSIONS,
 };
+
+/**
+ * Closes with the shutdown code so clients can tell a restart from a lost network, and drops a
+ * peer that does not complete the close handshake in time: a stalled close kept the old worker,
+ * and with it the replacement, waiting.
+ */
+function closeForShutdown(ws: WebSocketLike): Promise<void> {
+  // WebSocket.CLOSED = 3
+  if (ws.readyState === 3) return Promise.resolve();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const closed = new Promise<void>((resolve) => {
+    ws.once("close", () => resolve());
+    ws.close(WS_CLOSE_SERVER_SHUTDOWN, "Server shutting down");
+  });
+  const expired = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      ws.terminate?.();
+      resolve();
+    }, WS_SHUTDOWN_CLOSE_TIMEOUT_MS);
+  });
+  return Promise.race([closed, expired]).finally(() => clearTimeout(timer));
+}
 
 export class MissingDaemonVersionError extends Error {
   constructor() {
@@ -805,6 +833,17 @@ export class VoiceAssistantWebSocketServer {
         getProviderConfigs: () => this.daemonConfigStore.get().providers,
       });
     this.providerLoginService = new ProviderLoginService({
+      logger: this.logger,
+      startFailureMessage: (providerId) => {
+        const definition =
+          this.providerSnapshotManager.getAgentManagerProviderState().providerDefinitions[
+            providerId
+          ];
+        const kind = definition?.derivedFromProviderId ?? providerId;
+        if (kind === "claude") return CLAUDE_START_FAILURE;
+        if (kind === "codex") return CODEX_START_FAILURE;
+        return undefined;
+      },
       getClient: (providerId) => {
         const state = this.providerSnapshotManager.getAgentManagerProviderState();
         if (state.providerDefinitions[providerId]?.enabled !== true) return null;
@@ -1222,33 +1261,10 @@ export class VoiceAssistantWebSocketServer {
       }
 
       cleanupPromises.push(Promise.resolve(connection.session.cleanup()));
-      for (const ws of connection.sockets) {
-        cleanupPromises.push(
-          new Promise<void>((resolve) => {
-            // WebSocket.CLOSED = 3
-            if (ws.readyState === 3) {
-              resolve();
-              return;
-            }
-            ws.once("close", () => resolve());
-            ws.close();
-          }),
-        );
-      }
+      for (const ws of connection.sockets) cleanupPromises.push(closeForShutdown(ws));
     }
 
-    for (const ws of pendingSockets) {
-      cleanupPromises.push(
-        new Promise<void>((resolve) => {
-          if (ws.readyState === 3) {
-            resolve();
-            return;
-          }
-          ws.once("close", () => resolve());
-          ws.close();
-        }),
-      );
-    }
+    for (const ws of pendingSockets) cleanupPromises.push(closeForShutdown(ws));
 
     await Promise.all(cleanupPromises);
     await this.providerLoginService.dispose();
@@ -2042,6 +2058,8 @@ export class VoiceAssistantWebSocketServer {
         rewind: true,
         // COMPAT(agentTimelinePromptIndex): added in v0.2.X, drop the gate when floor >= v0.2.X.
         agentTimelinePromptIndex: true,
+        // COMPAT(agentTimelinePromptIndexAfterSeq): added in v0.11.0, remove gate after 2027-04-29.
+        agentTimelinePromptIndexAfterSeq: true,
         // COMPAT(agentHistorySearch): added in v0.3.0, remove gate after 2027-02-07.
         agentHistorySearch: true,
         // COMPAT(checkoutRefresh): added in v0.1.86, remove gate after 2026-11-29.
@@ -2080,6 +2098,7 @@ export class VoiceAssistantWebSocketServer {
         codexAccountCreation: true,
         claudeAccountCreation: true,
         claudeFullSignIn: true,
+        codexInstallationSignIn: true,
         providerSecretDelivery: true,
         providerCredentialRemoval: true,
         providerOrdering: true,
@@ -2184,6 +2203,8 @@ export class VoiceAssistantWebSocketServer {
         agentConfigApply: true,
         // COMPAT(agentProfileSwitch): added in Vorteo 2026-10, remove gate after 2027-04-22.
         agentProfileSwitch: true,
+        // COMPAT(agentProviderRecovery): added in Vorteo 2026-10, remove gate after 2027-04-28.
+        agentProviderRecovery: true,
       },
     };
   }

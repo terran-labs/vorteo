@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,7 +24,12 @@ import { hashDaemonPassword } from "../auth.js";
 import type { InstallationConfig } from "./config.js";
 import { coordinatorLifecycleWork } from "./coordinator-bootstrap.js";
 import { parseLifecycleJournal, type LifecycleJob } from "./lifecycle-journal.js";
-import { InstallationRestarts, type RestartExecutor, type RestartJournal } from "./restarts.js";
+import {
+  InstallationRestarts,
+  type RestartExecutor,
+  type RestartJournal,
+  type RestartApprovalPolicy,
+} from "./restarts.js";
 import { createInstallationServer } from "./server.js";
 import { SessionHostJobError } from "./session-host-job.js";
 
@@ -47,7 +53,7 @@ function plan(operation: SessionHostOperation, pathValue = "/usr/bin:/bin"): Ses
   };
 }
 
-function fixture(extras: Partial<RestartExecutor> = {}) {
+function fixture(extras: Partial<RestartExecutor> = {}, policy: RestartApprovalPolicy = {}) {
   let records: LifecycleJob[] = [];
   const journal: RestartJournal = {
     read: () => structuredClone(records),
@@ -75,6 +81,7 @@ function fixture(extras: Partial<RestartExecutor> = {}) {
   // The trusted Host policy approves Host restart requests automatically; never this job.
   const queue = new InstallationRestarts(journal, executor, Date.now, {
     hostRequestsAfter: "2026-01-01T00:00:00.000Z",
+    ...policy,
   });
   return {
     queue,
@@ -362,7 +369,7 @@ test("HTTP routes keep requests on the Host token and decisions on owner buttons
     body?: unknown,
     origin = "https://owner.example.test",
   ) =>
-    fetch(`http://127.0.0.1:${address.port}/api/installation/${route}`, {
+    requestWithHost(`http://127.0.0.1:${address.port}/api/installation/${route}`, {
       method: body === undefined ? "GET" : "POST",
       headers: {
         ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -633,7 +640,7 @@ test("the owner query keeps the v712 and v761 shapes for clients that do not dec
   if (!address || typeof address === "string") throw Error("Missing test address");
   config.listenPort = address.port;
   const request = (route: string, token: string, body: unknown) =>
-    fetch(`http://127.0.0.1:${address.port}/api/installation/${route}`, {
+    requestWithHost(`http://127.0.0.1:${address.port}/api/installation/${route}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -787,7 +794,7 @@ test("owner status is null, not an error, when the job cannot be inspected", asy
   if (!address || typeof address === "string") throw Error("Missing test address");
   config.listenPort = address.port;
   try {
-    const response = await fetch(
+    const response = await requestWithHost(
       `http://127.0.0.1:${address.port}/api/installation/owner/session-host/query`,
       {
         method: "POST",
@@ -803,7 +810,7 @@ test("owner status is null, not an error, when the job cannot be inspected", asy
     expect(response.status).toBe(200);
     // Without the restart flag the response keeps its older shape for strict older apps.
     expect(await response.json()).toEqual({ jobs: [], status: null });
-    const asking = await fetch(
+    const asking = await requestWithHost(
       `http://127.0.0.1:${address.port}/api/installation/owner/session-host/query`,
       {
         method: "POST",
@@ -830,3 +837,74 @@ test("owner status is null, not an error, when the job cannot be inspected", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("delegated session host maintenance retains a cancellable grant and revocation prevents dispatch", async () => {
+  let activation: string | null = "2026-01-01T00:00:00.000Z";
+  const f = fixture(
+    {},
+    {
+      maintenanceRequestsAfter: () => activation,
+      authority: () => "a".repeat(64),
+      cancellationDelayMs: 30_000,
+    },
+  );
+  await f.request();
+  await f.queue.drain();
+  expect(f.queue.listSessionHosts()[0]?.status).toBe("approved");
+  expect(f.queue.listSessionHosts()[0]).not.toHaveProperty("delegatedApproval");
+  expect(f.journal.read()[0]).toHaveProperty("delegatedApproval.policyActivatedAt", activation);
+  expect(f.apply).not.toHaveBeenCalled();
+  activation = null;
+  await f.queue.drain();
+  expect(f.queue.listSessionHosts()[0]?.status).toBe("rejected");
+  expect(f.apply).not.toHaveBeenCalled();
+});
+
+test.each(["session-host-install", "session-host-remove", "session-host-restart"] as const)(
+  "delegated %s dispatches only the freshly checked plan",
+  async (operation) => {
+    const f = fixture(
+      {},
+      {
+        maintenanceRequestsAfter: () => "2026-01-01T00:00:00.000Z",
+        authority: () => "a".repeat(64),
+        cancellationDelayMs: 0,
+      },
+    );
+    await f.request(operation);
+    await f.queue.drain();
+    expect(f.apply).toHaveBeenCalledTimes(1);
+    expect(f.queue.listSessionHosts()[0]?.status).toBe("succeeded");
+  },
+);
+
+// Node fetch does not preserve a supplied Host on every supported runtime, so the request
+// would reach the loopback authority and fail its local origin check. These routes need the
+// configured public authority on the wire (as in server.e2e.test.ts).
+function requestWithHost(
+  url: string,
+  input: { method: string; headers: Record<string, string>; body?: string },
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(
+      url,
+      { method: input.method, headers: input.headers },
+      (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        incoming.on("error", reject);
+        incoming.on("end", () => {
+          const headers = new Headers();
+          for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+            headers.append(incoming.rawHeaders[index]!, incoming.rawHeaders[index + 1]!);
+          }
+          const status = incoming.statusCode ?? 500;
+          const body = [204, 304].includes(status) ? null : Buffer.concat(chunks);
+          resolve(new Response(body, { status, headers }));
+        });
+      },
+    );
+    outgoing.on("error", reject);
+    outgoing.end(input.body);
+  });
+}

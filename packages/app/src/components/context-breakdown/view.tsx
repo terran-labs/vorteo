@@ -17,6 +17,7 @@ import {
   type ContextRow,
 } from "./model";
 import type { ContextBreakdownView } from "./use-context-breakdown";
+import type { SessionCost } from "@/components/context-window-meter.utils";
 import { SkeletonPulse, useSkeletonPulse } from "@/git/pull-request-panel/activity-skeleton";
 
 const DONUT_SIZE = 88;
@@ -46,7 +47,7 @@ export function ContextBreakdown({
   percentage: number;
   usedTokens: number;
   maxTokens: number;
-  sessionCost: string | null;
+  sessionCost: SessionCost | null;
   /** Whether item groups can be expanded; a hover popover cannot be pressed. */
   interactive: boolean;
 }) {
@@ -80,7 +81,12 @@ export function ContextBreakdown({
           </Text>
           {sessionCost ? (
             <Text style={styles.detail}>
-              {t("contextWindow.sessionCost", { cost: sessionCost })}
+              {t(
+                sessionCost.estimated
+                  ? "contextWindow.sessionCostEstimated"
+                  : "contextWindow.sessionCost",
+                { cost: sessionCost.amount },
+              )}
             </Text>
           ) : null}
           {overLimit ? (

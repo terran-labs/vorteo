@@ -267,7 +267,9 @@ const stageLabels: Record<CoordinatorBootstrapStage, string> = {
 };
 export function bootstrapStatus(request: CoordinatorBootstrapRequest): string {
   if (request.execution) return stageLabels[request.execution.stage];
+  if (request.dispatchStatus?.failure) return "Failed before dispatch";
   if (request.status === "canceled") return "Canceled";
+  if (request.dispatchStatus?.stalled) return "Approved; not started";
   if (request.automaticStatus) return automaticLabels[request.automaticStatus.state];
   if (request.status === "approved") return "Approved; awaiting dispatch";
   return "Approval needed";
@@ -309,8 +311,29 @@ export function bootstrapAutomaticDetail(request: CoordinatorBootstrapRequest): 
   return "This request uses your separate Host-only coordinator permission. Cancellation remains available until dispatch is claimed.";
 }
 
+/** The failure, stall or readiness explanation the coordinator reported, if any. */
+export function bootstrapDispatchDetail(request: CoordinatorBootstrapRequest): string | null {
+  const status = request.dispatchStatus;
+  if (!status || request.execution) return null;
+  if (status.failure) return status.failure.reason;
+  if (status.stalled) return status.stalled.reason;
+  if (status.readiness?.state === "blocked")
+    return `The update cannot start right now: ${status.readiness.blockers.join("; ")}. Approval will fail until this is resolved in Installation controls.`;
+  return null;
+}
+
+/** Failures stay in the banner for a day so the owner sees why nothing happened. */
+export function bootstrapRecentDispatchFailure(
+  request: CoordinatorBootstrapRequest,
+  now = Date.now(),
+): boolean {
+  const failure = request.dispatchStatus?.failure;
+  return failure !== undefined && now - Date.parse(failure.failedAt) < 24 * 60 * 60_000;
+}
+
 export function bootstrapRequiresOwnerAction(request: CoordinatorBootstrapRequest): boolean {
   if (request.execution) return request.execution.stage === "recovery_required";
+  if (request.dispatchStatus?.failure || request.dispatchStatus?.stalled) return true;
   if (request.status === "canceled") return false;
   if (request.automaticStatus)
     return (

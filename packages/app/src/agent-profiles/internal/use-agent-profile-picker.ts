@@ -78,6 +78,7 @@ export interface AgentProfilePickerRow {
 
 export interface AgentProfilePicker {
   selectEnvironment?: (serverId: string) => void;
+  applyAccountDefaults?: (provider: string) => void;
   /** The folder the task runs in, so project exclusions can hide unavailable choices. */
   projectPath: string | null;
   refreshStatus?: () => void;
@@ -107,6 +108,7 @@ interface PendingHandoff {
 
 export interface UseAgentProfilePickerInput {
   serverId: string | null;
+  recovery?: { onRecovered: () => void };
   /**
    * Providers this composer can actually run; pass a stable reference. A profile
    * naming anything else is hidden rather than shown as a row that cannot do
@@ -126,7 +128,7 @@ export interface UseAgentProfilePickerInput {
 export function useAgentProfilePicker(
   input: UseAgentProfilePickerInput,
 ): AgentProfilePicker | null {
-  const { serverId, availableProviders, target } = input;
+  const { serverId, availableProviders, target, recovery } = input;
   const { config: daemonConfig } = useDaemonConfig(serverId);
   const hosts = useHosts();
   const activeWorkspace = useActiveWorkspaceSelection();
@@ -240,7 +242,8 @@ export function useAgentProfilePicker(
       reason: profileSwitchReason(items),
     });
     setPendingSwitch(null);
-  }, [client, pendingSwitch, serverId, target]);
+    recovery?.onRecovered();
+  }, [client, pendingSwitch, serverId, target, recovery]);
   const createSuccessor = useCallback(
     async (profile: AgentProfile) => {
       if (target.kind !== "agent" || !client || !serverId || applyingRef.current) return;
@@ -271,7 +274,7 @@ export function useAgentProfilePicker(
       key: `${target.agentId}:${pendingSwitch.id}:${pendingSwitch.provider}`,
       profileName: pendingSwitch.name,
       onSwitch: confirmSwitch,
-      onNewTask: startSuccessorInstead,
+      onNewTask: recovery ? undefined : startSuccessorInstead,
       onClose: closeSwitch,
     });
   }
@@ -495,6 +498,24 @@ export function useAgentProfilePicker(
     ],
   );
 
+  const applyAccountDefaults = useCallback(
+    (provider: string) => {
+      if (target.kind !== "draft") return;
+      if (!availableProviders.includes(provider)) {
+        toast.error("The selected account is unavailable. Choose another account.");
+        return;
+      }
+      target.controls.applyProfile({
+        provider,
+        modelId: "",
+        modeId: "",
+        thinkingOptionId: "",
+        featureValues: {},
+      });
+    },
+    [target, availableProviders, toast],
+  );
+
   const refreshStatus = useCallback(() => {
     const providers = [
       ...new Set(rows.filter((row) => row.localEndpoint).map((row) => row.provider)),
@@ -523,7 +544,8 @@ export function useAgentProfilePicker(
             selectEnvironment:
               target.kind === "draft" ? target.controls.selectEnvironment : undefined,
             applyProfile,
-            applyDestinationProfile,
+            applyAccountDefaults: target.kind === "draft" ? applyAccountDefaults : undefined,
+            applyDestinationProfile: recovery ? undefined : applyDestinationProfile,
             isApplying,
             handoffElement,
             refreshStatus,
@@ -533,7 +555,9 @@ export function useAgentProfilePicker(
         : null,
     [
       applyProfile,
+      applyAccountDefaults,
       applyDestinationProfile,
+      recovery,
       target,
       projectPath,
       isSupported,
