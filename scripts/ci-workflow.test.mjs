@@ -57,6 +57,7 @@ const heavyCiJobs = new Set([
   "desktop-tests-windows",
   ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
   "playwright-smoke",
+  "playwright-installation",
   ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
 ]);
 
@@ -461,8 +462,12 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   }
 
   const condition = (job) => /^    if: \$\{\{ (.+) \}\}$/m.exec(job)?.[1] ?? "";
-  const selected = (job, outputs) =>
-    runInNewContext(condition(job), { needs: { changes: { outputs } }, cancelled: () => false });
+  const selected = (job, outputs, event = "workflow_dispatch") =>
+    runInNewContext(condition(job), {
+      ...contextFor(event),
+      needs: { changes: { outputs } },
+      cancelled: () => false,
+    });
   const all = { full: "true" };
   for (const [jobId, lines] of jobs) {
     if (jobId === "changes") continue;
@@ -480,7 +485,11 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     // The smoke replaces the full Playwright suite only when routing says so.
     const smoke = jobId === "playwright-smoke";
     assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit" && !smoke, jobId);
-    assert.equal(selected(job, { ...all, heavy: "false" }), !isHeavy && jobId !== "build", jobId);
+    assert.equal(
+      selected(job, { ...all, heavy: "false" }, "pull_request"),
+      !isHeavy && jobId !== "build",
+      jobId,
+    );
     // Missing routing outputs fail open to the heavy suites.
     assert.equal(selected(job, all), jobId !== "cli-unit" && !smoke, jobId);
   }
@@ -502,7 +511,7 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   }
   // Model Actions' implicit success() guard as well as its dependency barrier.
   // A plain expression evaluator would miss the skipped-needs regression.
-  function eligible(job, outputs, results, cancelled) {
+  function eligible(job, outputs, results, cancelled, context = contextFor("workflow_dispatch")) {
     const dependencies = /^    needs: (.+)$/m.exec(job)[1].replace(/[[\]]/g, "").split(/, */);
     if (dependencies.some((id) => results[id] === "in_progress")) return false;
     const expression = condition(job);
@@ -512,6 +521,7 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     const needs = Object.fromEntries(dependencies.map((id) => [id, { result: results[id] }]));
     needs.changes.outputs = outputs;
     return runInNewContext(expression, {
+      ...context,
       needs,
       cancelled: () => cancelled,
       success: () => success,
@@ -578,6 +588,7 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
               outputs,
               completed,
               false,
+              contextFor(event, ref),
             ),
           )
           .map(([id]) => id),
@@ -592,7 +603,9 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       ]) {
         const after = JSON.stringify(
           entries
-            .filter(([, lines]) => eligible(lines.join("\n"), outputs, results, false))
+            .filter(([, lines]) =>
+              eligible(lines.join("\n"), outputs, results, false, contextFor(event, ref)),
+            )
             .map(([id]) => id),
         );
         assert.equal(
@@ -601,7 +614,9 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
           `${event} ${ref}: identical selected job sets after failure or skip`,
         );
         assert.equal(
-          entries.some(([, lines]) => eligible(lines.join("\n"), outputs, results, true)),
+          entries.some(([, lines]) =>
+            eligible(lines.join("\n"), outputs, results, true, contextFor(event, ref)),
+          ),
           false,
         );
       }
@@ -630,6 +645,42 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     server,
     /- name: Run server unit tests\n\s+if: .*heavy == 'false'.*\n\s+run: npm run test:unit --workspace=@getpaseo\/server/,
   );
+});
+
+test("packaged installation browsers run only nightly and on manual dispatch", () => {
+  const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
+  const job = jobs.get("playwright-installation").join("\n");
+  const condition = /^    if: \$\{\{ (.+) \}\}$/m.exec(job)[1];
+  for (const [event_name, ref, expected] of [
+    ["schedule", "refs/heads/main", true],
+    ["workflow_dispatch", "refs/heads/task-branch", true],
+    ["pull_request", "refs/pull/185/merge", false],
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-185", false],
+    ["push", "refs/heads/main", false],
+    ["push", "refs/tags/release-26.11.601-beta", false],
+  ]) {
+    for (const cancelled of [false, true]) {
+      assert.equal(
+        runInNewContext(condition, {
+          github: { event_name, ref },
+          cancelled: () => cancelled,
+        }),
+        expected && !cancelled,
+        `${event_name} ${ref}, cancelled=${cancelled}`,
+      );
+    }
+  }
+  assert.match(job, /^    needs: \[changes, format, lint, typecheck\]$/m);
+  assert.match(job, /^    runs-on: ubuntu-24\.04$/m);
+  assert.match(job, /node-version: "22"/);
+  assert.match(job, /run: node scripts\/npm-retry\.mjs ci/);
+  assert.match(job, /run: npx playwright install --with-deps chromium/);
+  assert.match(job, /run: npm run test:e2e:installation --workspace=@getpaseo\/app/);
+  assert.doesNotMatch(job, /run: npm run build|--project=|--grep|continue-on-error/);
+  assert.match(job, /if: \$\{\{ success\(\) \|\| failure\(\) \|\| cancelled\(\) \}\}/);
+  assert.match(job, /uses: actions\/upload-artifact@v4/);
+  assert.match(job, /packages\/app\/test-results\//);
+  assert.match(job, /packages\/app\/playwright-report\//);
 });
 
 test("heavy suites reuse one server-stack build and build locally without it", () => {
@@ -775,7 +826,7 @@ test("stable iOS releases upload once and distribute to external testers before 
 test("eight Playwright shards share two-worker coverage", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 27);
+  assert.equal(jobs.size, 28);
   assert.ok(jobs.has("installer-tests"));
   // The shared server-stack build is a fan-out producer, not a result gate.
   assert.ok(jobs.has("build"));

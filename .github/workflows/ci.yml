@@ -759,6 +759,36 @@ jobs:
       PLAYWRIGHT_ARTIFACT: "8"
     steps: *playwright_test_steps
 
+  playwright-installation:
+    name: playwright (packaged installation)
+    needs: [changes, format, lint, typecheck]
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Install dependencies with retry
+        run: node scripts/npm-retry.mjs ci
+      - name: Install Chromium and system dependencies
+        timeout-minutes: 10
+        run: npx playwright install --with-deps chromium
+      # The installation script builds the server stack and packaged web app.
+      - name: Run packaged installation browser tests
+        run: npm run test:e2e:installation --workspace=@getpaseo/app
+      - name: Upload installation results and first-load timings
+        if: ${{ success() || failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-installation-results
+          path: |
+            packages/app/test-results/
+            packages/app/playwright-report/
+          retention-days: 7
+
   # Merge groups only: core flows (startup, a new workspace, sending a message, daemon
   # restart and reconnect, settings). The full suite runs nightly and on release tags.
   playwright-smoke:
