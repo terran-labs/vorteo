@@ -12,6 +12,7 @@ import path from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { checkArchiveReadiness } from "./archive-readiness.mjs";
 import {
+  VORTEO_WORKTREE_LOCK_REASON,
   git,
   hasCommit,
   listWorktrees,
@@ -47,8 +48,12 @@ export function classifyWorktrees({
   const current = path.resolve(repository);
   const decide = (worktree) => {
     if (path.resolve(worktree.path) === current) return ["keep", "Current worktree"];
-    if (worktree.locked) return ["keep", "Locked"];
+    // Vorteo locks its own worktrees only against prunes from other environments.
+    if (worktree.locked && worktree.lockReason !== VORTEO_WORKTREE_LOCK_REASON)
+      return ["keep", "Locked"];
     if (worktree.prunable || !existsSync(worktree.path)) {
+      // Git never prunes a locked worktree, so it stays whatever --prune-missing says.
+      if (worktree.locked) return ["keep", "Locked; its directory is not visible here"];
       return pruneMissing
         ? ["prune", "Directory is missing"]
         : ["keep", "Directory is not visible here; it may belong to another environment"];
@@ -74,8 +79,21 @@ export function applyCleanup({ cwd, target, entries }) {
   const results = [];
   for (const entry of entries) {
     if (entry.action !== "remove") continue;
-    // No --force: Git itself refuses to remove a worktree with changes.
-    git(repository, ["worktree", "remove", entry.path]);
+    // No --force: Git itself refuses to remove a worktree with changes. Vorteo's lock is lifted
+    // first and restored if Git refuses.
+    const vorteoLocked = listWorktrees(repository).some(
+      (worktree) =>
+        path.resolve(worktree.path) === path.resolve(entry.path) &&
+        worktree.lockReason === VORTEO_WORKTREE_LOCK_REASON,
+    );
+    if (vorteoLocked) git(repository, ["worktree", "unlock", entry.path]);
+    try {
+      git(repository, ["worktree", "remove", entry.path]);
+    } catch (error) {
+      if (vorteoLocked)
+        git(repository, ["worktree", "lock", "--reason", VORTEO_WORKTREE_LOCK_REASON, entry.path]);
+      throw error;
+    }
     let branchDeleted = false;
     if (
       entry.branch &&
