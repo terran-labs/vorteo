@@ -3,6 +3,7 @@ import { EnvironmentPresetMenu } from "./environment-preset-menu";
 import { AccountDisconnectedIcon } from "@/provider-usage/reconnect-control";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
+import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { Text, View } from "react-native";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -20,6 +21,7 @@ import { useCompactProfileName } from "./use-compact-profile-name";
 import { canonicalProfileId } from "@getpaseo/protocol/provider-preferences";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { selectedPresetPresentation } from "./selected-preset-presentation";
+import { effectiveReasoning } from "./shared-choices";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 
 const PROFILE_SNAP_POINTS = ["90%"];
@@ -76,6 +78,22 @@ export function activePresetPicker(input: {
 }) {
   return input.enabled && input.supported ? input.picker : null;
 }
+/** The composer's live choices win; the selected profile fills anything not yet resolved. */
+function selectedReasoning(input: {
+  definition: AgentProfile | undefined;
+  entries: readonly ProviderSnapshotEntry[] | undefined;
+  currentProvider?: string;
+  currentModel?: string | null;
+  currentThinkingOptionId?: string | null;
+}) {
+  const provider = input.currentProvider ?? input.definition?.provider;
+  return effectiveReasoning({
+    entry: input.entries?.find((entry) => entry.provider === provider),
+    model: input.currentModel ?? input.definition?.model,
+    thinkingOptionId: input.currentThinkingOptionId ?? input.definition?.thinkingOptionId,
+  });
+}
+
 export function PresetControls({
   inline = false,
   serverId,
@@ -155,6 +173,13 @@ export function PresetControls({
   }, [active, setOpen]);
   const selected = profiles.rows.find((row) => row.id === selectedProfileId);
   const compactName = useCompactProfileName(controlsRef, isCompact);
+  const reasoning = selectedReasoning({
+    definition: definitions?.find((row) => row.id === selectedProfileId),
+    entries,
+    currentProvider,
+    currentModel,
+    currentThinkingOptionId,
+  });
   const { triggerLabel, showWarning, showRing, remaining, statusLabel, accessibilityLabel } =
     selectedPresetPresentation({
       compactName,
@@ -167,6 +192,7 @@ export function PresetControls({
       view,
       now,
       resetCounts,
+      reasoningLabel: reasoning?.label,
     });
   const show = useCallback(() => {
     setOpen(true);

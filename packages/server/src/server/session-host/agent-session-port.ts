@@ -255,6 +255,7 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
       }
     },
     snapshot: () => toHostedJson(snapshot()),
+    settling: () => session.isProviderSettling?.() === true,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

@@ -886,6 +886,12 @@ export interface AgentSession {
    * An optional additional veto: missing methods use daemon baseline eligibility;
    * implemented checks that reject or return false keep the runtime resident. */
   canStopRuntime?(): Promise<boolean>;
+  /**
+   * Runtime-only, optional: true while a just-started provider process may still be doing startup
+   * work, such as refreshing its sign-in, that stopping it would lose. Idle release and session
+   * host shutdown wait for it, within their bounds. Missing means never settling.
+   */
+  isProviderSettling?(): boolean;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
   /** Hosted-only automatic release; rejects unless the host atomically admits an idle close. */

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { profileCatalogState, sharedChoiceState } from "./shared-choices";
+import { profileCatalogState, profileLaunchSummary, sharedChoiceState } from "./shared-choices";
 
 test("keeps shared reasoning visible but unavailable on a limited account", () => {
   const full = {
@@ -205,7 +205,7 @@ test("aliases never make nonselectable models available", () => {
   expect(selected.modelDisplay.label).toBe("opus");
   expect(selected.modelOptions).toEqual([]);
   expect(selected.thinkingOptions).toEqual([
-    { id: "provider-default", value: "", label: "Provider default", available: true },
+    { id: "provider-default", value: "", label: "Model default", available: true },
   ]);
 });
 
@@ -245,4 +245,26 @@ test("exact selectable IDs take precedence over colliding aliases for reasoning"
     "provider-default",
     "medium",
   ]);
+});
+
+test("summarizes a profile with its explicit or model-default reasoning", () => {
+  const entry = {
+    models: [
+      {
+        provider: "claude",
+        id: "claude-fable-5-2",
+        label: "Fable 5.2",
+        isDefault: true,
+        defaultThinkingOptionId: "medium",
+        thinkingOptions: [
+          { id: "medium", label: "Medium" },
+          { id: "ultracode", label: "Ultra Code" },
+        ],
+      },
+    ],
+  };
+  expect(profileLaunchSummary({ entry, profile: {} })).toBe("Fable 5.2 · Medium");
+  expect(profileLaunchSummary({ entry, profile: { thinkingOptionId: "ultracode" } })).toMatch(
+    /^Fable 5\.2 · Ultra code$/i,
+  );
 });

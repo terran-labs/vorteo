@@ -511,7 +511,6 @@ function ProfileIdentityFields({
 interface ProfileModelStageProps {
   state: AgentProfileFormState;
   model: AgentProfileFormModel;
-  sharedScope: AgentProfileEditModalProps["sharedScope"];
   controlSize: ControlSize;
   modelOptions: SelectFieldOption<string>[];
   modeOptions: SelectFieldOption<string>[];
@@ -524,7 +523,6 @@ interface ProfileModelStageProps {
 function ProfileModelStage({
   state,
   model,
-  sharedScope,
   controlSize,
   modelOptions,
   modeOptions,
@@ -583,7 +581,7 @@ function ProfileModelStage({
         />
       ) : null}
 
-      {state.disclosure.showThinkingField && sharedScope?.kind !== "workflow" ? (
+      {state.disclosure.showThinkingField ? (
         <SelectField
           label={t("settings.host.agentProfiles.thinkingLabel")}
           value={state.thinkingOptionId || UNSET_VALUE}
@@ -638,9 +636,16 @@ function OpenAgentProfileEditModal({
   const { t } = useTranslation();
   const controlSize: ControlSize = "md";
   const sharedCatalog = usesSharedCatalog(sharedScope);
+  const inheritThinking = sharedScope?.kind === "workflow";
   const snapshot = useMemo(
-    () => ({ mode, sharedCatalog, ...(profile ? { profile } : {}), ...(seed ? { seed } : {}) }),
-    [mode, profile, seed, sharedCatalog],
+    () => ({
+      mode,
+      sharedCatalog,
+      inheritThinking,
+      ...(profile ? { profile } : {}),
+      ...(seed ? { seed } : {}),
+    }),
+    [mode, profile, seed, sharedCatalog, inheritThinking],
   );
   const model = useAgentProfileFormModel(snapshot);
   const state = useAgentProfileFormState(model);
@@ -800,7 +805,6 @@ function OpenAgentProfileEditModal({
         <ProfileModelStage
           state={state}
           model={model}
-          sharedScope={sharedScope}
           controlSize={controlSize}
           modelOptions={modelOptions}
           modeOptions={modeOptions}

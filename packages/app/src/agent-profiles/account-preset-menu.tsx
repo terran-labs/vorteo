@@ -7,7 +7,12 @@ import { useVortonTouch } from "@/vorton-touch";
 import { ProfileAction } from "./profile-action";
 import { ProfileSelectorTile, ProfileLoading } from "./profile-selector-tile";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { profileCatalogState, sharedChoiceState, type LaunchChoices } from "./shared-choices";
+import {
+  profileCatalogState,
+  profileLaunchSummary,
+  sharedChoiceState,
+  type LaunchChoices,
+} from "./shared-choices";
 import { useCallback, useMemo, useReducer, useState, type ReactNode } from "react";
 import { Keyboard, Text, View, type LayoutChangeEvent } from "react-native";
 import { BottomSheetScrollView, ScrollView } from "@/components/ui/scroll-view";
@@ -880,13 +885,7 @@ function ProfileChoice({
   onInspect: (id: string) => void;
 }) {
   const select = useCallback(() => onInspect(row.id), [onInspect, row.id]);
-  const model = entry?.models?.find((item) => item.id === definition?.model);
-  const reasoning =
-    model?.thinkingOptions?.find((item) => item.id === definition?.thinkingOptionId)?.label ??
-    definition?.thinkingOptionId;
-  const summary = [model?.label ?? definition?.model ?? "Provider default model", reasoning]
-    .filter(Boolean)
-    .join(" · ");
+  const summary = profileLaunchSummary({ entry, profile: definition });
   return (
     <ProfileSelectorTile
       singleLine={singleLine}

@@ -43,6 +43,11 @@ export interface HostedSessionPort {
   /** Provider state returned with every attach, as of the newest recorded event. */
   snapshot(): JsonValue;
   subscribe(listener: (event: JsonValue) => void): () => void;
+  /**
+   * Optional: true while the provider process is too young to stop safely, such as a CLI that may
+   * be refreshing its sign-in. An idle close is refused and shutdown waits, within its bound.
+   */
+  settling?(): boolean;
   close(): Promise<void>;
 }
 
@@ -75,6 +80,8 @@ export interface SessionHostLimits {
   maxRefusals: number;
   /** Bound on closing each provider session when the host shuts down. */
   closeTimeoutMs: number;
+  /** Bound on waiting at shutdown for settling provider processes before closing them. */
+  settleTimeoutMs: number;
 }
 
 const DEFAULT_LIMITS: SessionHostLimits = {
@@ -87,6 +94,7 @@ const DEFAULT_LIMITS: SessionHostLimits = {
   maxFrameBytes: MAX_FRAME_BYTES,
   maxRefusals: 32,
   closeTimeoutMs: 15_000,
+  settleTimeoutMs: 10_000,
 };
 
 /** History pages stay well under one frame. */
@@ -491,7 +499,8 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
       const busy =
         state.activeCalls > 0 ||
         snapshot.data.activeTurnId !== null ||
-        snapshot.data.pendingPermissions.length > 0;
+        snapshot.data.pendingPermissions.length > 0 ||
+        state.port.settling?.() === true;
       if (busy) throw new HostError("failed", "Hosted session is busy; idle close refused.");
       // No await between the authoritative check and closing admission below.
     }
@@ -857,6 +866,15 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
       closing = true;
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      // A provider that just started may be refreshing its sign-in; stopping it mid-refresh can
+      // lose the account's rotated token. Give it a bounded moment to settle first.
+      const settleBy = Date.now() + limits.settleTimeoutMs;
+      while (
+        Date.now() < settleBy &&
+        [...sessions.values()].some((state) => state.port.settling?.() === true)
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
       // A provider that cannot exit must not keep the host from exiting.
       await Promise.all(
         [...sessions].map(async ([sessionId, state]) => {

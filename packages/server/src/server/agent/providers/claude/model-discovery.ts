@@ -1,5 +1,5 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import type { ChildProcess } from "node:child_process";
-import os from "node:os";
 import type { ModelInfo, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { raceProviderRefreshAbort } from "../../provider-refresh-deadline.js";
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
@@ -57,7 +57,7 @@ export async function discoverClaudeModels(
         prompt: input,
         options: {
           pathToClaudeCodeExecutable: binary,
-          cwd: os.homedir(),
+          cwd: await getProviderProbeCwd(),
           env: options.env,
           persistSession: false,
           tools: [],

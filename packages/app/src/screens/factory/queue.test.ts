@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadFactoryQueue, factoryAgentStatusKey, type FactoryInvoke } from "./queue";
+import {
+  factoryQueueRefreshInterval,
+  loadFactoryQueue,
+  factoryAgentStatusKey,
+  type FactoryInvoke,
+} from "./queue";
 import { ProjectFactoryStateSchema } from "@/components/sidebar/factory-state";
 import { FACTORY_LANES, factoryLanes, factoryTrack, shownReports } from "./overview-model";
 import {
@@ -25,6 +30,27 @@ const oldState = {
 };
 
 describe("Factory overview daemon compatibility", () => {
+  it("checks a cold paused refresh until it settles and preserves overview cadence", () => {
+    expect(
+      factoryQueueRefreshInterval({
+        queue: { ...emptyQueue, refreshing: true },
+        enabled: true,
+        polling: false,
+      }),
+    ).toBe(2_000);
+    expect(factoryQueueRefreshInterval({ queue: emptyQueue, enabled: true, polling: false })).toBe(
+      false,
+    );
+    expect(
+      factoryQueueRefreshInterval({
+        queue: emptyQueue,
+        enabled: true,
+        polling: true,
+        steadyMs: 30_000,
+      }),
+    ).toBe(30_000);
+  });
+
   it("retains stage and drain controls only when the daemon supplies them", () => {
     const old = ProjectFactoryStateSchema.parse(oldState);
     expect(old.workers.plannerProfileId).toBeUndefined();

@@ -68,6 +68,7 @@ export function AgentProfilePage({
     mode,
     profile,
     sharedCatalog: Boolean(sharedScope && readExecutionInstallation()),
+    inheritThinking: sharedScope?.kind === "workflow",
   });
   const touched = useRef(false);
   const model = useMemo(
