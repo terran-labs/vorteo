@@ -50,3 +50,39 @@ export const StandingInterruptionSchema = z.strictObject({
     .nullable(),
 });
 export type StandingInterruption = z.infer<typeof StandingInterruptionSchema>;
+
+/** Coordinator-private preparation, never a restart or source-selection grant.
+ * Admission independently binds every field to the retained enrollment and hold.
+ */
+export const CooperativeDrainPreparationSchema = z.strictObject({
+  operation: z.literal("maintenance.interrupt-held-turns"),
+  intent: StandingInterruptionSchema,
+  manifestSha256: digest,
+  endpointIdentitySha256: digest,
+  continuationCauseId: z.uuid(),
+  deadlineAt: z.string().datetime(),
+  phase: z.enum(["reserved", "accepted", "settled", "refused", "unknown"]),
+  observation: z
+    .strictObject({
+      checkedAt: z.string().datetime(),
+      workerInstanceId: z.uuid(),
+      restartDrainId: z.uuid(),
+      activeAgents: z.number().int().nonnegative(),
+      pendingStarts: z.number().int().nonnegative(),
+    })
+    .optional(),
+});
+export type CooperativeDrainPreparation = z.infer<typeof CooperativeDrainPreparationSchema>;
+
+/** Private, installed native endpoint descriptor. It contains no credentials and
+ * grants no effect without matching retained enrollment and a locked phase. */
+export const CooperativeMailboxDescriptorSchema = z.strictObject({
+  scopeFile: z.string().startsWith("/").max(4096),
+  endpointIdentitySha256: digest,
+  ownerUid: z.number().int().nonnegative(),
+  readerUid: z.number().int().nonnegative(),
+  helperFile: z.string().startsWith("/").max(4096),
+  helperSha256: digest,
+  pythonFile: z.literal("/usr/bin/python3"),
+});
+export type CooperativeMailboxDescriptor = z.infer<typeof CooperativeMailboxDescriptorSchema>;

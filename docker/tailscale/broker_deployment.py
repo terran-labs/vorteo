@@ -106,6 +106,26 @@ def preservation(root):
     }
 
 
+def stable_preservation(state):
+    """The part of a preservation report that a running broker leaves unchanged.
+
+    A running broker rewrites its ledger on every cycle and producers keep adding
+    inbox files, so a plan prepared while it runs can only bind the configuration
+    and installed marker. The full inventory is still captured after suppression
+    and compared across the commit window.
+    """
+    return {'config': state['config'], 'marker': state['marker']}
+
+
+def approved_preservation_sha256(state, admission):
+    """The preservation digest a plan approves for a channel admission mode."""
+    if admission == 'refusing':
+        return sha(encode(state))
+    if admission == 'running':
+        return sha(encode(stable_preservation(state)))
+    raise ValueError('Unknown channel admission')
+
+
 def assert_preserved(before, after):
     if before['config'] != after['config'] or before['marker'] != after['marker']:
         raise ValueError('Broker config or installed marker changed')
@@ -126,13 +146,16 @@ def expected_file(root, name, expected):
     return raw
 
 
-def deploy_files(plan, allowed_roots, *, verify_window, checkpoint=lambda stage, index: None):
+def deploy_files(plan, allowed_roots, *, verify_window, checkpoint=lambda stage, index: None,
+                 preservation_sha256=lambda root, state: sha(encode(state))):
     """Commit once inside a separately admitted, suppressed process window.
 
     verify_window must independently recheck the exact queue reservation, native
     suppression and participant commitments. Its returned binding must remain
     byte-identical throughout. It is a trusted port, never submitted plan data.
-    No failure handler resumes services, replays a write or deletes evidence.
+    preservation_sha256 maps a root's current preservation report to the digest the
+    plan approved; like verify_window it is a trusted port. No failure handler
+    resumes services, replays a write or deletes evidence.
     """
     validate_plan(plan, allowed_roots)
     binding = encode(verify_window())
@@ -169,7 +192,7 @@ def deploy_files(plan, allowed_roots, *, verify_window, checkpoint=lambda stage,
         for target in plan['targets']:
             root, _ = roots[target['root']]
             state = preservation(root)
-            if sha(encode(state)) != target['preservationSha256']:
+            if preservation_sha256(str(root), state) != target['preservationSha256']:
                 raise ValueError('Preservation inventory changed; refresh preparation')
             before[str(root)] = state
             for name, item in target['files'].items():

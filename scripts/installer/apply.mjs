@@ -3,6 +3,7 @@
 // with status "start", "done", "skip" or "fail".
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { installCommand } from "./command.mjs";
 import { describeServices, localOrigins } from "./coordinator-config.mjs";
 import { JOURNAL, assertGateMigrationSupported } from "./detect.mjs";
 import { buildRelease, serveRouteTarget } from "./host-installation.mjs";
@@ -531,7 +532,19 @@ export async function hostRelease(context, { revision, outcome, buildOnly = fals
     }
     pointLink(plan.paths.hostReleaseLink, release);
     await manager.restart(plan.services.host);
-    report({ status: "succeeded", release, detail: `The Host runs ${revision.slice(0, 12)}.` });
+    const commandMessage = installCommand({
+      home: context.home,
+      root: context.root,
+      source: plan.paths.hostReleaseLink,
+      node: plan.executables.node,
+      env: context.env,
+      platform: context.platform,
+    });
+    report({
+      status: "succeeded",
+      release,
+      detail: `The Host runs ${revision.slice(0, 12)}. ${commandMessage}`,
+    });
     return true;
   } catch (error) {
     report({ status: "failed", detail: error.message, ...(error.fix ? { fix: error.fix } : {}) });

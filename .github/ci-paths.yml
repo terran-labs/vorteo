@@ -36,6 +36,10 @@ hub:
 server:
   - "plugins/**"
   - "packages/server/**"
+  # The macOS server job runs the consumer deployment worker tests.
+  - "docker/tailscale/broker_*.py"
+  - "docker/tailscale/channel_identity.py"
+  - "docker/tailscale/test_broker_deployment.py"
   - "packages/app/e2e/support/fixtures/recording.*"
 
 desktop:

@@ -1,4 +1,8 @@
 import {
+  readCooperativeMailbox,
+  type CooperativeMailboxOptions,
+} from "../src/server/maintenance-restart-channel.js";
+import {
   createSupervisorWorkerLaunch,
   type SupervisorWorkerLaunchOptions,
   type SupervisorWorkerLaunchState,
@@ -78,6 +82,8 @@ interface SupervisorOptions {
   controllerLifetimeFd?: number;
   /** Injection only. The installed entrypoint never supplies this option. */
   workerLaunch?: SupervisorWorkerLaunchOptions;
+  /** Installed native descriptor only. Absence exposes no preparation capability. */
+  cooperativeMailbox?: CooperativeMailboxOptions;
   resolveWorkerSpawnSpec?: (workerEntry: string) => {
     command: string;
     args: string[];
@@ -338,6 +344,7 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
   };
 
   const exitSupervisor = (code: number, exitOptions: { keepTerminals?: boolean } = {}): void => {
+    if (cooperativeTimer) clearInterval(cooperativeTimer);
     if (exiting) {
       return;
     }
@@ -620,6 +627,58 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
       });
     });
   };
+
+  const cooperativeAttempts = new Set<string>();
+  let cooperativeReadPending = false;
+  let cooperativeReadFailed = false;
+  const cooperativeTimer = options.cooperativeMailbox
+    ? setInterval(() => {
+        if (cooperativeReadPending || shuttingDown || restarting || !child?.connected) return;
+        const worker = child;
+        cooperativeReadPending = true;
+        void readCooperativeMailbox(options.cooperativeMailbox!)
+          .then((reservations) => {
+            cooperativeReadFailed = false;
+            for (const reservation of reservations) {
+              const held = reservation.intent.held;
+              if (
+                child !== worker ||
+                !worker.connected ||
+                shuttingDown ||
+                restarting ||
+                worker.pid !== held.workerPid ||
+                reservation.intent.native.supervisor.pid !== process.pid ||
+                reservation.intent.native.worker.parentPid !== process.pid ||
+                held.terminateAt <= Date.now() ||
+                cooperativeAttempts.has(held.generation)
+              )
+                continue;
+              // Consume before the actual retained child channel send. A failed or
+              // ambiguous send never removes the generation or creates a retry.
+              cooperativeAttempts.add(held.generation);
+              worker.send?.({ type: "paseo:cooperative-drain-prepare", reservation }, (error) => {
+                if (error)
+                  writeLifecycleLog("Cooperative preparation outcome remains unknown", {
+                    requestId: held.requestId,
+                    generation: held.generation,
+                  });
+              });
+            }
+            return undefined;
+          })
+          .catch((error) => {
+            if (!cooperativeReadFailed)
+              writeLifecycleLog("Cooperative mailbox observation refused", {
+                reason: (error instanceof Error ? error.message : String(error)).slice(0, 240),
+              });
+            cooperativeReadFailed = true;
+          })
+          .finally(() => {
+            cooperativeReadPending = false;
+          });
+      }, 1000)
+    : null;
+  cooperativeTimer?.unref();
 
   const requestWorkerShutdown = (reason: string, terminateAt?: number): void => {
     if (!child) {

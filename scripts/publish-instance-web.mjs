@@ -167,6 +167,25 @@ try {
   await fs.rm(lock, { recursive: true, force: true });
 }
 
+// A Host source update runs this publisher from the new release once the Host daemon runs
+// it. It is the only code of the new release that a coordinator from an older release
+// executes, so repairing the `vorteo` command here reaches installations whose coordinator
+// predates the command (issue 229). Publishing from any other folder installs nothing. The
+// coordinator reads the sentence from stderr; stdout stays the release receipt. A missing
+// command never fails a publication that already switched.
+try {
+  const { installReleaseCommand } = await import("./installer/command.mjs");
+  const message = installReleaseCommand({
+    release: path.resolve(import.meta.dirname, ".."),
+    home: os.homedir(),
+    env: process.env,
+    platform: process.platform,
+  });
+  if (message) console.error(`vorteo-command: ${message}`);
+} catch (error) {
+  console.error(`vorteo-command: The vorteo command was not installed: ${error.message}`);
+}
+
 async function installAsset(name) {
   const target = path.join(destination, name);
   await fs.mkdir(path.dirname(target), { recursive: true });
