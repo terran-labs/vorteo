@@ -124,9 +124,54 @@ export function failedUpgradesNeedingReview(
   status: UpgradeStatus | null | undefined,
 ): InstallationUpgrade[] {
   if (!status) return [];
-  return recordsNeedingReview(newestUpgrades(status), upgradeTarget).filter(
-    (upgrade) => upgrade.status === "failed",
-  );
+  return recordsNeedingReview(
+    newestUpgrades({ ...status, upgrades: upgradesStillOpen(status) }),
+    upgradeTarget,
+  ).filter((upgrade) => upgrade.status === "failed");
+}
+
+const RELEASE_PARTS = /^release-(\d+)\.(\d+)\.(\d+)(-beta)?$/;
+
+/**
+ * Orders two release tags by calendar version; a beta sorts just before the stable release of
+ * the same version. Null when either tag is not a release tag.
+ */
+export function compareReleases(left: string, right: string): number | null {
+  const a = RELEASE_PARTS.exec(left);
+  const b = RELEASE_PARTS.exec(right);
+  if (!a || !b) return null;
+  for (const index of [1, 2, 3]) {
+    const difference = Number(a[index]) - Number(b[index]);
+    if (difference) return difference;
+  }
+  return (a[4] ? 0 : 1) - (b[4] ? 0 : 1);
+}
+
+/**
+ * The status's upgrades without failures the installation has already moved past (#639). A
+ * failed upgrade is dropped only when it was a forward upgrade and the installed release is
+ * strictly newer than its target. Update-check and automatic upgrades only ever offer a newer
+ * release, so they are forward. An owner-requested upgrade records no from-release and can be a
+ * downgrade, so it stays visible: a failed rollback is exactly what the owner must see. A
+ * failure to the installed release itself also stays: Host may have reached it while Dev failed.
+ * The existing supersede rule still drops a failure that a later success replaced. Dropped
+ * records stay in the journal.
+ */
+export function upgradesStillOpen(status: UpgradeStatus | null | undefined): InstallationUpgrade[] {
+  if (!status) return [];
+  const release = status.current?.release ?? null;
+  // A source update ahead of a release reports that release in `aheadOf`, and is past it.
+  const aheadOf = release ? null : (status.current?.aheadOf ?? null);
+  const installed = release ?? aheadOf;
+  if (!installed) return status.upgrades;
+  return status.upgrades.filter((upgrade) => {
+    if (upgrade.status !== "failed" || !upgrade.release) return true;
+    const forward = upgrade.origin === "update-check" || upgrade.automatic === true;
+    if (!forward) return true;
+    const order = compareReleases(upgrade.release, installed);
+    if (order === null) return true;
+    return aheadOf ? order > 0 : order >= 0;
+  });
 }
 
 /**

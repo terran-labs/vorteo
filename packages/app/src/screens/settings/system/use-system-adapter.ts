@@ -12,7 +12,10 @@ import {
   useInstallationUpgradeActions,
   useInstallationUpgradeStatus,
 } from "@/execution-installation/use-installation-upgrades";
-import { upgradeOffer } from "@/execution-installation/installation-upgrades-model";
+import {
+  upgradeOffer,
+  upgradesStillOpen,
+} from "@/execution-installation/installation-upgrades-model";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { useToast } from "@/contexts/toast-context";
 import { reportSyncError } from "@/components/settings/sync-error-notification";
@@ -189,7 +192,7 @@ function buildEnvironmentStatuses({
       target: "host",
       snapshot: host,
       installation: state,
-      upgrades: upgrades?.upgrades,
+      upgrades: upgradesStillOpen(upgrades),
       availableVersion: installation ? offer : standaloneVersion,
       reconnectingAfterAction: updating === hostId && updating !== null,
     }),
@@ -197,7 +200,7 @@ function buildEnvironmentStatuses({
       target: "container-daemon",
       snapshot: dev,
       installation: state,
-      upgrades: upgrades?.upgrades,
+      upgrades: upgradesStillOpen(upgrades),
       reconnectingAfterAction: updating === devId && updating !== null,
     }),
   };

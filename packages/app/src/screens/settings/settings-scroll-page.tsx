@@ -121,6 +121,15 @@ const MAX_RESULTS_SHOWN = 8;
 /** Height of the desktop sidebar's Back button and search field, pointer layouts only. */
 export const SIDEBAR_CONTROL_HEIGHT = 32;
 const ROW_WAIT_MS = 3000;
+/**
+ * After a jump lands, rows above the target can still arrive and move it, during the animated
+ * scroll or after it, and Safari has no scroll anchoring to compensate. The page keeps
+ * re-measuring the target and corrects the scroll until layout has been quiet this long, a
+ * reader gesture takes over, or the cap passes.
+ */
+const LANDING_QUIET_MS = 600;
+const LANDING_HOLD_MS = 4000;
+const LANDING_TICK_MS = 100;
 
 export interface SettingsSearchControls {
   query: string;
@@ -210,6 +219,16 @@ function renderedPane(element: HTMLElement | null): HTMLElement | null {
     candidate = next;
   }
   return candidate;
+}
+
+/**
+ * Room kept above a jump's landing. A section's own top padding is its inset; panes get a little
+ * room. A row gets more, for context above it, except a region that starts with its own heading,
+ * such as System health, which puts that heading at the top.
+ */
+function jumpInset(target: SettingsScrollRequest, pageRow: HTMLElement | null): number {
+  if (!pageRow) return target.pane ? JUMP_INSET : 0;
+  return pageRow.dataset?.settingsJump === "top" ? JUMP_INSET : JUMP_INSET * 4;
 }
 
 function sectionTitleDomId(section: SettingsSectionId): string {
@@ -451,11 +470,9 @@ export function SettingsScrollPage({
         // Loading-only panes are not useful destinations yet.
         if (!row && target.pane && element.querySelector('[data-settings-loading="true"]'))
           return null;
-        // A section's own top padding is its inset; panes and rows get room above them.
-        let inset = target.pane ? JUMP_INSET : 0;
         // A row in a dialog scrolls within the dialog; the page stays on its pane.
         const pageRow = row && inPage(node, row) ? row : null;
-        if (pageRow) inset = JUMP_INSET * 4;
+        const inset = jumpInset(target, pageRow);
         return { y: rowOffsetWithin(pageRow ?? element, node) - inset, row, element };
       }
       const sectionBox = sectionBoxes.current.get(target.section);
@@ -466,6 +483,77 @@ export function SettingsScrollPage({
     },
     [],
   );
+
+  const landing = useRef<(() => void) | null>(null);
+  const releaseLanding = useCallback(() => {
+    landing.current?.();
+    landing.current = null;
+  }, []);
+
+  /**
+   * Keeps a landed jump on its target while the page settles. Each tick re-measures the target;
+   * once an animated scroll has stopped moving, any drift is corrected without animation. The
+   * hold ends after quiet layout, a reader gesture or the cap.
+   */
+  const holdLanding = useCallback(
+    (target: SettingsScrollRequest) => {
+      releaseLanding();
+      const node = scrollNodeOf(scrollRef.current);
+      if (!node) return;
+      const started = Date.now();
+      let lastTop = node.scrollTop;
+      let lastHeight = node.scrollHeight;
+      let quietSince = started;
+      // Null while the jump's own animated scroll runs. Afterwards, the last position this hold
+      // set: any other move, such as a scrollbar drag or momentum after a gesture, is the reader's.
+      let ownTop: number | null = null;
+      const tick = () => {
+        if (Date.now() - started >= LANDING_HOLD_MS) {
+          releaseLanding();
+          return;
+        }
+        const offset = targetOffset(target);
+        const moving = node.scrollTop !== lastTop;
+        const layoutChanged = node.scrollHeight !== lastHeight;
+        lastTop = node.scrollTop;
+        lastHeight = node.scrollHeight;
+        if (layoutChanged) quietSince = Date.now();
+        if (ownTop === null) {
+          if (moving) return;
+          ownTop = node.scrollTop;
+        } else if (Math.abs(node.scrollTop - ownTop) > 1 && !layoutChanged) {
+          // Browser scroll anchoring moves the position only with a layout change.
+          releaseLanding();
+          return;
+        }
+        if (offset) {
+          const wanted = Math.max(0, Math.min(offset.y, node.scrollHeight - node.clientHeight));
+          if (Math.abs(node.scrollTop - wanted) > 2) {
+            scrollTo(wanted, false);
+            quietSince = Date.now();
+          }
+        }
+        ownTop = node.scrollTop;
+        lastTop = node.scrollTop;
+        if (Date.now() - quietSince >= LANDING_QUIET_MS) releaseLanding();
+      };
+      const timer = setInterval(tick, LANDING_TICK_MS);
+      // The reader takes over with any gesture, key or focus change of their own; the jump's
+      // own focus has already moved by the time this starts listening.
+      const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+      events.forEach((name) => node.addEventListener(name, releaseLanding, { passive: true }));
+      document.addEventListener("keydown", releaseLanding, true);
+      document.addEventListener("focusin", releaseLanding, true);
+      landing.current = () => {
+        clearInterval(timer);
+        events.forEach((name) => node.removeEventListener(name, releaseLanding));
+        document.removeEventListener("keydown", releaseLanding, true);
+        document.removeEventListener("focusin", releaseLanding, true);
+      };
+    },
+    [releaseLanding, scrollTo, targetOffset],
+  );
+  useEffect(() => releaseLanding, [releaseLanding]);
 
   /** Brings the pending request into view once its target has rendered. */
   const resolvePending = useCallback(() => {
@@ -485,7 +573,9 @@ export function SettingsScrollPage({
     scrollTo(offset.y, next.animated);
     // Focus once the jump is final, not on the pane before its row arrives.
     markLanding(next, offset, scrollNodeOf(scrollRef.current), pending.current === null);
-  }, [reportActive, scrollTo, targetOffset, searching]);
+    // Only a jump the reader chose (one that moves focus) is held; opening a page is not.
+    if (isWeb && next.focus && pending.current === null) holdLanding(next);
+  }, [holdLanding, reportActive, scrollTo, targetOffset, searching]);
 
   useEffect(() => {
     resolvePending();

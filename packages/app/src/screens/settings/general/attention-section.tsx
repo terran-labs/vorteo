@@ -10,6 +10,7 @@ import {
 } from "@/execution-installation/panel";
 import { useOwnerAccess } from "@/execution-installation/owner-access";
 import { useInstallationUpgradeStatus } from "@/execution-installation/use-installation-upgrades";
+import { upgradesStillOpen } from "@/execution-installation/installation-upgrades-model";
 import { healthCardAnchorId, revealHealthCard } from "@/execution-installation/health-cards";
 import { SYSTEM_HEALTH_ANCHOR_ID, type SettingsJumpTarget } from "../settings-jump";
 import { systemHealthItems } from "../system/health-model";
@@ -35,7 +36,7 @@ function useInstallationItems() {
   );
   const upgrades = useInstallationUpgradeStatus(useInstallationOwnerClient());
   return {
-    items: systemHealthItems(state, upgrades.data?.upgrades),
+    items: systemHealthItems(state, upgradesStillOpen(upgrades.data)),
     unlocked: state?.unlocked === true,
   };
 }
@@ -103,6 +104,8 @@ function AttentionRow({
 }
 
 // The list is a labelled region, so focus moved here by "System needs attention" reads its name.
+// The page lands a region that starts with its own heading at the top, without extra room.
+const HEADING_ANCHOR = { settingsJump: "top" } as const;
 const regionProps = isWeb
   ? ({ role: "region", "aria-label": "System health" } as const)
   : ({ accessibilityLabel: "System health" } as const);
@@ -187,15 +190,18 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
   else rows = items.map((item) => <AttentionRow key={item.id} item={item} onFix={fix} />);
   // While locked, say what is hidden instead of claiming all is well.
   const lockedRow = locked && items !== null ? <LockedHealthRow key="locked" /> : null;
+  // The anchor holds the Health heading too: "System needs attention" lands it at the top.
   return (
-    <SettingsSection title="Health" testID="settings-attention">
-      <View {...regionProps} nativeID={SYSTEM_HEALTH_ANCHOR_ID} testID="settings-health-list">
-        <SettingsCard>
-          {rows}
-          {lockedRow}
-        </SettingsCard>
-        <OwnerUnlockDialog visible={unlockOpen} onClose={closeUnlock} />
-      </View>
-    </SettingsSection>
+    <View {...regionProps} nativeID={SYSTEM_HEALTH_ANCHOR_ID} dataSet={HEADING_ANCHOR}>
+      <SettingsSection title="Health" testID="settings-attention">
+        <View testID="settings-health-list">
+          <SettingsCard>
+            {rows}
+            {lockedRow}
+          </SettingsCard>
+          <OwnerUnlockDialog visible={unlockOpen} onClose={closeUnlock} />
+        </View>
+      </SettingsSection>
+    </View>
   );
 }

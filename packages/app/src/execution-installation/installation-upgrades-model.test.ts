@@ -25,6 +25,7 @@ import {
   upgradeApprovalText,
   upgradeOffer,
   upgradeStepRows,
+  upgradesStillOpen,
 } from "./installation-upgrades-model";
 import { coordinatorSettingsView } from "./coordinator-settings-model";
 
@@ -135,6 +136,68 @@ describe("safety snapshots", () => {
 });
 
 describe("release upgrades", () => {
+  // #639: a forward failure the installation has moved past no longer asks for the owner. A
+  // failure to the installed release itself, or an owner-requested one that may be a rollback,
+  // still does.
+  it.each([
+    [
+      "update check, older than installed",
+      "release-26.11.600-beta",
+      "release-26.11.2400",
+      "update-check",
+      0,
+    ],
+    [
+      "update check, the installed release itself",
+      "release-26.11.2400",
+      "release-26.11.2400",
+      "update-check",
+      1,
+    ],
+    [
+      "update check, beta of the installed stable",
+      "release-26.11.2400-beta",
+      "release-26.11.2400",
+      "update-check",
+      0,
+    ],
+    [
+      "update check, newer than installed",
+      "release-26.12.100",
+      "release-26.11.2400",
+      "update-check",
+      1,
+    ],
+    [
+      "owner request to an older release (a rollback)",
+      "release-26.11.600",
+      "release-26.11.2400",
+      "owner",
+      1,
+    ],
+  ])("a failed upgrade (%s)", (_name, target, installed, origin, open) => {
+    const failed = {
+      ...upgrade("failed", "2026-11-06T00:00:00.000Z", target),
+      origin,
+    } as InstallationUpgrade;
+    expect(upgradesStillOpen(upgrades([failed], installed))).toHaveLength(open);
+  });
+
+  it("measures a source update ahead of a release from that release", () => {
+    const failed = {
+      ...upgrade("failed", "2026-11-06T00:00:00.000Z", "release-26.11.600-beta"),
+      automatic: true,
+    };
+    const status = upgrades([failed], null);
+    status.current = {
+      sourceCommit: "c".repeat(40),
+      release: null,
+      aheadOf: "release-26.11.600-beta",
+    };
+    expect(upgradesStillOpen(status)).toHaveLength(0);
+    expect(upgradesStillOpen(upgrades([failed], null))).toHaveLength(1);
+  });
+
   it("finds the active and the latest finished upgrade", () => {
     const failed = upgrade("failed", "2026-10-29T00:00:00.000Z");
     const pending = upgrade("pending", "2026-10-30T00:00:00.000Z");
