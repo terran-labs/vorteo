@@ -1,4 +1,7 @@
-import { assertWorkspaceUnprotected } from "./workspace-lifecycle/policy.js";
+import {
+  activeFactoryMembership,
+  assertWorkspaceUnprotected,
+} from "./workspace-lifecycle/policy.js";
 import { resolve } from "node:path";
 
 import type { Logger } from "pino";
@@ -310,7 +313,7 @@ async function assertBackingNotFactoryManaged(
 ): Promise<void> {
   const matchesBacking = createRealpathAwarePathMatcher(backing.path);
   for (const workspace of (await dependencies.listRetainedFactoryWorkspaces?.()) ?? []) {
-    if (!workspace.factoryMembership) continue;
+    if (!activeFactoryMembership(workspace)) continue;
     const retainedBacking = await resolveWorkspaceBackingDirectory(workspace, dependencies);
     if (matchesBacking(retainedBacking.path)) assertWorkspaceUnprotected(workspace);
   }

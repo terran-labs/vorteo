@@ -4,10 +4,10 @@ import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import { promisify } from "node:util";
-import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
 import type { LiveDevMode, LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import type { RequestHandler } from "express";
 import type { Logger } from "pino";
+import type { ServedInstallation } from "../../web-ui.js";
 import type { InstallationConfig } from "../config.js";
 import { createLiveDevMiddleware, forwardLiveDevUpgrade, isLiveDevSocketPath } from "./proxy.js";
 import {
@@ -237,7 +237,7 @@ export function createLiveDev(options: LiveDevServiceOptions) {
    * Serves the live interface on `served`, the canonical origin unless named. The dev server
    * admits only the .ts.net origin, so any other address presents that host upstream.
    */
-  function middleware(installation: () => ExecutionInstallation, served?: string): RequestHandler {
+  function middleware(installation: () => ServedInstallation, served?: string): RequestHandler {
     const servedOrigin = new URL(served ?? config.public.origin).origin;
     return createLiveDevMiddleware({
       ...(typeof target !== "string" && servedOrigin !== target.origin

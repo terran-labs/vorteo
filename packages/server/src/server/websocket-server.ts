@@ -2560,6 +2560,8 @@ export class VoiceAssistantWebSocketServer {
         installationResourceBindings: true,
         // COMPAT(projectPolicies): added 2026-10-22, remove gate after 2027-04-22.
         installationProjectPolicies: true,
+        // COMPAT(primaryConnection): added 2026-11-05, remove gate after 2027-05-05.
+        primaryConnectionSetting: true,
         installationSettingsAuthority: true,
         installationProviderRemoval: true,
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.

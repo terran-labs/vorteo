@@ -22,6 +22,7 @@ import {
   awaitBootEntryReadiness,
   bootEntryPointerBytes,
   bootEntrySwitchPinProblem,
+  RETIRED_LAUNCHER,
   bootEntrySwitchPlanDigest,
   bootEntrySwitchPreflight,
   INSTALL_TARGET,
@@ -318,24 +319,18 @@ test("Factory verification refuses changed custody after the switch", async () =
   );
 });
 
-test("rollback selects the retained Factory entry without copying anything", async () => {
+test("a switch back to the retired Factory launcher is refused before any effect", async () => {
   const p = plan({ rollback: true });
+  expect(bootEntrySwitchPinProblem(p, {})).toBe(RETIRED_LAUNCHER);
   const dev = fakeDev({
     pointsTo: PLAIN_ENTRY,
     files: { [PLAIN_ENTRY]: sha(plainBody) },
-    governedAfterRestart: true,
-    factory: [plainFacts, { ...launcherFacts, epoch: 55, supervisorPid: 123 }],
+    factory: [plainFacts],
   });
-  const preflight = await bootEntrySwitchPreflight(p, bootEntrySwitchPlanDigest(p)!, {
-    run: dev.run,
-  });
-  await applyBootEntrySwitch(p, "job-3", { run: dev.run });
-  await restartBootProgram(p, { run: dev.run });
-  await awaitBootEntryReadiness(p, preflight, { run: dev.run, ...noWait });
-  expect(await verifyFactoryAfterBootSwitch(p, preflight, { run: dev.run })).toContain(
-    "accepted its lock again (epoch 55)",
-  );
-  expect(dev.effects).toEqual([`swap ${FACTORY_ENTRY}`, "restart paseo"]);
+  await expect(
+    bootEntrySwitchPreflight(p, bootEntrySwitchPlanDigest(p)!, { run: dev.run }),
+  ).rejects.toThrow(RETIRED_LAUNCHER);
+  expect(dev.effects).toEqual([]);
 });
 
 /** Runs one of the real effect scripts under /bin/sh with the test user as the owner. */

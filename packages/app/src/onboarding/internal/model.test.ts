@@ -1,4 +1,14 @@
+import { PrimaryConnectionUnavailableError } from "@/execution-installation/primary-connection-error";
+import type { InstallationSettingsSnapshot } from "@getpaseo/protocol/installation-settings";
 import { describe, expect, it, vi } from "vitest";
+import {
+  createVorteoGuide,
+  guidePrimaryConnectionChoice,
+  type GuideHost,
+  type GuidePrimaryConnectionRequest,
+  type GuideRecord,
+  type GuideStorage,
+} from "../vorteo-guide/model";
 import {
   createOnboardingModel,
   type OnboardingCompletionStorage,
@@ -216,5 +226,233 @@ describe("onboarding model", () => {
     await model.complete();
 
     expect(seen).toEqual(["open:0", "open:1", "hidden"]);
+  });
+});
+
+class InstallationGuideStorage implements GuideStorage {
+  records = new Map<string, GuideRecord>();
+  async read(id: string) {
+    return this.records.get(id) ?? null;
+  }
+  async write(id: string, record: GuideRecord) {
+    this.records.set(id, record);
+  }
+}
+
+const GUIDE_HOST: GuideHost = {
+  installationId: "one",
+  serverId: "host",
+  ownerAuthenticated: true,
+  isConnected: true,
+  hasHydratedWorkspaces: true,
+  hasUserProjects: false,
+  supportsPrimaryConnection: true,
+};
+
+describe("Vorteo authenticated setup", () => {
+  it("waits for the authenticated installation and hydrated directory", async () => {
+    const model = createVorteoGuide({
+      savePrimaryConnection: async () => {},
+      installationId: "one",
+      storage: new InstallationGuideStorage(),
+    });
+    await model.ready;
+    model.applyGate({ ...GUIDE_HOST, ownerAuthenticated: false });
+    model.reopen({ ...GUIDE_HOST, installationId: "other" });
+    model.applyGate({ ...GUIDE_HOST, hasHydratedWorkspaces: false });
+    expect(model.getState()).toEqual({ status: "deciding" });
+    model.applyGate(GUIDE_HOST);
+    expect(model.getState()).toMatchObject({ status: "open", serverId: "host" });
+  });
+
+  it("isolates installations and records Skip separately from Finish", async () => {
+    const storage = new InstallationGuideStorage();
+    const one = createVorteoGuide({
+      savePrimaryConnection: async () => {},
+      installationId: "one",
+      storage,
+    });
+    await one.ready;
+    one.applyGate(GUIDE_HOST);
+    await one.skip();
+    const two = createVorteoGuide({
+      savePrimaryConnection: async () => {},
+      installationId: "two",
+      storage,
+    });
+    const restored = createVorteoGuide({
+      savePrimaryConnection: async () => {},
+      installationId: "one",
+      storage,
+    });
+    await Promise.all([two.ready, restored.ready]);
+    restored.applyGate(GUIDE_HOST);
+    two.applyGate({ ...GUIDE_HOST, installationId: "two" });
+    expect(restored.getState()).toEqual({ status: "hidden" });
+    expect(two.getState()).toMatchObject({ status: "open" });
+    await two.complete();
+    expect(storage.records.get("one")?.disposition).toBe("skipped");
+    expect(storage.records.get("two")?.disposition).toBe("completed");
+  });
+
+  it("resumes where the owner left for Settings and rejects a stale completion", async () => {
+    const storage = new InstallationGuideStorage();
+    const model = createVorteoGuide({
+      savePrimaryConnection: async () => {},
+      installationId: "one",
+      storage,
+    });
+    await model.ready;
+    model.applyGate(GUIDE_HOST);
+    model.goTo("providers");
+    const state = model.getState();
+    if (state.status !== "open") throw new Error("Expected open guide");
+    await model.pause();
+    // Visiting Settings is neither Skip nor Finish, but it keeps the step.
+    expect(storage.records.get("one")).toMatchObject({ disposition: "paused", step: "providers" });
+    model.reopen(GUIDE_HOST);
+    model.next(state.visit);
+    expect(model.getState()).toMatchObject({ status: "open", stepIndex: 1 });
+
+    // After a reload the paused guide stays closed until reopened, then resumes at its step.
+    const reloaded = createVorteoGuide({
+      savePrimaryConnection: async () => {},
+      installationId: "one",
+      storage,
+    });
+    await reloaded.ready;
+    reloaded.applyGate(GUIDE_HOST);
+    expect(reloaded.getState()).toEqual({ status: "hidden" });
+    reloaded.reopen(GUIDE_HOST);
+    expect(reloaded.getState()).toMatchObject({ status: "open", stepIndex: 1 });
+    await reloaded.complete();
+    expect(storage.records.get("one")?.disposition).toBe("completed");
+  });
+});
+
+describe("Vorteo primary connection", () => {
+  it("keeps unsupported choices local and maps supported writes to definition identity", async () => {
+    const saved: string[] = [];
+    let removed = false;
+    const savePrimaryConnection = vi.fn(async (request: GuidePrimaryConnectionRequest) => {
+      const snapshot: InstallationSettingsSnapshot = {
+        version: 1,
+        revision: 1,
+        sources: {},
+        settings: {
+          mcp: { injectIntoAgents: true },
+          appendSystemPrompt: "",
+          autoArchiveAfterMerge: false,
+          enableTerminalAgentHooks: false,
+          metadataGeneration: { providers: [] },
+          pluginsEnabled: false,
+          terminalProfiles: [],
+          resourceExclusions: {},
+          providerDefinitions: [
+            {
+              id: "managed/definition",
+              providerType: "claude",
+              removed,
+              bindings: { host: "claude-account-runtime" },
+              policy: { label: "A different label", enabled: true },
+            },
+          ],
+        },
+      };
+      const choice = guidePrimaryConnectionChoice(snapshot, request);
+      if (!choice)
+        throw new Error("This connection is no longer available in installation settings.");
+      saved.push(choice.providerId);
+    });
+    const model = createVorteoGuide({
+      installationId: "one",
+      storage: new InstallationGuideStorage(),
+      savePrimaryConnection,
+    });
+    await model.ready;
+    model.applyGate({ ...GUIDE_HOST, supportsPrimaryConnection: false });
+    model.goTo("providers");
+    const state = model.getState();
+    if (state.status !== "open") throw new Error("Expected open guide");
+    expect(await model.recordPrimaryConnection("claude-account-runtime", state.visit)).toBe(
+      "local",
+    );
+    expect(model.primaryRuntimeProviderId).toBe("claude-account-runtime");
+    expect(savePrimaryConnection).not.toHaveBeenCalled();
+    model.applyGate(GUIDE_HOST);
+    expect(await model.recordPrimaryConnection("claude-account-runtime", state.visit)).toBe(
+      "saved",
+    );
+    expect(saved).toEqual(["managed/definition"]);
+    expect(savePrimaryConnection).toHaveBeenCalledExactlyOnceWith({
+      serverId: "host",
+      runtimeProviderId: "claude-account-runtime",
+    });
+    expect(
+      guidePrimaryConnectionChoice(
+        { version: 1, revision: 0, sources: {}, settings: null },
+        {
+          serverId: "host",
+          runtimeProviderId: "A different label",
+        },
+      ),
+    ).toBeNull();
+    removed = true;
+    await expect(
+      model.recordPrimaryConnection("claude-account-runtime", state.visit),
+    ).rejects.toThrow("no longer available");
+    expect(saved).toEqual(["managed/definition"]);
+    expect(model.getState()).toMatchObject({ stepIndex: 1, visit: state.visit });
+    model.next(state.visit);
+    expect(await model.recordPrimaryConnection("claude-account-runtime", state.visit)).toBe(
+      "stale",
+    );
+    expect(savePrimaryConnection).toHaveBeenCalledTimes(2);
+  });
+
+  it("delegates retry to Settings, maps unavailable errors and ignores late completion", async () => {
+    const conflict = new Error(
+      "Shared settings changed. Reload and review the current values before saving.",
+    );
+    const savePrimaryConnection = vi.fn(
+      async (_request: { serverId: string; runtimeProviderId: string }) => {},
+    );
+    const model = createVorteoGuide({
+      installationId: "one",
+      storage: new InstallationGuideStorage(),
+      savePrimaryConnection,
+    });
+    await model.ready;
+    model.applyGate(GUIDE_HOST);
+    model.goTo("providers");
+    const state = model.getState();
+    if (state.status !== "open") throw new Error("Expected open guide");
+    savePrimaryConnection.mockRejectedValueOnce(conflict);
+    await expect(model.recordPrimaryConnection("codex", state.visit)).rejects.toBe(conflict);
+    expect(savePrimaryConnection).toHaveBeenCalledTimes(1);
+    expect(model.getState()).toMatchObject({ visit: state.visit, stepIndex: 1 });
+    savePrimaryConnection.mockClear();
+    savePrimaryConnection.mockRejectedValueOnce(new PrimaryConnectionUnavailableError());
+    await expect(model.recordPrimaryConnection("codex", state.visit)).rejects.toThrow(
+      "This connection is no longer available in installation settings. Refresh and choose again.",
+    );
+    expect(savePrimaryConnection).toHaveBeenCalledTimes(1);
+    expect(model.getState()).toMatchObject({ visit: state.visit, stepIndex: 1 });
+    savePrimaryConnection.mockClear();
+    savePrimaryConnection.mockRejectedValueOnce(new Error("Unlock installation controls"));
+    await expect(model.recordPrimaryConnection("codex", state.visit)).rejects.toThrow("Unlock");
+    expect(savePrimaryConnection).toHaveBeenCalledTimes(1);
+    let finish!: () => void;
+    savePrimaryConnection.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = model.recordPrimaryConnection("codex", state.visit);
+    model.goTo("projects");
+    finish();
+    expect(await pending).toBe("stale");
+    expect(model.getState()).toMatchObject({ stepIndex: 2 });
   });
 });

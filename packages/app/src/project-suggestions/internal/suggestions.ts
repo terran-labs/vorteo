@@ -1,3 +1,4 @@
+import { isInsideProjectsRoot } from "@/projects/projects-root";
 import type { ProjectSuggestion } from "@getpaseo/protocol/messages";
 
 export type { ProjectSuggestion };
@@ -17,12 +18,14 @@ export type ProviderSuggestions =
 export function mergeProviderSuggestions(
   providers: readonly ProviderSuggestions[],
   addedRootPaths: ReadonlySet<string>,
+  projectsRoot: string | null = null,
 ): ProjectSuggestion[] {
   const byRoot = new Map<string, ProjectSuggestion>();
   for (const provider of providers) {
     if (provider.status === "loading") continue;
     for (const suggestion of provider.suggestions) {
       if (addedRootPaths.has(suggestion.rootPath)) continue;
+      if (projectsRoot && !isInsideProjectsRoot(suggestion.rootPath, projectsRoot)) continue;
       const existing = byRoot.get(suggestion.rootPath);
       byRoot.set(
         suggestion.rootPath,
@@ -87,4 +90,15 @@ export async function addSuggestedProjects(
     }
   }
   return failures;
+}
+
+/** A missing capability must never issue a new RPC, even from a manual retry. */
+export function requestProviderSuggestions<T>(input: {
+  supported: boolean;
+  provider: string;
+  request: (options: { providers: string[] }) => Promise<T>;
+}): Promise<T> {
+  if (!input.supported)
+    return Promise.reject(new Error("Project history is not supported by this host"));
+  return input.request({ providers: [input.provider] });
 }
