@@ -352,6 +352,9 @@ export const en = {
       folderOutsideWorkspace: "{{path}} is outside this workspace",
       unexpectedDictationError: "An unexpected error occurred while handling dictation.",
       hostConnectionLost: "Lost connection to the host. Try again once it reconnects.",
+      hostRequestTimeout: "The Host did not answer in time. Check the connection and try again.",
+      hostRestarting:
+        "The Host is restarting or installing an update. Try again once it reconnects.",
     },
     connectionStatus: {
       online: "Online",
@@ -663,6 +666,17 @@ export const en = {
       insertAndSend: "Insert transcription and send",
       failed: "Dictation failed: {{error}}",
       failedRetry: "Dictation failed. Tap retry.",
+      stillTranscribing: "The Host is still transcribing a long recording. It has not failed.",
+      errors: {
+        speechService: "The Host's speech service did not respond. Try again.",
+        speechDecodeFailed:
+          "The Host's speech service could not transcribe this recording. Try again.",
+        speechNotConfigured: "Dictation is not set up on the Host.",
+        streamLost: "The Host lost track of this dictation. Try again.",
+        transcriptionTimeout: "The Host took too long to transcribe. Try again.",
+        hostRestarting:
+          "The Host is restarting or installing an update. Try again once it is back.",
+      },
     },
     question: {
       responseFailed: "Could not send your response. Try again.",

@@ -9,6 +9,7 @@ import { z } from "zod";
 import {
   DaemonClient,
   DaemonConnectionError,
+  DictationStreamError,
   supportsUsageReports,
   type DaemonClientTrace,
   type CreateAgentRequestOptions,
@@ -6562,6 +6563,45 @@ test("uses server-provided dictation finish timeout budget", async () => {
   vi.useRealTimers();
 });
 
+test("extends the dictation finish deadline while the daemon reports progress", async () => {
+  useHeartbeatClock();
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const accepted = () =>
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "dictation_stream_finish_accepted",
+        payload: { dictationId: "dict-long", timeoutMs: 1000 },
+      }),
+    );
+  const finishPromise = client.finishDictationStream("dict-long", 0);
+  accepted();
+  // Each repeat arrives before the previous 6 second deadline would have expired.
+  for (let elapsed = 0; elapsed < 60_000; elapsed += 4000) {
+    await vi.advanceTimersByTimeAsync(4000);
+    accepted();
+  }
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "dictation_stream_final",
+      payload: { dictationId: "dict-long", text: "done" },
+    }),
+  );
+  await expect(finishPromise).resolves.toEqual({ dictationId: "dict-long", text: "done" });
+  vi.useRealTimers();
+});
+
 test("resolves dictation finish when final arrives after finish accepted", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -6605,6 +6645,58 @@ test("resolves dictation finish when final arrives after finish accepted", async
     dictationId: "dict-2",
     text: "hello",
   });
+});
+
+test.each([
+  {
+    name: "the daemon's typed error arrives before the client's own timer",
+    fail: (mock: ReturnType<typeof createMockTransport>) =>
+      mock.triggerMessage(
+        wrapSessionMessage({
+          type: "dictation_stream_error",
+          payload: {
+            dictationId: "dict-typed",
+            error: "Speech service did not start in time",
+            retryable: true,
+            reasonCode: "speech_start_timeout",
+          },
+        }),
+      ),
+    elapseMs: 25_000,
+    reasonCode: "speech_start_timeout",
+  },
+  {
+    name: "the daemon announces its shutdown",
+    fail: (mock: ReturnType<typeof createMockTransport>) =>
+      mock.triggerClose({ code: 1001, reason: "Server shutting down" }),
+    elapseMs: 1_000,
+    reasonCode: "host_restarting",
+  },
+])("dictation start reports a typed reason when $name", async ({ fail, elapseMs, reasonCode }) => {
+  useHeartbeatClock();
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const outcome = client.startDictationStream("dict-typed", "pcm").then(
+    () => null,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(elapseMs);
+  fail(mock);
+  const error = await outcome;
+  expect(error).toBeInstanceOf(DictationStreamError);
+  expect((error as DictationStreamError).reasonCode).toBe(reasonCode);
+  vi.useRealTimers();
 });
 
 test("cancels waiters when send fails (no leaked timeouts)", async () => {

@@ -72,6 +72,9 @@ export const ko: TranslationResources = {
       folderOutsideWorkspace: "{{path}}은(는) 이 워크스페이스 밖에 있습니다",
       unexpectedDictationError: "받아쓰기를 처리하는 중 예기치 않은 오류가 발생했습니다.",
       hostConnectionLost: "호스트와의 연결이 끊어졌습니다. 다시 연결되면 다시 시도하세요.",
+      hostRequestTimeout: "호스트가 제시간에 응답하지 않았습니다. 연결을 확인하고 다시 시도하세요.",
+      hostRestarting:
+        "호스트가 다시 시작하거나 업데이트를 설치하는 중입니다. 다시 연결되면 다시 시도하세요.",
     },
     connectionStatus: {
       online: "온라인",
@@ -382,6 +385,17 @@ export const ko: TranslationResources = {
       insertAndSend: "전사 삽입 후 보내기",
       failed: "받아쓰기 실패: {{error}}",
       failedRetry: "받아쓰기에 실패했습니다. 다시 시도하려면 누르세요.",
+      stillTranscribing: "호스트가 긴 녹음을 아직 전사하는 중입니다. 실패하지 않았습니다.",
+      errors: {
+        speechService: "호스트의 음성 서비스가 응답하지 않았습니다. 다시 시도하세요.",
+        speechDecodeFailed:
+          "호스트의 음성 서비스가 이 녹음을 전사하지 못했습니다. 다시 시도하세요.",
+        speechNotConfigured: "호스트에 받아쓰기가 설정되어 있지 않습니다.",
+        streamLost: "호스트가 이 받아쓰기를 놓쳤습니다. 다시 시도하세요.",
+        transcriptionTimeout: "호스트의 전사 시간이 너무 오래 걸렸습니다. 다시 시도하세요.",
+        hostRestarting:
+          "호스트가 다시 시작하거나 업데이트를 설치하는 중입니다. 돌아오면 다시 시도하세요.",
+      },
     },
     question: {
       responseFailed: "응답을 보내지 못했습니다. 다시 시도해 주세요.",

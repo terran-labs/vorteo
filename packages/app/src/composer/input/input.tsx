@@ -52,6 +52,7 @@ import {
 import type { ComposerAttachment } from "@/attachments/types";
 import type { ImageAttachment, MessagePayload, TextReplacement } from "@/composer/types";
 import { focusWithRetries } from "@/utils/web-focus";
+import { toDictationErrorMessage } from "@/utils/error-messages";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Shortcut } from "@/components/ui/shortcut";
 import {
@@ -1651,7 +1652,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const handleDictationError = useCallback(
       (error: Error) => {
         console.error("[MessageInput] Dictation error:", error);
-        toast.error(error.message);
+        toast.error(toDictationErrorMessage(error));
       },
       [toast],
     );

@@ -1189,6 +1189,50 @@ export class DaemonConnectionError extends Error {
   }
 }
 
+/**
+ * A dictation failure the daemon reported, or one the client can attribute to a known cause.
+ * `reasonCode` is the daemon's stable reason when it sent one; older daemons send none.
+ */
+export class DictationStreamError extends Error {
+  readonly reasonCode?: string;
+  readonly retryable: boolean;
+  constructor(message: string, options: { reasonCode?: string; retryable?: boolean } = {}) {
+    super(message);
+    this.name = "DictationStreamError";
+    this.reasonCode = options.reasonCode;
+    this.retryable = options.retryable ?? true;
+  }
+}
+
+/** Dictation reason for a daemon that closed the socket announcing its own shutdown. */
+export const DICTATION_HOST_RESTARTING_REASON = "host_restarting";
+
+// A daemon that announced its shutdown, as opposed to a dropped network, is restarting or
+// installing an update. Its close reason reaches pending waiters as the error message.
+function toDictationWaitError(error: unknown): unknown {
+  if (
+    error instanceof DaemonConnectionError &&
+    error.code === "DAEMON_CONNECTION_LOST" &&
+    error.message === SERVER_SHUTDOWN_CLOSE_REASON
+  ) {
+    return new DictationStreamError(error.message, {
+      reasonCode: DICTATION_HOST_RESTARTING_REASON,
+    });
+  }
+  return error;
+}
+
+function toDictationStreamError(payload: {
+  error: string;
+  reasonCode?: string;
+  retryable: boolean;
+}): DictationStreamError {
+  return new DictationStreamError(payload.error, {
+    reasonCode: payload.reasonCode,
+    retryable: payload.retryable,
+  });
+}
+
 /** True when a request was sent but its reply was lost, leaving its daemon-side outcome unknown. */
 export function isRequestOutcomeUnknown(error: unknown): boolean {
   return error instanceof DaemonConnectionError && error.requestMayHaveArrived;
@@ -1279,6 +1323,9 @@ const DEFAULT_SEND_QUEUE_TIMEOUT_MS = DEFAULT_SESSION_RPC_TIMEOUT_MS;
 const DEFAULT_DICTATION_FINISH_ACCEPT_TIMEOUT_MS = DEFAULT_SESSION_RPC_TIMEOUT_MS;
 const DEFAULT_DICTATION_FINISH_FALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_DICTATION_FINISH_TIMEOUT_GRACE_MS = 5000;
+// The daemon bounds a dictation start at 25 seconds and reports why it failed. Waiting a little
+// longer lets that typed error arrive first, while liveness checks still end a dead connection.
+const DICTATION_START_ACK_TIMEOUT_MS = 30_000;
 
 function isWaiterTimeoutError(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith("Timeout waiting for message");
@@ -5267,7 +5314,7 @@ export class DaemonClient {
         }
         return msg.payload;
       },
-      30000,
+      DICTATION_START_ACK_TIMEOUT_MS,
       { skipQueue: true },
     );
     const ackPromise = ack.promise.then(() => undefined);
@@ -5282,11 +5329,12 @@ export class DaemonClient {
         }
         return msg.payload;
       },
-      30000,
+      // The acknowledgement timer bounds the start; this waiter only needs to outlive it.
+      0,
       { skipQueue: true },
     );
     const errorPromise = streamError.promise.then((payload) => {
-      throw new Error(payload.error);
+      throw toDictationStreamError(payload);
     });
 
     const cleanupError = new Error("Cancelled dictation start waiter");
@@ -5298,6 +5346,8 @@ export class DaemonClient {
       });
       const response = Promise.race([ackPromise, errorPromise]);
       await Promise.race([response, sent.then(() => response)]);
+    } catch (error) {
+      throw toDictationWaitError(error);
     } finally {
       ack.cancel(cleanupError);
       streamError.cancel(cleanupError);
@@ -5364,7 +5414,7 @@ export class DaemonClient {
 
     const finalPromise = final.promise;
     const errorPromise = streamError.promise.then((payload) => {
-      throw new Error(payload.error);
+      throw toDictationStreamError(payload);
     });
     const finishAcceptedPromise = finishAccepted.promise;
 
@@ -5395,39 +5445,66 @@ export class DaemonClient {
       },
     );
 
+    // The daemon may repeat `dictation_stream_finish_accepted` while a long transcription keeps
+    // progressing; each repeat replaces the deadline. Older daemons send one, as before.
+    const acceptedPredicate = (msg: SessionOutboundMessage) =>
+      msg.type === "dictation_stream_finish_accepted" && msg.payload.dictationId === dictationId
+        ? msg.payload
+        : null;
     const waitForFinalResult = async (
-      timeoutMs: number,
+      initialTimeoutMs: number,
     ): Promise<{ dictationId: string; text: string }> => {
-      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-        const outcome = await Promise.race([finalOutcomePromise, errorOutcomePromise]);
+      let timeoutMs = initialTimeoutMs;
+      for (;;) {
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+          const outcome = await Promise.race([finalOutcomePromise, errorOutcomePromise]);
+          if (outcome.kind === "error") {
+            throw outcome.error;
+          }
+          return outcome.payload;
+        }
+
+        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+        const timeoutPromise = new Promise<{ kind: "timeout" }>((resolve) => {
+          timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+        });
+        const extension = this.waitForWithCancel<DictationFinishAcceptedPayload>(
+          acceptedPredicate,
+          0,
+          { skipQueue: true },
+        );
+        const extensionPromise = extension.promise.then(
+          (payload) => ({ kind: "extended" as const, payload }),
+          () => ({ kind: "extension_cancelled" as const }),
+        );
+
+        const outcome = await Promise.race([
+          finalOutcomePromise,
+          errorOutcomePromise,
+          timeoutPromise,
+          extensionPromise,
+        ]);
+
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+        extension.cancel(cleanupError);
+
+        if (outcome.kind === "extended") {
+          timeoutMs = outcome.payload.timeoutMs + DEFAULT_DICTATION_FINISH_TIMEOUT_GRACE_MS;
+          continue;
+        }
+        if (outcome.kind === "extension_cancelled") {
+          continue;
+        }
+        if (outcome.kind === "timeout") {
+          throw new Error(`Timeout waiting for dictation finalization (${timeoutMs}ms)`);
+        }
         if (outcome.kind === "error") {
           throw outcome.error;
         }
         return outcome.payload;
       }
-
-      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-      const timeoutPromise = new Promise<{ kind: "timeout" }>((resolve) => {
-        timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
-      });
-
-      const outcome = await Promise.race([
-        finalOutcomePromise,
-        errorOutcomePromise,
-        timeoutPromise,
-      ]);
-
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-
-      if (outcome.kind === "timeout") {
-        throw new Error(`Timeout waiting for dictation finalization (${timeoutMs}ms)`);
-      }
-      if (outcome.kind === "error") {
-        throw outcome.error;
-      }
-      return outcome.payload;
     };
 
     const cleanupError = new Error("Cancelled dictation finish waiter");
@@ -5458,6 +5535,8 @@ export class DaemonClient {
       }
 
       return await waitForFinalResult(DEFAULT_DICTATION_FINISH_FALLBACK_TIMEOUT_MS);
+    } catch (error) {
+      throw toDictationWaitError(error);
     } finally {
       final.cancel(cleanupError);
       streamError.cancel(cleanupError);

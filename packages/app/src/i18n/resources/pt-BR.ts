@@ -73,6 +73,9 @@ export const ptBR: TranslationResources = {
       folderOutsideWorkspace: "{{path}} está fora deste workspace",
       unexpectedDictationError: "Ocorreu um erro inesperado ao processar o ditado.",
       hostConnectionLost: "Conexão com o host perdida. Tente novamente quando reconectar.",
+      hostRequestTimeout: "O host não respondeu a tempo. Verifique a conexão e tente novamente.",
+      hostRestarting:
+        "O host está reiniciando ou instalando uma atualização. Tente novamente quando ele reconectar.",
     },
     connectionStatus: {
       online: "Online",
@@ -385,6 +388,17 @@ export const ptBR: TranslationResources = {
       insertAndSend: "Inserir transcrição e enviar",
       failed: "Falha no ditado: {{error}}",
       failedRetry: "Falha no ditado. Toque para tentar novamente.",
+      stillTranscribing: "O host ainda está transcrevendo uma gravação longa. Não houve falha.",
+      errors: {
+        speechService: "O serviço de voz do host não respondeu. Tente novamente.",
+        speechDecodeFailed:
+          "O serviço de voz do host não conseguiu transcrever esta gravação. Tente novamente.",
+        speechNotConfigured: "O ditado não está configurado no host.",
+        streamLost: "O host perdeu este ditado. Tente novamente.",
+        transcriptionTimeout: "O host demorou demais para transcrever. Tente novamente.",
+        hostRestarting:
+          "O host está reiniciando ou instalando uma atualização. Tente novamente quando ele voltar.",
+      },
     },
     question: {
       responseFailed: "Não foi possível enviar sua resposta. Tente novamente.",
