@@ -37,6 +37,7 @@ vi.mock("react-native-reanimated", () => ({
 }));
 
 vi.mock("react-native", () => ({
+  useWindowDimensions: () => ({ width: 1200, height: 800, scale: 1, fontScale: 1 }),
   Platform: {
     select: (values: Record<string, unknown>) => values.web ?? values.default,
   },
@@ -86,6 +87,7 @@ vi.mock("react-native-unistyles", () => ({
     ) =>
     (props: Record<string, unknown>) =>
       React.createElement(Component, { ...props, ...mapping?.(theme) }),
+  useUnistyles: () => ({ theme, rt: { breakpoint: "md" } }),
 }));
 
 describe("Switch", () => {

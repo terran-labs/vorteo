@@ -92,7 +92,7 @@ export function MaintenanceNotice({
       {onCancel ? (
         <Button
           variant="ghost"
-          size="xs"
+          size="sm"
           onPress={onCancel}
           accessibilityLabel={`Cancel: ${title}`}
           testID={testID ? `${testID}-cancel` : undefined}

@@ -66,6 +66,7 @@ import { Button } from "@/components/ui/button";
 
 import { getHostRuntimeStore, useHostRegistryLoaded } from "@/runtime/host-runtime";
 import { useVortonTouch } from "@/vorton-touch";
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import {
   getBootstrapPanel,
   BootstrapHistory,
@@ -216,7 +217,7 @@ function InstallationWelcomeForm({
           </Text>
         ) : null}
         <Button
-          size="lg"
+          size="md"
           disabled={state.busy || !state.password.trim()}
           onPress={connect}
           testID="installation-unlock"
@@ -741,10 +742,6 @@ function FullMaintenanceDelegation({
     () => void model.changeMaintenanceDelegation(!delegation?.enabled),
     [model, delegation?.enabled],
   );
-  const changeManagement = useCallback(
-    () => void model.changeMaintenanceDelegation(true, !delegation?.managementEnabled),
-    [model, delegation?.managementEnabled],
-  );
   if (!delegation?.available) return null;
   return (
     <View>
@@ -767,24 +764,14 @@ function FullMaintenanceDelegation({
           : "Delegate all supported maintenance"}
       </Button>
       {delegation.managementAvailable ? (
-        <View>
-          <Text style={styles.text}>
-            Delegate installation management to trusted Host agents. This enables supported
-            automatic maintenance and cancellation of pending or queued requests, with durable
-            receipts. Exact manual-review jobs still require your decision. Agents cannot change
-            this grant, accounts or credentials. You can revoke management here at any time.
-          </Text>
-          <Button
-            size="md"
-            disabled={state.busy || Boolean(state.maintenanceDelegationError)}
-            onPress={changeManagement}
-            testID="installation-management-change"
-          >
-            {delegation.managementEnabled
-              ? "Revoke installation management"
-              : "Delegate installation management"}
-          </Button>
-        </View>
+        <Text style={styles.text} testID="installation-management-status">
+          {delegation.managementEnabled
+            ? "Installation management is enabled by this grant."
+            : "This grant also enables installation management."}{" "}
+          Trusted Host agents can cancel pending or queued requests, with durable receipts. They
+          cannot approve requests that need your review, stop claimed work, or change this grant,
+          accounts, credentials or settings.
+        </Text>
       ) : null}
     </View>
   );
@@ -1194,7 +1181,13 @@ function BrokerRequest({
       </View>
       <Text style={styles.text}>{brokerReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
-      <Button variant="ghost" size={size} onPress={toggle} {...disclosureProps(expanded)}>
+      <Button
+        variant="ghost"
+        size={size}
+        style={styles.reviewControl(size === "md")}
+        onPress={toggle}
+        {...disclosureProps(expanded)}
+      >
         Details
       </Button>
       {expanded ? (
@@ -1799,12 +1792,14 @@ function RestartActionButton({
   disabledReason,
   ...props
 }: ComponentProps<typeof Button> & { disabledReason: string | null }) {
-  if (!disabledReason) return <Button {...props} />;
+  const touch = useVortonTouch();
+  const style = useMemo(() => [styles.reviewControl(touch), props.style], [props.style, touch]);
+  if (!disabledReason) return <Button {...props} style={style} />;
   // A separate hit target avoids browsers suppressing taps on a disabled descendant.
   return (
     <Tooltip enabledOnMobile>
       <View style={styles.disabledAction}>
-        <Button {...props} disabled accessible={false} focusable={false} />
+        <Button {...props} style={style} disabled accessible={false} focusable={false} />
         <TooltipTrigger
           style={StyleSheet.absoluteFillObject}
           accessibilityRole="button"
@@ -2394,6 +2389,9 @@ function RestartBannerItem({ job, model }: { job: RestartJob; model: Installatio
 }
 
 const styles = StyleSheet.create((theme) => ({
+  reviewControl: (touch: boolean) => ({
+    minHeight: touch ? CONTROL_HEIGHTS.md.xs : CONTROL_HEIGHTS.md.md,
+  }),
   disabledAction: { position: "relative", alignSelf: "flex-start" },
   unlockRow: {
     flexDirection: "row",

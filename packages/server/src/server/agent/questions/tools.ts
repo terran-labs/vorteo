@@ -13,7 +13,7 @@ function result(value: unknown): PaseoToolResult {
 
 export function createQuestionTools(
   manager: Pick<AgentManager, "readQuestions" | "mutateQuestions">,
-  callerAgentId: string,
+  callerAgentId?: string,
 ): PaseoToolDefinition[] {
   return [
     {
@@ -23,6 +23,9 @@ export function createQuestionTools(
         "Read the questions this thread asked the owner, in ask order, with their status (open, answered, withdrawn) and any owner answer. Answers are the owner's decisions for those questions only.",
       inputSchema: ReadQuestionsSchema,
       handler: async (input) => {
+        if (!callerAgentId?.trim()) {
+          throw new Error("An agent-scoped caller identity is required");
+        }
         ReadQuestionsSchema.parse(input);
         return result({ questions: await manager.readQuestions(callerAgentId) });
       },
@@ -35,6 +38,9 @@ export function createQuestionTools(
         QUESTION_GUIDANCE,
       inputSchema: UpdateQuestionsSchema,
       handler: async (input) => {
+        if (!callerAgentId?.trim()) {
+          throw new Error("An agent-scoped caller identity is required");
+        }
         const { mutation } = UpdateQuestionsSchema.parse(input);
         return result({ questions: await manager.mutateQuestions(callerAgentId, mutation) });
       },

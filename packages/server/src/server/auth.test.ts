@@ -153,7 +153,6 @@ describe("hello admission", () => {
         credential: { kind: "localCredential", token: "stale" },
         passwordHash: undefined,
         localCredential: "current",
-        transport: "direct",
       }),
     ).toMatchObject({ admission: { principalId: "owner" } });
   });
@@ -165,7 +164,6 @@ describe("hello admission", () => {
       const input = {
         passwordHash: CORRECT_PASSWORD_HASH,
         localCredential: second,
-        transport: "direct" as const,
       };
       expect(
         await resolveSessionAdmission({
@@ -191,19 +189,9 @@ describe("hello admission", () => {
           credential: { kind: "password", password: "wrong" },
         }),
       ).toEqual({ rejection: "incorrect_password" });
-      expect(
-        await resolveSessionAdmission({
-          ...input,
-          transport: "relay",
-          credential: { kind: "password", password: "wrong" },
-        }),
-      ).toEqual({ rejection: "incorrect_password" });
       expect(await resolveSessionAdmission({ ...input, credential: undefined })).toEqual({
         rejection: "password_required",
       });
-      expect(
-        await resolveSessionAdmission({ ...input, transport: "relay", credential: undefined }),
-      ).toMatchObject({ admission: { principalId: "owner" } });
     } finally {
       await deleteLocalCredential(home);
       await rm(home, { recursive: true, force: true });

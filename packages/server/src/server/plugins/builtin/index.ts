@@ -10,10 +10,12 @@ export const builtinPlugins = [
   "cursor-usage-source",
   "factory",
   "grok-usage-source",
+  "hoplite-provider",
   "kimi-usage-source",
   "minimax-usage-source",
   "muse-provider",
   "opencode-go-usage-source",
+  "worktree-include",
   "zai-usage-source",
 ] as const;
 

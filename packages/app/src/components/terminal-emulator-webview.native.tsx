@@ -17,7 +17,6 @@ import {
 } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import type { ITheme } from "@xterm/xterm";
-import type { TerminalState } from "@getpaseo/protocol/messages";
 import type { TerminalInputModeState } from "@getpaseo/protocol/terminal-input-mode";
 import type {
   TerminalOutputData,
@@ -31,14 +30,19 @@ import { terminalEmulatorWebViewHtml } from "../terminal/webview/terminal-emulat
 import type { PendingTerminalModifiers } from "../utils/terminal-keys";
 import { openExternalUrl } from "../utils/open-external-url";
 import type { TerminalEmulatorHandle, TerminalEmulatorProps } from "./terminal-emulator-contract";
-import { shouldHandleTerminalBridgeMessage } from "./terminal-webview-message-routing";
+import type { TerminalCharacterWidths } from "../terminal/character-widths";
+import {
+  serializeTerminalReplay,
+  type TerminalWebViewReplayEvent,
+  shouldHandleTerminalBridgeMessage,
+} from "./terminal-webview-message-routing";
 import { shouldResetForMissingRendererReady } from "./terminal-webview-readiness";
 
 type BridgeInboundMessage =
   | {
       type: "mount";
       streamKey: string;
-      initialSnapshot: TerminalState | null;
+      characterWidths: TerminalCharacterWidths;
       scrollbackLines: number;
       theme: ITheme;
       fontFamily?: string;
@@ -48,8 +52,8 @@ type BridgeInboundMessage =
     }
   | { type: "unmount"; streamKey: string }
   | { type: "writeOutput"; streamKey: string; text: string }
-  | { type: "restoreOutput"; streamKey: string; text: string }
-  | { type: "renderSnapshot"; streamKey: string; state: TerminalState | null }
+  | { type: "replay"; streamKey: string; event: TerminalWebViewReplayEvent }
+  | { type: "setCharacterWidths"; streamKey: string; widths: TerminalCharacterWidths }
   | { type: "paste"; streamKey: string; text: string }
   | { type: "clear"; streamKey: string }
   | { type: "find"; streamKey: string; query: string; direction?: "next" | "previous" }
@@ -133,7 +137,7 @@ function serializeForInjectedJavaScript(message: BridgeInboundMessage): string {
 
 function createMountMessage(input: {
   streamKey: string;
-  initialSnapshot: TerminalState | null;
+  characterWidths: TerminalCharacterWidths;
   scrollbackLines: number;
   theme: ITheme;
   fontFamily?: string;
@@ -144,7 +148,7 @@ function createMountMessage(input: {
   return {
     type: "mount",
     streamKey: input.streamKey,
-    initialSnapshot: input.initialSnapshot,
+    characterWidths: input.characterWidths,
     scrollbackLines: input.scrollbackLines,
     theme: input.theme,
     fontFamily: input.fontFamily,
@@ -169,7 +173,7 @@ export default function WebViewTerminalEmulator({
   swipeGesturesEnabled = false,
   onSwipeLeft,
   onSwipeRight,
-  initialSnapshot = null,
+  characterWidths,
   onFindRequest,
   onFindResult,
   onInput,
@@ -200,7 +204,7 @@ export default function WebViewTerminalEmulator({
   const pendingTapRef = useRef<PendingTerminalTap | null>(null);
   const mountConfigRef = useRef({
     streamKey,
-    initialSnapshot,
+    characterWidths,
     scrollbackLines,
     theme: xtermTheme,
     fontFamily,
@@ -210,7 +214,7 @@ export default function WebViewTerminalEmulator({
   });
   mountConfigRef.current = {
     streamKey,
-    initialSnapshot,
+    characterWidths,
     scrollbackLines,
     theme: xtermTheme,
     fontFamily,
@@ -341,17 +345,9 @@ export default function WebViewTerminalEmulator({
         }
         sendToWebView({ type: "writeOutput", streamKey, text: output });
       },
-      restoreOutput: (data: TerminalOutputData) => {
-        outputDecoderRef.current.decode();
-        const text = outputDecoderRef.current.decode(data, { stream: false });
-        if (text.length === 0) {
-          return;
-        }
-        sendToWebView({ type: "restoreOutput", streamKey, text });
-      },
-      renderSnapshot: (state: TerminalState | null) => {
-        outputDecoderRef.current.decode();
-        sendToWebView({ type: "renderSnapshot", streamKey, state });
+      replay: (event) => {
+        if (event.type === "begin") outputDecoderRef.current.decode();
+        sendToWebView({ type: "replay", streamKey, event: serializeTerminalReplay(event) });
       },
       paste: (text: string) => {
         sendToWebView({ type: "paste", streamKey, text });
@@ -397,6 +393,11 @@ export default function WebViewTerminalEmulator({
     sendToWebView,
     streamKey,
   ]);
+
+  useEffect(() => {
+    if (!mountRequestedStreamKeyRef.current) return;
+    sendToWebView({ type: "setCharacterWidths", streamKey, widths: characterWidths });
+  }, [characterWidths, sendToWebView, streamKey]);
 
   const themeKey = useMemo(() => buildThemeKey(xtermTheme), [xtermTheme]);
   useEffect(() => {

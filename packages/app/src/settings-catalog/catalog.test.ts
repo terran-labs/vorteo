@@ -1,3 +1,4 @@
+import { isAvailable, getPane } from "./catalog";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -148,4 +149,17 @@ describe("settings catalog", () => {
     // Guards the scanner itself: a broken pattern would otherwise pass vacuously.
     expect(scanned).toBeGreaterThan(25);
   });
+});
+
+it("offers keyboard shortcuts for hardware keyboards independently of Electron", () => {
+  const pane = getPane("chat.shortcuts")!;
+  const context = {
+    isDesktopApp: false,
+    isWeb: false,
+    isNative: true,
+    hasHosts: false,
+    hasInstallation: false,
+  };
+  expect(isAvailable(pane, context)).toBe(false);
+  expect(isAvailable(pane, { ...context, hardwareKeyboardPresent: true })).toBe(true);
 });

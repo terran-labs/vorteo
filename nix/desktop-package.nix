@@ -86,6 +86,7 @@ buildNpmPackage {
     # Expo's web build pulls in some pre-bundled assets; ensure it doesn't try
     # to phone home during the build.
     CI = "1";
+    NODE_OPTIONS = "--max-old-space-size=4096";
   } // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
     # Keep build diagnostics; the renderer export gets its own heap below.
     # Preserve Node's fatal-error reason when a Metro worker aborts in CI.
@@ -131,7 +132,7 @@ buildNpmPackage {
         # The Nix output is not a distributable DMG, so leave it unsigned and
         # disable the hardened runtime that requires a matching signature.
         CSC_IDENTITY_AUTO_DISCOVERY=false \
-          ../../node_modules/.bin/electron-builder \
+          npm exec --offline -- electron-builder \
             --config electron-builder.yml \
             --dir \
             --mac \
@@ -166,6 +167,9 @@ buildNpmPackage {
         mkdir -p "$out/share/paseo-desktop/$(dirname "$path")"
         cp -a "$path" "$out/share/paseo-desktop/$path"
       done < desktop-files.txt
+
+      # Shell hooks invoke the retained CLI bin directly, without a system Node.
+      patchShebangs --build "$out/share/paseo-desktop"
 
       # Keep the same unpackaged monorepo layout expected by main.js.
       cp package.json $out/share/paseo-desktop/
@@ -259,7 +263,7 @@ buildNpmPackage {
   meta = {
     description = "Vorteo desktop app (Electron wrapper)";
     homepage = "https://github.com/getpaseo/paseo";
-    license = lib.licenses.agpl3Plus;
+    license = lib.licenses.asl20;
     mainProgram = "paseo-desktop";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };

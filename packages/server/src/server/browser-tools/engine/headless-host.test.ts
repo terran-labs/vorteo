@@ -18,7 +18,14 @@ class FakePage implements PlaywrightPageLike {
   public viewport: { width: number; height: number } | null = null;
   public readonly visited: string[] = [];
   private readonly listeners = new Map<string, ((payload: never) => void)[]>();
-  public keyboard = { down: async () => {}, up: async () => {} };
+  public readonly insertedText: string[] = [];
+  public keyboard = {
+    down: async () => {},
+    up: async () => {},
+    insertText: async (text: string) => {
+      this.insertedText.push(text);
+    },
+  };
 
   public url(): string {
     return this.currentUrl;
@@ -145,6 +152,22 @@ describe("normalizeDeniedHost", () => {
 });
 
 describe("HeadlessBrowserHost", () => {
+  test("inserts text only into the requested tab", async () => {
+    const { context, host } = await createHost();
+    const first = await openTab(host, "wks_a");
+    await openTab(host, "wks_a");
+    const result = await host.execute(
+      request({
+        command: "type",
+        args: { browserId: first, text: "Hello 界🙂" },
+      }),
+    );
+    expect(result).toMatchObject({ ok: true, result: { command: "type", browserId: first } });
+    expect(context.pages[0]?.insertedText).toEqual(["Hello 界🙂"]);
+    expect(context.pages[1]?.insertedText).toEqual([]);
+    await host.close();
+  });
+
   test("opens tabs in the requesting workspace with the configured viewport", async () => {
     const { context, host } = await createHost();
     const browserId = await openTab(host, "wks_a", "https://example.com/");

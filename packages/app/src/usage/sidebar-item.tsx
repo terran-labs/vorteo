@@ -15,7 +15,7 @@ import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
 import { usePanelStore } from "@/stores/panel-store";
 import { buildUsageRoute } from "@/utils/host-routes";
 import { useHostUsageWithControls } from "./controls";
-import { useUsagePreferences, type UsageDisplay } from "./display";
+import { useUsageDisplay, useUsagePreferences, type UsageDisplay } from "./display";
 import { useUsageHostId, useUsageHostSelection } from "./hosts";
 import { useUsageHostReports } from "./queries";
 import { UsageSourceIcon } from "./source-icon";
@@ -33,9 +33,9 @@ import { UsageOptions } from "./options";
 import { UsageBody } from "./usage-section";
 
 /** Each summary window with data on the usage host, under its source; empty while none has. */
-function useUsageSummary(): readonly PinnedUsageSource[] {
-  const { preferences } = useUsagePreferences();
-  const reports = useUsageHostReports(useUsageHostId());
+export function useUsageSummary(enabled = true): readonly PinnedUsageSource[] {
+  const reports = useUsageHostReports(useUsageHostId(), enabled);
+  const { preferences } = useUsageDisplay(reports);
   return useMemo(() => resolvePinnedUsage(reports, preferences), [preferences, reports]);
 }
 
@@ -144,7 +144,9 @@ function HostUsageSheet({
       testID="sidebar-usage-sheet"
     >
       <View style={styles.sheetBody} testID="usage-expanded">
-        {view.kind === "unavailable" ? null : <UsageOptions display={display} />}
+        {view.kind === "unavailable" ? null : (
+          <UsageOptions display={display} serverId={serverId} />
+        )}
         <UsageBody serverId={serverId} view={view} display={display} onRefresh={refresh} />
       </View>
     </SidebarPopoverSurface>

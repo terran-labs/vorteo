@@ -135,7 +135,6 @@ export function AgentProfileRow({
         ) : null}
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={moveUpIcon}
           onPress={handleMoveUp}
           disabled={disabled || isFirst}
@@ -144,7 +143,6 @@ export function AgentProfileRow({
         />
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={moveDownIcon}
           onPress={handleMoveDown}
           disabled={disabled || isLast}
@@ -153,7 +151,6 @@ export function AgentProfileRow({
         />
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={editIcon}
           onPress={handleEdit}
           disabled={disabled}
@@ -162,7 +159,6 @@ export function AgentProfileRow({
         />
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={removeIcon}
           onPress={handleRemove}
           disabled={disabled}

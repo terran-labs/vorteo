@@ -40,6 +40,7 @@ import { useColorScheme } from "react-native";
 import { applyShellAppearance } from "./apply-shell";
 import { applyAppearance } from "./apply";
 import type { AppearanceId } from "@/styles/appearance-catalog";
+import { AppearanceSystemBars } from "./system-bars";
 
 interface ContributedThemes {
   options: PluginThemeOption[];
@@ -195,6 +196,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     <ThemePreviewActiveContext.Provider value={preview !== null || previewApplied}>
       <ThemePreviewContext.Provider value={setPreview}>
         <ContributedThemesContext.Provider value={value}>
+          <AppearanceSystemBars />
           {children}
           <BootHandoff />
         </ContributedThemesContext.Provider>

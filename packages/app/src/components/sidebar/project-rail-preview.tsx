@@ -1,3 +1,4 @@
+import { useOverlayRegistration, hasActiveOverlay, type KeyboardInputEvent } from "@/keyboard";
 import { getInterfaceScale } from "@/appearance/interface-zoom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View } from "react-native";
@@ -10,12 +11,7 @@ import { Button } from "@/components/ui/button";
 import { FloatingSurface } from "@/components/ui/floating";
 import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useVortonTouch } from "@/vorton-touch";
-import {
-  OVERLAY_Z,
-  OverlayLayerProvider,
-  hasActiveWebOverlay,
-  useWebOverlayRegistration,
-} from "@/lib/overlay-root";
+import { OVERLAY_Z, OverlayLayerProvider } from "@/lib/overlay-root";
 import { isWeb } from "@/constants/platform";
 import { ProjectRailList } from "./project-rail-list";
 import type {
@@ -79,7 +75,7 @@ export function ProjectRailPreview({
   const leave = useCallback(() => {
     clear();
     timer.current = setTimeout(() => {
-      if (pinned.current || (isWeb && hasActiveWebOverlay())) return;
+      if (pinned.current || (isWeb && hasActiveOverlay())) return;
       // A pointer departure must not dismiss a preview still being used by keyboard.
       if (isWeb) {
         const focused = document.activeElement;
@@ -106,7 +102,7 @@ export function ProjectRailPreview({
   useEffect(() => clear, [clear]);
   useEffect(() => close(), [width, height, close]);
   const handleOverlayKey = useCallback(
-    (event: KeyboardEvent) => {
+    (event: KeyboardInputEvent) => {
       if (
         event.key === "ArrowRight" &&
         (triggerRef.current as unknown as HTMLElement | null)?.contains(document.activeElement)
@@ -131,17 +127,18 @@ export function ProjectRailPreview({
     },
     [close],
   );
-  const setOverlayScope = useWebOverlayRegistration({
+  const setOverlayScope = useOverlayRegistration({
     active: isWeb && Boolean(anchor),
     layer: OVERLAY_Z.tooltip,
     onKeyDown: handleOverlayKey,
     focusBehavior: "none",
+    keys: ["Escape", "ArrowRight"],
   });
 
   useEffect(() => {
     if (!isWeb || !anchor) return;
     const outside = (event: Event) => {
-      if (hasActiveWebOverlay()) return;
+      if (hasActiveOverlay()) return;
       const target = event.target;
       if (!(target instanceof Node)) return;
       const contains = (ref: typeof triggerRef) =>

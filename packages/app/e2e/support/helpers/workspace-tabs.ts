@@ -56,8 +56,12 @@ function visibleTestId(page: Page, testId: string) {
   return page.getByTestId(testId).filter({ visible: true });
 }
 
-function explorerSidebar(page: Page) {
-  return visibleTestId(page, "workspace-supporting-cards").first();
+export function explorerSidebar(page: Page) {
+  const compact = (page.viewportSize()?.width ?? 1280) < 500;
+  return visibleTestId(
+    page,
+    compact ? "explorer-content-area" : "workspace-supporting-cards",
+  ).first();
 }
 
 async function selectWorkspaceTab(tab: Locator): Promise<void> {
@@ -71,10 +75,10 @@ async function selectWorkspaceTab(tab: Locator): Promise<void> {
 
 /** Reveal the Explorer sidebar without changing its selected view. */
 export async function ensureExplorerSidebar(page: Page): Promise<Locator> {
-  const toggle = page.getByTestId("workspace-explorer-toggle").first();
+  const toggle = page.getByTestId("workspace-explorer-toggle").filter({ visible: true }).first();
   await expect(toggle).toBeVisible({ timeout: 30_000 });
   const explorer = explorerSidebar(page);
-  if ((await explorer.count()) === 0) {
+  if (!(await explorer.isVisible())) {
     await toggle.click();
   }
   await expect(explorer).toBeVisible({ timeout: 30_000 });
@@ -87,13 +91,22 @@ async function openExplorerView(
   view: { cardTestId: string; contentTestId: string; timeout?: number },
 ): Promise<void> {
   const explorer = await ensureExplorerSidebar(page);
-  const disclosure = explorer.getByTestId(`${view.cardTestId}-toggle`);
+  const compact = (page.viewportSize()?.width ?? 1280) < 500;
+  const disclosure = explorer.getByTestId(
+    compact
+      ? `explorer-tab-${view.cardTestId === "supporting-card-files" ? "files" : "changes"}`
+      : `${view.cardTestId}-toggle`,
+  );
   await expect(disclosure).toBeVisible({ timeout: view.timeout ?? 30_000 });
   if ((await disclosure.getAttribute("aria-expanded")) !== "true") {
     await disclosure.click();
   }
   await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-  await expect(visibleTestId(page, view.contentTestId).first()).toBeVisible({
+  const contentTestId =
+    compact && view.cardTestId === "supporting-card-changes_tree"
+      ? "changes-header"
+      : view.contentTestId;
+  await expect(visibleTestId(page, contentTestId).first()).toBeVisible({
     timeout: view.timeout ?? 30_000,
   });
 }
@@ -188,7 +201,7 @@ export async function expectOnlyWorkspaceAgentTabsVisible(
 }
 
 export async function ensureWorkspaceAgentPaneVisible(page: Page): Promise<void> {
-  const toggle = page.getByTestId("workspace-explorer-toggle").first();
+  const toggle = page.getByTestId("workspace-explorer-toggle").filter({ visible: true }).first();
   if (!(await toggle.isVisible().catch(() => false))) {
     return;
   }

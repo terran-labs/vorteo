@@ -101,7 +101,7 @@ function ThreadQuestionGroup({
         </View>
         <Button
           variant="ghost"
-          size="xs"
+          size="sm"
           leftIcon={ArrowUpRight}
           onPress={openThread}
           accessibilityLabel={`Open thread ${thread.threadTitle}`}

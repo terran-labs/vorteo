@@ -1,3 +1,4 @@
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import { useCardDisclosure } from "@/agent-stream/use-card-disclosure";
 import type { AgentJournalEntry } from "@getpaseo/protocol/agent-journal";
 import AsyncStorage from "@/storage/app-storage";
@@ -63,7 +64,7 @@ function JournalContent({
   const [expanded, setExpanded] = useCardDisclosure("journal");
   const toggle = useCallback(() => setExpanded((value) => !value), [setExpanded]);
   const touch = useVortonTouch();
-  const buttonSize = touch ? "md" : "xs";
+  const buttonSize = touch ? "md" : "sm";
   const storageKey = journalViewKey(serverId, agentId);
   const queryKey = ["journal-view", storageKey];
   const queryClient = useQueryClient();
@@ -164,6 +165,7 @@ function JournalContent({
         <Button
           variant="ghost"
           size={buttonSize}
+          style={touch ? styles.touchAction : undefined}
           disabled={changeView.isPending}
           testID="journal-show-history"
           onPress={showHistory}
@@ -183,7 +185,12 @@ function JournalSeenError({ failed, onRetry }: { failed: boolean; onRetry: () =>
       <Text style={[styles.empty, taskCardStyles.proseInset]}>
         Could not save or load seen entries on this device.
       </Text>
-      <Button variant="ghost" size={touch ? "md" : "xs"} onPress={onRetry}>
+      <Button
+        variant="ghost"
+        size={touch ? "md" : "sm"}
+        style={touch ? styles.touchAction : undefined}
+        onPress={onRetry}
+      >
         Retry
       </Button>
     </View>
@@ -233,6 +240,7 @@ function JournalCount({ count, unread, ready }: { count: number; unread: number;
 }
 
 const styles = StyleSheet.create((theme) => ({
+  touchAction: { minHeight: CONTROL_HEIGHTS.md.xs },
   readError: {
     flexDirection: "row",
     alignItems: "center",

@@ -29,7 +29,12 @@ const OwnerDelegationSchema = z.strictObject({
   /** Separate owner grant for exact, authenticated Host maintenance requests. */
   maintenanceApprovedAfter: z.string().datetime().nullable().optional(),
   maintenanceChangedAt: z.string().datetime().optional(),
-  /** Separate explicit consent to manage retained installation requests. */
+  /**
+   * COMPAT(separateInstallationManagement): legacy separate management opt-in written by
+   * older runtimes. Read and ignored: the full maintenance grant now implies management.
+   * Retained so older runtimes keep parsing the file after a rollback. This runtime never
+   * sets it and clears it on its next grant write. Retire with that rollback window.
+   */
   managementApprovedAfter: z.string().datetime().nullable().optional(),
   /** How long an unapproved delegated request may wait before the owner is prompted. */
   graceMinutes: z.number().int().min(1).max(60).optional(),
@@ -170,6 +175,7 @@ const MaintenanceDelegationChangeSchema = z.strictObject({
     .regex(/^[a-f0-9]{64}$/)
     .nullable(),
   enabled: z.boolean(),
+  /** COMPAT(separateInstallationManagement): accepted from older clients and ignored. */
   management: z.boolean().optional(),
 });
 
@@ -185,12 +191,7 @@ export function changeMaintenanceDelegation(stateDir: string, input: unknown) {
   const { revision, stored } = readMaintenanceDelegation(stateDir);
   if (change.expectedRevision !== revision)
     throw new RestartRequestError("Maintenance delegation changed. Refresh before saving.");
-  const management =
-    change.enabled && (change.management ?? Boolean(stored.managementApprovedAfter));
-  if (
-    Boolean(stored.maintenanceApprovedAfter) === change.enabled &&
-    Boolean(stored.managementApprovedAfter) === management
-  ) {
+  if (Boolean(stored.maintenanceApprovedAfter) === change.enabled) {
     if (revision) syncMaintenanceDelegation(stateDir);
     return maintenanceDelegationStatus(stateDir);
   }
@@ -206,9 +207,8 @@ export function changeMaintenanceDelegation(stateDir: string, input: unknown) {
       maintenanceApprovedAfter: change.enabled
         ? (stored.maintenanceApprovedAfter ?? changedAt)
         : null,
-      ...(change.management !== undefined || stored.managementApprovedAfter !== undefined
-        ? { managementApprovedAfter: management ? changedAt : null }
-        : {}),
+      // Never write a legacy opt-in, so a rollback cannot widen management authority.
+      ...(stored.managementApprovedAfter !== undefined ? { managementApprovedAfter: null } : {}),
     }),
   );
   syncMaintenanceDelegation(stateDir);
@@ -231,9 +231,39 @@ function syncMaintenanceDelegation(stateDir: string) {
   }
 }
 
-/** A full maintenance grant alone never authorizes management of retained work. */
-export function managementDelegationAuthority(stateDir: string) {
+export interface ManagementCredentials {
+  installationId: string;
+  hostAgentTokenHash: string;
+  containerAgentTokenHash: string;
+  ownerPasswordHash: string;
+}
+
+/**
+ * An active full maintenance grant implies management (cancellation only). The authority
+ * revision binds the grant epoch and the installation credentials, so revocation, a new
+ * grant or credential rotation invalidates it, while unrelated delegation settings do not.
+ * The legacy separate opt-in neither grants nor revokes anything here.
+ */
+export function managementDelegationAuthority(
+  stateDir: string,
+  credentials: ManagementCredentials,
+) {
   const { revision, stored } = readMaintenanceDelegation(stateDir);
-  if (!revision || !stored.maintenanceApprovedAfter || !stored.managementApprovedAfter) return null;
-  return { revision, activatedAt: stored.managementApprovedAfter };
+  const activatedAt = stored.maintenanceApprovedAfter;
+  if (!revision || !activatedAt) return null;
+  return {
+    revision: createHash("sha256")
+      .update(
+        JSON.stringify({
+          scope: "installation-management-v2",
+          installation: credentials.installationId,
+          host: credentials.hostAgentTokenHash,
+          container: credentials.containerAgentTokenHash,
+          owner: credentials.ownerPasswordHash,
+          maintenanceApprovedAfter: activatedAt,
+        }),
+      )
+      .digest("hex"),
+    activatedAt,
+  };
 }

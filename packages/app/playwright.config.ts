@@ -5,6 +5,9 @@ import { defineConfig, devices } from "@playwright/test";
 const baseURL =
   process.env.E2E_BASE_URL ?? `http://localhost:${process.env.E2E_METRO_PORT ?? "8081"}`;
 const relayDeploymentSpec = "**/relay-deployment-reconnect.real.spec.ts";
+// Vorteo keeps its own onboarding: upstream's first-run walkthrough is off behind
+// UPSTREAM_SETUP_ENABLED in src/onboarding/index.ts. Route its spec back in if that flag is enabled.
+const upstreamSetupWalkthroughSpec = "**/onboarding.spec.ts";
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {
   if (process.env.E2E_RECORD_VIDEO === "1") return "on";
@@ -34,7 +37,7 @@ export default defineConfig({
   projects: [
     {
       name: "browser",
-      testIgnore: ["**/*.real.spec.ts", "**/*.packaged.spec.ts"],
+      testIgnore: ["**/*.real.spec.ts", "**/*.packaged.spec.ts", upstreamSetupWalkthroughSpec],
       use: { ...devices["Desktop Chrome"] },
     },
     {

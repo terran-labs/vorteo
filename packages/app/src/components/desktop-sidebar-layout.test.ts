@@ -169,3 +169,25 @@ describe("compact rail width", () => {
     expect(COMPACT_SIDEBAR_WIDTH).toBe(50);
   });
 });
+
+it("reserves room for Explorer and the workspace before showing app navigation", () => {
+  const contentMinimumWidth = resolveDesktopAppContentMinimum({
+    isSettingsRoute: false,
+    explorerVisible: true,
+  });
+  expect(contentMinimumWidth).toBe(600);
+  expect(
+    canDesktopAppSidebarShare({
+      contentMinimumWidth,
+      requestedSidebarWidth: 320,
+      viewportWidth: 744,
+    }),
+  ).toBe(false);
+  expect(
+    canDesktopAppSidebarShare({
+      contentMinimumWidth,
+      requestedSidebarWidth: 320,
+      viewportWidth: 951,
+    }),
+  ).toBe(true);
+});

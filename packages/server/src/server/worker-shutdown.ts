@@ -1,5 +1,5 @@
 interface WorkerShutdownPorts {
-  stop(): Promise<void>;
+  stop(options?: { keepTerminals?: boolean }): Promise<void>;
   forceExit(): void;
   now(): number;
 }
@@ -13,7 +13,7 @@ export function createWorkerShutdown(ports: WorkerShutdownPorts) {
   let rejectDeadline: ((error: Error) => void) | null = null;
   let settled = false;
 
-  function begin(terminateAt?: number): Promise<void> {
+  function begin(terminateAt?: number, options?: { keepTerminals?: boolean }): Promise<void> {
     const now = ports.now();
     const requested = terminateAt === undefined ? now + 10_000 : terminateAt;
     if (!Number.isSafeInteger(requested) || requested > now + 300_000)
@@ -36,7 +36,11 @@ export function createWorkerShutdown(ports: WorkerShutdownPorts) {
       });
       // Install the shared promise before invoking stop, including synchronous
       // shutdown hooks that may request shutdown again.
-      result = Promise.race([expired, Promise.resolve().then(() => ports.stop())]).finally(() => {
+      const stopOptions = { keepTerminals: options?.keepTerminals === true };
+      result = Promise.race([
+        expired,
+        Promise.resolve().then(() => ports.stop(stopOptions)),
+      ]).finally(() => {
         settled = true;
         if (timer !== null) clearTimeout(timer);
       });

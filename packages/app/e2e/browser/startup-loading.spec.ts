@@ -38,7 +38,7 @@ for (const stylesheet of ["react-native-stylesheet", "unistyles-web"]) {
   test(`startup stays covered until ${stylesheet} applies`, async ({ page }, testInfo) => {
     await page.addInitScript((id) => {
       const hold = () => {
-        const style = document.getElementById(id);
+        const style = document.head?.querySelector(`#${id}`);
         if (style && style.getAttribute("media") !== "not all") {
           style.setAttribute("media", "not all");
         }
@@ -47,12 +47,12 @@ for (const stylesheet of ["react-native-stylesheet", "unistyles-web"]) {
       observer.observe(document, { childList: true, subtree: true });
       Reflect.set(window, "releaseStartupStyles", () => {
         observer.disconnect();
-        document.getElementById(id)?.removeAttribute("media");
+        document.head?.querySelector(`#${id}`)?.removeAttribute("media");
       });
     }, stylesheet);
     await page.goto("/");
     await expect(page.locator("#root")).not.toBeEmpty();
-    await expect(page.locator(`#${stylesheet}`)).toHaveAttribute("media", "not all");
+    await expect(page.locator(`head #${stylesheet}`)).toHaveAttribute("media", "not all");
     await expect(page.locator("#boot-help")).toBeVisible({ timeout: 6000 });
     await expect(page.locator("#boot-overlay")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath(`${stylesheet}-held.png`) });

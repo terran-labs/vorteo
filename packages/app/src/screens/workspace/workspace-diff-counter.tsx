@@ -79,8 +79,8 @@ export function WorkspaceDiffCounter({
 const styles = StyleSheet.create((theme) => ({
   compactToolbar: {
     width: "auto",
-    minWidth: CONTROL_HEIGHTS.field,
-    minHeight: CONTROL_HEIGHTS.field,
+    minWidth: CONTROL_HEIGHTS.md.xs,
+    minHeight: CONTROL_HEIGHTS.md.xs,
     paddingHorizontal: theme.spacing[2],
   },
   toolbar: {

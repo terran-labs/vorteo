@@ -224,6 +224,13 @@ describe("toStoredAgentRecord", () => {
       expect(record.lastStatus).toBe(status);
     }
   });
+
+  it("keeps the last usage through a stored record, so it survives a daemon restart", () => {
+    const usage = { contextWindowMaxTokens: 1_000_000, contextWindowUsedTokens: 40_000 };
+    const record = toStoredAgentRecord(createManagedAgent({ lastUsage: usage }));
+    expect(parseStoredAgentRecord(JSON.parse(JSON.stringify(record))).lastUsage).toEqual(usage);
+    expect(buildStoredAgentPayload(record, ["claude"]).lastUsage).toEqual(usage);
+  });
 });
 
 describe("toAgentPayload", () => {
@@ -477,6 +484,17 @@ describe("toAgentPayload", () => {
         },
       },
     });
+  });
+
+  it("carries a stored lastError onto the payload", () => {
+    const record = toStoredAgentRecord(
+      createManagedAgent({ provider: "codex", config: { provider: "codex" }, lastError: "boom" }),
+    );
+
+    expect(buildStoredAgentPayload(record, ["codex"]).lastError).toBe("boom");
+    expect(buildStoredAgentPayload({ ...record, lastError: null }, ["codex"])).not.toHaveProperty(
+      "lastError",
+    );
   });
 
   it("omits lastUsage when not available", () => {

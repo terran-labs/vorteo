@@ -4,19 +4,11 @@ import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { sidebarWorkspaceRowStyles } from "@/components/sidebar/sidebar-workspace-row-content";
-import type { Theme } from "@/styles/theme";
-
-const foregroundMutedColorMapping = (theme: Theme) => ({
-  color: theme.colors.foregroundMuted,
-});
-const foregroundColorMapping = (theme: Theme) => ({
-  color: theme.colors.foreground,
-});
-const ThemedChevronDown = withUnistyles(ChevronDown);
-const ThemedChevronUp = withUnistyles(ChevronUp);
+import { DensityIcon } from "@/components/ui/density-icon";
+import { density as densityTokens, densityIconBox } from "@/styles/density";
 
 /**
  * The row that ends a truncated group. It is a workspace row that happens to say "Show more", so
@@ -70,17 +62,11 @@ export function SidebarGroupToggleRow({
       {({ hovered, pressed }) => (
         <>
           <View style={styles.iconSlot}>
-            {expanded ? (
-              <ThemedChevronUp
-                size={14}
-                uniProps={hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping}
-              />
-            ) : (
-              <ThemedChevronDown
-                size={14}
-                uniProps={hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping}
-              />
-            )}
+            <DensityIcon
+              icon={expanded ? ChevronUp : ChevronDown}
+              size="sm"
+              color={hovered || pressed ? "foreground" : "foregroundMuted"}
+            />
           </View>
           <Text style={hovered || pressed ? styles.textHovered : styles.text} numberOfLines={1}>
             {label}
@@ -94,7 +80,7 @@ export function SidebarGroupToggleRow({
 const styles = StyleSheet.create((theme) => ({
   // Kept in step with `workspaceRow` in sidebar-workspace-list.tsx and sidebar-status-list.tsx.
   row: {
-    minHeight: 36,
+    minHeight: densityTokens.rowHeight,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
     paddingLeft: theme.spacing[2],
@@ -114,8 +100,8 @@ const styles = StyleSheet.create((theme) => ({
   // The width of a workspace row's status slot, so the label lands on the same rail as the
   // titles above it rather than two points to their left.
   iconSlot: {
-    width: theme.iconSize.md,
-    height: theme.iconSize.md,
+    width: densityIconBox("md"),
+    height: densityIconBox("md"),
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,

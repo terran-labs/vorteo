@@ -14,26 +14,45 @@ const patchedPackages = [
   { nodeModulesPath: "node_modules/eas-cli", patchPrefix: "eas-cli+" },
   // Backport parser progress guards until Metro supports image-size 2.
   { nodeModulesPath: "node_modules/image-size", patchPrefix: "image-size+" },
-  // SDK 54 development launcher waits for the scene-owned React window.
-  { nodeModulesPath: "node_modules/expo-dev-launcher", patchPrefix: "expo-dev-launcher+" },
   {
     nodeModulesPath: "node_modules/@expo/cli",
     patchPrefix: "@expo+cli+",
   },
+  // Backport for expo-modules-core 57.0.23: https://github.com/expo/expo/pull/49634.
+  // Remove when the installed Expo SDK includes the Activity recreation fix.
   {
-    nodeModulesPath: "node_modules/react-native-markdown-display",
-    patchPrefix: "react-native-markdown-display+",
+    nodeModulesPath: "node_modules/expo-modules-core",
+    patchPrefix: "expo-modules-core+",
   },
+  // Backport https://github.com/software-mansion/enriched-markdown/pull/924: preserve settled
+  // Android measurements across parent clones. Remove those hunks when upgrading past
+  // 1.2.0-nightly-20261019-926ef06f0; reconcile the other local patch hunks separately.
   {
-    nodeModulesPath: "node_modules/react-native-uitextview",
-    patchPrefix: "react-native-uitextview+",
+    nodeModulesPath: "packages/app/node_modules/react-native-enriched-markdown",
+    patchPrefix: "react-native-enriched-markdown+",
+    cwd: "packages/app",
   },
-  // Includes registry cleanup from upstream PR1203, numeric theme rule updates,
-  // and filtering of the private uniProps mapping before passing DOM props.
-  // Retire each hunk only after verifying its fix in the installed upstream version.
+  // Preserve fork numeric theme updates and shadowRegistry/ref cleanup alongside upstream fixes.
+  // Registry cleanup: remove after react-native-unistyles ships
+  // https://github.com/jpudysz/react-native-unistyles/pull/1203.
+  // Adaptive themes: keep until colorScheme reads no longer consume listener-owned media changes.
+  // withUnistyles: strip the control prop before merging and mapping-result uniProps afterward.
+  // Android configuration: backport 3.5.3; remove the two NativePlatform hunks at >= 3.5.3.
+  // https://github.com/jpudysz/react-native-unistyles/compare/v3.5.2...v3.5.3
+  // Layout constraints: backport of https://github.com/jpudysz/react-native-unistyles/pull/1357
+  // (commit from the root the commit hands us, so a concurrent window-size commit is kept).
+  // Remove the ShadowTreeManager hunk when the installed release includes that PR.
   {
     nodeModulesPath: "node_modules/react-native-unistyles",
     patchPrefix: "react-native-unistyles+",
+  },
+  // Backport of https://github.com/software-mansion/react-native-reanimated/pull/10435
+  // (Reanimated 4.7.1): skip synchronous Android prop updates for unmounted view tags
+  // instead of throwing and printing a full stack trace on the UI thread per tag per event.
+  // Remove when the installed Reanimated is >= 4.7.1.
+  {
+    nodeModulesPath: "node_modules/react-native-reanimated",
+    patchPrefix: "react-native-reanimated+",
   },
   {
     nodeModulesPath: "node_modules/react-native-draggable-flatlist",
@@ -43,9 +62,23 @@ const patchedPackages = [
     nodeModulesPath: "node_modules/react-native-gesture-handler",
     patchPrefix: "react-native-gesture-handler+",
   },
+  // Exports BottomSheetModalInternalProvider so a subtree can host its own sheets on the shared
+  // modal stack (see packages/app/src/components/ui/isolated-bottom-sheet-modal/host-scope.tsx), and
+  // keeps a dismissing modal's status through its final onChange(-1), so a modal with
+  // enableDismissOnClose=false that unmounts while presented still leaves the portal.
+  // Dimensions subscription cleanup: https://github.com/gorhom/react-native-bottom-sheet/issues/2734
+  // and https://github.com/gorhom/react-native-bottom-sheet/pull/2751. Remove the useAnimatedLayout
+  // hunks once an installed release includes the cleanup; retain the other local hunks.
   {
-    nodeModulesPath: "node_modules/react-native-svg",
+    nodeModulesPath: "node_modules/@gorhom/bottom-sheet",
+    patchPrefix: "@gorhom+bottom-sheet+",
+  },
+  // Android resize: retain until upstream clears descendant geometry when the SVG canvas resizes.
+  // The native pixel regression is included in the patch; preserve the separate transform hunks.
+  {
+    nodeModulesPath: "packages/app/node_modules/react-native-svg",
     patchPrefix: "react-native-svg+",
+    cwd: "packages/app",
   },
   {
     nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
@@ -68,30 +101,37 @@ if (!existsSync("patches") || installedPackages.length === 0) {
 
 const patchFiles = readdirSync("patches").filter((file) => file.endsWith(".patch"));
 
-// Group patch files by the directory patch-package must run from.
-const patchFilesByCwd = new Map();
-for (const { patchPrefix, cwd = "." } of installedPackages) {
+const isWindows = process.platform === "win32";
+const cmd = isWindows ? "patch-package.cmd" : "patch-package";
+
+let failed = false;
+for (const [index, { nodeModulesPath, patchPrefix, cwd = "." }] of installedPackages.entries()) {
   const files = patchFiles.filter((file) => file.startsWith(patchPrefix));
   if (files.length === 0) {
     continue;
   }
-  const group = patchFilesByCwd.get(cwd) ?? [];
-  group.push(...files);
-  patchFilesByCwd.set(cwd, group);
+  const outcome = applyPatches(cwd, files, index);
+  if (outcome === "applied") {
+    continue;
+  }
+  failed = true;
+  if (outcome === "unavailable") {
+    continue;
+  }
+  // patch-package cannot apply a patch that changed after an earlier version of it was
+  // applied. Without the package, the next install fetches it clean and applies the patch.
+  rmSync(nodeModulesPath, { recursive: true, force: true });
+  console.error(
+    `postinstall-patches: removed ${nodeModulesPath} because its patch did not apply. ` +
+      "Run npm install again to reinstall it with the current patch. " +
+      "If it fails again on the clean package, the patch is out of date and must be regenerated.",
+  );
 }
 
-if (patchFilesByCwd.size === 0) {
-  process.exit(0);
-}
+process.exit(failed ? 1 : 0);
 
-const isWindows = process.platform === "win32";
-const cmd = isWindows ? "patch-package.cmd" : "patch-package";
-
-let groupIndex = 0;
-for (const [cwd, files] of patchFilesByCwd) {
-  groupIndex += 1;
-  const tempPatchDir = join(".tmp", `postinstall-patches-${process.pid}-${groupIndex}`);
-
+function applyPatches(cwd, files, index) {
+  const tempPatchDir = join(".tmp", `postinstall-patches-${process.pid}-${index}`);
   mkdirSync(tempPatchDir, { recursive: true });
   for (const patchFile of files) {
     copyFileSync(join("patches", patchFile), join(tempPatchDir, patchFile));
@@ -99,7 +139,7 @@ for (const [cwd, files] of patchFilesByCwd) {
 
   let result;
   try {
-    result = spawnSync(cmd, ["--patch-dir", relative(cwd, tempPatchDir)], {
+    result = spawnSync(cmd, ["--patch-dir", relative(cwd, tempPatchDir), "--error-on-fail"], {
       cwd,
       shell: isWindows,
       stdio: "inherit",
@@ -111,10 +151,7 @@ for (const [cwd, files] of patchFilesByCwd) {
 
   if (result.error) {
     console.error("postinstall-patches: patch-package failed to spawn:", result.error.message);
+    return "unavailable";
   }
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
-  }
+  return result.status === 0 ? "applied" : "rejected";
 }
-
-process.exit(0);

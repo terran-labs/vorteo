@@ -18,7 +18,6 @@ export function CommunityLinks() {
     <View style={styles.row}>
       <Button
         variant="ghost"
-        size="sm"
         leftIcon={renderGitHubIcon}
         onPress={handleOpenGitHub}
         testID="community-links-github"
@@ -32,6 +31,9 @@ export function CommunityLinks() {
 const styles = StyleSheet.create(() => ({
   row: {
     flexDirection: "row",
+    // Shrinks and wraps rather than running off a narrow phone screen.
+    flexShrink: 1,
+    flexWrap: "wrap",
     justifyContent: "center",
     alignItems: "center",
     gap: 0,

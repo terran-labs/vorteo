@@ -176,7 +176,14 @@ describe("runArchiveCommand", () => {
     expect(listCalls).toEqual([{ cwd: process.cwd() }]);
   });
 
-  it("lists worktrees of the --repo root, resolved to an absolute path", async () => {
+  it.each([
+    { target: daemonTarget, expectedRepo: "relative/repo", location: "remote endpoint" },
+    {
+      target: { kind: "instance" as const, home: "/unused-fixture-home" },
+      expectedRepo: path.resolve("relative/repo"),
+      location: "local instance",
+    },
+  ])("lists the --repo root for a $location", async ({ target, expectedRepo }) => {
     const listCalls: Array<Parameters<DaemonClient["getPaseoWorktreeList"]>[0]> = [];
     const fakeClient = createFakeDaemonClient({
       getPaseoWorktreeList: async (input) => {
@@ -188,11 +195,11 @@ describe("runArchiveCommand", () => {
     await expect(
       runArchiveCommandWithDeps(
         "missing",
-        { daemonTarget, repo: "relative/repo", cwd: "/ignored" },
+        { daemonTarget: target, repo: "relative/repo", cwd: "/ignored" },
         { connectToDaemon: async () => fakeClient },
       ),
     ).rejects.toMatchObject({ code: "WORKTREE_NOT_FOUND" });
 
-    expect(listCalls).toEqual([{ repoRoot: path.resolve("relative/repo") }]);
+    expect(listCalls).toEqual([{ repoRoot: expectedRepo }]);
   });
 });

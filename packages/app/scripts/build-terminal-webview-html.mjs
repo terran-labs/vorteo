@@ -52,7 +52,7 @@ const result = await esbuild.build({
   write: false,
   format: "iife",
   platform: "browser",
-  target: ["ios15", "chrome100"],
+  target: ["ios16.4", "chrome100"],
   loader: {
     ".css": "text",
   },

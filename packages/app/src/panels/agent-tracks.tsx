@@ -10,7 +10,8 @@ import { JournalCard } from "@/journal/card";
 import { OpenQuestionsCard } from "@/open-questions/card";
 import { ContextCard } from "@/components/context-breakdown/card";
 
-import { supportsDesktopPaneSplits, useIsCompactFormFactor } from "@/constants/layout";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import { usePaneContext } from "@/panels/pane-context";
 import { useSettings } from "@/hooks/use-settings";
 import { PluginComposerPills } from "@/plugins";
@@ -19,13 +20,15 @@ import {
   type ArchiveFinishedStatus,
   useArchiveSubagent,
   useDetachSubagent,
+  useSubagentSheetTab,
   type SubagentRow,
 } from "@/subagents";
+
 import { SubagentsTrack } from "@/subagents/track";
 import type { TodoEntry } from "@/types/stream";
-import { resolveAgentPresentation } from "@/subagents/policies";
+
 import { navigateToAgent } from "@/utils/navigate-to-agent";
-import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import { buildWorkspaceTabPersistenceKey, type WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { openPreferredWorkspaceTarget } from "@/workspace-tabs/open-beside";
 
 export const AgentTracks = memo(function AgentTracks({
@@ -41,72 +44,62 @@ export const AgentTracks = memo(function AgentTracks({
   serverId: string;
   workspaceId: string;
   agentId: string;
-  cwd: string;
+  parentAgentId?: string | null;
   subagentRows: SubagentRow[];
   tasks: TodoEntry[] | undefined;
   archiveFinishedStatus: ArchiveFinishedStatus;
   onArchiveFinished: () => void;
   hasPluginComposerPills: boolean;
 }): ReactElement | null {
-  const { tabId, openTab } = usePaneContext();
+  const { tabId } = usePaneContext();
 
   const isCompact = useIsCompactFormFactor();
-  const canSplit = supportsDesktopPaneSplits() && !isCompact;
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
   const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
   const canDetachSubagents = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.agentDetach === true,
   );
-  const archiveSubagent = useArchiveSubagent({ serverId });
-  const detachSubagent = useDetachSubagent({ serverId });
-  const handleOpenSubagent = useCallback(
-    (subagentId: string) => {
-      const session = useSessionStore.getState().sessions[serverId];
-      const agent = session?.agents.get(subagentId) ?? session?.agentDetails.get(subagentId);
-      const presentation =
-        agent && session
-          ? resolveAgentPresentation({
-              agent,
-              agents: session.agents,
-              workspaces: session.hasHydratedWorkspaces ? session.workspaces : undefined,
-            })
-          : null;
-      if (presentation?.workspaceId && presentation.workspaceId !== workspaceId) {
-        navigateToAgent({ serverId, agentId: subagentId });
-        return;
-      }
-      if (canSplit && workspaceKey) {
-        openPreferredWorkspaceTarget({
-          isCompact,
-          workspaceKey,
-          target: { kind: "agent", agentId: subagentId },
-          source: "subagents",
-          preferences: openInSidePane,
-          parentTabId: tabId,
-        });
-        return;
-      }
-      navigateToAgent({ serverId, agentId: subagentId });
+  const archiveSubagent = useArchiveSubagent();
+  const detachSubagent = useDetachSubagent();
+  const openSubagentTarget = useCallback(
+    (target: WorkspaceTabTarget) => {
+      openPreferredWorkspaceTarget({
+        workspaceKey,
+        target,
+        source: "subagents",
+        preferences: openInSidePane,
+        parentTabId: tabId,
+      });
     },
-    [canSplit, isCompact, openInSidePane, serverId, tabId, workspaceId, workspaceKey],
+    [openInSidePane, tabId, workspaceKey],
+  );
+  const handleOpenSubagent = useCallback(
+    ({ serverId: targetServerId, agentId: subagentId }: AgentAddress) => {
+      const session = useSessionStore.getState().sessions[targetServerId];
+      const agent = session?.agents.get(subagentId) ?? session?.agentDetails.get(subagentId);
+      // A subagent in another workspace lives in that workspace's tabs.
+      if (
+        targetServerId !== serverId ||
+        (agent?.workspaceId && agent.workspaceId !== workspaceId)
+      ) {
+        navigateToAgent({ serverId: targetServerId, agentId: subagentId });
+        return;
+      }
+      openSubagentTarget({ kind: "agent", agentId: subagentId });
+    },
+    [openSubagentTarget, serverId, workspaceId],
   );
   const handleOpenProviderSubagent = useCallback(
-    (parentAgentId: string, subagentId: string) => {
-      if (canSplit && workspaceKey) {
-        openPreferredWorkspaceTarget({
-          isCompact,
-          workspaceKey,
-          target: { kind: "provider_subagent", parentAgentId, subagentId },
-          source: "subagents",
-          preferences: openInSidePane,
-          parentTabId: tabId,
-        });
-        return;
-      }
-      openTab({ kind: "provider_subagent", parentAgentId, subagentId });
+    (ownerAgentId: string, subagentId: string) => {
+      openSubagentTarget({
+        kind: "provider_subagent",
+        parentAgentId: ownerAgentId,
+        subagentId,
+      });
     },
-    [canSplit, isCompact, openInSidePane, openTab, tabId, workspaceKey],
+    [openSubagentTarget],
   );
+  const sheetTabFor = useSubagentSheetTab(workspaceKey, tabId);
 
   return (
     <>
@@ -120,6 +113,7 @@ export const AgentTracks = memo(function AgentTracks({
         rows={subagentRows}
         onOpenSubagent={handleOpenSubagent}
         onOpenProviderSubagent={handleOpenProviderSubagent}
+        sheetTabFor={sheetTabFor}
         onArchiveSubagent={archiveSubagent}
         onArchiveFinished={onArchiveFinished}
         archiveFinishedStatus={archiveFinishedStatus}
@@ -142,17 +136,20 @@ export const AgentTracks = memo(function AgentTracks({
 });
 
 export function hasAgentTracks({
+  parentAgentId,
   subagentRows,
   tasks,
   archiveFinishedStatus,
   hasPluginComposerPills = false,
 }: {
+  parentAgentId?: string | null;
   subagentRows: readonly SubagentRow[];
   tasks: readonly TodoEntry[] | undefined;
   archiveFinishedStatus: ArchiveFinishedStatus;
   hasPluginComposerPills?: boolean;
 }): boolean {
   return (
+    parentAgentId !== null ||
     subagentRows.length > 0 ||
     Boolean(tasks?.length) ||
     archiveFinishedStatus.kind !== "idle" ||
@@ -164,7 +161,6 @@ export function AgentHistoryTracks({
   serverId,
   workspaceId,
   agentId,
-  cwd,
 }: {
   serverId: string;
   workspaceId: string;
@@ -195,7 +191,6 @@ export function AgentHistoryTracks({
       serverId={serverId}
       workspaceId={workspaceId}
       agentId={agentId}
-      cwd={cwd}
       subagentRows={subagentRows}
       tasks={tasks}
       archiveFinishedStatus={archive.status}

@@ -107,7 +107,6 @@ export function BrowserDataSection() {
           </View>
           <Button
             variant="outline"
-            size="sm"
             loading={isClearing}
             disabled={isClearing || isResetting}
             onPress={handleClear}

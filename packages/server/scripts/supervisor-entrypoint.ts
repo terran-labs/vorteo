@@ -15,6 +15,7 @@ import { writePrivateFileAtomicSync } from "../src/server/private-files.js";
 import { PRIVATE_FILE_MODE } from "../src/server/private-files.js";
 import { supervisorPersistedConfig } from "./supervisor-persisted-config.js";
 import { parseControllerLifetimeFd, runSupervisor } from "./supervisor.js";
+import { reapTerminalWorkers } from "../src/terminal/terminal-worker-reaper.js";
 import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
 
 // Managed maintenance verifies the launch entry through OS arguments. Changing
@@ -213,6 +214,10 @@ async function main(): Promise<void> {
     onWorkerExit: () =>
       updatePidLock(paseoHome, { listen: null, serverId: null }, { ownerPid: process.pid }),
     onSupervisorExit: releaseLock,
+    cleanupTerminals: async (log) => {
+      const result = await reapTerminalWorkers({ paseoHome, log });
+      log("Terminal worker cleanup result", { ...result });
+    },
   });
   requestSupervisorShutdown = supervisor.requestShutdown;
 }

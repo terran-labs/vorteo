@@ -38,14 +38,12 @@ function SettingsDaemonRedirect() {
 export default function SettingsSectionRoute() {
   const params = useLocalSearchParams<{
     section?: string;
-    addHost?: string;
     installation?: string;
     restart?: string;
     setting?: string;
   }>();
   const rawSection = typeof params.section === "string" ? params.section : "";
   const section: SettingsSectionSlug = isSettingsSectionSlug(rawSection) ? rawSection : "general";
-  const openAddHostIntent = typeof params.addHost === "string" ? params.addHost : null;
   const view = useMemo(() => ({ kind: "section" as const, section }), [section]);
 
   // COMPAT(settingsDaemonRedirect): added 2026-07-08, remove after 2027-01-08.
@@ -62,7 +60,6 @@ export default function SettingsSectionRoute() {
   return (
     <SettingsScreen
       view={view}
-      openAddHostIntent={openAddHostIntent}
       installationRequested={params.installation === "1" || typeof params.restart === "string"}
       restartRequestId={typeof params.restart === "string" ? params.restart : null}
       settingId={typeof params.setting === "string" ? params.setting : null}

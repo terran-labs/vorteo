@@ -59,10 +59,10 @@ export function AgentRouteResolutionView({
           <Text style={styles.error}>{toErrorMessage(resolution.error)}</Text>
         </View>
         <ActionFooter style={styles.actions}>
-          <Button size="sm" variant="default" leftIcon={RotateCw} onPress={onRetry}>
+          <Button variant="default" leftIcon={RotateCw} onPress={onRetry}>
             {t("common.actions.retry")}
           </Button>
-          <Button size="sm" variant="outline" leftIcon={ArrowLeftToLine} onPress={onBack}>
+          <Button variant="outline" leftIcon={ArrowLeftToLine} onPress={onBack}>
             {t("common.actions.back")}
           </Button>
         </ActionFooter>
@@ -100,10 +100,10 @@ export function AgentRouteResolutionView({
       </View>
       {!isConnecting ? (
         <ActionFooter style={styles.actions}>
-          <Button size="sm" variant="default" leftIcon={RotateCw} onPress={onRetry}>
+          <Button variant="default" leftIcon={RotateCw} onPress={onRetry}>
             {t("common.actions.retry")}
           </Button>
-          <Button size="sm" variant="outline" leftIcon={Settings} onPress={onManageHost}>
+          <Button variant="outline" leftIcon={Settings} onPress={onManageHost}>
             {t("workspace.route.manageHost")}
           </Button>
         </ActionFooter>

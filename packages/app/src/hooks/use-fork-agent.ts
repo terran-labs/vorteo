@@ -46,9 +46,8 @@ export type ForkAgentSource = Pick<
  * in-flight turn. `selectForkContextRows` projects the full timeline when
  * neither field is present, which is what makes mid-run forking work.
  */
-export type ForkAgentBoundary = Pick<
-  AgentForkContextOptions,
-  "boundaryCursor" | "boundaryMessageId"
+export type ForkAgentBoundary = Partial<
+  Pick<AgentForkContextOptions, "boundaryCursor" | "boundaryMessageId">
 >;
 
 export interface ForkAgentRequest {

@@ -18,6 +18,8 @@ import {
 } from "@/execution-installation/skills";
 import { confirmDialog } from "@/utils/confirm-dialog";
 
+export type AgentSkillsController = ReturnType<typeof useAgentSkills>;
+
 export function useAgentSkills(serverId: string) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -139,7 +141,7 @@ export function useAgentSkills(serverId: string) {
   const saveWithConfirmation = useCallback(
     async (selection: AgentSkillSelection) => {
       const result = await saveAsync({ selection, confirmedRemovals: [] });
-      if (!result.confirmationRequired) return;
+      if (!result.confirmationRequired) return true;
       const removals = result.confirmationRequired.removals;
       const confirmed = await confirmDialog({
         title: t("settings.host.skills.removeTitle"),
@@ -147,9 +149,10 @@ export function useAgentSkills(serverId: string) {
         confirmLabel: t("settings.host.skills.actions.remove"),
         destructive: true,
       });
-      if (!confirmed) return;
+      if (!confirmed) return false;
       const retry = await saveAsync({ selection, confirmedRemovals: removals });
       if (retry.confirmationRequired) throw new Error(t("settings.host.skills.saveFailed"));
+      return true;
     },
     [saveAsync, t],
   );
@@ -158,22 +161,35 @@ export function useAgentSkills(serverId: string) {
   }, [refetch]);
   const runReconcile = useCallback(async () => {
     if (managed) {
-      if (!sharedSelection) return;
-      await saveWithConfirmation(sharedSelection).catch((error: Error) =>
-        report(t("settings.host.skills.updateFailed"), error),
-      );
-      return;
+      if (!sharedSelection) return false;
+      return saveWithConfirmation(sharedSelection).catch((error: Error) => {
+        report(t("settings.host.skills.updateFailed"), error);
+        return false;
+      });
     }
-    await reconcileAsync().catch(() => undefined);
+    return reconcileAsync().then(
+      (status) => status.state !== "not-installed",
+      () => false,
+    );
   }, [reconcileAsync, managed, sharedSelection, saveWithConfirmation, report, t]);
   const runUninstall = useCallback(async () => {
     if (managed) {
-      await saveWithConfirmation({ mode: "custom", skills: [] }).catch((error: Error) =>
-        report(t("settings.host.skills.uninstallFailed"), error),
-      );
-      return;
+      return saveWithConfirmation({ mode: "custom", skills: [] }).catch((error: Error) => {
+        report(t("settings.host.skills.uninstallFailed"), error);
+        return false;
+      });
     }
-    await uninstallAsync().catch(() => undefined);
+    const confirmed = await confirmDialog({
+      title: t("settings.host.skills.uninstallTitle"),
+      message: t("settings.host.skills.uninstallMessage"),
+      confirmLabel: t("settings.host.skills.actions.uninstall"),
+      destructive: true,
+    });
+    if (!confirmed) return false;
+    return uninstallAsync().then(
+      (status) => status.state === "not-installed",
+      () => false,
+    );
   }, [uninstallAsync, managed, saveWithConfirmation, report, t]);
   const saveSelection = useCallback(
     (selection: AgentSkillSelection, confirmedRemovals: readonly string[] = []) =>

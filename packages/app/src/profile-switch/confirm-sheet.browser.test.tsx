@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { page } from "vitest/browser";
 import { i18n } from "@/i18n/i18next";
-import { ProfileSwitchSheet } from "./confirm-sheet";
+import { ProfileSwitchSheet, type ProfileSwitchRequest } from "./confirm-sheet";
 
 // The sheet's overlay layers belong to the shared component; this suite covers the
 // switch states rendered inside it.
@@ -45,18 +45,27 @@ afterEach(() => {
 });
 
 interface Deferred {
+  request: ProfileSwitchRequest;
   resolve: () => void;
   reject: (error: Error) => void;
 }
 
 /** Mirrors the picker: the sheet closes only after the daemon accepts the switch. */
-function Harness({ switches, onNewTask }: { switches: Deferred[]; onNewTask: () => void }) {
+function Harness({
+  switches,
+  onNewTask,
+  busy,
+}: {
+  switches: Deferred[];
+  onNewTask: () => void;
+  busy: boolean;
+}) {
   const [open, setOpen] = useState(true);
   const close = useCallback(() => setOpen(false), []);
   const switchThread = useCallback(
-    () =>
+    (request: ProfileSwitchRequest) =>
       new Promise<void>((resolve, reject) => {
-        switches.push({ resolve, reject });
+        switches.push({ request, resolve, reject });
       }).then(close),
     [close, switches],
   );
@@ -64,6 +73,7 @@ function Harness({ switches, onNewTask }: { switches: Deferred[]; onNewTask: () 
   return (
     <ProfileSwitchSheet
       profileName="Codex 2"
+      busy={busy}
       onSwitch={switchThread}
       onNewTask={onNewTask}
       onClose={close}
@@ -71,8 +81,8 @@ function Harness({ switches, onNewTask }: { switches: Deferred[]; onNewTask: () 
   );
 }
 
-function mount(switches: Deferred[], onNewTask = vi.fn()) {
-  act(() => root.render(<Harness switches={switches} onNewTask={onNewTask} />));
+function mount(switches: Deferred[], onNewTask = vi.fn(), busy = false) {
+  act(() => root.render(<Harness switches={switches} onNewTask={onNewTask} busy={busy} />));
   return onNewTask;
 }
 
@@ -85,10 +95,27 @@ test("shows progress while switching and closes when the daemon accepts", async 
   await expect
     .element(page.getByText("starts a new session there", { exact: false }))
     .toBeVisible();
+  await expect.element(page.getByText("Switch in this thread", { exact: true })).toBeVisible();
+  await expect.element(page.getByTestId("profile-switch-busy")).not.toBeInTheDocument();
   await switchButton().click();
   await expect.element(page.getByText("Switching...", { exact: true })).toBeVisible();
   await expect.element(page.getByTestId("profile-switch-new-task")).toBeDisabled();
   expect(switches).toHaveLength(1);
+  expect(switches[0].request.stopTurn).toBe(false);
+  await act(async () => switches[0].resolve());
+  await expect.element(page.getByText("Sheet closed", { exact: true })).toBeVisible();
+});
+
+test("offers to stop a running turn and reports each stage", async () => {
+  const switches: Deferred[] = [];
+  mount(switches, vi.fn(), true);
+  await expect.element(page.getByTestId("profile-switch-busy")).toBeVisible();
+  await expect.element(page.getByText("Stop turn and switch", { exact: true })).toBeVisible();
+  await switchButton().click();
+  await expect.element(page.getByText("Stopping turn...", { exact: true })).toBeVisible();
+  expect(switches[0].request.stopTurn).toBe(true);
+  await act(async () => switches[0].request.onStage("switching"));
+  await expect.element(page.getByText("Switching...", { exact: true })).toBeVisible();
   await act(async () => switches[0].resolve());
   await expect.element(page.getByText("Sheet closed", { exact: true })).toBeVisible();
 });

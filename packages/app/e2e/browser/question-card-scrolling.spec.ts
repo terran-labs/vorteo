@@ -60,7 +60,7 @@ for (const width of [390, 1600]) {
       const lastOption = card.getByRole("radio").last();
       await lastOption.scrollIntoViewIfNeeded();
       await expect(lastOption).toBeInViewport();
-      await lastOption.click();
+      await lastOption.getByText("Desktop", { exact: true }).click();
       await expect(card).toContainText("Which rollout should we use?");
       await card.getByRole("radio", { name: "Behind feature flag", exact: true }).click();
       await expect(card).toContainText("What success criteria should we use?");

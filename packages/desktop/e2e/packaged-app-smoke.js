@@ -804,6 +804,11 @@ async function openSmokeWorkspace({ appPath, env, page, daemonHome }) {
     ],
     label: "Create packaged smoke workspace",
   });
+  // The fresh daemon had no projects at launch, so first-run setup is open over the sidebar.
+  await page.evaluate(() =>
+    localStorage.setItem("@paseo:onboarding", JSON.stringify({ completedAt: "1970-01-01" })),
+  );
+  await page.reload();
   const workspaceRow = page
     .getByRole("button", { name: "Sandbox smoke workspace", exact: true })
     .and(page.locator('[data-testid^="sidebar-workspace-row-"]'));
@@ -852,6 +857,11 @@ async function assertSandboxState({ browser, page, expectedSandbox, stdout, stde
 
 function assertLinuxDesktopIdentity(appPath) {
   if (process.platform === "linux") {
+    assert.deepEqual(
+      fs.readFileSync(path.join(appPath, "resources", "icon.png")),
+      fs.readFileSync(path.join(__dirname, "..", "assets", "icon.png")),
+      "Packaged Linux windows must have the Paseo icon at their runtime lookup path",
+    );
     const metadata = JSON.parse(
       extractFile(path.join(appPath, "resources", "app.asar"), "package.json").toString(),
     );

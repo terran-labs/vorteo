@@ -29,12 +29,38 @@ async function openChangedWorkspace(page: Page) {
   await rm(path.join(workspace.repoPath, "remote.git"), { recursive: true });
   await writeFile(path.join(workspace.repoPath, "counter.txt"), "after\nmore\n");
   await workspace.client.checkoutRefresh(workspace.repoPath);
-  await expect
-    .poll(async () => {
-      const result = await workspace.client.fetchWorkspaces();
-      return result.entries.find((entry) => entry.id === workspace.workspaceId)?.diffStat;
-    })
-    .toEqual({ additions: 2, deletions: 1 });
+  let lastEntry:
+    | Awaited<ReturnType<typeof workspace.client.fetchWorkspaces>>["entries"][number]
+    | undefined;
+  try {
+    await expect
+      .poll(async () => {
+        const result = await workspace.client.fetchWorkspaces();
+        lastEntry = result.entries.find((entry) => entry.id === workspace.workspaceId);
+        return lastEntry?.diffStat;
+      })
+      .toEqual({ additions: 2, deletions: 1 });
+  } catch (error) {
+    // Retain the observation that failed, without another RPC or subprocess.
+    try {
+      await test.info().attach("fixture-workspace-observation", {
+        contentType: "application/json",
+        body: JSON.stringify(
+          {
+            repoPath: workspace.repoPath,
+            workspaceDirectory: workspace.workspaceDirectory,
+            workspaceId: workspace.workspaceId,
+            lastEntry: lastEntry ?? null,
+          },
+          null,
+          2,
+        ),
+      });
+    } catch {
+      console.info("Fixture observation attachment failed; preserving original assertion failure");
+    }
+    throw error;
+  }
   await openAgentRoute(page, { workspaceId: workspace.workspaceId, agentId: agent.id });
   return workspace;
 }

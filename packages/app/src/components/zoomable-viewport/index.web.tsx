@@ -1,5 +1,5 @@
 import { getInterfaceScale } from "@/appearance/interface-zoom";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useVortonTouch } from "@/vorton-touch";
@@ -289,8 +289,14 @@ export function ZoomableViewport({
   const controlsVisible = isHovered || isFocusWithin || hasTouchInput || touchControls;
   const handleFocus = useCallback(() => setIsFocusWithin(true), []);
   const handleBlur = useCallback(() => setIsFocusWithin(false), []);
-  const handleMouseEnter = useCallback(() => setIsHovered(true), []);
-  const handleMouseLeave = useCallback(() => setIsHovered(false), []);
+  // Modal mounting can omit React's synthesized enter event. Track the bubbling
+  // events, but treat the canvas and toolbar as one hover region.
+  const handlePointerOver = useCallback(() => setIsHovered(true), []);
+  const handlePointerOut = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const next = event.relatedTarget;
+    if (next instanceof Node && event.currentTarget.parentElement?.contains(next)) return;
+    setIsHovered(false);
+  }, []);
 
   return (
     <View style={[styles.root, style]} testID={testID}>
@@ -301,8 +307,8 @@ export function ZoomableViewport({
         onDoubleClick={reset}
         onFocusCapture={handleFocus}
         onBlurCapture={handleBlur}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
+        onPointerOver={handlePointerOver}
+        onPointerOut={handlePointerOut}
         onPointerCancel={endPointer}
         onPointerDown={beginPointer}
         onPointerMove={movePointer}
@@ -316,8 +322,8 @@ export function ZoomableViewport({
       <div
         onBlurCapture={handleBlur}
         onFocusCapture={handleFocus}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
+        onPointerOver={handlePointerOver}
+        onPointerOut={handlePointerOut}
         style={toolbarDomStyle}
       >
         <ViewportToolbar

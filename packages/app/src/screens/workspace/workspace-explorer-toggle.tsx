@@ -2,6 +2,7 @@ import { PanelRight, PanelRightOpen } from "lucide-react-native";
 import { type StyleProp, type ViewStyle } from "react-native";
 import { withUnistyles } from "react-native-unistyles";
 import { HeaderToggleButton } from "@/components/headers/header-toggle-button";
+
 import {
   extraMutedIconColorMapping,
   iconButtonChromeGlyphSize,
@@ -13,6 +14,8 @@ const desktopTarget = { minWidth: 40, minHeight: 40 };
 
 const ThemedPanelRight = withUnistyles(PanelRight);
 const ThemedPanelRightOpen = withUnistyles(PanelRightOpen);
+
+export const EXPLORER_TOGGLE_KEYS: ShortcutKey[] = ["mod", "E"];
 
 interface WorkspaceExplorerToggleProps {
   onPress: () => void;

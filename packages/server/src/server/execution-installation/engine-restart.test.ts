@@ -60,8 +60,13 @@ function fakeDocker(options: { health?: () => string; epochs?: number[]; verifyF
     if (args[2] === "info") return { stdout: "29.8.0\n" };
     if (args[2] === "inspect") {
       const id = args.at(-1)!;
-      const health = id === ids.dev ? (options.health?.() ?? "healthy") : "";
-      return { stdout: `${id}|true|2026-10-23T0${boot}:00:00Z|${health}\n` };
+      // Like Docker, only containers with a healthcheck carry State.Health.
+      const state = {
+        Running: true,
+        StartedAt: `2026-10-23T0${boot}:00:00Z`,
+        ...(id === ids.dev ? { Health: { Status: options.health?.() ?? "healthy" } } : {}),
+      };
+      return { stdout: `${id}|${JSON.stringify(state)}\n` };
     }
     if (args[0] === "--docker") {
       if (options.verifyFails) {
@@ -101,6 +106,20 @@ test("preflight refuses an unhealthy Dev container before any effect", async () 
     "Dev container is not healthy. Nothing was restarted.",
   );
   expect(docker.commands).not.toContain("desktop restart");
+});
+
+test("preflight names the real Docker error when a container cannot be inspected", async () => {
+  const docker = fakeDocker({});
+  const run: EngineCommand = async (file, args, timeoutMs) => {
+    if (args[2] === "inspect" && args.at(-1) === ids.gatewayTailscale)
+      throw Object.assign(new Error("Command failed: docker inspect"), {
+        stderr: "Error: No such container: bbbb\nmore detail\n",
+      });
+    return docker.run(file, args, timeoutMs);
+  };
+  await expect(engineRestartPreflight(plan(), { run })).rejects.toThrow(
+    "the gateway Tailscale container could not be inspected (Error: No such container: bbbb). Nothing was restarted.",
+  );
 });
 
 test("preflight refuses when Factory's lock acceptance check fails now", async () => {

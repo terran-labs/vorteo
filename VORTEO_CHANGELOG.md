@@ -12,6 +12,105 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Keep the Context window card after a daemon restart. Agents now save their last reported usage, so the card no longer disappears until each agent runs another turn.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Full maintenance delegation now includes installation management, so trusted Host agents can cancel pending or queued requests whenever the full grant is active, and revoking the grant removes it. Existing full grants gain this automatically, and Installation controls no longer show a separate management switch. Management still cannot approve requests that need the owner, stop claimed work, or change credentials or settings. Enrolled installations do not gain management. Its authority revision now binds the grant epoch and installation credentials. An older client's separate switch is accepted and ignored. A rollback to an older runtime keeps management only where its earlier separate opt-in is still recorded.
+- Explain that a management cancellation must use the `jobSha256` from `management-status`; a digest taken from a `request-*` submission response is refused.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Teach the CI workflow contract test about the separate format and lint jobs: both stay gated and keep their commands, and quality covers the lint-rule, relay and SDK domains.
+- Keep the separate format and lint CI jobs the main ruleset requires, with upstream's remaining checks in quality. Restore the fork's theme preview padding and review panel control targets under upstream's two-size controls, and keep non-focus overlays from taking initial focus. Make the steering mock finish only after a real steer, send its browser check with the immediate-send shortcut, and repair three test fixtures.
+- Point the website browser checks at Vorteo's page titles, download thanks heading, homepage mockup and plugin demo heading. Registry fixture text and release download URLs are unchanged.
+- Align the Simplified Chinese docs with Vorteo's English sections: renamed Vorteo anchors, the installer-based getting started page and the Standing, Protected and Scheduled workspaces section. Other Chinese body text still names Paseo.
+- Restore keyboard entry into the collapsed sidebar's project preview: non-trapping overlays get first refusal for each key, with fallback to the focused surface. Reconcile the idle agent release browser checks with Vorteo's installation-wide Agents settings and its read error text.
+- Merge Paseo through `eb8b5b8f9`, the cutoff for this synchronization: hardware keyboard shortcuts on native and desktop, Codex multi-file patch diffs, linked issue and pull request references, plugin screen progress, two-size controls, Apache-2.0 license declarations and fixes for ACP, Pi, cron days and workspaces. Shortcut settings appear wherever a hardware keyboard is available. Upstream's first-run walkthrough is merged but not shown; Vorteo keeps its own onboarding. Upstream's interrupted-agent recovery now defaults off, while Vorteo's tracked restart continuation is unaffected.
+- Merge `main` with the installed Host deliveries into the upstream integration. Coordinator admission keeps ignoring a canceled update's stale preparation within main's refactored blocker check, Claude sessions keep both runtime safety and full sign-in adoption, and settings rows show both summaries and hints.
+- Record the stop-turn account switching commit in history. Its reviewed changes and later corrections were already integrated, so the merge keeps the integrated source unchanged.
+
+## Unreleased - 2026-11-02
+
+- Merge 24 newer Paseo commits, adding plugin live subscriptions, in-place Add host, Codex patch details, JSON agent logs, stricter cron steps, Markdown table and question fixes, and provider cleanup fixes. Plugin subscriptions receive the daemon's authenticated server identity and fail closed without it; binary plugin frames require the client's advertised decoder. QR and link pairing remain retired.
+- Offer Stop turn and switch for running turns, explain goal pausing, and wait for cancellation before capturing handoff context. Permission-only states keep the existing refusal without stopping the thread.
+- Synchronize the welcome animation marker when reduced motion stops its frame loop; retain event-driven resumption and validate both motion transitions.
+- Integrate published installer, packaged Claude and release-tooling corrections while retaining upstream dependencies and installation safeguards.
+- Preserve the separately reviewed coordinator admission repair in upstream integration ancestry. The merge changes no runtime behavior.
+- Ignore stale source-preparation state on terminal update requests when checking coordinator idleness. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
+- Preserve the current workspace route when restoring unrelated saved tabs. Remove foreign pins only after workspace ownership is known, retaining archived and detail-only members of the workspace group.
+- Gate sidebar Usage queries on resolved item visibility while preserving direct Usage access and host settings. Reconcile script-toolbar fixtures with command-level setup output.
+- Respect the target Host capability when adding bundled providers, clear removal markers on explicit re-add, and show installation errors beside the selected catalog entry. Managed bundled enrollment remains unsupported.
+- Start owned Claude child teardown before SDK and history waits, preserving native cleanup failures and the existing daemon shutdown deadline. History can still delay session cleanup after child exit.
+- Preserve explicit relay and plugin-registry opt-in, quota failure accounting, and recovery of captured schedule runs without replaying uncertain execution.
+- Restore thread-tool declarations and legacy worktree setup after agent binding. Fix package-local Factory source exports and reconcile asynchronous and retained-contract fixtures.
+
+- Merge `main` after the eighth Host delivery so the ninth installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Record the eighth installed Host update and Dev's installed release notes for their pull request to `main`. No source changes.
+
+## Unreleased - 2026-11-01
+
+- Preserve complete task checklist fields and stopped-thread queue actions after upstream integration. Restore searchable settings and legacy terminal translations, and translate new pull-request merge states.
+- Reconcile protocol, provider, native-font and app fixtures with generated validation, subscribed workspace updates and retained layout behavior. Keep rejection assertions and test deadlines; clarify checkout-bound Explorer navigation.
+
+## Unreleased - 2026-11-01
+
+- Gate Voice model queries, refresh and model changes on the Host speech-settings capability, so an older daemon receives no unsupported model requests.
+
+## Unreleased - 2026-11-01
+
+- Integrate the reviewed delegated installation cancellation and restart-fixture corrections with the upstream synchronization. Preserve explicit management opt-in, revocation and manual restart approval. Bound the synchronous receipt-writer lint exception to its five existing APIs.
+
+## Unreleased - 2026-11-01
+
+- Record the completed upstream merge and its Git committer timestamp for Settings > General. This source record does not imply either daemon or the web release has been updated.
+
+## Unreleased - 2026-11-01
+
+- Synchronize with Paseo's `0.15.0-beta.1` development line, including retained terminal workers, native terminal rendering, provider history fixes, plugin lifecycle and panel APIs, and Expo 57.
+- Preserve Vorteo's account and profile workflows, installation controls, private connectivity, branding and appearance while adapting the upstream changes. Document the speech-settings migration and metadata model selection behavior. Source integration does not activate either daemon or establish physical-device acceptance.
+- Retain the legacy mobile terminal preference on the new replay API, native scene launch data, host Voice controls and compact workspace actions. Restore inert Markdown handling for active URL schemes and private-session attachment downloads.
+- Preserve tracked restart continuations. Restrict the new upstream startup-resume path to eligible loaded sessions until providers support safe cold loading and final dispatch checks. Keep quota admission failures visible during agent creation.
+- Restore the Usage route and teach commit validation to accept an upstream merge parent without relaxing Vorteo release-version checks.
+- Make local relay regression tests exercise the local adapter instead of inheriting the deployment's external forwarding URL.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - Cancelling a command the daemon runs now stops it. Command checks such as the Claude sign-in check accepted a cancel signal but kept running until their time limit after the caller gave up.

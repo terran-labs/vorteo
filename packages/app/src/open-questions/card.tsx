@@ -276,7 +276,7 @@ function BlockedTasks({
         <Button
           key={task.id}
           variant="outline"
-          size="xs"
+          size="sm"
           leftIcon={ListTodo}
           onPress={showTasks}
           accessibilityHint={onShowTasks ? "Opens the thread" : "Opens the Tasks card"}
@@ -302,7 +302,7 @@ function AnsweredQuestions({
     <View style={styles.answered}>
       <Button
         variant="ghost"
-        size="xs"
+        size="sm"
         leftIcon={visible ? ChevronDown : ChevronRight}
         onPress={onToggle}
         style={styles.answeredToggle}

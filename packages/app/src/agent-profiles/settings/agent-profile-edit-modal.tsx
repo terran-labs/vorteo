@@ -22,7 +22,7 @@ import type { AgentFeature } from "@getpaseo/protocol/agent-types";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
-import { type FieldControlSize } from "@/components/ui/control-geometry";
+import { type ControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import {
   SelectField,
@@ -30,7 +30,6 @@ import {
   type SelectFieldOption,
 } from "@/components/ui/select-field";
 import { Switch } from "@/components/ui/switch";
-import { useIsCompactFormFactor } from "@/constants/layout";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 import { useReportActionError } from "@/hooks/use-action-error";
 import { AgentProfileAppearanceField } from "./agent-profile-appearance-field";
@@ -162,7 +161,7 @@ interface ProfileLaunchFieldsProps {
   profile?: AgentProfile;
   model: AgentProfileFormModel;
   state: AgentProfileFormState;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
   defaults?: boolean;
 }
 const WORKER_LIMIT_OPTIONS: SelectFieldOption<number | "uncapped">[] = [1, 2, 3, 4, 6, 8].map(
@@ -329,7 +328,7 @@ function WorkerControls({
 }: {
   state: AgentProfileFormState;
   model: AgentProfileFormModel;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
   isLoading: boolean;
   workers: ReturnType<typeof workerChoices>;
   uncappedSupported: boolean;
@@ -411,7 +410,7 @@ function ProfileProviderFields({
   state: AgentProfileFormState;
   providerOptions: SelectFieldOption<string>[];
   onChange: (value: string, display: SelectFieldDisplay) => void;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
 }) {
   const { t } = useTranslation();
   return sharedScope ? (
@@ -471,7 +470,7 @@ function ProfileIdentityFields({
   state: AgentProfileFormState;
   profile?: AgentProfile;
   seed?: AgentProfileSeed;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
   model: AgentProfileFormModel;
   onAppearance: (value: { icon: string; color: string }) => void;
 }) {
@@ -513,7 +512,7 @@ interface ProfileModelStageProps {
   state: AgentProfileFormState;
   model: AgentProfileFormModel;
   sharedScope: AgentProfileEditModalProps["sharedScope"];
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
   modelOptions: SelectFieldOption<string>[];
   modeOptions: SelectFieldOption<string>[];
   thinkingOptions: SelectFieldOption<string>[];
@@ -637,7 +636,7 @@ function OpenAgentProfileEditModal({
   onSave,
 }: AgentProfileEditModalProps & { onDismiss: () => void }): ReactElement {
   const { t } = useTranslation();
-  const controlSize: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
+  const controlSize: ControlSize = "md";
   const sharedCatalog = usesSharedCatalog(sharedScope);
   const snapshot = useMemo(
     () => ({ mode, sharedCatalog, ...(profile ? { profile } : {}), ...(seed ? { seed } : {}) }),
@@ -764,7 +763,6 @@ function OpenAgentProfileEditModal({
       onClose={handleCancel}
       onDismiss={onDismiss}
       footer={actions}
-      sizeContentToCurrentSnapPoint
       desktopMaxWidth={520}
       desktopPlacement="end"
       testID="agent-profile-edit-modal"
@@ -883,7 +881,7 @@ function AgentProfileFeatureRow({
   feature: AgentFeature;
   isFirst: boolean;
   disabled: boolean;
-  size: FieldControlSize;
+  size: ControlSize;
   model: AgentProfileFormModel;
 }): ReactElement {
   const rowStyle = useMemo(

@@ -33,7 +33,7 @@ export function ThemePreviewArtwork({
     <Svg
       width="100%"
       height="100%"
-      style={StyleSheet.absoluteFillObject}
+      style={StyleSheet.absoluteFill}
       viewBox={`0 0 ${width} ${height}`}
       pointerEvents="none"
       accessibilityElementsHidden

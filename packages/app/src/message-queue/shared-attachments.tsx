@@ -6,7 +6,7 @@ import type { QueueAttachment, QueuePresentation } from "@getpaseo/protocol/mess
 import { AttachmentLightbox } from "@/components/attachment-lightbox";
 import { Button } from "@/components/ui/button";
 import { useReportActionError } from "@/hooks/use-action-error";
-import { useHosts } from "@/runtime/host-runtime";
+import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useDownloadStore } from "@/stores/download-store";
 
 import { presentQueueContext, type QueueContext } from "./context-presentation";
@@ -129,6 +129,10 @@ function SharedAttachment({
           fileName: file.attachment.fileName,
           path: file.path,
           daemonProfile: hosts.find((host) => host.serverId === serverId),
+          activeConnectionId:
+            getHostRuntimeStore().getSnapshot(serverId)?.activeConnectionId ?? null,
+          readFile: (targetPath, maxBytes) =>
+            client.readFile(file.cwd, targetPath, undefined, maxBytes),
           requestFileDownloadToken: async () => {
             const download = await client.getMessageQueueAttachment({
               agentId,
@@ -140,6 +144,7 @@ function SharedAttachment({
               token: download.file?.downloadToken ?? null,
               fileName: download.file?.attachment.fileName ?? null,
               mimeType: download.file?.attachment.mimeType ?? null,
+              size: download.file?.attachment.size ?? null,
               error: download.error?.message ?? null,
             };
           },

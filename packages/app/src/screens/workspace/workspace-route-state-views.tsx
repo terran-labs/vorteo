@@ -151,7 +151,6 @@ function ArchivedWorkspaceRecovery({
       </View>
       <ActionFooter style={styles.actions}>
         <Button
-          size="sm"
           variant="default"
           leftIcon={isRestoring ? undefined : RotateCw}
           onPress={onRecover}
@@ -182,10 +181,10 @@ function WorkspaceRecoveryInspectionFailed({
         <Text style={styles.error}>{state.error}</Text>
       </View>
       <ActionFooter style={styles.actions}>
-        <Button size="sm" variant="default" leftIcon={RotateCw} onPress={onRetry}>
+        <Button variant="default" leftIcon={RotateCw} onPress={onRetry}>
           {t("common.actions.retry")}
         </Button>
-        <Button size="sm" variant="outline" leftIcon={ArrowLeftToLine} onPress={onDismiss}>
+        <Button variant="outline" leftIcon={ArrowLeftToLine} onPress={onDismiss}>
           {t("common.actions.back")}
         </Button>
       </ActionFooter>
@@ -251,7 +250,7 @@ function WorkspaceEmptyState({
         <Text style={styles.description}>{description ?? hostName}</Text>
       </View>
       <ActionFooter style={styles.actions}>
-        <Button size="sm" variant="default" leftIcon={ArrowLeftToLine} onPress={onDismiss}>
+        <Button variant="default" leftIcon={ArrowLeftToLine} onPress={onDismiss}>
           {t("common.actions.back")}
         </Button>
       </ActionFooter>

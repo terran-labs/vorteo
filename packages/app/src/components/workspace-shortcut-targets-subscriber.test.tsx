@@ -49,6 +49,8 @@ function workspaceDescriptor(input: {
   statusEnteredAt?: Date | null;
 }): WorkspaceDescriptor {
   return {
+    createdAt: null,
+    lastUserMessageAt: null,
     id: input.id,
     projectId: input.projectId ?? "project-1",
     projectDisplayName: input.projectDisplayName ?? "Project 1",
@@ -107,7 +109,6 @@ describe("WorkspaceShortcutTargetsSubscriber", () => {
     });
     useSidebarOrderStore.setState({
       projectOrder: [],
-      workspaceOrderByProject: {},
     });
     useSidebarViewStore.setState({
       groupMode: "project",
@@ -144,6 +145,22 @@ describe("WorkspaceShortcutTargetsSubscriber", () => {
       useSessionStore.getState().clearSession("host-a");
       useSessionStore.getState().clearSession("host-b");
     });
+  });
+
+  it("keeps keyboard navigation populated when the sidebar starts hidden", async () => {
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarModelProvider active={false} keyboardNavigationActive>
+            <WorkspaceShortcutTargetsSubscriber enabled />
+          </SidebarModelProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(useKeyboardShortcutsStore.getState().sidebarShortcutWorkspaceTargets).toEqual([
+      { serverId: "srv", workspaceId: "ws-1" },
+      { serverId: "srv", workspaceId: "ws-2" },
+    ]);
   });
 
   it("publishes workspace shortcut targets without rendering the sidebar", async () => {

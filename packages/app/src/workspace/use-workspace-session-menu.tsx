@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useHostFeature } from "@/runtime/host-features";
 import { ImportSessionSheet } from "@/components/import-session-sheet";
 import { useNavigateToImportedAgent } from "@/hooks/use-import-session";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
@@ -15,6 +16,12 @@ export function useWorkspaceSessionMenu(serverId: string, workspaceId: string) {
     workspaceId,
     (workspace) => workspace.workspaceDirectory,
   );
+  const descriptorSetupStatus = useWorkspaceFields(
+    serverId,
+    workspaceId,
+    (workspace) => workspace.setupStatus ?? null,
+  );
+  const supportsSetupObservation = useHostFeature(serverId, "workspaceSetupObservation");
   const snapshot = useWorkspaceSetupStore(
     (state) => state.snapshots[`${serverId}:${workspaceId}`] ?? null,
   );
@@ -33,7 +40,12 @@ export function useWorkspaceSessionMenu(serverId: string, workspaceId: string) {
   return {
     onImportSession: openImport,
     importSessionDisabled: !client || !connected || !directory,
-    onShowSetup: shouldShowWorkspaceSetup(snapshot) ? openSetup : undefined,
+    onShowSetup: shouldShowWorkspaceSetup(
+      snapshot?.status ?? descriptorSetupStatus ?? null,
+      supportsSetupObservation,
+    )
+      ? openSetup
+      : undefined,
     sheet: importOpen ? (
       <ImportSessionSheet
         visible

@@ -1,6 +1,8 @@
 export const CLIENT_CAPS = {
   checklistReviewStatus: "checklist_review_status",
   checklistBlockedStatus: "checklist_blocked_status",
+  terminalChunkedReplay: "terminal_chunked_replay",
+  binaryChunkingV1: "binary_chunking_v1",
   helloRejection: "hello_rejection",
   // COMPAT(ownedSubscriptions): added in v0.8.0, remove legacy ownership after 2027-03-09.
   ownedSubscriptions: "owned_subscriptions",
@@ -48,6 +50,10 @@ export const CLIENT_CAPS = {
   // COMPAT(profileSwitchTimeline): added in Vorteo 2026-10. Older clients' strict timeline
   // union rejects profile switch markers, so the daemon omits them. Remove after 2027-04-22.
   profileSwitchTimeline: "profile_switch_timeline",
+  workspaceSetupObservation: "workspace_setup_observation",
+  // COMPAT(pluginBinaryPayloads): added in v0.15.0, remove after 2027-05-02 once client floor >= v0.15.0.
+  // The daemon sends plugin RPC outputs as binary opcode 0x21 only to clients that decode it.
+  pluginBinaryPayloads: "plugin_binary_payloads",
   // COMPAT(workspaceSetupBlocked): added in v0.8.0, remove after 2027-03-07 once client floor >= v0.8.0.
   workspaceSetupBlocked: "workspace_setup_blocked",
   browserHost: "browser_host",

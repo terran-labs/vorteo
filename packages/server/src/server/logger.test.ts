@@ -160,6 +160,19 @@ describe("createRootLogger", () => {
       const root = await mkdtemp(path.join(tmpdir(), "paseo-logger-depth-"));
       const logPath = path.join(root, "output.log");
       const { stdout, stderr } = await runLoggerFixture(`
+      const { createRequire } = await import("node:module");
+      const { strict: assert } = await import("node:assert");
+      const pretty = createRequire(${JSON.stringify(loggerModuleUrl)})("pino-pretty");
+      const originalFactory = pretty.prettyFactory;
+      let formatCalls = 0;
+      pretty.prettyFactory = (options) => {
+        const format = originalFactory(options);
+        return (line) => {
+          formatCalls++;
+          if (formatCalls === 1) throw new Error("deterministic fixture formatting failure");
+          return format(line);
+        };
+      };
       const logger = createRootLogger({ log: {
         console: { level: "info", format: "pretty" },
         ${file ? `file: { path: ${JSON.stringify(logPath)} },` : ""}
@@ -169,6 +182,8 @@ describe("createRootLogger", () => {
       logger.info({ detail, authorization: "synthetic-secret", headers: { authorization: "synthetic-secret" } }, "nested fixture");
       logger.info("after nested fixture");
       logger.flush();
+      assert.equal(formatCalls, 2);
+      pretty.prettyFactory = originalFactory;
     `);
       const output = file ? await readFile(logPath, "utf8") : stdout;
       expect(output, stderr).toContain("after nested fixture");

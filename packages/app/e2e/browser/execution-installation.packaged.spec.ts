@@ -519,6 +519,10 @@ test("welcome signs in with the owner password and restores both environments", 
   await expect(rain).toHaveAttribute("data-motion", "falling");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(rain).toHaveAttribute("data-motion", "still");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(rain).toHaveAttribute("data-motion", "falling");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(rain).toHaveAttribute("data-motion", "still");
   await page.screenshot({
     path: testInfo.outputPath("welcome-without-notices.png"),
     fullPage: true,

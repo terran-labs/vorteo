@@ -29,7 +29,7 @@ test("a download button opens the thanks page and requests the file", async ({ p
 
   await fileRequest;
   await expect(page).toHaveURL(/\/download\/thanks\?file=/);
-  await expect(page.getByRole("heading", { name: "Thanks for downloading Paseo" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Thanks for downloading Vorteo" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Try again" })).toHaveAttribute(
     "href",
     APPLE_SILICON_DMG,

@@ -10,6 +10,7 @@ test("a denied daemon catalog cannot construct a client runtime or evaluate its 
   let constructions = 0;
   const registry = new PluginRegistry({
     version: "0.8.0",
+    localeSource: { getLocale: () => "en", subscribe: () => () => {} },
     allowHost: (serverId) => serverId === "trusted-host",
     createRuntime: () => {
       constructions++;

@@ -25,6 +25,9 @@ export function useAgentPresentationNavigation(input: {
   const presentationWorkspaceId = useMemo(() => {
     const agent = agentId ? agents?.get(agentId) : undefined;
     if (!agents || !agent || agent.archivedAt) return null;
+    // Independent foreign tabs are stale layout entries, not managed worker moves.
+    // Let workspace reconciliation remove them without changing the active route.
+    if (!agent.parentAgentId) return null;
     // An explicitly opened native workspace remains a valid place to read its worker.
     if (normalizeWorkspaceOpaqueId(agent.workspaceId) === input.workspaceId)
       return input.workspaceId;

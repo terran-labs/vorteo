@@ -83,11 +83,11 @@ function ProfileActionBase({
 }
 
 export const ProfileAction = withUnistyles(ProfileActionBase, (theme) => ({
-  height: CONTROL_HEIGHTS.field + theme.spacing[2] * 2,
+  height: CONTROL_HEIGHTS.md.xs + theme.spacing[2] * 2,
 }));
 
 const styles = StyleSheet.create((theme) => ({
   viewport: { overflow: "hidden", flexShrink: 0 },
   content: { paddingVertical: theme.spacing[2] },
-  button: { borderRadius: theme.borderRadius.xl },
+  button: { borderRadius: theme.borderRadius.xl, minHeight: CONTROL_HEIGHTS.md.xs },
 }));

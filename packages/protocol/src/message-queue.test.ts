@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { SessionInboundMessageSchema } from "./messages.js";
 import { QueueChangedSchema } from "./message-queue.js";
-import { WSOutboundMessageSchema as GeneratedWSOutboundMessageSchema } from "./generated/validation/ws-outbound.aot.js";
+import { validateWSOutboundMessage } from "./validation/ws-outbound.js";
 
 it("requires an explicit observed turn or idle state for send now", () => {
   const operation = {
@@ -84,7 +84,7 @@ it("accepts queue snapshots through the generated outbound validator", () => {
       payload: { agentId: "agent", revision: 0, paused: false, items: [] },
     },
   };
-  expect(GeneratedWSOutboundMessageSchema.safeParse(envelope).success).toBe(true);
+  expect(validateWSOutboundMessage(envelope).success).toBe(true);
 });
 
 it("validates shared image references and captured context with the generated validator", () => {
@@ -118,5 +118,5 @@ it("validates shared image references and captured context with the generated va
       },
     },
   };
-  expect(GeneratedWSOutboundMessageSchema.safeParse(envelope).success).toBe(true);
+  expect(validateWSOutboundMessage(envelope).success).toBe(true);
 });

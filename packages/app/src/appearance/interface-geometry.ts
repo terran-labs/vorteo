@@ -4,8 +4,8 @@ import { getInterfaceScale, useInterfaceZoom } from "./interface-zoom";
 /** Layout coordinates exclude CSS zoom; browser pointer and bounding rect coordinates include it. */
 export function interfaceRect<T extends { x: number; y: number; width: number; height: number }>(
   rect: T,
+  scale = getInterfaceScale(),
 ): T {
-  const scale = getInterfaceScale();
   return {
     ...rect,
     x: rect.x / scale,

@@ -28,7 +28,7 @@ export function resolveNavigateToAgent(
 ): string {
   const target = deps.readAgentNavTarget({ serverId: input.serverId, agentId: input.agentId });
   const agentWorkspaceId =
-    target.presentationWorkspaceId ?? input.workspaceId ?? target.agentWorkspaceId;
+    target.presentationWorkspaceId ?? target.agentWorkspaceId ?? input.workspaceId;
   const workspaceId = normalizeWorkspaceOpaqueId(agentWorkspaceId);
 
   if (!workspaceId) {

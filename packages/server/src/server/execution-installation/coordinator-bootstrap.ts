@@ -165,7 +165,7 @@ type LifecycleWorkJob = ReturnType<typeof parseLifecycleJournal>[number];
 
 /** Why one job blocks a coordinator replacement, or null when it does not. */
 function lifecycleWorkReason(job: LifecycleWorkJob): string | null {
-  const active = job.status === "approved" || job.status === "running";
+  const active = ["approved", "running"].includes(job.status);
   // A coordinator replacement must not cut a session host install or removal short either.
   if (["maintenance-controller", "recovery-launcher", "session-host"].includes(job.target))
     return active ? `is ${job.status}` : null;

@@ -551,6 +551,25 @@ test("compact rail focuses projects from its flyout", async ({ page }) => {
   await railProject.hover();
   const preview = page.getByTestId("project-rail-preview");
   await expect(preview).toBeVisible();
+  await railProject.focus();
+  await expect(railProject).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(
+    preview.getByTestId("sidebar-workspace-row-vorteo-demo:demo-workspace-0-0"),
+  ).toBeFocused();
+  await page.mouse.move(900, 800);
+  await page.waitForTimeout(350);
+  await expect(preview).toBeVisible();
+  const workspaceCard = page.getByTestId("workspace-hover-card");
+  await expect(workspaceCard).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(workspaceCard).toBeHidden();
+  await expect(preview).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(preview).toHaveCount(0);
+  await expect(railProject).toBeFocused();
+  await railProject.hover();
+  await expect(preview).toBeVisible();
   const projectRow = preview.locator('[data-testid^="sidebar-project-row-"]').first();
   await projectRow.hover();
   await expect(preview.locator('[data-testid^="sidebar-project-focus-"]')).toBeVisible();

@@ -1,4 +1,4 @@
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused } from "expo-router/react-navigation";
 import { router } from "expo-router";
 import { useMemo, type ReactNode } from "react";
 import { View } from "react-native";
@@ -66,7 +66,9 @@ function HostUsage({
   return (
     <UsagePage actions={controls}>
       <View testID={`usage-host-${serverId}`}>
-        {view.kind === "unavailable" ? null : <UsageOptions display={display} />}
+        {view.kind === "unavailable" ? null : (
+          <UsageOptions display={display} serverId={serverId} />
+        )}
         <UsageBody serverId={serverId} view={view} display={display} onRefresh={refresh} />
       </View>
     </UsagePage>

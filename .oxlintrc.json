@@ -5,6 +5,7 @@
   },
   "ignorePatterns": [".dev/**"],
   "plugins": ["react", "react-perf", "unicorn", "typescript", "oxc", "import", "promise"],
+  "jsPlugins": ["./scripts/oxlint/paseo-plugin.mjs"],
   "categories": {
     "correctness": "error",
     "suspicious": "error",
@@ -84,6 +85,928 @@
     "max-nested-callbacks": ["error", { "max": 3 }]
   },
   "overrides": [
+    // Exceptions name individual APIs in individual modules; new APIs still fail in these files.
+    // TODO entries are runtime debt, not startup exemptions. Do not add directory-wide exceptions.
+    {
+      "files": ["packages/server/src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
+      "rules": {
+        "paseo/no-sync-io": [
+          "error",
+          {
+            "allow": {
+              // TODO: literal executableExists is a synchronous public capability; move its callers and Windows existence predicates to async together.
+              "executable-resolution/executable-resolution.ts": ["existsSync"],
+              // TODO: winget enumeration shares synchronous existence predicates with literal lookup; convert the executable-resolution boundary together.
+              "executable-resolution/windows.ts": ["readdirSync"],
+              // TODO: live file-change classification is a synchronous event mapper; move the probe to async event ingestion.
+              "server/agent/providers/claude/agent.ts": ["existsSync"],
+              // TODO: new-session construction still resolves its project directory synchronously; move preparation before construction.
+              // TODO: Chrome integration checks one native-host manifest synchronously at session setup; move the probe to async startup.
+              "server/agent/providers/claude/chrome-integration.ts": ["existsSync"],
+              "server/agent/providers/claude/project-dir.ts": ["realpathSync"],
+              // TODO: live subagent output is read by a synchronous event mapper; add bounded async loading at ingestion.
+              // TODO: setup-token sign-in creates its private config directory synchronously; move it to the async sign-in boundary.
+              "server/agent/providers/claude/setup-token-runtime.ts": ["mkdirSync"],
+              "server/agent/providers/claude/subagents/workflow-output.ts": [
+                "closeSync",
+                "openSync",
+                "readSync"
+              ],
+              // TODO: diagnostics probes provider-owned auth/session storage; convert alongside provider discovery and readiness.
+              "server/agent/providers/omp/agent.ts": ["existsSync"],
+              // TODO: synchronous provider configuration discovery; move discovery into async launch preparation.
+              "server/agent/providers/omp/provider-config.ts": ["existsSync"],
+              // TODO: synchronous session-root selection is shared by descriptor builders; migrate callers with explicit readiness.
+              "server/agent/providers/omp/session-descriptor.ts": ["existsSync"],
+              // TODO: launch directory creation shares the server generation/start state machine; audit concurrent rotation before adding an await.
+              "server/agent/providers/opencode/server-manager.ts": ["mkdirSync"],
+              // TODO: launch preparation owns MCP config merge, extension generation and synchronous cleanup; migrate lifecycle and diagnostics together.
+              "server/agent/providers/pi/agent.ts": [
+                "existsSync",
+                "mkdtempSync",
+                "readFileSync",
+                "rmSync",
+                "writeFileSync"
+              ],
+              // Provider child process: Pi loads this extension outside the daemon; it reads child-agent status there.
+              "server/agent/providers/pi/extensions/pi-subagents/index.ts": ["readFileSync"],
+              // Startup/shutdown only: remove stale Unix listening sockets before bind and during disposal.
+              "server/bootstrap.ts": ["existsSync", "unlinkSync"],
+              // Startup configuration resolution: detect the bundled app distribution before the daemon listens.
+              "server/config.ts": ["existsSync"],
+              // Startup identity: load or create the daemon keypair before accepting connections.
+              "server/daemon-keypair.ts": ["existsSync", "readFileSync"],
+              // Fatal exit diagnostics: synchronously flush the exit reason when the worker is about to terminate.
+              "server/daemon-worker.ts": ["appendFileSync", "mkdirSync"],
+              // Startup host identity: memoized scutil lookup is warmed before listening; later callers use the cache.
+              "server/host-name.ts": ["execFileSync"],
+              // TODO: relationship persistence is atomic with enrollment/revocation state transitions; serialize those transitions before async writes.
+              "server/hub/relationship-controller.ts": [
+                "existsSync",
+                "readFileSync",
+                "renameSync",
+                "rmSync"
+              ],
+              // Local client bootstrap: reads the local credential and pid lock to select/authenticate a daemon connection.
+              "server/local-credential.ts": ["readFileSync"],
+              // Startup logger construction: create the log directory before opening the logging destination.
+              "server/logger.ts": ["mkdirSync"],
+              // TODO: runtime skill commands resolve their bundled source through a synchronous targets capability; migrate the capability and controller together.
+              "server/orchestration-skills/internal/paths.ts": ["existsSync"],
+              // Module initialization: the package version is resolved once and cached at import.
+              "server/package-version.ts": ["existsSync", "readFileSync"],
+              // TODO: config reads also serve synchronous writer ownership and stale-byte checks; migrate those consumers together rather than assuming an async facade releases custody.
+              "server/persisted-config.ts": ["existsSync", "readFileSync"],
+              // Startup pid identity: read and memoize the Linux boot id for the daemon lock.
+              "server/pid-lock.ts": ["readFileSync"],
+              // Startup builtin loader construction: select the bundled plugin root before loading plugins.
+              "server/plugins/builtin/index.ts": ["existsSync"],
+              // Build child process: plugin graph traversal and esbuild preparation run in the isolated compiler process.
+              "server/plugins/compiler-build.ts": ["existsSync", "readFileSync", "realpathSync"],
+              // Build child process: select the esbuild binary for the isolated plugin compiler.
+              "server/plugins/compiler-esbuild.ts": ["existsSync"],
+              // Build child process: TypeScript resolution and source reads run in the isolated plugin compiler.
+              "server/plugins/compiler-imports.ts": ["readFileSync", "realpathSync"],
+              // TODO: plugin install/update/remove commits sources.json synchronously; preserve record/write ordering with an async mutation queue.
+              "server/plugins/managed-source.ts": ["existsSync", "readFileSync"],
+              // TODO: shared synchronous persistence supports startup identity plus Hub/plugin/push runtime writers; migrate those owners before removing these exports.
+              "server/private-files.ts": [
+                "chmodSync",
+                "mkdirSync",
+                "realpathSync",
+                "renameSync",
+                "rmSync",
+                "writeFileSync"
+              ],
+              // TODO: constructor load plus runtime renew/revoke/prune use synchronous persistence; introduce ordered async mutations and readiness.
+              "server/push/token-store.ts": ["existsSync", "readFileSync"],
+              // Startup identity: load or create the server id before accepting connections.
+              "server/server-id.ts": ["existsSync", "readFileSync"],
+              // Listener lifecycle only: unlink the Unix socket before binding or after stopping the proxy.
+              "server/service-proxy.ts": ["existsSync", "unlinkSync"],
+              // TODO: self-update origin validation exposes synchronous package-root and realpath checks; migrate validation and its runtime interface together.
+              "server/session/daemon/install-origin.ts": ["existsSync", "readFileSync"],
+              // TODO: npm self-update inspection probes the reported install path; move the probe into bounded async installation inspection.
+              "server/session/daemon/npm-global-cli.ts": ["lstatSync"],
+              // Speech child process: model-file validation runs in the worker-backed local speech provider.
+              "server/speech/providers/local/sherpa/sherpa-offline-recognizer.ts": ["existsSync"],
+              // Speech child process: native addon discovery and patchelf run outside the daemon.
+              "server/speech/providers/local/sherpa/sherpa-onnx-node-loader.ts": [
+                "existsSync",
+                "spawnSync"
+              ],
+              // Speech child process: model-file validation runs in the worker-backed local speech provider.
+              "server/speech/providers/local/sherpa/sherpa-tts.ts": ["existsSync"],
+              // TODO: static request selection and index injection need bounded async serving with response/error ownership; keep this as a separate request-path conversion.
+              "server/web-ui.ts": ["readFileSync", "statSync"],
+              // Startup registry hydration: check persisted workspace directories before the runtime reconciliation service starts.
+              "server/workspace-registry-bootstrap.ts": ["statSync"],
+              // Terminal child process: hook config installation/removal is owned by terminal creation and teardown in the worker.
+              "terminal/agent-hooks/agent-hook-installer.ts": [
+                "existsSync",
+                "readFileSync",
+                "rmSync"
+              ],
+              // Terminal child process: launcher readiness and PTY record ownership run outside the daemon.
+              "terminal/terminal-worker-process.ts": [
+                "chmodSync",
+                "closeSync",
+                "existsSync",
+                "openSync",
+                "rmSync",
+                "writeSync"
+              ],
+              // Worker startup only: choose and secure the local listening socket before accepting a controller.
+              "terminal/terminal-worker-socket-path.ts": ["lstatSync", "mkdirSync"],
+              // Startup only: build an independent worker installation before launching; Electron ASAR sources require plain fs reads.
+              "terminal/terminal-worker-runtime.ts": [
+                "chmodSync",
+                "existsSync",
+                "mkdirSync",
+                "readdirSync",
+                "readFileSync",
+                "renameSync",
+                "rmSync",
+                "statSync",
+                "writeFileSync"
+              ],
+              // TODO: CLI shim lookup moved out of terminal.ts; migrate the executable-resolution boundary together.
+              "terminal/paseo-cli-path.ts": ["existsSync"],
+              // Node loader thread: TypeScript terminal-worker resolution runs in the loader, outside the daemon event loop.
+              "terminal/terminal-ts-loader.mjs": ["existsSync"],
+              // Terminal child process: executable preparation and shell integration run in the worker-backed terminal manager.
+              "terminal/terminal.ts": [
+                "accessSync",
+                "chmodSync",
+                "existsSync",
+                "mkdirSync",
+                "readFileSync",
+                "statSync"
+              ],
+              // TODO: legacy realpath helpers still serve install-origin validation and other synchronous consumers; migrate remaining callers before removing them.
+              "utils/path.ts": ["realpathSync"],
+
+              // Fork compatibility: exact retained APIs only; review evidence is kept with the merge artifacts.
+              // TODO: descriptor/nonce ownership explicitly forbids awaits; migrate the writer contract and all consumers together.
+              "server/config-writer.ts": [
+                "closeSync",
+                "fstatSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: private provider-preference migration receipt commits before config mutation; preserve synchronous writer custody during migration.
+              "server/daemon-config-store.ts": ["mkdirSync", "writeFileSync"],
+              // TODO: OAuth credential inode checks, private staging and durable replacement form one authority transaction; migrate custody together.
+              "server/execution-installation/accounts/claude-oauth-credentials-file.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "lstatSync",
+                "mkdirSync",
+                "openSync",
+                "readFileSync",
+                "renameSync",
+                "rmdirSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: read approved OAuth bytes through their verified descriptor; asynchronous migration must retain file identity and bounds.
+              "server/execution-installation/accounts/claude-oauth-host.ts": [
+                "closeSync",
+                "fstatSync",
+                "openSync",
+                "readFileSync"
+              ],
+              // TODO: setup consumer validates and secures the exact credential descriptor before use; migrate admission and disposal together.
+              "server/execution-installation/accounts/claude-setup-consumer.ts": [
+                "closeSync",
+                "fchmodSync",
+                "fstatSync",
+                "fsyncSync",
+                "lstatSync",
+                "openSync"
+              ],
+              // TODO: setup credential staging, inode validation and durable replacement share custody; preserve explicit rollback ownership.
+              "server/execution-installation/accounts/claude-setup-file.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "lstatSync",
+                "mkdirSync",
+                "openSync",
+                "readFileSync",
+                "renameSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: sign-in handoff reads and removes only the verified auth inode; migrate admission and cleanup together.
+              "server/execution-installation/accounts/codex-signin-auth-file.ts": [
+                "closeSync",
+                "fstatSync",
+                "openSync",
+                "readFileSync",
+                "unlinkSync"
+              ],
+              // TODO: host sign-in reads the reviewed auth descriptor; retain identity checks during asynchronous migration.
+              "server/execution-installation/accounts/codex-signin-host.ts": [
+                "closeSync",
+                "fstatSync",
+                "openSync",
+                "readFileSync"
+              ],
+              // Installation control-process startup: read private installation configuration before constructing authority and listeners.
+              "server/execution-installation/config.ts": ["readFileSync"],
+              // TODO: retained container update origin and artifact checks feed installation admission; migrate inspection and final rechecks together.
+              "server/execution-installation/container-updates.ts": [
+                "existsSync",
+                "mkdirSync",
+                "readFileSync",
+                "statSync"
+              ],
+              // TODO: shared bootstrap authority: bounded descriptor reads and filesystem identity traversal establish reviewed artifact evidence.
+              "server/execution-installation/coordinator-bootstrap-artifact-scan.ts": [
+                "closeSync",
+                "fstatSync",
+                "lstatSync",
+                "openSync",
+                "readSync",
+                "readdirSync",
+                "readlinkSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: canonical path and inode checks bind the selected coordinator artifact.
+              "server/execution-installation/coordinator-bootstrap-artifact.ts": [
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: read and durably settle the exact claimed journal descriptor before dispatch.
+              "server/execution-installation/coordinator-bootstrap-claimed-journal.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync"
+              ],
+              // TODO: shared bootstrap authority: inspect claimed release directories and inode types before launch admission.
+              "server/execution-installation/coordinator-bootstrap-claimed-launch.ts": [
+                "lstatSync",
+                "readdirSync"
+              ],
+              // TODO: shared bootstrap authority: canonicalize runner identity before executing the claimed artifact.
+              "server/execution-installation/coordinator-bootstrap-claimed-runner.ts": [
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: bind and flush private evidence through exact descriptors before authority transitions.
+              // TODO: main's dispatch failure reader scans recorded dispatch files synchronously; move it to the async coordinator journal boundary.
+              "server/execution-installation/coordinator-bootstrap-dispatch-failure.ts": [
+                "readFileSync",
+                "readdirSync"
+              ],
+              // TODO: main's dispatch status reader scans recorded dispatch files synchronously; convert with the failure reader.
+              "server/execution-installation/coordinator-bootstrap-dispatch-status.ts": [
+                "readFileSync",
+                "readdirSync"
+              ],
+              "server/execution-installation/coordinator-bootstrap-evidence.ts": [
+                "closeSync",
+                "fsyncSync",
+                "lstatSync",
+                "openSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: canonical host artifact identity is checked before host admission.
+              "server/execution-installation/coordinator-bootstrap-host.ts": [
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: exclusive journal ownership, process evidence and durable writes share a synchronous custody boundary.
+              "server/execution-installation/coordinator-bootstrap-journal.ts": [
+                "closeSync",
+                "execFileSync",
+                "fstatSync",
+                "fsyncSync",
+                "linkSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "readSync",
+                "realpathSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: shared bootstrap authority: inspect the selected launch source and canonical release identity before execution.
+              "server/execution-installation/coordinator-bootstrap-launch.ts": [
+                "lstatSync",
+                "readFileSync",
+                "readdirSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: bounded native process inspection proves maintenance absence before dispatch.
+              "server/execution-installation/coordinator-bootstrap-maintenance-absence.ts": [
+                "execFileSync"
+              ],
+              // TODO: shared bootstrap authority: native child inventory and canonical executable identity prove recovery custody.
+              "server/execution-installation/coordinator-bootstrap-maintenance-child-custody.ts": [
+                "execFileSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: descriptor identity, private staging and atomic evidence selection preserve reviewed file custody.
+              "server/execution-installation/coordinator-bootstrap-maintenance-file-selection.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "linkSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "readlinkSync",
+                "realpathSync",
+                "renameSync",
+                "symlinkSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: shared bootstrap authority: exclusively create and flush launcher state before transferring maintenance authority.
+              "server/execution-installation/coordinator-bootstrap-maintenance-launcher-state.ts": [
+                "closeSync",
+                "fsyncSync",
+                "openSync",
+                "writeFileSync"
+              ],
+              // TODO: shared bootstrap authority: bounded native inventory and executable identity underpin maintenance recovery admission.
+              "server/execution-installation/coordinator-bootstrap-maintenance-process-inventory.ts": [
+                "execFileSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: exact marker identity and durable activation record precede recovery dispatch.
+              "server/execution-installation/coordinator-bootstrap-maintenance-recovery-activation.ts": [
+                "closeSync",
+                "fsyncSync",
+                "lstatSync",
+                "openSync",
+                "writeFileSync"
+              ],
+              // TODO: shared bootstrap authority: inspect recovery artifact inode type before accepting the recovery plan.
+              "server/execution-installation/coordinator-bootstrap-maintenance-recovery-inspection.ts": [
+                "lstatSync"
+              ],
+              // TODO: shared bootstrap authority: bounded synchronous native inspection ports preserve the retained recovery contract.
+              "server/execution-installation/coordinator-bootstrap-maintenance-recovery-native-ports.ts": [
+                "spawnSync"
+              ],
+              // TODO: shared bootstrap authority: retained synchronous native rollback port settles its tracked recovery operation.
+              "server/execution-installation/coordinator-bootstrap-maintenance-recovery-rollback.ts": [
+                "spawnSync"
+              ],
+              // TODO: shared bootstrap authority: native service inventory and canonical artifact checks establish reviewed service identity.
+              "server/execution-installation/coordinator-bootstrap-maintenance-service-inspection.ts": [
+                "execFileSync",
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: exclusive producer record is written through its owned descriptor before dispatch.
+              "server/execution-installation/coordinator-bootstrap-maintenance-service-producer.ts": [
+                "closeSync",
+                "openSync",
+                "writeSync"
+              ],
+              // TODO: shared bootstrap authority: canonical status-artifact identity is verified before consuming service observations.
+              "server/execution-installation/coordinator-bootstrap-maintenance-service-status.ts": [
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: descriptor and pathname inode identity jointly establish ownership.
+              "server/execution-installation/coordinator-bootstrap-ownership.ts": [
+                "fstatSync",
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: preclaim journal descriptor is verified and flushed before claim transfer.
+              "server/execution-installation/coordinator-bootstrap-preclaim-journal.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync"
+              ],
+              // TODO: shared bootstrap authority: bounded private config reads retain canonical-path and descriptor ownership checks.
+              "server/execution-installation/coordinator-bootstrap-private-configuration.ts": [
+                "closeSync",
+                "fstatSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: existing release-seal presence gates source mutation and release disposal.
+              "server/execution-installation/coordinator-bootstrap-release-seal.ts": ["existsSync"],
+              // TODO: shared bootstrap authority: descriptor-bound renewal state is read and durably written before custody transfer.
+              "server/execution-installation/coordinator-bootstrap-renewal.ts": [
+                "closeSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync",
+                "writeFileSync"
+              ],
+              // TODO: shared bootstrap authority: retained runner reads and flushes exact private execution evidence before launch.
+              "server/execution-installation/coordinator-bootstrap-runner.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: shared bootstrap authority: bounded native service-manager command preserves the existing bootstrap service port.
+              "server/execution-installation/coordinator-bootstrap-service.ts": ["execFileSync"],
+              // TODO: bootstrap startup authority: inspect the startup artifact type before accepting its fence.
+              "server/execution-installation/coordinator-bootstrap-startup.ts": ["lstatSync"],
+              // TODO: shared bootstrap authority: exclusive private state staging and atomic durable replacement retain ownership.
+              "server/execution-installation/coordinator-bootstrap-state.ts": [
+                "closeSync",
+                "fsyncSync",
+                "openSync",
+                "renameSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: shared bootstrap authority: canonical executable identity binds supervision control to the reviewed release.
+              "server/execution-installation/coordinator-bootstrap-supervision-control.ts": [
+                "realpathSync"
+              ],
+              // Handoff control-process entrypoint: read its private handoff input before executing the tracked workflow.
+              // TODO: main's dispatch notifier reads one receipt synchronously; convert with the dispatch readers.
+              "server/execution-installation/coordinator-dispatch-notifier.ts": ["readFileSync"],
+              "server/execution-installation/coordinator-handoff-main.ts": ["readFileSync"],
+              // TODO: retained handoff authority: inspect and replace only the selected release links and owned handoff files.
+              "server/execution-installation/coordinator-handoff.ts": [
+                "closeSync",
+                "existsSync",
+                "openSync",
+                "readFileSync",
+                "readlinkSync",
+                "renameSync",
+                "rmSync",
+                "symlinkSync"
+              ],
+              // TODO: standing automation consent is descriptor-bound and durably recorded; migrate ordered authority mutations together.
+              "server/execution-installation/daemon-automation.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync"
+              ],
+              // TODO: retained engine restart inspection validates config and executable identity; migrate observations and dispatch rechecks together.
+              "server/execution-installation/engine-restart.ts": [
+                "accessSync",
+                "readFileSync",
+                "realpathSync",
+                "statSync"
+              ],
+              // TODO: adopted factory runtime admission binds accessible executable and source identity; migrate the admission contract together.
+              "server/execution-installation/factory-runtime-adoption.ts": [
+                "accessSync",
+                "lstatSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: factory launch verification binds executable and provenance checks; preserve final admission when migrating IO.
+              "server/execution-installation/factory-verify.ts": [
+                "accessSync",
+                "lstatSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: retained launcher activation authority: native command, selected inode and durable launcher replacement share tracked activation custody.
+              "server/execution-installation/host-launcher-update.ts": [
+                "closeSync",
+                "execFileSync",
+                "fsyncSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync",
+                "renameSync",
+                "writeSync"
+              ],
+              // TODO: private release-retention receipts precede cleanup decisions; migrate persistence and retention ordering together.
+              "server/execution-installation/host-release-retention.ts": ["writeFileSync"],
+              // TODO: synchronous installation-name store reads retained identity settings; migrate constructor readiness and reload callers together.
+              "server/execution-installation/installation-name.ts": ["existsSync", "readFileSync"],
+              // TODO: lifecycle receipts flush the owned journal descriptor before acknowledging transitions; migrate commit semantics together.
+              "server/execution-installation/lifecycle-journal.ts": [
+                "closeSync",
+                "fsyncSync",
+                "openSync"
+              ],
+              // Installation control-process entrypoint: resolve private config, executable and entrypoint identities before listener activation.
+              "server/execution-installation/main.ts": ["readFileSync", "realpathSync"],
+              // TODO: enrollment authorization reads and replaces exact durable approval files; retain descriptor and decision custody during migration.
+              "server/execution-installation/maintenance/authorization.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync",
+                "renameSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: registration execution consumes verified config and executable descriptors; migrate admission without an unchecked await gap.
+              "server/execution-installation/maintenance/dev-registration-execution.ts": [
+                "closeSync",
+                "fstatSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: bounded native registration observations bind processes and file descriptors; migrate observation and custody checks together.
+              "server/execution-installation/maintenance/dev-registration-native-observation-host.ts": [
+                "closeSync",
+                "execFileSync",
+                "fstatSync",
+                "lstatSync",
+                "openSync",
+                "readSync",
+                "realpathSync"
+              ],
+              // TODO: private registration records are verified and flushed before authority changes; migrate the transaction as a unit.
+              "server/execution-installation/maintenance/dev-registration.ts": [
+                "closeSync",
+                "fsyncSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync",
+                "writeFileSync"
+              ],
+              // TODO: retained bounded native service inspection supplies maintenance authority evidence; migrate its callers and final rechecks together.
+              "server/execution-installation/maintenance/host-service-inspection.ts": [
+                "execFileSync"
+              ],
+              // TODO: host startup admission binds canonical symlink and inode identities; migrate startup checks and launch custody together.
+              "server/execution-installation/maintenance/host-startup-contract.ts": [
+                "lstatSync",
+                "readlinkSync",
+                "realpathSync"
+              ],
+              // TODO: supervisor activation verifies its selected marker inode; retain the synchronous final admission boundary during migration.
+              "server/execution-installation/maintenance/host-supervisor-activation.ts": [
+                "lstatSync"
+              ],
+              // TODO: candidate continuation reads and flushes exact private artifacts and link identity; migrate custody and settlement together.
+              "server/execution-installation/maintenance/host-supervisor-candidate-continuation.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "openSync",
+                "readlinkSync"
+              ],
+              // TODO: canonical supervisor command identity is final admission evidence; migrate the command boundary with its callers.
+              "server/execution-installation/maintenance/host-supervisor-command-admission.ts": [
+                "realpathSync"
+              ],
+              // TODO: supervisor continuation binds descriptors, private state and durable markers; migrate the whole custody transition.
+              "server/execution-installation/maintenance/host-supervisor-continuation.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "readlinkSync",
+                "realpathSync"
+              ],
+              // TODO: supervisor execution opens and flushes its exact evidence before dispatch; migrate evidence ownership and execution together.
+              "server/execution-installation/maintenance/host-supervisor-execution.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "openSync"
+              ],
+              // TODO: fallback admission checks the selected inode before using it; retain identity checks during asynchronous migration.
+              "server/execution-installation/maintenance/host-supervisor-fallback.ts": [
+                "lstatSync"
+              ],
+              // TODO: initial supervisor command admission binds canonical executable and inode identity; migrate without weakening its final check.
+              "server/execution-installation/maintenance/host-supervisor-initial-command-admission.ts": [
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: supervisor migration validates exact release identity before transfer; migrate selection and activation together.
+              "server/execution-installation/maintenance/host-supervisor-migration.ts": [
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: native supervisor launch consumes reviewed source and executable identities; migrate preparation and final dispatch together.
+              "server/execution-installation/maintenance/host-supervisor-native-launch.ts": [
+                "lstatSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: recovery inspection binds canonical links and selected inode types; migrate observation and custody checks together.
+              "server/execution-installation/maintenance/host-supervisor-recovery-inspection.ts": [
+                "lstatSync",
+                "readlinkSync",
+                "realpathSync"
+              ],
+              // TODO: bounded native process inspection and canonical daemon identity establish tracked maintenance evidence.
+              "server/execution-installation/maintenance/native-daemon-inspection.ts": [
+                "execFileSync",
+                "lstatSync",
+                "realpathSync"
+              ],
+              // TODO: exclusive private registration staging, inode checks and durable publication form one authority transaction.
+              "server/execution-installation/maintenance/native-registration.ts": [
+                "closeSync",
+                "fstatSync",
+                "fsyncSync",
+                "linkSync",
+                "lstatSync",
+                "mkdirSync",
+                "openSync",
+                "readFileSync",
+                "readdirSync",
+                "realpathSync",
+                "unlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: descriptor-bound source provenance is checked before admission; migrate observation and final identity validation together.
+              "server/execution-installation/maintenance/source-provenance.ts": [
+                "closeSync",
+                "fstatSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: scoped maintenance client reads its credential through a verified descriptor; migrate credential readiness and request admission together.
+              "server/execution-installation/managed-client.ts": [
+                "closeSync",
+                "fstatSync",
+                "openSync",
+                "readFileSync"
+              ],
+              // TODO: cancellation receipts share the synchronous authority and queue mutation boundary; move receipt custody and all mutation-time rechecks to async together.
+              "server/execution-installation/management.ts": [
+                "closeSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync",
+                "writeFileSync"
+              ],
+              // TODO: retained helper artifact preparation: retained bounded compiler invocation creates the native helper artifact before use.
+              "server/execution-installation/native-helper-artifact.ts": ["spawnSync"],
+              // TODO: delegated authority binds exact private decision files and durable descriptors; migrate reads, grants and revocations together.
+              "server/execution-installation/owner-delegation.ts": [
+                "closeSync",
+                "existsSync",
+                "fstatSync",
+                "fsyncSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync"
+              ],
+              // TODO: owner session constructor and durable renew/revoke state share synchronous persistence; migrate readiness and ordered mutations.
+              "server/execution-installation/owner-sessions.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync"
+              ],
+              // TODO: frozen profile admission reads the selected private installation config synchronously; migrate bindings and final launch rechecks together.
+              "server/execution-installation/profiles/admission.ts": ["readFileSync"],
+              // TODO: profile controller persists shared definitions under exclusive ownership; migrate durable write ordering and request serialization together.
+              "server/execution-installation/profiles/runtime.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "mkdirSync",
+                "openSync",
+                "readFileSync",
+                "writeFileSync"
+              ],
+              // TODO: session-host release admission binds canonical selected source identity; migrate selection and launch rechecks together.
+              "server/execution-installation/release-selection-guard.ts": [
+                "existsSync",
+                "realpathSync"
+              ],
+              // TODO: upgrade runtime validates selected source and owns staging cleanup; migrate ordered upgrade custody and rollback together.
+              "server/execution-installation/release-upgrade-runtime.ts": [
+                "closeSync",
+                "existsSync",
+                "mkdirSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync",
+                "rmSync"
+              ],
+              // TODO: upgrade selection consumes synchronous persisted release state; migrate constructor readiness and live update admission together.
+              "server/execution-installation/release-upgrades.ts": ["existsSync", "readFileSync"],
+              // TODO: installation authority construction validates private state and source roots; separate startup from runtime readers before migrating IO.
+              "server/execution-installation/server.ts": [
+                "existsSync",
+                "mkdirSync",
+                "realpathSync"
+              ],
+              // TODO: frozen settings admission reads the selected private installation config; migrate binding custody and final dispatch checks together.
+              "server/execution-installation/settings/admission.ts": ["readFileSync"],
+              // TODO: instruction request state is read and atomically renamed during approval transitions; migrate ordered mutations together.
+              "server/execution-installation/settings/instruction-requests.ts": [
+                "existsSync",
+                "readFileSync",
+                "renameSync"
+              ],
+              // TODO: shared settings controller owns exclusive durable writes; migrate request serialization and persistence as one transaction.
+              "server/execution-installation/settings/runtime.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync",
+                "writeFileSync"
+              ],
+              // TODO: skill package admission and exclusive durable receipts share source custody; migrate install/remove and rollback ordering together.
+              "server/execution-installation/settings/skill-packages.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "linkSync",
+                "openSync",
+                "readFileSync",
+                "rmSync",
+                "statSync",
+                "writeFileSync"
+              ],
+              // TODO: installation snapshot copy/restore operates on reviewed source and owned staging; migrate the tracked transaction and rollback together.
+              "server/execution-installation/snapshots.ts": [
+                "cpSync",
+                "existsSync",
+                "lstatSync",
+                "readFileSync",
+                "readdirSync",
+                "renameSync",
+                "rmSync",
+                "statSync"
+              ],
+              // TODO: contribution batching owns private staging and rollback cleanup; migrate write ordering and tracked batch custody together.
+              "server/execution-installation/source-batches.ts": [
+                "mkdirSync",
+                "mkdtempSync",
+                "readFileSync",
+                "rmSync",
+                "writeFileSync"
+              ],
+              // TODO: source update admission and private durable selection share a tracked authority transaction; migrate staging and activation together.
+              "server/execution-installation/source-updates.ts": [
+                "closeSync",
+                "existsSync",
+                "fsyncSync",
+                "lstatSync",
+                "mkdirSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync",
+                "renameSync",
+                "symlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: gated supervisor maintenance reads the exact reviewed receipt; migrate evidence consumption with final dispatch validation.
+              "server/execution-installation/supervisor-maintenance-gated.ts": ["readFileSync"],
+              // TODO: supervisor maintenance verifies accessible executable and private inputs before tracked dispatch; migrate admission and rechecks together.
+              "server/execution-installation/supervisor-maintenance.ts": [
+                "accessSync",
+                "readFileSync"
+              ],
+              // TODO: agent Git-trust selection uses synchronous repository identity inspection; migrate launch preparation and trust revalidation together.
+              "server/projects-folder-agent-git-trust.ts": ["statSync"],
+              // TODO: synchronous Git safe-directory capability resolves root identity; migrate every environment-builder consumer together.
+              "server/projects-folder-git-trust.ts": ["existsSync", "realpathSync"],
+              // TODO: projects-root identity and local settings are synchronous public capabilities; migrate callers without weakening path containment.
+              "server/projects-folder.ts": ["existsSync", "readFileSync", "realpathSync"],
+              // Isolated E2E child fixture: synchronous existence probe coordinates its disposable harness process, not live daemon traffic.
+              "server/session-host/durable-sessions.fixture.e2e.ts": ["existsSync"],
+              // Isolated E2E harness: private temporary installs, native probes and cleanup belong to the test control process.
+              "server/session-host/durable-sessions.harness.e2e.ts": [
+                "chmodSync",
+                "execFileSync",
+                "mkdirSync",
+                "mkdtempSync",
+                "readFileSync",
+                "renameSync",
+                "rmSync",
+                "symlinkSync",
+                "writeFileSync"
+              ],
+              // TODO: session-host audit callback rotates and flushes private logs synchronously; migrate bounded logging and error ownership together.
+              "server/session-host/host-files.ts": [
+                "appendFileSync",
+                "chmodSync",
+                "renameSync",
+                "statSync"
+              ],
+              // TODO: durable-session settings are a synchronous host/worker capability; migrate startup readiness and reload consumers together.
+              "server/session-host/settings.ts": ["readFileSync"],
+              // TODO: relay shim staging and source inspection share durable-host tool custody; migrate preparation and live replacement together.
+              "server/session-host/tool-relay.ts": [
+                "existsSync",
+                "lstatSync",
+                "mkdirSync",
+                "readFileSync",
+                "renameSync",
+                "rmSync",
+                "writeFileSync"
+              ],
+              // TODO: selected system-project checkout classification is synchronous; move bounded probing into async provisioning without fallback drift.
+              "server/system-project/ensure-system-project.ts": ["existsSync"],
+              // TODO: system-project source provisioning checks its Git marker synchronously; migrate setup readiness and ownership together.
+              "server/system-project/setup-source.ts": ["existsSync"],
+              // TODO: broker reservation lookup is a synchronous shared capability; migrate its callers with origin validation and current-request identity.
+              "server/workspace-preview-origin.ts": ["readFileSync"],
+              // TODO: reviewed account deletion rechecks managed-home identity immediately before removal; migrate planning and destructive custody together.
+              "services/provider-login/removal.ts": [
+                "existsSync",
+                "lstatSync",
+                "realpathSync",
+                "rmSync"
+              ],
+              // TODO: retained claude quota discovery checks account-store presence synchronously; migrate bounded auth discovery with current-account routing.
+              "services/quota-fetcher/providers/claude.ts": ["existsSync"],
+              // TODO: retained codex quota discovery checks account-store presence synchronously; migrate bounded auth discovery with current-account routing.
+              "services/quota-fetcher/providers/codex.ts": ["existsSync"],
+              // TODO: retained copilot quota discovery checks account-store presence synchronously; migrate bounded auth discovery with current-account routing.
+              "services/quota-fetcher/providers/copilot.ts": ["existsSync"],
+              // TODO: retained cursor quota discovery checks account-store presence synchronously; migrate bounded auth discovery with current-account routing.
+              "services/quota-fetcher/providers/cursor.ts": ["existsSync"],
+              // TODO: retained grok quota discovery checks account-store presence synchronously; migrate bounded auth discovery with current-account routing.
+              "services/quota-fetcher/providers/grok.ts": ["existsSync"],
+              // TODO: retained kimi quota discovery checks account-store presence synchronously; migrate bounded auth discovery with current-account routing.
+              "services/quota-fetcher/providers/kimi.ts": ["existsSync"],
+              // TODO: retained minimax quota discovery checks account-store presence synchronously; migrate bounded auth discovery with current-account routing.
+              "services/quota-fetcher/providers/minimax.ts": ["existsSync"],
+              // TODO: retained synchronous config readers merge local script overrides; migrate remaining consumers while preserving local-override semantics.
+              "utils/paseo-config-file.ts": ["existsSync", "readFileSync"]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "packages/server/src/**/*.{test,spec,fixture}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        "packages/server/src/**/test-utils/**",
+        "packages/server/src/server/daemon-e2e/**",
+        "packages/server/src/server/agent/providers/pi/extensions/*-test.ts"
+      ],
+      "rules": { "paseo/no-sync-io": "off" }
+    },
+    {
+      "files": [
+        "plugins/*-provider/server/**/*.ts",
+        "packages/plugin/src/server/acp-internal/**/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "node:child_process",
+                "importNames": [
+                  "spawn",
+                  "exec",
+                  "execFile",
+                  "spawnSync",
+                  "execSync",
+                  "execFileSync"
+                ],
+                "message": "Use the plugin server process helpers so Windows command scripts and argv are handled consistently."
+              },
+              {
+                "name": "child_process",
+                "importNames": [
+                  "spawn",
+                  "exec",
+                  "execFile",
+                  "spawnSync",
+                  "execSync",
+                  "execFileSync"
+                ],
+                "message": "Use the plugin server process helpers so Windows command scripts and argv are handled consistently."
+              }
+            ]
+          }
+        ]
+      }
+    },
     {
       "files": ["packages/app/src/**/*.{ts,tsx}"],
       "rules": {
@@ -196,10 +1119,7 @@
     {
       "files": [
         "packages/app/src/app/_layout.tsx",
-        "packages/app/src/app/pair-scan.tsx",
         "packages/app/src/components/adaptive-modal-sheet.tsx",
-        "packages/app/src/components/add-host-method-modal.tsx",
-        "packages/app/src/components/add-host-modal.tsx",
         "packages/app/src/components/agent-list.tsx",
         "packages/app/src/components/agent-status-dot.tsx",
         "packages/app/src/components/attachment-lightbox.tsx",
@@ -213,13 +1133,11 @@
         "packages/app/src/components/download-toast.tsx",
         "packages/app/src/components/draggable-list.native.tsx",
         "packages/app/src/components/headers/back-header.tsx",
-        "packages/app/src/components/headers/menu-header.tsx",
         "packages/app/src/components/headers/screen-header.tsx",
         "packages/app/src/components/host-status-dot.tsx",
         "packages/app/src/components/hosts/host-picker.tsx",
         "packages/app/src/components/icons/paseo-logo.tsx",
         "packages/app/src/components/left-sidebar.tsx",
-        "packages/app/src/components/pair-link-modal.tsx",
         "packages/app/src/components/plan-card.tsx",
         "packages/app/src/components/provider-diagnostic-sheet.tsx",
         "packages/app/src/components/question-form-card.tsx",
@@ -316,6 +1234,168 @@
       ],
       "rules": {
         "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": ["packages/app/src/**/*.{ts,tsx}"],
+      "rules": {
+        "paseo/no-raw-pressable": "error"
+      }
+    },
+    // Press feedback is owned by the primitives in components/ui. Raw pressable burn-down:
+    // 117 retained files. Future work should remove entries as contracts migrate to shared primitives.
+    {
+      "files": [
+        // retained feedback debt: main's shared provider section row; no standard feedback is claimed during merge lint.
+        "packages/app/src/agent-profiles/settings/shared-provider-section.tsx",
+        // retained feedback debt: main's owner lock badge keeps its fixed size in both states; no standard feedback is claimed during merge lint.
+        "packages/app/src/components/settings/owner-lock.tsx",
+        // retained feedback debt: main's Quotas card footer actions; no standard feedback is claimed during merge lint.
+        "packages/app/src/provider-usage/quota-footer.tsx",
+        // retained feedback debt: main's System view rows; the Settings redesign owns their final controls.
+        "packages/app/src/screens/settings/system/system-view.tsx",
+        "packages/app/src/components/ui/**/*.{ts,tsx}",
+        "packages/app/src/**/*.{test,spec}.{ts,tsx}",
+        "packages/app/src/agent-profiles/settings/agent-profile-appearance-field.tsx",
+        "packages/app/src/agent-skills/selection-sheet.tsx",
+        "packages/app/src/agent-stream/chat-outline/rail.web.tsx",
+        "packages/app/src/agent-stream/view.tsx",
+        "packages/app/src/changelog/internal/changelog-sheet.tsx",
+        "packages/app/src/command-center/command-center.tsx",
+        "packages/app/src/components/adaptive-modal-sheet.tsx",
+        "packages/app/src/components/add-project-flow.tsx",
+        "packages/app/src/components/agent-list.tsx",
+        "packages/app/src/components/app-diagnostic-sheet.tsx",
+        "packages/app/src/components/attachment-lightbox.tsx",
+        "packages/app/src/components/attachment-pill.tsx",
+        "packages/app/src/components/combined-model-selector.tsx",
+        "packages/app/src/components/compact-explorer-sidebar.tsx",
+        "packages/app/src/components/context-window-meter.tsx",
+        "packages/app/src/components/desktop/window-controls.tsx",
+        "packages/app/src/components/dictation-controls.tsx",
+        "packages/app/src/components/download-toast.tsx",
+        "packages/app/src/components/file-explorer-pane.tsx",
+        "packages/app/src/components/headers/back-header.tsx",
+        "packages/app/src/components/highlighted-code-block.tsx",
+        "packages/app/src/components/hosts/host-filter.tsx",
+        "packages/app/src/components/hosts/host-picker.tsx",
+        "packages/app/src/components/import-session-sheet.tsx",
+        "packages/app/src/components/left-sidebar.tsx",
+        "packages/app/src/components/markdown/fence/mermaid/host.native.tsx",
+        "packages/app/src/components/markdown/fence/mermaid/host.web.tsx",
+        "packages/app/src/components/message.tsx",
+        "packages/app/src/components/model-browser.tsx",
+        "packages/app/src/components/plan-card.tsx",
+        "packages/app/src/components/provider-diagnostic-sheet.tsx",
+        "packages/app/src/components/question-form-card.tsx",
+        "packages/app/src/components/realtime-voice-overlay.tsx",
+        "packages/app/src/components/schedules/schedule-row.tsx",
+        "packages/app/src/components/settings/collapsible-row.tsx",
+        "packages/app/src/components/settings/headings/settings-info-tip.tsx",
+        "packages/app/src/components/sidebar-callout.tsx",
+        "packages/app/src/components/sidebar-resize-handle.tsx",
+        "packages/app/src/components/sidebar-workspace-list.tsx",
+        "packages/app/src/components/sidebar/sidebar-group-toggle-row.tsx",
+        "packages/app/src/components/sidebar/sidebar-header-row.tsx",
+        "packages/app/src/components/sidebar/sidebar-section-header.tsx",
+        "packages/app/src/components/sidebar/sidebar-status-list.tsx",
+        "packages/app/src/components/sidebar/workspace-meta-row/index.tsx",
+        "packages/app/src/components/terminal-copy-paste-actions.tsx",
+        "packages/app/src/components/terminal-emulator-native-grid.native.tsx",
+        "packages/app/src/components/terminal-pane.tsx",
+        "packages/app/src/components/toast-host.tsx",
+        "packages/app/src/components/tool-call-sheet.tsx",
+        "packages/app/src/components/welcome-screen.tsx",
+        "packages/app/src/components/workspace-hover-card.tsx",
+        "packages/app/src/components/zoomable-viewport/toolbar.tsx",
+        "packages/app/src/composer/agent-controls/index.tsx",
+        "packages/app/src/composer/diff-stat-pill.tsx",
+        "packages/app/src/composer/dock/internal/background.native.tsx",
+        "packages/app/src/composer/draft/import-pill.tsx",
+        "packages/app/src/composer/index.tsx",
+        "packages/app/src/composer/tracks.tsx",
+        "packages/app/src/desktop/browser/pane/index.electron.tsx",
+        "packages/app/src/git/actions-split-button.tsx",
+        "packages/app/src/git/commits-section/commit-row.tsx",
+        "packages/app/src/git/commits-section/commits-section.tsx",
+        "packages/app/src/git/diff-pane.tsx",
+        "packages/app/src/git/forges/gitlab.view.tsx",
+        "packages/app/src/git/pull-request-panel/checks-section.tsx",
+        "packages/app/src/git/pull-request-panel/pane.tsx",
+        "packages/app/src/git/pull-request-panel/section-kit.tsx",
+        "packages/app/src/hosts/host-chooser.tsx",
+        "packages/app/src/mobile-panels/presentation.tsx",
+        "packages/app/src/panels/new-tab-panel.tsx",
+        "packages/app/src/panels/setup-panel.tsx",
+        "packages/app/src/plugins/buttons/view.tsx",
+        "packages/app/src/review/surface.tsx",
+        "packages/app/src/screens/open-project-screen.tsx",
+        "packages/app/src/screens/project-settings-screen.tsx",
+        "packages/app/src/screens/projects-screen.tsx",
+        "packages/app/src/screens/settings-screen.tsx",
+        "packages/app/src/screens/settings/host-appearance-section.tsx",
+        "packages/app/src/screens/settings/host-page.tsx",
+        "packages/app/src/screens/settings/providers-section.tsx",
+        "packages/app/src/screens/workspace/compact-workspace-header/tab-switcher.tsx",
+        "packages/app/src/screens/workspace/scripts/workspace-scripts-button.tsx",
+        "packages/app/src/screens/workspace/workspace-desktop-tabs-row.tsx",
+        "packages/app/src/screens/workspace/workspace-tab-presentation.tsx",
+        "packages/app/src/tool-calls/detail-level/overview/sheet.tsx",
+        "packages/app/src/usage/sidebar-item.tsx",
+        "packages/app/src/usage/window-bar.tsx",
+        "packages/app/src/workspace-labels/manager-modal.tsx",
+        "packages/app/src/workspace-labels/swatch.tsx",
+        "packages/app/src/workspace/open-in-editor/button.tsx",
+        // Owner-reviewed merge compatibility; these entries do not certify standard feedback.
+        // custom feedback or gesture contract: Shared card disclosure owns pointer highlight, heading whitespace and passive long-press tooltip. Preserve card header layout and tooltip gesture ownership.
+        "packages/app/src/agent-stream/card-disclosure.tsx",
+        // custom feedback or gesture contract: Folder and breadcrumb rows explicitly style active/hovered/pressed states and preserve nested Add action, disabled state and folder-navigation semantics.
+        "packages/app/src/components/add-project-flow-projects-folder.tsx",
+        // retained feedback debt: Interactive sheet group header expands; hover popover counterpart stays a noninteractive View. Preserve this interaction boundary and header geometry; static feedback remains existing debt.
+        "packages/app/src/components/context-breakdown/view.tsx",
+        // custom feedback or gesture contract: Native press-in/long-press drag activation and web non-button dnd-kit activator are intentionally different. Replacing the primitive risks gesture and nested-button semantics.
+        "packages/app/src/components/list-drag-handle.tsx",
+        // retained feedback debt: Version action checks updates and opens Maintenance with preserved testID and compact footer geometry. Current static feedback remains existing debt.
+        "packages/app/src/components/sidebar-identity-footer.tsx",
+        // custom feedback or gesture contract: Container row owns pointer/press state and a separate drag activator; preserve propagation, expand/navigation and row-wide feedback.
+        "packages/app/src/components/sidebar/container-row.tsx",
+        // retained feedback debt: Pinned section heading owns conditional chevron/count and touch-visible controls; retains collapse contract and row geometry. No new press feedback claim.
+        "packages/app/src/components/sidebar/pinned-section-header.tsx",
+        // custom feedback or gesture contract: Preview row owns hovered background and stops propagation to its surrounding hover card/navigation surface.
+        "packages/app/src/components/workspace-preview-rows.tsx",
+        // retained feedback debt: Existing compact queue-message button owns queue/send state, IME keyboard dispatch and recording/composer lifetimes; existing raw primitive is retained. No new hover feedback claim for this queue button.
+        "packages/app/src/composer/input/input.tsx",
+        // retained feedback debt: Maintenance notice row contains a separately actionable Cancel control and compact rail counterpart. Preserve nested actions and tracked-review navigation; static feedback remains existing debt.
+        "packages/app/src/execution-installation/maintenance-notice.tsx",
+        // retained feedback debt: Maintenance permission checkbox retains exact role, checked state, disabled state and owner approval action. Its current static row is retained UI debt; no claim of standard feedback.
+        "packages/app/src/execution-installation/panel.tsx",
+        // retained feedback debt: Existing Open Usage footer uses link role and hitSlop, preserving /usage navigation. Static text link feedback remains explicit existing debt.
+        "packages/app/src/provider-usage/global-quota-card.tsx",
+        // retained feedback debt: Quota account disclosure retains expansion/accessibility state inside nested card rows. Current static feedback remains existing debt.
+        "packages/app/src/provider-usage/quota-account-list.tsx",
+        // type-only reference: Pressable is imported only to type existing project badge styles via ComponentProps; visible badge rows already own hovered/pressed feedback. No rendered raw Pressable in this file.
+        "packages/app/src/screens/new-workspace-screen.tsx",
+        // custom feedback or gesture contract: Zoom step buttons own hovered/pressed styles and boundaries alongside native range pointer-up commit/cancel behavior. Reset uses the existing compact percentage readout.
+        "packages/app/src/screens/settings/appearance/interface-zoom-control.web.tsx",
+        // custom feedback or gesture contract: Provider removal link owns hovered row treatment and busy disabling; keep destructive confirmation route and text semantics.
+        "packages/app/src/screens/settings/provider-detail-page.tsx",
+        // custom feedback or gesture contract: Settings search results explicitly share selected/hovered/pressed fill and preserve result navigation and accessibility hints.
+        "packages/app/src/screens/settings/settings-scroll-page.tsx",
+        // custom feedback or gesture contract: Long-press drag handle and hovered/pressed expansion title share a provider row; replacing primitives could alter drag ownership and row geometry.
+        "packages/app/src/screens/settings/shared-providers-page.tsx",
+        // custom feedback or gesture contract: Link semantics, hover text decoration, touch crumb geometry and pointer/focus disclosure remain owned here. This is sidebar folder navigation, not the retired focus mode.
+        "packages/app/src/sidebar-focus/breadcrumb.tsx",
+        // custom feedback or gesture contract: Existing icon actions explicitly style hovered/pressed background and glyph with fixed hitSlop; preserve sidebar folder focusing semantics.
+        "packages/app/src/sidebar-focus/focus-button.tsx",
+        // retained feedback debt: Existing disabled-during-sync retry row/rail includes status copy and separator. No standard hover/press feedback is claimed; retain as explicit existing UI debt rather than silently redesigning during merge lint.
+        "packages/app/src/sidebar-state/status.tsx",
+        // custom feedback or gesture contract: Icon-only archive/retry actions render their own hovered/pressed glyph state; inline card action geometry and tooltip delegation stay unchanged.
+        "packages/app/src/subagents/track.tsx",
+        // retained feedback debt: Workspace lifecycle badge stops propagation within a surrounding workspace row and owns tooltip semantics. Preserve nested activation/hit target; no claim of standard feedback.
+        "packages/app/src/workspace/lifecycle/indicators.tsx"
+      ],
+      "rules": {
+        "paseo/no-raw-pressable": "off"
       }
     },
     {

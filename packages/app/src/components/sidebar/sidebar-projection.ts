@@ -1,4 +1,5 @@
 import { splitFactoryWorkspaces } from "@/workspace/lifecycle/grouping";
+import type { TFunction } from "i18next";
 import { buildStatusGroups } from "@/hooks/sidebar-status-view-model";
 import {
   splitPinnedSidebarGroups,
@@ -53,6 +54,7 @@ export interface SidebarProjectionInput {
   pinnedCollapsed: boolean;
   collapsedProjectKeys: ReadonlySet<string>;
   collapsedWorkspaceGroupKeys: ReadonlySet<string>;
+  t: TFunction;
   factorySupportedHosts?: ReadonlyMap<string, boolean>;
   /** Null when the sidebar host cannot store folders. */
   folderState?: SidebarFolderState | null;
@@ -150,7 +152,7 @@ function buildWorkspaceGroups(
       return [];
     case "status":
       return statusWorkspaceGroups(
-        buildStatusGroups(unpinnedWorkspaces, input.projectNamesByViewKey),
+        buildStatusGroups(unpinnedWorkspaces, input.projectNamesByViewKey, input.t),
       );
   }
 }

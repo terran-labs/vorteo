@@ -1,7 +1,7 @@
 import React from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { Pressable, Text } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 import { Tooltip, TooltipContent, TooltipText, TooltipTrigger } from "./tooltip";
@@ -104,5 +104,62 @@ describe("Tooltip portal cleanup", () => {
     await userEvent.keyboard("{Escape}");
     await expectRemoved();
     expect(document.activeElement).toBe(trigger);
+  });
+  it("keeps a disabled button inert while its wrapper exposes hover and keyboard guidance", async () => {
+    const press = vi.fn();
+    const longPress = vi.fn();
+    flushSync(() =>
+      root.render(
+        <Tooltip delayDuration={0} enabledOnMobile>
+          <TooltipTrigger asChild passive>
+            <View
+              focusable
+              accessibilityLabel="Select a profile before sending"
+              testID="disabled-help"
+            >
+              <Pressable
+                disabled
+                accessibilityRole="button"
+                accessibilityLabel="Send message"
+                onPress={press}
+                onLongPress={longPress}
+              >
+                <Text>Send</Text>
+              </Pressable>
+            </View>
+          </TooltipTrigger>
+          <TooltipContent>
+            <Text>Select a profile before sending</Text>
+          </TooltipContent>
+        </Tooltip>,
+      ),
+    );
+    const wrapper = container.querySelector<HTMLElement>('[data-testid="disabled-help"]');
+    const button = container.querySelector<HTMLButtonElement>('[role="button"]');
+    if (!wrapper || !button) throw new Error("Disabled Send fixture did not render");
+    expect(container.querySelectorAll('[role="button"]').length).toBe(1);
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    await userEvent.hover(wrapper);
+    await expect
+      .poll(() => document.querySelector('[role="tooltip"]')?.textContent)
+      .toBe("Select a profile before sending");
+    expect(wrapper.getAttribute("aria-describedby")).toBe(
+      document.querySelector('[role="tooltip"]')?.id,
+    );
+    await userEvent.unhover(wrapper);
+    await expectRemoved();
+    await userEvent.keyboard("{Tab}");
+    expect(document.activeElement).toBe(wrapper);
+    await expect
+      .poll(() => document.querySelector('[role="tooltip"]')?.textContent)
+      .toBe("Select a profile before sending");
+    await userEvent.keyboard("{Enter} ");
+    await userEvent.click(wrapper);
+    expect(press).not.toHaveBeenCalled();
+    expect(longPress).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Escape}");
+    await expectRemoved();
+    expect(document.activeElement).toBe(wrapper);
   });
 });

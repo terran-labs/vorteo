@@ -8,10 +8,11 @@ category: Getting started
 
 # Getting started
 
-This fork runs Vorteo inside a container. Follow [Docker installation](/docs/docker), then connect accounts and enable Vorteo from the sidebar. The installer builds the checkout locally and enrolls its internal Tailscale client.
+Vorteo runs agents on your machines, with a trusted Host environment and an optional isolated Dev container. Follow the [installation guide](https://github.com/terran-labs/vorteo#install) for the fork installer and [Docker operations](/docs/docker) for container details. The installer builds from the fork source and configures private connectivity.
 
 ## Where next
 
+- [Run parallel tasks](/docs/parallel-development), use separate worktrees, review diffs, and test changes in the desktop app.
 - [Connectivity](/docs/connectivity), connect through the relay or Tailscale.
 - [Docker](/docs/docker), run the daemon and bundled web UI in a container.
 - [Workspaces](/docs/workspaces), the project, workspace, and session model Vorteo is built around.

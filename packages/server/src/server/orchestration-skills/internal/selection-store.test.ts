@@ -58,7 +58,7 @@ describe("daemon agent skill selection", () => {
   it("shares one persisted selection with the config patch path", async () => {
     const { config, root, store } = await createStore();
 
-    config.patch({
+    await config.patch({
       skills: { selection: { mode: "custom", skills: ["paseo"] } },
     } satisfies MutableDaemonConfigPatch);
 

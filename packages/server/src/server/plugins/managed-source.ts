@@ -2,7 +2,11 @@ import {
   PluginRegistryIdentitySchema,
   parsePluginRegistryReference,
 } from "@getpaseo/protocol/plugin-registry";
-import { resolveRegistryPlugin, type RegistryOptions } from "./managed-source/registry.js";
+import {
+  assertRegistryEnabled,
+  resolveRegistryPlugin,
+  type RegistryOptions,
+} from "./managed-source/registry.js";
 import type { ResolvedPluginSource } from "@getpaseo/protocol/plugin-installation";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -178,11 +182,16 @@ export class ManagedPluginSources {
     input: InstallInput,
     target?: PluginUpdateTarget,
   ): Promise<ManagedPluginCandidate> {
-    const registry = this.registryOptions.enabled
-      ? parsePluginRegistryReference(input.source, this.registryOptions.defaultUrl)
-      : null;
+    const registry =
+      this.registryOptions.enabled === true
+        ? parsePluginRegistryReference(input.source, this.registryOptions.defaultUrl)
+        : null;
     if (registry) {
-      if (input.ref || input.pluginPath)
+      if (input.ref)
+        throw new Error(
+          "Registry installs pin the reviewed revision. Drop --ref, or install from an explicit github:owner/repository source to choose a revision.",
+        );
+      if (input.pluginPath)
         throw new Error("Registry sources use their reviewed artifact path and revision");
       const resolved = await resolveRegistryPlugin(registry, this.registryOptions, true);
       const candidate = await this.prepareInstall(resolved.input, resolved.target);
@@ -193,7 +202,9 @@ export class ManagedPluginSources {
       };
     }
     if (input.source.startsWith("registry:")) {
-      throw new Error("Enable plugin registry sources and provide a valid registry reference");
+      throw new Error(
+        "Enable plugin registry sources and provide a valid registry reference; set pluginRegistryEnabled or PASEO_PLUGIN_REGISTRY_ENABLED",
+      );
     }
     const pluginPath = normalizePluginPath(input.pluginPath);
     const versionRoot = await this.createStagingRoot();
@@ -222,7 +233,7 @@ export class ManagedPluginSources {
           integrity: artifact.integrity,
         };
       } else {
-        const remote = normalizeGitSource(input.source, !this.registryOptions.enabled);
+        const remote = normalizeGitSource(input.source, this.registryOptions.enabled !== true);
         sourceRoot = path.join(versionRoot, "checkout");
         await clone(remote, sourceRoot);
         const commit = await resolveRequestedRef(sourceRoot, input.ref);
@@ -269,6 +280,7 @@ export class ManagedPluginSources {
   }
 
   async prepareResolvedInstall(resolved: ResolvedPluginSource): Promise<ManagedPluginCandidate> {
+    if (resolved.identity.registry) assertRegistryEnabled(this.registryOptions);
     let input: InstallInput;
     if (resolved.kind === "git") {
       input = {
@@ -327,7 +339,7 @@ export class ManagedPluginSources {
     const location = this.locate(pluginId, configuredPath);
     let target: PluginUpdateTarget;
     let outcome: PluginUpdatePreview["outcome"];
-    if (this.registryOptions.enabled && current.identity.registry) {
+    if (current.identity.registry) {
       if (selection) throw new Error("Registry updates use only the reviewed registry pin");
       const resolved = await resolveRegistryPlugin(
         current.identity.registry,
@@ -404,7 +416,7 @@ export class ManagedPluginSources {
     await this.assertCurrent(proposal, configuredPath);
     const identity = this.locate(proposal.id, configuredPath).identity;
     const record = this.records[proposal.id];
-    if (this.registryOptions.enabled && identity.kind !== "directory" && identity.registry) {
+    if (identity.kind !== "directory" && identity.registry) {
       const resolved = await resolveRegistryPlugin(identity.registry, this.registryOptions, false);
       assertRegistryArtifactIdentity(identity, resolved.artifact);
       if (!isDeepStrictEqual(resolved.target, proposal.target))
@@ -536,7 +548,7 @@ function reviewLinks(current: PluginInstallation, target: PluginUpdateTarget): s
   }
   return [];
 }
-/** Bare owner/repo is GitHub shorthand unless registry references own that syntax. */
+/** Bare GitHub shorthand is available only while registry lookup is disabled. */
 function normalizeGitSource(source: string, bareGitHubShorthand: boolean): string {
   const expandsShorthand =
     bareGitHubShorthand || source.startsWith("github:") || source.startsWith("git:");

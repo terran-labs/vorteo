@@ -294,8 +294,8 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     surface4: tint.surface4,
     surfaceDiffEmpty: tint.surfaceDiffEmpty,
     surfaceSidebar: tint.surfaceSidebar,
-    surfaceSidebarHover: tint.surface1,
-    surfaceSidebarSelected: tint.surface3,
+    surfaceSidebarHover: tint.surface3,
+    surfaceSidebarSelected: tint.surface4,
     surfaceWorkspace: tint.surface0,
     interactionHighlight: "rgba(0, 0, 0, 0.06)",
 
@@ -468,8 +468,10 @@ export const SPACING = {
   1.5: 6,
   2: 8,
   3: 12,
+  3.5: 14,
   4: 16,
   6: 24,
+  7: 28,
   8: 32,
   12: 48,
   16: 64,
@@ -499,7 +501,6 @@ export const ICON_SIZE = {
   sm: 14,
   md: 16,
   lg: 20,
-  xl: 24,
 } as const;
 
 export const ICON_STROKE_WIDTH = 1.5;
@@ -624,7 +625,7 @@ export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemant
 
 const lightShadow = {
   sm: {
-    shadowColor: "rgba(0, 0, 0, 0.02)",
+    shadowColor: "rgba(0, 0, 0, 0.08)",
     shadowOffset: { width: 0, height: 2 },
     shadowRadius: 8,
     elevation: 2,

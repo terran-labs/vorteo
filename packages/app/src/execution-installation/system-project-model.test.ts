@@ -10,6 +10,8 @@ function workspace(
     id,
     {
       id,
+      createdAt: null,
+      lastUserMessageAt: null,
       projectId: "system",
       projectDisplayName: "Vorteo System",
       projectRootPath: "/system",

@@ -1,6 +1,7 @@
 import type { UsageReportEntry } from "@getpaseo/protocol/messages";
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { openUsage } from "../support/helpers/usage-login";
 import { getServerId } from "../support/helpers/server-id";
 import { openSettingsHostSection } from "../support/helpers/settings";
 import {
@@ -89,16 +90,17 @@ test.describe("usage settings", () => {
     await expect(card.getByText("Alpha plan", { exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(card.getByText("dev@example.com", { exact: true })).toBeVisible();
     await expect(card.getByText("Beta plan", { exact: true })).toBeVisible();
-    await expect(card.getByText("70%")).toBeVisible();
+    await expect(card.getByText("70% used")).toBeVisible();
     await expect(card.getByText("1,234 left", { exact: true })).toBeVisible();
     await expect(card.getByText("$5.00 / $20.00", { exact: true })).toBeVisible();
     await expect(card.getByText("2026-12-31", { exact: true })).toBeVisible();
     await expect(card.getByText("Gamma auth expired", { exact: true })).toBeVisible();
 
-    // Percentages now live on the Usage screen, and still apply to the host section.
-    await expect(card.getByTestId("usage-options-toggle")).toHaveCount(0);
+    // The shared percentages setting applies to the host section.
     const hostUsageUrl = page.url();
-    await page.goto("/usage");
+    await gotoAppShell(page);
+    await openUsage(page);
+    await expect(page.getByTestId("usage-options-toggle")).toBeVisible();
     await showUsageAs(page, "remaining");
     await page.goto(hostUsageUrl);
     await expect(card.getByText("30% left")).toBeVisible();
@@ -126,11 +128,11 @@ test.describe("usage settings", () => {
     await openSettings(page);
     await openSettingsHostSection(page, serverId, "usage");
     const card = page.getByTestId("usage-card");
-    await expect(card.getByText("23%")).toBeVisible({ timeout: 10_000 });
+    await expect(card.getByText("23% used")).toBeVisible({ timeout: 10_000 });
 
     await refreshAllUsage(page);
     await expect.poll(() => forcedRefreshCount(usage)).toBe(1);
-    await expect(card.getByText("64%")).toBeVisible();
+    await expect(card.getByText("64% used")).toBeVisible();
   });
 
   test("asks to update a host without usage support and never calls it", async ({ page }) => {

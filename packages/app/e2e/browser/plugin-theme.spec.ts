@@ -1,8 +1,8 @@
+import type { Page } from "@playwright/test";
 import { pluginRequirements } from "../support/helpers/plugin-fixture";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { connectNewWorkspaceDaemonClient } from "../support/helpers/new-workspace";
 import { openSettingsSection } from "../support/helpers/settings";
@@ -149,15 +149,7 @@ const MANY_THEMES_SOURCE = `export default function contribute(plugin) {
   return () => {};
 }`;
 
-async function scrollThemeMenuToLastTheme(page: Page) {
-  const firstTheme = page.getByText("Pack theme 1", { exact: true });
-  await expect(firstTheme).toBeVisible({ timeout: 30_000 });
-  await firstTheme.hover();
-  await page.mouse.wheel(0, 4000);
-  await expect(page.getByText(LAST_THEME_NAME, { exact: true })).toBeInViewport({ ratio: 1 });
-}
-
-test("scrolls to the last theme when a plugin contributes more themes than fit", async ({
+test("reaches the last theme when a plugin contributes more themes than fit", async ({
   page,
 }, testInfo) => {
   const directory = await mkdtemp(path.join(tmpdir(), "paseo-plugin-theme-many-e2e-"));
@@ -195,3 +187,11 @@ test("scrolls to the last theme when a plugin contributes more themes than fit",
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+async function scrollThemeMenuToLastTheme(page: Page) {
+  const firstTheme = page.getByText("Pack theme 1", { exact: true });
+  await expect(firstTheme).toBeVisible({ timeout: 30_000 });
+  await firstTheme.hover();
+  await page.mouse.wheel(0, 4000);
+  await expect(page.getByText(LAST_THEME_NAME, { exact: true })).toBeInViewport({ ratio: 1 });
+}

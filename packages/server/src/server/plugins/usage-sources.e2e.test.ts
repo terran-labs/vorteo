@@ -1,8 +1,12 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { expect, test } from "vitest";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon } from "../test-utils/paseo-daemon.js";
 import { BuiltinPluginLoader, resolveBuiltinPluginsRoot } from "./builtin/index.js";
@@ -13,7 +17,64 @@ const subprocessDirectory = fileURLToPath(
 );
 
 test("lists built-in and subprocess usage; validates input and isolates fetch errors", async () => {
-  const daemon = await createTestPaseoDaemon({
+  const network = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("Network forbidden in isolated usage fixture"));
+  onTestFinished(() => network.mockRestore());
+  const isolatedHome = await mkdtemp(path.join(os.tmpdir(), "plugin-usage-home-"));
+  onTestFinished(async () => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+    await rm(isolatedHome, { recursive: true, force: true });
+  });
+  for (const key of [
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "KIMI_CODE_HOME",
+  ]) {
+    vi.stubEnv(key, isolatedHome);
+  }
+  for (const key of [
+    "COPILOT_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_PAT",
+    "CURSOR_ACCESS_TOKEN",
+    "CURSOR_TOKEN",
+    "ZAI_API_KEY",
+    "GLM_API_KEY",
+    "GROK_API_KEY",
+    "GROK_TOKEN",
+    "KIMI_TOKEN",
+    "KIMI_API_KEY",
+    "MINIMAX_API_KEY",
+  ]) {
+    vi.stubEnv(key, undefined);
+  }
+  // MiniMax captures credential paths at import time, before a daemon is constructed.
+  vi.resetModules();
+  const { createTestPaseoDaemon: createIsolatedDaemon } =
+    await import("../test-utils/paseo-daemon.js");
+  const accountHome = path.join(isolatedHome, "codex-account");
+  await mkdir(accountHome);
+  const daemon = await createIsolatedDaemon({
+    providerOverrides: {
+      claude: { enabled: false },
+      codex: { enabled: false },
+      "fixture-codex": {
+        extends: "codex",
+        label: "Isolated account",
+        env: { CODEX_HOME: accountHome },
+      },
+      "disabled-codex": {
+        extends: "codex",
+        label: "Disabled account",
+        enabled: false,
+        env: { CODEX_HOME: accountHome },
+      },
+    },
     daemonVersion: "0.9.2",
     pluginsEnabled: false,
     builtinPlugins: new BuiltinPluginLoader(fixtureRoot, ["usage-source"]),
@@ -51,13 +112,34 @@ test("lists built-in and subprocess usage; validates input and isolates fetch er
       status: "unavailable",
       problem: { kind: "expired", expiresAt: expect.any(String), refreshedBy: "claude" },
     });
-    const legacy = await client.listProviderUsage();
-    expect(legacy.providers.find((provider) => provider.displayName === "Fixture")?.status).toBe(
-      "available",
-    );
-    expect(legacy.providers.find((provider) => provider.status === "unavailable")?.error).toBe(
-      "Login expired 1h ago. Run claude to refresh it.",
-    );
+    const legacy = await client.listProviderUsage({ requestId: "account-usage" });
+    expect(legacy).toEqual({
+      requestId: "account-usage",
+      fetchedAt: expect.stringMatching(/^\d{4}-/),
+      providers: [
+        ["copilot", "GitHub Copilot"],
+        ["cursor", "Cursor"],
+        ["zai", "Z.ai"],
+        ["grok", "Grok"],
+        ["kimi", "Kimi"],
+        ["minimax", "MiniMax"],
+        ["fixture-codex", "Isolated account"],
+      ].map(([providerId, displayName]) => ({
+        providerId,
+        displayName,
+        status: "unavailable",
+        planLabel: null,
+        windows: [],
+        balances: [],
+        details: [],
+        error: null,
+      })),
+      workerActivity: {
+        checkedAt: expect.stringMatching(/^\d{4}-/),
+        runningByProvider: {},
+      },
+    });
+    expect(network).not.toHaveBeenCalled();
     await client.patchDaemonConfig({ pluginsEnabled: true });
     await client.installDirectoryPlugin(subprocessDirectory, "fixture-directory");
     const both = await client.listUsageReports({ forceRefresh: true });
@@ -74,6 +156,7 @@ test("lists built-in and subprocess usage; validates input and isolates fetch er
   } finally {
     await client.close();
     await daemon.close();
+    await rm(accountHome, { recursive: true, force: true });
   }
 }, 60_000);
 
@@ -335,3 +418,74 @@ export default function contribute(server) {
     await rm(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+test.each(["builtin", "directory"])(
+  "%s usage plugins reach the environment proxy",
+  async (mode) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "usage-proxy-"));
+    const tunnels: string[] = [];
+    const proxy = createServer();
+    proxy.on("connect", (request, socket) => {
+      tunnels.push(request.url!);
+      socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const address = proxy.address();
+    if (!address || typeof address === "string") throw new Error("Missing proxy address");
+    const guard = path.join(root, "network-guard.cjs");
+    // Prevent vendor DNS/network access even when proxy support is broken.
+    await writeFile(
+      guard,
+      `const dns = require('node:dns');
+const lookup = dns.lookup;
+dns.lookup = function(host, ...args) {
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return lookup.call(this, host, ...args);
+  args.at(-1)(Object.assign(new Error('External DNS forbidden in proxy test'), { code: 'ENOTFOUND' }));
+};`,
+    );
+    await mkdir(path.join(root, ".claude"));
+    await mkdir(path.join(root, ".codex"));
+    await writeFile(
+      path.join(root, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "fixture-claude" } }),
+    );
+    await writeFile(
+      path.join(root, ".codex", "auth.json"),
+      JSON.stringify({ tokens: { access_token: "fixture-codex", account_id: "fixture-account" } }),
+    );
+    try {
+      await promisify(execFile)(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          fileURLToPath(new URL("./test-fixtures/usage-proxy-daemon.ts", import.meta.url)),
+          mode,
+        ],
+        {
+          timeout: 45_000,
+          maxBuffer: 1024 * 1024,
+          env: {
+            ...process.env,
+            HOME: root,
+            USERPROFILE: root,
+            CODEX_HOME: path.join(root, ".codex"),
+            CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
+            NODE_OPTIONS: `--require=${JSON.stringify(guard.replaceAll("\\", "/"))}`,
+            https_proxy: `http://127.0.0.1:${address.port}`,
+            no_proxy: "",
+            NO_PROXY: "",
+          },
+        },
+      );
+      expect(tunnels).toContain("api.anthropic.com:443");
+      expect(tunnels).toContain("chatgpt.com:443");
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  60_000,
+);

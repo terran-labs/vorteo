@@ -1,7 +1,11 @@
+import type { TerminalCharacterWidths } from "../character-widths";
+import {
+  deserializeTerminalReplay,
+  type TerminalWebViewReplayEvent,
+} from "../../components/terminal-webview-message-routing";
 import type { TerminalFindResult } from "../runtime/terminal-emulator-runtime";
 import type { ITheme } from "@xterm/xterm";
 import xtermCss from "@xterm/xterm/css/xterm.css";
-import type { TerminalState } from "@getpaseo/protocol/messages";
 import type { TerminalInputModeState } from "@getpaseo/protocol/terminal-input-mode";
 import type { PendingTerminalModifiers } from "@/utils/terminal-keys";
 import {
@@ -16,7 +20,7 @@ import type {
 interface MountMessage {
   type: "mount";
   streamKey: string;
-  initialSnapshot: TerminalState | null;
+  characterWidths: TerminalCharacterWidths;
   scrollbackLines: number;
   theme: ITheme;
   fontFamily?: string;
@@ -29,8 +33,8 @@ type InboundMessage =
   | MountMessage
   | { type: "unmount"; streamKey: string }
   | { type: "writeOutput"; streamKey: string; text: string }
-  | { type: "restoreOutput"; streamKey: string; text: string }
-  | { type: "renderSnapshot"; streamKey: string; state: TerminalState | null }
+  | { type: "replay"; streamKey: string; event: TerminalWebViewReplayEvent }
+  | { type: "setCharacterWidths"; streamKey: string; widths: TerminalCharacterWidths }
   | { type: "paste"; streamKey: string; text: string }
   | { type: "clear"; streamKey: string }
   | { type: "find"; streamKey: string; query: string; direction?: "next" | "previous" }
@@ -262,11 +266,8 @@ class TerminalWebViewBridge {
       case "writeOutput":
         this.runtime?.write({ data: encodeTerminalOutput(message.text) });
         break;
-      case "restoreOutput":
-        this.runtime?.restoreOutput({ data: encodeTerminalOutput(message.text) });
-        break;
-      case "renderSnapshot":
-        this.runtime?.renderSnapshot({ state: message.state });
+      case "replay":
+        this.runtime?.replay(deserializeTerminalReplay(message.event));
         break;
       case "paste":
         this.runtime?.paste(message.text);
@@ -293,6 +294,9 @@ class TerminalWebViewBridge {
     >,
   ): boolean {
     switch (message.type) {
+      case "setCharacterWidths":
+        this.runtime?.setCharacterWidths({ widths: message.widths });
+        return true;
       case "setTheme":
         this.applyThemeBackground(message.theme);
         this.runtime?.setTheme({ theme: message.theme });
@@ -356,10 +360,10 @@ class TerminalWebViewBridge {
       },
     });
     runtime.setPendingModifiers({ pendingModifiers: message.pendingModifiers });
+    runtime.setCharacterWidths({ widths: message.characterWidths });
     runtime.mount({
       root: this.root,
       host: this.host,
-      initialSnapshot: message.initialSnapshot,
       scrollback: message.scrollbackLines,
       theme: message.theme,
       fontFamily: message.fontFamily,

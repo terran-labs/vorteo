@@ -36,6 +36,7 @@ import {
   type SidebarWorkspaceTrailing,
 } from "@/components/sidebar/workspace-trailing";
 import { useAppSettings } from "@/hooks/use-settings";
+import { densityIconBox } from "@/styles/density";
 import type { Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
@@ -56,15 +57,13 @@ const managedAlertMapping = (theme: Theme) => ({
   color: theme.colors.surface0,
   fill: theme.colors.foregroundExtraMuted,
 });
+
 const needsInputColorMapping = (theme: Theme) => ({
   color: theme.colors.surface0,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
-const ThemedMonitor = withUnistyles(Monitor);
-const ThemedFolder = withUnistyles(Folder);
-const ThemedFolderGit2 = withUnistyles(FolderGit2);
 
 export function SidebarWorkspaceRowFrame({
   workspace,
@@ -314,7 +313,7 @@ function WorkspaceStatusIndicator({
     ) : null;
   }
 
-  let KindIcon: typeof ThemedMonitor;
+  let KindIcon = ThemedMonitor;
   if (workspaceKind === "local_checkout") KindIcon = ThemedMonitor;
   else if (workspaceKind === "worktree") KindIcon = ThemedFolderGit2;
   else KindIcon = ThemedFolder;
@@ -528,6 +527,9 @@ export function SidebarWorkspaceMenuReveal({
   );
 }
 
+// The status dot centres on the title's first line, so both share its line height.
+const TITLE_LINE_HEIGHT = 20;
+
 const styles = StyleSheet.create((theme) => ({
   trailingRail: {
     position: "relative",
@@ -590,8 +592,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceStatusDot: {
     position: "relative",
-    width: theme.iconSize.md,
-    height: 20,
+    width: densityIconBox("md"),
+    height: TITLE_LINE_HEIGHT,
     borderRadius: theme.borderRadius.full,
     flexShrink: 0,
     alignItems: "center",
@@ -623,7 +625,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     fontWeight: "400",
-    lineHeight: 20,
+    lineHeight: TITLE_LINE_HEIGHT,
     opacity: 0.76,
     flex: 1,
     minWidth: theme.spacing[12],
@@ -658,3 +660,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.surface0,
   },
 }));
+
+const ThemedMonitor = withUnistyles(Monitor);
+const ThemedFolderGit2 = withUnistyles(FolderGit2);
+const ThemedFolder = withUnistyles(Folder);

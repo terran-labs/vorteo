@@ -1,3 +1,7 @@
+import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
+import { useAddHost } from "@/hosts/add-host";
+import { Modal } from "@/components/ui/modal";
+import { usePanelStore } from "@/stores/panel-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { router } from "expo-router";
 import type {
@@ -28,15 +32,9 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type RefObject,
 } from "react";
-import {
-  Modal,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-  type PressableStateCallbackType,
-} from "react-native";
+import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
 import {
   EditingTextInput as TextInput,
   type EditingTextInputHandle,
@@ -114,19 +112,16 @@ import {
   type ProjectPickerOption,
 } from "@/components/project-picker-options";
 import { Shortcut } from "@/components/ui/shortcut";
-import { useKeyboardShortcutsAvailable } from "@/keyboard/availability";
+import { useRevealActiveItem } from "@/components/ui/scroll-reveal";
+import { useHardwareKeyboardPresent } from "@/keyboard";
 import { getIsElectronRuntime } from "@/constants/layout";
-import { isNative, isWeb } from "@/constants/platform";
+import { isWeb } from "@/constants/platform";
 import { pickDirectory } from "@/desktop/pick-directory";
 import { useFetchQuery } from "@/data/query";
 import { getOpenProjectFailureReason, registerProjectDescriptor } from "@/hooks/open-project";
 import { useIsLocalDaemon, useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { useCloneGithubProject, useOpenProject } from "@/hooks/use-open-project";
-import {
-  OverlayLayerProvider,
-  useGlobalWebOverlayLayer,
-  useWebOverlayRegistration,
-} from "@/lib/overlay-root";
+import { OverlayLayerProvider, useGlobalOverlayLayer } from "@/lib/overlay-root";
 import {
   useHosts,
   useHostRuntimeClient,
@@ -144,7 +139,7 @@ import { useRecommendedProjectPaths } from "@/stores/session-store-hooks";
 import type { AddProjectFlowRequest } from "@/stores/add-project-flow-store";
 import type { Theme } from "@/styles/theme";
 import { shortenPath } from "@/utils/shorten-path";
-import { buildNewWorkspaceRoute, buildSettingsAddHostRoute } from "@/utils/host-routes";
+import { buildNewWorkspaceRoute } from "@/utils/host-routes";
 import { toErrorMessage } from "@/utils/error-messages";
 
 interface AddProjectFlowProps {
@@ -449,7 +444,17 @@ function pathTestId(path: string): string {
   return `add-project-flow-path-${encodeURIComponent(path)}`;
 }
 
-function FlowRow({ option, active }: { option: FlowRowOption; active: boolean }) {
+function FlowRow({
+  option,
+  active,
+  activeItemRef,
+  onRowLayout,
+}: {
+  option: FlowRowOption;
+  active: boolean;
+  activeItemRef: RefObject<View | null>;
+  onRowLayout: () => void;
+}) {
   const accessibilityState = useMemo(
     () => ({ disabled: option.disabled === true, selected: active }),
     [active, option.disabled],
@@ -467,6 +472,8 @@ function FlowRow({ option, active }: { option: FlowRowOption; active: boolean })
       accessibilityRole="button"
       accessibilityState={accessibilityState}
       disabled={option.disabled}
+      ref={active ? activeItemRef : undefined}
+      onLayout={active ? onRowLayout : undefined}
       onPress={option.select}
       style={rowStyle}
       testID={option.testID}
@@ -489,7 +496,7 @@ function FlowRow({ option, active }: { option: FlowRowOption; active: boolean })
 }
 
 function FlowHint({ keys, action }: { keys: string[]; action: string }) {
-  const shortcutsAvailable = useKeyboardShortcutsAvailable();
+  const shortcutsAvailable = useHardwareKeyboardPresent();
   if (!shortcutsAvailable) return null;
 
   return (
@@ -587,6 +594,7 @@ function setPageStatus(
 // The product flow is intentionally one cohesive page-stack state machine.
 // eslint-disable-next-line complexity
 export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
+  const addHost = useAddHost();
   const hosts = useHosts();
   const hostIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(hostIds);
@@ -674,6 +682,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
   );
   const setHasHydratedWorkspaces = useSessionStore((store) => store.setHasHydratedWorkspaces);
   const inputRef = useRef<EditingTextInputHandle>(null);
+  const resultsRef = useRef<ScrollView>(null);
   const submissionInFlightRef = useRef(false);
   const browseInFlightRef = useRef(false);
   const newFolderInputRef = useRef<EditingTextInputHandle>(null);
@@ -780,17 +789,15 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
   const folderLoading = folderRequest !== null && folderQuery.isFetching;
 
   const handleBack = useCallback(() => {
-    setState((current) => {
-      const previous = backAddProjectPage(current);
-      if (previous) return previous;
-      onClose();
-      return current;
-    });
-  }, [onClose]);
+    const previous = backAddProjectPage(state);
+    if (previous) setState(previous);
+    else onClose();
+  }, [onClose, state]);
 
   const openNewWorkspaceForProject = useCallback(
     (serverId: string, project: WorkspaceProjectDescriptorPayload) => {
       onClose();
+      usePanelStore.getState().showMobileAgent();
       router.push(
         buildNewWorkspaceRoute({
           serverId,
@@ -1280,7 +1287,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
         chooseHost: (serverId) => setState((current) => chooseAddProjectHost(current, serverId)),
         addHost: () => {
           onClose();
-          router.push(buildSettingsAddHostRoute(Date.now()));
+          addHost();
         },
       });
     }
@@ -1424,6 +1431,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
     folderPayload,
     githubQuery.data,
     host,
+    addHost,
     onClose,
     openAddedProject,
     page,
@@ -1438,6 +1446,13 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
   ]);
 
   const activeIndex = rows.length === 0 ? 0 : Math.min(page.activeIndex, rows.length - 1);
+  const rowListKey = useMemo(() => rows.map((row) => row.id).join("\u0000"), [rows]);
+  const { activeItemRef, contentRef, onItemLayout, onViewportLayout, onScroll } =
+    useRevealActiveItem({
+      activeIndex,
+      listKey: rowListKey,
+      scrollRef: resultsRef,
+    });
   const createDirectory = useCallback(() => {
     if (page.kind !== "new-directory-name") return;
     void createFolder({
@@ -1557,36 +1572,21 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
     ],
   );
 
-  const modalLayer = useGlobalWebOverlayLayer("modal", isWeb);
-  const handleWebOverlayKeyDown = useCallback(
-    (event: KeyboardEvent) => {
+  const modalLayer = useGlobalOverlayLayer("modal", true);
+  const handleOverlayKeyDown = useCallback(
+    (event: KeyboardInputEvent) => {
       if (!handleKey({ key: event.key, mod: event.metaKey || event.ctrlKey })) return false;
       event.preventDefault();
       return true;
     },
     [handleKey],
   );
-  const setWebOverlayScope = useWebOverlayRegistration({
-    active: isWeb,
+  const setOverlayScope = useOverlayRegistration({
+    keys: ["Escape", "Enter", "ArrowUp", "ArrowDown"],
+    active: true,
     layer: modalLayer,
-    onKeyDown: handleWebOverlayKeyDown,
+    onKeyDown: handleOverlayKeyDown,
   });
-
-  const handleNativeKeyPress = useCallback(
-    ({ nativeEvent: { key } }: { nativeEvent: { key: string } }) => {
-      if (
-        key === "ArrowDown" ||
-        key === "ArrowUp" ||
-        key === "Escape" ||
-        key === "Backspace" ||
-        key === "ArrowLeft" ||
-        key === "ArrowRight"
-      ) {
-        handleKey({ key, mod: false });
-      }
-    },
-    [handleKey],
-  );
 
   const handleInputChange = useCallback((value: string) => {
     setState((current) =>
@@ -1639,7 +1639,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
       <View style={styles.overlay} testID="add-project-flow">
         <Pressable style={styles.backdrop} onPress={onClose} testID="add-project-flow-backdrop" />
         <View
-          ref={setWebOverlayScope}
+          ref={setOverlayScope}
           style={styles.panel}
           testID={`add-project-flow-page-${page.kind}`}
           accessibilityLabel={`Add project: ${page.kind}`}
@@ -1659,29 +1659,11 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
                 ) : null}
               </View>
             </View>
-            {!hasPageInput(page) && isNative ? (
-              // Native hardware-keyboard events need a focused responder even without a visible field.
-              <TextInput
-                ref={inputRef}
-                onKeyPress={handleNativeKeyPress}
-                onSubmitEditing={submitActive}
-                showSoftInputOnFocus={false}
-                caretHidden
-                contextMenuHidden
-                accessible={false}
-                accessibilityElementsHidden
-                importantForAccessibility="no-hide-descendants"
-                pointerEvents="none"
-                style={styles.keyboardCapture}
-                testID="add-project-flow-keyboard-capture"
-              />
-            ) : null}
             {hasPageInput(page) ? (
               <ThemedTextInput
                 ref={inputRef}
                 initialValue={pageInput(page)}
                 onChangeText={handleInputChange}
-                onKeyPress={isWeb ? undefined : handleNativeKeyPress}
                 onSubmitEditing={isWeb ? undefined : submitActive}
                 placeholder={pagePlaceholder(page, projectsFolder)}
                 style={styles.input}
@@ -1731,91 +1713,101 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
             ) : null}
           </View>
           <ScrollView
+            ref={resultsRef}
             style={styles.results}
-            contentContainerStyle={styles.resultsContent}
             keyboardShouldPersistTaps="always"
+            onLayout={onViewportLayout}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
             testID="add-project-flow-results"
           >
-            {naming && page.kind === "folder-browser" ? (
-              <NewFolderNameRow
-                inputRef={newFolderInputRef}
-                initialValue={page.newFolderName ?? ""}
-                preview={
-                  folderDirectory && page.newFolderName?.trim()
-                    ? newFolderPreview(folderDirectory, page.newFolderName)
-                    : null
-                }
-                disabled={isSubmitting}
-                onChange={changeNewFolderName}
-                onSubmit={createProjectsFolder}
-                onKeyPress={isWeb ? undefined : handleNativeKeyPress}
-              />
-            ) : null}
-            {preview ? (
-              <Text style={styles.preview} testID="add-project-flow-path-preview">
-                {shortenPath(preview)}
-              </Text>
-            ) : null}
-            {isSubmitting ? (
-              <Text style={styles.stateText} testID="add-project-flow-progress">
-                {progressText(page)}
-              </Text>
-            ) : null}
-            {!isSubmitting && page.error ? (
-              <Text style={styles.errorText} testID="add-project-flow-error">
-                {page.error}
-              </Text>
-            ) : null}
-            {!isSubmitting && queryError ? (
-              <Text style={styles.errorText} testID="add-project-flow-query-error">
-                {queryError}
-              </Text>
-            ) : null}
-            {!isSubmitting && loading ? (
-              <Text style={styles.stateText} testID="add-project-flow-loading">
-                Loading...
-              </Text>
-            ) : null}
-            {/* Typed paths and matching recommendations do not depend on directory search. */}
-            {!isSubmitting && projectsBrowser
-              ? projectsRows.map((row, index) => (
-                  <ProjectsFolderRowView
-                    key={row.id}
-                    row={row}
-                    active={!naming && index === activeIndex}
-                    disabled={naming}
-                    onSelect={selectProjectsRow}
-                    onAdd={addProjectsRow}
-                  />
-                ))
-              : null}
-            {!isSubmitting && !projectsBrowser
-              ? rows.map((option, index) => (
-                  <FlowRow key={option.id} option={option} active={index === activeIndex} />
-                ))
-              : null}
-            {!isSubmitting &&
-            !loading &&
-            !queryError &&
-            rows.length === 0 &&
-            page.kind !== "new-directory-name" ? (
-              <Text style={styles.stateText} testID="add-project-flow-empty">
-                {page.kind === "folder-browser"
-                  ? folderBrowserEmptyText({
-                      purpose: folderBrowserPurpose(page.purpose),
-                      directory: folderDirectory,
-                      filter: page.query,
-                    })
-                  : emptyText(page, host ?? null)}
-              </Text>
-            ) : null}
-            {showShareHint ? (
-              <Text style={styles.hintText} testID="add-project-flow-share-hint">
-                To use folders from your computer, share them with share-folder.sh in the
-                installation directory on the host.
-              </Text>
-            ) : null}
+            <View ref={contentRef} collapsable={false} style={styles.resultsContent}>
+              {naming && page.kind === "folder-browser" ? (
+                <NewFolderNameRow
+                  inputRef={newFolderInputRef}
+                  initialValue={page.newFolderName ?? ""}
+                  preview={
+                    folderDirectory && page.newFolderName?.trim()
+                      ? newFolderPreview(folderDirectory, page.newFolderName)
+                      : null
+                  }
+                  disabled={isSubmitting}
+                  onChange={changeNewFolderName}
+                  onSubmit={createProjectsFolder}
+                />
+              ) : null}
+              {preview ? (
+                <Text style={styles.preview} testID="add-project-flow-path-preview">
+                  {shortenPath(preview)}
+                </Text>
+              ) : null}
+              {isSubmitting ? (
+                <Text style={styles.stateText} testID="add-project-flow-progress">
+                  {progressText(page)}
+                </Text>
+              ) : null}
+              {!isSubmitting && page.error ? (
+                <Text style={styles.errorText} testID="add-project-flow-error">
+                  {page.error}
+                </Text>
+              ) : null}
+              {!isSubmitting && queryError ? (
+                <Text style={styles.errorText} testID="add-project-flow-query-error">
+                  {queryError}
+                </Text>
+              ) : null}
+              {!isSubmitting && loading ? (
+                <Text style={styles.stateText} testID="add-project-flow-loading">
+                  Loading...
+                </Text>
+              ) : null}
+              {/* Typed paths and matching recommendations do not depend on directory search. */}
+              {!isSubmitting && projectsBrowser
+                ? projectsRows.map((row, index) => (
+                    <ProjectsFolderRowView
+                      key={row.id}
+                      row={row}
+                      active={!naming && index === activeIndex}
+                      disabled={naming}
+                      onSelect={selectProjectsRow}
+                      onAdd={addProjectsRow}
+                    />
+                  ))
+                : null}
+              {!isSubmitting && !projectsBrowser
+                ? rows.map((option, index) => (
+                    <FlowRow
+                      key={option.id}
+                      option={option}
+                      active={index === activeIndex}
+                      activeItemRef={activeItemRef}
+                      onRowLayout={onItemLayout}
+                    />
+                  ))
+                : null}
+              {!isSubmitting &&
+              !loading &&
+              !queryError &&
+              rows.length === 0 &&
+              page.kind !== "new-directory-name" ? (
+                <Text style={styles.stateText} testID="add-project-flow-empty">
+                  {page.kind === "folder-browser"
+                    ? folderBrowserEmptyText({
+                        purpose: folderBrowserPurpose(page.purpose),
+                        directory: folderDirectory,
+                        filter: page.query,
+                      })
+                    : emptyText(page, host ?? null)}
+                </Text>
+              ) : null}
+              {showShareHint ? (
+                <Text style={styles.hintText} testID="add-project-flow-share-hint">
+                  To use folders from your computer, share them with share-folder.sh in the
+                  installation directory on the host.
+                </Text>
+              ) : null}
+            </View>
           </ScrollView>
           {projectsBrowser && projectsFooter ? (
             <ProjectsFolderFooterBar
@@ -1842,7 +1834,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
     </Modal>
   );
 
-  return createElement(OverlayLayerProvider, { layer: isWeb ? modalLayer : 0 }, modal);
+  return createElement(OverlayLayerProvider, { layer: modalLayer }, modal);
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -1853,7 +1845,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[12],
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(0, 0, 0, 0.5)",
   },
   panel: {
@@ -1916,12 +1908,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
     outlineStyle: "none",
   } as object,
-  keyboardCapture: {
-    position: "absolute",
-    width: 1,
-    height: 1,
-    opacity: 0,
-  },
   results: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
   resultsContent: { paddingVertical: theme.spacing[2] },
   row: {

@@ -1,7 +1,9 @@
+import { Inbox } from "lucide-react-native";
+import { useImportSession } from "@/hooks/use-import-session";
 import { useHosts, useHostRuntimeLastError } from "@/runtime/host-runtime";
 import { useCallback, useEffect, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, ScrollView } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useRouter } from "expo-router";
 import { FolderOpen, Plug } from "lucide-react-native";
@@ -25,6 +27,7 @@ import { AccountsFirstGate } from "@/accounts-first/screen";
 
 export function OpenProjectScreen() {
   const { t } = useTranslation();
+  const importSession = useImportSession({});
   const hosts = useHosts();
   const router = useRouter();
   const openDesktopAgentList = usePanelStore((s) => s.openDesktopAgentList);
@@ -62,36 +65,46 @@ export function OpenProjectScreen() {
       <MenuHeader borderless />
       {/* After the owner's first sign-in, connect accounts before the usual home tiles. */}
       <AccountsFirstGate>
-        <View style={styles.content}>
-          <TitlebarDragRegion />
-          <View style={styles.logo}>
-            <VorteoLogo size={96} />
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+          <View style={styles.content}>
+            <TitlebarDragRegion />
+            <View style={styles.logo}>
+              <VorteoLogo size={96} />
+            </View>
+            {hosts.map((host) => (
+              <HostError key={host.serverId} serverId={host.serverId} label={host.label} />
+            ))}
+            <View style={styles.tiles}>
+              <HomeTile
+                icon={FolderOpen}
+                title={t("openProject.tiles.addProject.title")}
+                description={t("openProject.tiles.addProject.description")}
+                onPress={handleOpenPicker}
+                testID="open-project-submit"
+                accent
+              />
+              <HomeTile
+                icon={Inbox}
+                title={t("openProject.tiles.importSession.title")}
+                description={t("openProject.tiles.importSession.description")}
+                onPress={importSession.open}
+                testID="open-project-import-session"
+              />
+              <HomeTile
+                icon={Plug}
+                title={t("openProject.tiles.setupProviders.title")}
+                description={t("openProject.tiles.setupProviders.description")}
+                onPress={handleOpenProviders}
+                testID="open-project-setup-providers"
+              />
+            </View>
           </View>
-          {hosts.map((host) => (
-            <HostError key={host.serverId} serverId={host.serverId} label={host.label} />
-          ))}
-          <View style={styles.tiles}>
-            <HomeTile
-              icon={FolderOpen}
-              title={t("openProject.tiles.addProject.title")}
-              description={t("openProject.tiles.addProject.description")}
-              onPress={handleOpenPicker}
-              testID="open-project-submit"
-              accent
-            />
-            <HomeTile
-              icon={Plug}
-              title={t("openProject.tiles.setupProviders.title")}
-              description={t("openProject.tiles.setupProviders.description")}
-              onPress={handleOpenProviders}
-              testID="open-project-setup-providers"
-            />
+          <View style={styles.communityRow}>
+            <CommunityLinks />
           </View>
-        </View>
-        <View style={styles.communityRow}>
-          <CommunityLinks />
-        </View>
+        </ScrollView>
       </AccountsFirstGate>
+      {importSession.sheet}
     </View>
   );
 }
@@ -157,18 +170,21 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface0,
     userSelect: "none",
   },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+  },
   content: {
     position: "relative",
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 0,
     justifyContent: { xs: "flex-start", md: "center" },
     alignItems: "center",
     gap: 0,
     padding: theme.spacing[6],
     paddingTop: { xs: theme.spacing[12], md: theme.spacing[6] },
-    paddingBottom: {
-      xs: HEADER_INNER_HEIGHT_MOBILE + HEADER_TOP_PADDING_MOBILE + theme.spacing[6],
-      md: HEADER_INNER_HEIGHT + theme.spacing[6],
-    },
   },
   logo: {
     marginBottom: theme.spacing[8],
@@ -219,10 +235,8 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 18,
   },
   communityRow: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: {
+    flexShrink: 0,
+    paddingBottom: {
       xs: HEADER_INNER_HEIGHT_MOBILE + HEADER_TOP_PADDING_MOBILE + theme.spacing[2],
       md: HEADER_INNER_HEIGHT + theme.spacing[2],
     },

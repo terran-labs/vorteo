@@ -91,7 +91,9 @@ export function DictationControls({
       <View style={styles.meterWrapper}>
         <VolumeMeter volume={volume} isMuted={false} isSpeaking={false} orientation="horizontal" />
       </View>
-      <Text style={timerTextStyle}>{formatDuration(duration)}</Text>
+      <Text style={timerTextStyle}>
+        {status === "paused" ? t("message.dictation.paused") : formatDuration(duration)}
+      </Text>
       <View style={styles.actionGroup}>
         <Pressable
           onPress={handleCancel}
@@ -293,6 +295,11 @@ export function DictationOverlay({
           />
           <Text style={overlayTimerTextStyle}>{formatDuration(duration)}</Text>
         </View>
+        {status === "paused" ? (
+          <Text numberOfLines={2} style={overlayTranscriptTextStyle}>
+            {t("message.dictation.paused")}
+          </Text>
+        ) : null}
         {isFailed ? (
           <Text numberOfLines={2} style={overlayTranscriptTextStyle}>
             {errorText

@@ -5,7 +5,7 @@ import type { PaseoToolDefinition } from "./types.js";
 
 export function createPauseGoalTool(
   manager: Pick<AgentManager, "readAgentGoal" | "setAgentGoal">,
-  callerAgentId: string,
+  callerAgentId?: string,
 ): PaseoToolDefinition {
   return {
     name: "pause_goal",
@@ -19,6 +19,9 @@ export function createPauseGoalTool(
     inputSchema: z.object({}).strict(),
     outputSchema: { state: AgentGoalStateSchema },
     handler: async () => {
+      if (!callerAgentId?.trim()) {
+        throw new Error("An agent-scoped caller identity is required");
+      }
       const current = await manager.readAgentGoal(callerAgentId);
       if (current.status !== "ready") {
         throw new Error("Could not confirm the current goal. Do not claim it is paused.");

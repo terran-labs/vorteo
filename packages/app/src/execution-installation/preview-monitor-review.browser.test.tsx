@@ -427,7 +427,7 @@ test("full maintenance delegation shows its scope and revokes on desktop and com
   }
 });
 
-test("installation management is a separate explicit owner choice", async () => {
+test("installation management follows the full grant without a separate switch", async () => {
   vi.stubGlobal("React", React);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const managementClient: ConstructorParameters<typeof InstallationPanelModel>[0] = {
@@ -445,17 +445,14 @@ test("installation management is a separate explicit owner choice", async () => 
     activatedAt: "2026-11-01T00:00:00Z",
     enabled: true,
     managementAvailable: true,
-    managementEnabled: false,
+    managementEnabled: true,
   };
   const decisions: unknown[] = [];
   managementClient.maintenanceDelegation = async () => managementPreference;
-  managementClient.changeMaintenanceDelegation = async (_status, enabled, management) => {
-    decisions.push({ enabled, management });
-    managementPreference = {
-      ...managementPreference,
-      enabled,
-      managementEnabled: management === true,
-    };
+  managementClient.changeMaintenanceDelegation = async (...args) => {
+    const [, enabled] = args;
+    decisions.push({ enabled, extra: args.length - 2 });
+    managementPreference = { ...managementPreference, enabled, managementEnabled: enabled };
     return managementPreference;
   };
   const model = new InstallationPanelModel(managementClient);
@@ -468,24 +465,17 @@ test("installation management is a separate explicit owner choice", async () => 
       act(() => root.render(<DaemonAutomationControl model={model} state={model.getState()} />));
     render();
     await expect
-      .element(page.getByTestId("installation-management-change"))
-      .toHaveTextContent("Delegate installation management");
+      .element(page.getByTestId("installation-management-status"))
+      .toHaveTextContent("Installation management is enabled by this grant.");
+    expect(container.querySelector('[data-testid="installation-management-change"]')).toBeNull();
     await act(async () => {
-      await page.getByTestId("installation-management-change").click();
+      await page.getByTestId("maintenance-delegation-change").click();
     });
     render();
-    expect(decisions).toEqual([{ enabled: true, management: true }]);
+    expect(decisions).toEqual([{ enabled: false, extra: 0 }]);
     await expect
-      .element(page.getByTestId("installation-management-change"))
-      .toHaveTextContent("Revoke installation management");
-    await act(async () => {
-      await page.getByTestId("installation-management-change").click();
-    });
-    render();
-    expect(decisions).toEqual([
-      { enabled: true, management: true },
-      { enabled: true, management: false },
-    ]);
+      .element(page.getByTestId("installation-management-status"))
+      .toHaveTextContent("This grant also enables installation management.");
   } finally {
     act(() => root.unmount());
     container.remove();

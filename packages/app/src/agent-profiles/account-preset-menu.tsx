@@ -458,6 +458,7 @@ function SectionButton({
       style={styles.sectionButton}
       accessibilityLabel={`${sectionNumbers[section]}. ${label}${value ? `: ${value}` : ""}`}
       accessibilityState={accessibilityState}
+      aria-expanded={expanded}
       trailing={content}
       testID={`preset-section-${section}`}
     />

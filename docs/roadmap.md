@@ -27,3 +27,5 @@ Agent work uses the same labels as Freed: `factory:ready` (an agent may take it)
 ## Keep pace with Paseo
 
 Every upstream merge compares incoming behavior with the [customizations inventory](vorteo-customizations.md#upstream-comparison), credits inherited features and opens or closes issues for any resulting retirement work.
+
+The November 2026 comparison separates upstream terminal retention and plugin improvements from Vorteo's durable agent sessions, installation approvals and account workflows. Keep those remaining outcomes open until their own acceptance checks pass. The SDK57 scene adaptation is prepared; native startup and device acceptance remain open. It does not retire font, theme or private-preview work. Incoming cold startup recovery still needs provider-specific nonexecuting loading and final dispatch authorization; existing tracked restart continuation remains available.

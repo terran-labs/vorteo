@@ -1,6 +1,7 @@
 import { pendingCodexAsyncQuestions } from "./providers/codex/async-questions.js";
 import { projectQueueGoalState } from "../message-queue/goal-hold.js";
 import { snapshotQuestions } from "./questions/model.js";
+import { isSameOrDescendantPath } from "../path-utils.js";
 import type {
   AgentListItemPayload,
   AgentSnapshotPayload,
@@ -34,6 +35,13 @@ interface ProjectionOptions {
   title?: string | null;
   createdAt?: string;
   internal?: boolean;
+  /**
+   * Archive timestamp, supplied by a caller holding the stored record. A live
+   * managed agent cannot know this: an archived agent is resumed back into
+   * memory to serve a history read, so being in the manager is not evidence
+   * that it is active. Storage stays the single owner.
+   */
+  archivedAt?: string | null;
 }
 
 interface RecentProviderSessionProjectionOptions {
@@ -98,10 +106,12 @@ export function toStoredAgentRecord(
     lastStatus: agent.lifecycle,
     lastModeId: agent.currentModeId ?? config?.modeId ?? null,
     config: config ?? null,
+    launchEnv: agent.launchEnv ? { ...agent.launchEnv } : undefined,
     runtimeInfo,
     features: normalizeFeatures(agent.features),
     persistence,
     lastError: agent.lastError ?? undefined,
+    ...(agent.lastUsage ? { lastUsage: storedUsage(agent.lastUsage) } : {}),
     requiresAttention: agent.attention.requiresAttention,
     attentionReason: agent.attention.requiresAttention ? agent.attention.attentionReason : null,
     attentionTimestamp: agent.attention.requiresAttention
@@ -137,6 +147,12 @@ function hostedFlag(agent: ManagedAgent): Pick<AgentSnapshotPayload, "hosted"> {
   return agent.session?.isDurablyHosted?.() === true ? { hosted: true } : {};
 }
 
+function projectActiveTurn(agent: ManagedAgent): AgentSnapshotPayload["activeTurn"] {
+  return agent.activeTurnId
+    ? { turnId: agent.activeTurnId, startedAt: agent.activeTurnStartedAt?.toISOString() ?? null }
+    : null;
+}
+
 export function toAgentPayload(
   agent: ManagedAgent,
   options?: ProjectionOptions,
@@ -165,12 +181,7 @@ export function toAgentPayload(
     updatedAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt ? agent.lastUserMessageAt.toISOString() : null,
     status: agent.lifecycle,
-    activeTurn: agent.activeTurnId
-      ? {
-          turnId: agent.activeTurnId,
-          startedAt: agent.activeTurnStartedAt?.toISOString() ?? null,
-        }
-      : null,
+    activeTurn: projectActiveTurn(agent),
     capabilities: cloneCapabilities(agent.capabilities),
     ...(agent.goalState
       ? { goalState: projectQueueGoalState(agent.goalState, agent.queueGoalHold) }
@@ -183,6 +194,8 @@ export function toAgentPayload(
     persistence: projectPersistenceHandleForWire(agent.persistence),
     title: options?.title ?? null,
     labels: agent.labels,
+    archivedAt: options?.archivedAt ?? null,
+    ...(agent.internal ? { internal: true } : {}),
   };
 
   const usage = sanitizeUsage(agent.lastUsage);
@@ -239,6 +252,14 @@ function buildStoredPersistenceHandle(
   return toAgentPersistenceHandle(validProviders, record.persistence);
 }
 
+function projectStoredAttention(record: StoredAgentRecord) {
+  return {
+    requiresAttention: record.requiresAttention ?? false,
+    attentionReason: record.attentionReason ?? null,
+    attentionTimestamp: record.attentionTimestamp ?? null,
+  };
+}
+
 export function buildStoredAgentPayload(
   record: StoredAgentRecord,
   validProviders: Iterable<AgentProvider>,
@@ -291,11 +312,12 @@ export function buildStoredAgentPayload(
     pendingPermissions: pendingCodexAsyncQuestions(record.persistence),
     persistence,
     title: record.title ?? null,
-    requiresAttention: record.requiresAttention ?? false,
-    attentionReason: record.attentionReason ?? null,
-    attentionTimestamp: record.attentionTimestamp ?? null,
+    ...projectStoredAttention(record),
     archivedAt: record.archivedAt ?? null,
+    ...(record.internal ? { internal: true } : {}),
     labels: normalizeLabels(record.labels),
+    ...(typeof record.lastError === "string" ? { lastError: record.lastError } : {}),
+    ...storedUsagePayload(record.lastUsage),
     ...(providerAvailable ? {} : { providerUnavailable: true }),
   };
 }
@@ -321,6 +343,66 @@ export function toAgentListItemPayload(agent: AgentSnapshotPayload): AgentListIt
     labels: agent.labels,
     ...(agent.providerUnavailable ? { providerUnavailable: true } : {}),
   };
+}
+
+function parseTimestamp(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function resolveAgentListActivityTime(agent: AgentListItemPayload): number {
+  return Math.max(
+    parseTimestamp(agent.updatedAt),
+    parseTimestamp(agent.lastUserMessageAt),
+    parseTimestamp(agent.attentionTimestamp),
+    parseTimestamp(agent.archivedAt),
+    parseTimestamp(agent.createdAt),
+  );
+}
+
+function compareAgentListItems(a: AgentListItemPayload, b: AgentListItemPayload): number {
+  const attentionDelta =
+    Number(b.requiresAttention ?? false) - Number(a.requiresAttention ?? false);
+  if (attentionDelta !== 0) {
+    return attentionDelta;
+  }
+
+  const statusOrder = {
+    running: 0,
+    initializing: 1,
+    idle: 2,
+    error: 3,
+    closed: 4,
+  } as Record<string, number>;
+  const statusDelta = (statusOrder[a.status] ?? 999) - (statusOrder[b.status] ?? 999);
+  if (statusDelta !== 0) {
+    return statusDelta;
+  }
+
+  return resolveAgentListActivityTime(b) - resolveAgentListActivityTime(a);
+}
+
+export function selectAgentListItems(
+  agents: readonly AgentSnapshotPayload[],
+  options: {
+    cwd?: string;
+    statuses?: AgentSnapshotPayload["status"][];
+    sinceHours?: number;
+    limit?: number;
+  } = {},
+): AgentListItemPayload[] {
+  const statusFilter = options.statuses?.length ? new Set(options.statuses) : null;
+  const sinceMs = Date.now() - (options.sinceHours ?? 48) * 60 * 60 * 1000;
+  return agents
+    .map(toAgentListItemPayload)
+    .filter((agent) => !options.cwd || isSameOrDescendantPath(options.cwd, agent.cwd))
+    .filter((agent) => !statusFilter || statusFilter.has(agent.status))
+    .filter((agent) => !agent.archivedAt || resolveAgentListActivityTime(agent) >= sinceMs)
+    .sort(compareAgentListItems)
+    .slice(0, options.limit ?? 50);
 }
 
 export function toRecentProviderSessionDescriptorPayload(
@@ -571,4 +653,26 @@ function sanitizeRuntimeInfo(
     sanitized.extra = extra;
   }
   return sanitized;
+}
+
+/** Usage keeps only its finite numbers on disk. */
+function storedUsage(usage: AgentUsage): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(usage).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === "number" && Number.isFinite(entry[1]),
+    ),
+  );
+}
+
+function storedUsagePayload(
+  usage: StoredAgentRecord["lastUsage"],
+): Pick<AgentSnapshotPayload, "lastUsage"> {
+  const sanitized = sanitizeUsage(usage);
+  return sanitized ? { lastUsage: sanitized } : {};
+}
+
+/** The usage a stored record carries, for an agent the daemon brings back. */
+export function restoreStoredUsage(record: StoredAgentRecord): AgentUsage | undefined {
+  return sanitizeUsage(record.lastUsage);
 }

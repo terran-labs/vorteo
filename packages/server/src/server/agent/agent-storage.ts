@@ -122,8 +122,10 @@ const STORED_AGENT_SCHEMA = z.object({
   title: z.string().nullable().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   lastStatus: AgentStatusSchema.default("closed"),
+  resumeOnStartup: z.boolean().optional(),
   lastModeId: z.string().nullable().optional(),
   config: SERIALIZABLE_CONFIG_SCHEMA,
+  launchEnv: z.record(z.string(), z.string()).optional(),
   runtimeInfo: z
     .object({
       provider: z.string(),
@@ -137,6 +139,11 @@ const STORED_AGENT_SCHEMA = z.object({
   features: z.array(AgentFeatureSchema).optional(),
   persistence: PERSISTENCE_HANDLE_SCHEMA,
   lastError: z.string().nullable().optional(),
+  /**
+   * The last reported usage, kept so the Context window card survives a daemon restart. Written
+   * with the record's other changes, not on every streamed update, so it can trail the live value.
+   */
+  lastUsage: z.record(z.string(), z.number()).optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
@@ -375,6 +382,23 @@ export class AgentStorage {
   async upsert(record: StoredAgentRecord): Promise<void> {
     await this.load();
     await this.queueRecordWrite(record);
+  }
+
+  /** Recovery owns only its intent/status fields. Changed custody cancels this attempt. */
+  async updateRestartRecovery(
+    expected: StoredAgentRecord,
+    update: { resumeOnStartup: boolean; lastStatus?: StoredAgentRecord["lastStatus"] },
+  ): Promise<StoredAgentRecord | null> {
+    const captured = structuredClone(expected);
+    await this.load();
+    let committed: StoredAgentRecord | null = null;
+    await this.queueRecordMutation(captured.id, (current) => {
+      if (!current || !isDeepStrictEqual(current, captured)) return null;
+      committed = { ...current, resumeOnStartup: update.resumeOnStartup };
+      if (update.lastStatus !== undefined) committed.lastStatus = update.lastStatus;
+      return committed;
+    });
+    return committed ? structuredClone(committed) : null;
   }
 
   async updateQueueGoalHold(
@@ -742,6 +766,8 @@ export class AgentStorage {
       if (existing && existing.archivedAt !== undefined) {
         record.archivedAt = existing.archivedAt;
       }
+      record.resumeOnStartup =
+        existing?.resumeOnStartup && agent.lifecycle !== "idle" && agent.lifecycle !== "error";
       return record;
     });
   }

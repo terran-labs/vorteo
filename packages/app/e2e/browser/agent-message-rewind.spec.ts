@@ -27,8 +27,10 @@ async function completeSubmittedTurn(
 
   // An optimistic prompt can render before this request starts its foreground run.
   await expect.poll(() => gate.isPromptAccepted(prompt)).toBe(true);
+  await expectAgentReadyToInterrupt(page);
   const finish = await agent.client.waitForFinish(agent.agentId, 30_000);
   expect(finish.status).toBe("idle");
+  await expectAgentIdle(page);
   await expect(page.getByText("(end of synthetic stream)", { exact: true }).last()).toBeVisible();
   await expect(userMessage).toHaveAttribute("aria-busy", "false");
   return userMessage;

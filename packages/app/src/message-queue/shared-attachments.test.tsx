@@ -35,6 +35,7 @@ vi.mock("./runtime", () => ({
 }));
 vi.mock("@/runtime/host-runtime", () => ({
   useHosts: () => [{ serverId: "host" }],
+  getHostRuntimeStore: () => ({ getSnapshot: () => ({ activeConnectionId: "private-relay" }) }),
   useHostRuntimeIsConnected: () => true,
 }));
 vi.mock("@/stores/download-store", () => ({
@@ -153,6 +154,7 @@ it("uses the existing download flow with captured attachment metadata", async ()
   await act(async () => container.querySelector("button")!.click());
   const request = state.download.mock.calls[0][0];
   expect(request.fileName).toBe("notes.txt");
+  expect(request.activeConnectionId).toBe("private-relay");
   expect(await request.requestFileDownloadToken("content")).toMatchObject({
     token: "token",
     fileName: "notes.txt",
@@ -165,6 +167,8 @@ it("uses the existing download flow with captured attachment metadata", async ()
     download: true,
   });
   expect(state.read).not.toHaveBeenCalled();
+  await request.readFile("content", 1024);
+  expect(state.read).toHaveBeenCalledWith("/captured", "content", undefined, 1024);
 });
 
 const textContext = {

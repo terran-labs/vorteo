@@ -17,11 +17,23 @@ test("touch workspace rows have no kebab and the title menu contains workspace a
   page,
 }, testInfo) => {
   const seeded = await seedWorkspace({ repoPrefix: "sidebar-mobile-menu-sheet-" });
+  const secondProject = await seedWorkspace({ repoPrefix: "sidebar-mobile-menu-filter-" });
 
   try {
     await gotoAppShell(page);
     await page.getByRole("button", { name: "Open menu", exact: true }).click();
     await waitForSidebarHydration(page);
+
+    await page.getByTestId("sidebar-display-preferences-menu").click();
+    await expect(page.getByRole("menuitem")).toHaveText([
+      /^Grouping/,
+      /^Sort/,
+      /^Title/,
+      "Show",
+      "Project",
+      "Show background",
+    ]);
+    await closeMenuSheet(page);
 
     await page
       .getByTestId(`sidebar-project-kebab-${projectEquivalenceViewKey(seeded.projectKey)}`)
@@ -96,6 +108,7 @@ test("touch workspace rows have no kebab and the title menu contains workspace a
     await page.getByTestId("workspace-header-archive").tap();
     await expect(page).not.toHaveURL(new RegExp(`/workspace/${seeded.workspaceId}`));
   } finally {
+    await secondProject.cleanup();
     await seeded.cleanup();
   }
 });

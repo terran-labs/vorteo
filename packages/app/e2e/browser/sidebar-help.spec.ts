@@ -209,6 +209,9 @@ async function expectFingerSizedToolbarTargets(page: Page): Promise<void> {
     // Flex layout can report a 44px box as 43.99999px; round to a hundredth before comparing.
     expect(Math.round(bounds.width * 100) / 100).toBeGreaterThanOrEqual(44);
     expect(Math.round(bounds.height * 100) / 100).toBeGreaterThanOrEqual(44);
+    expect(Number(await button.locator("svg").first().getAttribute("width"))).toBeLessThanOrEqual(
+      20,
+    );
   }
 }
 

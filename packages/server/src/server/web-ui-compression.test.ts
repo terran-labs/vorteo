@@ -33,7 +33,7 @@ describe("final injected HTML content encoding", () => {
       expect(decoded).toEqual(identity.body);
       expect(encoded.body.length).toBeLessThan(identity.body.length / 4);
       expect(decoded.toString()).toContain("window.__PASEO_INITIAL_DAEMON_CONNECTION__");
-      expect(decoded.toString()).toContain('"listen":"fixture.invalid"');
+      expect(decoded.toString()).toContain('"listen":"fixture.invalid:443"');
       expect(decoded.toString()).toContain('"useTls":true');
       expect(decoded.toString()).not.toContain(LABEL);
       expect(decoded.toString().match(/__PASEO_INITIAL_DAEMON_CONNECTION__/g)).toHaveLength(1);
