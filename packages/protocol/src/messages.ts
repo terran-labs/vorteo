@@ -419,6 +419,9 @@ export const MutableDaemonConfigSchema = z
     // COMPAT(idleRuntimeCleanupSetting): added in v0.13.0, keep optional while old daemons are supported.
     // Persisted host-wide value, applied live by the daemon.
     idleRuntimeCleanup: z.boolean().optional(),
+    // COMPAT(blockedWorkReviewSetting): added 2026-11-09, optional because older daemons omit it.
+    // Hourly blocked-work reviews; absent means the daemon reviews unconditionally.
+    blockedWorkReview: z.boolean().optional(),
     // COMPAT(restartRecovery): added in v0.14.0, keep optional for older hosts.
     resumeOnStartup: z.boolean().optional(),
     resumePrompt: z.string().optional(),
@@ -459,6 +462,7 @@ export const MutableDaemonConfigPatchSchema = z
     autoArchiveAfterMerge: z.boolean().optional(),
     enableTerminalAgentHooks: z.boolean().optional(),
     idleRuntimeCleanup: z.boolean().optional(),
+    blockedWorkReview: z.boolean().optional(),
     resumeOnStartup: z.boolean().optional(),
     resumePrompt: z.string().optional(),
     appendSystemPrompt: z.string().optional(),
@@ -4354,6 +4358,8 @@ export const ServerInfoStatusPayloadSchema = z
         skillPackageTransfer: z.boolean().optional(),
         // COMPAT(idleRuntimeCleanupSetting): added in v0.13.0, remove gate after 2027-04-26.
         idleRuntimeCleanupSetting: z.boolean().optional(),
+        // COMPAT(blockedWorkReviewSetting): added 2026-11-09, remove gate after 2027-05-09.
+        blockedWorkReviewSetting: z.boolean().optional(),
         // COMPAT(restartRecovery): added in v0.14.0, remove gate after 2027-04-28.
         resumeOnStartupSetting: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.

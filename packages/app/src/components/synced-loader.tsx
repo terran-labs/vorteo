@@ -10,34 +10,34 @@ import Animated, {
 import { scheduleOnUI } from "react-native-worklets";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import {
+  SYNCED_LOADER_COLUMNS,
   SYNCED_LOADER_DOT_COUNT,
   getSyncedLoaderDotOpacity,
-  getSyncedLoaderStep,
 } from "@/components/synced-loader-state";
 
-const GRID_COLUMNS = 2;
 const DOT_KEYS = Array.from({ length: SYNCED_LOADER_DOT_COUNT }, (_, i) => `dot-${i}`);
-const sharedStep = makeMutable(0);
+// Reduced motion freezes the grid on this frame; any fixed instant shows a few lit dots.
+const REDUCED_MOTION_TIME_MS = 0;
+// One app-wide frame clock: a single requestAnimationFrame loop on the UI thread feeds
+// every visible loader, so adding loaders adds style worklets, not timers.
+const sharedTime = makeMutable(0);
 const activeLoaderCount = makeMutable(0);
 const clockRunning = makeMutable(false);
-let nextStepListenerId = 1;
+let nextTimeListenerId = 1;
 
-function advanceSharedStep(): void {
+function advanceSharedTime(): void {
   "worklet";
   if (activeLoaderCount.value === 0) {
     clockRunning.value = false;
     return;
   }
 
-  const nextStep = getSyncedLoaderStep(Date.now());
-  if (sharedStep.value !== nextStep) {
-    sharedStep.value = nextStep;
-  }
-  requestAnimationFrame(advanceSharedStep);
+  sharedTime.value = Date.now();
+  requestAnimationFrame(advanceSharedTime);
 }
 
-function registerStepListener(
-  step: SharedValue<number>,
+function registerTimeListener(
+  time: SharedValue<number>,
   registered: SharedValue<boolean>,
   listenerId: number,
 ): void {
@@ -47,69 +47,65 @@ function registerStepListener(
   }
 
   registered.value = true;
-  step.value = getSyncedLoaderStep(Date.now());
-  sharedStep.addListener(listenerId, (nextStep) => {
-    step.value = nextStep;
+  time.value = Date.now();
+  sharedTime.addListener(listenerId, (nextTime) => {
+    time.value = nextTime;
   });
   activeLoaderCount.value += 1;
 
   if (!clockRunning.value) {
     clockRunning.value = true;
-    sharedStep.value = step.value;
-    requestAnimationFrame(advanceSharedStep);
+    sharedTime.value = time.value;
+    requestAnimationFrame(advanceSharedTime);
   }
 }
 
-function unregisterStepListener(registered: SharedValue<boolean>, listenerId: number): void {
+function unregisterTimeListener(registered: SharedValue<boolean>, listenerId: number): void {
   "worklet";
   if (!registered.value) {
     return;
   }
 
   registered.value = false;
-  sharedStep.removeListener(listenerId);
+  sharedTime.removeListener(listenerId);
   activeLoaderCount.value -= 1;
 }
 
-function useSyncedLoaderStep(active: boolean, reduceMotion: boolean): SharedValue<number> {
+function useSyncedLoaderTime(active: boolean, reduceMotion: boolean): SharedValue<number> {
   // The local value lets retained loaders detach from the app-wide clock without
   // unmounting their animated views or leaving hidden style worklets subscribed.
-  const step = useSharedValue(reduceMotion ? 0 : getSyncedLoaderStep(Date.now()));
+  const time = useSharedValue(reduceMotion ? REDUCED_MOTION_TIME_MS : Date.now());
   const registered = useSharedValue(false);
-  const [listenerId] = useState(() => nextStepListenerId++);
+  const [listenerId] = useState(() => nextTimeListenerId++);
 
   useLayoutEffect(() => {
     if (!active || reduceMotion) {
       return;
     }
 
-    scheduleOnUI(registerStepListener, step, registered, listenerId);
+    scheduleOnUI(registerTimeListener, time, registered, listenerId);
     return () => {
-      scheduleOnUI(unregisterStepListener, registered, listenerId);
+      scheduleOnUI(unregisterTimeListener, registered, listenerId);
     };
-  }, [active, listenerId, reduceMotion, registered, step]);
+  }, [active, listenerId, reduceMotion, registered, time]);
 
-  return step;
+  return time;
 }
 
 export function SyncedLoader({ size = 10, color }: { size?: number; color: string }) {
   const active = useRetainedPanelActive();
   const reduceMotion = useReducedMotion();
-  const step = useSyncedLoaderStep(active, reduceMotion);
+  const time = useSyncedLoaderTime(active, reduceMotion);
 
-  // The 2x3 grid fills `size` exactly on its long axis: the dot is whatever is left after
-  // the two gaps, not a floored integer. Flooring cost the grid up to a third of a dot per
-  // row — at size 10 it drew 8pt of ink in a 10pt box and read as a small mark in a large
-  // slot. Fractional dots are fine here; these are sub-pixel radii on a moving glyph.
+  // The 3x3 grid fills `size` exactly: the dot is whatever is left after the two gaps,
+  // not a floored integer. Flooring cost the grid up to a third of a dot per row and
+  // read as a small mark in a large slot. Fractional dots are fine here; these are
+  // sub-pixel radii on a moving glyph.
   const gap = Math.max(1, Math.round(size * 0.12));
-  const dotSize = Math.max(2, (size - gap * 2) / 3);
-  const gridWidth = dotSize * 2 + gap;
-  const gridHeight = dotSize * 3 + gap * 2;
+  const dotSize = Math.max(2, (size - gap * 2) / SYNCED_LOADER_COLUMNS);
+  const gridSide = dotSize * SYNCED_LOADER_COLUMNS + gap * (SYNCED_LOADER_COLUMNS - 1);
 
-  const gridStyle = useMemo(
-    () => ({ width: gridWidth, height: gridHeight }),
-    [gridHeight, gridWidth],
-  );
+  const gridStyle = useMemo(() => ({ width: gridSide, height: gridSide }), [gridSide]);
   const containerStyle = useMemo(
     () =>
       ({
@@ -125,8 +121,8 @@ export function SyncedLoader({ size = 10, color }: { size?: number; color: strin
     <View style={containerStyle}>
       <View style={gridStyle}>
         {Array.from({ length: SYNCED_LOADER_DOT_COUNT }).map((_, dotIndex) => {
-          const rowIndex = Math.floor(dotIndex / GRID_COLUMNS);
-          const columnIndex = dotIndex % GRID_COLUMNS;
+          const rowIndex = Math.floor(dotIndex / SYNCED_LOADER_COLUMNS);
+          const columnIndex = dotIndex % SYNCED_LOADER_COLUMNS;
 
           return (
             <SpinnerDot
@@ -134,7 +130,7 @@ export function SyncedLoader({ size = 10, color }: { size?: number; color: strin
               color={color}
               dotSize={dotSize}
               dotIndex={dotIndex}
-              step={step}
+              time={time}
               left={columnIndex * (dotSize + gap)}
               top={rowIndex * (dotSize + gap)}
             />
@@ -149,19 +145,19 @@ function SpinnerDot({
   color,
   dotSize,
   dotIndex,
-  step,
+  time,
   left,
   top,
 }: {
   color: string;
   dotSize: number;
   dotIndex: number;
-  step: SharedValue<number>;
+  time: SharedValue<number>;
   left: number;
   top: number;
 }) {
   const animatedStyle = useAnimatedStyle(() => ({
-    opacity: getSyncedLoaderDotOpacity(step.value, dotIndex),
+    opacity: getSyncedLoaderDotOpacity(time.value, dotIndex),
   }));
 
   const dotStyle = useMemo(

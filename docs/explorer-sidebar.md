@@ -28,7 +28,7 @@ can remount. Native retained content stays live, while web chat uses its existin
 
 ## Sheets
 
-On compact layouts, Files, Changes, pull requests, individual files and subagents open in a sheet over the workspace, so the tab switcher
+On compact layouts, the Files, Changes and pull request detail tiles expand in place. Individual files and subagents open in a sheet over the workspace, so the tab switcher
 keeps only agents and terminals. A panel kind opts in with `compactSheet` in its manifest
 (`packages/app/src/panels/panel-manifest.ts`), and the layout store's `openTab` decides between
 sheet and tab, so callers open targets the same way on every layout. Each such sheet holds one
@@ -45,7 +45,13 @@ See [menus.md](menus.md#a-page-that-fills-the-sheet) for the page contract.
 The store keeps `sheetsByWorkspace` in opening order and never reorders it, because moving a sheet
 remounts its panel. Revealing a target that already has a sheet uncovers that sheet by closing the
 ones above it, except ones holding unsaved work, which stay where they are. Opening a sheet as a tab
-dismisses the sheets above it, since the tab would sit under them. The stack is not persisted. Files, Changes and pull requests set `preferSheet`, so a retained desktop tab cannot redirect a phone tile into a hidden dock. Explicit pane destinations still preserve their requested placement.
+dismisses the sheets above it, since the tab would sit under them. The stack is not persisted.
+Phone detail tiles and the Explorer keyboard toggle request inline cards before tab resolution,
+so a retained desktop tab cannot redirect them into a hidden dock. Explicit pane destinations
+still preserve their requested placement; their compact fallback remains a sheet. When no
+conversation with detail tiles is visible, as from a terminal, draft or file, phone navigation
+opens the view in a sheet instead. Inline tiles hold their panel's view state, such as folded files
+and the Commits section, for as long as the conversation stays mounted, because they have no layout tab.
 
 Both kinds render the same `SheetPane` (`packages/app/src/screens/workspace/sheet-pane/`): the
 header (icon, title, Back when there is a list to return to, Open as tab, Close), the pane, its

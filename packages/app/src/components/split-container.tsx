@@ -53,6 +53,7 @@ import { SupportingCardsContext } from "@/screens/workspace/supporting-cards-con
 import { COLUMN_BREAKPOINT } from "@/agent-stream/columns/geometry";
 import { SupportingCardGroup } from "@/screens/workspace/supporting-card-group";
 import { FLOATING_PANEL_INSET } from "@/styles/floating-panel";
+import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
 import {
@@ -309,7 +310,11 @@ export function SplitContainer({
     : inheritedWindowChromeCorners;
   const mainColumnStyle = styles.mainColumn;
   const explorerSidebarDockStyle = useMemo(
-    () => [styles.explorerSidebarDock, { width: explorerSidebarWidth - FLOATING_PANEL_INSET * 2 }],
+    () => [
+      styles.explorerSidebarDock,
+      // The width changes on every drag frame; keep it out of the shared stylesheet.
+      inlineUnistylesStyle({ width: explorerSidebarWidth - FLOATING_PANEL_INSET * 2 }),
+    ],
     [explorerSidebarWidth],
   );
   const previewExplorerSidebarResize = useCallback(

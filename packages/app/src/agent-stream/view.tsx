@@ -1988,7 +1988,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     flexGrow: 1,
     paddingHorizontal: {
       xs: theme.spacing[3],
-      md: theme.spacing[4],
+      md: theme.spacing[2],
     },
   },
   forwardListContentContainer: {

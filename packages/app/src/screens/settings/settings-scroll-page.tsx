@@ -22,6 +22,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { hoverStyle } from "@/styles/hover";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { HighlightedText } from "@/components/ui/highlighted-text";
+import { FLOATING_PANEL_RADIUS, FLOATING_PANEL_CONTROL_HEIGHT } from "@/styles/floating-panel";
 import { SearchField } from "@/components/ui/search-field";
 import { isWeb } from "@/constants/platform";
 import type {
@@ -106,7 +107,13 @@ export interface SettingsSearchControls {
   onSubmit: () => void;
 }
 
-export function SettingsSearchBox({ search }: { search: SettingsSearchControls }) {
+export function SettingsSearchBox({
+  search,
+  fitPlaceholder = false,
+}: {
+  search: SettingsSearchControls;
+  fitPlaceholder?: boolean;
+}) {
   return (
     <SearchField
       value={search.query}
@@ -117,6 +124,8 @@ export function SettingsSearchBox({ search }: { search: SettingsSearchControls }
       clearAccessibilityLabel="Clear settings search"
       testID="settings-search-input"
       clearTestID="settings-search-clear"
+      fitPlaceholder={fitPlaceholder}
+      style={styles.searchField}
     />
   );
 }
@@ -644,6 +653,7 @@ function SearchResultRow({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  searchField: { height: FLOATING_PANEL_CONTROL_HEIGHT, borderRadius: FLOATING_PANEL_RADIUS },
   scroll: {
     flex: 1,
   },

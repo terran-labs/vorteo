@@ -13,6 +13,7 @@ import type { OpenInSidePanePreferences, PullRequestOpenLocation } from "@/hooks
 import {
   isExplorerSidebarOpen,
   openExplorerSidebarView,
+  revealCompactDetail,
   type ExplorerSidebarView,
 } from "@/workspace-tabs/explorer-sidebar";
 import {
@@ -70,11 +71,8 @@ export function openComposerChanges(input: OpenWorkspaceChangesInput): string | 
 export function openWorkspacePullRequest(input: OpenWorkspacePullRequestInput): string | null {
   if (!input.workspaceKey) return null;
   if (input.isCompact) {
-    return useWorkspaceLayoutStore.getState().openTab({
-      workspaceKey: input.workspaceKey,
-      target: { kind: "pull_request" },
-      intent: "reveal",
-    });
+    revealCompactDetail(input.workspaceKey, { kind: "pull_request" });
+    return null;
   }
   let tabId: string | null;
   if (supportingViewsBelongInExplorer(input) || input.destination === "explorer") {

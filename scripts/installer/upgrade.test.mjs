@@ -531,21 +531,30 @@ describe("upgrade", () => {
   });
 
   const STALE = new Date("2026-10-30T11:00:00Z");
+  // `held` is the reason the refusal gives, or null when the record is replaced.
   test.each([
-    ["a coordinator that answers makes the installer wait", { stale: true }, false],
-    ["a stopped coordinator's abandoned record is replaced", { stale: true, down: 1e9 }, true],
+    [
+      "a coordinator that answers makes the installer wait",
+      { stale: true },
+      /coordinator is running/,
+    ],
+    ["a stopped coordinator's abandoned record is replaced", { stale: true, down: 1e9 }, null],
     [
       "a running build-only Host build makes the installer wait",
       { stale: true, down: 1e9, building: true },
-      false,
+      /Host build for this installation is still running \(pgrep -f 'host-release/,
     ],
     [
       "a slow coordinator that answers after failed probes is waited for",
       { stale: true, down: 2 },
-      false,
+      /coordinator is running/,
     ],
-    ["a recently written record is waited for", { stale: false, down: 1e9 }, false],
-  ])("a running source upgrade: %s", async (_name, { stale, down = 0, building }, replaced) => {
+    [
+      "a recently written record is waited for",
+      { stale: false, down: 1e9 },
+      /changed in the last 10 minutes/,
+    ],
+  ])("a running source upgrade: %s", async (_name, { stale, down = 0, building }, held) => {
     let probes = 0;
     let root;
     const { context, paths } = machine({
@@ -579,41 +588,56 @@ describe("upgrade", () => {
     const { plan } = await upgradePlan(context);
     const { ok, failure } = await apply(context, plan);
     const [record] = JSON.parse(readFileSync(journal, "utf8")).upgrades;
-    if (replaced) {
+    if (!held) {
       expect(failure).toBeUndefined();
       expect(record).toMatchObject({ status: "failed", steps: [{ status: "failed" }] });
     } else {
       expect(ok).toBe(false);
       expect(failure.message).toMatch(/source upgrade to commit c{12} started from the interface/);
+      expect(failure.message).toMatch(held);
+      if (building) expect(failure.fix).toMatch(/If it is hung, stop the process/);
       expect(record.status).toBe("running");
     }
   });
 
   test.each([
-    ["is refused when the target lacks it", false],
-    ["proceeds when the target contains it", true],
-  ])("an installed commit from a source upgrade %s", async (_name, contains) => {
-    const { context, paths } = machine({
-      rules: [["git merge-base", contains ? "" : new Error("not an ancestor")]],
-    });
-    writeJson(path.join(paths.coordinatorState, "source-upgrades", "journal.json"), {
-      version: 1,
-      upgrades: [
-        {
-          id: "s1",
-          sourceCommit: OLD,
-          status: "succeeded",
-          steps: [{ name: "host", status: "succeeded" }],
-        },
-      ],
-    });
-    const planning = upgradePlan(context);
-    if (contains) await expect(planning).resolves.toMatchObject({ plan: { upgrade: true } });
-    else
-      await expect(planning).rejects.toThrow(
-        /does not contain commit a{12}, which a source upgrade/,
-      );
-  });
+    ["is refused when the target lacks it", { contains: false }],
+    ["proceeds when the target contains it", { contains: true }],
+    ["is reported missing when the source checkout lacks it", { contains: true, fetched: false }],
+  ])(
+    "an installed commit from a source upgrade %s",
+    async (_name, { contains, fetched = true }) => {
+      const { context, paths } = machine({
+        rules: [
+          ["git merge-base", contains ? "" : new Error("not an ancestor")],
+          [`git cat-file -e ${OLD}^{commit}`, fetched ? "" : new Error("missing")],
+        ],
+      });
+      writeJson(path.join(paths.coordinatorState, "source-upgrades", "journal.json"), {
+        version: 1,
+        upgrades: [
+          {
+            id: "s1",
+            sourceCommit: OLD,
+            status: "succeeded",
+            steps: [{ name: "host", status: "succeeded" }],
+          },
+        ],
+      });
+      const planning = upgradePlan(context);
+      if (!fetched)
+        await expect(planning).rejects.toMatchObject({
+          message: expect.stringMatching(/does not hold commit a{12}, which a source upgrade/),
+          fix: expect.stringMatching(/fetch origin main/),
+        });
+      else if (contains) await expect(planning).resolves.toMatchObject({ plan: { upgrade: true } });
+      else
+        await expect(planning).rejects.toMatchObject({
+          message: expect.stringMatching(/does not contain commit a{12}, which a source upgrade/),
+          fix: expect.stringMatching(/^Fix forward: land the change on main/),
+        });
+    },
+  );
 
   test.each([
     ["the same commit", { revision: NEW }, true],

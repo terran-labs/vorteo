@@ -1134,6 +1134,15 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     scope: environment,
   },
   {
+    id: "system.overview.blockedWorkReview",
+    pane: "system.overview",
+    label: "Review blocked work hourly",
+    labelKey: "settings.host.agents.blockedWorkReview.title",
+    hint: "Off by default. Each review reloads the thread's whole conversation.",
+    keywords: ["blocked", "stuck", "usage", "weekly limit", "tokens", "review"],
+    scope: environment,
+  },
+  {
     id: "maintenance.installation.access",
     pane: "maintenance.installation",
     label: "Installation owner",
@@ -1177,8 +1186,8 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "maintenance.installation.deliveryMode",
     pane: "system.overview",
-    label: "Delivery mode",
-    keywords: ["live dev", "fast refresh", "reliable", "live checkout"],
+    label: "Live development",
+    keywords: ["live dev", "delivery mode", "fast refresh", "hot reload", "lab", "live checkout"],
     scope: installation,
   },
   {

@@ -904,7 +904,11 @@ function MobileSidebar({
 }: MobileSidebarProps) {
   const touch = useVortonTouch();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
-  const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
+  const {
+    gesture: closeGesture,
+    gestureRef: closeGestureRef,
+    edgeRef,
+  } = useCloseAgentListGesture();
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -957,6 +961,7 @@ function MobileSidebar({
   return (
     <MobilePanelOverlay
       panel="agent-list"
+      edgeRef={edgeRef}
       closeGesture={closeGesture}
       panelStyle={mobileSidebarInsetStyle}
     >

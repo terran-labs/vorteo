@@ -1224,9 +1224,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       flexDirection: "column",
       minHeight: "100%",
       paddingTop: CONTENT_PADDING_TOP_PX,
-      paddingBottom: CARD_GAP,
-      paddingLeft: isMobileBreakpoint ? 8 : 16,
-      paddingRight: isMobileBreakpoint ? 8 : 16,
+      paddingBottom: isMobileBreakpoint ? 1 : CARD_GAP,
+      paddingLeft: 8,
+      paddingRight: 8,
       boxSizing: "border-box",
     };
   }, [isMobileBreakpoint]);

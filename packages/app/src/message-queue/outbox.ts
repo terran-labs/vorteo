@@ -24,6 +24,8 @@ export interface QueueOutboxPort {
     error: { code: string; message: string } | null;
   }>;
   changed(snapshot: QueueSnapshot, serverId: string): void;
+  /** Reads current host state so content-free commands can settle revision conflicts. */
+  read?(serverId: string, agentId: string): Promise<QueueSnapshot>;
   localChanged?(serverId: string, flush: boolean): void;
   acknowledged?(record: OutboxRecord): Promise<void>;
   discarded?(record: OutboxRecord): Promise<void>;
@@ -84,6 +86,9 @@ export class QueueOutbox {
   async retry(key: OutboxKey): Promise<void> {
     const record = await this.storage.read(key);
     if (!record?.error || record.dismissed) return;
+    // Resending a stale pause or resume repeats the same conflict. The owner asked
+    // again after seeing the current queue, so apply it to that state instead.
+    if (isPauseConflict(record) && (await this.settlePauseConflict(record, true))) return;
     await this.storage.exchange(key, record.revision, {
       ...record,
       revision: record.revision + 1,
@@ -117,10 +122,84 @@ export class QueueOutbox {
       if (candidate.serverId !== serverId) continue;
       const canRepairQueue = ["delete", "pause", "resolve"].includes(candidate.operation.kind);
       if (blocked.has(candidate.agentId) && !canRepairQueue) continue;
-      const record = await this.storage.read(outboxKey(candidate));
+      const key = outboxKey(candidate);
+      const record = await this.storage.read(key);
       if (!record || record.dismissed) continue;
-      if (record.error || !(await this.deliver(record))) blocked.add(record.agentId);
+      if (!record.error && (await this.deliver(record))) continue;
+      const failed = await this.storage.read(key);
+      if (failed && isPauseConflict(failed)) {
+        const settled = await this.settlePauseConflict(failed, false);
+        // A rebased pause still precedes later operations; the next pass sends it first.
+        if (settled === "rebased") blocked.add(failed.agentId);
+        if (settled) continue;
+      }
+      // A rejected resume leaves the queue paused, where later messages wait safely on
+      // the host. Holding them on this device would hide them from every other client.
+      if (failed?.operation.kind === "pause" && !failed.operation.paused) continue;
+      blocked.add(candidate.agentId);
     }
+  }
+
+  async dismissCommand(key: OutboxKey): Promise<void> {
+    const record = await this.storage.read(key);
+    if (!record?.error || hasMessageContent(record))
+      throw new Error("Only a rejected command without message content can be dismissed.");
+    if (!(await this.storage.exchange(key, record.revision, null)))
+      throw new Error("The pending change was updated on another tab. Review it again.");
+    this.notifyLocalChange(key.serverId, true);
+  }
+
+  /**
+   * Pause and resume carry no message content and are refused whenever any queue
+   * change moved its revision, including an ordinary dispatch. Drop one the queue
+   * already satisfies. Reissue a pause, which is always safe, against current state.
+   * A resume is reissued only when the owner retries: a Stop may have paused the
+   * queue after they asked to resume.
+   */
+  private async settlePauseConflict(
+    record: OutboxRecord,
+    resume: boolean,
+  ): Promise<"removed" | "rebased" | null> {
+    const operation = record.operation;
+    if (operation.kind !== "pause" || !this.port.read) return null;
+    let current: QueueSnapshot;
+    try {
+      current = await this.port.read(record.serverId, record.agentId);
+    } catch {
+      return null;
+    }
+    const key = outboxKey(record);
+    if (current.paused === operation.paused) {
+      if (!(await this.storage.exchange(key, record.revision, null))) return null;
+      this.notifyLocalChange(record.serverId, false);
+      return "removed";
+    }
+    if (!operation.paused && !resume) return null;
+    const operationId = rebasedOperationId(operation.operationId);
+    if (!operationId) return null;
+    const rebased = { ...operation, operationId, expectedRevision: current.revision };
+    const next: OutboxRecord = {
+      ...record,
+      // Keep its sort key so messages queued after the pause cannot overtake it.
+      order: record.order ?? record.createdAt,
+      revision: 0,
+      operation: rebased,
+      prepared: rebased,
+      error: null,
+      dismissed: undefined,
+    };
+    // Insert before removing: an interruption leaves the stale copy, which the next
+    // pass drops once the reissued command applies. Another tab may settle the same
+    // conflict meanwhile; then withdraw this copy so only one reissue reaches the host.
+    if ((await this.storage.read(key))?.revision !== record.revision) return null;
+    const nextKey = outboxKey(next);
+    if (!(await this.storage.exchange(nextKey, null, next))) return null;
+    if (!(await this.storage.exchange(key, record.revision, null))) {
+      await this.storage.exchange(nextKey, 0, null);
+      return null;
+    }
+    this.notifyLocalChange(record.serverId, true);
+    return "rebased";
   }
 
   async keepRejectedCopy(key: OutboxKey): Promise<void> {
@@ -195,4 +274,28 @@ export class QueueOutbox {
     }
     return true;
   }
+}
+
+const MAX_PAUSE_REBASES = 5;
+
+// operation_conflict means another tab already sent the same reissued pause.
+function isPauseConflict(record: OutboxRecord): boolean {
+  const code = record.error?.code;
+  return (
+    record.operation.kind === "pause" &&
+    (code === "revision_conflict" || code === "operation_conflict")
+  );
+}
+
+function hasMessageContent(record: OutboxRecord): boolean {
+  return record.operation.kind === "enqueue" || record.operation.kind === "edit";
+}
+
+// Deterministic, so two tabs settling the same conflict write the same record once.
+// Bounded, so a queue that changes on every attempt leaves the conflict for the owner.
+function rebasedOperationId(operationId: string): string | null {
+  const match = /^(.*)~r(\d+)$/.exec(operationId);
+  const base = match ? match[1] : operationId;
+  const count = match ? Number(match[2]) + 1 : 1;
+  return count > MAX_PAUSE_REBASES ? null : `${base}~r${count}`;
 }

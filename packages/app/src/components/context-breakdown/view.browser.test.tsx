@@ -10,10 +10,17 @@ import type { SessionCost } from "@/components/context-window-meter.utils";
 // Load translations so rows expose their real labels.
 void testI18n;
 
-// The suite stubs react-native-svg to nothing; draw plain SVG so the donut's arcs can be counted.
+// The suite stubs react-native-svg; retain SVG attributes for chart composition checks.
 vi.mock("react-native-svg", () => ({
   default: (props: React.SVGProps<SVGSVGElement>) => <svg {...props} />,
-  Circle: ({ cx, cy, r }: React.SVGProps<SVGCircleElement>) => <circle cx={cx} cy={cy} r={r} />,
+  Circle: (props: React.SVGProps<SVGCircleElement>) => <circle {...props} />,
+  Defs: (props: React.SVGProps<SVGDefsElement>) => <defs {...props} />,
+  G: (props: React.SVGProps<SVGGElement>) => <g {...props} />,
+  Mask: (props: React.SVGProps<SVGMaskElement>) => <mask {...props} />,
+  LinearGradient: (props: React.SVGProps<SVGLinearGradientElement>) => (
+    <linearGradient {...props} />
+  ),
+  Stop: (props: React.SVGProps<SVGStopElement>) => <stop {...props} />,
 }));
 
 const { ContextBreakdown } = await import("./view");
@@ -94,8 +101,8 @@ describe("ContextBreakdown", () => {
       expect(view.getByText(label)).toBeTruthy();
     }
     expect(view.getByText("2.8%")).toBeTruthy();
-    // Track plus nine drawn segments; the deferred row stays out of the donut.
-    expect(container.querySelectorAll("circle")).toHaveLength(10);
+    // Track plus nine categories; the capacity mask is separate from the data.
+    expect(container.querySelectorAll("g circle")).toHaveLength(10);
     expect(view.queryByText("mcp__paseo__update_checklist")).toBeNull();
     act(() => view.getByTestId("context-breakdown-group-mcp_tools").click());
     expect(view.getByText("mcp__paseo__update_checklist")).toBeTruthy();
@@ -106,7 +113,7 @@ describe("ContextBreakdown", () => {
     expect(view.getByText("Used")).toBeTruthy();
     expect(view.getByText("Free space")).toBeTruthy();
     expect(view.getByText("This provider reports totals only.")).toBeTruthy();
-    expect(container.querySelectorAll("circle")).toHaveLength(3);
+    expect(container.querySelectorAll("g circle")).toHaveLength(3);
   });
 
   it("labels a reported cost plainly and an estimated cost as an estimate", () => {

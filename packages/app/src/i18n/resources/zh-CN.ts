@@ -2881,6 +2881,11 @@ export const zhCN: TranslationResources = {
           hint: "空闲一小时后释放内存。",
           info: "停止 Agent 进程，但保留对话。发送消息即可继续。\n\n进行中的工作、待处理的通知和 Provider 安全检查会阻止清理。",
         },
+        blockedWorkReview: {
+          title: "每小时复查受阻工作",
+          hint: "默认关闭。每次复查都会重新加载线程的完整对话，可能消耗大量套餐用量。",
+          info: "每小时向带有受阻任务或目标的空闲线程发送提示，让其重新检查阻碍并继续工作。每次提示都会恢复完整对话，因此少数受阻线程就可能用掉服务商每周限额的很大一部分。\n\n等待用量限额重置的线程会单独恢复。",
+        },
       },
       workspaces: {
         unavailable: "连接到这个 Host 以管理 Workspace",
