@@ -2312,7 +2312,8 @@ describe("account choice for new Factory agents", () => {
           },
         ] as never,
       }),
-      getSettings: () => ({}) as never,
+      // A standalone daemon launches only with a chosen primary connection, so name codex.
+      getSettings: () => ({ primaryConnection: { provider: "codex" } }) as never,
       hosts: () => ({
         use: async () => {
           throw new Error("no connected hosts");

@@ -1,12 +1,19 @@
 import { CARD_GAP } from "@/agent-stream/columns/geometry";
 import { useMobileComposerLayout } from "@/composer/mobile-layout";
+import { EdgeFade } from "@/components/ui/edge-fade";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useMemo } from "react";
-import { View, Text, Pressable } from "react-native";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { View, Text, Pressable, Keyboard } from "react-native";
+import {
+  getInterfaceWindow,
+  interfaceRect,
+  useWindowDimensions,
+} from "@/appearance/interface-geometry";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { X, ArrowUp, RefreshCcw, Check, Mic, Pencil, ListPlus } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { VolumeMeter } from "./volume-meter";
+import { isWeb } from "@/constants/platform";
 import { FOOTER_HEIGHT } from "@/constants/layout";
 import type { DictationStatus } from "@/hooks/use-dictation";
 import { useVortonTouch } from "@/vorton-touch";
@@ -106,7 +113,7 @@ export function DictationControls({
         </Pressable>
         {actionsDisabled ? (
           <View style={styles.loadingContainer}>
-            <LoadingSpinner size="small" color={theme.colors.foreground} />
+            <LoadingSpinner size="small" color={theme.colors.foreground} prominent />
           </View>
         ) : null}
         {!actionsDisabled && isFailed ? (
@@ -145,6 +152,74 @@ export function DictationControls({
  * Full-width overlay variant for the agent input footer.
  * Uses blue background with white icons.
  */
+interface WindowEdges {
+  left: number;
+  right: number;
+  bottom: number;
+}
+
+// Used until the panel has measured itself: the composer's 8px field inset plus its 8px margin.
+const FALLBACK_WINDOW_EDGES: WindowEdges = { left: 16, right: 16, bottom: 16 };
+
+/**
+ * Distances from the panel to the window's left, right and bottom edges, so the phone recording
+ * background can run full-bleed, including the bottom safe area, whatever insets the composer's
+ * ancestors add. Measured in layout units, which exclude interface zoom.
+ */
+function useWindowEdges(enabled: boolean) {
+  const ref = useRef<View>(null);
+  const [edges, setEdges] = useState<WindowEdges>(FALLBACK_WINDOW_EDGES);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const measure = useCallback(() => {
+    if (!enabled) {
+      return;
+    }
+    ref.current?.measureInWindow((x, y, width, height) => {
+      if (width === 0 && height === 0) {
+        return;
+      }
+      const rect = interfaceRect({ x, y, width, height });
+      const window = getInterfaceWindow();
+      const next = {
+        left: Math.max(0, rect.x),
+        right: Math.max(0, window.width - rect.x - rect.width),
+        bottom: Math.max(0, window.height - rect.y - rect.height),
+      };
+      setEdges((previous) =>
+        previous.left === next.left &&
+        previous.right === next.right &&
+        previous.bottom === next.bottom
+          ? previous
+          : next,
+      );
+    });
+  }, [enabled]);
+  // Window size changes move the panel without resizing it, so onLayout alone would miss them.
+  useLayoutEffect(measure, [measure, windowWidth, windowHeight]);
+  useEffect(() => {
+    if (!enabled) return;
+    // Ancestor keyboard translations move the panel without triggering its onLayout.
+    let frame = 0;
+    const refresh = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    const viewport = isWeb ? window.visualViewport : null;
+    viewport?.addEventListener("resize", refresh);
+    viewport?.addEventListener("scroll", refresh);
+    const shown = Keyboard.addListener("keyboardDidShow", refresh);
+    const hidden = Keyboard.addListener("keyboardDidHide", refresh);
+    return () => {
+      cancelAnimationFrame(frame);
+      viewport?.removeEventListener("resize", refresh);
+      viewport?.removeEventListener("scroll", refresh);
+      shown.remove();
+      hidden.remove();
+    };
+  }, [enabled, measure]);
+  return { ref, edges, onLayout: measure };
+}
+
 export function DictationOverlay({
   volume,
   duration,
@@ -162,6 +237,7 @@ export function DictationOverlay({
   const { theme } = useUnistyles();
   const touch = useVortonTouch();
   const mobileComposer = useMobileComposerLayout();
+  const windowEdges = useWindowEdges(mobileComposer.enabled);
   const { t } = useTranslation();
   const isFailed = status === "failed";
   const showActiveState = isRecording || isProcessing || isFailed;
@@ -213,6 +289,25 @@ export function DictationOverlay({
     ],
     [touch, onAcceptAndQueue],
   );
+  const mobileBackgroundStyle = useMemo(
+    () => [
+      overlayStyles.mobileBackground,
+      {
+        left: -windowEdges.edges.left,
+        right: -windowEdges.edges.right,
+        bottom: -windowEdges.edges.bottom,
+        backgroundColor: theme.colors.accent,
+      },
+    ],
+    [windowEdges.edges, theme.colors.accent],
+  );
+  const mobileFadeStyle = useMemo(
+    () => [
+      overlayStyles.mobileFade,
+      { left: -windowEdges.edges.left, right: -windowEdges.edges.right },
+    ],
+    [windowEdges.edges],
+  );
   const overlayLoadingStyle = useMemo(
     () => [
       overlayStyles.loadingContainer,
@@ -256,13 +351,21 @@ export function DictationOverlay({
   }
 
   return (
-    <View style={containerStyle} testID="dictation-overlay">
+    <View
+      ref={windowEdges.ref}
+      onLayout={windowEdges.onLayout}
+      style={containerStyle}
+      testID="dictation-overlay"
+    >
       {mobileComposer.enabled ? (
-        <View
-          pointerEvents="none"
-          testID="mobile-recording-background"
-          style={[overlayStyles.mobileBackground, { backgroundColor: theme.colors.accent }]}
-        />
+        <>
+          <EdgeFade edge="bottom" solidFraction={0} backdrop="accent" style={mobileFadeStyle} />
+          <View
+            pointerEvents="none"
+            testID="mobile-recording-background"
+            style={mobileBackgroundStyle}
+          />
+        </>
       ) : null}
       <Pressable
         onPress={handleCancel}
@@ -309,7 +412,7 @@ export function DictationOverlay({
       <View style={[overlayStyles.actionButtonsContainer, touch && overlayStyles.touchActions]}>
         {actionsDisabled ? (
           <View style={overlayLoadingStyle}>
-            <LoadingSpinner size="small" color={theme.colors.accentForeground} />
+            <LoadingSpinner size="small" color={theme.colors.accentForeground} prominent />
           </View>
         ) : null}
         {!actionsDisabled && isFailed ? (
@@ -421,13 +524,22 @@ const styles = StyleSheet.create((theme) => ({
 
 const OVERLAY_BUTTON_SIZE = 44;
 const OVERLAY_VERTICAL_PADDING = (FOOTER_HEIGHT - OVERLAY_BUTTON_SIZE) / 2;
+const MOBILE_SOLID_OVERHANG = 9;
+const MOBILE_FADE_HEIGHT = 24;
 
 const overlayStyles = StyleSheet.create((theme) => ({
   // The hidden composer still owns the footprint. Fill it rather than replacing
   // a multiline draft with FOOTER_HEIGHT. Match its border + padding offsets.
   touchContainer: { height: "100%", paddingHorizontal: 0, paddingVertical: 0 },
   mobileContainer: { backgroundColor: "transparent", borderRadius: 0 },
-  mobileBackground: { position: "absolute", top: -9, bottom: -16, left: -16, right: -16 },
+  // Full-bleed to the window's sides and bottom (see useWindowEdges). The top fades into the
+  // content above over MOBILE_FADE_HEIGHT instead of meeting the cards with a hard edge.
+  mobileBackground: { position: "absolute", top: -MOBILE_SOLID_OVERHANG },
+  mobileFade: {
+    position: "absolute",
+    top: -MOBILE_SOLID_OVERHANG - MOBILE_FADE_HEIGHT,
+    height: MOBILE_FADE_HEIGHT,
+  },
   touchCancel: {
     position: "absolute",
     left: 7,
@@ -444,8 +556,8 @@ const overlayStyles = StyleSheet.create((theme) => ({
   },
   touchActions: { position: "static" },
   touchCenter: { alignSelf: "stretch", paddingHorizontal: 56, paddingTop: 8, paddingBottom: 8 },
-  // The full-width background extends 9px above and 16px below the field.
-  // Offset its contents by half that difference to center in the visible green area.
+  // The background's solid area starts 9px above the field and runs to the window bottom, safe
+  // area included. Contents stay on the field, level with the cancel and submit buttons.
   mobileCenter: { paddingTop: 15 },
   container: {
     flexDirection: "row",

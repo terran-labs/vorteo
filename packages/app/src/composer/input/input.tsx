@@ -409,7 +409,7 @@ function SendButtonContent({
   buttonIconSize: number;
 }) {
   if (isSubmitLoading) {
-    return <ThemedLoadingSpinner size="small" uniProps={iconAccentForegroundMapping} />;
+    return <ThemedLoadingSpinner size="small" uniProps={iconAccentForegroundMapping} prominent />;
   }
   if (submitIcon === "newline") {
     return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconForegroundMapping} />;
@@ -2547,8 +2547,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       () => [
         isFullscreen ? styles.fullscreenContainer : styles.container,
         touch && showOverlay && styles.recordingContainer,
+        mobileComposer.enabled && showOverlay && styles.mobileRecordingContainer,
       ],
-      [isFullscreen, touch, showOverlay],
+      [isFullscreen, touch, showOverlay, mobileComposer.enabled],
     );
     const fullscreenControls = useMemo(
       () => (
@@ -2609,6 +2610,8 @@ const styles = StyleSheet.create((theme: Theme) => ({
     position: "relative",
   },
   recordingContainer: { height: 162, flexShrink: 0, overflow: "hidden" },
+  // Phone recording paints through the composer margins and bottom safe area.
+  mobileRecordingContainer: { overflow: "visible" },
   fullscreenContainer: {
     flex: 1,
     position: "relative",
