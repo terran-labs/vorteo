@@ -557,19 +557,62 @@ export interface CeilingEvaluation {
   ): Promise<void>;
 }
 
-const NOOP_EVALUATION: CeilingEvaluation = {
+export const NOOP_CEILING_EVALUATION: CeilingEvaluation = {
   report: async () => {},
   reportRequested: async () => {},
   noteTarget: () => {},
   reportPermissionAnswer: async () => {},
 };
+const NOOP_EVALUATION = NOOP_CEILING_EVALUATION;
+
+/**
+ * The one guard every reporting hook goes through. Runs `run` and returns its value, or
+ * `fallback` when it throws. A returned promise gets a rejection handler, so a failure can never
+ * become an unhandled rejection. All reporting work belongs inside `run`, including reading the
+ * hook's arguments, so nothing between an operation and its result runs unguarded.
+ */
+export function guardCeiling<T, F = T>(fallback: F, run: () => T): T | F {
+  try {
+    const result = run();
+    if (result !== null && typeof result === "object" && "then" in result) {
+      const then = (result as { then?: unknown }).then;
+      if (typeof then === "function") {
+        return (result as unknown as Promise<unknown>).then(undefined, () => undefined) as T;
+      }
+    }
+    return result;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Hands a discarded report's promise to the guard, so a rejection is always handled. */
+function settle(report: Promise<unknown>): void {
+  guardCeiling(undefined, () => report);
+}
+
+/** Every method of an evaluation, routed through the guard. */
+function totalEvaluation(evaluation: CeilingEvaluation): CeilingEvaluation {
+  const settled = Promise.resolve();
+  return {
+    report: (targetAgentId, extra) =>
+      guardCeiling(settled, () => evaluation.report(targetAgentId, extra)),
+    reportRequested: (target) => guardCeiling(settled, () => evaluation.reportRequested(target)),
+    noteTarget: (targetAgentId) =>
+      guardCeiling(undefined, () => evaluation.noteTarget(targetAgentId)),
+    reportPermissionAnswer: (targetAgentId, response) =>
+      guardCeiling(settled, () => evaluation.reportPermissionAnswer(targetAgentId, response)),
+  };
+}
 
 /** Reports an account switch only when it happened; refusals, skips and dry runs change nothing. */
 export function reportIfSwitched(
   evaluation: CeilingEvaluation,
   result: { agentId: string; outcome: string } | undefined,
 ): void {
-  if (result?.outcome === "switched") void evaluation.report(result.agentId);
+  guardCeiling(undefined, () => {
+    if (result?.outcome === "switched") settle(evaluation.report(result.agentId));
+  });
 }
 
 interface ScheduleLike {
@@ -604,38 +647,42 @@ export function reportSchedule(
     triggered?: boolean;
   } = {},
 ): void {
-  if (options.previous && scheduleTargetKey(options.previous) === scheduleTargetKey(schedule))
-    return;
-  const config = schedule.target.config as
-    | {
-        provider?: string;
-        modeId?: string;
-        cwd?: string;
-        isolation?: string;
-        featureValues?: Record<string, unknown>;
-        providerOptions?: Record<string, unknown>;
-      }
-    | undefined;
-  if (schedule.target.type !== "new-agent" || !config?.provider) {
-    void evaluation.reportRequested({ label: schedule.id, unresolved: "schedule-target" });
-    return;
-  }
-  void evaluation.reportRequested({
-    label: schedule.id,
-    provider: config.provider,
-    modeId: config.modeId ?? null,
-    featureValues: config.featureValues,
-    providerOptions: config.providerOptions,
-    cwd: config.cwd,
-    // The schedule service launches every run with `unattended: true` (schedule/service.ts).
-    facts: { unattended: true },
-    extra: {
-      scheduleId: schedule.id,
-      isolation: config.isolation ?? "local",
-      // Schedule records do not store who created them. Join on scheduleId against
-      // create_schedule lines to tell an agent's own schedule from one it did not arrange.
-      ...(options.triggered ? { scheduleCreator: "not-recorded" } : {}),
-    },
+  guardCeiling(undefined, () => {
+    if (options.previous && scheduleTargetKey(options.previous) === scheduleTargetKey(schedule))
+      return;
+    const config = schedule.target.config as
+      | {
+          provider?: string;
+          modeId?: string;
+          cwd?: string;
+          isolation?: string;
+          featureValues?: Record<string, unknown>;
+          providerOptions?: Record<string, unknown>;
+        }
+      | undefined;
+    if (schedule.target.type !== "new-agent" || !config?.provider) {
+      settle(evaluation.reportRequested({ label: schedule.id, unresolved: "schedule-target" }));
+      return;
+    }
+    settle(
+      evaluation.reportRequested({
+        label: schedule.id,
+        provider: config.provider,
+        modeId: config.modeId ?? null,
+        featureValues: config.featureValues,
+        providerOptions: config.providerOptions,
+        cwd: config.cwd,
+        // The schedule service launches every run with `unattended: true` (schedule/service.ts).
+        facts: { unattended: true },
+        extra: {
+          scheduleId: schedule.id,
+          isolation: config.isolation ?? "local",
+          // Schedule records do not store who created them. Join on scheduleId against
+          // create_schedule lines to tell an agent's own schedule from one it did not arrange.
+          ...(options.triggered ? { scheduleCreator: "not-recorded" } : {}),
+        },
+      }),
+    );
   });
 }
 
@@ -654,46 +701,54 @@ export function reportRemoteOperation(
   input: Record<string, unknown>,
   failed: boolean | undefined,
 ): void {
-  if (failed || !destination || destination === localServerId) return;
-  if (tool === "send_agent_prompt") {
-    if (typeof input.sessionMode !== "string" || !input.sessionMode) return;
-    void evaluate("remote_send_agent_prompt").reportRequested({
-      label: destination,
-      unresolved: "remote-recipient",
-      extra: { remoteServerId: destination, change: "session-mode", applied: "unknown-remote" },
-    });
-    return;
-  }
-  if (tool !== "create_agent") return;
-  const settings = (input.settings ?? {}) as {
-    modeId?: unknown;
-    features?: unknown;
-  };
-  let provider: string | null = null;
-  try {
-    provider =
-      typeof input.provider === "string"
-        ? resolveRequiredProviderModel(input.provider).provider
-        : null;
-  } catch {
-    provider = null;
-  }
-  const extra = { remoteServerId: destination, targetDirectory: "unresolved-remote" };
-  const evaluation = evaluate("remote_create_agent");
-  if (!provider) {
-    void evaluation.reportRequested({ label: destination, unresolved: "remote-provider", extra });
-    return;
-  }
-  void evaluation.reportRequested({
-    label: destination,
-    provider,
-    modeId: typeof settings.modeId === "string" ? settings.modeId : null,
-    featureValues:
-      settings.features && typeof settings.features === "object"
-        ? (settings.features as Record<string, unknown>)
-        : undefined,
-    facts: { environmentId: destination },
-    extra,
+  guardCeiling(undefined, () => {
+    if (failed || !destination || destination === localServerId) return;
+    if (tool === "send_agent_prompt") {
+      if (typeof input.sessionMode !== "string" || !input.sessionMode) return;
+      settle(
+        evaluate("remote_send_agent_prompt").reportRequested({
+          label: destination,
+          unresolved: "remote-recipient",
+          extra: { remoteServerId: destination, change: "session-mode", applied: "unknown-remote" },
+        }),
+      );
+      return;
+    }
+    if (tool !== "create_agent") return;
+    const settings = (input.settings ?? {}) as {
+      modeId?: unknown;
+      features?: unknown;
+    };
+    let provider: string | null = null;
+    try {
+      provider =
+        typeof input.provider === "string"
+          ? resolveRequiredProviderModel(input.provider).provider
+          : null;
+    } catch {
+      provider = null;
+    }
+    const extra = { remoteServerId: destination, targetDirectory: "unresolved-remote" };
+    const evaluation = evaluate("remote_create_agent");
+    if (!provider) {
+      settle(
+        evaluation.reportRequested({ label: destination, unresolved: "remote-provider", extra }),
+      );
+      return;
+    }
+    settle(
+      evaluation.reportRequested({
+        label: destination,
+        provider,
+        modeId: typeof settings.modeId === "string" ? settings.modeId : null,
+        featureValues:
+          settings.features && typeof settings.features === "object"
+            ? (settings.features as Record<string, unknown>)
+            : undefined,
+        facts: { environmentId: destination },
+        extra,
+      }),
+    );
   });
 }
 
@@ -711,33 +766,35 @@ export function reportSessionMode(
   sessionMode: string | undefined,
   dispatched: Promise<unknown>,
 ): void {
-  if (!sessionMode) return;
-  let evaluation: CeilingEvaluation;
-  let before: string | null = null;
-  try {
-    evaluation = evaluate();
-    const target = getAgent(agentId);
-    before = target ? liveModeId(target) : null;
-  } catch {
-    return;
-  }
-  const modeNow = (): string | null => {
+  guardCeiling(undefined, () => {
+    if (!sessionMode) return;
+    let evaluation: CeilingEvaluation;
+    let before: string | null = null;
     try {
+      evaluation = evaluate();
       const target = getAgent(agentId);
-      return target ? liveModeId(target) : null;
+      before = target ? liveModeId(target) : null;
     } catch {
-      return null;
+      return;
     }
-  };
-  dispatched
-    .then(
-      () => evaluation.report(agentId, { change: "session-mode" }),
-      () =>
-        modeNow() === sessionMode && before !== sessionMode
-          ? evaluation.report(agentId, { change: "session-mode", dispatch: "failed-after-mode" })
-          : undefined,
-    )
-    .catch(() => undefined);
+    const modeNow = (): string | null => {
+      try {
+        const target = getAgent(agentId);
+        return target ? liveModeId(target) : null;
+      } catch {
+        return null;
+      }
+    };
+    dispatched
+      .then(
+        () => evaluation.report(agentId, { change: "session-mode" }),
+        () =>
+          modeNow() === sessionMode && before !== sessionMode
+            ? evaluation.report(agentId, { change: "session-mode", dispatch: "failed-after-mode" })
+            : undefined,
+      )
+      .catch(() => undefined);
+  });
 }
 
 /**
@@ -814,6 +871,16 @@ function logAt(
  * calling agent (owner or top-level sessions). Never throws.
  */
 export function beginCeilingReport(
+  dependencies: ReporterDependencies,
+  callerAgentId: string | undefined,
+  operation: CeilingOperation,
+): CeilingEvaluation {
+  return guardCeiling(NOOP_EVALUATION, () =>
+    totalEvaluation(createCeilingReport(dependencies, callerAgentId, operation)),
+  );
+}
+
+function createCeilingReport(
   dependencies: ReporterDependencies,
   callerAgentId: string | undefined,
   operation: CeilingOperation,
