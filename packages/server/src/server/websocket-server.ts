@@ -137,6 +137,13 @@ import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
+import {
+  ServicePrincipalError,
+  ServicePrincipalStore,
+  servicePrincipalSessionId,
+} from "./authorization/service-principals.js";
+import type { ServicePrincipalManagement } from "./session.js";
+import type { AgentGrant } from "@getpaseo/protocol/messages";
 import type { WorkspaceLabelService } from "./workspace-labels/index.js";
 import {
   APPLICATION_SOCKET_LEASE_CHECK_INTERVAL_MS,
@@ -162,6 +169,11 @@ export interface ExternalSocketMetadata {
 export interface SessionAdmission {
   principalId: string;
   permissions: readonly DaemonPermission[];
+  /** Resource-scoped agent authority held by a service principal. */
+  agentGrants?: readonly AgentGrant[];
+  principalLabel?: string;
+  /** When a service principal's token expires; its sessions end then. */
+  expiresAt?: string | null;
   hubExecutionAgents?: HubExecutionAgents;
 }
 
@@ -517,6 +529,9 @@ interface SocketSessionOptions {
   onLifecycleIntent?: (intent: SessionLifecycleIntent) => void;
   hubExecutionAgents?: HubExecutionAgents;
   hubRelationships?: HubRelationshipManagement;
+  servicePrincipals?: ServicePrincipalManagement;
+  agentGrants?: readonly AgentGrant[];
+  principalLabel?: string;
 }
 
 interface ClosePhysicalSocketParams {
@@ -631,6 +646,8 @@ export class VoiceAssistantWebSocketServer {
   private readonly sidebarState: SidebarStateStore;
   private readonly paseoHome: string;
   private readonly connectedHosts: ConnectedHosts;
+  private readonly servicePrincipals: ServicePrincipalStore;
+  private readonly servicePrincipalManagement: ServicePrincipalManagement;
 
   toolHosts() {
     return createToolHosts(this.connectedHosts);
@@ -832,6 +849,30 @@ export class VoiceAssistantWebSocketServer {
       logger: this.logger.child({ module: "sidebar-state" }),
     });
     this.connectedHosts = new ConnectedHosts(paseoHome, { serverId, label: getHostName() });
+    this.servicePrincipals = new ServicePrincipalStore(paseoHome);
+    this.servicePrincipalManagement = {
+      list: () => this.servicePrincipals.list(),
+      create: async (input) => {
+        // Without a password every unauthenticated client is owner, so a scoped
+        // credential would promise a boundary the daemon cannot enforce.
+        if (!this.passwordHash)
+          throw new ServicePrincipalError(
+            "Set a daemon password before issuing service credentials",
+          );
+        return this.servicePrincipals.create(input);
+      },
+      setGrants: async (id, grants, actor) => {
+        const principal = await this.servicePrincipals.setGrants(id, grants, actor);
+        // Reconnecting picks up the new grants; narrowing must not wait for that.
+        this.disconnectPrincipal(servicePrincipalSessionId(id));
+        return principal;
+      },
+      revoke: async (id, actor) => {
+        const principal = await this.servicePrincipals.revoke(id, actor);
+        this.disconnectPrincipal(servicePrincipalSessionId(id));
+        return principal;
+      },
+    };
     this.passwordHash = auth?.password;
     this.worktreesRoot = daemonRuntimeConfig?.worktreesRoot;
     this.daemonConfigStore = daemonConfigStore;
@@ -1248,6 +1289,57 @@ export class VoiceAssistantWebSocketServer {
             ? permissions.filter((permission) => connection.permissionCeiling!.includes(permission))
             : permissions,
         );
+      }
+    }
+  }
+
+  /**
+   * Final outbound check for service sessions. Some session paths deliver without
+   * the session's own filter; this transport boundary covers every one of them.
+   */
+  private serviceDelivery(
+    connection: SessionConnection,
+    msg: SessionOutboundMessage,
+  ): SessionOutboundMessage | null {
+    if (!connection.principalId.startsWith("service:")) return msg;
+    // The handshake server_info is written directly to the socket, not through here.
+    // Directory projection happens in session delivery, before delivery proofs attach.
+    return connection.session.allowsOutbound(msg) ? msg : null;
+  }
+
+  /** Ends a service principal's sessions when its token expires, not only at its next connect. */
+  private scheduleAdmissionExpiry(admission: SessionAdmission): void {
+    if (!admission.expiresAt) return;
+    const expiresAt = Date.parse(admission.expiresAt);
+    // setTimeout overflows past about 24.8 days, so long expiries re-arm in steps.
+    const MAX_STEP = 20 * 24 * 60 * 60 * 1000;
+    const arm = () => {
+      const remaining = expiresAt - Date.now();
+      const timer =
+        remaining > MAX_STEP
+          ? setTimeout(arm, MAX_STEP)
+          : setTimeout(
+              () => this.disconnectPrincipal(admission.principalId),
+              Math.max(0, remaining),
+            );
+      timer.unref?.();
+    };
+    arm();
+  }
+
+  /** Removes all authority from a principal's live sessions and closes their sockets. */
+  private disconnectPrincipal(principalId: string): void {
+    this.updatePrincipalPermissions(principalId, []);
+    for (const [ws, pending] of this.pendingConnections) {
+      if (pending.admission?.principalId === principalId) {
+        this.clearPendingConnection(ws);
+        this.closePhysicalSocket({ ws, logMessage: "Closed pending socket of revoked principal" });
+      }
+    }
+    for (const connection of new Set(this.externalSessionsByKey.values())) {
+      if (connection.principalId !== principalId) continue;
+      for (const ws of connection.sockets) {
+        this.closePhysicalSocket({ ws, logMessage: "Closed socket of revoked principal" });
       }
     }
   }
@@ -1701,13 +1793,20 @@ export class VoiceAssistantWebSocketServer {
         if (!connection) {
           return;
         }
-        this.sendToConnection(connection, wrapSessionMessage(msg));
+        const delivered = this.serviceDelivery(connection, msg);
+        if (!delivered) return;
+        this.sendToConnection(connection, wrapSessionMessage(delivered));
       },
       onMessageToSource: async (source, msg) => {
         if (!connection || !connection.sockets.has(source as WebSocketLike)) {
           return;
         }
-        await this.sendMessageToClientAndWait(source as WebSocketLike, wrapSessionMessage(msg));
+        const delivered = this.serviceDelivery(connection, msg);
+        if (!delivered) return;
+        await this.sendMessageToClientAndWait(
+          source as WebSocketLike,
+          wrapSessionMessage(delivered),
+        );
       },
       onBinaryMessage: (frame) => {
         if (!connection) {
@@ -1742,6 +1841,9 @@ export class VoiceAssistantWebSocketServer {
       },
       hubExecutionAgents: admission.hubExecutionAgents,
       hubRelationships: this.hubRelationships ?? undefined,
+      servicePrincipals: this.servicePrincipalManagement,
+      agentGrants: admission.agentGrants,
+      principalLabel: admission.principalLabel,
     });
 
     const base: SessionConnectionBase = {
@@ -1848,6 +1950,9 @@ export class VoiceAssistantWebSocketServer {
       providerLoginService: this.providerLoginService,
       hubExecutionAgents: options.hubExecutionAgents,
       hubRelationships: options.hubRelationships,
+      servicePrincipals: options.servicePrincipals,
+      agentGrants: options.agentGrants,
+      principalLabel: options.principalLabel,
       serviceProxy: this.serviceProxy ?? undefined,
       scriptRuntimeStore: this.scriptRuntimeStore ?? undefined,
       workspaceSetupObservation: this.workspaceSetupObservation,
@@ -2041,6 +2146,7 @@ export class VoiceAssistantWebSocketServer {
         credential: message.auth,
         passwordHash: this.passwordHash,
         localCredential: this.credentialSource?.localCredential?.() ?? null,
+        servicePrincipals: this.servicePrincipals,
       });
       if (this.pendingConnections.get(ws) !== pending) return false;
       if ("rejection" in resolved) {
@@ -2048,7 +2154,13 @@ export class VoiceAssistantWebSocketServer {
         await this.rejectHello(ws, message, resolved.rejection);
         return false;
       }
+      if (!servicesHelloIsCompatible(resolved.admission, message)) {
+        this.clearPendingConnection(ws);
+        await this.rejectHello(ws, message, "incompatible_protocol");
+        return false;
+      }
       pending.admission = resolved.admission;
+      this.scheduleAdmissionExpiry(resolved.admission);
       return true;
     } catch (error) {
       pending.connectionLogger.error({ err: error }, "Failed to resolve hello credential");
@@ -2109,6 +2221,7 @@ export class VoiceAssistantWebSocketServer {
     }
     existing.permissionCeiling = message.sessionPermissions;
     existing.session.setPermissions(pending.admission!.permissions);
+    existing.session.setAgentGrants(pending.admission!.agentGrants);
     existing.session.setRouted(message.routed === true);
     this.assignHostSource(existing, message, pending.admission!.principalId);
     const newAppVersion = message.appVersion ?? null;
@@ -2178,6 +2291,11 @@ export class VoiceAssistantWebSocketServer {
         workspaceTitleSuggestions: true,
         connectedHosts: true,
         hostMultiplexing: true,
+        // COMPAT(servicePrincipals): added 2026-11-03, remove gate after 2027-05-03.
+        servicePrincipals: true,
+        // COMPAT(serviceAgentGrants): added 2026-11-03, remove gate after 2027-05-03.
+        serviceAgentGrants: true,
+        agentToolAccess: true,
         // COMPAT(relayProtectedSecurity): added in v0.13.0, remove gate after 2027-04-21.
         relayProtectedSecurity: true,
         usageSetting: true,
@@ -2928,7 +3046,8 @@ export class VoiceAssistantWebSocketServer {
     message: Extract<WSInboundMessage, { type: "session" }>,
   ): Promise<void> {
     const link = this.hostLink(ws, activeConnection);
-    if (link.handles(message.message)) {
+    // Unauthorized link frames fall through so the session answers with its rpc_error.
+    if (link.handles(message.message) && activeConnection.session.allowsInbound(message.message)) {
       await activeConnection.session.delivery.request(ws, message.message, () =>
         link.dispatch(message.message),
       );
@@ -3344,6 +3463,21 @@ function createWebSocketConnectionIdentity(
     ...(metadata?.securityMode ? { securityMode: metadata.securityMode } : {}),
     ...(metadata?.hubDaemonId ? { hubDaemonId: metadata.hubDaemonId } : {}),
   };
+}
+
+/**
+ * Service sessions receive only replies and owned subscriptions, so they must use
+ * the source-owned delivery contract and selective timelines.
+ */
+function servicesHelloIsCompatible(
+  admission: SessionAdmission | null | undefined,
+  hello: WSHelloMessage,
+): boolean {
+  if (!admission?.principalId.startsWith("service:")) return true;
+  return (
+    hello.capabilities?.[CLIENT_CAPS.ownedSubscriptions] === true &&
+    hello.capabilities?.[CLIENT_CAPS.selectiveAgentTimeline] === true
+  );
 }
 
 function sessionConnectionKey(principalId: string, clientId: string): string {

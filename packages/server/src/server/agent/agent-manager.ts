@@ -163,6 +163,7 @@ import {
 } from "./profile-switch/history.js";
 import { readRecordedContext } from "./profile-switch/context.js";
 import type {
+  AgentToolAccessSetting,
   ProfileSwitchEndpoint,
   ProfileSwitchTimelineItem,
 } from "@getpaseo/protocol/agent-types";
@@ -373,7 +374,41 @@ function buildStoredAgentConfig(record: StoredAgentRecord): AgentSessionConfig {
   if (record.config.usageLimitHold) config.usageLimitHold = record.config.usageLimitHold;
   if (record.config.quotaReserve) config.quotaReserve = record.config.quotaReserve;
   if (record.config.mcpServers != null) config.mcpServers = record.config.mcpServers;
+  if (record.config.toolAccess === "none") config.toolAccess = "none";
   return stripInternalPaseoMcpServer(config);
+}
+
+/** Effective tool access reported to the authorization layer. */
+export type AgentToolAccess = "none" | "default";
+
+/** Only the Claude provider disables every built-in tool, so tool-less agents run only there. */
+const TOOL_LESS_PROVIDER_FAMILY = "claude";
+
+/** Refusal to create, launch or reconfigure an agent against its tool access setting. */
+export class ToolAccessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolAccessError";
+  }
+}
+
+/** A tool-less config keeps no MCP servers or tool preapprovals to launch with. */
+function withoutToolGrants(config: AgentSessionConfig): AgentSessionConfig {
+  const next: AgentSessionConfig = { ...config, toolAccess: "none" };
+  delete next.mcpServers;
+  delete next.toolPolicy;
+  return next;
+}
+
+/** Fails closed if anything attached tools to a tool-less launch. */
+function resolveToolLessLaunchConfig(
+  launchConfig: AgentSessionConfig,
+  launchContext: AgentLaunchContext,
+): AgentSessionConfig {
+  if (launchContext.paseoTools || Object.keys(launchContext.mcpServers ?? {}).length > 0) {
+    throw new ToolAccessError("A thread without tools cannot launch with tools attached.");
+  }
+  return withoutToolGrants(launchConfig);
 }
 
 export { AGENT_LIFECYCLE_STATUSES, type AgentLifecycleStatus };
@@ -1763,6 +1798,9 @@ export class AgentManager {
       assertCurrent,
       openSession: (input) => {
         assertCurrent();
+        // Governed sessions skip prepareSessionConfig, which is what enforces tool access.
+        if (input.config.toolAccess === "none")
+          throw new ToolAccessError("Controller-managed execution cannot run without tools.");
         return (async () => {
           // Capture scalar placement before awaiting registry reads. Provider startup
           // must not race a controller mutating the caller's placement object.
@@ -3107,6 +3145,7 @@ export class AgentManager {
         ...request.config,
         ...config,
         internal: config.internal,
+        toolAccess: config.toolAccess,
         profileId: config.profileId,
         profileLaunch: config.profileLaunch,
         skillSnapshot: config.skillSnapshot,
@@ -3177,6 +3216,10 @@ export class AgentManager {
       (await this.registry?.get(resolvedAgentId))?.config?.controllerExecutionId
     )
       throw new Error("Controller-managed execution must be created through its controller.");
+    // Recreating a stored tool-less agent, as loading one without a provider handle does,
+    // keeps it tool-less even though its record is replaced.
+    if ((await this.readStoredToolAccess(resolvedAgentId)) === "none")
+      config = { ...config, toolAccess: "none" };
     await this.deleteAgentState(resolvedAgentId);
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
@@ -3203,7 +3246,7 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       options?.env,
-      buildCreateOpening(),
+      { ...buildCreateOpening(), toolAccess: storedConfig.toolAccess },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
@@ -3379,7 +3422,7 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       launchEnv,
-      buildResumeOpening(),
+      { ...buildResumeOpening(), toolAccess: storedConfig.toolAccess },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const session = await client.resumeSession(
@@ -3551,6 +3594,7 @@ export class AgentManager {
         workspaceId: existing.workspaceId,
         title: await this.resolveInitialPersistedTitle(agentId, existing.config, null),
         labels: existing.labels,
+        toolAccess: storedConfig.toolAccess,
       },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
@@ -3699,7 +3743,12 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       undefined,
-      { reason: "create", purpose: "interactive", workspaceId: source.workspaceId },
+      {
+        reason: "create",
+        purpose: "interactive",
+        workspaceId: source.workspaceId,
+        toolAccess: storedConfig.toolAccess,
+      },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
 
@@ -6358,6 +6407,11 @@ export class AgentManager {
     const agent = this.requireSessionAgent(agentId);
     try {
       await this.hydrateTimelineFromLegacyProviderHistory(agent, options);
+      // Quiet history hydration still needs to restore descriptors cleared by an unloaded list.
+      // Publish the final snapshot without replaying the parent's timeline or child history.
+      for (const subagent of this.providerSubagents.list(agentId)) {
+        this.dispatch({ type: "provider_subagent", event: { type: "upsert", subagent } });
+      }
     } finally {
       // Rows from history are committed (or were already); held live events may follow them now.
       agent.session.historyApplied?.();
@@ -8688,10 +8742,20 @@ export class AgentManager {
   ): Promise<PreparedSessionConfig> {
     if (config.controllerExecutionId)
       throw new Error("Controller-managed execution requires trusted registration.");
-    const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), {
+    // Tool access only narrows. Once an agent is tool-less, no override, profile switch or
+    // reload config can restore its tools.
+    const toolLess =
+      config.toolAccess === "none" || (await this.readStoredToolAccess(agentId)) === "none";
+    const source = toolLess ? withoutToolGrants(config) : config;
+    const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(source), {
       env: options.env,
       purpose: options.purpose,
     });
+    if (toolLess) {
+      if (options.purpose !== "history") this.assertToolLessProvider(storedConfig.provider);
+      const launchConfig = this.applyDaemonAppendSystemPrompt(storedConfig);
+      return { storedConfig, launchConfig, paseoToolPolicy: { enabled: false } };
+    }
     const paseoToolPolicy = this.paseoToolsEnabled
       ? this.resolvePaseoToolPolicy(storedConfig.provider)
       : { enabled: false };
@@ -8716,6 +8780,52 @@ export class AgentManager {
       }),
     );
     return { storedConfig, launchConfig, paseoToolPolicy };
+  }
+
+  /** The tool access recorded for an agent, live or persisted, before any new config applies. */
+  private async readStoredToolAccess(agentId: string): Promise<AgentToolAccessSetting | undefined> {
+    if (this.agents.get(agentId)?.config.toolAccess === "none") return "none";
+    const record = await this.registry?.get(agentId);
+    return record?.config?.toolAccess === "none" ? "none" : undefined;
+  }
+
+  /**
+   * Root provider of a provider's `extends` chain in the registry, such as "claude" for a
+   * `claude-account-*` account. Null when the chain is unregistered or cyclic.
+   */
+  private resolveProviderFamily(provider: AgentProvider): AgentProvider | null {
+    const seen = new Set<AgentProvider>();
+    let current = provider;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const definition = this.providerDefinitions.get(current);
+      if (!definition) return null;
+      if (!definition.derivedFromProviderId) return current;
+      current = definition.derivedFromProviderId;
+    }
+    return null;
+  }
+
+  private assertToolLessProvider(provider: AgentProvider): void {
+    if (this.resolveProviderFamily(provider) !== TOOL_LESS_PROVIDER_FAMILY) {
+      throw new ToolAccessError(
+        `A thread without tools can only run on a Claude account. '${provider}' is not one.`,
+      );
+    }
+  }
+
+  /**
+   * Effective tool access for an agent, for authorization decisions. Returns "none" only when
+   * the agent's live or stored config records `toolAccess: "none"` and its provider resolves
+   * to the Claude family through the provider registry, the only provider that enforces it.
+   * Every other agent, including an unknown one, reports "default".
+   */
+  async getToolAccess(agentId: string): Promise<AgentToolAccess> {
+    if ((await this.readStoredToolAccess(agentId)) !== "none") return "default";
+    const provider =
+      this.agents.get(agentId)?.provider ?? (await this.registry?.get(agentId))?.provider;
+    if (!provider) return "default";
+    return this.resolveProviderFamily(provider) === TOOL_LESS_PROVIDER_FAMILY ? "none" : "default";
   }
 
   private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
@@ -8746,6 +8856,8 @@ export class AgentManager {
       workspaceId?: string | null;
       title?: string | null;
       labels?: Record<string, string>;
+      /** A tool-less launch attaches no plugin tools, MCP servers or native tool catalog. */
+      toolAccess?: AgentToolAccessSetting;
     },
   ): Promise<AgentLaunchContext> {
     // A plugin changing during this open must still make the resulting session stale.
@@ -8772,7 +8884,7 @@ export class AgentManager {
       const request = buildOpenRequest();
       const transformed = await this.pluginLifecycle.before("agent.open.before", request);
       env = { ...transformed.env, ...env };
-      if (request.purpose === "interactive") {
+      if (request.purpose === "interactive" && opening?.toolAccess !== "none") {
         this.attachedPluginTools.set(agentId, transformed.tools as AttachedAgentTool[]);
         mcpServers = transformed.mcpServers;
         mcpServerOwners = transformed.mcpServerOwners;
@@ -8791,10 +8903,12 @@ export class AgentManager {
       },
     };
     const useNativeTools =
+      opening?.toolAccess !== "none" &&
       this.paseoToolsEnabled &&
       isPaseoToolPolicyEnabled(paseoToolPolicy) &&
       client.capabilities.supportsNativePaseoTools;
     if (
+      opening?.toolAccess !== "none" &&
       this.paseoToolCatalogFactory &&
       (useNativeTools || this.getPluginTools(agentId).length > 0)
     ) {
@@ -8817,6 +8931,8 @@ export class AgentManager {
     launchConfig: AgentSessionConfig,
     launchContext: AgentLaunchContext,
   ): AgentSessionConfig {
+    if (launchConfig.toolAccess === "none")
+      return resolveToolLessLaunchConfig(launchConfig, launchContext);
     const savedServerNames = new Set(
       Object.keys(stripInternalPaseoMcpServer(launchConfig).mcpServers ?? {}),
     );

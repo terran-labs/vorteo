@@ -9,6 +9,7 @@ import type {
   AgentFeatureToggle,
   AgentProviderNotice,
   AgentTaskItem,
+  AgentToolAccessSetting,
   JsonValue,
   ProfileSwitchTimelineItem,
   ProviderOptions,
@@ -690,6 +691,12 @@ export interface AgentSessionConfig {
   providerOptions?: ProviderOptions;
   toolPolicy?: ToolPolicy;
   mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * "none" makes a Claude-family agent unable to call any tool: the daemon injects no Vorteo
+   * tools or MCP servers and the provider disables its built-in tools. Owner-only, set at
+   * creation, and preserved by every later launch and reconfiguration.
+   */
+  toolAccess?: AgentToolAccessSetting;
   /**
    * Internal agents are hidden from listings and don't trigger notifications.
    * They are used for ephemeral system tasks like commit/PR generation.
