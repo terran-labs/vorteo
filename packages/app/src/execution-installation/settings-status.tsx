@@ -1,3 +1,5 @@
+import { OwnerSettingsGate } from "@/components/settings/owner-lock";
+import { useOwnerAccess } from "./owner-access";
 import { reportSyncError } from "@/components/settings/sync-error-notification";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useToast } from "@/contexts/toast-context";
@@ -250,7 +252,19 @@ function ConflictResolver({
   );
 }
 
-export function InstallationSettingsStatus({
+export function InstallationSettingsStatus(props: {
+  children: ReactNode;
+  showStatus?: boolean;
+  title?: string;
+}) {
+  return (
+    <OwnerSettingsGate title={props.title ?? "Installation settings"}>
+      <UnlockedInstallationSettingsStatus {...props} />
+    </OwnerSettingsGate>
+  );
+}
+
+function UnlockedInstallationSettingsStatus({
   children,
   showStatus = false,
 }: {
@@ -346,6 +360,12 @@ export function InstallationSettingsStatus({
 
 /** Place once in the page header, rather than once around each pane. */
 export function InstallationSettingsSyncStatus() {
+  const { status } = useOwnerAccess();
+  if (status === "locked" || status === "checking") return null;
+  return <UnlockedInstallationSettingsSyncStatus />;
+}
+
+function UnlockedInstallationSettingsSyncStatus() {
   const { data } = useInstallationSettings();
   const sources = Object.values(data?.sources ?? {});
   let message: string | null = null;

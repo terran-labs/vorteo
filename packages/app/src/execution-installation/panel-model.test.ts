@@ -7,6 +7,7 @@ import {
   InstallationPanelModel,
   restartExplanation,
   restartRequestSummary,
+  restartForceDeadline,
   restartBannerTitle,
   restartCancellable,
   delegationOverdueNote,
@@ -878,6 +879,8 @@ test("service queue refresh survives summary failure and cancellation retains ac
   let cancelled = false;
   let fail = true;
   let reads = 0;
+  let pauseNextRead = false;
+  let resumeRead: (() => void) | undefined;
   const model = enrollmentStatusModel(
     async () => enrollmentStatusFixture,
     async () => {
@@ -886,6 +889,10 @@ test("service queue refresh survives summary failure and cancellation retains ac
     {
       maintenanceServices: async () => {
         reads++;
+        if (pauseNextRead)
+          await new Promise<void>((resolve) => {
+            resumeRead = resolve;
+          });
         return {
           installationId: enrollmentStatusFixture.installationId,
           available: true,
@@ -902,13 +909,25 @@ test("service queue refresh survives summary failure and cancellation retains ac
   await model.initialize();
   expect(reads).toBe(1);
   expect(model.getState().serviceQueue?.jobs[0]?.id).toBe(job.id);
+  pauseNextRead = true;
+  const inFlightRead = model.refreshServiceQueue();
   await model.cancelMaintenanceService(job);
   expect(model.getState().serviceQueueError).toBe(
     "Lost connection to the host. Try again once it reconnects.",
   );
   expect(model.getState().busy).toBe(false);
+  pauseNextRead = false;
+  expect(resumeRead).toBeDefined();
+  resumeRead!();
+  await inFlightRead;
+  expect(model.getState().serviceQueueError).toContain("Lost connection");
+  const readsBeforePoll = reads;
+  await model.refresh();
+  expect(reads).toBe(readsBeforePoll + 1);
+  expect(model.getState().serviceQueueError).toContain("Lost connection");
   fail = false;
   await model.refreshServiceQueue();
+  expect(model.getState().serviceQueueError).toBeNull();
   await model.cancelMaintenanceService(job);
   expect(model.getState().serviceQueue?.jobs[0]?.status).toBe("rejected");
   expect(model.getState().notice).toContain("cancelled before dispatch");
@@ -1220,4 +1239,25 @@ test("the password copy command quotes the coordinator's path", () => {
   expect(passwordCopyCommand("/Users/o'neil/my host/owner-password")).toBe(
     "pbcopy < '/Users/o'\\''neil/my host/owner-password'",
   );
+});
+
+test("Dev Force uses the same delayed approval guard as Host", () => {
+  const approvedAt = "2026-11-06T00:00:00.000Z";
+  const job: RestartJob = {
+    id: "dev-force",
+    revision: "reviewed",
+    target: "container-daemon",
+    requestedBy: "container-agent",
+    reason: "Activate Dev changes",
+    createdAt: approvedAt,
+    expiresAt: "9999-12-31T00:00:00.000Z",
+    status: "approved",
+    approvedAt,
+    detail: "Waiting for current work",
+  };
+  const deadline = Date.parse(approvedAt) + 60_000;
+  expect(restartForceDeadline(job)).toBe(deadline);
+  expect(restartForceDeadline({ ...job, target: "host" })).toBe(deadline);
+  expect(restartForceDeadline({ ...job, status: "pending" })).toBeNull();
+  expect(restartForceDeadline({ ...job, engineRestartPlanSha256: "a".repeat(64) })).toBeNull();
 });

@@ -1,4 +1,8 @@
-import { selectSettingsHost, expectSettingsHostPickerLabel } from "../support/helpers/settings";
+import {
+  selectSettingsHost,
+  expectSettingsHostPickerLabel,
+  revealSettingsLocation,
+} from "../support/helpers/settings";
 import { test, expect } from "../support/fixtures";
 import {
   buildHostWorkspaceRoute,
@@ -56,6 +60,26 @@ import { expectAppRoute } from "../support/helpers/route-assertions";
 import { clickNewChat, gotoWorkspace } from "../support/helpers/launcher";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 
+for (const width of [1280, 390]) {
+  test(`Help stays reachable in Settings at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await gotoAppShell(page);
+    await openSettings(page);
+    await revealSettingsLocation(page, "general.about");
+    const help = page.getByTestId("settings-help");
+    await expect(help).toBeVisible();
+    await expect(help.getByTestId("settings-help-discord")).toHaveAccessibleName(/Discord/);
+    await expect(help.getByTestId("settings-help-github")).toHaveAccessibleName(
+      /Create GitHub issue/,
+    );
+    await help.getByTestId("settings-help-diagnostics").click();
+    await expect(page.getByTestId("app-diagnostic-sheet")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("app-diagnostic-sheet")).not.toBeVisible();
+    await expect(help).toBeVisible();
+  });
+}
+
 async function openWorkspace(
   page: import("@playwright/test").Page,
   workspace: { workspaceId: string },
@@ -65,7 +89,7 @@ async function openWorkspace(
 }
 
 test.describe("Settings sidebar scroll position", () => {
-  test.use({ viewport: { width: 1000, height: 500 } });
+  test.use({ viewport: { width: 1000, height: 400 } });
 
   test("clamps after resizing and starts a fresh visit at the top", async ({ page }) => {
     await gotoAppShell(page);
@@ -73,7 +97,7 @@ test.describe("Settings sidebar scroll position", () => {
     await scrollSettingsSidebarToEnd(page);
     await page.setViewportSize({ width: 1000, height: 1100 });
     await expectSettingsSidebarScrollOffset(page, 0);
-    await page.setViewportSize({ width: 1000, height: 500 });
+    await page.setViewportSize({ width: 1000, height: 400 });
     await openSettingsSection(page, "appearance");
     await expectSettingsSidebarScrollOffset(page, 0);
     await scrollSettingsSidebarToEnd(page);
@@ -126,7 +150,7 @@ test.describe("Settings sidebar scroll position", () => {
     await openSettings(page);
 
     const hostScrollTop = await scrollSettingsSidebarToEnd(page);
-    await expect(page.getByTestId("settings-host-section-providers")).toBeInViewport();
+    await expect(page.getByTestId("settings-section-system")).toBeInViewport();
 
     for (const section of [
       "providers",
@@ -136,15 +160,19 @@ test.describe("Settings sidebar scroll position", () => {
       "providers",
     ] as const) {
       await openSettingsHostSection(page, getServerId(), section);
-      await expect(page.getByTestId("page-title")).toHaveText(
-        section === "providers" ? "Providers" : "Terminals",
-      );
+      await expect(
+        page.getByTestId(
+          section === "providers"
+            ? "settings-pane-accounts.providers"
+            : "settings-pane-terminal.profiles",
+        ),
+      ).toBeVisible();
       await expectSettingsSidebarScrollOffset(page, hostScrollTop);
     }
 
     const sidebar = page.getByTestId("settings-sidebar");
     const appScrollTop = await revealSettingsSidebarSection(page, "diagnostics");
-    await expect(sidebar.getByRole("button", { name: "About", exact: true })).toBeInViewport();
+    await expect(sidebar.getByRole("button", { name: "System", exact: true })).toBeInViewport();
 
     await openSettingsSection(page, "about");
     await expectAboutContent(page);
@@ -237,20 +265,19 @@ test.describe("Settings sidebar navigation", () => {
       return sectionIds;
     });
     expect(ids).toEqual([
+      "settings-section-interface",
+      "settings-section-privacy",
       "settings-section-general",
-      "settings-section-accounts",
+      "settings-section-providers",
       "settings-section-agents",
-      "settings-section-chat",
-      "settings-section-terminal",
-      "settings-section-appearance",
-      "settings-section-workspaces",
+      "settings-section-voice",
       "settings-section-environments",
-      "settings-section-plugins",
-      "settings-section-maintenance",
+      "settings-section-projects",
+      "settings-section-system",
     ]);
     await expect(sidebar.getByTestId("settings-section-pair-device")).toHaveCount(0);
     const generalBox = await sidebar.getByTestId("settings-section-general").boundingBox();
-    const accountsBox = await sidebar.getByTestId("settings-section-accounts").boundingBox();
+    const accountsBox = await sidebar.getByTestId("settings-section-providers").boundingBox();
     expect(accountsBox!.y - generalBox!.y - generalBox!.height).toBeLessThanOrEqual(8);
     await openSettingsSection(page, "editor");
     await expect(page.getByText(/Press i to enter Insert mode/)).toBeVisible();
@@ -261,8 +288,9 @@ test.describe("Settings sidebar navigation", () => {
 
     await openSettingsSection(page, "general");
     await expectSettingsHeader(page, "General");
-    await expectAboutContent(page);
     await expectGeneralContent(page);
+    await openSettingsSection(page, "about");
+    await expectAboutContent(page);
 
     await openSettingsSection(page, "appearance");
     await expectSettingsHeader(page, "Appearance");
@@ -429,9 +457,9 @@ test.describe("Settings — compact master-detail", () => {
     await expectCompactSettingsList(page);
 
     await test.step("open app details and return to the list", async () => {
-      // Diagnostics moved into General's Connected hosts card.
+      // Diagnostics lives in System's Connected hosts pane.
       await openSettingsSection(page, "diagnostics");
-      await expectAppRoute(page, buildSettingsSectionRoute("general"));
+      await expectAppRoute(page, buildSettingsSectionRoute("system"));
       await expectDiagnosticsContent(page);
       await expectSettingsSidebarHidden(page);
       await expectSettingsBackButton(page);
@@ -670,3 +698,52 @@ test("environment tabs stay visible while details scroll", async ({ page }) => {
     path: test.info().outputPath("environment-tabs.png"),
   });
 });
+
+for (const width of [1280, 390]) {
+  test(`Settings search stays in the top bar and closes Command Center at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await gotoAppShell(page);
+    if (width === 390)
+      await page.getByTestId("menu-button").filter({ visible: true }).first().click();
+    await page.getByTestId("sidebar-search").filter({ visible: true }).first().click();
+    await expect(page.getByTestId("command-center-panel")).toBeVisible();
+    // Exercise navigation while the overlay still owns input, as a sidebar action can do.
+    if (width === 390)
+      await page
+        .getByTestId("menu-button")
+        .filter({ visible: true })
+        .first()
+        .dispatchEvent("click");
+    await page.getByTestId("sidebar-settings").first().dispatchEvent("click");
+    await expect(page.getByTestId("command-center-panel")).not.toBeVisible();
+    const input = page.getByTestId("settings-search-input").filter({ visible: true });
+    await expect(input).toHaveCount(1);
+    const top = await input.boundingBox();
+    expect(top!.y).toBeLessThan(80);
+    if (width === 390) {
+      const sidebar = page.getByTestId("settings-sidebar");
+      await expect(sidebar).toBeVisible();
+      await expect(sidebar).toHaveCSS("border-top-width", "0px");
+      await expect(sidebar).toHaveCSS("box-shadow", "none");
+      await page.getByTestId("settings-section-interface").click();
+      await expect(input).toBeVisible();
+      await page.getByTestId("settings-scroll-page").hover();
+      await page.mouse.wheel(0, 700);
+      await expect.poll(async () => (await input.boundingBox())!.y).toBe(top!.y);
+    } else {
+      const back = await page.getByTestId("settings-back-to-workspace").boundingBox();
+      expect(Math.abs(back!.y + back!.height / 2 - top!.y - top!.height / 2)).toBeLessThan(8);
+    }
+    await page.screenshot({ path: test.info().outputPath(`settings-header-${width}.png`) });
+    await page.keyboard.press("/");
+    await expect(input).toBeFocused();
+    await input.fill("data saver");
+    await expect(page.getByTestId("settings-search-results")).toBeVisible();
+    await expect(input).toBeFocused();
+    await input.press("Enter");
+    await expect(input).toHaveValue("");
+    await expect(page.getByTestId("settings-data-saver")).toBeVisible();
+  });
+}

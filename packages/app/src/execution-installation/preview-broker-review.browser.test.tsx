@@ -8,7 +8,7 @@ import { page } from "vitest/browser";
 import type { PreviewBrokerJob } from "@getpaseo/protocol/preview-broker-maintenance";
 import { InstallationPanelModel } from "./panel-model";
 import { brokerReviewFixture } from "./preview-broker-review.fixture";
-import { InstallationControls } from "./panel";
+import { InstallationControls, InstallationSystemDetails } from "./panel";
 
 vi.mock("expo-clipboard", () => ({
   setStringAsync: vi.fn(async () => {
@@ -149,6 +149,7 @@ test("production broker review preserves exact evidence and manual gates at desk
       root.render(
         <QueryClientProvider client={new QueryClient()}>
           <InstallationControls key={width} />
+          <InstallationSystemDetails target="host" />
         </QueryClientProvider>,
       ),
     );
@@ -159,7 +160,9 @@ test("production broker review preserves exact evidence and manual gates at desk
       await page.viewport(width, 900);
       expect(window.innerWidth).toBe(width);
       render(width);
-      expect(container.textContent).toContain("Checking owner access...");
+      expect(container.querySelector('[data-testid="owner-lock-badge"]')?.textContent).toContain(
+        "Checking",
+      );
       expect(button("approve")).toBeNull();
       expect(button("cancel")).toBeNull();
       await page.screenshot({
@@ -230,12 +233,24 @@ test("production broker review preserves exact evidence and manual gates at desk
         assertUnclipped(card, width);
       }
     }
+    const systemDetails = container.querySelector<HTMLElement>(
+      '[data-testid="system-installation-details-host"]',
+    )!;
+    const heightBeforeError = systemDetails.getBoundingClientRect().height;
+    await act(() => model.decideBroker({ ...current, revision: current.revision + 1 }, "approve"));
+    const helperError = model.getState().helperError!;
+    expect(helperError).toContain("request changed");
+    await expect.element(page.getByText(helperError, { exact: true })).toBeVisible();
+    expect(systemDetails.textContent).toContain(helperError);
+    expect(systemDetails.getBoundingClientRect().height).toBe(heightBeforeError);
     await act(() => model.lock());
     for (const width of [1280, 390]) {
       await page.viewport(width, 900);
       expect(window.innerWidth).toBe(width);
       render(width);
-      expect(container.textContent).toContain("Owner locked");
+      expect(container.querySelector('[data-testid="owner-lock-badge"]')?.textContent).toContain(
+        "Locked",
+      );
       expect(container.querySelector('[data-testid^="broker-request-"]')).toBeNull();
       expect(button("approve")).toBeNull();
       expect(button("cancel")).toBeNull();
@@ -274,6 +289,7 @@ test("broker decision errors remain visible and confirmed results replace the ca
       root.render(
         <QueryClientProvider client={new QueryClient()}>
           <InstallationControls />
+          <InstallationSystemDetails target="host" />
         </QueryClientProvider>,
       ),
     );
@@ -325,6 +341,7 @@ test("consumer deployment uses its separate exact decision and retains uncertain
       root.render(
         <QueryClientProvider client={new QueryClient()}>
           <InstallationControls />
+          <InstallationSystemDetails target="host" />
         </QueryClientProvider>,
       ),
     );

@@ -1,3 +1,4 @@
+import { SETTINGS_PANES } from "@/settings-catalog/catalog";
 import { Buffer } from "buffer";
 import { buildAgentDeepLinkRoute } from "@getpaseo/protocol/agent-deep-link";
 
@@ -495,6 +496,10 @@ export function resolveKnownHostRoute(input: {
 }
 
 export const SETTINGS_SECTION_SLUGS = [
+  "interface",
+  "privacy",
+  "system",
+  "voice",
   "general",
   "accounts",
   "maintenance",
@@ -529,7 +534,10 @@ export const SETTINGS_SECTION_SLUGS = [
 export type SettingsSectionSlug = (typeof SETTINGS_SECTION_SLUGS)[number];
 
 export function isSettingsSectionSlug(value: string): value is SettingsSectionSlug {
-  return (SETTINGS_SECTION_SLUGS as readonly string[]).includes(value);
+  return (
+    (SETTINGS_SECTION_SLUGS as readonly string[]).includes(value) ||
+    SETTINGS_PANES.some((pane) => pane.legacySlugs?.includes(value))
+  );
 }
 
 export const HOST_SECTION_SLUGS = [

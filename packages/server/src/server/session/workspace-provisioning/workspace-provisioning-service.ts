@@ -21,7 +21,7 @@ import { deriveProjectKey, retainedProjectKey } from "../../project-key.js";
 import {
   areEquivalentPaths,
   createRealpathAwarePathMatcher,
-  isPathInsideRoot,
+  getRealpathAwareRelativePath,
 } from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
 import { logicalProjectsPath, projectsFolderLocation } from "../../projects-folder.js";
@@ -369,10 +369,9 @@ export function createWorkspaceProvisioningService(deps: {
     // A project at the repository root may be recorded at a kept alias path, as a Factory
     // checkout is; reuse it rather than allocating a second project for the same folder.
     const repoLocation = projectsFolderLocation(input.repoRoot);
+    const matchesRepoRoot = createRealpathAwarePathMatcher(repoLocation);
     const atRoot = (await projectRegistry.list()).find(
-      (project) =>
-        !project.archivedAt &&
-        areEquivalentPaths(projectsFolderLocation(project.rootPath), repoLocation),
+      (project) => !project.archivedAt && matchesRepoRoot(projectsFolderLocation(project.rootPath)),
     );
     if (atRoot) return refreshProjectKind(atRoot);
 
@@ -561,8 +560,10 @@ export function createWorkspaceProvisioningService(deps: {
 
 /** Whether `project` is the repository's own project: its folder is the repository or inside it. */
 function isRepositoryProject(repoRoot: string, project: PersistedProjectRecord): boolean {
-  return isPathInsideRoot(
-    projectsFolderLocation(repoRoot),
-    projectsFolderLocation(project.rootPath),
+  return (
+    getRealpathAwareRelativePath(
+      projectsFolderLocation(repoRoot),
+      projectsFolderLocation(project.rootPath),
+    ) !== null
   );
 }

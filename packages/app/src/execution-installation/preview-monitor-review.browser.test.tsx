@@ -7,8 +7,16 @@ import { InstallationPanelModel } from "./panel-model";
 import type { RestartDecision, RestartJob } from "@getpaseo/protocol/execution-installation";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { monitorReviewFixture } from "./preview-monitor-review.fixture";
-import { DaemonAutomationControl, InstallationControls, RestartActions } from "./panel";
+import {
+  DaemonAutomationControl,
+  InstallationControls,
+  InstallationSystemDetails,
+  RestartActions,
+} from "./panel";
 
+vi.mock("@/contexts/toast-api-context", () => ({
+  useToast: () => ({ error: vi.fn(), show: vi.fn() }),
+}));
 vi.mock("@/utils/copy-to-clipboard", () => ({ copyToClipboard: vi.fn() }));
 
 const capture = vi.hoisted(() => ({
@@ -135,7 +143,15 @@ test("production monitor review preserves exact evidence and manual gates at 390
   document.body.style.margin = "0";
   document.body.append(container);
   const root = createRoot(container);
-  const render = (width: number) => act(() => root.render(<InstallationControls key={width} />));
+  const render = (width: number) =>
+    act(() =>
+      root.render(
+        <>
+          <InstallationControls key={width} />
+          <InstallationSystemDetails target="host" />
+        </>,
+      ),
+    );
   const button = (action: string) =>
     container.querySelector<HTMLElement>(`[data-testid="monitor-${current.id}-${action}"]`);
   try {
@@ -143,7 +159,9 @@ test("production monitor review preserves exact evidence and manual gates at 390
       await page.viewport(width, 900);
       expect(window.innerWidth).toBe(width);
       render(width);
-      expect(container.textContent).toContain("Checking owner access...");
+      expect(container.querySelector('[data-testid="owner-lock-badge"]')?.textContent).toContain(
+        "Checking",
+      );
       expect(button("approve")).toBeNull();
       expect(button("cancel")).toBeNull();
       await page.screenshot({
@@ -216,12 +234,24 @@ test("production monitor review preserves exact evidence and manual gates at 390
         assertUnclipped(card, width);
       }
     }
+    const systemDetails = container.querySelector<HTMLElement>(
+      '[data-testid="system-installation-details-host"]',
+    )!;
+    const heightBeforeError = systemDetails.getBoundingClientRect().height;
+    await act(() => model.decideMonitor({ ...current, revision: current.revision + 1 }, "approve"));
+    const helperError = model.getState().helperError!;
+    expect(helperError).toContain("request changed");
+    await expect.element(page.getByText(helperError, { exact: true })).toBeVisible();
+    expect(systemDetails.textContent).toContain(helperError);
+    expect(systemDetails.getBoundingClientRect().height).toBe(heightBeforeError);
     await act(() => model.lock());
     for (const width of [390]) {
       await page.viewport(width, 900);
       expect(window.innerWidth).toBe(width);
       render(width);
-      expect(container.textContent).toContain("Owner locked");
+      expect(container.querySelector('[data-testid="owner-lock-badge"]')?.textContent).toContain(
+        "Locked",
+      );
       expect(container.querySelector('[data-testid^="monitor-request-"]')).toBeNull();
       expect(button("approve")).toBeNull();
       expect(button("cancel")).toBeNull();
@@ -246,7 +276,7 @@ test("production monitor review preserves exact evidence and manual gates at 390
 }, 30_000);
 
 test.each([390])(
-  "pending Host restart requires confirmation and sends only approve at %spx",
+  "Host force restart is hidden before timeout and confirms approval at %spx",
   async (width) => {
     vi.stubGlobal("React", React);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -284,6 +314,13 @@ test.each([390])(
     try {
       await model.initialize();
       render(job);
+      expect(container.querySelector(`[data-testid="restart-force-${job.id}"]`)).toBeNull();
+      job.status = "approved";
+      job.approvedAt = new Date().toISOString();
+      render({ ...job });
+      expect(container.querySelector(`[data-testid="restart-force-${job.id}"]`)).toBeNull();
+      job.approvedAt = new Date(Date.now() - 61_000).toISOString();
+      render({ ...job });
       const force = page.getByTestId(`restart-force-${job.id}`);
       await expect.element(force).toBeVisible();
       vi.mocked(confirmDialog).mockClear();
@@ -396,7 +433,7 @@ test("full maintenance delegation shows its scope and revokes on desktop and com
       await act(() => model.refresh());
       render();
       await expect
-        .element(page.getByRole("alert"))
+        .element(page.getByText("Delegation file protection changed", { exact: true }))
         .toHaveTextContent("Delegation file protection changed");
       expect(revoke.element().getAttribute("aria-disabled")).toBe("true");
       expect(container.scrollWidth).toBeLessThanOrEqual(container.clientWidth);

@@ -1,6 +1,10 @@
 import { ActionFooter } from "@/components/ui/action-footer";
 import { SharedSkillCatalog } from "./shared-catalog";
-import { readExecutionInstallation } from "@/execution-installation/policy";
+import {
+  installationHostServerId,
+  readExecutionInstallation,
+} from "@/execution-installation/policy";
+import { AgentSkillsSection } from "./index";
 import { useFetchQuery } from "@/data/query";
 import { useCallback, useMemo, useReducer, useState } from "react";
 import { Text, View } from "react-native";
@@ -52,16 +56,25 @@ function Library({ onClose }: { onClose: () => void }) {
 
 export function SkillLibraryContent() {
   const installation = readExecutionInstallation();
+  const hosts = useHosts();
+  // Bundled selection uses the same authority as the other host-backed Settings panes.
+  const serverId = installationHostServerId(installation) ?? hosts[0]?.serverId;
   const [inspect, setInspect] = useState(false);
   const toggle = useCallback(() => setInspect((value) => !value), []);
-  if (!installation) return <EnvironmentInventory />;
   return (
     <View style={styles.content}>
-      <SharedSkillCatalog />
-      <Button variant="outline" onPress={toggle}>
-        {inspect ? "Hide environment inventory" : "Inspect environment inventory"}
-      </Button>
-      {inspect ? <EnvironmentInventory /> : null}
+      {serverId ? <AgentSkillsSection serverId={serverId} /> : null}
+      {installation ? (
+        <>
+          <SharedSkillCatalog />
+          <Button variant="outline" onPress={toggle}>
+            {inspect ? "Hide environment inventory" : "Inspect environment inventory"}
+          </Button>
+          {inspect ? <EnvironmentInventory /> : null}
+        </>
+      ) : (
+        <EnvironmentInventory />
+      )}
     </View>
   );
 }

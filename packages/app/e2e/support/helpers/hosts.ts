@@ -82,6 +82,7 @@ export async function addConnectedHostsAndReload(
     }),
   );
 
+  await page.waitForFunction((key) => Boolean(localStorage.getItem(key)), SEED_NONCE_KEY);
   await page.evaluate(
     ({ hosts, keys, primaryLabel }) => {
       const nonce = localStorage.getItem(keys.nonce);

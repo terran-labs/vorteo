@@ -631,6 +631,18 @@ export class InstallationSourceUpdates {
     return { prepared, admission, files, receiptSha256 };
   }
 
+  private async verifiedHostPublication(input: { job: RestartJob; receiptSha256?: string }) {
+    const verified = await this.verifiedHostPreparation(input.job);
+    // Legacy receipts remain readable, but cannot authorize candidate-owned scripts.
+    if (!verified.admission.candidateArtifactSha256 || !verified.admission.exportedArtifactSha256)
+      throw new Error(
+        "Candidate publication requires artifact evidence; prepare a new source update",
+      );
+    if (input.receiptSha256 !== undefined && verified.receiptSha256 !== input.receiptSha256)
+      throw new Error("Candidate publication receipts changed after activation");
+    return verified;
+  }
+
   async install(
     job: RestartJob,
     restart: RestartExecutor["restart"],
@@ -665,7 +677,7 @@ export class InstallationSourceUpdates {
       throw new Error(
         "Activation was already attempted. Inspect its retained receipt before recovery.",
       );
-    const { prepared, admission } = await this.verifiedHostPreparation(job);
+    const { prepared, admission, receiptSha256 } = await this.verifiedHostPublication({ job });
     const previous = admission.previous;
     const validation = this.config.host.startupValidation;
     if (!validation) throw new Error("Host startup validation is required for source updates");
@@ -723,10 +735,15 @@ export class InstallationSourceUpdates {
       );
     }
     try {
+      // Restart is an asynchronous boundary. Recheck the exact admitted source and
+      // artifact before executing its publisher, including all supporting imports.
+      // Only the Host account can write this release; it already controls the running
+      // daemon. The child reopening these files does not isolate that same account.
+      await this.verifiedHostPublication({ job, receiptSha256 });
       await execute(
         validation.node,
         [
-          path.join(settings.toolingDirectory, "publish-instance-web.mjs"),
+          path.join(prepared.release, "scripts", "publish-instance-web.mjs"),
           prepared.exported,
           settings.webDirectory,
         ],

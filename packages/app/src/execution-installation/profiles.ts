@@ -1,3 +1,4 @@
+import { useOwnerAccess } from "./owner-access";
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useFetchQuery } from "@/data/query";
@@ -32,12 +33,13 @@ async function requestProfiles(patch?: InstallationProfilesPatch) {
 }
 
 export function useInstallationProfiles() {
+  const owner = useOwnerAccess();
   const installation = readExecutionInstallation();
   const queryClient = useQueryClient();
   const query = useFetchQuery({
     queryKey: ["installation-profiles", installation?.installationId],
     queryFn: () => requestProfiles(),
-    enabled: installation !== null,
+    enabled: installation !== null && owner.status === "unlocked",
     refetchInterval: 5000,
     retry: false,
     dataShape: "value",

@@ -1,3 +1,4 @@
+import type { LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import type { RestartJob, RestartSummary } from "@getpaseo/protocol/execution-installation";
 import type { InstallationEnrollmentStatus } from "@getpaseo/protocol/installation-enrollment";
 import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
@@ -16,8 +17,21 @@ export interface SystemEnvironmentInput {
   target: "host" | "container-daemon";
   connection: Pick<HostRuntimeSnapshot, "connectionStatus" | "lastError">;
   enrollment?: InstallationEnrollmentStatus | null;
-  restartJobs?: readonly Pick<RestartJob, "id" | "target" | "status" | "reason">[];
-  upgrades?: readonly Pick<InstallationUpgrade, "id" | "status" | "release">[];
+  liveDev?: LiveDevStatus | null;
+  restartJobs?: readonly Pick<
+    RestartJob,
+    | "id"
+    | "target"
+    | "status"
+    | "reason"
+    | "supervisorPlanSha256"
+    | "engineRecoveryPlanSha256"
+    | "impact"
+  >[];
+  upgrades?: readonly Pick<
+    InstallationUpgrade,
+    "id" | "status" | "release" | "automatic" | "acknowledgedAt"
+  >[];
   serviceQueue?: Pick<MaintenanceServiceQueueStatus, "jobs">;
   /** Public counts are installation-wide and cannot safely be attributed to one target. */
   locked?: boolean;
@@ -38,6 +52,11 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     : (input.restartJobs ?? []).filter((job) => job.target === input.target);
   const upgrades = input.locked ? [] : (input.upgrades ?? []);
   const waiting = jobs.find((job) => job.status === "pending");
+  const recovery =
+    waiting?.target === "container-daemon" &&
+    Boolean(
+      waiting.engineRecoveryPlanSha256 || (waiting.supervisorPlanSha256 && waiting.impact?.error),
+    );
   const upgrade = upgrades.find((job) => job.status === "pending");
   const counts = input.locked ? input.restartSummary : undefined;
   const activeJob = jobs.find((job) => job.status === "approved" || job.status === "running");
@@ -45,7 +64,8 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
   const activeUpgrade = upgrades.some(
     (job) => job.status === "approved" || job.status === "running",
   );
-  const activeWork = Boolean(activeJob) || activeUpgrade;
+  const activeWork = Boolean(activeJob) || activeUpgrade || input.reconnectingAfterAction === true;
+  const live = input.liveDev?.mode === "live" ? input.liveDev : null;
   const attention =
     ((offline || Boolean(connection.lastError)) && !activeWork) ||
     enrollment?.activation === "recovery-required" ||
@@ -54,15 +74,21 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     ) ||
     jobs.some((job) => job.status === "pending" || job.status === "failed") ||
     Boolean(upgrade) ||
+    Boolean(live?.server.state === "failed") ||
+    upgrades.some(
+      (entry) => entry.status === "failed" && entry.automatic && !entry.acknowledgedAt,
+    ) ||
     Boolean(counts?.requested) ||
     (Boolean(input.availableVersion) && !activeWork);
   const updating =
+    live?.server.state === "starting" ||
     input.reconnectingAfterAction ||
     activeWork ||
     input.serviceQueue?.jobs.some((job) => job.status === "running") ||
     Boolean(counts && (counts.queued || counts.running));
   let action: SystemAction | null = null;
   if (activeWork) action = null;
+  else if (recovery) action = { kind: "approve-restart", id: waiting!.id, label: "Repair Dev" };
   else if (offline) action = { kind: "reconnect", label: "Reconnect" };
   else if (waiting)
     action = {
@@ -84,7 +110,11 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
   if (updating) status = "updating";
   if (attention) status = "attention";
   const reason =
-    waiting?.reason || activeJob?.reason || (upgrade ? `Update to ${upgrade.release}` : undefined);
+    waiting?.reason ||
+    activeJob?.reason ||
+    (upgrade ? `Update to ${upgrade.release}` : undefined) ||
+    live?.server.detail ||
+    undefined;
   return { status, action, ...(reason ? { reason } : {}) };
 }
 

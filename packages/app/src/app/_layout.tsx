@@ -839,6 +839,7 @@ function RootStack() {
         <Stack.Screen name="welcome" />
         <Stack.Screen name="settings/index" />
         <Stack.Screen name="settings/[section]" />
+        <Stack.Screen name="settings/profiles/[profileId]" />
         <Stack.Screen name="new" />
         <Stack.Screen name="open-project" />
         <Stack.Screen name="sessions" />
