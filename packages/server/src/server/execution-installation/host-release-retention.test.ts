@@ -32,10 +32,14 @@ import {
 } from "../session-host/host-files.js";
 import { sessionHostReleaseRoot } from "../session-host/service.js";
 import { linkedReleasePathsInCommands, releaseProcessPaths } from "./host-release-processes.js";
+import { coordinatorRestartBlocker, coordinatorRestartState } from "./coordinator-restart-guard.js";
 import {
+  CLEANUP_WAIT_MS,
   HostReleaseCleanupUnsupportedError,
+  hostReleaseCleanupDeleting,
   hostReleaseRetentionIdle,
   pruneHostReleases,
+  recoverHostReleasesAtStart,
   restoreHostReleasesAtStart,
   recordLinkTargets,
   ReleaseRootLockedError,
@@ -1235,4 +1239,154 @@ test("on Windows every cleanup entry point refuses before touching anything", as
   restoreHostReleasesAtStart({ releaseRoot: f.root }, logger);
   await expect.poll(() => existsSync(f.release(0))).toBe(true);
   expect(logged).toEqual(["Put back a Host release left set aside"]);
+});
+
+test("at start, a cleanup a restart interrupted is marked with what it did and did not remove", async () => {
+  // The coordinator restarted six minutes into a real run: one folder gone, one half deleted,
+  // one still set aside, one never reached. Its receipt still said "running".
+  const f = fixture(6);
+  const nonce = "f3a87b8c7cbaa308";
+  rmSync(path.join(f.root, id(0)), { recursive: true });
+  renameSync(path.join(f.root, id(1)), path.join(f.root, `.deleting-${id(1)}-${nonce}`));
+  renameSync(path.join(f.root, id(2)), path.join(f.root, `.pruning-${id(2)}-${nonce}`));
+  const receipt = (job: number) => path.join(f.root, id(job), "retention.json");
+  const running = {
+    version: 1,
+    status: "running",
+    startedAt: "2026-11-19T08:24:07.000Z",
+    mode: "on",
+    keepNewest: 3,
+    plan: { remove: [id(0), id(1), id(2), id(3)], removeCopies: [], finish: [], kept: {} },
+  };
+  writeFileSync(receipt(4), JSON.stringify(running));
+  writeFileSync(receipt(5), JSON.stringify({ version: 1, status: "running", mode: "dry-run" }));
+  const finished = JSON.stringify({ version: 1, status: "finished", note: "Removed 1." });
+  writeFileSync(receipt(3), finished);
+  const recovery = await recoverHostReleasesAtStart(f.root, {
+    now: () => new Date("2026-11-19T08:40:00.000Z"),
+  });
+  expect(recovery).toEqual({ restored: [id(2)], interrupted: [id(4), id(5)].sort() });
+  expect(JSON.parse(readFileSync(receipt(4), "utf8"))).toEqual({
+    ...running,
+    status: "interrupted",
+    interruptedAt: "2026-11-19T08:40:00.000Z",
+    note: "The coordinator restarted before this cleanup finished. It removed 1 of the 4 folders it planned to remove.",
+    outcome: {
+      removed: [id(0)],
+      notRemoved: {
+        [id(1)]:
+          `deletion started and not finished: .deleting-${id(1)}-${nonce}; the next cleanup finishes it`,
+        [id(2)]: "still present under its own name",
+        [id(3)]: "still present under its own name",
+      },
+    },
+  });
+  expect(JSON.parse(readFileSync(receipt(5), "utf8"))).toMatchObject({
+    status: "interrupted",
+    note: "The coordinator restarted before this cleanup finished. A dry run removes nothing.",
+  });
+  expect(readFileSync(receipt(3), "utf8")).toBe(finished);
+  // Nothing else changed: the half-deleted folder waits for the next cleanup.
+  expect(existsSync(path.join(f.root, `.deleting-${id(1)}-${nonce}`))).toBe(true);
+});
+
+test("the real restart guard refuses during a real cleanup, never during a dry run, and lapses", async () => {
+  // Through the real start function, the real cleanup and the state the server builds.
+  const f = fixture(4);
+  const guard = coordinatorRestartState({
+    upgradeActive: () => false,
+    followDispatching: () => false,
+    settingsDispatching: () => false,
+    customDomainRunning: () => false,
+    hostJobBusy: () => false,
+    coordinatorRequestOpen: () => false,
+    labUpdateActive: () => false,
+  });
+  const cleanup = (
+    dryRun: boolean,
+    paused: ReturnType<typeof gate>,
+    resume: ReturnType<typeof gate>,
+  ) =>
+    startHostReleaseRetention(
+      async () => {
+        await pruneHostReleases({
+          releaseRoot: f.root,
+          referenced: [f.current],
+          keepNewest: 1,
+          dryRun,
+          inUse: async () => {
+            paused.open();
+            await resume.opened;
+            return [];
+          },
+        });
+        return "";
+      },
+      path.join(f.base, `retention-${dryRun}.json`),
+    );
+  expect(coordinatorRestartBlocker(guard, "follow")).toBeNull();
+  const dryPaused = gate();
+  const dryResume = gate();
+  const paused = gate();
+  const resume = gate();
+  try {
+    // A dry run renames and deletes nothing, so a restart cannot cut anything.
+    expect(cleanup(true, dryPaused, dryResume)).toBe(true);
+    await dryPaused.opened;
+    expect(coordinatorRestartBlocker(guard, "follow")).toBeNull();
+    dryResume.open();
+    await hostReleaseRetentionIdle();
+
+    const startedAt = Date.now();
+    expect(cleanup(false, paused, resume)).toBe(true);
+    await paused.opened;
+    for (const self of ["follow", "settings", "custom-domain"] as const)
+      expect(coordinatorRestartBlocker(guard, self)).toMatch(
+        /^Host release cleanup is running; try again when it finishes\. This check lapses at /,
+      );
+    // The refusal lapses a fixed time after the cleanup started, even if it never ends.
+    expect(hostReleaseCleanupDeleting(startedAt + CLEANUP_WAIT_MS + 1_000)).toBeNull();
+  } finally {
+    // Never leave a paused cleanup behind for the next test.
+    dryResume.open();
+    resume.open();
+    await hostReleaseRetentionIdle();
+  }
+  expect(coordinatorRestartBlocker(guard, "follow")).toBeNull();
+  expect(existsSync(f.release(0))).toBe(false);
+});
+
+test("the startup pass never marks the receipt of a cleanup running in this process", async () => {
+  // A dry run takes no lock, so the startup pass could otherwise overwrite its receipt.
+  const f = fixture(4);
+  const receipt = path.join(f.release(3), "..", "retention.json");
+  const paused = gate();
+  const resume = gate();
+  startHostReleaseRetention(async () => {
+    await pruneHostReleases({
+      releaseRoot: f.root,
+      referenced: [f.current],
+      keepNewest: 1,
+      dryRun: true,
+      inUse: async () => {
+        paused.open();
+        await resume.opened;
+        return [];
+      },
+    });
+    return "Dry run done.";
+  }, receipt);
+  try {
+    await paused.opened;
+    expect(JSON.parse(readFileSync(receipt, "utf8")).status).toBe("running");
+    expect(await recoverHostReleasesAtStart(f.root)).toEqual({ restored: [], interrupted: [] });
+    expect(JSON.parse(readFileSync(receipt, "utf8")).status).toBe("running");
+  } finally {
+    resume.open();
+    await hostReleaseRetentionIdle();
+  }
+  expect(JSON.parse(readFileSync(receipt, "utf8"))).toMatchObject({
+    status: "finished",
+    note: "Dry run done.",
+  });
 });

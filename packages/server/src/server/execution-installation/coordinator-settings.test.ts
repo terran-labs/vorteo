@@ -51,6 +51,20 @@ function installation() {
   return { disk, follow, clock };
 }
 
+/** Every field of the shared restart state, each reporting nothing in progress. */
+function restartCheckState(): CoordinatorRestartState {
+  return {
+    upgradeActive: () => false,
+    followDispatching: () => false,
+    settingsDispatching: () => false,
+    customDomainRunning: () => false,
+    hostJobBusy: () => false,
+    coordinatorRequestOpen: () => false,
+    labUpdateActive: () => false,
+    hostReleaseCleanup: () => null,
+  };
+}
+
 /** The shared restart check with nothing else in progress, apart from `busy`. */
 function restartCheck(busy: Partial<Record<keyof CoordinatorRestartState, boolean>>) {
   const state = Object.fromEntries(
@@ -64,6 +78,8 @@ function restartCheck(busy: Partial<Record<keyof CoordinatorRestartState, boolea
       "labUpdateActive",
     ].map((key) => [key, () => busy[key as keyof CoordinatorRestartState] === true]),
   ) as unknown as CoordinatorRestartState;
+  state.hostReleaseCleanup = () =>
+    busy.hostReleaseCleanup ? { lapsesAt: new Date("2026-11-19T09:00:00.000Z") } : null;
   return () => coordinatorRestartBlocker(state, "settings");
 }
 
@@ -327,6 +343,28 @@ test.each([
         conflict: restartCheck({ customDomainRunning: true }),
       });
       await expect(requestRefresh(state, settings)).rejects.toThrow("custom domain");
+    },
+  },
+  {
+    name: "refuses every coordinator restart but a release upgrade while a Host release cleanup runs",
+    run: async () => {
+      const state = installation();
+      const { settings } = settingsPorts(state, {
+        conflict: restartCheck({ hostReleaseCleanup: true }),
+      });
+      await expect(requestRefresh(state, settings)).rejects.toThrow(
+        "Host release cleanup is running",
+      );
+      const busy: CoordinatorRestartState = {
+        ...restartCheckState(),
+        hostReleaseCleanup: () => ({ lapsesAt: new Date("2026-11-19T09:00:00.000Z") }),
+      };
+      for (const self of ["follow", "custom-domain", "settings"] as const)
+        expect(coordinatorRestartBlocker(busy, self)).toBe(
+          "Host release cleanup is running; try again when it finishes. This check lapses at 2026-11-19T09:00:00.000Z.",
+        );
+      // The upgrade waits for it at its own coordinator step instead.
+      expect(coordinatorRestartBlocker(busy, "upgrade")).toBeNull();
     },
   },
   {

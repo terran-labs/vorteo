@@ -1,3 +1,4 @@
+import { cleanupWaitDetail, hostReleaseCleanupDeleting } from "./host-release-retention.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -91,6 +92,8 @@ export interface LabHostRestartState {
 }
 
 export interface LabUpdatePorts {
+  /** Whether a Host release cleanup runs in this coordinator; defaults to the real check. */
+  hostReleaseCleanupRunning?(): boolean;
   now(): Date;
   /** Why lab self-updates cannot run here now (Stable type included), or null. */
   blocker(): Promise<string | null>;
@@ -159,6 +162,8 @@ function unfinished(step: LabUpdateStep): boolean {
 }
 
 export class LabSelfUpdates {
+  /** When each update started waiting for a Host release cleanup, in this process. */
+  private readonly cleanupWaits = new Map<string, number>();
   private records: LabRecord[] = [];
   private loaded: Promise<void> | null = null;
   /** Journal mutations run one at a time, so requests and drains never interleave. */
@@ -596,6 +601,16 @@ export class LabSelfUpdates {
       const previous = await this.ports.coordinatorRelease();
       if (previous === next && (await this.ports.runningRelease()) === next)
         return { status: "succeeded", detail: "The coordinator already runs this release." };
+      // The Host step just started a cleanup; restarting now would cut it part way.
+      const wait = cleanupWaitDetail({
+        waits: this.cleanupWaits,
+        id: record.id,
+        now: this.ports.now().getTime(),
+        running: this.ports.hostReleaseCleanupRunning
+          ? this.ports.hostReleaseCleanupRunning()
+          : hostReleaseCleanupDeleting() !== null,
+      });
+      if (wait) return { status: "waiting", detail: wait };
       // Recorded before the launch: the handoff restarts this process.
       record = await this.save(record, {
         previous: { ...record.previous, coordinator: previous },

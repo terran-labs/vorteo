@@ -147,6 +147,8 @@ export async function plistStrings(file: string): Promise<string[]> {
   if (process.platform !== "darwin")
     throw new Error(`Property lists cannot be parsed on ${process.platform}`);
   const { stdout } = await run("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", "--", file], {
+    // A hung plutil must not hold a cleanup, and the restart guard, open; it fails closed.
+    timeout: 120_000,
     maxBuffer: 4 * PERSISTENT_FILE_LIMIT,
   });
   return [...stdout.matchAll(/<(string|key)>([\s\S]*?)<\/\1>/g)].map((match) =>

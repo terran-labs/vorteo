@@ -1,3 +1,5 @@
+import { hostReleaseCleanupDeleting } from "./host-release-retention.js";
+
 /** Operations that restart the coordinator process. */
 export type CoordinatorRestart = "upgrade" | "follow" | "settings" | "custom-domain";
 
@@ -13,6 +15,21 @@ export interface CoordinatorRestartState {
   coordinatorRequestOpen(): boolean;
   /** Known only once the lab journal has loaded; false before that. */
   labUpdateActive(): boolean;
+  /**
+   * A Host release cleanup in this coordinator that renames and deletes, which a restart would
+   * cut, with when the guard stops waiting for it; null for none, a dry run or off.
+   */
+  hostReleaseCleanup(): { lapsesAt: Date } | null;
+}
+
+/**
+ * The restart state with its Host release cleanup view taken from the cleanup itself, so the
+ * guard always sees the real run. The caller supplies every other view.
+ */
+export function coordinatorRestartState(
+  views: Omit<CoordinatorRestartState, "hostReleaseCleanup">,
+): CoordinatorRestartState {
+  return { ...views, hostReleaseCleanup: () => hostReleaseCleanupDeleting() };
 }
 
 /**
@@ -37,5 +54,9 @@ export function coordinatorRestartBlocker(
   if (state.hostJobBusy()) return "Wait for the approved Host restart or update to finish.";
   if (state.coordinatorRequestOpen()) return "Wait for the open coordinator request to finish.";
   if (state.labUpdateActive()) return "Wait for the lab self-update to finish.";
+  // A release upgrade waits for it at its own coordinator step instead.
+  const cleanup = state.hostReleaseCleanup();
+  if (cleanup)
+    return `Host release cleanup is running; try again when it finishes. This check lapses at ${cleanup.lapsesAt.toISOString()}.`;
   return null;
 }

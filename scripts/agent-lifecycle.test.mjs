@@ -404,7 +404,7 @@ test("publishing opens a pull request, waits for required checks and merges with
   const pr = await openPullRequest(plan, { env, gh, pollMs: 0 });
   assert.equal(pr.headRefOid, head);
   assert.equal(run(clone, "ls-remote", "origin", "refs/heads/feat/a").split(/\s+/)[0], head);
-  assert.match(calls.find((call) => call.args[1] === "create").input, /^\(AI Generated\)\./);
+  assert.match(calls.find((call) => call.args[1] === "create").input, /^\(AI Generated\)\n\n/);
   // Reusing the branch finds the same pull request instead of opening another.
   assert.equal((await openPullRequest(plan, { env, gh, pollMs: 0 })).number, pr.number);
   assert.equal(assertReviewed(plan, pr, { gh }), "authored by this installation's account");

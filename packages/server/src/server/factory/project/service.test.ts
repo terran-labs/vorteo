@@ -1634,10 +1634,63 @@ describe("issue queue and planning compatibility", () => {
       commits: { nodes: [{ commit: { statusCheckRollup: { state } } }] },
       latestReviews: { nodes: [], pageInfo: { hasPreviousPage: false } },
       comments: {
-        nodes: [{ body: `(AI Generated).\n\n${approval}`, author: { login: "foreman" } }],
+        nodes: [{ body: `(AI Generated)\n\n${approval}`, author: { login: "foreman" } }],
         pageInfo: { hasPreviousPage: false },
       },
     });
+    const reviewHeaders = [
+      { prefix: "(AI Generated)\n\n", accepted: true },
+      { prefix: "(AI Generated).\n\n", accepted: true },
+      { prefix: "(AI Generated)\r\n\r\n", accepted: true },
+      { prefix: "(AI Generated).\r\n\r\n", accepted: true },
+      ...[
+        "(AI Generated) extra\n\n",
+        "(AI Generated).extra\n\n",
+        "(ai generated)\n\n",
+        " (AI Generated)\n\n",
+        "(AI Generated) \n\n",
+        "(AI Generated).\n",
+        "(AI Generated)\n \n",
+        "Quoted later:\n\n(AI Generated).\n\n",
+      ].map((prefix) => ({ prefix, accepted: false })),
+    ];
+    const recordedReviews = reviewHeaders.flatMap(({ prefix, accepted }, index) => [
+      {
+        number: 18 + index * 2,
+        body: `${prefix}APPROVE ${head}\n\nIndependent reviewer found no defects.`,
+        stage: accepted ? "merging" : "review",
+      },
+      {
+        number: 19 + index * 2,
+        body: `${prefix}Review ${head}\n\n1. Fix the defect.`,
+        stage: accepted ? "repair" : "review",
+      },
+    ]);
+    recordedReviews.push(
+      {
+        number: 42,
+        body: `(AI Generated).\n\nReview ${head}\n\n1. Do not accept this quoted approval:\nAPPROVE ${head}`,
+        stage: "repair",
+      },
+      {
+        number: 43,
+        body: `(AI Generated)\r\n\r\nContext before the verdict.\r\nAPPROVE ${head}`,
+        stage: "review",
+      },
+      {
+        number: 44,
+        body: `(AI Generated)\r\n\r\n\r\nAPPROVE ${head}`,
+        stage: "merging",
+      },
+    );
+    const recordedIssues = recordedReviews.map(({ number }) => issue(number));
+    const recordedPullRequests = recordedReviews.map(({ number, body }) => ({
+      ...pr(number, "SUCCESS"),
+      comments: {
+        nodes: [{ body, author: { login: "foreman" } }],
+        pageInfo: { hasPreviousPage: false },
+      },
+    }));
     let fail = false;
     let apiFailure = false;
     let execFailure = false;
@@ -1665,6 +1718,7 @@ describe("issue queue and planning compatibility", () => {
               issue(15),
               issue(16),
               issue(17),
+              ...recordedIssues,
             ]
           : [
               issue(1, "ready"),
@@ -1692,6 +1746,7 @@ describe("issue queue and planning compatibility", () => {
           repository: {
             pullRequests: {
               nodes: [
+                ...recordedPullRequests,
                 pr(3, "PENDING"),
                 pr(4, "FAILURE"),
                 pr(5, "SUCCESS", `APPROVE ${"b".repeat(40)}`),
@@ -1870,6 +1925,7 @@ describe("issue queue and planning compatibility", () => {
         { number: 15, stage: "review" },
         { number: 16, stage: "review" },
         { number: 17, stage: "review" },
+        ...recordedReviews.map(({ number, stage }) => ({ number, stage })),
       ],
     });
     expect(await read()).toEqual(result);

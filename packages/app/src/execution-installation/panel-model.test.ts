@@ -444,14 +444,32 @@ test("owner expiry during session restoration does not navigate away from an ope
 });
 
 test("restart explanations lead with the authored change and keep technical detail separate", () => {
-  expect(
-    restartExplanation(
-      "(AI Generated).\n\nRestart Host to activate protected workspaces.\n\nValidation passed.\n\nRollback is prepared.",
-    ),
-  ).toEqual({
-    summary: "Restart Host to activate protected workspaces.",
-    details: "Validation passed.\n\nRollback is prepared.",
-  });
+  for (const header of ["(AI Generated)", "(AI Generated)."]) {
+    for (const newline of ["\n", "\r\n"]) {
+      expect(
+        restartExplanation(
+          `${header}${newline}${newline}Restart Host to activate protected workspaces.\n\nValidation passed.\n\nRollback is prepared.`,
+        ),
+      ).toEqual({
+        summary: "Restart Host to activate protected workspaces.",
+        details: "Validation passed.\n\nRollback is prepared.",
+      });
+    }
+  }
+  for (const prefix of [
+    "(AI Generated) prose\n\n",
+    "(AI Generated).extra\n\n",
+    "(ai generated)\n\n",
+    " (AI Generated)\n\n",
+    "(AI Generated) \n\n",
+    "(AI Generated).\n",
+    "(AI Generated)\n \n",
+    "Quoted later:\n\n(AI Generated).\n\n",
+  ]) {
+    const reason = `${prefix}Restart Host to activate protected workspaces.`;
+    const explanation = restartExplanation(reason);
+    expect(`${explanation.summary}\n\n${explanation.details}`).toContain(prefix.trim());
+  }
   expect(restartExplanation("Restart Dev to activate shared profiles.")).toEqual({
     summary: "Restart Dev to activate shared profiles.",
     details: "",
@@ -690,6 +708,7 @@ test("restart summaries identify Dev requests and durable Host automatic approva
 
 test("helper model observes without approving and refuses stale decisions", async () => {
   let decisions = 0;
+  const failureReason = "Decision unconfirmed; refresh before retrying";
   const model = new InstallationPanelModel({
     restartSummary: async () => null,
     restoreSession: async () => false,
@@ -706,7 +725,7 @@ test("helper model observes without approving and refuses stale decisions", asyn
     listHelpers: async () => [helperReviewFixture],
     decideHelper: async () => {
       decisions++;
-      throw new Error("Decision unconfirmed; refresh before retrying");
+      throw new Error(`${failureReason}\nAdditional diagnostic detail`);
     },
   });
   await model.unlock();
@@ -722,13 +741,14 @@ test("helper model observes without approving and refuses stale decisions", asyn
   expect(model.getState()).toMatchObject({
     busy: false,
     error: null,
-    helperError: "Decision unconfirmed; refresh before retrying",
+    helperError: failureReason,
     helperJobs: [helperReviewFixture],
   });
   await model.refresh();
-  expect(model.getState().helperError).toBe("Decision unconfirmed; refresh before retrying");
+  expect(model.getState().helperError).toBe(failureReason);
   model.dismissHelperError();
   expect(model.getState().helperError).toBeNull();
+  expect(decisions).toBe(1);
   await model.lock();
   expect(model.getState().helperJobs).toEqual([]);
 });

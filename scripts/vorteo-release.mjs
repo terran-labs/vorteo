@@ -363,7 +363,13 @@ function installerAsset(plan) {
 export function curatedReleaseNotes(input) {
   if (typeof input !== "string" || !input.trim())
     throw new ReleaseRefusal("Publishing a release requires curated notes via --notes-file.");
-  const notes = input.replace(/^(?:\s*\(AI Generated\)\.\s*)+/i, "").trim();
+  const notes = input.replace(/^(?:\(AI Generated\)\.?(?:\n\n|\r\n\r\n))+/, "").trim();
+  const leadingAttribution = /^[\s\uFEFF]*\(AI Generated\)/i.test(notes);
+  const standaloneAttribution = /^[ \t\uFEFF]*\(AI Generated\)\.?[ \t]*\r?$/im.test(notes);
+  if (leadingAttribution || standaloneAttribution)
+    throw new ReleaseRefusal(
+      "Remove attribution from release notes, or use an exact leading (AI Generated) header followed by an empty line.",
+    );
   if (
     /^[ \t]{0,3}#{1,6}\s+(?:Unreleased\b|(?:Vorteo\s+)?v?\d+(?:\.\d+){2}|20\d{2}-\d{2}-\d{2})/im.test(
       notes,

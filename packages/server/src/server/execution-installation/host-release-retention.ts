@@ -165,11 +165,134 @@ export function assertHostReleaseCleanupSupported(): void {
   if (process.platform === "win32") throw new HostReleaseCleanupUnsupportedError();
 }
 
+/** What a startup pass found and repaired. */
+export interface HostReleaseStartupRecovery {
+  /** Job folders put back under their own name. */
+  restored: string[];
+  /** Install job folders whose cleanup receipt was left running and is now marked interrupted. */
+  interrupted: string[];
+}
+
+/**
+ * At coordinator start, under the release root lock: put back releases a coordinator that died
+ * during cleanup left set aside, where nothing can start from them, then mark every cleanup
+ * receipt still saying "running" as interrupted, with what that run did and did not remove.
+ * Nothing in this process is cleaning yet, and the lock excludes a cleanup in another, so a
+ * running receipt here belongs to a run that died. Returns null when another process holds
+ * the lock; its own cleanup restores first.
+ */
+export async function recoverHostReleasesAtStart(
+  releaseRoot: string,
+  callbacks: Pick<HostReleaseRetention, "onError" | "onRestored"> & {
+    now?: () => Date;
+  } = {},
+): Promise<HostReleaseStartupRecovery | null> {
+  assertHostReleaseCleanupSupported();
+  const root = await realpath(releaseRoot);
+  try {
+    return await withReleaseRootLock(root, async () => ({
+      restored: await restoreAbandoned(root, callbacks),
+      // Holds this process's cleanup slot: no cleanup here can start, or write its receipt,
+      // while receipts are marked. Skipped when one already runs; it owns its own receipt.
+      interrupted:
+        (await whileNoCleanupRuns(() =>
+          markInterruptedReceipts(root, callbacks.now ?? (() => new Date()), callbacks),
+        )) ?? [],
+    }));
+  } catch (error) {
+    if (error instanceof ReleaseRootLockedError) return null;
+    throw error;
+  }
+}
+
+/** A receipt larger than this was not written by a cleanup; it is left alone. */
+const RECEIPT_MAX_BYTES = 4 * 1024 * 1024;
+
+async function markInterruptedReceipts(
+  root: string,
+  now: () => Date,
+  callbacks: Pick<HostReleaseRetention, "onError">,
+): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const marked: string[] = [];
+  for (const job of names.filter((name) => JOB_FOLDER.test(name))) {
+    const file = path.join(root, job, "retention.json");
+    try {
+      if ((await stat(file)).size > RECEIPT_MAX_BYTES) continue;
+      const original = await readFile(file, "utf8");
+      const receipt = JSON.parse(original) as Record<string, unknown>;
+      if (receipt.status !== "running") continue;
+      const temporary = `${file}.${randomBytes(8).toString("hex")}.tmp`;
+      const interrupted = {
+        ...receipt,
+        status: "interrupted",
+        interruptedAt: now().toISOString(),
+        ...interruptedOutcome(receipt, names),
+      };
+      await writeFile(temporary, JSON.stringify(interrupted) + "\n", { mode: 0o600 });
+      // A receipt that changed since it was read keeps its own record.
+      if ((await readFile(file, "utf8")) !== original) {
+        await rm(temporary, { force: true });
+        continue;
+      }
+      await rename(temporary, file);
+      marked.push(job);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      callbacks.onError?.(file, error);
+    }
+  }
+  return marked;
+}
+
+/**
+ * What an interrupted run removed and what it left, read from its plan and the folders that
+ * exist now, after the startup restore. A job folder under its own name was put back or never
+ * set aside; a `.deleting` folder is half removed and the next cleanup finishes it.
+ */
+function interruptedOutcome(receipt: Record<string, unknown>, names: readonly string[]) {
+  const note = "The coordinator restarted before this cleanup finished.";
+  if (receipt.mode === "dry-run")
+    return { note: `${note} A dry run removes nothing.`, outcome: { removed: [], notRemoved: {} } };
+  const plan = receipt.plan as Partial<HostReleaseCleanupPlan> | undefined;
+  if (!plan)
+    return {
+      note: `${note} It stopped before recording its plan, which comes before any deletion, so it removed nothing.`,
+      outcome: { removed: [], notRemoved: {} },
+    };
+  const removed: string[] = [];
+  const notRemoved: Record<string, string> = {};
+  const stateOf = (name: string) => {
+    if (names.includes(name)) return "still present under its own name";
+    const started = names.find((entry) => DELETING.exec(entry)?.[1] === name);
+    if (started)
+      return `deletion started and not finished: ${started}; the next cleanup finishes it`;
+    const aside = names.find((entry) => SET_ASIDE.exec(entry)?.[1] === name);
+    if (aside) return `still set aside as ${aside}`;
+    return null;
+  };
+  for (const name of plan.remove ?? []) {
+    const state = stateOf(name);
+    if (state) notRemoved[name] = state;
+    else removed.push(name);
+  }
+  for (const entry of [...(plan.removeCopies ?? []), ...(plan.finish ?? [])]) {
+    if (names.includes(entry)) notRemoved[entry] = "still present";
+    else removed.push(entry);
+  }
+  return {
+    note: `${note} It removed ${removed.length} of the ${removed.length + Object.keys(notRemoved).length} folders it planned to remove.`,
+    outcome: { removed, notRemoved },
+  };
+}
+
 /**
  * At coordinator start, put back releases a coordinator that died during cleanup left set
- * aside, where nothing can start from them. Runs alongside the rest of startup and never fails
- * it: the restore takes the release root lock, so it never runs while a cleanup in any process
- * holds folders set aside, and every outcome is only logged. A no-op on Windows.
+ * aside, and mark cleanup receipts it left running as interrupted. Runs alongside the rest of
+ * startup and never fails it: the pass takes the release root lock, so it never runs while a
+ * cleanup in any process holds folders set aside, and every outcome is only logged. A no-op on
+ * Windows.
  */
 export function restoreHostReleasesAtStart(
   sourceUpdates: { releaseRoot: string } | undefined,
@@ -182,14 +305,19 @@ export function restoreHostReleasesAtStart(
   const { releaseRoot } = sourceUpdates;
   void (async () => {
     try {
-      const restored = await restoreSetAsideReleases(releaseRoot, {
+      const recovery = await recoverHostReleasesAtStart(releaseRoot, {
         onRestored: (folder) => logger.warn({ folder }, "Put back a Host release left set aside"),
         onError: (folder, error) =>
-          logger.warn({ folder, err: error }, "Could not put back a Host release left set aside"),
+          logger.warn({ folder, err: error }, "Could not repair Host release cleanup state"),
       });
       // A cleanup in another coordinator holds the root; it restores first itself.
-      if (restored === null)
+      if (recovery === null)
         logger.info("A Host release cleanup is running; startup restore left it alone");
+      else if (recovery.interrupted.length > 0)
+        logger.warn(
+          { jobs: recovery.interrupted },
+          "Marked Host release cleanups a restart interrupted",
+        );
     } catch (error) {
       logger.warn({ err: error }, "Could not check for Host releases left set aside");
     }
@@ -215,6 +343,8 @@ async function processStart(pid: number): Promise<string | null> {
   try {
     const { stdout } = await runCommand("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
       env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+      // A hung ps fails closed: the holder counts as alive and the caller is refused.
+      timeout: 120_000,
     });
     return stdout.trim() || null;
   } catch (error) {
@@ -512,10 +642,19 @@ export async function pruneHostReleases(input: HostReleaseRetention): Promise<st
   assertHostReleaseCleanupSupported();
   const root = await realpath(input.releaseRoot);
   if (input.dryRun) {
-    input.onPlan?.(await planDryRun(root, input));
+    // Computed whether or not anyone listens: `onPlan?.(await …)` would skip the evidence read.
+    const plan = await planDryRun(root, input);
+    input.onPlan?.(plan);
     return [];
   }
-  return withReleaseRootLock(root, () => pruneLocked(root, input));
+  return withReleaseRootLock(root, async () => {
+    deletingSince = Date.now();
+    try {
+      return await pruneLocked(root, input);
+    } finally {
+      deletingSince = null;
+    }
+  });
 }
 
 /**
@@ -850,6 +989,71 @@ async function removeJobFolder(
 }
 
 let running: Promise<void> | null = null;
+
+/**
+ * How long a step that restarts the coordinator waits for a running cleanup. A cleanup cut
+ * by a restart is safe, since the startup pass restores and records it, but it leaves a half
+ * removed folder and an interrupted run, so restarts wait for it within this bound.
+ */
+export const CLEANUP_WAIT_MS = 30 * 60_000;
+
+/**
+ * For a step about to restart the coordinator: the status detail to wait with while a Host
+ * release cleanup runs, or null to go ahead. `waits` records when each job started waiting;
+ * past CLEANUP_WAIT_MS the step goes ahead and the cleanup is cut.
+ */
+export function cleanupWaitDetail(input: {
+  waits: Map<string, number>;
+  id: string;
+  now: number;
+  running: boolean;
+}): string | null {
+  if (!input.running) {
+    input.waits.delete(input.id);
+    return null;
+  }
+  const since = input.waits.get(input.id) ?? input.now;
+  input.waits.set(input.id, since);
+  if (input.now - since >= CLEANUP_WAIT_MS) return null;
+  return "Waiting for Host release cleanup to finish before restarting the coordinator (at most 30 minutes).";
+}
+
+/** When a cleanup in this process that may rename and delete took the release root lock. */
+let deletingSince: number | null = null;
+
+/**
+ * A cleanup in this process that renames and deletes, which a coordinator restart would cut,
+ * with when the restart guard stops waiting for it: CLEANUP_WAIT_MS after it started, so a
+ * hung cleanup cannot hold restarts forever. A dry run or an off run never counts: it renames
+ * and deletes nothing. Null when there is none, or once it lapses.
+ */
+export function hostReleaseCleanupDeleting(now: number = Date.now()): { lapsesAt: Date } | null {
+  if (deletingSince === null) return null;
+  const lapsesAt = deletingSince + CLEANUP_WAIT_MS;
+  return now < lapsesAt ? { lapsesAt: new Date(lapsesAt) } : null;
+}
+
+/**
+ * Run `body` holding this process's single cleanup slot, so no cleanup starts until it ends;
+ * one that would start meanwhile is skipped with a receipt saying so. Returns null without
+ * running `body` when a cleanup already holds the slot.
+ */
+async function whileNoCleanupRuns<T>(body: () => Promise<T>): Promise<T | null> {
+  if (running) return null;
+  let release!: () => void;
+  running = new Promise<void>((resolve) => (release = resolve));
+  try {
+    return await body();
+  } finally {
+    release();
+    running = null;
+  }
+}
+
+/** Whether a Host release cleanup of any mode is running in this process. */
+export function hostReleaseRetentionRunning(): boolean {
+  return running !== null;
+}
 
 function writeRetentionReceipt(file: string, receipt: Record<string, unknown>): void {
   try {

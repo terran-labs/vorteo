@@ -6,6 +6,12 @@ Before publishing, verify the repository's current visibility and destination. R
 
 The normal workflow checks credentials, not every kind of personal information. Review documentation and configuration examples manually. Never print a token to investigate a match, run live credential verification against third parties, or upload a private scan report to a public issue or CI artifact.
 
+## Generated post attribution
+
+Ordinary generated external posts start with the exact line `(AI Generated)`, then an empty line and the body. Readers also accept the legacy `(AI Generated).` line with the same separator, using LF or CRLF line endings. Changed case, indentation, trailing spaces, suffixes, whitespace-only separators and headers quoted later in a body are not valid attribution headers.
+
+Recorded Factory verdicts must be the first non-empty line after the exact header separator. Attribution does not grant review or merge authority. Author identity, exact-head approvals, claim and installation ownership, and all other gates still apply. [Public release summaries](release.md#public-release-summaries) omit attribution; their publisher strips consecutive exact leading forms with empty separator lines, then refuses remaining leading attribution lookalikes and standalone attribution lines. Ordinary inline prose remains unchanged.
+
 ## If data was committed
 
 Preserve active work and a private backup first. Remove the material from every affected branch and tag, including historical versions. Use an isolated rewrite rather than resetting an active checkout. Re-scan both the candidate tree and rewritten history, then publish with explicit expected-old-revision checks. Retain unrelated work and upstream history.

@@ -1,3 +1,4 @@
+import { cleanupWaitDetail, hostReleaseCleanupDeleting } from "./host-release-retention.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -172,6 +173,8 @@ export interface UpgradePorts {
   devUnmanaged?: boolean;
   /** Null when the coordinator can replace itself; otherwise why it cannot. */
   coordinatorReplacement: string | null;
+  /** Whether a Host release cleanup runs in this coordinator; defaults to the real check. */
+  hostReleaseCleanupRunning?(): boolean;
   /** Installed Host source commit. */
   currentCommit(): string | null;
   /** The commit a release tag names on GitHub. */
@@ -285,6 +288,8 @@ function coordinatorSwapResult(
  * keep one instance with its own journal; neither starts while the other is approved or running.
  */
 abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
+  /** When each upgrade started waiting for a Host release cleanup, in this process. */
+  private readonly cleanupWaits = new Map<string, number>();
   protected records: UpgradeRecord[];
   private draining = false;
 
@@ -676,6 +681,16 @@ abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
       const previous = this.ports.coordinatorRelease();
       if (previous === next && this.ports.runningRelease() === next)
         return { status: "succeeded", detail: "The coordinator already runs this release." };
+      // The Host step just started a cleanup; restarting now would cut it part way.
+      const wait = cleanupWaitDetail({
+        waits: this.cleanupWaits,
+        id: record.id,
+        now: this.ports.now().getTime(),
+        running: this.ports.hostReleaseCleanupRunning
+          ? this.ports.hostReleaseCleanupRunning()
+          : hostReleaseCleanupDeleting() !== null,
+      });
+      if (wait) return { status: "waiting", detail: wait };
       // Record the launch before it happens: the helper restarts this process.
       const launched = this.save(record, {
         private: {
