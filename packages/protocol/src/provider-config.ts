@@ -65,6 +65,9 @@ export const ProviderOverrideSchema = z.object({
   enabled: z.boolean().optional(),
   /** Continue threads automatically after this account's usage limit resets. Absent means on. */
   autoResumeAfterUsageLimit: z.boolean().optional(),
+  // COMPAT(primaryConnectionAutomatic): added 2026-11-25. Whether Automatic may launch system
+  // threads on this account; absent means it may. Older daemons strip the key.
+  automaticPrimary: z.boolean().optional(),
   order: z.number().optional(),
   // Suppress a plugin registration after the user deletes its provider connection.
   removed: z.boolean().optional(),

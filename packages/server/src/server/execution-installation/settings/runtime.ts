@@ -268,6 +268,8 @@ export function createInstallationSettings(
           usable: usableProviders(ready, usage.providers, daemon.config),
           pending: [...loading, ...failing],
           unconfirmed,
+          automatic:
+            client.getLastServerInfoMessage()?.features?.primaryConnectionAutomatic === true,
         };
       } finally {
         await client.close();

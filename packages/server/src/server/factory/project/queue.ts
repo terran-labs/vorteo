@@ -8,20 +8,35 @@ import type { StoredAgentRecord } from "../../agent/agent-storage.js";
 import { markerInstallations } from "./claims.js";
 import type { DevAgent } from "./issue-agent-host.js";
 import type { GhRunner } from "./tick-gate.js";
+import {
+  ISSUE_TRUST_FIELDS,
+  issueTrust,
+  issueTrustFactsSchema,
+  type IssueTrust,
+  type TrustedAccounts,
+} from "./trust.js";
 
 type QueueIssue = ProjectFactoryQueue["issues"][number];
 const pageInfo = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
-const issueSchema = z.object({
+const issueSchema = issueTrustFactsSchema.extend({
   number: z.number(),
   title: z.string(),
   url: z.string(),
   labels: z.object({ nodes: z.array(z.object({ name: z.string() })), pageInfo }),
 });
+const FACTORY_LABELS = [
+  "factory:ready",
+  "factory:running",
+  "factory:blocked",
+  "factory:human-review",
+];
 const prSchema = z.object({
   number: z.number(),
   url: z.string(),
   headRefName: z.string(),
   headRefOid: z.string(),
+  /** From a fork: never an issue's pull request, whatever its branch is called. */
+  isCrossRepository: z.boolean().default(false),
   body: z.string().default(""),
   reviewDecision: z.string().nullable(),
   commits: z.object({
@@ -37,7 +52,11 @@ const prSchema = z.object({
   }),
   latestReviews: z.object({
     nodes: z.array(
-      z.object({ state: z.string(), commit: z.object({ oid: z.string() }).nullable() }),
+      z.object({
+        state: z.string(),
+        commit: z.object({ oid: z.string() }).nullable(),
+        author: z.object({ login: z.string() }).nullable().optional(),
+      }),
     ),
     pageInfo: z.object({ hasPreviousPage: z.boolean() }),
   }),
@@ -71,6 +90,8 @@ interface QueueInput {
   devAgents?: () => Promise<DevQueueAgents | undefined>;
   /** Issues whose claim branch this installation created. */
   ownClaims: ReadonlySet<number>;
+  /** Intake trust; an issue or review it cannot vouch for is shown as untrusted. */
+  trusted: () => Promise<TrustedAccounts>;
   now: Date;
 }
 class QueueReadError extends Error {}
@@ -128,8 +149,8 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
           `query($owner:String!,$name:String!,$cursor:String) {
         ${cursor === null ? "viewer { login }" : ""}
         repository(owner:$owner,name:$name) {
-          issues(first:100,after:$cursor,states:OPEN,orderBy:{field:CREATED_AT,direction:ASC}) {
-            nodes { number title url labels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } } }
+          issues(first:100,after:$cursor,states:OPEN,labels:${JSON.stringify(FACTORY_LABELS)},orderBy:{field:CREATED_AT,direction:ASC}) {
+            nodes { number title url ${ISSUE_TRUST_FIELDS} labels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } } }
             pageInfo { hasNextPage endCursor }
           }
         }
@@ -159,9 +180,9 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
           `query($owner:String!,$name:String!,$cursor:String) {
         repository(owner:$owner,name:$name) {
           pullRequests(first:100,after:$cursor,states:OPEN) {
-            nodes { number url headRefName headRefOid body reviewDecision
+            nodes { number url headRefName headRefOid isCrossRepository body reviewDecision
               commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
-              latestReviews(last:100) { nodes { state commit { oid } } pageInfo { hasPreviousPage } }
+              latestReviews(last:100) { nodes { state commit { oid } author { login } } pageInfo { hasPreviousPage } }
               comments(last:100) { nodes { body author { login } } pageInfo { hasPreviousPage } }
             }
             pageInfo { hasNextPage endCursor }
@@ -180,6 +201,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       cursor = nextCursor(page.pageInfo, cursor);
     } while (cursor);
     const { records, dev, errors, partial, degraded } = await queueAgents(input);
+    const { verdict: trustVerdict, sameRepository } = await trustEvidence(input, prs);
     const queue: QueueIssue[] = [];
     for (const issue of issues) {
       if (issue.labels.pageInfo.hasNextPage)
@@ -193,7 +215,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
         ...issueAgents(records, input.workspaceIds, issue.number),
         ...devIssueAgents(dev, issue.number),
       ];
-      const { pull, claim } = issuePull(prs, issue.number, input.ownClaims);
+      const { pull, claim } = issuePull(sameRepository, issue.number, input.ownClaims);
       const pr = pull ? describePr(pull, viewerLogin) : null;
       const item: QueueIssue = {
         number: issue.number,
@@ -204,6 +226,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
         pr,
         agents,
         claim,
+        ...(await trustVerdict(issue)),
       };
       item.stage = deriveStage(item, pull ? approvedHead(pull, viewerLogin) : false);
       queue.push(item);
@@ -234,7 +257,76 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
   }
 }
 
-/** The issue's pull request and, when it comes from a claim branch, that claim's owner. */
+/**
+ * Pull requests from this repository with only trusted reviews, and a verdict per issue. When
+ * the trusted accounts cannot be read, every issue is shown as unverified.
+ */
+async function trustEvidence(input: QueueInput, prs: PullRequest[]) {
+  let lookup: TrustedAccounts;
+  let trustError: string | null = null;
+  try {
+    lookup = await input.trusted();
+  } catch (error) {
+    trustError = errorMessage(error);
+    lookup = async () => false;
+  }
+  // A failed lookup of one login (a 403 or 429 for someone who reviewed or commented) counts
+  // that login as untrusted and is reported on the issues it affects; the read goes on.
+  const failures = new Map<string, string>();
+  const trusted: TrustedAccounts = async (login) => {
+    try {
+      return await lookup(login);
+    } catch (error) {
+      if (login) failures.set(login, errorMessage(error));
+      return false;
+    }
+  };
+  const sameRepository = prs.filter((pr) => !pr.isCrossRepository);
+  for (const pr of sameRepository) {
+    // Anyone can review a public pull request; only trusted reviewers count, even for display.
+    const kept = [];
+    for (const review of pr.latestReviews.nodes)
+      if (await trusted(review.author?.login)) kept.push(review);
+    pr.latestReviews.nodes = kept;
+  }
+  /** The queue item's optional `untrusted` field, empty for a trusted issue. */
+  const verdict = async (issue: z.infer<typeof issueSchema>): Promise<{ untrusted?: string }> => {
+    if (trustError)
+      return { untrusted: `Could not verify who approved issue #${issue.number}: ${trustError}` };
+    const before = new Set(failures.keys());
+    const result: IssueTrust = await issueTrust(issue, trusted);
+    if (result.trusted) return {};
+    const failed = [...failures].find(
+      ([login]) => !before.has(login) || issueLogins(issue).has(login),
+    );
+    return {
+      untrusted: failed
+        ? `Could not verify whether @${failed[0]} is trusted for issue #${issue.number}: ${failed[1]}`
+        : result.reason,
+    };
+  };
+  return { verdict, sameRepository };
+}
+
+/** Every account that wrote, edited, retitled or labeled the issue. */
+function issueLogins(issue: z.infer<typeof issueSchema>): Set<string> {
+  return new Set(
+    [
+      issue.author?.login,
+      ...issue.userContentEdits.nodes.map((edit) => edit.editor?.login),
+      ...issue.timelineItems.nodes.map((item) => item.actor?.login),
+    ].filter((login): login is string => Boolean(login)),
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The issue's pull request and, when it comes from a claim branch, that claim's owner. Callers
+ * pass only pull requests from this repository: a fork can name its branch anything.
+ */
 function issuePull(prs: PullRequest[], issueNumber: number, ownClaims: ReadonlySet<number>) {
   const branch = projectFactoryClaimBranch(issueNumber);
   // Exact names avoid issue 1 matching 10. The `<prefix>/factory-issue-<n>` form predates

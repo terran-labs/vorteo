@@ -9,7 +9,9 @@ import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { useInstallationSettings } from "@/execution-installation/settings";
 import {
   primaryConnectionAvailability,
+  useAutomaticPrimary,
   usePrimaryConnection,
+  type AutomaticPrimaryState,
 } from "@/execution-installation/primary-connection";
 import { useDaemonPrimaryConnection } from "@/hooks/use-daemon-primary-connection";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
@@ -93,6 +95,12 @@ const PRIMARY_UNAVAILABLE: AttentionItem = {
   label: "Primary connection for system threads",
   hint: "Unavailable. It is off, signed out, not ready or not connected on the Host or where Factory runs, so system threads there wait.",
 };
+const AUTOMATIC_NONE: AttentionItem = {
+  ...PRIMARY_MISSING,
+  id: "automatic-primary",
+  label: "No account can run system threads",
+  hint: "Sign in to a provider in Providers.",
+};
 
 /** Local provider ids whose usage reading asks for a new sign-in or finds no credentials. */
 function useSignedOut(serverId: string | null): Set<string> {
@@ -107,12 +115,21 @@ function useSignedOut(serverId: string | null): Set<string> {
 
 type Availability = ReturnType<typeof primaryConnectionAvailability>;
 
+/**
+ * With no primary chosen, Automatic runs system threads where it is supported, so the only
+ * problem is that no account can; an older Host or coordinator still asks for a choice. A chosen
+ * primary is never replaced by Automatic, so it must be usable.
+ */
 function primaryAttention(
   primary: { loaded: boolean; primary: object | null | undefined },
+  automatic: AutomaticPrimaryState,
   availability: () => Availability,
 ): AttentionItem | null {
   if (!primary.loaded) return null;
-  if (!primary.primary) return PRIMARY_MISSING;
+  if (!primary.primary) {
+    if (!automatic.supported) return PRIMARY_MISSING;
+    return automatic.current === null ? AUTOMATIC_NONE : null;
+  }
   return availability() === "unavailable" ? PRIMARY_UNAVAILABLE : null;
 }
 
@@ -134,7 +151,7 @@ function useSharedPrimaryItem(): AttentionItem | null {
   const required = environments
     .filter((environment) => environment.kind === "host" || factories.has(environment.serverId))
     .map((environment) => environment.serverId);
-  return primaryAttention(shared, () =>
+  return primaryAttention(shared, shared.automatic, () =>
     primaryConnectionAvailability({
       primary: shared.primary!,
       definitions: settings.data?.settings?.providerDefinitions ?? [],
@@ -156,8 +173,9 @@ function useStandalonePrimaryItem(): AttentionItem | null {
   const standalone = useDaemonPrimaryConnection(serverId);
   const local = useProvidersSnapshot(standalone.supported ? serverId : null);
   const signedOut = useSignedOut(standalone.loaded ? serverId : null);
+  const automatic = useAutomaticPrimary(standalone.supported ? serverId : null);
   const provider = standalone.primary?.provider ?? "";
-  return primaryAttention(standalone, () =>
+  return primaryAttention(standalone, automatic, () =>
     primaryConnectionAvailability({
       primary: { providerId: provider },
       definitions: [
@@ -176,8 +194,9 @@ function useStandalonePrimaryItem(): AttentionItem | null {
 }
 
 /**
- * Asks for a primary connection while none is chosen, or for another one while the chosen one
- * cannot run anywhere. Nothing is ever switched for the owner. Silent until settings load.
+ * Says when no account can run system threads under Automatic, asks for a primary connection
+ * where Automatic is not supported yet, and asks for another one while the chosen one cannot
+ * run anywhere. A chosen primary is never switched for the owner. Silent until settings load.
  */
 function usePrimaryConnectionItem(): AttentionItem | null {
   const shared = useSharedPrimaryItem();

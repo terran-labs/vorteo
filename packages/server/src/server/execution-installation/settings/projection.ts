@@ -10,6 +10,7 @@ import {
   type InstallationSettings,
 } from "@getpaseo/protocol/installation-settings";
 import { composeEnvironmentSystemPrompt, readUserSystemPrompt } from "./instructions.js";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import { localPrimaryConnection } from "./primary-connection.js";
 import { projectTimeZone } from "./time-zone.js";
 
@@ -73,6 +74,28 @@ export function localProjectPolicies(
     });
   }
   return policies;
+}
+
+/** Daemons that support Automatic always report its marker, false until a coordinator sets it. */
+function automaticAware(localConfig: MutableDaemonConfig): boolean {
+  return localConfig.installationPrimaryConnectionAutomatic !== undefined;
+}
+
+/**
+ * The definitions a daemon receives. COMPAT(primaryConnectionAutomatic): added 2026-11-25,
+ * remove after 2027-05-25. Older daemons parse definitions strictly and reject the Automatic
+ * policy key, so it goes only to daemons that support Automatic.
+ */
+function daemonDefinitions(
+  definitions: InstallationProvider[],
+  localConfig: MutableDaemonConfig,
+): InstallationProvider[] {
+  if (automaticAware(localConfig)) return definitions;
+  return definitions.map((definition) => {
+    if (definition.policy.automaticPrimary === undefined) return definition;
+    const { automaticPrimary: _automatic, ...policy } = definition.policy;
+    return { ...definition, policy };
+  });
 }
 
 export function projectInstallationSettings(
@@ -168,7 +191,7 @@ export function projectInstallationSettings(
     ...(settings.providerDefinitions
       ? {
           installationProviderPolicy: {
-            definitions: settings.providerDefinitions,
+            definitions: daemonDefinitions(settings.providerDefinitions, localConfig),
             excludedIds: exclusions?.providerIds ?? [],
           },
         }
@@ -185,6 +208,8 @@ export function projectInstallationSettings(
           // Tells the daemon this coordinator owns the choice, so it stops using the earlier
           // first-usable launch rule. Older coordinators never send it.
           installationPrimaryConnectionSupported: true,
+          // Same capability rule: only daemons that support Automatic report the key.
+          ...(automaticAware(localConfig) ? { installationPrimaryConnectionAutomatic: true } : {}),
         }
       : {}),
     // Same capability rule: daemons that store the owner's time zone always report the key.

@@ -22,6 +22,8 @@ import type { ProviderSnapshotEntry } from "../../agent/agent-sdk-types.js";
 import { ProviderUsageService } from "../../../services/quota-fetcher/service.js";
 import type { ProviderQuotaObservationService } from "../../../services/quota-fetcher/governor-service.js";
 import { expandProviderSnapshot } from "@getpaseo/protocol/provider-snapshot-codec";
+import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
+import { previewAutomaticPrimary } from "../../system-project/launch-selection.js";
 
 type SnapshotChangeHandler = (transition: ProviderSnapshotTransition) => void;
 
@@ -417,6 +419,75 @@ describe("ProviderCatalogSession", () => {
     expect(responses[0]?.payload.workerActivity?.runningByProvider).toEqual({ codex: 1 });
     expect(responses[1]?.payload.workerActivity?.runningByProvider).toEqual({ codex: 0 });
     expect(responses[1]?.payload.workerActivity?.checkedAt).not.toBe("2026-01-01T00:00:00Z");
+  });
+
+  it("reports Automatic's current pick from the usage it lists, and nothing where it does not apply", async () => {
+    const usage = [
+      {
+        providerId: "codex",
+        displayName: "Codex",
+        status: "available" as const,
+        planLabel: null,
+        windows: [{ id: "w", label: "Week", remainingPct: 20 }],
+      },
+      {
+        providerId: "claude",
+        displayName: "Claude",
+        status: "available" as const,
+        planLabel: null,
+        windows: [{ id: "w", label: "Week", remainingPct: 70 }],
+      },
+    ];
+    let settings = MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false } });
+    const providers = {
+      listProviders: async () => [
+        { provider: "codex", status: "ready" as const, enabled: true, label: "Codex 1" },
+        { provider: "claude", status: "ready" as const, enabled: true, label: "Claude 1" },
+      ],
+    };
+    const { subsystem, emitted } = makeSubsystem({
+      usage: { listUsage: async () => ({ fetchedAt: "2026-11-25T00:00:00Z", providers: usage }) },
+      host: {
+        previewAutomaticPrimary: (listed) =>
+          previewAutomaticPrimary({ providers, usage: listed, settings }),
+      },
+    });
+    const list = async (requestId: string) => {
+      await subsystem.handleProviderUsageListRequest({
+        type: "provider.usage.list.request",
+        requestId,
+      });
+      return emitted
+        .filter((message) => message.type === "provider.usage.list.response")
+        .find((message) => message.payload.requestId === requestId)?.payload;
+    };
+    expect((await list("standalone"))?.automaticPrimary).toEqual({
+      providerId: "claude",
+      label: "Claude 1",
+    });
+    settings = {
+      ...settings,
+      providers: { claude: { automaticPrimary: false }, codex: { automaticPrimary: false } },
+    };
+    expect((await list("none"))?.automaticPrimary).toBeNull();
+    // An installation daemon whose coordinator predates Automatic reports no key at all.
+    settings = {
+      ...settings,
+      sharedProviderPreferences: {
+        version: 1,
+        revision: 1,
+        providers: {},
+        legacyProfiles: {},
+        installation: {
+          installationId: "4c07b582-7d41-4be4-9725-36f975708983",
+          serverId: "host",
+          environment: "host",
+          revision: 1,
+        },
+      },
+      installationPrimaryConnectionSupported: true,
+    };
+    expect(await list("older")).not.toHaveProperty("automaticPrimary");
   });
 
   it("surfaces a usage-list failure as an rpc_error envelope", async () => {

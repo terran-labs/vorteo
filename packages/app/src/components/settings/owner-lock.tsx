@@ -100,8 +100,18 @@ export function OwnerUnlockDialog({ visible, onClose }: { visible: boolean; onCl
 }
 
 /** Keep error space stable while allowing larger text and full screen reader output. */
-function OwnerErrorSlot({ message, testID }: { message: string | null; testID: string }) {
+function OwnerErrorSlot({
+  message,
+  testID,
+  reserve = true,
+}: {
+  message: string | null;
+  testID: string;
+  /** Keep two lines of room even with no error, so nothing below moves when one appears. */
+  reserve?: boolean;
+}) {
   const { fontScale } = useWindowDimensions();
+  if (!reserve && !message) return null;
   return (
     <View style={styles.errorSlot(fontScale)} testID={`${testID}-slot`}>
       <Text
@@ -134,7 +144,17 @@ const statusAnnouncements = {
  * chosen and both are disabled. Arrow keys move between the two options and choose, as in any
  * radio group; only the chosen option is a Tab stop.
  */
-export function OwnerLockBadge({ testIDPrefix = "owner-access" }: { testIDPrefix?: string } = {}) {
+export function OwnerLockBadge({
+  testIDPrefix = "owner-access",
+  reserveErrorSpace = true,
+}: {
+  testIDPrefix?: string;
+  /**
+   * Whether the empty space for an unlock error is kept below the control. The settings sidebar
+   * turns it off: there the empty two lines read as a gap above its first group (#671).
+   */
+  reserveErrorSpace?: boolean;
+} = {}) {
   const access = useOwnerAccess();
   const compact = useIsCompactFormFactor();
   const [open, setOpen] = useState(false);
@@ -243,7 +263,7 @@ export function OwnerLockBadge({ testIDPrefix = "owner-access" }: { testIDPrefix
       <Text accessibilityLiveRegion="polite" style={styles.visuallyHidden}>
         {announcement}
       </Text>
-      <OwnerErrorSlot message={error} testID="owner-lock-error" />
+      <OwnerErrorSlot message={error} testID="owner-lock-error" reserve={reserveErrorSpace} />
       <OwnerUnlockDialog visible={open} onClose={closeDialog} />
     </View>
   );

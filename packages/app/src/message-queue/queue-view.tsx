@@ -45,7 +45,9 @@ const QueueEditEditor = lazy(() =>
   })),
 );
 import { type MessageQueueControl } from "./use-message-queue";
-import { canKeepRejectedChange, type OutboxRecord } from "./outbox-record";
+import { canKeepRejectedChange, isSupersededEdit, type OutboxRecord } from "./outbox-record";
+import { useSessionStore } from "@/stores/session-store";
+import { formatMessageTimestamp } from "@/utils/time";
 
 function describePendingChange(record: OutboxRecord): string {
   const operation = record.operation;
@@ -412,6 +414,7 @@ function PendingRecovery({
   const retry = useCallback(() => {
     void control.retry(record).catch(reportError);
   }, [record, control, reportError]);
+  if (isSupersededEdit(record)) return <SupersededEditRecovery record={record} control={control} />;
   return (
     <View>
       {record.error && !record.dismissed ? (
@@ -457,6 +460,102 @@ function PendingRecovery({
       ) : null}
     </View>
   );
+}
+
+/** Says what happened to the message an edit targeted, and lets the owner keep the edit. */
+function SupersededEditRecovery({
+  record,
+  control,
+}: {
+  record: OutboxRecord;
+  control: MessageQueueControl;
+}) {
+  const reportError = useReportActionError();
+  const [busy, setBusy] = useState(false);
+  const operation = record.operation;
+  const current =
+    operation.kind === "edit"
+      ? control.snapshot?.items.find((item) => item.id === operation.messageId)
+      : undefined;
+  const deliveredAt = useDeliveredAt(record);
+  const sendAsNew = useCallback(() => {
+    setBusy(true);
+    void control
+      .sendEditAsNewMessage(record)
+      .catch(reportError)
+      .finally(() => setBusy(false));
+  }, [control, record, reportError]);
+  const discard = useCallback(() => {
+    void control.removeLocalCopy(record).catch(reportError);
+  }, [control, record, reportError]);
+  const code = record.error?.code;
+  return (
+    <View>
+      <Text style={[styles.secondary, taskCardStyles.proseInset]} accessibilityRole="alert">
+        {describeSupersededEdit(code, current, deliveredAt)}
+      </Text>
+      {code === "revision_conflict" && current?.delivery.status === "queued" ? (
+        <ReviewRejectedEdit record={record} control={control} />
+      ) : null}
+      <Button
+        variant="ghost"
+        size="sm"
+        style={styles.inlineAction}
+        disabled={busy}
+        onPress={sendAsNew}
+      >
+        Send my edit as a new message
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        style={styles.inlineAction}
+        disabled={busy}
+        onPress={discard}
+      >
+        Discard my edit
+      </Button>
+    </View>
+  );
+}
+
+function describeSupersededEdit(
+  code: string | undefined,
+  current: QueueItem | undefined,
+  deliveredAt: number | null,
+): string {
+  if (code === "revision_conflict")
+    return "This message was changed in another window before your edit arrived. Your edit was not sent.";
+  if (code === "delivery_conflict" && current) {
+    if ("startedAt" in current.delivery)
+      return `This message started sending at ${formatMessageTimestamp(new Date(current.delivery.startedAt))}, before your edit. Your edit was not sent.`;
+  } else if (deliveredAt !== null) {
+    return `This message was already sent at ${formatMessageTimestamp(new Date(deliveredAt))}, before your edit. Your edit was not sent.`;
+  }
+  return "This message left the queue before your edit arrived: it was sent, or removed in another window. Your edit was not sent.";
+}
+
+/**
+ * When the edited message reached the thread: the latest loaded user message with
+ * its original text, sent no earlier than it was queued. Null when it is not loaded.
+ */
+function useDeliveredAt(record: OutboxRecord): number | null {
+  const original = record.original;
+  return useSessionStore((state) => {
+    const session = state.sessions[record.serverId];
+    if (!original || !session) return null;
+    const queuedAt = Date.parse(original.createdAt);
+    let latest: number | null = null;
+    for (const item of [
+      ...(session.agentStreamTail.get(record.agentId) ?? []),
+      ...(session.agentStreamHead.get(record.agentId) ?? []),
+    ]) {
+      if (item.kind !== "user_message" || item.text !== original.text) continue;
+      const at = item.timestamp.getTime();
+      if (at >= queuedAt && (latest === null || at > latest)) latest = at;
+    }
+    return latest;
+  });
 }
 
 function ReviewRejectedEdit({

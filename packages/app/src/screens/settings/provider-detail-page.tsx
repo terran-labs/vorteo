@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
+import { AutomaticEligibilityRow } from "./automatic-primary";
 import {
   canMakePrimary as offersMakePrimary,
   confirmDisablePrimary,
@@ -381,6 +382,7 @@ function ConnectionsSection({
       onKeys={keysFromList}
       secrets={secrets.byDefinition.get(primaryDefinition(account, environments).id)}
       primary={primary.loaded ? isPrimaryConnection(primary.primary, account.definitions) : null}
+      automaticSupported={primary.automatic.supported}
       onMakePrimary={makePrimary}
     />
   );
@@ -541,6 +543,7 @@ function ConnectionRow({
   onKeys,
   secrets,
   primary,
+  automaticSupported,
   onMakePrimary,
 }: {
   account: ProviderAccount;
@@ -555,6 +558,8 @@ function ConnectionRow({
   secrets: ProviderSecretsStatus | undefined;
   /** Whether this is the primary connection; null where the setting is unavailable. */
   primary: boolean | null;
+  /** Clearing the primary connection leaves system threads on Automatic. */
+  automaticSupported: boolean;
   onMakePrimary(account: ProviderAccount, name: string): void;
 }) {
   const isCompact = useIsCompactFormFactor();
@@ -577,7 +582,11 @@ function ConnectionRow({
   );
   const toggle = useCallback(
     async (enabled: boolean) => {
-      if (!enabled && primary === true && !(await confirmDisablePrimary(name, confirmDialog)))
+      if (
+        !enabled &&
+        primary === true &&
+        !(await confirmDisablePrimary(name, confirmDialog, automaticSupported))
+      )
         return;
       const ids = new Set(account.definitions.map((entry) => entry.id));
       save({
@@ -589,7 +598,7 @@ function ConnectionRow({
         },
       });
     },
-    [account, snapshot, save, primary, name],
+    [account, snapshot, save, primary, name, automaticSupported],
   );
   const summary = usageSummary(connection.windows);
   // Errors, undelivered keys and pending sign-ins ask something of the owner, so they always show.
@@ -1148,6 +1157,7 @@ function EnvironmentAccessSheet({
           />
         ))}
       </View>
+      <AutomaticEligibilityRow account={account} snapshot={snapshot} busy={busy} save={save} />
       {/* Removing a connection from one environment, or restoring it there, is rare repair work. */}
       <SettingsAdvancedGroup testID="provider-manage-advanced">
         <View style={settingsStyles.card}>

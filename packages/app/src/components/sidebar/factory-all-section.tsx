@@ -1,6 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { SidebarFactoryIcon } from "./leading-slot";
-import { FactoryStageBar } from "./factory-card-stage-bar";
+import { SidebarFactoryIcon, SidebarLeadingSlot } from "./leading-slot";
+import { sidebarContainerRowStyles } from "./container-row";
+import { sidebarIndentStyle } from "./indent";
+import { useSidebarRowDensity } from "./use-sidebar-row-density";
+import { hoverStyle, rowSurface } from "@/styles/hover";
+import { useVortonTouch } from "@/vorton-touch";
 import { memo, useCallback, useMemo } from "react";
 import { Text, View, type GestureResponderEvent } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -31,7 +35,7 @@ import {
   loadFactoryList,
 } from "@/screens/factory/factory-reads";
 import { factoryCardReadsQueue } from "./factory-section";
-import { factoryStageCounts, factoryOverviewPathTarget } from "./factory-card-model";
+import { factoryOverviewPathTarget, factoryPipelineCounts } from "./factory-card-model";
 import {
   aggregateFactories,
   factorySummaryState,
@@ -157,7 +161,6 @@ function useAllFactories(collapsed: boolean) {
     ],
     [lists, queues],
   );
-  const fetchedAt = queues.flatMap((queue) => (queue.data ? [queue.data.fetchedAt] : [])).sort()[0];
   const retry = useCallback(
     (event: GestureResponderEvent) => {
       event.stopPropagation();
@@ -167,7 +170,7 @@ function useAllFactories(collapsed: boolean) {
   );
   const visible = factoryPlugins.length > 0 && (factories.length > 0 || errors.length > 0);
   const degraded = queues.map((query) => query.data?.degraded).find(Boolean);
-  return { factories, errors, fetchedAt, retry, visible, degraded };
+  return { factories, errors, retry, visible, degraded };
 }
 
 /** A three-line global pipeline summary. The whole block opens the overview. */
@@ -181,9 +184,11 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
-  const { factories, errors, fetchedAt, retry, visible, degraded } = useAllFactories(false);
+  const { factories, errors, retry, visible, degraded } = useAllFactories(false);
+  const density = useSidebarRowDensity();
+  const touch = useVortonTouch();
   const aggregate = useMemo(() => aggregateFactories(factories), [factories]);
-  const counts = useMemo(() => factoryStageCounts(aggregate.issues), [aggregate.issues]);
+  const pipeline = useMemo(() => factoryPipelineCounts(aggregate.issues), [aggregate.issues]);
   const firstServerId = factories[0]?.serverId ?? null;
   const routeTarget = factoryOverviewPathTarget(usePathname());
   const openOverview = useCallback(() => {
@@ -194,11 +199,6 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
   if (!mainSidebar || focused || !visible) return null;
   const summary = factorySummaryState(factories);
   const anyQueue = summary.hasQueue;
-  const queued = counts.find((entry) => entry.segment === "queued")?.count ?? 0;
-  const review = counts.find((entry) => entry.segment === "review")?.count ?? 0;
-  const active = counts
-    .filter((entry) => entry.segment !== "queued" && entry.segment !== "review")
-    .reduce((sum, entry) => sum + entry.count, 0);
   const selected = routeTarget !== null && routeTarget.projectId === null;
   return (
     <PressHighlight
@@ -206,60 +206,68 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
       accessibilityRole="link"
       accessibilityLabel={t("sidebar.factoryCard.allTitle")}
       accessibilityState={selected ? SELECTED_STATE : undefined}
-      style={[styles.summary, selected && styles.selected]}
+      // One surface for the whole block: the folder row's geometry, hover and selected fills.
+      style={[
+        sidebarContainerRowStyles.row,
+        density,
+        sidebarIndentStyle(0),
+        styles.summary,
+        selected ? styles.selected : !touch && styles.hoverable,
+      ]}
+      highlightStyle={sidebarContainerRowStyles.rowPressed}
       testID="factory-global-summary"
     >
       <View style={styles.heading}>
-        <SidebarFactoryIcon calm cssHover />
-        <Text style={styles.title} numberOfLines={1}>
+        <SidebarLeadingSlot chevron={null}>{factoryIcon}</SidebarLeadingSlot>
+        <Text
+          style={[
+            sidebarContainerRowStyles.title,
+            selected ? styles.selectedTitle : sidebarContainerRowStyles.calmTitle,
+            styles.title,
+          ]}
+          numberOfLines={1}
+        >
           {t("sidebar.factoryCard.allTitle")}
         </Text>
-        <ThemedArrowRight size={16} uniProps={mutedColor} />
+        <ThemedArrowRight size={14} uniProps={calmColor} />
       </View>
       <View style={styles.details}>
         <Text style={styles.counts} numberOfLines={1}>
           {t("projectFactory.scope.sidebarSummary", summary)}
         </Text>
         <Text style={styles.counts} numberOfLines={1}>
-          {anyQueue ? t("projectFactory.scope.pipelineSummary", { queued, active, review }) : null}
+          {anyQueue ? t("projectFactory.scope.pipelineSummary", pipeline) : null}
         </Text>
-        {fetchedAt ? (
-          <Text style={styles.counts}>
-            {t("projectFactory.scope.snapshotAt", {
-              time: new Date(fetchedAt).toLocaleString(),
-              minutes: Math.max(0, Math.floor((Date.now() - Date.parse(fetchedAt)) / 60_000)),
-            })}
-          </Text>
-        ) : null}
         {degraded ? <Text style={styles.counts}>{degraded}</Text> : null}
         {errors.length > 0 ? (
           <PressHighlight onPress={retry} accessibilityRole="button">
             <Text style={styles.counts}>{t("projectFactory.scope.queueRetry")}</Text>
           </PressHighlight>
         ) : null}
-        {anyQueue ? (
-          <FactoryStageBar issues={aggregate.issues} onPress={openOverview} fullWidth />
-        ) : null}
       </View>
     </PressHighlight>
   );
 });
 
-const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const calmColor = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 const ThemedArrowRight = withUnistyles(ArrowRight);
+// Calm like the Pinned and Factory glyphs below it.
+const factoryIcon = <SidebarFactoryIcon calm cssHover />;
 const styles = StyleSheet.create((theme) => ({
-  summary: {
-    paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[2],
-    gap: theme.spacing[1],
-    minHeight: 72,
+  // A column on the folder row's rails; it grows with its lines instead of centering one.
+  summary: { flexDirection: "column", alignItems: "stretch", gap: theme.spacing[0.5] },
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  selected: {
+    backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
   },
-  selected: { backgroundColor: theme.colors.interactionHighlight },
+  selectedTitle: { color: theme.colors.foreground },
   heading: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
-  title: { flex: 1, color: theme.colors.foreground, fontSize: theme.fontSize.base },
-  details: { marginLeft: 28, gap: theme.spacing[1] },
+  title: { flex: 1 },
+  // Lines start under the title: the leading slot plus the heading's gap.
+  details: { marginLeft: theme.iconSize.md + theme.spacing[2], gap: theme.spacing[0.5] },
   counts: {
-    color: theme.colors.foregroundMuted,
+    color: theme.colors.foregroundExtraMuted,
     fontSize: theme.fontSize.sm,
     fontVariant: ["tabular-nums"],
   },

@@ -8,6 +8,9 @@ import { useAgentGoal } from "@/goals/use-agent-goal";
 import { goalQueueNotice } from "@/goals/goal-presentation";
 import { SharedQueueView as QueueView } from "./queue-view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useSessionStore } from "@/stores/session-store";
+import { QueueOutbox } from "./outbox";
+import { encodeOutboxKey, outboxKey, type OutboxRecord } from "./outbox-record";
 vi.hoisted(async () => {
   globalThis.React = await import("react");
 });
@@ -28,6 +31,8 @@ const state = vi.hoisted(() => ({
   dispatching: false,
   pendingEdit: false,
   goalError: false,
+  rejectedEdit: null as unknown,
+  sendEditAsNewMessage: async (_record: unknown) => {},
   mutate: vi.fn(),
   expand: vi.fn(),
 }));
@@ -40,6 +45,7 @@ vi.mock("./use-message-queue", () => ({
     canSendNow: true,
     canMutate: true,
     mutate: state.mutate,
+    sendEditAsNewMessage: (record: unknown) => state.sendEditAsNewMessage(record),
     snapshot: {
       revision: 0,
       paused: state.paused,
@@ -64,6 +70,7 @@ vi.mock("./use-message-queue", () => ({
           ],
     },
     pending: [
+      ...(state.rejectedEdit ? [state.rejectedEdit] : []),
       ...(state.pendingEdit
         ? [
             {
@@ -300,6 +307,7 @@ beforeEach(() => {
   state.dispatching = false;
   state.pendingEdit = false;
   state.goalError = false;
+  state.rejectedEdit = null;
   vi.clearAllMocks();
   queryClient.clear();
   container = document.createElement("div");
@@ -450,4 +458,111 @@ it("shows a pending edit on its message row without a header status or extra row
     container.querySelector('[data-testid="queue-message-text"] [data-testid="saving-indicator"]'),
   ).not.toBeNull();
   expect(container.textContent).not.toContain("Saving message");
+});
+
+it("offers to send an edit as a new message after its original was delivered", async () => {
+  const records = new Map<string, OutboxRecord>();
+  const outbox = new QueueOutbox(
+    {
+      list: async () => [...records.values()],
+      read: async (key) => records.get(encodeOutboxKey(key)) ?? null,
+      exchange: async (key, revision, value) => {
+        const id = encodeOutboxKey(key);
+        if ((records.get(id)?.revision ?? null) !== revision) return false;
+        if (value) records.set(id, value);
+        else records.delete(id);
+        return true;
+      },
+    },
+    {
+      upload: async () => {
+        throw new Error("Unexpected upload");
+      },
+      mutate: async () => {
+        throw new Error("Unexpected delivery");
+      },
+      changed: () => {},
+    },
+  );
+  const file = {
+    id: "upload_notes",
+    kind: "file" as const,
+    fileName: "notes.txt",
+    mimeType: "text/plain",
+    size: 3,
+  };
+  const image = {
+    kind: "image" as const,
+    metadata: {
+      id: "photo",
+      mimeType: "image/png",
+      storageType: "web-indexeddb" as const,
+      storageKey: "photo",
+      byteSize: 4,
+      createdAt: 1,
+    },
+  };
+  const operation = {
+    kind: "edit" as const,
+    operationId: "edit",
+    messageId: "delivered",
+    expectedRevision: 0,
+    text: "Edited",
+    attachments: [file],
+  };
+  const rejected: OutboxRecord = {
+    version: 1,
+    serverId: "host",
+    agentId: "agent",
+    revision: 1,
+    createdAt: 2,
+    operation,
+    localAttachments: [image],
+    prepared: null,
+    error: { code: "missing", message: "The queued message no longer exists." },
+    original: { text: "Original", createdAt: "2026-11-27T18:24:17.000Z" },
+  };
+  records.set(encodeOutboxKey(outboxKey(rejected)), rejected);
+  state.rejectedEdit = rejected;
+  state.sendEditAsNewMessage = (record) =>
+    outbox.resendRejectedEdit(outboxKey(record as OutboxRecord), 3);
+  useSessionStore.setState({
+    sessions: {
+      host: {
+        agentStreamTail: new Map([
+          [
+            "agent",
+            [
+              {
+                kind: "user_message",
+                id: "sent",
+                text: "Original",
+                timestamp: new Date("2026-11-27T18:24:20.000Z"),
+              },
+            ],
+          ],
+        ]),
+        agentStreamHead: new Map(),
+      },
+    },
+  } as never);
+  try {
+    await render();
+    const send = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Send my edit as a new message",
+    );
+    await act(async () => send?.click());
+    expect([...records.values()]).toEqual([
+      expect.objectContaining({
+        operation: expect.objectContaining({
+          kind: "enqueue",
+          text: "Edited",
+          attachments: [file],
+        }),
+        localAttachments: [image],
+      }),
+    ]);
+  } finally {
+    useSessionStore.setState({ sessions: {} } as never);
+  }
 });

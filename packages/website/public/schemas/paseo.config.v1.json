@@ -282,6 +282,9 @@
         "installationPrimaryConnectionSupported": {
           "type": "boolean"
         },
+        "installationPrimaryConnectionAutomatic": {
+          "type": "boolean"
+        },
         "timeZone": {
           "type": "object",
           "properties": {
@@ -1272,6 +1275,9 @@
                 "type": "boolean"
               },
               "autoResumeAfterUsageLimit": {
+                "type": "boolean"
+              },
+              "automaticPrimary": {
                 "type": "boolean"
               },
               "order": {

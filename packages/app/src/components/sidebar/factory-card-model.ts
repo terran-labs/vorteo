@@ -111,14 +111,38 @@ export function factoryRunnerTrack(
   return { boxes, step, danger };
 }
 
-/** Issues a runner is working on: past the queue, or already staffed. */
+/** An agent doing work now: running, or starting. */
+export function isLiveFactoryAgent(agent: Pick<FactoryQueueIssue["agents"][number], "status">) {
+  return agent.status === "running" || agent.status === "initializing";
+}
+
+/**
+ * Active runners: issues with an agent running or starting now. The queue attaches every
+ * unarchived thread whatever its status, and a blocked or stalled issue keeps its stage, so
+ * neither stage nor attachment says work is happening. Those issues stay in the stage counts.
+ */
 export function factoryRunners<Issue extends FactoryQueueIssue>(issues: readonly Issue[]): Issue[] {
-  return issues.filter((issue) => issue.stage !== "queued" || issue.agents.length > 0);
+  return issues.filter((issue) => issue.agents.some(isLiveFactoryAgent));
+}
+
+/**
+ * The All Factories pipeline line. Each issue lands in one bucket: active when an agent runs,
+ * otherwise by stage, and stalled when it is past the queue with nothing running.
+ */
+export function factoryPipelineCounts(issues: readonly FactoryQueueIssue[]) {
+  const counts = { queued: 0, active: 0, stalled: 0, review: 0 };
+  for (const issue of issues) {
+    if (issue.agents.some(isLiveFactoryAgent)) counts.active += 1;
+    else if (issue.stage === "queued") counts.queued += 1;
+    else if (issue.stage === "review") counts.review += 1;
+    else counts.stalled += 1;
+  }
+  return counts;
 }
 
 /** The agent a runner row opens: a running worker, else the reviewer, else the lead. */
 export function factoryRunnerAgent(issue: Pick<FactoryQueueIssue, "agents">) {
-  const live = (status: string) => status === "running" || status === "initializing";
+  const live = (status: string) => isLiveFactoryAgent({ status });
   return (
     issue.agents.find((agent) => agent.role === "worker" && live(agent.status)) ??
     issue.agents.find((agent) => agent.role === "reviewer") ??

@@ -47,7 +47,7 @@ import { FactoryRunners } from "./factory-card-runners";
 import { FactoryStageBar, type StageBarIssue } from "./factory-card-stage-bar";
 import { useFactoryCardStore } from "./factory-card-store";
 import type { ProjectFactoryState } from "./factory-state";
-import { FactorySubheading } from "./factory-subheading";
+import { FactoryGroup } from "./factory-group";
 import { SidebarSectionRow } from "./container-row";
 import { SidebarFactoryIcon } from "./leading-slot";
 import { factoryOverviewRoute } from "./project-factory-model";
@@ -137,12 +137,18 @@ export const FactorySection = memo(function FactorySection({
     >
       {foreman ? <FactoryForemanTile chip={foreman} level={level + 1} {...selection} /> : null}
       {crew.length > 0 ? (
-        <>
-          <FactorySubheading label={t("sidebar.factoryCard.crew")} level={level + 1} />
+        <FactoryGroup
+          groupKey={`factory-crew:${card.key}`}
+          title={t("sidebar.factoryCard.crew")}
+          count={crew.length}
+          level={level + 1}
+          testID={`factory-card-crew-${card.key}`}
+        >
           <FactoryRoleChips chips={crew} level={level + 2} {...selection} />
-        </>
+        </FactoryGroup>
       ) : null}
       <FactoryRunners
+        groupKey={`factory-runners:${card.key}`}
         serverId={card.serverId}
         runners={runners}
         level={level + 1}

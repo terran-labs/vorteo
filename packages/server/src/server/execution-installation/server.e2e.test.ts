@@ -808,7 +808,8 @@ test("shared settings require owner access and persist revisioned writes before 
     await createInstallationSettingsReader(clientFile).read({ ...hostAdmission, revision: 1 }),
   ).toEqual({
     ...hostAdmission,
-    // The reader negotiates primary connection and time zone fields.
+    // The reader negotiates primary connection, Automatic and time zone fields.
+    primaryConnectionAutomatic: true,
     settings: {
       ...hostAdmission.settings,
       primaryConnection: null,
@@ -1730,6 +1731,68 @@ test("legacy owner clients can read removed providers but cannot resurrect them"
   });
   expect(restored.status).toBe(200);
   expect(settings.snapshot().settings!.providerDefinitions![0].removed).toBe(false);
+});
+
+test("the Automatic switch round-trips for new readers and is hidden and protected from older ones", async () => {
+  const host = new SettingsEnvironmentFake("host-id");
+  host.config.providers = { mock: { enabled: true } };
+  const settings = new InstallationSettingsService(new SettingsJournalFake(), [host]);
+  const initial = await settings.reconcile();
+  const { url } = await fixture(undefined, settings);
+  const headers = {
+    Host: "owner.example.test",
+    Origin: "https://owner.example.test",
+    Authorization: "Bearer owner-test-password",
+    "Content-Type": "application/json",
+    "X-Vorteo-Provider-Removal": "1",
+  };
+  const aware = { ...headers, "X-Vorteo-Automatic-Primary": "1" };
+  const switchedOff = structuredClone(initial.settings!.providerDefinitions!);
+  for (const provider of switchedOff) provider.policy.automaticPrimary = false;
+  const saved = await requestWithHost(`${url}/api/installation/owner/settings`, {
+    method: "PATCH",
+    headers: aware,
+    body: JSON.stringify({
+      expectedRevision: initial.revision,
+      settings: { providerDefinitions: switchedOff },
+    }),
+  });
+  expect(saved.status).toBe(200);
+  expect((await saved.json()).settings.providerDefinitions[0].policy.automaticPrimary).toBe(false);
+  const read = (requestHeaders: Record<string, string>) =>
+    requestWithHost(`${url}/api/installation/owner/settings/read`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: "{}",
+    }).then((response) => response.json());
+  expect((await read(aware)).settings.providerDefinitions[0].policy.automaticPrimary).toBe(false);
+  // An older app parses definitions strictly, so it never sees the key, and cannot replace the
+  // definitions without it, which would switch the account back on.
+  const legacy = await read(headers);
+  expect(legacy.settings.providerDefinitions[0].policy).not.toHaveProperty("automaticPrimary");
+  const rejected = await requestWithHost(`${url}/api/installation/owner/settings`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      expectedRevision: legacy.revision,
+      settings: { providerDefinitions: legacy.settings.providerDefinitions },
+    }),
+  });
+  expect(rejected.status).toBe(409);
+  expect(settings.snapshot().settings!.providerDefinitions![0].policy.automaticPrimary).toBe(false);
+  // Older daemons' admission readers are strict too; only readers that ask receive the key.
+  const admission = async (query: string) =>
+    (
+      await fetch(`${url}/api/installation/settings/admission${query}`, {
+        headers: { Authorization: "Bearer host-agent-test-token" },
+      })
+    ).json();
+  const older = await admission("?primaryConnection=1");
+  expect(older).not.toHaveProperty("primaryConnectionAutomatic");
+  expect(older.settings.providerDefinitions[0].policy).not.toHaveProperty("automaticPrimary");
+  const current = await admission("?primaryConnection=1&automaticPrimary=1");
+  expect(current.primaryConnectionAutomatic).toBe(true);
+  expect(current.settings.providerDefinitions[0].policy.automaticPrimary).toBe(false);
 });
 
 test("uploaded source stays inert until the owner approves its exact digest; legacy approval cannot install", async () => {

@@ -58,7 +58,6 @@ export interface OptimizerAgentInput {
   providers: Pick<ProviderSnapshotManager, "listProviders" | "on" | "off">;
   readUsage: (options: { forceRefresh: boolean }) => Promise<{ providers: ProviderUsage[] }>;
   getSettings: () => MutableDaemonConfig;
-  adoptPrimary?: DefaultLaunchInput["adoptPrimary"];
   refreshSupport?: DefaultLaunchInput["refreshSupport"];
   onSettingsChange: (handler: () => void) => () => void;
   createAgent: BoundCreateAgentCommand;

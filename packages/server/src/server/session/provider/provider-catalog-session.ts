@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
 import { compactProviderSnapshot } from "@getpaseo/protocol/provider-snapshot-codec";
 import type { SessionInboundMessage, SessionOutboundMessage } from "../../messages.js";
+import type { AutomaticPrimary, ProviderUsage } from "@getpaseo/protocol/messages";
 import {
   isGlobalProviderSnapshotKey,
   resolveSnapshotCwd,
@@ -60,6 +61,10 @@ export interface ProviderCatalogSessionHost {
   listProviderAvailability(): Promise<ProviderAvailability[]>;
   listDraftFeatures(config: AgentSessionConfig): Promise<AgentFeature[]>;
   listRunningWorkerCounts?(): Record<string, number>;
+  /** The account Automatic picks now; undefined where Automatic does not apply. */
+  previewAutomaticPrimary?(
+    usage: readonly ProviderUsage[],
+  ): Promise<AutomaticPrimary | null | undefined>;
 }
 
 export interface ProviderCatalogSessionOptions {
@@ -633,12 +638,14 @@ export class ProviderCatalogSession {
   ): Promise<void> {
     try {
       const usage = await this.providerUsageService.listUsage({ forceRefresh: msg.forceRefresh });
+      const automaticPrimary = await this.host.previewAutomaticPrimary?.(usage.providers);
       this.host.emit({
         type: "provider.usage.list.response",
         payload: {
           requestId: msg.requestId,
           fetchedAt: usage.fetchedAt,
           providers: usage.providers,
+          ...(automaticPrimary === undefined ? {} : { automaticPrimary }),
           ...(this.host.listRunningWorkerCounts
             ? {
                 workerActivity: {

@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import {
   MutableDaemonConfigSchema,
@@ -26,15 +29,15 @@ function launchInput(
   duringRead?: (current: MutableDaemonConfig, read: number) => MutableDaemonConfig,
 ) {
   let current = config;
+  let readings = usage;
   let reads = 0;
-  const adoptPrimary = vi.fn((primary: MutableDaemonConfig["primaryConnection"]) => {
-    current = { ...current, primaryConnection: primary };
-  });
   return {
-    adoptPrimary,
     current: () => current,
     set: (next: MutableDaemonConfig) => {
       current = next;
+    },
+    setUsage: (next: ProviderUsage[]) => {
+      readings = next;
     },
     input: {
       providers: {
@@ -44,16 +47,45 @@ function launchInput(
           return ready.map((provider) => ({ provider, enabled: true, status: "ready" as const }));
         },
       },
-      readUsage: async () => ({ providers: usage }),
+      readUsage: async () => ({ providers: readings }),
       getSettings: () => current,
-      adoptPrimary,
     },
   };
 }
 
+/** A signed-in reading whose windows have these remaining percentages. */
+function metered(providerId: string, ...remaining: number[]): ProviderUsage {
+  return {
+    providerId,
+    displayName: providerId,
+    status: "available",
+    planLabel: null,
+    windows: remaining.map((remainingPct, index) => ({
+      id: `w${index}`,
+      label: `Window ${index}`,
+      remainingPct,
+    })),
+  };
+}
+
+const automaticInstallation = (patch: Partial<MutableDaemonConfig> = {}) =>
+  settings({
+    sharedProviderPreferences: {
+      version: 1,
+      revision: 1,
+      providers: {},
+      legacyProfiles: {},
+      installation,
+    },
+    installationPrimaryConnection: null,
+    installationPrimaryConnectionSupported: true,
+    installationPrimaryConnectionAutomatic: true,
+    ...patch,
+  });
+
 describe("resolveDefaultLaunch", () => {
   test("launches with the installation's primary connection, not the first usable provider", async () => {
-    const { input, adoptPrimary } = launchInput(
+    const { input } = launchInput(
       settings({
         sharedProviderPreferences: {
           version: 1,
@@ -69,7 +101,6 @@ describe("resolveDefaultLaunch", () => {
       ["claude", "codex"],
     );
     expect(await resolveDefaultLaunch(input)).toEqual({ provider: "codex" });
-    expect(adoptPrimary).not.toHaveBeenCalled();
   });
 
   test("uses the primary connection's profile, else the provider's default profile", async () => {
@@ -98,7 +129,7 @@ describe("resolveDefaultLaunch", () => {
     });
   });
 
-  test("never guesses: no primary, or a primary that is not ready or signed out, waits", async () => {
+  test("before Automatic, no primary waits; a primary that is not ready or signed out waits", async () => {
     const unset = launchInput(
       settings({
         sharedProviderPreferences: {
@@ -113,8 +144,8 @@ describe("resolveDefaultLaunch", () => {
       }),
       ["claude"],
     );
+    // An older coordinator never projects the Automatic marker, so an unchosen primary waits.
     expect(await resolveDefaultLaunch(unset.input)).toBeNull();
-    expect(unset.adoptPrimary).not.toHaveBeenCalled();
 
     const notReady = launchInput(settings({ primaryConnection: { provider: "codex" } }), [
       "claude",
@@ -157,47 +188,143 @@ describe("resolveDefaultLaunch", () => {
       [{ providerId: "claude", status: "unavailable", credentialsMissing: true } as ProviderUsage],
     );
     expect(await resolveDefaultLaunch(noCredentials.input)).toBeNull();
-
-    const ownerChooses = launchInput(settings({ primaryConnection: null }), ["claude"]);
-    expect(await resolveDefaultLaunch(ownerChooses.input)).toBeNull();
-    expect(ownerChooses.adoptPrimary).not.toHaveBeenCalled();
   });
 
-  test("a standalone daemon adopts its only usable provider once", async () => {
-    const only = launchInput(settings(), ["claude"]);
-    expect(await resolveDefaultLaunch(only.input)).toEqual({ provider: "claude" });
-    expect(only.adoptPrimary).toHaveBeenCalledWith({ provider: "claude" });
-    expect(only.current().primaryConnection).toEqual({ provider: "claude" });
-
-    // Codex's usage reading failed, so it may be usable too: wait instead of choosing either way.
-    const unsettled = launchInput(
-      settings(),
-      ["claude", "codex"],
-      [{ providerId: "codex", status: "error" } as ProviderUsage],
+  test("Automatic picks the most remaining quota, then the default provider, then order", async () => {
+    const usage = [
+      metered("codex", 90, 40),
+      metered("codex-2", 80),
+      metered("claude", 95, 80),
+      metered("codex-3", 100, 0),
+    ];
+    const ready = ["codex", "codex-2", "claude", "codex-3", "opencode"];
+    // codex-2 and claude tie at 80 remaining; codex-3 has a window with nothing left.
+    const byOrder = launchInput(automaticInstallation(), ready, usage);
+    expect(await resolveDefaultLaunch(byOrder.input)).toEqual({ provider: "codex-2" });
+    const preferences = automaticInstallation().sharedProviderPreferences!;
+    const byDefault = launchInput(
+      automaticInstallation({
+        sharedProviderPreferences: { ...preferences, defaultProvider: "claude" },
+      }),
+      ready,
+      usage,
     );
-    expect(await resolveDefaultLaunch(unsettled.input)).toBeNull();
-    expect(unsettled.adoptPrimary).not.toHaveBeenCalled();
+    expect(await resolveDefaultLaunch(byDefault.input)).toEqual({ provider: "claude" });
+    // An account without usage windows ranks after every metered one.
+    const unmetered = launchInput(automaticInstallation(), ready, [
+      metered("codex", 0),
+      metered("codex-2", 0),
+      metered("claude", 0),
+      metered("codex-3", 0),
+    ]);
+    expect(await resolveDefaultLaunch(unmetered.input)).toEqual({ provider: "opencode" });
+    // A standalone daemon that has not chosen uses Automatic too.
+    const standalone = launchInput(settings(), ready, usage);
+    expect(await resolveDefaultLaunch(standalone.input)).toEqual({ provider: "codex-2" });
+  });
 
-    // A settled reading that cannot confirm Codex, such as a setup-token connection, leaves the
-    // choice to the owner rather than adopting Claude or retrying forever.
-    const unconfirmed = launchInput(
-      settings(),
-      ["claude", "codex"],
-      [{ providerId: "codex", status: "unavailable" } as ProviderUsage],
+  test("Automatic keeps its pick while that account stays a candidate", async () => {
+    const launch = launchInput(
+      automaticInstallation(),
+      ["codex", "claude"],
+      [metered("codex", 70), metered("claude", 50)],
     );
-    expect(await resolveDefaultLaunch(unconfirmed.input)).toBeNull();
-    expect(unconfirmed.adoptPrimary).toHaveBeenCalledWith(null);
+    expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "codex" });
+    // Claude now has more left, but system threads do not move while Codex can still run them.
+    launch.setUsage([metered("codex", 20), metered("claude", 90)]);
+    expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "codex" });
+    // Codex runs out, so Automatic moves, and stays on Claude once Codex recovers.
+    launch.setUsage([metered("codex", 0), metered("claude", 90)]);
+    expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "claude" });
+    launch.setUsage([metered("codex", 100), metered("claude", 10)]);
+    expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "claude" });
+  });
 
-    const several = launchInput(settings(), ["claude", "codex"]);
-    expect(await resolveDefaultLaunch(several.input)).toBeNull();
-    expect(several.adoptPrimary).toHaveBeenCalledWith(null);
-    // Decided: a later pass with one usable provider leaves the choice to the owner.
-    expect(await resolveDefaultLaunch({ ...several.input })).toBeNull();
-    expect(several.adoptPrimary).toHaveBeenCalledTimes(1);
+  test("Automatic never picks an account switched off for it, or one it cannot confirm", async () => {
+    const providers = { codex: { automaticPrimary: false }, claude: {} };
+    const launch = launchInput(
+      automaticInstallation({ providers: providers as MutableDaemonConfig["providers"] }),
+      ["codex", "claude", "opencode", "copilot"],
+      [
+        metered("codex", 100),
+        { providerId: "claude", status: "error" } as ProviderUsage,
+        { providerId: "opencode", status: "unavailable" } as ProviderUsage,
+        {
+          providerId: "copilot",
+          status: "unavailable",
+          authRecovery: { instructions: "Sign in again." },
+        } as ProviderUsage,
+      ],
+    );
+    expect(await resolveDefaultLaunch(launch.input)).toBeNull();
+    // Switching it back on makes the same account eligible.
+    launch.set(automaticInstallation());
+    expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "codex" });
+  });
 
-    const none = launchInput(settings(), []);
-    expect(await resolveDefaultLaunch(none.input)).toBeNull();
-    expect(none.adoptPrimary).not.toHaveBeenCalled();
+  test("Automatic refuses another entry that launches with a switched-off account's home", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "automatic-homes-"));
+    try {
+      const codexHome = path.join(root, "codex-2");
+      const claudeHome = path.join(root, "claude-2");
+      mkdirSync(codexHome);
+      mkdirSync(claudeHome);
+      // The duplicates reach the same folders through a symlink, compared by real path.
+      symlinkSync(codexHome, path.join(root, "codex-link"));
+      symlinkSync(claudeHome, path.join(root, "claude-link"));
+      const providers = {
+        "codex-2": { extends: "codex", env: { CODEX_HOME: codexHome }, automaticPrimary: false },
+        "codex-copy": { extends: "codex", env: { CODEX_HOME: path.join(root, "codex-link") } },
+        "claude-2": {
+          extends: "claude",
+          env: { CLAUDE_CONFIG_DIR: claudeHome },
+          automaticPrimary: false,
+        },
+        "claude-copy": {
+          extends: "claude",
+          env: { CLAUDE_CONFIG_DIR: path.join(root, "claude-link") },
+        },
+        "codex-3": { extends: "codex", env: { CODEX_HOME: path.join(root, "codex-3") } },
+      };
+      const launch = launchInput(
+        automaticInstallation({ providers: providers as MutableDaemonConfig["providers"] }),
+        ["codex-copy", "claude-copy", "codex-3"],
+        [metered("codex-copy", 100), metered("claude-copy", 100), metered("codex-3", 10)],
+      );
+      expect(await resolveDefaultLaunch(launch.input)).toEqual({ provider: "codex-3" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit choice is never overridden, and an unusable one waits instead of Automatic", async () => {
+    const usage = [
+      metered("codex", 10),
+      metered("claude", 90),
+      {
+        providerId: "copilot",
+        status: "unavailable",
+        authRecovery: { instructions: "Sign in again." },
+      } as ProviderUsage,
+    ];
+    const chosen = launchInput(
+      automaticInstallation({ installationPrimaryConnection: { provider: "codex" } }),
+      ["codex", "claude", "copilot"],
+      usage,
+    );
+    expect(await resolveDefaultLaunch(chosen.input)).toEqual({ provider: "codex" });
+    const signedOut = launchInput(
+      automaticInstallation({ installationPrimaryConnection: { provider: "copilot" } }),
+      ["codex", "claude", "copilot"],
+      usage,
+    );
+    expect(await resolveDefaultLaunch(signedOut.input)).toBeNull();
+    const standalone = launchInput(
+      settings({ primaryConnection: { provider: "copilot" } }),
+      ["codex", "claude", "copilot"],
+      usage,
+    );
+    expect(await resolveDefaultLaunch(standalone.input)).toBeNull();
   });
 
   test("an older coordinator keeps the first usable launch and never waits", async () => {
@@ -217,7 +344,6 @@ describe("resolveDefaultLaunch", () => {
       ["claude", "codex"],
     );
     expect(await resolveDefaultLaunch(legacy.input)).toEqual({ provider: "codex" });
-    expect(legacy.adoptPrimary).not.toHaveBeenCalled();
     // The earlier rule skips readings that are unavailable or failed without a sign-in request.
     const unconfirmed = launchInput(
       legacy.current(),

@@ -786,7 +786,7 @@ function SettingsSidebar({
     <View style={sidebarStyles.list}>
       {/* The owner lock sits first, above This device, centered across the sidebar. */}
       <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
-        <OwnerLockBadge />
+        <OwnerLockBadge reserveErrorSpace={false} />
       </View>
       <View {...navigationProps(t("settings.title"))}>
         {(["This device", "Vorteo"] as const).map((group) => (
@@ -1672,12 +1672,14 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
     gap: theme.spacing[0.5],
   },
+  // Every group label gets the same room above it, whatever precedes it (#671).
   groupLabel: {
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundExtraMuted,
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1],
+    marginTop: theme.spacing[4],
   },
   item: {
     flexDirection: "row",

@@ -41,8 +41,41 @@ export function changesPrimaryConnectionCopy(
       )) ||
     (patch.installationPrimaryConnectionSupported !== undefined &&
       patch.installationPrimaryConnectionSupported !==
-        (current.installationPrimaryConnectionSupported ?? false))
+        (current.installationPrimaryConnectionSupported ?? false)) ||
+    (patch.installationPrimaryConnectionAutomatic !== undefined &&
+      patch.installationPrimaryConnectionAutomatic !==
+        (current.installationPrimaryConnectionAutomatic ?? false))
   );
+}
+
+/** Whether this admission answer comes from a coordinator where unchosen means Automatic. */
+function automaticSupported(admission: InstallationSettingsAdmission): boolean {
+  return (
+    admission.primaryConnectionAutomatic === true &&
+    admission.settings.primaryConnection !== undefined
+  );
+}
+
+/**
+ * The Automatic marker a write should leave, or undefined to leave it alone, by the same rule
+ * as the support marker: a fresh admission answer decides it, and a projection without the key
+ * comes from an older coordinator, which clears it.
+ */
+export function reconciledAutomaticMarker(
+  current: MutableDaemonConfig,
+  patch: MutableDaemonConfigPatch,
+  admission?: InstallationSettingsAdmission,
+): boolean | undefined {
+  if (!current.sharedProviderPreferences?.installation) return undefined;
+  const known = current.installationPrimaryConnectionAutomatic ?? false;
+  if (admission) {
+    const supported = automaticSupported(admission);
+    return supported === known ? undefined : supported;
+  }
+  const projection = patch.expectedInstallationResourceRevision !== undefined;
+  return projection && patch.installationPrimaryConnectionAutomatic === undefined && known
+    ? false
+    : undefined;
 }
 
 /**
@@ -96,8 +129,11 @@ export function assertPrimaryConnectionProjection(input: {
       admission ? localPrimaryConnection(admission.settings, admission.serverId) : null,
     );
   const markerMatches =
-    patch.installationPrimaryConnectionSupported === undefined ||
-    patch.installationPrimaryConnectionSupported === supported;
+    (patch.installationPrimaryConnectionSupported === undefined ||
+      patch.installationPrimaryConnectionSupported === supported) &&
+    (patch.installationPrimaryConnectionAutomatic === undefined ||
+      patch.installationPrimaryConnectionAutomatic ===
+        (admission !== undefined && automaticSupported(admission)));
   if (!admission || !copyMatches || !markerMatches)
     throw new InstallationSettingsAdmissionError(
       "The primary connection must be chosen through the installation coordinator.",

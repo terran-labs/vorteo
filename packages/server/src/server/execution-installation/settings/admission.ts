@@ -21,6 +21,9 @@ export const InstallationSettingsAdmissionSchema = z.object({
   revision: z.number().int().positive(),
   settings: InstallationSettingsSchema,
   installationInstructions: z.string(),
+  // COMPAT(primaryConnectionAutomatic): added 2026-11-25. True from coordinators where an
+  // unchosen primary connection means Automatic; older ones omit it.
+  primaryConnectionAutomatic: z.boolean().optional(),
 });
 export type InstallationSettingsAdmission = z.infer<typeof InstallationSettingsAdmissionSchema>;
 type InstallationBinding = NonNullable<SharedProviderPreferences["installation"]>;
@@ -152,10 +155,10 @@ export function createInstallationSettingsReader(
         );
       // Node's fetch keeps no HTTP cache, so no cache mode is needed; the entrypoint builds, which
       // type against Node alone, reject the DOM-only option.
-      // COMPAT(projectPolicies, primaryConnection, timeZoneSetting): older coordinators ignore
-      // the query and omit the newer fields.
+      // COMPAT(projectPolicies, primaryConnection, timeZoneSetting, primaryConnectionAutomatic):
+      // older coordinators ignore the query and omit the newer fields.
       const url = new URL(
-        "/api/installation/settings/admission?projectPolicies=1&primaryConnection=1&timeZone=1",
+        "/api/installation/settings/admission?projectPolicies=1&primaryConnection=1&timeZone=1&automaticPrimary=1",
         config.origin,
       );
       let response: Response;

@@ -1,6 +1,19 @@
 import { previewStatus } from "./preview-status";
 export const en = {
   previewStatus: previewStatus.en,
+  projectHostTarget: {
+    settingsOfflineOne:
+      "{{project}} can't be edited right now because {{environments}} is offline. Bring it back online, then open these settings again.",
+    settingsOfflineMany:
+      "{{project}} can't be edited right now because {{environments}} are offline. Bring one of them back online, then open these settings again.",
+    settingsNoFolder:
+      "{{project}} has no folder on any environment that is online, so its settings can't be edited here.",
+    factoryOfflineOne: "Factory unavailable: {{environments}} is offline",
+    factoryOfflineMany: "Factory unavailable: {{environments}} are offline",
+    factoryMissingPlugin: "Factory isn't available on {{environment}}.",
+    listPair: "{{first}} and {{last}}",
+    listMany: "{{rest}}, and {{last}}",
+  },
   projectFactory: {
     overview: "Factory Overview",
     projectHeading: "{{project}} Factory",
@@ -136,8 +149,8 @@ export const en = {
       all: "All Factories",
       allTitle: "All Factories",
       sample: "Sample Factory",
-      pipelineSummary: "{{queued}} queued · {{active}} active · {{review}} review",
-      snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
+      pipelineSummary:
+        "{{queued}} queued · {{active}} active · {{stalled}} stalled · {{review}} review",
       queueRetry: "Queue unavailable. Retry",
       sidebarSummary_one:
         "{{count}} Factory · {{running}} on · {{paused}} paused · {{held}} held/draining",
@@ -1607,7 +1620,6 @@ export const en = {
       moreIssues: "+{{count}} more",
       issue: "#{{number}} {{title}}",
       runners: "Runners",
-      runnersActive: "{{count}} active",
       steps: { plan: "Plan", build: "Build", review: "Review", merge: "Merge", deploy: "Deploy" },
       trackCurrent: "{{step}} · {{stage}}",
       trackDanger: "{{step}} needs attention · {{stage}}",
@@ -3870,6 +3882,18 @@ export const en = {
     },
   },
   // DRAFT wording for adopting a legacy Codex account; awaiting approval.
+  automaticPrimary: {
+    title: "Primary connection",
+    option: "Automatic",
+    current: "Automatic: currently {{account}}",
+    none: "Automatic: no account can run system threads right now",
+    use: "Use Automatic",
+    confirmTitle: "Use Automatic for system threads?",
+    confirmMessage:
+      "Automatic starts system threads, such as the Optimizer and Factory, on the ready account with the most usage left, and stays on it while it can run them. Threads that are running keep their current connection.",
+    saved: "System threads now use Automatic.",
+    eligible: "Automatic may use this account",
+  },
   codexAdoption: {
     title: "Use the Host's sign-in on Dev",
     description:

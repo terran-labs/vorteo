@@ -1,11 +1,18 @@
 import { useOpenNewWorkspace } from "@/hooks/use-open-new-workspace";
 import { router, usePathname } from "expo-router";
-import { CalendarClock, History, LayoutDashboard, Plus, Search } from "lucide-react-native";
+import { CalendarClock, History, Plus, Search } from "lucide-react-native";
 import { memo, useCallback, useMemo, useRef, type ComponentType, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { View, type StyleProp, type ViewStyle } from "react-native";
+import { Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { PressHighlight } from "@/components/ui/press-highlight";
 import { StyleSheet } from "react-native-unistyles";
 import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
+import { sidebarContainerRowStyles } from "@/components/sidebar/container-row";
+import { sidebarIndentStyle } from "@/components/sidebar/indent";
+import { SidebarDashboardIcon, SidebarLeadingSlot } from "@/components/sidebar/leading-slot";
+import { useSidebarRowDensity } from "@/components/sidebar/use-sidebar-row-density";
+import { hoverStyle, rowSurface } from "@/styles/hover";
+import { useVortonTouch } from "@/vorton-touch";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { PluginSidebarItem } from "@/plugins/sidebar-items";
 import {
@@ -73,23 +80,54 @@ export function SidebarNavRows({ style, onBeforeNavigate, firstRowTrailing }: Si
   );
 }
 
+/**
+ * The Dashboard row reads like the Pinned and project rows below it: the folder row's geometry,
+ * leading slot, calm title and icon, and hover, pressed and selected fills, so its icon and title
+ * sit on the same rails inside a project focus too.
+ */
 function DashboardSidebarRow({ onBeforeNavigate }: SidebarNavRowProps) {
   const selected = usePathname() === "/dashboard";
+  const density = useSidebarRowDensity();
+  const touch = useVortonTouch();
   const navigate = useCallback(() => {
     onBeforeNavigate?.();
     router.navigate("/dashboard");
   }, [onBeforeNavigate]);
+  const rowStyle = useMemo(
+    () => [
+      sidebarContainerRowStyles.row,
+      density,
+      sidebarIndentStyle(0),
+      selected ? styles.dashboardSelected : !touch && styles.dashboardHoverable,
+    ],
+    [density, touch, selected],
+  );
   return (
-    <SidebarHeaderRow
-      icon={LayoutDashboard}
-      label="Dashboard"
+    <PressHighlight
+      accessibilityRole="button"
+      accessibilityLabel="Dashboard"
+      accessibilityState={selected ? DASHBOARD_SELECTED : undefined}
       onPress={navigate}
-      isActive={selected}
+      style={rowStyle}
+      highlightStyle={sidebarContainerRowStyles.rowPressed}
       testID="sidebar-dashboard"
-      variant="compact"
-    />
+    >
+      <SidebarLeadingSlot chevron={null}>{dashboardIcon}</SidebarLeadingSlot>
+      <Text
+        style={[
+          sidebarContainerRowStyles.title,
+          selected ? styles.dashboardSelectedTitle : sidebarContainerRowStyles.calmTitle,
+        ]}
+        numberOfLines={1}
+      >
+        Dashboard
+      </Text>
+    </PressHighlight>
   );
 }
+
+const DASHBOARD_SELECTED = { selected: true } as const;
+const dashboardIcon = <SidebarDashboardIcon calm cssHover />;
 
 const SidebarNewWorkspaceRow = memo(function SidebarNewWorkspaceRow({
   onBeforeNavigate,
@@ -177,7 +215,13 @@ const BUILTIN_ROWS: Record<BuiltinSidebarNavId, ComponentType<SidebarNavRowProps
   schedules: SidebarSchedulesRow,
 };
 
-const styles = StyleSheet.create({
+const styles = StyleSheet.create((theme) => ({
+  dashboardHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  dashboardSelected: {
+    backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
+  },
+  dashboardSelectedTitle: { color: theme.colors.foreground },
   firstRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -186,4 +230,4 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-});
+}));

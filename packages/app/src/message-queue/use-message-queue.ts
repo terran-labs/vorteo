@@ -183,6 +183,14 @@ export function useMessageQueue(serverId: string, agentId: string) {
       await refreshMessageOutbox(serverId);
       await flushMessageOutbox(serverId);
     },
+    sendEditAsNewMessage: async (record: OutboxRecord) => {
+      await messageOutbox.resendRejectedEdit(
+        { serverId, agentId, operationId: record.operation.operationId },
+        Date.now(),
+      );
+      await refreshMessageOutbox(serverId);
+      await flushMessageOutbox(serverId);
+    },
     removeLocalCopy: async (record: OutboxRecord) => {
       await messageOutbox.removeRejectedCopy({
         serverId,
