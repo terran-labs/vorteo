@@ -558,6 +558,18 @@
                 "renameSync",
                 "rmSync"
               ],
+              // TODO: queued installation change requests journal synchronously beside the other installation queues; migrate with them.
+              "server/execution-installation/queued-agent-actions.ts": [
+                "existsSync",
+                "mkdirSync",
+                "readFileSync"
+              ],
+              // TODO: immediate agent action receipts are written beside the synchronous journals they accompany; migrate with them.
+              "server/execution-installation/agent-actions.ts": [
+                "existsSync",
+                "mkdirSync",
+                "readFileSync"
+              ],
               // TODO: delegated broker approval evidence is read and written inside the synchronous restart drain, beside the broker journal it shadows; migrate both together.
               "server/execution-installation/delegated-admission.ts": [
                 "existsSync",

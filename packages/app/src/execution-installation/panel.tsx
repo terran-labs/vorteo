@@ -1,6 +1,7 @@
 import { toErrorMessage } from "@/utils/error-messages";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
-import { useInstallationUpgradeStatus } from "./use-installation-upgrades";
+import { useAgentActionReceipts, useInstallationUpgradeStatus } from "./use-installation-upgrades";
+import type { AgentActionReceipt } from "@getpaseo/protocol/installation-upgrades";
 import { systemAttentionCount } from "@/screens/settings/system/system-adapter-model";
 import { usePanelOwnerAccess } from "./panel-owner-access";
 import { OwnerLockBadge } from "@/components/settings/owner-lock";
@@ -94,6 +95,7 @@ import { installationHasDev, readExecutionInstallation } from "./policy";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
 import { CoordinatorFollowCard } from "./installation-upgrade-card";
+import { InstallationChangesCard } from "./installation-change-card";
 import { CoordinatorSettingsCard } from "./coordinator-settings-card";
 import {
   InstallationPanelModel,
@@ -409,7 +411,8 @@ function InstallationHistory({
   onToggle: () => void;
   controlSize: "sm" | "md";
 }) {
-  const historyCount = history.length + useCoordinatorHistoryCount();
+  const receipts = useAgentActionReceipts(useInstallationOwnerClient()).data ?? [];
+  const historyCount = history.length + receipts.length + useCoordinatorHistoryCount();
   const bootstrapModel = getBootstrapPanel();
   return (
     <View testID="restart-history" style={[styles.cardBody, settingsStyles.rowBorder]}>
@@ -443,9 +446,32 @@ function InstallationHistory({
           ) : null}
           {bootstrapModel ? <BootstrapHistory model={bootstrapModel} /> : null}
           <CoordinatorRecoveryHistory />
+          <AgentActionHistory receipts={receipts} />
         </SettingsExpansion>
       ) : null}
     </View>
+  );
+}
+
+const AGENT_ACTION_OUTCOME: Record<AgentActionReceipt["outcome"], string> = {
+  started: "is running",
+  succeeded: "ran",
+  failed: "tried",
+  interrupted: "was interrupted while running",
+};
+
+/** Actions Host agents ran at once under the full maintenance grant, such as snapshots. */
+function AgentActionHistory({ receipts }: { receipts: AgentActionReceipt[] }) {
+  if (!receipts.length) return null;
+  return (
+    <HistoryGroup title="Agent actions" testID="agent-action-history">
+      {receipts.slice(0, 20).map((receipt) => (
+        <Text key={receipt.id} style={styles.text}>
+          {new Date(receipt.at).toLocaleString()}: {receipt.requester ?? "A Host agent"}{" "}
+          {AGENT_ACTION_OUTCOME[receipt.outcome]} {receipt.action}. {receipt.detail}
+        </Text>
+      ))}
+    </HistoryGroup>
   );
 }
 
@@ -603,6 +629,7 @@ function InstallationSystemDetailsBody({
                 <SafetySnapshotsCard client={panelClient} />
                 <CoordinatorFollowCard client={panelClient} />
                 <CoordinatorSettingsCard client={panelClient} />
+                <InstallationChangesCard client={panelClient} />
               </>
             ) : null}
             {hasDev && target === "host" ? (

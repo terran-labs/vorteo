@@ -57,6 +57,9 @@ import {
 } from "@getpaseo/protocol/instruction-requests";
 
 import {
+  AgentActionReceiptsSchema,
+  QueuedAgentActionSchema,
+  QueuedAgentActionsSchema,
   CoordinatorFollowJobSchema,
   CoordinatorFollowStatusSchema,
   CoordinatorSettingsJobSchema,
@@ -66,6 +69,8 @@ import {
   SnapshotListSchema,
   SnapshotRestoreStatusSchema,
   UpgradeStatusSchema,
+  type AgentActionReceipt,
+  type QueuedAgentAction,
   type CoordinatorFollowDecision,
   type CoordinatorFollowJob,
   type CoordinatorFollowStatus,
@@ -196,6 +201,9 @@ const SNAPSHOT_RESTORE_READER = tolerant(SnapshotRestoreStatusSchema);
 const UPGRADE_STATUS_READER = tolerant(UpgradeStatusSchema);
 const UPGRADE_READER = tolerant(InstallationUpgradeSchema);
 const COORDINATOR_FOLLOW_STATUS_READER = tolerant(CoordinatorFollowStatusSchema);
+const AGENT_ACTIONS_READER = tolerant(AgentActionReceiptsSchema);
+const INSTALLATION_CHANGES_READER = tolerant(QueuedAgentActionsSchema);
+const INSTALLATION_CHANGE_READER = tolerant(QueuedAgentActionSchema);
 const COORDINATOR_FOLLOW_READER = tolerant(CoordinatorFollowJobSchema);
 const COORDINATOR_SETTINGS_STATUS_READER = tolerant(CoordinatorSettingsStatusSchema);
 const COORDINATOR_SETTINGS_READER = tolerant(CoordinatorSettingsJobSchema);
@@ -874,6 +882,40 @@ export class InstallationClient {
     );
     if (result.id !== upgrade.id)
       throw new Error("Upgrade receipt changed. Refresh before another action.");
+    return result;
+  }
+
+  /** Actions Host agents ran at once under the full maintenance grant, newest first. */
+  async agentActionReceipts(): Promise<AgentActionReceipt[]> {
+    try {
+      return AGENT_ACTIONS_READER.parse(await this.request("agent-actions/query", {})).receipts;
+    } catch (error) {
+      // COMPAT(agentActions): older coordinators answer 404; they ran no immediate agent actions.
+      if (error instanceof InstallationRouteUnavailable) return [];
+      throw error;
+    }
+  }
+
+  /** Installation changes Host agents requested; empty on coordinators without them. */
+  async installationChanges(): Promise<QueuedAgentAction[]> {
+    try {
+      return INSTALLATION_CHANGES_READER.parse(await this.request("queued-actions/query", {})).jobs;
+    } catch (error) {
+      // COMPAT(installationChanges): older coordinators answer 404 and hold no such requests.
+      if (error instanceof InstallationRouteUnavailable) return [];
+      throw error;
+    }
+  }
+
+  async decideInstallationChange(
+    job: QueuedAgentAction,
+    decision: "approve" | "cancel",
+  ): Promise<QueuedAgentAction> {
+    const result = INSTALLATION_CHANGE_READER.parse(
+      await this.request(`queued-actions/${job.id}/decision`, { revision: job.revision, decision }),
+    );
+    if (result.id !== job.id)
+      throw new Error("Installation change receipt changed. Refresh before another action.");
     return result;
   }
 

@@ -22,6 +22,7 @@ import {
   adoptionRequired,
   createReleaseUpgradeRuntime,
   legacyHostCommit,
+  takeSafetySnapshot,
   upgradeBlocker,
 } from "./release-upgrade-runtime.js";
 import type { InstallationRestarts } from "./restarts.js";
@@ -396,4 +397,22 @@ test("a release upgrade that would drop a source-upgraded Host commit fails at i
   expect(commands).toContainEqual(
     expect.stringContaining(`merge-base --is-ancestor ${INSTALLED} ${releaseCommit}`),
   );
+});
+
+test("an agent's snapshot never prunes an existing rollback point", async () => {
+  const existing = Array.from({ length: 6 }, (_, index) => ({ id: `s${index}` }));
+  const pruned: string[][] = [];
+  const store = {
+    list: () => existing as never,
+    take: async () => ({ id: "new" }) as never,
+    prune: (keep: readonly string[] = []) => (pruned.push([...keep]), []),
+  };
+  await takeSafetySnapshot(store, false);
+  expect(pruned).toEqual([]);
+  // Two over retention: refused before taking anything.
+  existing.push({ id: "s6" });
+  await expect(takeSafetySnapshot(store, false)).rejects.toThrow("retention is full");
+  // The owner's snapshot still prunes as before.
+  await takeSafetySnapshot(store, true);
+  expect(pruned).toEqual([["new"]]);
 });

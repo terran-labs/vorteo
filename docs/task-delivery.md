@@ -150,9 +150,11 @@ When the owner's full maintenance delegation is active, every fresh Host-credent
 
 For authorized work, prepare and submit required restart or installation requests without asking permission in chat to create them. Present the exact request's review link and a short description of the target and interruption to whoever decides it: the installation lead when the owner has delegated approvals, otherwise the owner. That decision in Installation controls is the approval; do not require a verbal reply before or after it. Observe the recorded decision and continue automatically when approved. Only the delegated installation lead approves on the owner's behalf, within its recorded grant. A changed source, plan or request revision requires its own button approval.
 
-### New operations ship with their front door
+### Front doors
 
 Every new installation lifecycle or settings operation ships, in the same change, with an agent request command in `scripts/installation-agent.mjs`, delegated admission under the full maintenance grant through the shared exclusion list in `delegated-admission.ts`, and live status with Cancel in Installation controls. Do not ship an owner-only operation and convert it later. The front-door test fails when an owner route in `front-door.ts` has no agent command, exclusion on that list, or pinned entry. Read-only views, owner sessions, grant management and release upgrades are pinned exemptions. Existing owner operations without an agent door are a pinned gap list; it only shrinks, and a new route never joins it.
+
+Lifecycle and settings operations that change the installation get a pending request with the thirty-second window and Cancel. Read-only or non-disruptive actions, such as a safety snapshot or helper recovery verification, get an immediate door instead: the grant is checked at the call, the action runs at once and Installation controls history keeps its receipt under **Agent actions**. The front-door test refuses an immediate door for any handler that restarts, installs or changes configuration.
 
 This rule also applies to coordinator maintenance. If the installed system cannot represent an operation with a visible request and approval button, report that specific capability gap and prepare the missing managed workflow. Do not substitute chat approval, a plain daemon request or an untracked service operation. Instruction changes do not themselves add coordinator reload support.
 

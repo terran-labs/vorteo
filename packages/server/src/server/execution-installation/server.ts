@@ -4,6 +4,9 @@ import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
+  AgentActionRequestSchema,
+  QueuedAgentActionDecisionSchema,
+  type QueuedAgentAction,
   CoordinatorFollowAgentRequestSchema,
   CoordinatorFollowDecisionSchema,
   CoordinatorFollowRequestSchema,
@@ -18,6 +21,10 @@ import {
   UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
+import { createAgentActions } from "./agent-actions.js";
+import { createQueuedAgentActions, type QueuedAgentActions } from "./queued-agent-actions.js";
+import { installationChangeDefinitions } from "./queued-agent-action-definitions.js";
+import { installationHealth, originCertificate } from "./origin-reachability.js";
 import { COORDINATOR_SETTINGS, createCoordinatorSettings } from "./coordinator-settings.js";
 import {
   createDelegationEvidence,
@@ -616,6 +623,9 @@ export function createInstallationServer(
     const policyActivatedAt = maintenanceDelegationActivation(config.stateDir);
     return policyActivatedAt ? { policyActivatedAt, authoritySha256: approvalAuthority() } : null;
   };
+  const agentActions = createAgentActions({ stateDir: config.stateDir, grant: delegationGrant });
+  // Created once its owner operations exist, below; the drain and management read it after.
+  let queuedActions: QueuedAgentActions | undefined;
   const restarts = new InstallationRestarts(
     standingRuntime.journal,
     restartExecutor,
@@ -824,6 +834,10 @@ export function createInstallationServer(
         void coordinatorSettings
           .drain()
           .catch((error) => logger.error({ err: error }, "Coordinator settings change failed"));
+        // Installation changes, including a custom domain change resumed after its restart.
+        void queuedActions
+          ?.drain()
+          .catch((error) => logger.error({ err: error }, "Installation change failed"));
         // Lab builds run for minutes; like upgrades they advance beside the drain.
         void labRuntime.updates
           .drain()
@@ -1009,6 +1023,7 @@ export function createInstallationServer(
     {
       follow: () => releaseRuntime?.coordinatorFollow ?? null,
       settings: coordinatorSettings,
+      installationChanges: () => queuedActions ?? null,
     },
   );
   function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
@@ -2406,6 +2421,23 @@ export function createInstallationServer(
     res.json(job);
     void restarts.drain().catch(() => logger.error("Helper lifecycle journal failed"));
   });
+  // Host agents run the same read-only verification under the full maintenance grant, with a
+  // receipt in Installation controls. It never installs, so it runs at once.
+  app.post(
+    "/api/installation/helpers/verify-installed",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester, ...decision } = (req.body ?? {}) as Record<string, unknown>;
+      const request = AgentActionRequestSchema.parse({ requester });
+      void agentActions
+        .run("request-helper-verification", request.requester, async () => {
+          const job = await restarts.verifyHelperRecovery(decision);
+          return { result: job, detail: `Verified helper recovery ${job.id}: ${job.detail}` };
+        })
+        .then(({ result, receipt }) => res.json({ job: result, receipt }), next);
+    },
+  );
   app.post("/api/installation/owner/helpers/verify-installed", (req, res, next) => {
     void restarts.verifyHelperRecovery(req.body).then((job) => res.json(job), next);
   });
@@ -2546,6 +2578,81 @@ export function createInstallationServer(
     void settings.previewSkills(input.selection).then((sources) => res.json({ sources }), next);
   });
   const installationName = createInstallationNameStore(config.stateDir);
+  // Installation changes a Host agent requests: each pending and cancellable, approved by the
+  // owner or, after its window, by the full maintenance grant.
+  queuedActions = createQueuedAgentActions({
+    stateDir: config.stateDir,
+    grant: delegationGrant,
+    definitions: installationChangeDefinitions({
+      name: installationName,
+      liveDev,
+      installationType: {
+        read: () => readInstallationType(config.stateDir),
+        // Serialized with the owner's own changes, as in the owner route.
+        change(input) {
+          const change = installationTypeChanges.then(() =>
+            changeInstallationType(config.stateDir, input),
+          );
+          installationTypeChanges = change.catch(() => undefined);
+          return change;
+        },
+      },
+      settings,
+      customDomain,
+      publicOrigin: config.public.origin,
+      health: (origin) => installationHealth(origin, config.public.installationId),
+      certificate: originCertificate,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    }),
+  });
+  const publicQueuedAction = ({ previous: _previous, ...job }: QueuedAgentAction) => job;
+  app.post(
+    "/api/installation/installation-changes",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const body = z
+        .strictObject({
+          action: z.string().min(1).max(64),
+          request: z.unknown(),
+          requester: z.string().min(1).max(256).optional(),
+        })
+        .parse(req.body);
+      const job = queuedActions!.request(body.action, body.request, body.requester);
+      void queuedActions!
+        .drain()
+        .catch((error) => logger.error({ err: error }, "Installation change failed"));
+      res.status(201).json(publicQueuedAction(job));
+    },
+  );
+  app.get(
+    "/api/installation/installation-changes/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = queuedActions!.get(z.string().uuid().parse(req.params.id));
+      if (!job) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(publicQueuedAction(job));
+    },
+  );
+  app.post("/api/installation/owner/queued-actions/query", (_req, res) =>
+    res.json({ jobs: queuedActions!.list().map(publicQueuedAction) }),
+  );
+  app.post("/api/installation/owner/queued-actions/:id/decision", (req, res) => {
+    const decision = QueuedAgentActionDecisionSchema.parse(req.body);
+    const job = queuedActions!.decide(
+      z.string().uuid().parse(req.params.id),
+      decision.revision,
+      decision.decision,
+    );
+    void queuedActions!
+      .drain()
+      .catch((error) => logger.error({ err: error }, "Installation change failed"));
+    res.json(publicQueuedAction(job));
+  });
   app.patch("/api/installation/owner/name", (req, res) => {
     const input = z.strictObject({ name: z.string().nullable() }).parse(req.body);
     // An empty name restores the default rather than saving a blank title.
@@ -2765,6 +2872,33 @@ export function createInstallationServer(
         .map((job) => job.id),
     });
   });
+  // Host agents prepare the same repair under the full maintenance grant. Preparation restarts
+  // nothing; the repaired Dev restart then follows the delegated restart queue.
+  app.post(
+    "/api/installation/dev-repair/prepare",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const input = z
+        .strictObject({
+          id: z.string().uuid(),
+          revision: z.string().uuid(),
+          requester: z.string().min(1).max(256).optional(),
+        })
+        .parse(req.body);
+      void agentActions
+        .run("request-dev-repair", input.requester, async () => {
+          const job = restarts.requestDevRepair(input.id, input.revision, true);
+          return { result: job, detail: `Started Dev repair preparation for restart ${job.id}.` };
+        })
+        .then(({ result }) => {
+          void restarts
+            .prepareBatches()
+            .catch((error) => logger.error({ err: error }, "Dev repair preparation failed"));
+          return res.status(202).json({ id: result.id, revision: result.revision });
+        }, next);
+    },
+  );
   app.post("/api/installation/owner/dev-repair/prepare", (req, res) => {
     const input = z
       .strictObject({ id: z.string().uuid(), revision: z.string().uuid() })
@@ -2890,6 +3024,26 @@ export function createInstallationServer(
       .takeSnapshot()
       .then((snapshot) => res.status(201).json(snapshot), next);
   });
+  // Host agents take the same safety snapshot under the full maintenance grant. It is a
+  // non-disruptive copy, so it runs at once and leaves a receipt in Installation controls.
+  app.post(
+    "/api/installation/snapshots",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res, next) => {
+      const { requester } = AgentActionRequestSchema.parse(req.body ?? {});
+      void agentActions
+        .run("request-snapshot", requester, async () => {
+          // Never prunes: an agent's snapshot never removes an existing rollback point.
+          const snapshot = await requireReleaseRuntime().takeSnapshot({ prune: false });
+          return { result: snapshot, detail: `Took safety snapshot ${snapshot.id}.` };
+        })
+        .then(({ result, receipt }) => res.status(201).json({ snapshot: result, receipt }), next);
+    },
+  );
+  app.post("/api/installation/owner/agent-actions/query", (_req, res) =>
+    res.json({ receipts: agentActions.list() }),
+  );
   app.post("/api/installation/owner/snapshots/restore", (req, res, next) => {
     const request = SnapshotRestoreRequestSchema.parse(req.body);
     void requireReleaseRuntime()
