@@ -397,6 +397,7 @@ export async function assertMergeable(
 const MERGE_STATE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      id
       state
       headRefOid
       mergeCommit { oid }
@@ -405,6 +406,14 @@ const MERGE_STATE_QUERY = `query($owner: String!, $name: String!, $number: Int!)
     }
   }
 }`;
+
+const ENQUEUE_MUTATION = `mutation($id: ID!, $head: GitObjectID!) {
+  enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) {
+    mergeQueueEntry { position }
+  }
+}`;
+
+const AUTO_MERGE_REFUSAL = /auto merge is not allowed|enablePullRequestAutoMerge/i;
 
 function mergeState(gh, repository, number) {
   const [owner, name] = repository.split("/");
@@ -485,17 +494,34 @@ export async function waitForMerged(
 export async function mergePullRequest(plan, pr, { gh = runGh, wait = {}, log = () => {} } = {}) {
   await assertMergeable(plan, pr, { gh, log, ...wait });
   // A rerun after a timeout finds the entry still queued; enqueueing it again would fail.
-  if (!mergeState(gh, plan.repository, pr.number).isInMergeQueue) {
-    gh([
-      "pr",
-      "merge",
-      String(pr.number),
-      "-R",
-      plan.repository,
-      "--merge",
-      "--match-head-commit",
-      plan.head,
-    ]);
+  const state = mergeState(gh, plan.repository, pr.number);
+  if (!state.isInMergeQueue) {
+    try {
+      gh([
+        "pr",
+        "merge",
+        String(pr.number),
+        "-R",
+        plan.repository,
+        "--merge",
+        "--match-head-commit",
+        plan.head,
+      ]);
+    } catch (error) {
+      // When GitHub does not enqueue at once, gh falls back to auto-merge, which this
+      // repository disallows. Enqueue directly, pinned to the tested head.
+      if (!AUTO_MERGE_REFUSAL.test(String(error?.message ?? error))) throw error;
+      gh([
+        "api",
+        "graphql",
+        "-f",
+        `query=${ENQUEUE_MUTATION}`,
+        "-f",
+        `id=${state.id}`,
+        "-f",
+        `head=${plan.head}`,
+      ]);
+    }
   }
   const merged = await waitForMerged(plan, pr, { gh, log, ...wait });
   const mainHead = fetchBase(plan.root, plan.remote, plan.branch);

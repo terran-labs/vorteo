@@ -6,6 +6,9 @@ import { DensityIcon } from "@/components/ui/density-icon";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative } from "@/constants/platform";
 import { density } from "@/styles/density";
+import { hoverGroup, revealOnGroupHover } from "@/styles/hover";
+
+const TOGGLE_HOVER_GROUP = "section-toggle";
 
 /** A sidebar section label such as "Pinned" or "Workspaces". A section with `onToggle`
  * collapses from its title; children sit at the trailing edge as its actions. */
@@ -54,6 +57,7 @@ function CollapsibleTitle({
 }) {
   const isCompact = useIsCompactFormFactor();
   const accessibilityState = useMemo(() => ({ expanded: !collapsed }), [collapsed]);
+  const revealChevron = !isNative && !isCompact;
 
   return (
     <Pressable
@@ -63,18 +67,17 @@ function CollapsibleTitle({
       style={styles.toggle}
       testID={testID}
     >
-      {({ hovered }) => (
-        <>
-          <Text style={styles.title}>{title}</Text>
-          {hovered || isNative || isCompact ? (
-            <DensityIcon
-              icon={collapsed ? ChevronRight : ChevronDown}
-              size="xs"
-              color="foregroundMuted"
-            />
-          ) : null}
-        </>
-      )}
+      <>
+        <Text style={styles.title}>{title}</Text>
+        {/* Stays mounted after the title; CSS reveals it while the toggle is hovered. */}
+        <View style={revealChevron ? styles.chevronReveal : null}>
+          <DensityIcon
+            icon={collapsed ? ChevronRight : ChevronDown}
+            size="xs"
+            color="foregroundMuted"
+          />
+        </View>
+      </>
     </Pressable>
   );
 }
@@ -101,7 +104,9 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     marginLeft: -theme.spacing[2],
     paddingHorizontal: theme.spacing[2],
+    ...hoverGroup(TOGGLE_HOVER_GROUP),
   },
+  chevronReveal: revealOnGroupHover(TOGGLE_HOVER_GROUP),
   title: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,

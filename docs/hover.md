@@ -1,10 +1,43 @@
 # Hover
 
-Read this before writing any hover code. Every hover regression we ship is one of the three failure modes below, and every one of them is solved by the same canonical pattern. The pattern is hardwon — it survived every other shape we tried — so copy it, don't reinvent it.
+Read this before writing any hover code.
 
-## The pattern
+## Start with CSS: the browser owns hover
 
-The canonical implementation lives in `packages/app/src/components/sidebar-workspace-list.tsx`, in the workspace row (around line 1369). When in doubt, open that file and copy the shape.
+Most hover is visual: a row, button or card heading changes its own background, border or color. Do that with browser-owned CSS `:hover` through the helpers in `packages/app/src/styles/hover.ts`, never with React state.
+
+```tsx
+const styles = StyleSheet.create((theme) => ({
+  row: {
+    padding: theme.spacing[2],
+    ...hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  },
+}));
+```
+
+Why: JS hover flags (`onPointerEnter`/`onPointerLeave` state, `Pressable` `({ hovered })`, `onHoverIn`/`onHoverOut`) only update when the pointer moves. When a click collapses a card or reflows a list, the element slides out from under a resting cursor and keeps its highlight until the mouse moves again (failure mode 5). The browser recomputes `:hover` on layout changes. Unistyles compiles `_web._hover` to a real `:hover` rule.
+
+| Need                                       | Use                                                                        |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| Element highlights itself                  | `hoverStyle(hover, web?)`                                                  |
+| Hovering a row restyles a child            | `hoverGroup(name)` on the row, `groupHoverStyle(name, hover)` on the child |
+| Hovering a row reveals its action buttons  | `hoverGroup(name)` on the row, `revealOnGroupHover(name)` on the actions   |
+| Hover opens, times, prefetches or notifies | The JS pattern below                                                       |
+
+Rules for the helpers:
+
+- They emit nothing when the primary pointer cannot hover (`CAN_HOVER`), so touch screens never get sticky highlights and revealed controls stay visible. Still leave reveal styles out on compact and native layouts.
+- CSS `:hover` outranks the base class regardless of style array order. Suppress hover for selected or disabled states by leaving the hover style out of the array, not by ordering.
+- A style has one `_web` key. Pass existing web declarations, such as `cursor`, as the helper's second argument.
+- Group names are matched against every ancestor, not the nearest one. Give nested groups different names.
+
+## JS hover, for behavior only
+
+Use JS hover state only when hover does something CSS cannot: opening a tooltip or hover card, starting a timer, prefetching, notifying a parent, or mounting content too heavy to keep mounted. The rest of this guide covers that case. Every hover regression in the JS path is one of the failure modes below, and the canonical pattern avoids them, so copy it, don't reinvent it.
+
+### The pattern
+
+The sidebar rows show the split: their fill, title, calm tone, arrow and actions use the CSS helpers, and only `useSidebarRowFocus` (see `packages/app/src/sidebar-folders/folder-row.tsx`) still tracks hover in JS, because hover mounts the focus button. Copy that shape when hover must drive behavior.
 
 ```tsx
 //
@@ -111,6 +144,10 @@ rendered while the menu is up. `useOpenKebabMenuVisibility`
 sidebar rows: it owns `open`, hands the menu its controlled props, and ORs `open` into the
 row's own `showKebab`.
 
+### Failure mode 5: layout moves the element away from a resting cursor
+
+A click collapses a card, closes a panel or reorders a list. The hovered element moves out from under a cursor that has not moved. The browser recomputes `:hover`, but JS flags wait for the next pointer event, so the old element stays highlighted. This is why visual hover belongs to CSS. When behavioral JS hover hits it, reset the state where the layout change happens, for example clear `hovered` when the card collapses.
+
 ## Native fallback
 
 Hover doesn't exist on touch devices. Anything you hide behind hover must have a non-hover path on native and compact layouts:
@@ -125,7 +162,7 @@ const showControls = isHovered || isNative || isCompact;
 
 ## What about `Pressable.onHoverIn` / `onHoverOut`?
 
-It's fine when a `Pressable` styles **itself** based on its own hover — for example, an icon button that changes color on hover. That's self-contained. The render-prop `<Pressable style={({ hovered }) => ...}>` does the same thing more cleanly and is the preferred form.
+A `Pressable` that styles **itself** on hover should use `hoverStyle`, not `onHoverIn` / `onHoverOut` or the `({ hovered })` render prop. Those are JS flags and go stale (failure mode 5).
 
 It is **not** fine for tracking hover to drive state **outside** that `Pressable` (revealing a sibling, opening a tooltip, showing a kebab) when there is any other `Pressable` inside — because that's Failure Mode 1.
 
@@ -143,6 +180,8 @@ Don't roll your own. The math is annoying, the edge cases (pointer leaves window
 
 Before opening a PR that touches hover:
 
+- [ ] Visual highlights and hover reveals use the `styles/hover.ts` helpers, not React state.
+- [ ] Any remaining JS hover drives behavior CSS cannot express, and resets when a layout change moves its element away.
 - [ ] Hover-tracking is on a plain `View` with `onPointerEnter` / `onPointerLeave`, **not** on a `Pressable` that wraps anything pressable.
 - [ ] Any press behavior lives on a separate inner `Pressable` that does not have `onHoverIn` / `onHoverOut`.
 - [ ] The hover trigger's bounding box contains every element the user might mouse into while interacting with the feature.

@@ -7,7 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ScrollView, View, type LayoutChangeEvent } from "react-native";
+import { View, type LayoutChangeEvent } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { DraggedCardHeightHandle, useDraggedCardHeight } from "@/components/card-height-handle";
@@ -18,10 +19,11 @@ import { CountBadge } from "@/components/ui/count-badge";
 import { usePanelStore } from "@/stores/panel-store";
 import { SUPPORTING_CARD_DEFAULTS } from "@/stores/panel-store/state";
 import { SidebarInsetContext, SidebarSectionRule } from "./sidebar-separator";
+import { useSidebarListReach } from "./list-reach";
 
 /** Cards that span every thread and account, as opposed to the focused tab's right-hand cards. */
 export type GlobalCardKind = "globalQuestions" | "globalQuota";
-const GLOBAL_CARD_KINDS: readonly GlobalCardKind[] = ["globalQuestions", "globalQuota"];
+export const GLOBAL_CARD_KINDS: readonly GlobalCardKind[] = ["globalQuestions", "globalQuota"];
 
 /** Below this height, one card opens at a time so the workspace list keeps its room. */
 const EXCLUSIVE_HEIGHT = 720;
@@ -49,6 +51,27 @@ export function globalCardLayout(
   return { exclusive, maxBodyHeight: Math.max(120, Math.round(windowHeight * share)) };
 }
 
+type PanelState = ReturnType<typeof usePanelStore.getState>;
+
+/** Whether `kind` renders open, given the saved choices and the layout. */
+export function isSectionExpanded(
+  state: PanelState,
+  kind: GlobalCardKind,
+  exclusive: boolean,
+  shown: ReadonlySet<GlobalCardKind>,
+): boolean {
+  const open = (card: GlobalCardKind) =>
+    state.supportingCardExpanded[card] ?? SUPPORTING_CARD_DEFAULTS[card];
+  if (!open(kind)) return false;
+  // Choices saved on a taller screen may leave several open; the first in order wins here.
+  return (
+    !exclusive ||
+    GLOBAL_CARD_KINDS.slice(0, GLOBAL_CARD_KINDS.indexOf(kind)).every(
+      (card) => !shown.has(card) || !open(card),
+    )
+  );
+}
+
 /** The device remembers each card's state; small screens close the others when one opens. */
 export function useGlobalCardDisclosure(kind: GlobalCardKind) {
   const { exclusive, shown, setShown } = useContext(GlobalCardLayoutContext);
@@ -56,18 +79,7 @@ export function useGlobalCardDisclosure(kind: GlobalCardKind) {
     setShown(kind, true);
     return () => setShown(kind, false);
   }, [kind, setShown]);
-  const expanded = usePanelStore((state) => {
-    const open = (card: GlobalCardKind) =>
-      state.supportingCardExpanded[card] ?? SUPPORTING_CARD_DEFAULTS[card];
-    if (!open(kind)) return false;
-    // Choices saved on a taller screen may leave several open; the first in order wins here.
-    return (
-      !exclusive ||
-      GLOBAL_CARD_KINDS.slice(0, GLOBAL_CARD_KINDS.indexOf(kind)).every(
-        (card) => !shown.has(card) || !open(card),
-      )
-    );
-  });
+  const expanded = usePanelStore((state) => isSectionExpanded(state, kind, exclusive, shown));
   const toggle = useCallback(() => {
     const store = usePanelStore.getState();
     const next = !expanded;
@@ -126,7 +138,10 @@ export function GlobalCard({
   children: ReactNode;
 }) {
   const [expanded, toggle] = useGlobalCardDisclosure(kind);
-  const { maxBodyHeight } = useContext(GlobalCardLayoutContext);
+  const { maxBodyHeight, shown } = useContext(GlobalCardLayoutContext);
+  const listReaches = useSidebarListReach((state) => state.reaches);
+  // The first section's rule is the footer block's top edge, drawn only where the list meets it.
+  const leading = GLOBAL_CARD_KINDS.find((candidate) => shown.has(candidate)) === kind;
   const badge = useMemo(
     () => (
       <CountBadge
@@ -155,7 +170,7 @@ export function GlobalCard({
   }, []);
   return (
     <View testID={`${testID}-section`}>
-      <SidebarSectionRule testID={`${testID}-rule`}>
+      <SidebarSectionRule testID={`${testID}-rule`} lineHidden={leading && !listReaches}>
         {expanded ? (
           <DraggedCardHeightHandle
             card={dragged}

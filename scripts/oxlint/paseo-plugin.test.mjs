@@ -59,6 +59,26 @@ test("press primitives and pressable types are allowed", () => {
   assert.equal(result.failed, false, result.output);
 });
 
+test("raw scrollers are reported and the shared scroller and scroller types are allowed", () => {
+  for (const source of [
+    'import { ScrollView } from "react-native";\nexport { ScrollView };\n',
+    'import { FlatList as List } from "react-native-gesture-handler";\nexport { List };\n',
+    'import { Animated } from "react-native";\nexport const A = () => <Animated.ScrollView />;\n',
+    'import Animated from "react-native-reanimated";\nexport const A = () => <Animated.ScrollView />;\n',
+  ]) {
+    const result = lint(source, "paseo/no-raw-scroller");
+    assert.equal(result.failed, true, source);
+    assert.match(result.output, /no-raw-scroller/);
+  }
+  const allowed = lint(
+    'import { type ScrollView as Raw, View } from "react-native";\n' +
+      'import { ScrollView } from "@/components/ui/scroll-view";\n' +
+      "export type Ref = Raw;\nexport { ScrollView, View };\n",
+    "paseo/no-raw-scroller",
+  );
+  assert.equal(allowed.failed, false, allowed.output);
+});
+
 for (const source of [
   'import { readFileSync as read } from "node:fs"; export { read };',
   'import { execSync } from "child_process"; export { execSync };',

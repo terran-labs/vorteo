@@ -18,6 +18,7 @@ import {
 import { Shortcut } from "@/components/ui/shortcut";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { hoverStyle } from "@/styles/hover";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { actionsWithoutPrimary, type GitAction, type GitActions } from "@/git/policy";
 import { useGitActionRunner } from "@/git/use-actions";
@@ -111,29 +112,26 @@ export function GitActionsSplitButton({
 
   const primaryDisabled = gitActions.primary?.disabled;
   const primaryPressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.splitButtonPrimary,
-      (Boolean(hovered) || pressed) &&
-        inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
+      pressed && inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
       primaryDisabled && styles.splitButtonPrimaryDisabled,
     ],
     [primaryDisabled, theme.colors.surface2],
   );
 
   const caretTriggerStyle = useCallback(
-    ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
+    ({ pressed, open }: { pressed: boolean; open: boolean }) => [
       styles.splitButtonCaret,
-      (hovered || pressed || open) &&
-        inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
+      (pressed || open) && inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
     ],
     [theme.colors.surface2],
   );
 
   const menuOnlyTriggerStyle = useCallback(
-    ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
+    ({ pressed, open }: { pressed: boolean; open: boolean }) => [
       styles.menuOnlyTrigger,
-      (hovered || pressed || open) &&
-        inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
+      (pressed || open) && inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
     ],
     [theme.colors.surface2],
   );
@@ -309,6 +307,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[3],
     justifyContent: "center",
     position: "relative",
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   menuOnlyTrigger: {
     width: {
@@ -324,6 +323,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     gap: theme.spacing[1],
     borderRadius: FLOATING_PANEL_RADIUS,
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   splitButtonPrimaryDisabled: {
     opacity: 0.6,
@@ -351,6 +351,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: FLOATING_PANEL_RADIUS,
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   iconButton: {
     width: {

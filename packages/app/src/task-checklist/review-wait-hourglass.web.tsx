@@ -13,6 +13,7 @@ import {
   StreamGrain,
   TopSand,
   type SandTrack,
+  useHourglassFrameStyle,
 } from "./review-wait-hourglass-frame";
 
 // Linear between keyframes: drain and pile must move at one rate to stay mirrors of each other,
@@ -73,6 +74,7 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
 }: {
   muted?: boolean;
 }) {
+  const frameStyle = useHourglassFrameStyle();
   const drain = useSandLoop(DRAIN);
   const drainCounter = useSandLoop(DRAIN_COUNTER);
   const pile = useSandLoop(PILE);
@@ -80,7 +82,7 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
   const stream = useSandLoop(STREAM);
   const flip = useSandLoop(FLIP);
   return (
-    <View style={layers.frame}>
+    <View style={frameStyle}>
       <View ref={flip} style={layers.flip}>
         <View ref={drain} style={layers.topWindow}>
           <View ref={drainCounter} style={layers.topContent}>

@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo, useRef, useLayoutEffect, type ReactElement } from "react";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import {
   DndContext,
   closestCenter,

@@ -12,7 +12,7 @@ import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
+import { BottomSheetScrollView } from "@/components/ui/scroll-view";
 import { ChevronLeft } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {

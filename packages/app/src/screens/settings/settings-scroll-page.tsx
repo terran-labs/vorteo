@@ -19,6 +19,7 @@ import {
   type PressableStateCallbackType,
 } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { HighlightedText } from "@/components/ui/highlighted-text";
 import { SearchField } from "@/components/ui/search-field";
@@ -609,10 +610,11 @@ function SearchResultRow({
   const handlePress = useCallback(() => onSelect(result.entry), [onSelect, result.entry]);
   const accessibilityState = useMemo(() => ({ selected }), [selected]);
   const rowStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.resultRow,
       bordered && styles.resultBorder,
-      (selected || hovered || pressed) && styles.resultActive,
+      styles.resultHover,
+      (selected || pressed) && styles.resultActive,
     ],
     [bordered, selected],
   );
@@ -698,6 +700,7 @@ const styles = StyleSheet.create((theme) => ({
   resultActive: {
     backgroundColor: theme.colors.surface2,
   },
+  resultHover: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   resultText: {
     flex: 1,
     minWidth: 0,

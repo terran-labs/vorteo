@@ -30,6 +30,7 @@ import { createReviewEditorScope } from "./editor";
 import { isWeb } from "@/constants/platform";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import type { Theme } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 import {
   useReviewDraftComments,
   useReviewDraftStore,
@@ -46,13 +47,16 @@ import {
   type InlineReviewEditorState,
 } from "./geometry";
 
-type PressableState = PressableStateCallbackType & { hovered?: boolean };
-function iconButtonStyle({ hovered, pressed }: PressableState): StyleProp<ViewStyle> {
-  return [styles.iconButton, (hovered || pressed) && styles.iconButtonHovered];
+function iconButtonStyle({ pressed }: PressableStateCallbackType): StyleProp<ViewStyle> {
+  return [styles.iconButton, styles.iconButtonHover, pressed && styles.iconButtonHovered];
 }
 
-function iconButtonDestructiveStyle({ hovered, pressed }: PressableState): StyleProp<ViewStyle> {
-  return [styles.iconButton, (hovered || pressed) && styles.iconButtonDestructiveHovered];
+function iconButtonDestructiveStyle({ pressed }: PressableStateCallbackType): StyleProp<ViewStyle> {
+  return [
+    styles.iconButton,
+    styles.iconButtonDestructiveHover,
+    pressed && styles.iconButtonDestructiveHovered,
+  ];
 }
 
 function getWebTextInputElement(input: EditingTextInputHandle | null): HTMLElement | null {
@@ -593,6 +597,8 @@ const styles = StyleSheet.create((theme) => ({
   iconButtonDestructiveHovered: {
     backgroundColor: theme.colors.surface3,
   },
+  iconButtonHover: hoverStyle({ backgroundColor: theme.colors.surface3 }),
+  iconButtonDestructiveHover: hoverStyle({ backgroundColor: theme.colors.surface3 }),
   editorBlock: {
     minHeight: INLINE_REVIEW_EDITOR_HEIGHT,
     backgroundColor: theme.colors.surface2,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import type { AgentProfilePicker, AgentProfileSeed } from "@/agent-profiles";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
@@ -39,7 +40,6 @@ interface CombinedModelSelectorProps {
     onPress: () => void;
     disabled: boolean;
     isOpen: boolean;
-    hovered: boolean;
     pressed: boolean;
   }) => React.ReactNode;
   onOpen?: () => void;
@@ -54,8 +54,8 @@ interface CombinedModelSelectorProps {
    * Render the custom trigger as a full-width form field: the outer Pressable
    * becomes a transparent passthrough that stretches its child edge-to-edge and
    * stops painting its own hover/pressed background and rounded corners. The
-   * trigger itself owns the field visuals and reads hovered/pressed to show its
-   * active state. Without this the trigger stays a content-width toolbar chip
+   * trigger itself owns the field visuals: it reads pressed/open to show its
+   * active state and styles hover with CSS (`hoverStyle`), not a JS flag. Without this the trigger stays a content-width toolbar chip
    * (the composer's layout).
    */
   triggerFill?: boolean;
@@ -143,7 +143,7 @@ export function CombinedModelSelector({
   }, [handleOpenChange, isOpen]);
 
   const triggerStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
+    ({ pressed }: PressableStateCallbackType) => {
       if (triggerFill) {
         return [
           styles.trigger,
@@ -154,7 +154,8 @@ export function CombinedModelSelector({
       }
       return [
         styles.trigger,
-        Boolean(hovered) && styles.triggerHovered,
+        // CSS :hover outranks later classes, so leave it out while the pressed or open fill shows.
+        !pressed && !isOpen && !disabled && styles.triggerHovered,
         (pressed || isOpen) && styles.triggerPressed,
         disabled && styles.triggerDisabled,
         renderTrigger ? styles.customTriggerWrapper : null,
@@ -226,13 +227,12 @@ export function CombinedModelSelector({
           })}
           testID="combined-model-selector"
         >
-          {({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) =>
+          {({ pressed }: PressableStateCallbackType) =>
             renderTrigger({
               selectedModelLabel: browser.triggerLabel,
               onPress: handleTriggerPress,
               disabled,
               isOpen,
-              hovered: Boolean(hovered),
               pressed,
             })
           }
@@ -302,9 +302,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
     borderRadius: theme.borderRadius["2xl"],
   },
-  triggerHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  triggerHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   toolbarGlyph16: {
     width: 16,
     height: 16,

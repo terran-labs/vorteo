@@ -3,6 +3,7 @@ import Svg, { Path } from "react-native-svg";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Hourglass } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
+import { calmToneColor, litToneColor, useSidebarRowTone } from "@/components/sidebar/row-tone";
 
 export const HOURGLASS_SIZE = 10;
 /** One drain and flip. Slow enough to read as waiting rather than working. */
@@ -94,6 +95,19 @@ const neutral = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted })
 const managed = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 export const hourglassColor = (muted: boolean) => (muted ? managed : neutral);
 
+/** Inside a sidebar row the hourglass follows the row's tone like the icons around it. */
+function useHourglassColor(muted: boolean) {
+  const tone = useSidebarRowTone();
+  if (tone === "lit") return litToneColor;
+  if (tone === "calm") return calmToneColor;
+  return hourglassColor(muted);
+}
+
+/** Rows set icon strength themselves, so the hourglass drops its own dimming there. */
+export function useHourglassFrameStyle() {
+  return useSidebarRowTone() ? layers.frameInRow : layers.frame;
+}
+
 function Sand({ d, color }: { d: string; color?: string }) {
   return (
     <Svg width={HOURGLASS_SIZE} height={HOURGLASS_SIZE} viewBox="0 0 24 24">
@@ -105,10 +119,10 @@ const ThemedSand = withUnistyles(Sand);
 const ThemedOutline = withUnistyles(Hourglass);
 
 export function TopSand({ muted }: { muted: boolean }) {
-  return <ThemedSand d={TOP_SAND} uniProps={hourglassColor(muted)} />;
+  return <ThemedSand d={TOP_SAND} uniProps={useHourglassColor(muted)} />;
 }
 export function PileSand({ muted }: { muted: boolean }) {
-  return <ThemedSand d={PILE_SAND} uniProps={hourglassColor(muted)} />;
+  return <ThemedSand d={PILE_SAND} uniProps={useHourglassColor(muted)} />;
 }
 export function StreamGrain({ muted }: { muted: boolean }) {
   return <View style={[themed.stream, muted && themed.streamManaged]} />;
@@ -116,7 +130,7 @@ export function StreamGrain({ muted }: { muted: boolean }) {
 export function HourglassOutline({ muted }: { muted: boolean }) {
   return (
     <View style={layers.full} pointerEvents="none">
-      <ThemedOutline size={HOURGLASS_SIZE} strokeWidth={1.8} uniProps={hourglassColor(muted)} />
+      <ThemedOutline size={HOURGLASS_SIZE} strokeWidth={1.8} uniProps={useHourglassColor(muted)} />
     </View>
   );
 }
@@ -125,6 +139,7 @@ export function HourglassOutline({ muted }: { muted: boolean }) {
 // on one crashes when the theme changes (docs/unistyles.md). Colour lives one level in.
 export const layers = RNStyleSheet.create({
   frame: { width: HOURGLASS_SIZE, height: HOURGLASS_SIZE, opacity: HOURGLASS_OPACITY },
+  frameInRow: { width: HOURGLASS_SIZE, height: HOURGLASS_SIZE },
   /** Turns the sand and outline together around the icon's centre. */
   flip: { width: HOURGLASS_SIZE, height: HOURGLASS_SIZE },
   full: { position: "absolute", top: 0, left: 0, width: HOURGLASS_SIZE, height: HOURGLASS_SIZE },

@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
-import { ScrollView, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
+import { type ScrollView, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { usePathname, useRootNavigationState } from "expo-router";
 import { useStore } from "zustand";
 import {

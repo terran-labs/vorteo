@@ -45,3 +45,6 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Live dev revision record, written by scripts/live-dev.mjs
+src/utils/live-revision.local.json

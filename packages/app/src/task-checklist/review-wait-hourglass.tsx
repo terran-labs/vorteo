@@ -22,6 +22,7 @@ import {
   streamOffset,
   StreamGrain,
   TopSand,
+  useHourglassFrameStyle,
 } from "./review-wait-hourglass-frame";
 
 const FLIP_EASING = Easing.inOut(Easing.cubic);
@@ -36,6 +37,7 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
 }: {
   muted?: boolean;
 }) {
+  const frameStyle = useHourglassFrameStyle();
   const reduced = useReducedMotion();
   const phase = useSharedValue(0);
   useEffect(() => {
@@ -108,7 +110,7 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
   });
 
   return (
-    <View style={layers.frame}>
+    <View style={frameStyle}>
       <Animated.View style={[layers.flip, flip]}>
         <Animated.View style={[layers.topWindow, drain]}>
           <Animated.View style={[layers.topContent, drainCounter]}>

@@ -25,6 +25,7 @@ import {
 import { getForgePresentation, normalizeForge } from "@/git/forge";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import type { Theme } from "@/styles/theme";
+import { CAN_HOVER, groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import { DiffStat } from "@/components/diff-stat";
 import { Pressable } from "react-native";
 import type { GestureResponderEvent } from "react-native";
@@ -235,7 +236,6 @@ function CopyableInfoRow({
   copyLabel: string;
   testID: string;
 }) {
-  const [isHovered, setIsHovered] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const handlePressIn = useCallback((event: GestureResponderEvent) => {
@@ -250,36 +250,34 @@ function CopyableInfoRow({
     }, 2000);
   }, [copyValue]);
 
-  const handleHoverIn = useCallback(() => setIsHovered(true), []);
-  const handleHoverOut = useCallback(() => setIsHovered(false), []);
-
-  let iconUniProps = foregroundMutedColorMapping;
-  if (copied || isHovered) {
-    iconUniProps = foregroundColorMapping;
-  }
-  const textStyle =
-    copied || isHovered ? [styles.cardInfoText, styles.cardInfoTextHovered] : styles.cardInfoText;
+  // CSS group hover swaps the row's icon for the copy icon and brightens the text.
+  const textStyle = copied
+    ? [styles.cardInfoText, styles.cardInfoTextHovered]
+    : [styles.cardInfoText, styles.cardInfoTextGroupHover];
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={copyLabel}
-      style={styles.cardInfoRow}
+      style={[styles.cardInfoRow, styles.cardInfoHoverGroup]}
       hitSlop={4}
       onPressIn={handlePressIn}
       onPress={handlePress}
-      onHoverIn={handleHoverIn}
-      onHoverOut={handleHoverOut}
     >
-      {(() => {
-        if (copied) {
-          return <ThemedCheck size={12} uniProps={iconUniProps} />;
-        }
-        if (isHovered) {
-          return <ThemedCopy size={12} uniProps={iconUniProps} />;
-        }
-        return <Icon size={12} uniProps={iconUniProps} />;
-      })()}
+      {copied ? (
+        <ThemedCheck size={12} uniProps={foregroundColorMapping} />
+      ) : (
+        <>
+          <View style={styles.cardInfoIdleIcon}>
+            <Icon size={12} uniProps={foregroundMutedColorMapping} />
+          </View>
+          {CAN_HOVER ? (
+            <View style={styles.cardInfoHoverIcon}>
+              <ThemedCopy size={12} uniProps={foregroundColorMapping} />
+            </View>
+          ) : null}
+        </>
+      )}
       <Text style={textStyle} numberOfLines={1} testID={testID}>
         {value}
       </Text>
@@ -311,32 +309,31 @@ function checksSummaryTextStyle(presentation: CountedCheckPresentation) {
   return styles.checksStatusTextMuted;
 }
 
+/** CSS group hover swaps the forge icon for an external link icon and brightens the label. */
 function ChecksSummaryContent({
   checks,
   forge,
-  hovered,
 }: {
   checks: NonNullable<PrHint["checks"]>;
   forge: PrHint["forge"];
-  hovered: boolean;
 }) {
   const { t } = useTranslation();
   const counts = countCheckPresentations(checks);
-
-  const labelStyle = hovered
-    ? [styles.checksSummaryLabel, styles.checksSummaryLabelHovered]
-    : styles.checksSummaryLabel;
-  const iconUniProps = hovered ? foregroundColorMapping : foregroundMutedColorMapping;
   const icon = getForgePresentation(normalizeForge(forge)).icon;
 
   return (
     <>
-      {hovered ? (
-        <ThemedExternalLink size={12} uniProps={iconUniProps} />
-      ) : (
-        renderChecksSummaryForgeIcon(icon, iconUniProps)
-      )}
-      <Text style={labelStyle}>{t("workspace.git.pr.sections.checks")}</Text>
+      <View style={styles.checksSummaryIdleIcon}>
+        {renderChecksSummaryForgeIcon(icon, foregroundMutedColorMapping)}
+      </View>
+      {CAN_HOVER ? (
+        <View style={styles.checksSummaryHoverIcon}>
+          <ThemedExternalLink size={12} uniProps={foregroundColorMapping} />
+        </View>
+      ) : null}
+      <Text style={[styles.checksSummaryLabel, styles.checksSummaryLabelHovered]}>
+        {t("workspace.git.pr.sections.checks")}
+      </Text>
       <View style={styles.checksSummaryCounts}>
         {COUNTED_CHECK_PRESENTATIONS.map((presentation) => (
           <ChecksSummaryPill
@@ -370,27 +367,16 @@ function ChecksSummaryPressable({
     void openExternalUrl(buildForgeChecksUrl(forge, url) ?? url);
   }, [forge, url]);
 
-  const renderChildren = useCallback(
-    ({ hovered }: { pressed: boolean; hovered?: boolean }) => (
-      <ChecksSummaryContent checks={checks} forge={forge} hovered={Boolean(hovered)} />
-    ),
-    [checks, forge],
-  );
-
   return (
     <Pressable
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="link"
-      style={checksSummaryPressableStyle}
+      style={[styles.checksSummaryRow, styles.listRowHovered, styles.checksSummaryHoverGroup]}
       onPress={handlePress}
     >
-      {renderChildren}
+      <ChecksSummaryContent checks={checks} forge={forge} />
     </Pressable>
   );
-}
-
-function checksSummaryPressableStyle({ hovered = false }: { pressed: boolean; hovered?: boolean }) {
-  return [styles.checksSummaryRow, hovered && styles.listRowHovered];
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -438,13 +424,29 @@ const styles = StyleSheet.create((theme) => ({
   cardInfoTextHovered: {
     color: theme.colors.foreground,
   },
+  cardInfoHoverGroup: hoverGroup("workspace-card-info"),
+  cardInfoTextGroupHover: groupHoverStyle("workspace-card-info", {
+    color: theme.colors.foreground,
+  }),
+  cardInfoIdleIcon: groupHoverStyle("workspace-card-info", { display: "none" }),
+  // Rendered only with hover capability, and hidden until the row is hovered.
+  cardInfoHoverIcon: groupHoverStyle(
+    "workspace-card-info",
+    { display: "flex" },
+    { display: "none" },
+  ),
   separator: {
     height: 1,
     backgroundColor: theme.colors.border,
   },
-  listRowHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  listRowHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
+  checksSummaryHoverGroup: hoverGroup("workspace-card-checks"),
+  checksSummaryIdleIcon: groupHoverStyle("workspace-card-checks", { display: "none" }),
+  checksSummaryHoverIcon: groupHoverStyle(
+    "workspace-card-checks",
+    { display: "flex" },
+    { display: "none" },
+  ),
   checksSummaryRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -458,9 +460,9 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
   },
-  checksSummaryLabelHovered: {
+  checksSummaryLabelHovered: groupHoverStyle("workspace-card-checks", {
     color: theme.colors.foreground,
-  },
+  }),
   checksSummaryCounts: {
     flexDirection: "row",
     alignItems: "center",

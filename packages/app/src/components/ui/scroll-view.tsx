@@ -14,6 +14,21 @@ import {
 import { isNative } from "@/constants/platform";
 import { useIsInsideBottomSheet } from "./bottom-sheet-scope";
 
+/**
+ * The shared scrollers fade their content at an edge with more to scroll (web only; native has
+ * no CSS mask). Pass `edgeFade={false}` only for code, diff and terminal surfaces, where a faded
+ * line hurts reading and selection. See docs/design.md, "Scroll edges".
+ */
+export interface ScrollEdgeFadeProp {
+  edgeFade?: boolean;
+}
+export type SharedScrollViewProps = ScrollViewProps & ScrollEdgeFadeProp;
+export type SharedFlatListProps<Item> = FlatListProps<Item> & ScrollEdgeFadeProp;
+
+/** Same names as the React Native types, so `useRef<ScrollView>` keeps working after the swap. */
+export type ScrollView = NativeScrollView;
+export type FlatList<Item = unknown> = NativeFlatList<Item>;
+
 // Both libraries forward to the RN FlatList instance. Their published ref types
 // disagree about getScrollResponder (Gorhom) and include the component function
 // in the instance intersection (RNGH); keep that type discrepancy at this boundary.
@@ -23,8 +38,8 @@ const HorizontalFlatList = GestureFlatList as unknown as <Item>(
 ) => React.ReactElement;
 
 /** The presentation owns gesture integration; callers keep the React Native API. */
-export const ScrollView = forwardRef<NativeScrollView, ScrollViewProps>(
-  function ScrollView(props, ref) {
+export const ScrollView = forwardRef<NativeScrollView, SharedScrollViewProps>(
+  function SharedScrollView({ edgeFade: _edgeFade, ...props }, ref) {
     const inSheet = useIsInsideBottomSheet();
     if (!inSheet) return <NativeScrollView {...props} ref={ref} />;
     if (props.horizontal) {
@@ -42,7 +57,10 @@ export const ScrollView = forwardRef<NativeScrollView, ScrollViewProps>(
   },
 );
 
-function SheetAwareFlatList<Item>(props: FlatListProps<Item>, ref: Ref<NativeFlatList<Item>>) {
+function SheetAwareFlatList<Item>(
+  { edgeFade: _edgeFade, ...props }: SharedFlatListProps<Item>,
+  ref: Ref<NativeFlatList<Item>>,
+) {
   const inSheet = useIsInsideBottomSheet();
   if (!inSheet) return <NativeFlatList {...props} ref={ref} />;
   if (props.horizontal) {
@@ -57,5 +75,8 @@ function SheetAwareFlatList<Item>(props: FlatListProps<Item>, ref: Ref<NativeFla
 
 // forwardRef erases the item generic. All three implementations expose the RN list methods.
 export const FlatList = forwardRef(SheetAwareFlatList) as <Item>(
-  props: FlatListProps<Item> & { ref?: Ref<NativeFlatList<Item>> },
+  props: SharedFlatListProps<Item> & { ref?: Ref<NativeFlatList<Item>> },
 ) => React.ReactElement;
+
+/** Bottom sheet scrollers; on web they carry the shared edge fade (scroll-view.web.tsx). */
+export { BottomSheetScrollView, BottomSheetFlatList };

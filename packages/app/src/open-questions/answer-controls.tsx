@@ -5,12 +5,13 @@ import {
   type QuestionOption,
 } from "@getpaseo/protocol/agent-questions";
 import { CheckSquare, Sparkles, Square } from "lucide-react-native";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
 import { PressHighlight } from "@/components/ui/press-highlight";
+import { EVERY_CARD, useQuestionDraft, type DraftExtra } from "./drafts";
 import { composeOptionAnswer, composeTextAnswer, type ComposedAnswer } from "./model";
 
 /** Long recommendations get a taller field so the owner can read what they are accepting. */
@@ -36,14 +37,9 @@ export function QuestionAnswerControls(props: ControlsProps) {
 
 function TextAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: ControlsProps) {
   const recommended = question.recommendedDefault;
-  const [draft, setDraft] = useState(recommended);
-  const [resets, setResets] = useState(0);
-  // A revised recommendation replaces the draft, so the owner never accepts a stale default.
-  const [seen, setSeen] = useState(recommended);
-  if (seen !== recommended) {
-    setSeen(recommended);
-    setDraft(recommended);
-  }
+  // Shared with every other card showing this question, such as the left sidebar's.
+  const { text: draft, textResetKey, setText } = useQuestionDraft(question.id, recommended);
+  const setDraft = useCallback((value: string) => setText(value), [setText]);
   const multiline =
     (question.input?.kind === "text" && question.input.multiline === true) ||
     recommended.length > MULTILINE_THRESHOLD;
@@ -52,16 +48,13 @@ function TextAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: Co
   const send = useCallback(() => {
     if (composed.answer) onAnswer(composed);
   }, [composed, onAnswer]);
-  const reset = useCallback(() => {
-    setDraft(recommended);
-    setResets((value) => value + 1);
-  }, [recommended]);
+  const reset = useCallback(() => setText(recommended, EVERY_CARD), [recommended, setText]);
   return (
     <View style={styles.stack}>
       <FormTextInput
         size="md"
-        initialValue={recommended}
-        resetKey={`${recommended}:${resets}`}
+        initialValue={draft}
+        resetKey={textResetKey}
         onChangeText={setDraft}
         onSubmitEditing={multiline ? undefined : send}
         editable={canAnswer}
@@ -97,7 +90,7 @@ function TextAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: Co
   );
 }
 
-type Extra = "note" | "other" | null;
+type Extra = DraftExtra;
 
 function OptionAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: ControlsProps) {
   const input = question.input;
@@ -107,9 +100,10 @@ function OptionAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: 
     [question.recommendedOptionIds],
   );
   const multi = input?.kind === "multi";
-  const [selected, setSelected] = useState<string[]>(() => [...recommended]);
-  const [extra, setExtra] = useState<Extra>(null);
-  const [text, setText] = useState("");
+  const draft = useQuestionDraft(question.id, question.recommendedDefault);
+  const { setSelected, extra, setExtra, setExtraText } = draft;
+  const selected = useMemo(() => draft.selected ?? [...recommended], [draft.selected, recommended]);
+  const text = draft.extraText;
   const note = extra === "note" ? text : "";
 
   const choose = useCallback(
@@ -118,10 +112,11 @@ function OptionAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: 
   );
   const toggle = useCallback(
     (id: string) =>
-      setSelected((current) =>
-        current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-      ),
-    [],
+      setSelected((current) => {
+        const base = current ?? [...recommended];
+        return base.includes(id) ? base.filter((item) => item !== id) : [...base, id];
+      }),
+    [recommended, setSelected],
   );
   const submitMulti = useCallback(
     () => onAnswer(composeOptionAnswer(question, selected, note)),
@@ -131,10 +126,13 @@ function OptionAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: 
     const composed = composeTextAnswer(question, text);
     if (composed.answer) onAnswer(composed);
   }, [onAnswer, question, text]);
-  const openNote = useCallback(() => setExtra((value) => (value === "note" ? null : "note")), []);
+  const openNote = useCallback(
+    () => setExtra((value) => (value === "note" ? null : "note")),
+    [setExtra],
+  );
   const openOther = useCallback(
     () => setExtra((value) => (value === "other" ? null : "other")),
-    [],
+    [setExtra],
   );
 
   const range = multi ? multiRange(input, options.length) : null;
@@ -173,9 +171,9 @@ function OptionAnswer({ question, canAnswer, pending, onAnswer, testIDPrefix }: 
       {extra ? (
         <FormTextInput
           size="md"
-          initialValue=""
-          resetKey={extra}
-          onChangeText={setText}
+          initialValue={text}
+          resetKey={draft.extraResetKey}
+          onChangeText={setExtraText}
           onSubmitEditing={extra === "other" ? sendOther : undefined}
           editable={canAnswer}
           maxLength={extra === "note" ? 2000 : 4000}

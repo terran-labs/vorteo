@@ -297,6 +297,91 @@ describe("ProviderUsageService", () => {
     expect(refreshed.providers[0]?.windows[0]?.usedPct).toBe(2);
   });
 
+  // Usage history is persisted state: it must survive a restart and stay bounded.
+  it("records each window's usage over time and keeps it across restarts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "usage-history-"));
+    const historyFile = join(dir, "provider-usage-history.json");
+    let now = Date.parse("2026-06-19T00:00:00.000Z");
+    let used = 10;
+    const fetchers: ProviderUsageFetcher[] = [
+      {
+        providerId: "claude",
+        displayName: "Claude",
+        fetchUsage: async () => ({
+          providerId: "claude",
+          displayName: "Claude",
+          status: "available",
+          windows: [{ id: "weekly", label: "Weekly", usedPct: used }],
+        }),
+      },
+    ];
+    try {
+      const first = new ProviderUsageService({
+        logger: createLogger(),
+        now: () => now,
+        fetchers,
+        historyFile,
+      });
+      await first.listUsage({ forceRefresh: true });
+      now += 60_000; // within five minutes: replaces the latest sample
+      used = 12;
+      await first.listUsage({ forceRefresh: true });
+      now += 10 * 60_000;
+      used = 20;
+      const latest = await first.listUsage({ forceRefresh: true });
+      expect(latest.providers[0]?.windows[0]?.history?.map((point) => point.usedPct)).toEqual([
+        12, 20,
+      ]);
+      await first.stopHistorySampling();
+
+      const restarted = new ProviderUsageService({
+        logger: createLogger(),
+        now: () => now,
+        fetchers,
+        historyFile,
+      });
+      now += 10 * 60_000;
+      used = 25;
+      const resumed = await restarted.listUsage({ forceRefresh: true });
+      expect(resumed.providers[0]?.windows[0]?.history?.map((point) => point.usedPct)).toEqual([
+        12, 20, 25,
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A client polling every two minutes once slid a single sample forward forever.
+  it("keeps adding samples while usage is polled more often than the sample spacing", async () => {
+    let now = Date.parse("2026-06-19T00:00:00.000Z");
+    let used = 10;
+    const service = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => now,
+      historyFile: null,
+      fetchers: [
+        {
+          providerId: "claude",
+          displayName: "Claude",
+          fetchUsage: async () => ({
+            providerId: "claude",
+            displayName: "Claude",
+            status: "available",
+            windows: [{ id: "weekly", label: "Weekly", usedPct: used }],
+          }),
+        },
+      ],
+    });
+    let latest = await service.listUsage({ forceRefresh: true });
+    for (let minute = 2; minute <= 12; minute += 2) {
+      now += 2 * 60_000;
+      used += 1;
+      latest = await service.listUsage({ forceRefresh: true });
+    }
+    // Twelve minutes span three five-minute buckets.
+    expect(latest.providers[0]?.windows[0]?.history?.length).toBe(3);
+  });
+
   it("serves cached usage for two minutes by default", async () => {
     let now = Date.parse("2026-06-19T00:00:00.000Z");
     let calls = 0;
@@ -667,7 +752,7 @@ describe("real provider usage fetchers", () => {
     fetchApi = mockFetch(
       new Map([
         [
-          "https://api.anthropic.com/api/oauth/usage",
+          "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
           () =>
             jsonResponse(
               makeClaudeResponse({
@@ -691,7 +776,7 @@ describe("real provider usage fetchers", () => {
       ]),
     });
     expect(fetchApi).toHaveBeenCalledWith(
-      "https://api.anthropic.com/api/oauth/usage",
+      "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -701,7 +786,7 @@ describe("real provider usage fetchers", () => {
     fetchApi = mockFetch(
       new Map([
         [
-          "https://api.anthropic.com/api/oauth/usage",
+          "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
           () =>
             jsonResponse({
               five_hour: { utilization: 0, resets_at: null },
@@ -740,7 +825,7 @@ describe("real provider usage fetchers", () => {
     let usageCalls = 0;
     fetchApi = vi.fn(async (url: RequestInfo | URL) => {
       const endpoint = url.toString();
-      if (endpoint === "https://api.anthropic.com/api/oauth/usage") {
+      if (endpoint === "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1") {
         usageCalls += 1;
         return new Response(null, { status: 401 });
       }
@@ -773,7 +858,7 @@ describe("real provider usage fetchers", () => {
     expect(findProvider(result, "claude").status).toBe("unavailable");
     expect(usageFetch).toHaveBeenCalledTimes(1);
     expect(usageFetch).toHaveBeenCalledWith(
-      "https://api.anthropic.com/api/oauth/usage",
+      "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer at_expired" }),
       }),
@@ -1544,7 +1629,7 @@ describe("usage bars escalate as they fill", () => {
       fetch: mockFetch(
         new Map([
           [
-            "https://api.anthropic.com/api/oauth/usage",
+            "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
             () =>
               jsonResponse({
                 seven_day: { utilization, resets_at: "2026-06-04T00:00:00Z" },
@@ -1650,7 +1735,12 @@ describe("ClaudeQuotaProvider scoped weekly limits", () => {
       claudeHome,
       claudeKeychainReader: async () => null,
       fetch: mockFetch(
-        new Map([["https://api.anthropic.com/api/oauth/usage", () => jsonResponse(body)]]),
+        new Map([
+          [
+            "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
+            () => jsonResponse(body),
+          ],
+        ]),
       ),
     });
     return { provider, logger };
@@ -1768,7 +1858,12 @@ describe("ClaudeQuotaProvider scoped limit reconciliation", () => {
       claudeHome,
       claudeKeychainReader: async () => null,
       fetch: mockFetch(
-        new Map([["https://api.anthropic.com/api/oauth/usage", () => jsonResponse(body)]]),
+        new Map([
+          [
+            "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
+            () => jsonResponse(body),
+          ],
+        ]),
       ),
     }).fetchUsage();
     return usage.windows;

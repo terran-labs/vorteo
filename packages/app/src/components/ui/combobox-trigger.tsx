@@ -28,9 +28,9 @@ const chevronColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
 
+/** No `hovered`: trigger hover belongs in CSS (`hoverStyle` in `@/styles/hover`). */
 interface TriggerState {
   pressed: boolean;
-  hovered: boolean;
   focused: boolean;
 }
 
@@ -54,8 +54,8 @@ export const ComboboxTrigger = forwardRef<View, ComboboxTriggerProps>(function C
   const touch = useVortonTouch();
   const [focused, setFocused] = useState(false);
   const pressableStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => {
-      const resolved = typeof style === "function" ? style({ pressed, hovered, focused }) : style;
+    ({ pressed }: PressableStateCallbackType) => {
+      const resolved = typeof style === "function" ? style({ pressed, focused }) : style;
       return touch ? [resolved, touchTriggerStyle] : resolved;
     },
     [focused, style, touch],

@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useRef, type ReactNode } from "react";
-import { ScrollView } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { Wrench } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { IndentRail } from "@/components/indent-rail";

@@ -1,5 +1,5 @@
-import { ScrollView } from "react-native";
 import { useResponsiveSupportingCards } from "@/hooks/use-responsive-sidebar";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { useSupportingCardRequests } from "@/workspace-tabs/supporting-card-requests";
 import { useAgentPresentationNavigation } from "@/subagents/use-agent-presentation-navigation";
 import { useWorkspaceArchiveRedirect } from "@/workspace/use-workspace-archive-redirect";

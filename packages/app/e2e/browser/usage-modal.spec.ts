@@ -29,7 +29,7 @@ import {
   expectUnpinnableRows,
   openCompactSidebar,
   openUsageFromQuotaCard,
-  quotaCard,
+  openQuotas,
   openUsageOptions,
   closeUsageOptions,
   showUsageAs,
@@ -365,11 +365,13 @@ test.describe("usage screen", () => {
   });
 });
 
-/** The Quota card lists exactly this source's account, so it reads the expected usage host. */
+/** The quotas list exactly this source's account, so they read the expected usage host. */
 async function expectQuotaAccount(page: Page, sourceId: string) {
-  const accounts = quotaCard(page).locator('[data-testid^="global-quota-account-"]');
+  const quotas = await openQuotas(page);
+  const accounts = quotas.locator('[data-testid^="global-quota-account-"]');
   await expect(accounts).toHaveCount(1, { timeout: 30_000 });
-  await expect(quotaCard(page).getByTestId(`global-quota-account-${sourceId}`)).toBeVisible();
+  await expect(quotas.getByTestId(`global-quota-account-${sourceId}`)).toBeVisible();
+  await page.keyboard.press("Escape");
 }
 
 const loginWindows: UsageReportEntry["report"] = {

@@ -24,15 +24,11 @@ test("touch workspace rows have no kebab and the title menu contains workspace a
     await page.getByRole("button", { name: "Open menu", exact: true }).click();
     await waitForSidebarHydration(page);
 
-    await page.getByTestId("sidebar-display-preferences-menu").click();
-    await expect(page.getByRole("menuitem")).toHaveText([
-      /^Grouping/,
-      /^Sort/,
-      /^Title/,
-      "Show",
-      "Project",
-      "Show background",
-    ]);
+    // View preferences are a group in the sidebar's main menu.
+    await page.locator('[data-testid="sidebar-footer-overflow"]:visible').first().click();
+    await expect(
+      page.getByRole("menuitem").filter({ hasText: /^(Grouping|Sort|Title|Show|Project)/ }),
+    ).toHaveText([/^Grouping/, /^Sort/, /^Title/, "Show", "Project", "Show background"]);
     await closeMenuSheet(page);
 
     await page

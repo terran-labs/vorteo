@@ -5,6 +5,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { WorkspaceScriptPayload } from "@getpaseo/protocol/messages";
 import type { Theme } from "@/styles/theme";
 import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 
 import { resolveWorkspaceScriptLink } from "@/utils/workspace-script-links";
 import { openExternalUrl } from "@/utils/open-external-url";
@@ -15,10 +16,6 @@ const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.for
 
 const successColorMapping = (theme: Theme) => ({ color: theme.colors.statusSuccess });
 const dangerColorMapping = (theme: Theme) => ({ color: theme.colors.statusDanger });
-function rowStyle({ hovered }: { hovered?: boolean }) {
-  return [styles.row, hovered && styles.hovered];
-}
-
 export function WorkspacePreviewRows({ scripts }: { scripts: WorkspaceScriptPayload[] }) {
   return (
     <>
@@ -53,7 +50,7 @@ function WorkspacePreviewRow({ script }: { script: WorkspaceScriptPayload }) {
       accessibilityRole="link"
       accessibilityLabel={`${script.scriptName}: ${target.url}`}
       onPress={onPress}
-      style={rowStyle}
+      style={styles.row}
     >
       <ThemedGlobe
         size={12}
@@ -75,8 +72,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[3],
     paddingVertical: 6,
     minHeight: 28,
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
-  hovered: { backgroundColor: theme.colors.surface2 },
   text: {
     flex: 1,
     minWidth: 0,

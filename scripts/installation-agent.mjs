@@ -39,6 +39,10 @@ function planBindings(values) {
   );
 }
 
+/** Delegated Dev creation must outlast Dev's settings admission timeout so Dev's reported cause
+ * arrives first; the coordinator e2e suite asserts the margin. */
+export const REQUEST_TIMEOUT_MS = 60_000;
+
 /** This client is copied alone into Dev. Use built-ins, not an undeclared
  * dispatcher dependency, to avoid fetch's shorter independent headers timeout.
  * One deadline covers connection, headers and body; failure never retries. */
@@ -788,7 +792,7 @@ if (
       : await fetch(requestUrl, {
           ...requestOptions,
           redirect: "error",
-          signal: AbortSignal.timeout(60_000),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
   if (!response.ok) {
     const failure = await response.json().catch(() => null);

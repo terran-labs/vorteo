@@ -28,6 +28,7 @@ import type { Theme } from "@/styles/theme";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import { getForgePresentation } from "@/git/forge";
 import { FLOATING_PANEL_RADIUS } from "@/styles/floating-panel";
+import { hoverStyle } from "@/styles/hover";
 import { extraMutedIconColorMapping } from "@/components/ui/icon-button-chrome";
 
 interface WorkspaceOpenInEditorButtonProps {
@@ -196,18 +197,19 @@ export function WorkspaceOpenInEditorButton({
   );
 
   const primaryPressableStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       hideLabels ? styles.splitButtonPrimaryIconOnly : styles.splitButtonPrimary,
-      (Boolean(hovered) || pressed) && styles.splitButtonPrimaryHovered,
+      !openMutation.isPending && styles.splitButtonPrimaryHover,
+      pressed && styles.splitButtonPrimaryHovered,
       openMutation.isPending && styles.splitButtonPrimaryDisabled,
     ],
     [hideLabels, openMutation.isPending],
   );
 
   const caretTriggerStyle = useCallback(
-    ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
+    ({ pressed, open }: { pressed: boolean; open: boolean }) => [
       styles.splitButtonCaret,
-      (hovered || pressed || open) && styles.splitButtonCaretHovered,
+      (pressed || open) && styles.splitButtonCaretHovered,
     ],
     [],
   );
@@ -322,6 +324,8 @@ const styles = StyleSheet.create((theme) => ({
   splitButtonPrimaryHovered: {
     backgroundColor: theme.colors.surface2,
   },
+  // Left out while opening, since the disabled button never reported hover.
+  splitButtonPrimaryHover: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   splitButtonPrimaryDisabled: {
     opacity: 0.6,
   },
@@ -346,6 +350,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: FLOATING_PANEL_RADIUS,
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   splitButtonCaretHovered: {
     backgroundColor: theme.colors.surface2,

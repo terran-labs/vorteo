@@ -38,6 +38,7 @@ import { useTranslation } from "react-i18next";
 
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { createNameId } from "mnemonic-id";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Composer } from "@/composer";
@@ -1499,9 +1500,9 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput) {
   );
 
   const badgePressableStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.badge,
-      Boolean(hovered) && !isPending && styles.badgeHovered,
+      !pressed && !isPending && styles.badgeHovered,
       pressed && !isPending && styles.badgePressed,
       isPending && styles.badgeDisabled,
     ],
@@ -2632,9 +2633,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius["2xl"],
     gap: theme.spacing[1],
   },
-  badgeHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  badgeHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   badgePressed: {
     backgroundColor: theme.colors.surface0,
   },

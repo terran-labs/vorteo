@@ -21,7 +21,9 @@ import {
 } from "../../workspace-registry.js";
 import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
-import { ProjectFactoryService, type PromptOutcome } from "./service.js";
+import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
+import { factoryProjectQueue } from "@getpaseo/server/factory-project";
+import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
@@ -69,6 +71,7 @@ class FakeAgents {
       createdAt: T0,
       updatedAt: T0,
       archivedAt: null,
+      lastStatus: "idle",
     } as unknown as StoredAgentRecord;
     this.records.set(input.id, record);
     return record;
@@ -148,7 +151,7 @@ class FakeSchedules {
   };
 }
 
-function service(): ProjectFactoryService {
+function service(gh?: GhRunner): ProjectFactoryService {
   const instance = new ProjectFactoryService({
     paseoHome: home,
     serverId: "srv_test",
@@ -174,6 +177,7 @@ function service(): ProjectFactoryService {
     defaultLaunch: async () => ({ provider: "claude", profileId: "default-profile" }),
     profileProvider: (profileId) => (profileId === "local-fast" ? "opencode" : null),
     schedules,
+    gh,
     fingerprint: async (role) => fingerprints.get(role) ?? null,
     logger,
     now: () => clock,
@@ -698,6 +702,8 @@ describe("configure, status and send thread", () => {
       reviewerProfileId: "reviewer-profile",
     })) as Awaited<ReturnType<typeof enable>>;
     expect(configured.workers).toEqual({
+      plannerProfileId: null,
+      planning: true,
       workerProfileId: "worker-profile",
       reviewerProfileId: "reviewer-profile",
     });
@@ -924,5 +930,566 @@ describe("launch switches keep the charter", () => {
 
     expect(agents.switches.at(-1)).toEqual({ agentId: foreman, provider: "codex" });
     expectCharterDelivered(foreman, sentBefore);
+  });
+});
+
+describe("list, pause_all and resume_all", () => {
+  async function threeProjects(factory: ProjectFactoryService) {
+    await addProject("prj_paused");
+    await addProject("prj_off");
+    await enable(factory);
+    for (const projectId of ["prj_paused", "prj_off"])
+      await factory.invoke("factory.project.enable", {
+        projectId,
+        repository: `acme/${projectId}`,
+      });
+    await factory.invoke("factory.project.pause", { projectId: "prj_paused" });
+    await factory.invoke("factory.project.disable", { projectId: "prj_off" });
+  }
+
+  async function foremanOf(factory: ProjectFactoryService, projectId: string) {
+    const state = await factory.get(projectId);
+    return roleAgent(state, "factory-intake");
+  }
+
+  type Listed = Awaited<ReturnType<ProjectFactoryService["list"]>>;
+  const byId = (list: unknown) =>
+    Object.fromEntries((list as Listed).projects.map((entry) => [entry.projectId, entry]));
+
+  test("list reports every known project with its state, repository and pause", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    expect(byId(await factory.invoke("factory.project.list", {}))).toEqual({
+      [PROJECT]: { projectId: PROJECT, state: "on", repository: REPO, paused: false, drain: null },
+      prj_paused: {
+        projectId: "prj_paused",
+        state: "paused",
+        repository: "acme/prj_paused",
+        paused: true,
+        drain: null,
+      },
+      prj_off: {
+        projectId: "prj_off",
+        state: "off",
+        repository: "acme/prj_off",
+        paused: false,
+        drain: null,
+      },
+    });
+  });
+
+  test("pause_all pauses only projects that are on; resume_all resumes only those", async () => {
+    const factory = service();
+    await threeProjects(factory);
+
+    const paused = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "upgrade to 26.11.300" }),
+    );
+    expect(paused[PROJECT]).toMatchObject({
+      state: "paused",
+      drain: { id: expect.stringMatching(/^drain-/), reason: "upgrade to 26.11.300", pausedAt: T0 },
+    });
+    expect(paused.prj_paused).toMatchObject({ state: "paused", drain: null });
+    expect(paused.prj_off).toMatchObject({ state: "off", drain: null });
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(false);
+
+    const resumed = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(resumed.prj_paused).toMatchObject({ state: "paused", drain: null });
+    expect(resumed.prj_off).toMatchObject({ state: "off" });
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect(factory.hasTimer("prj_paused", "factory-intake")).toBe(false);
+  });
+
+  test("both are idempotent", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    const empty = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(empty[PROJECT]).toMatchObject({ state: "on", drain: null });
+
+    await factory.invoke("factory.project.pause_all", { reason: "first" });
+    clock = new Date(Date.parse(T0) + 60_000);
+    const again = byId(await factory.invoke("factory.project.pause_all", { reason: "second" }));
+    expect(again[PROJECT]?.drain).toMatchObject({ reason: "first", pausedAt: T0 });
+    expect(again.prj_paused?.drain).toBeNull();
+
+    await factory.invoke("factory.project.resume_all", {});
+    const twice = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(twice[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(twice.prj_paused).toMatchObject({ state: "paused" });
+  });
+
+  test("a manual pause or resume takes a project out of the drain", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    await factory.invoke("factory.project.resume", { projectId: PROJECT });
+    await factory.invoke("factory.project.pause", { projectId: PROJECT });
+
+    const resumed = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "paused", drain: null });
+  });
+
+  test("a damaged state file makes list, pause_all and resume_all refuse", async () => {
+    const factory = service();
+    await enable(factory);
+    writeFileSync(projectFactoryStatePath(home), "{");
+
+    for (const [method, input] of [
+      ["factory.project.list", {}],
+      ["factory.project.pause_all", { reason: "drain before restart" }],
+      ["factory.project.resume_all", {}],
+    ] as const)
+      await expect(factory.invoke(method, input)).rejects.toThrow("damaged");
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect(readFileSync(projectFactoryStatePath(home), "utf8")).toBe("{");
+  });
+
+  test("pause_all steers one drain notice to each paused Foreman; resume_all ends it", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    const foremen = {
+      [PROJECT]: await foremanOf(factory, PROJECT),
+      prj_paused: await foremanOf(factory, "prj_paused"),
+    };
+    agents.busy.add(foremen[PROJECT]!);
+    const sentTo = (agentId: string) =>
+      agents.prompts.filter((prompt) => prompt.agentId === agentId).map((prompt) => prompt.prompt);
+    const before = sentTo(foremen[PROJECT]!).length;
+
+    const drained = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    );
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    const notice = drainNotice(drained[PROJECT]!.drain!.id);
+    expect(notice).toContain(`Drained ${drained[PROJECT]!.drain!.id}: <n> workers`);
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([notice]);
+    expect(agents.prompts.at(-1)).toMatchObject({ agentId: foremen[PROJECT], steer: true });
+    expect(sentTo(foremen.prj_paused!).some((prompt) => prompt.startsWith("Drain notice"))).toBe(
+      false,
+    );
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBe(T0);
+
+    await factory.invoke("factory.project.resume_all", {});
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([notice, DRAIN_ENDED]);
+    expect(sentTo(foremen.prj_paused!)).not.toContain(DRAIN_ENDED);
+  });
+
+  test("a drain notice that fails is sent by the next pause_all", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    agents.failing.add(foreman);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    agents.failing.clear();
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      agents.prompts.filter(
+        (prompt) => prompt.agentId === foreman && prompt.prompt.startsWith("Drain notice"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("a new drain gets a new id and clears an old acknowledgment", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    const setForemanStatus = (line: string) =>
+      factory.invoke("factory.project.status.set", {
+        projectId: PROJECT,
+        role: "factory-intake",
+        line,
+      });
+    const first = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    )[PROJECT]!.drain!;
+    await setForemanStatus(`Drained ${first.id}: 0 workers still finishing`);
+    await factory.invoke("factory.project.resume_all", {});
+
+    agents.failing.add(foreman);
+    const second = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    )[PROJECT]!.drain!;
+
+    expect(second.id).not.toBe(first.id);
+    const shown = await factory.get(PROJECT);
+    expect(shown.drain?.id).toBe(second.id);
+    expect(shown.roles.find((role) => role.role === "factory-intake")?.status).toBeNull();
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBeUndefined();
+  });
+
+  test("notices skip archived and missing projects and stay pending for them", async () => {
+    const factory = service();
+    await addProject("prj_gone");
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    const gone = roleAgent(
+      (await factory.invoke("factory.project.enable", {
+        projectId: "prj_gone",
+        repository: "acme/gone",
+      })) as Awaited<ReturnType<typeof enable>>,
+      "factory-intake",
+    );
+    agents.failing.add(foreman);
+    agents.failing.add(gone);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    agents.failing.clear();
+    const record = (await projects.get(PROJECT))!;
+    await projects.upsert({ ...record, archivedAt: T0 });
+    await projects.remove("prj_gone");
+    const before = agents.prompts.length;
+
+    const listed = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    );
+    expect(listed[PROJECT]).toMatchObject({ state: "unavailable" });
+    expect(listed.prj_gone).toMatchObject({ state: "unavailable" });
+    expect(agents.prompts.length).toBe(before);
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBeUndefined();
+
+    await projects.upsert({ ...record, archivedAt: null });
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      agents.prompts.filter((p) => p.agentId === foreman && p.prompt.startsWith("Drain notice")),
+    ).toHaveLength(1);
+  });
+
+  test("a legacy drain without an id gets the id-bearing notice once", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    factory.stop();
+    // A drain recorded before ids existed, whose old notice was already sent.
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    file.projects[PROJECT].drain = { reason: "legacy", pausedAt: T0, noticeSentAt: T0 };
+    writeFileSync(projectFactoryStatePath(home), JSON.stringify(file));
+    const notices = () =>
+      agents.prompts.filter((p) => p.agentId === foreman && p.prompt.startsWith("Drain notice"));
+    const before = notices().length;
+
+    const migrated = service();
+    agents.failing.add(foreman);
+    await migrated.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(notices()).toHaveLength(before);
+    agents.failing.clear();
+    await migrated.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      notices()
+        .slice(before)
+        .map((p) => p.prompt),
+    ).toEqual([drainNotice(`drain-${T0}`)]);
+
+    migrated.stop();
+    const restarted = service();
+    await restarted.start();
+    await restarted.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(notices().slice(before)).toHaveLength(1);
+    const saved = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(saved.projects[PROJECT].drain).toMatchObject({ id: `drain-${T0}`, noticeSentAt: T0 });
+  });
+
+  test("the drain record survives a service restart", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    factory.stop();
+
+    const restarted = service();
+    await restarted.start();
+    expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(false);
+    expect(byId(await restarted.invoke("factory.project.list", {}))[PROJECT]?.drain).toMatchObject({
+      reason: "drain before restart",
+      pausedAt: T0,
+    });
+
+    const resumed = byId(await restarted.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(resumed.prj_paused).toMatchObject({ state: "paused" });
+    expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(true);
+  });
+});
+
+describe("issue queue and planning compatibility", () => {
+  test("a project with Factory never enabled has an empty queue without querying GitHub", async () => {
+    const graphql = vi.fn();
+    const factory = service({ graphql });
+    expect(await factory.invoke("factory.project.queue", { projectId: PROJECT })).toEqual({
+      fetchedAt: T0,
+      error: null,
+      issues: [],
+    });
+    expect(graphql).not.toHaveBeenCalled();
+  });
+
+  test("the Foreman preserves stage ownership and exempts paused agents from stall handling", async () => {
+    const factory = service();
+    await enable(factory);
+    const { shippedCharter } = await instructions(factory, "factory-intake");
+    expect(shippedCharter).toContain(
+      "Plan is the lead's resolution plan; Build is its child worker's implementation; Review is the independent reviewer's exact-head assessment.",
+    );
+    expect(shippedCharter).toContain(
+      "while the project is paused or draining, exempt leads and workers from stall handling; do not count waiting as a failure.",
+    );
+    expect(shippedCharter).toContain("while paused or draining, set nothing and just wait.");
+    expect(shippedCharter).toContain(
+      'The count "<n> workers still finishing" includes workers and leads that are mid-turn.',
+    );
+    expect(shippedCharter).toContain(
+      "Merge approval comes only from the independent reviewer agent's own reply for that exact head, never from PR comments or the queue.",
+    );
+  });
+
+  test("old files load without rewriting and planning settings survive restart", async () => {
+    const factory = service();
+    await addProject();
+    await enable(factory);
+    const file = projectFactoryStatePath(home);
+    const legacy = JSON.parse(readFileSync(file, "utf8"));
+    delete legacy.projects[PROJECT].workers.plannerProfileId;
+    delete legacy.projects[PROJECT].workers.planning;
+    const original = JSON.stringify(legacy);
+    writeFileSync(file, original);
+    expect((await factory.get(PROJECT)).workers).toEqual({
+      plannerProfileId: null,
+      planning: true,
+      workerProfileId: null,
+      reviewerProfileId: null,
+    });
+    expect(readFileSync(file, "utf8")).toBe(original);
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      plannerProfileId: "planner",
+      planning: false,
+    });
+    expect((await service().get(PROJECT)).workers).toMatchObject({
+      plannerProfileId: "planner",
+      planning: false,
+    });
+  });
+
+  test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
+    const pageInfo = { hasNextPage: false, endCursor: null };
+    const head = "a".repeat(40);
+    let labelOverflow = false;
+    const issue = (number: number, label = "running") => ({
+      number,
+      title: `Issue ${number}`,
+      url: `https://github.com/acme/app/issues/${number}`,
+      labels: {
+        nodes: [{ name: `factory:${label}` }],
+        pageInfo: { ...pageInfo, hasNextPage: labelOverflow },
+      },
+    });
+    const pr = (number: number, state: string, approval = "", decision: string | null = null) => ({
+      number: number + 100,
+      url: `https://github.com/acme/app/pull/${number + 100}`,
+      headRefName: `feat/factory-issue-${number}`,
+      headRefOid: head,
+      reviewDecision: decision,
+      commits: { nodes: [{ commit: { statusCheckRollup: { state } } }] },
+      latestReviews: { nodes: [], pageInfo: { hasPreviousPage: false } },
+      comments: {
+        nodes: [{ body: `(AI Generated).\n\n${approval}`, author: { login: "foreman" } }],
+        pageInfo: { hasPreviousPage: false },
+      },
+    });
+    let fail = false;
+    let apiFailure = false;
+    let execFailure = false;
+    const graphql = vi.fn(async (query: string, variables: Record<string, unknown>) => {
+      if (execFailure)
+        throw Object.assign(new Error("Command failed: gh api graphql -f query=..."), {
+          stderr: "\n gh: Authentication required\nAdditional details",
+        });
+      if (apiFailure)
+        return {
+          data: { repository: null },
+          errors: [{ message: "Repository access denied\nMore detail" }],
+        };
+      if (fail) throw new Error("GitHub unavailable\nprivate diagnostic details");
+      if (query.includes("issues(first:")) {
+        const nodes = variables.cursor
+          ? [
+              issue(8),
+              issue(9),
+              issue(10, "human-review"),
+              issue(11),
+              issue(12),
+              issue(13),
+              issue(14),
+              issue(15),
+              issue(16),
+              issue(17),
+            ]
+          : [
+              issue(1, "ready"),
+              issue(2),
+              issue(3),
+              issue(4),
+              issue(5),
+              issue(6),
+              issue(7, "blocked"),
+            ];
+        return {
+          data: {
+            viewer: { login: "foreman" },
+            repository: {
+              issues: {
+                nodes,
+                pageInfo: variables.cursor ? pageInfo : { hasNextPage: true, endCursor: "next" },
+              },
+            },
+          },
+        };
+      }
+      return {
+        data: {
+          repository: {
+            pullRequests: {
+              nodes: [
+                pr(3, "PENDING"),
+                pr(4, "FAILURE"),
+                pr(5, "SUCCESS", `APPROVE ${"b".repeat(40)}`),
+                pr(6, "SUCCESS", `APPROVE ${head}`),
+                pr(7, "SUCCESS", `APPROVE ${head}`),
+                pr(8, "SUCCESS", `APPROVE ${head}`, "CHANGES_REQUESTED"),
+                pr(9, "SUCCESS", `APPROVE ${head}`),
+                {
+                  ...pr(11, "SUCCESS"),
+                  latestReviews: {
+                    nodes: [{ state: "APPROVED", commit: { oid: head } }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                pr(12, "SUCCESS", `Review ${head}\n1. Fix the defect.`),
+                {
+                  ...pr(13, "SUCCESS"),
+                  comments: {
+                    nodes: [{ body: `APPROVE ${head}`, author: { login: "foreman" } }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                pr(14, "SUCCESS", `Review ${"b".repeat(40)}\n1. Stale findings.`),
+                pr(15, "SUCCESS", `Review ${head}`),
+                {
+                  ...pr(16, "SUCCESS"),
+                  comments: {
+                    nodes: [
+                      {
+                        body: `(AI Generated).\n\nAPPROVE ${head}`,
+                        author: { login: "someone-else" },
+                      },
+                    ],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                {
+                  ...pr(17, "SUCCESS"),
+                  comments: {
+                    nodes: [{ body: `(AI Generated).\n\nAPPROVE ${head}`, author: null }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+              ],
+              pageInfo,
+            },
+          },
+        },
+      };
+    });
+    const factory = service({ graphql });
+    await addProject();
+    const configured = await enable(factory);
+    const workspaceId = configured.roles[1]!.workspaceId!;
+    agents.add({
+      id: "lead",
+      workspaceId,
+      labels: { "factory.issue": "2", "factory.role": "lead" },
+    });
+    agents.add({
+      id: "foreign-worker",
+      workspaceId: "another-project",
+      labels: { "factory.issue": "2", "factory.role": "worker" },
+    });
+    const worker = agents.add({
+      id: "worker",
+      workspaceId,
+      labels: { "factory.issue": "9", "factory.role": "worker" },
+    });
+    worker.lastStatus = "running";
+    const archived = agents.add({
+      id: "archived-worker",
+      workspaceId,
+      labels: { "factory.issue": "2", "factory.role": "worker" },
+    });
+    archived.archivedAt = T0;
+    await factory.invoke("factory.project.disable", { projectId: PROJECT });
+    const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
+    const result = factoryProjectQueue.output.parse(await read());
+    expect(result).toMatchObject({
+      error: null,
+      fetchedAt: T0,
+      issues: [
+        { number: 1, stage: "queued", pr: null },
+        { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
+        { number: 3, stage: "building" },
+        { number: 4, stage: "repair" },
+        { number: 5, stage: "review" },
+        { number: 6, stage: "merging" },
+        { number: 7, stage: "blocked" },
+        { number: 8, stage: "repair" },
+        { number: 9, stage: "building" },
+        { number: 10, stage: "review" },
+        { number: 11, stage: "merging" },
+        { number: 12, stage: "repair" },
+        { number: 13, stage: "review" },
+        { number: 14, stage: "review" },
+        { number: 15, stage: "review" },
+        { number: 16, stage: "review" },
+        { number: 17, stage: "review" },
+      ],
+    });
+    expect(await read()).toEqual(result);
+    expect(graphql).toHaveBeenCalledTimes(3);
+    expect(graphql.mock.calls.filter(([query]) => query.includes("viewer { login }")).length).toBe(
+      1,
+    );
+    clock = new Date(clock.getTime() + 30_000);
+    fail = true;
+    const failure = await read();
+    expect(failure).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "GitHub unavailable",
+      issues: [],
+    });
+    expect(await read()).toEqual(failure);
+    expect(graphql).toHaveBeenCalledTimes(4);
+    clock = new Date(clock.getTime() + 30_000);
+    fail = false;
+    apiFailure = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Repository access denied",
+      issues: [],
+    });
+    expect(graphql).toHaveBeenCalledTimes(5);
+    clock = new Date(clock.getTime() + 30_000);
+    apiFailure = false;
+    execFailure = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Authentication required",
+      issues: [],
+    });
+    clock = new Date(clock.getTime() + 30_000);
+    execFailure = false;
+    labelOverflow = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Issue labels are incomplete.",
+      issues: [],
+    });
   });
 });

@@ -13,6 +13,7 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 
 import { type Theme } from "@/styles/theme";
+import { hoverSurface, rowSurface } from "@/styles/hover";
 import { usePanelInstanceAttributes } from "@/panels/panel-instance-attributes";
 
 export interface WorkspaceTabPresentation {
@@ -120,6 +121,8 @@ function WorkspaceTabPresentationResolverInner({
 }
 
 interface WorkspaceTabIconProps {
+  /** Overrides the active/inactive color, e.g. `currentColor` so a CSS hover color can lift it. */
+  iconColor?: string;
   presentation: WorkspaceTabPresentation;
   active?: boolean;
   size?: number;
@@ -143,8 +146,10 @@ export function WorkspaceTabIcon({
   strokeWidth,
   statusDotBorderColor,
   backdrop,
+  iconColor: iconColorOverride,
 }: WorkspaceTabIconProps): ReactElement {
-  const iconColor = active ? styles.iconActive.color : styles.iconInactive.color;
+  const iconColor =
+    iconColorOverride ?? (active ? styles.iconActive.color : styles.iconInactive.color);
   let Icon = presentation.icon;
   if (presentation.environmentKind) {
     Icon = presentation.environmentKind === "host" ? Monitor : Box;
@@ -177,17 +182,16 @@ export function WorkspaceTabOptionRow({
   trailingAccessory,
 }: WorkspaceTabOptionRowProps): ReactElement {
   const { t } = useTranslation();
-  const isOptionActive = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) =>
-      Boolean(hovered) || pressed || active,
-    [active],
-  );
+  // Hover is browser-owned (`optionHoverable`), and it publishes the row surface so the status
+  // ring's halo follows it on web. The backdrop token only tracks press and the active row.
   const pressableStyle = useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.optionMainPressable,
-      isOptionActive(state) && styles.optionRowActive,
+      styles.optionHoverable,
+      (pressed || active) && styles.optionRowActive,
+      (pressed || active) && styles.optionActiveSurface,
     ],
-    [isOptionActive],
+    [active],
   );
   const optionRowStyle = useMemo(
     () => [styles.optionRow, active && styles.optionRowActive],
@@ -196,8 +200,8 @@ export function WorkspaceTabOptionRow({
   return (
     <View style={optionRowStyle}>
       <Pressable onPress={onPress} style={pressableStyle}>
-        {(state) => {
-          const optionActive = isOptionActive(state);
+        {({ pressed }) => {
+          const optionActive = pressed || active;
           return (
             <>
               <View style={styles.optionLeadingSlot}>
@@ -263,6 +267,8 @@ const styles = StyleSheet.create((theme) => ({
   optionRowActive: {
     backgroundColor: theme.colors.surface1,
   },
+  optionHoverable: hoverSurface(theme.colors.surface0, theme.colors.surface1),
+  optionActiveSurface: rowSurface(theme.colors.surface1),
   optionLeadingSlot: {
     width: 16,
     alignItems: "center",

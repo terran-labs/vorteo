@@ -10,7 +10,8 @@ import type { SidebarFocusTarget } from "@/sidebar-focus/model";
 import { useVortonTouch } from "@/vorton-touch";
 
 const PINNED_FOCUS_TARGET: SidebarFocusTarget = { kind: "pinned" };
-const pinnedSectionIcon = <SidebarPinIcon />;
+// Calm like the folder glyphs beside it, regaining the muted color on row hover.
+const pinnedSectionIcon = <SidebarPinIcon calm cssHover />;
 
 /**
  * The root Pinned heading: a folder-like row that folds, and focuses to list only pinned rows.

@@ -85,6 +85,7 @@ import {
   type MessageInputRef,
 } from "./input/input";
 import type { ImageAttachment, MessagePayload, TextReplacement } from "./types";
+import { hoverStyle } from "@/styles/hover";
 import { ICON_SIZE, SPACING, type Theme } from "@/styles/theme";
 import { LaunchPickerCollapse } from "@/composer/draft/launch-transition";
 import type { DraftCommandTarget } from "@/agent-commands";
@@ -277,11 +278,11 @@ function buildCancelButtonStyle(isConnected: boolean, isCancellingAgent: boolean
 }
 
 function buildRealtimeVoiceButtonStyle(
-  hovered: boolean | undefined,
   voiceButtonDisabled: boolean,
   reserveLeadingSpace: boolean,
 ): object[] {
-  const hoveredStyle = hovered ? styles.iconButtonHovered : undefined;
+  // Browser-owned hover; a disabled button keeps its rest look.
+  const hoveredStyle = voiceButtonDisabled ? styles.iconButtonRest : styles.iconButtonHoverable;
   const disabledStyle = voiceButtonDisabled ? styles.buttonDisabled : undefined;
   const reserveStyle = reserveLeadingSpace ? styles.realtimeVoiceButtonCompactReserve : undefined;
   return [styles.realtimeVoiceButton, reserveStyle, hoveredStyle, disabledStyle].filter(
@@ -1166,16 +1167,12 @@ function ComposerVoiceModeButton({
   t,
 }: ComposerVoiceModeButtonProps) {
   const shortcutNode = voiceToggleKeys ? <Shortcut chord={voiceToggleKeys} /> : null;
-  const renderTriggerContent = useCallback(
-    ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
-      if (isVoiceSwitching) {
-        return <LoadingSpinner size="small" color="white" />;
-      }
-      const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
-      return <ThemedAudioLines size={buttonIconSize} uniProps={colorMapping} />;
-    },
-    [buttonIconSize, isVoiceSwitching],
-  );
+  const renderTriggerContent = useCallback(() => {
+    if (isVoiceSwitching) {
+      return <LoadingSpinner size="small" color="white" />;
+    }
+    return <ThemedAudioLines size={buttonIconSize} uniProps={iconInheritedColorMapping} />;
+  }, [buttonIconSize, isVoiceSwitching]);
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
       <TooltipTrigger
@@ -2044,8 +2041,7 @@ function ComposerContentImpl({
   const isVoiceSwitching = voice?.isVoiceSwitching ?? false;
   const voiceButtonDisabled = !isConnected || isVoiceSwitching;
   const realtimeVoiceButtonStyle = useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) =>
-      buildRealtimeVoiceButtonStyle(state.hovered, voiceButtonDisabled, isCompactLayout),
+    () => buildRealtimeVoiceButtonStyle(voiceButtonDisabled, isCompactLayout),
     [isCompactLayout, voiceButtonDisabled],
   );
 
@@ -2721,9 +2717,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
     backgroundColor: theme.colors.palette.green[600],
     borderColor: theme.colors.palette.green[800],
   },
-  iconButtonHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  // `color` tints the icon, which inherits it on web through `iconInheritedColorMapping`.
+  iconButtonHoverable: hoverStyle(
+    { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
+  iconButtonRest: { _web: { color: theme.colors.foregroundMuted } },
   attachmentTray: {
     flexDirection: "row",
     gap: theme.spacing[2],
@@ -2794,8 +2793,11 @@ const ThemedPaperclip = withUnistyles(Paperclip);
 const ThemedImageIcon = withUnistyles(ImageIcon);
 const ThemedClipboardPaste = withUnistyles(ClipboardPaste);
 const ThemedFileText = withUnistyles(FileText);
-const iconForegroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+// On web the icon inherits its button's CSS color, so browser-owned hover can brighten it.
+const iconInheritedColorMapping = isWeb
+  ? () => ({ color: "currentColor" })
+  : iconForegroundMutedMapping;
 
 function renderForgeAttachmentIcon(icon: string): ReactElement {
   return (

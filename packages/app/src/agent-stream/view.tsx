@@ -127,6 +127,7 @@ import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store"
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useForkAgent } from "@/hooks/use-fork-agent";
 import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import { useRetainedPanelActive } from "@/components/retained-panel";
@@ -1694,12 +1695,10 @@ const mutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
 
-const pressableStyle = ({
-  pressed,
-  hovered = false,
-}: PressableStateCallbackType & { hovered?: boolean }) => [
+// Hover is a browser-owned style; a disabled (responding) option keeps its rest look.
+const pressableStyle = ({ pressed }: PressableStateCallbackType) => [
   permissionStyles.optionButton,
-  hovered ? permissionStyles.optionButtonHovered : null,
+  permissionStyles.optionButtonHoverable,
   pressed ? permissionStyles.optionButtonPressed : null,
 ];
 
@@ -1731,7 +1730,7 @@ function PermissionActionButton({
     <Pressable
       accessibilityRole="button"
       testID={testID}
-      style={pressableStyle}
+      style={isResponding ? permissionStyles.optionButton : pressableStyle}
       onPress={handlePress}
       disabled={isResponding}
     >
@@ -2102,9 +2101,7 @@ const permissionStyles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
     borderColor: theme.colors.borderAccent,
   },
-  optionButtonHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  optionButtonHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   optionButtonPressed: {
     opacity: 0.9,
   },

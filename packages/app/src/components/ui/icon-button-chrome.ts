@@ -4,6 +4,7 @@ import type { StyleProp, ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { HEADER_CONTROL_HEIGHT } from "@/components/ui/control-geometry";
 import { ICON_SIZE } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 
 export { extraMutedIconColorMapping, mutedIconColorMapping } from "@/components/ui/icon-color";
 
@@ -15,6 +16,10 @@ export const COMPACT_LARGE_ICON_BUTTON_SIZE = 32;
 const COMPACT_SMALL_ICON_BUTTON_SIZE = 32;
 
 export interface IconButtonChromeState {
+  /**
+   * @deprecated Ignored. Hover is browser-owned CSS `:hover`, so the highlight clears when a click
+   * moves the button out from under a resting cursor. Accepted so Pressable state objects still fit.
+   */
   hovered?: boolean;
   pressed?: boolean;
   open?: boolean;
@@ -34,9 +39,17 @@ interface IconButtonChromeOptions {
   /** A circular hitbox and highlight, for buttons inside a pill-shaped container. */
   round?: boolean;
   style?: StyleProp<ViewStyle>;
+  /**
+   * Sidebar chrome: hover and press use the sidebar rows' quiet hover fill and the current
+   * page uses their selected fill, instead of the brighter shared highlight.
+   */
+  sidebar?: boolean;
 }
 
-const IconButtonChromeContext = createContext<"default" | "header-island">("default");
+/** "sidebar" gives icon actions the sidebar rows' calmer hover and selected fills. */
+export type IconButtonChromeScope = "default" | "header-island" | "sidebar";
+
+const IconButtonChromeContext = createContext<IconButtonChromeScope>("default");
 
 /** A container owns the chrome of its icon actions, including custom menu and badge triggers. */
 export const IconButtonChromeProvider = IconButtonChromeContext.Provider;
@@ -59,6 +72,7 @@ export function useIconButtonChromeStyle({
         disabled,
         round: scope === "header-island" || round,
         style,
+        sidebar: scope === "sidebar",
         state: { ...state, active: active || state.active },
       }),
     [scope, size, compact, disabled, round, style, active],
@@ -73,15 +87,35 @@ export function iconButtonChromeStyle({
   disabled = false,
   round = false,
   style,
+  sidebar = false,
 }: IconButtonChromeOptions): StyleProp<ViewStyle> {
-  const highlighted = state?.active || state?.hovered || state?.pressed || state?.open;
   return [
     resolveIconButtonFrame(size, compact),
     round ? styles.round : null,
     style,
-    highlighted ? styles.highlighted : null,
+    highlightStyle(state, sidebar, disabled),
     disabled ? styles.disabled : null,
   ];
+}
+
+/**
+ * Pressed, open and active fills come from JS state; hover is a CSS `:hover` entry. `:hover`
+ * outranks the base class whatever the array order, so the hover entry is left out whenever a
+ * pressed, open, active or disabled fill must win.
+ */
+function highlightStyle(
+  state: IconButtonChromeState | undefined,
+  sidebar: boolean,
+  disabled: boolean,
+) {
+  const engaged = state?.pressed || state?.open;
+  if (!sidebar) {
+    if (state?.active || engaged) return styles.highlighted;
+    return disabled ? null : styles.highlightOnHover;
+  }
+  if (state?.active) return styles.sidebarSelected;
+  if (engaged) return styles.sidebarHovered;
+  return disabled ? null : styles.sidebarHoverOnHover;
 }
 
 /** Frame-only form for non-interactive placeholders that must preserve header alignment. */
@@ -147,6 +181,10 @@ const styles = StyleSheet.create((theme) => ({
   highlighted: {
     backgroundColor: theme.colors.interactionHighlight,
   },
+  highlightOnHover: hoverStyle({ backgroundColor: theme.colors.interactionHighlight }),
+  sidebarHovered: { backgroundColor: theme.colors.surfaceSidebarHover },
+  sidebarHoverOnHover: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  sidebarSelected: { backgroundColor: theme.colors.surfaceSidebarSelected },
   disabled: {
     opacity: theme.opacity[50],
   },

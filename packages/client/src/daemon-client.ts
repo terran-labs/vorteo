@@ -3481,7 +3481,11 @@ export class DaemonClient {
       ...options,
       config,
     });
-    if (result.error || !result.agent) throw new Error(result.error ?? "Agent creation failed");
+    if (result.error || !result.agent) {
+      // Keep the daemon's failure code so callers can classify the reported cause.
+      const code = result.creation?.errorCode ?? result.errorCode;
+      throw Object.assign(new Error(result.error ?? "Agent creation failed"), code ? { code } : {});
+    }
     return result.agent;
   }
 

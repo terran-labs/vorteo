@@ -8,7 +8,8 @@ import {
 } from "react";
 import { useLocalSearchParams } from "expo-router";
 import { SelectField } from "@/components/ui/select-field";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { useIsFocused } from "expo-router/react-navigation";
 import { CalendarClock, Plus } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";

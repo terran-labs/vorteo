@@ -10,6 +10,8 @@ import {
 } from "./sidebar/sidebar-width";
 import { panelHeaderInset, usePanelSpacing } from "@/styles/use-panel-spacing";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { hoverStyle } from "@/styles/hover";
+import { isWeb } from "@/constants/platform";
 import { useResponsiveSidebar } from "@/hooks/use-responsive-sidebar";
 import { InstallationRestartBanner } from "@/execution-installation/panel";
 import { usePointerResize } from "./use-pointer-resize";
@@ -31,11 +33,9 @@ import {
   Plus,
   History,
   CalendarClock,
-  Settings2,
   GitBranch,
   Settings,
   MoreVertical,
-  CircleHelp,
   PanelLeftOpen,
 } from "lucide-react-native";
 import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
@@ -58,6 +58,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from "react";
 import {
@@ -91,7 +92,7 @@ import {
   SIDEBAR_RESIZE_FAIL_OFFSET,
 } from "@/components/sidebar-resize-handle-layout";
 
-import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
+import { useSidebarDisplayPreferenceSection } from "@/components/sidebar/display-preferences/menu";
 import {
   SidebarInsetContext,
   SidebarSectionRule,
@@ -99,7 +100,6 @@ import {
 } from "@/components/sidebar/sidebar-separator";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
 
-import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 
 import { Shortcut } from "@/components/ui/shortcut";
@@ -129,6 +129,8 @@ import { buildSchedulesRoute, buildSessionsRoute, buildSettingsRoute } from "@/u
 import { openHostOverview } from "@/navigation/settings-navigation";
 import { UsageSidebarItem, useUsageSummary } from "@/usage";
 import { SidebarGlobalCards } from "@/components/sidebar/global-cards";
+import { IconButtonChromeProvider } from "@/components/ui/icon-button-chrome";
+import { SidebarFooterBlock, useFooterLeadingRule } from "@/components/sidebar/footer-rules";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
 import { useCreateSidebarFolderAction } from "@/sidebar-folders/actions";
@@ -137,7 +139,9 @@ import { focusSidebarProject } from "@/sidebar-focus/context";
 
 type SidebarTheme = Theme;
 
-const DEV_BUILD_LABEL = process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL?.trim() || null;
+// Live dev already shows its floating marker at lower right, so the sidebar omits that label.
+const RAW_DEV_BUILD_LABEL = process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL?.trim() || null;
+const DEV_BUILD_LABEL = RAW_DEV_BUILD_LABEL === "Live dev" ? null : RAW_DEV_BUILD_LABEL;
 
 interface SidebarSharedProps {
   theme: SidebarTheme;
@@ -349,6 +353,43 @@ export function LeftSidebar({ active }: { active: boolean }) {
   return <ThemedLeftSidebar active={active} uniProps={sidebarThemeMapping} />;
 }
 
+/**
+ * Toolbar icons in order. Full width: navigation after the toggle, a gap, then search and
+ * settings before the menu. The rail keeps search first, then schedules and history.
+ */
+function ToolbarOrder({
+  rail,
+  search,
+  history,
+  schedules,
+  settings,
+}: {
+  rail: boolean;
+  search: ReactNode;
+  history: ReactNode;
+  schedules: ReactNode;
+  settings: ReactNode;
+}) {
+  if (rail)
+    return (
+      <>
+        {search}
+        {schedules}
+        {history}
+        {settings}
+      </>
+    );
+  return (
+    <>
+      {history}
+      {schedules}
+      <View style={styles.footerGap} />
+      {search}
+      {settings}
+    </>
+  );
+}
+
 function FooterIconButton({
   disabled = false,
   active = false,
@@ -380,14 +421,23 @@ function FooterIconButton({
   const accessibilityState = useMemo(() => ({ selected: active }), [active]);
   const isCompact = useIsCompactFormFactor();
   const iconSize = isCompact ? theme.iconSize.lg : theme.iconSize.md;
-  const buttonStyle = useCallback(
-    ({ hovered }: { hovered?: boolean }) => [
+  // Hover is CSS, so the fill clears when a click moves the button out from under a resting
+  // cursor. `:hover` outranks the selected fill, so the hover entries step aside while active.
+  const hoverable = !active && !disabled;
+  const buttonStyle = useMemo(
+    () => [
       styles.footerIconButton,
       (touch || rail) && styles.touchIconButton,
-      (active || hovered) && styles.activeIconButton,
+      hoverable && styles.footerIconHoverable,
+      hoverable && styles.footerIconTint,
+      active && styles.activeIconButton,
     ],
-    [touch, rail, active],
+    [touch, rail, active, hoverable],
   );
+  // On web an idle glyph strokes with the button's CSS color, which brightens on hover.
+  let iconColor = theme.colors.foregroundMuted;
+  if (active) iconColor = theme.colors.foreground;
+  else if (hoverable && isWeb) iconColor = "currentColor";
 
   return (
     <Tooltip delayDuration={300}>
@@ -405,12 +455,7 @@ function FooterIconButton({
           accessibilityState={accessibilityState}
           onPress={onPress}
         >
-          {({ hovered }) => (
-            <Icon
-              size={iconSize + iconSizeAdjustment}
-              color={hovered || active ? theme.colors.foreground : theme.colors.foregroundMuted}
-            />
-          )}
+          <Icon size={iconSize + iconSizeAdjustment} color={iconColor} />
         </Pressable>
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8} testID={`${testID}-tooltip`}>
@@ -508,8 +553,8 @@ function SidebarToolbar({
   const alternateSearchKeys = useShortcutKeys("toggle-command-center-alternate");
   const { t } = useTranslation();
 
-  const [helpOpen, setHelpOpen] = useState(false);
-  const [displayOpen, setDisplayOpen] = useState(false);
+  // View preferences live in this menu, under Appearance, so one visit changes several.
+  const display = useSidebarDisplayPreferenceSection();
 
   const pathname = usePathname();
   const touch = useVortonTouch();
@@ -525,8 +570,6 @@ function SidebarToolbar({
     onBeforeNavigate?.();
     handleAddHost();
   }, [onBeforeNavigate, handleAddHost]);
-  const openHelp = useCallback(() => setHelpOpen(true), []);
-  const openDisplay = useCallback(() => setDisplayOpen(true), []);
   const menuIcons = useMemo(
     () => ({
       settings: <Settings size={16} color={theme.colors.foregroundMuted} />,
@@ -534,10 +577,8 @@ function SidebarToolbar({
       history: <History size={16} color={theme.colors.foregroundMuted} />,
       host: <Link2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       project: <FolderPlus size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
-      help: <CircleHelp size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       workspace: <Plus size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       folder: <Folder size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
-      display: <Settings2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
     }),
     [theme.iconSize.sm, theme.colors.foregroundMuted],
   );
@@ -559,22 +600,18 @@ function SidebarToolbar({
     hasMenuNavigation,
   } = sidebarNavigationVisibility(fit, rail);
   const moreStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => [
+    ({ pressed }: { pressed: boolean }) => [
       styles.footerIconButton,
       (touch || rail) && styles.touchIconButton,
-      (hovered || pressed) && styles.activeIconButton,
+      styles.footerIconHoverable,
+      pressed && styles.hoveredIconButton,
     ],
     [touch, rail],
   );
   const more = useMemo(
     () => (
       <View>
-        <SidebarHelpMenu hiddenTrigger controlledOpen={helpOpen} onOpenChange={setHelpOpen} />
-        <SidebarDisplayPreferencesMenu
-          hiddenTrigger
-          controlledOpen={displayOpen}
-          onOpenChange={setDisplayOpen}
-        />
+        {display.modal}
         <DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -591,7 +628,12 @@ function SidebarToolbar({
               <IconTooltipContent label="More sidebar actions" />
             </TooltipContent>
           </Tooltip>
-          <DropdownMenuContent side={rail ? "right" : "bottom"} align="start" width={360}>
+          <DropdownMenuContent
+            side={rail ? "right" : "bottom"}
+            align="start"
+            width={360}
+            pages={display.pages}
+          >
             {!settingsOutside ? (
               <DropdownMenuItem onSelect={handleSettings} leading={menuIcons.settings}>
                 Settings
@@ -644,28 +686,15 @@ function SidebarToolbar({
             <View style={styles.themeMenu}>
               <SidebarThemePicker />
             </View>
-            <DropdownMenuItem
-              testID="sidebar-display-preferences-action"
-              onSelect={openDisplay}
-              leading={menuIcons.display}
-            >
-              {t("sidebar.display.viewPreferences")}
-            </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              testID="sidebar-help-action"
-              onSelect={openHelp}
-              leading={menuIcons.help}
-            >
-              {t("sidebar.help.trigger")}
-            </DropdownMenuItem>
+            <DropdownMenuLabel>View</DropdownMenuLabel>
+            {display.rows}
           </DropdownMenuContent>
         </DropdownMenu>
       </View>
     ),
     [
-      helpOpen,
-      displayOpen,
+      display,
       rail,
       theme,
       handleSettings,
@@ -682,8 +711,6 @@ function SidebarToolbar({
       handleNewFolder,
       labels.addProject,
       t,
-      openDisplay,
-      openHelp,
       menuIcons,
     ],
   );
@@ -707,6 +734,35 @@ function SidebarToolbar({
       theme={theme}
     />
   );
+  const search = useMemo(
+    () => (
+      <FooterIconButton
+        icon={Search}
+        onPress={handleSearch}
+        label={t("sidebar.sections.search")}
+        shortcutKeys={searchKeys}
+        alternateShortcutKeys={alternateSearchKeys}
+        testID="sidebar-search"
+        theme={theme}
+      />
+    ),
+    [alternateSearchKeys, handleSearch, searchKeys, t, theme],
+  );
+
+  const settingsButton = useMemo(
+    () => (
+      <FooterIconButton
+        onPress={handleSettings}
+        testID="sidebar-settings"
+        label={labels.settings}
+        icon={Settings}
+        shortcutKeys={settingsKeys}
+        theme={theme}
+      />
+    ),
+    [handleSettings, labels.settings, settingsKeys, theme],
+  );
+
   if (railFooter) return more;
   return (
     <>
@@ -719,45 +775,31 @@ function SidebarToolbar({
         testID="sidebar-toolbar"
         onLayout={rail ? undefined : measureToolbar}
       >
-        {rail && onExpand ? (
-          <FooterIconButton
-            icon={PanelLeftOpen}
-            onPress={onExpand}
-            label="Expand sidebar"
-            testID="sidebar-expand"
-            theme={theme}
+        <IconButtonChromeProvider value={rail ? "default" : "sidebar"}>
+          {rail && onExpand ? (
+            <FooterIconButton
+              icon={PanelLeftOpen}
+              onPress={onExpand}
+              label="Expand sidebar"
+              testID="sidebar-expand"
+              theme={theme}
+            />
+          ) : (
+            <SidebarMenuToggle
+              insideSidebar
+              testID="sidebar-collapse"
+              style={[styles.footerIconButton, touch && styles.touchIconButton]}
+            />
+          )}
+          <ToolbarOrder
+            rail={rail}
+            search={search}
+            history={showHistory || rail ? history : null}
+            schedules={showSchedules || rail ? schedules : null}
+            settings={showSettings ? settingsButton : null}
           />
-        ) : (
-          <SidebarMenuToggle
-            insideSidebar
-            testID="sidebar-collapse"
-            style={[styles.footerIconButton, touch && styles.touchIconButton]}
-          />
-        )}
-        <FooterIconButton
-          icon={Search}
-          onPress={handleSearch}
-          label={t("sidebar.sections.search")}
-          shortcutKeys={searchKeys}
-          alternateShortcutKeys={alternateSearchKeys}
-          testID="sidebar-search"
-          theme={theme}
-        />
-        {!rail ? <View style={styles.footerGap} /> : null}
-        {showHistory ? history : null}
-        {showSchedules || rail ? schedules : null}
-        {rail ? history : null}
-        {showSettings ? (
-          <FooterIconButton
-            onPress={handleSettings}
-            testID="sidebar-settings"
-            label={labels.settings}
-            icon={Settings}
-            shortcutKeys={settingsKeys}
-            theme={theme}
-          />
-        ) : null}
-        {!rail ? more : null}
+          {!rail ? more : null}
+        </IconButtonChromeProvider>
         {!rail ? <SidebarSeparator edge="bottom" testID="sidebar-toolbar-divider" /> : null}
       </View>
       {navigationRows ? (
@@ -807,10 +849,11 @@ function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void
   const visibleItems = items.filter(
     (item) => item.visible && (item.kind === "plugin" || usageSummary.length > 0),
   );
+  const rule = useFooterLeadingRule("rows", visibleItems.length > 0);
   if (visibleItems.length === 0) return null;
   return (
     <>
-      <SidebarSectionRule testID="sidebar-footer-separator" />
+      {rule ? <SidebarSectionRule testID="sidebar-footer-separator" /> : null}
       <View ref={rowsRef} collapsable={false} style={styles.footerRows}>
         {visibleItems.map((item) =>
           item.kind === "plugin" ? (
@@ -939,12 +982,14 @@ function MobileSidebar({
             />
           )}
 
-          <SidebarGlobalCards onBeforeNavigate={closeSidebar} />
-          <SidebarSyncNotice />
-          <InstallationRestartBanner placement="sidebar" />
-          <DemoControls />
-          {<SidebarFooterRows onBeforeNavigate={closeSidebar} />}
-          <SidebarIdentityFooter />
+          <SidebarFooterBlock>
+            <SidebarGlobalCards onBeforeNavigate={closeSidebar} />
+            <SidebarSyncNotice />
+            <InstallationRestartBanner placement="sidebar" />
+            <DemoControls />
+            <SidebarFooterRows onBeforeNavigate={closeSidebar} />
+            <SidebarIdentityFooter />
+          </SidebarFooterBlock>
         </SidebarInsetContext.Provider>
       </View>
     </MobilePanelOverlay>
@@ -1251,12 +1296,14 @@ function DesktopSidebar({
             </>
           )}
 
-          {!compact ? <SidebarGlobalCards /> : null}
-          <SidebarSyncNotice compact={compact} />
-          <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
-          {!compact ? <DemoControls /> : null}
-          {!compact ? <SidebarFooterRows /> : null}
-          {!compact ? <SidebarIdentityFooter /> : null}
+          <SidebarFooterBlock>
+            {!compact ? <SidebarGlobalCards /> : null}
+            <SidebarSyncNotice compact={compact} />
+            <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
+            {!compact ? <DemoControls /> : null}
+            {!compact ? <SidebarFooterRows /> : null}
+            {!compact ? <SidebarIdentityFooter /> : null}
+          </SidebarFooterBlock>
 
           <SidebarResizeHandle
             edge="right"
@@ -1390,8 +1437,18 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[1],
   },
   touchIconButton: { width: 44, height: 44 },
+  // The rows' quiet hover and selected fills, so toolbar icons never outshine the list.
+  footerIconHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  footerIconTint: hoverStyle(
+    { color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
+  hoveredIconButton: {
+    backgroundColor: theme.colors.surfaceSidebarHover,
+    borderRadius: FLOATING_PANEL_RADIUS,
+  },
   activeIconButton: {
-    backgroundColor: theme.colors.interactionHighlight,
+    backgroundColor: theme.colors.surfaceSidebarSelected,
     borderRadius: FLOATING_PANEL_RADIUS,
   },
   tooltipRow: {
