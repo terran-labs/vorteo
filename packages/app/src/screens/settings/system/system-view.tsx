@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Text, View, Pressable, type LayoutChangeEvent } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { ScrollView } from "@/components/ui/scroll-view";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import { isWeb } from "@/constants/platform";
 import { settingsStyles } from "@/styles/settings";
+import { useOnHealthCardReveal } from "@/execution-installation/health-cards";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 
 const labels: Record<SystemStatus, string> = {
@@ -49,6 +49,9 @@ function EnvironmentRow({ row, first }: { row: SystemEnvironmentRow; first: bool
   useEffect(() => {
     if (row.detailsRequestId) setExpanded(true);
   }, [row.detailsRequestId]);
+  // A Health row's Fix opens the card it names, which lives in these Details.
+  const expand = useCallback(() => setExpanded(true), []);
+  useOnHealthCardReveal(row.name === "Dev" ? "container-daemon" : "host", expand);
   const toggle = useCallback(() => setExpanded((current) => !current), []);
   const act = useCallback(() => {
     if (row.action) row.onAction(row.action);
@@ -94,7 +97,11 @@ function EnvironmentRow({ row, first }: { row: SystemEnvironmentRow; first: bool
         </View>
         {row.reason ? <Text style={styles.reason}>{row.reason}</Text> : null}
       </View>
-      {expanded ? <ScrollView style={styles.detailsViewport}>{row.details}</ScrollView> : null}
+      {/* Details grow with the page rather than scrolling inside it, so a jump to a card inside
+          them scrolls one container and lands on the card on phones and desktops alike. */}
+      {expanded ? (
+        <View testID={`system-details-${row.name.toLowerCase()}`}>{row.details}</View>
+      ) : null}
     </View>
   );
 }
@@ -165,7 +172,6 @@ const styles = StyleSheet.create((theme) => ({
   reason: { lineHeight: 20, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   // The overflow trigger sizes to its label instead of truncating to an ellipsis.
   menu: { minWidth: 72, flexShrink: 0 },
-  detailsViewport: { height: 560 },
   details: { minHeight: 44, justifyContent: "center", paddingHorizontal: theme.spacing[2] },
   detailsText: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   services: {

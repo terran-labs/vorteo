@@ -6,6 +6,8 @@ export const zhCN: TranslationResources = {
   previewStatus: previewStatus["zh-CN"],
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",
     historyChangedFailure: "搜索期间聊天已更改。请重新搜索。",
@@ -2239,6 +2241,13 @@ export const zhCN: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "在所有环境中退出登录",
+      title: "要在所有环境中退出 Codex 吗？",
+      message:
+        "这会让 Host 退出此 ChatGPT 账号并撤销其登录，在你重新连接前 Host 和 Dev 都将无法使用。",
+      confirm: "全部退出登录",
+    },
     checkUsage: "检查用量",
     checkUsageHint: "在所有设备上应用于 {{host}}",
     off: "{{host}} 的用量检查已关闭。",

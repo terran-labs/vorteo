@@ -11,6 +11,7 @@ import {
   type UpgradeDecision,
   type UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
+import { recordsNeedingReview, upgradeTarget } from "./failure-review";
 
 // Pure views of safety snapshots and release upgrades for Installation controls and the
 // update section. The coordinator owns every decision; these only describe its replies.
@@ -105,6 +106,32 @@ export function latestFinishedUpgrade(
 ): InstallationUpgrade | null {
   if (!status) return null;
   return newestUpgrades(status).find((upgrade) => !upgradeIsActive(upgrade)) ?? null;
+}
+
+/**
+ * The finished upgrade the Updates card shows. One the owner dismissed stays in the journal but
+ * no longer sits beside the current status.
+ */
+export function shownFinishedUpgrade(
+  status: UpgradeStatus | null | undefined,
+): InstallationUpgrade | null {
+  const finished = latestFinishedUpgrade(status);
+  return finished && !finished.acknowledgedAt ? finished : null;
+}
+
+/** Failed upgrades that still need the owner: not dismissed and not followed by a success. */
+export function failedUpgradesNeedingReview(
+  status: UpgradeStatus | null | undefined,
+): InstallationUpgrade[] {
+  if (!status) return [];
+  return recordsNeedingReview(newestUpgrades(status), upgradeTarget).filter(
+    (upgrade) => upgrade.status === "failed",
+  );
+}
+
+/** The coordinator accepts Dismiss for this failure. Older ones accept it for automatic upgrades. */
+export function upgradeCanBeDismissed(upgrade: InstallationUpgrade): boolean {
+  return upgrade.automatic === true && !upgradeIsActive(upgrade);
 }
 
 /** The coordinator reports an update policy, so it accepts the policy routes and decisions. */

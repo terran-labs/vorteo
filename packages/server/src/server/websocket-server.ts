@@ -2567,6 +2567,8 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(claudeSignInUpgrade): added after v26.11.206, remove gate after 2027-05-02.
         claudeSignInUpgrade: true,
         codexInstallationSignIn: true,
+        // COMPAT(codexAccountAdoption): added after v26.11.2100, remove gate after 2027-05-24.
+        codexAccountAdoption: true,
         providerSecretDelivery: true,
         speechSecretDelivery: true,
         providerCredentialRemoval: true,

@@ -14599,18 +14599,24 @@ test("provider deletion stays blocked during registration and for internal sessi
   const agentId = randomUUID();
   try {
     expect(manager.isProviderInUse("codex")).toBe(false);
+    expect(manager.providerSessionActivity("codex")).toBe("none");
     const creating = manager.createAgent(
       { provider: "codex", cwd: workdir, internal: true },
       agentId,
       { workspaceId: undefined },
     );
     expect(manager.isProviderInUse("codex")).toBe(true);
+    // A start in flight refuses a coordinator refresh lease.
+    expect(manager.providerSessionActivity("codex")).toBe("busy");
     const agent = await creating;
     expect(manager.listAgents()).toHaveLength(0);
     expect(manager.isProviderInUse("codex")).toBe(true);
     expect(manager.isProviderInUse("claude")).toBe(false);
+    // A loaded idle session does not.
+    expect(manager.providerSessionActivity("codex")).toBe("loaded");
     await manager.archiveAgent(agent.id);
     expect(manager.isProviderInUse("codex")).toBe(false);
+    expect(manager.providerSessionActivity("codex")).toBe("none");
   } finally {
     if (manager.getAgent(agentId)) await manager.closeAgent(agentId);
     await manager.flushForShutdown();

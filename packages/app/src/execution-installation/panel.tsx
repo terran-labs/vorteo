@@ -45,6 +45,19 @@ import type { SessionHostJob } from "@getpaseo/protocol/session-host-maintenance
 import type { InstructionRequestQuery } from "@getpaseo/protocol/instruction-requests";
 import { diffInstructionLines } from "./instruction-diff";
 import {
+  healthCardAnchorProps,
+  useOnHealthCardReveal,
+  type HealthCard,
+  type HealthCardHost,
+} from "./health-cards";
+import {
+  byTarget,
+  byTargetAndOperation,
+  instructionRequestIsStale,
+  isSupersededFailure,
+  recordsNeedingReview,
+} from "./failure-review";
+import {
   sessionHostActionDisabledReason,
   sessionHostOperationTitle,
   sessionHostPlanLines,
@@ -422,6 +435,8 @@ function CoordinatorMaintenanceReviews() {
  * updates and coordinator recoveries. Only active work stays above it.
  */
 function InstallationHistory({
+  anchorHost,
+  anchored,
   history,
   model,
   busy,
@@ -430,6 +445,9 @@ function InstallationHistory({
   onToggle,
   controlSize,
 }: {
+  anchorHost: HealthCardHost;
+  /** A failed restart's Fix lands here when no restart is active. */
+  anchored: boolean;
   history: RestartJob[];
   model: InstallationPanelModel;
   busy: boolean;
@@ -442,7 +460,11 @@ function InstallationHistory({
   const historyCount = history.length + receipts.length + useCoordinatorHistoryCount();
   const bootstrapModel = getBootstrapPanel();
   return (
-    <View testID="restart-history" style={[styles.cardBody, settingsStyles.rowBorder]}>
+    <View
+      testID="restart-history"
+      style={[styles.cardBody, settingsStyles.rowBorder]}
+      {...(anchored ? healthCardAnchorProps(anchorHost, "restarts") : null)}
+    >
       <View style={styles.requestHeader}>
         <Button
           variant="ghost"
@@ -571,6 +593,21 @@ function InstallationActionStatus({
   );
 }
 
+/** A failed restart's Fix lands in History, which has to be open to show it. */
+function useRevealRestartHistory(
+  target: HealthCardHost,
+  restartsInHistory: boolean,
+  show: (visible: boolean) => void,
+) {
+  const reveal = useCallback(
+    (card: HealthCard) => {
+      if (card === "restarts" && restartsInHistory) show(true);
+    },
+    [restartsInHistory, show],
+  );
+  useOnHealthCardReveal(target, reveal);
+}
+
 function InstallationSystemDetailsBody({
   model,
   requestId,
@@ -608,6 +645,8 @@ function InstallationSystemDetailsBody({
   useEffect(() => {
     if (selectedHistoryId) setHistoryVisible(true);
   }, [selectedHistoryId]);
+  const restartsInHistory = active.length === 0;
+  useRevealRestartHistory(target, restartsInHistory, setHistoryVisible);
   const missingRequest =
     requestId &&
     state.lastUpdatedAt &&
@@ -634,27 +673,31 @@ function InstallationSystemDetailsBody({
         {target === "host" ? <CoordinatorMaintenanceReviews /> : null}
         {state.unlocked ? (
           <>
-            <MaintenanceDashboard
-              status={state.enrollmentStatus}
-              error={state.enrollmentError}
-              refreshing={state.enrollmentRefreshing}
-              onRefresh={model.refreshEnrollmentStatus}
-            >
-              <RecoveryBookmark
-                status={state.recoveryAccess}
-                error={state.recoveryAccessError}
-                refreshing={state.recoveryAccessRefreshing}
-                onRefresh={model.refreshRecoveryAccess}
+            <View {...healthCardAnchorProps(target, "dashboard")}>
+              <MaintenanceDashboard
+                status={state.enrollmentStatus}
+                error={state.enrollmentError}
+                refreshing={state.enrollmentRefreshing}
+                onRefresh={model.refreshEnrollmentStatus}
+              >
+                <RecoveryBookmark
+                  status={state.recoveryAccess}
+                  error={state.recoveryAccessError}
+                  refreshing={state.recoveryAccessRefreshing}
+                  onRefresh={model.refreshRecoveryAccess}
+                />
+              </MaintenanceDashboard>
+            </View>
+            <View {...healthCardAnchorProps(target, "services")}>
+              <MaintenanceServiceQueue
+                status={state.serviceQueue}
+                error={state.serviceQueueError}
+                refreshing={state.serviceQueueRefreshing}
+                busy={state.busy}
+                onRefresh={model.refreshServiceQueue}
+                onCancel={model.cancelMaintenanceService}
               />
-            </MaintenanceDashboard>
-            <MaintenanceServiceQueue
-              status={state.serviceQueue}
-              error={state.serviceQueueError}
-              refreshing={state.serviceQueueRefreshing}
-              busy={state.busy}
-              onRefresh={model.refreshServiceQueue}
-              onCancel={model.cancelMaintenanceService}
-            />
+            </View>
             {target === "host" ? <InstallationServiceRequests model={model} state={state} /> : null}
             {active.map((job) => (
               <RestartRequest
@@ -706,6 +749,8 @@ function InstallationSystemDetailsBody({
               </View>
             ) : null}
             <InstallationHistory
+              anchorHost={target}
+              anchored={restartsInHistory}
               history={visibleHistory}
               model={model}
               busy={state.busy}
@@ -721,6 +766,16 @@ function InstallationSystemDetailsBody({
   );
 }
 
+/**
+ * The first record in a queue that still needs the owner, where its Health row's Fix lands.
+ * With none, the Fix lands on the queue's first record instead.
+ */
+function firstNeedingReview<T extends { id: string; status: string; target?: string }>(
+  jobs: readonly T[],
+): string | undefined {
+  return recordsNeedingReview(jobs, byTarget)[0]?.id ?? jobs[0]?.id;
+}
+
 function InstallationServiceRequests({
   model,
   state,
@@ -728,15 +783,19 @@ function InstallationServiceRequests({
   model: InstallationPanelModel;
   state: ReturnType<InstallationPanelModel["getState"]>;
 }) {
+  const brokerAnchor = firstNeedingReview(state.brokerJobs);
+  const monitorAnchor = firstNeedingReview(state.monitorJobs);
+  const helperAnchor = firstNeedingReview(state.helperJobs);
   return (
     <>
-      {" "}
       {state.brokerJobs.map((job) => (
         <BrokerRequest
           key={`${job.id}:${job.revision}`}
           job={job}
           model={model}
           busy={state.busy}
+          anchored={job.id === brokerAnchor}
+          superseded={isSupersededFailure(job, state.brokerJobs, byTarget)}
         />
       ))}
       {state.monitorJobs.map((job) => (
@@ -745,6 +804,8 @@ function InstallationServiceRequests({
           job={job}
           model={model}
           busy={state.busy}
+          anchored={job.id === monitorAnchor}
+          superseded={isSupersededFailure(job, state.monitorJobs, byTarget)}
         />
       ))}
       {state.helperJobs.map((job) => (
@@ -753,6 +814,8 @@ function InstallationServiceRequests({
           job={job}
           model={model}
           busy={state.busy}
+          anchored={job.id === helperAnchor}
+          superseded={isSupersededFailure(job, state.helperJobs, byTarget)}
         />
       ))}
       <SessionHostCard model={model} state={state} />
@@ -1187,31 +1250,79 @@ export function RestartRequest({
   );
 }
 
+// Status badges inside request cards, not settings rows.
+const SUPERSEDED_BADGE = "Superseded";
+const STALE_BADGE = "Stale";
+
+/** A request's status, or "Superseded" for a failure a later success replaced. */
+function RequestStatusBadge({
+  job,
+  superseded,
+  recoveryLabel,
+}: {
+  job: { status: string; stage?: string };
+  superseded: boolean;
+  recoveryLabel: string;
+}) {
+  if (job.stage === "recovery_required")
+    return <StatusBadge label={recoveryLabel} variant="warning" />;
+  if (superseded) return <StatusBadge label={SUPERSEDED_BADGE} variant="muted" />;
+  return <StatusBadge label={job.status} variant={job.status === "failed" ? "warning" : "muted"} />;
+}
+
+/**
+ * Why a failed request failed, shown on the card so the owner can judge it without opening
+ * Details. A superseded failure says it no longer needs them.
+ */
+function FailedRequestNote({
+  job,
+  superseded,
+}: {
+  job: { status: string; detail: string; acknowledgedAt?: string };
+  superseded: boolean;
+}) {
+  if (job.status !== "failed") return null;
+  if (superseded) return <Text style={styles.text}>A later request succeeded.</Text>;
+  return job.detail ? (
+    <Text selectable style={styles.error}>
+      {job.detail}
+    </Text>
+  ) : null;
+}
+
 function BrokerRequest({
   job,
   model,
   busy,
+  anchored = false,
+  superseded = false,
 }: {
   job: BrokerReviewJob;
   model: InstallationPanelModel;
   busy: boolean;
+  /** Where this queue's Health Fix lands. */
+  anchored?: boolean;
+  /** Failed, then replaced by a later success on the same target. */
+  superseded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const size = useVortonTouch() ? "md" : "sm";
   const toggle = useCallback(() => setExpanded((value) => !value), []);
   return (
-    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={`broker-request-${job.id}`}>
+    <View
+      style={[styles.cardBody, settingsStyles.rowBorder]}
+      testID={`broker-request-${job.id}`}
+      {...(anchored ? healthCardAnchorProps("host", "broker") : null)}
+    >
       <View style={styles.requestHeader}>
         <Text style={settingsStyles.rowTitle}>
           {job.target === "preview-broker-deployment"
             ? "Preview broker consumer deployment"
             : "Preview broker channel trust"}
         </Text>
-        <StatusBadge
-          label={job.stage === "recovery_required" ? "Needs inspection" : job.status}
-          variant={job.stage === "recovery_required" ? "warning" : "muted"}
-        />
+        <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs inspection" />
       </View>
+      <FailedRequestNote job={job} superseded={superseded} />
       <Text style={styles.text}>{brokerReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
       <Button
@@ -1312,23 +1423,31 @@ function MonitorRequest({
   job,
   model,
   busy,
+  anchored = false,
+  superseded = false,
 }: {
   job: PreviewMonitorJob;
   model: InstallationPanelModel;
   busy: boolean;
+  /** Where this queue's Health Fix lands. */
+  anchored?: boolean;
+  /** Failed, then replaced by a later success on the same target. */
+  superseded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const size = useVortonTouch() ? "md" : "sm";
   const toggle = useCallback(() => setExpanded((value) => !value), []);
   return (
-    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={`monitor-request-${job.id}`}>
+    <View
+      style={[styles.cardBody, settingsStyles.rowBorder]}
+      testID={`monitor-request-${job.id}`}
+      {...(anchored ? healthCardAnchorProps("host", "monitor") : null)}
+    >
       <View style={styles.requestHeader}>
         <Text style={settingsStyles.rowTitle}>Dev preview monitor</Text>
-        <StatusBadge
-          label={job.stage === "recovery_required" ? "Needs inspection" : job.status}
-          variant={job.stage === "recovery_required" ? "warning" : "muted"}
-        />
+        <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs inspection" />
       </View>
+      <FailedRequestNote job={job} superseded={superseded} />
       <Text style={styles.text}>{monitorReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
       <Button variant="ghost" size={size} onPress={toggle} {...disclosureProps(expanded)}>
@@ -1392,10 +1511,16 @@ function HelperRequest({
   job,
   model,
   busy,
+  anchored = false,
+  superseded = false,
 }: {
   job: NativeHelperJob;
   model: InstallationPanelModel;
   busy: boolean;
+  /** Where this queue's Health Fix lands. */
+  anchored?: boolean;
+  /** Failed, then replaced by a later success on the same target. */
+  superseded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const controlSize = useVortonTouch() ? "md" : "sm";
@@ -1404,14 +1529,16 @@ function HelperRequest({
   if (job.stage === "recovery_required") actions = ["verify-installed"];
   else if (job.status === "pending" || job.status === "approved") actions = ["approve", "cancel"];
   return (
-    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={`helper-request-${job.id}`}>
+    <View
+      style={[styles.cardBody, settingsStyles.rowBorder]}
+      testID={`helper-request-${job.id}`}
+      {...(anchored ? healthCardAnchorProps("host", "helper") : null)}
+    >
       <View style={styles.requestHeader}>
         <Text style={settingsStyles.rowTitle}>Native helper</Text>
-        <StatusBadge
-          label={job.stage === "recovery_required" ? "Needs recovery" : job.status}
-          variant={job.stage === "recovery_required" ? "warning" : "muted"}
-        />
+        <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs recovery" />
       </View>
+      <FailedRequestNote job={job} superseded={superseded} />
       <Text style={styles.text}>{helperReviewSummary(job)}</Text>
       <Button variant="ghost" size={controlSize} onPress={toggle} {...disclosureProps(expanded)}>
         Details
@@ -1498,13 +1625,23 @@ function InstructionRequestsCard({
     .slice(-3)
     .toReversed();
   if (!pending.length && !recent.length && !state.instructionError) return null;
+  // Stale requests were written against older instructions and can only be rejected; current
+  // ones come first, so Fix lands on the one the owner can approve.
+  const isStale = (request: InstructionRequest) =>
+    instructionRequestIsStale(request, overview.revision);
+  const current = pending.filter((request) => !isStale(request));
+  const ordered = [...current, ...pending.filter(isStale)];
   return (
-    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="instruction-requests-card">
+    <View
+      style={[styles.cardBody, settingsStyles.rowBorder]}
+      testID="instruction-requests-card"
+      {...healthCardAnchorProps("host", "instructions")}
+    >
       <View style={styles.requestHeader}>
         <Text style={settingsStyles.rowTitle}>Agent instruction changes</Text>
         <StatusBadge
-          label={pending.length ? `${pending.length} pending` : "None pending"}
-          variant={pending.length ? "warning" : "muted"}
+          label={current.length ? `${current.length} pending` : "None pending"}
+          variant={current.length ? "warning" : "muted"}
         />
       </View>
       {state.instructionError ? (
@@ -1517,11 +1654,12 @@ function InstructionRequestsCard({
           </Button>
         </>
       ) : null}
-      {pending.map((request) => (
+      {ordered.map((request) => (
         <InstructionRequestReview
           key={request.id}
           request={request}
           current={overview.appendSystemPrompt ?? ""}
+          stale={isStale(request)}
           model={model}
           busy={state.busy}
         />
@@ -1540,11 +1678,14 @@ type InstructionRequest = InstructionRequestQuery["requests"][number];
 function InstructionRequestReview({
   request,
   current,
+  stale,
   model,
   busy,
 }: {
   request: InstructionRequest;
   current: string;
+  /** Written against older instructions: the coordinator would refuse to apply it. */
+  stale: boolean;
   model: InstallationPanelModel;
   busy: boolean;
 }) {
@@ -1568,7 +1709,14 @@ function InstructionRequestReview({
           label={fromDev ? "From Dev (untrusted)" : "From Host"}
           variant={fromDev ? "error" : "muted"}
         />
+        {stale ? <StatusBadge label={STALE_BADGE} variant="muted" /> : null}
       </View>
+      {stale ? (
+        <Text style={styles.text} testID={`instruction-${request.id}-stale`}>
+          Instructions changed after this request, so it can no longer be applied. Reject it; the
+          agent can send a new one.
+        </Text>
+      ) : null}
       <Text selectable style={styles.text} numberOfLines={1}>
         {`Requester (as named by the agent): ${request.requester}`}
       </Text>
@@ -1613,15 +1761,17 @@ function InstructionRequestReview({
         >
           Reject
         </RestartActionButton>
-        <RestartActionButton
-          testID={`instruction-${request.id}-approve`}
-          size={size}
-          variant="destructive"
-          disabledReason={busy ? "Another installation action is running" : null}
-          onPress={approve}
-        >
-          Apply to all agents
-        </RestartActionButton>
+        {stale ? null : (
+          <RestartActionButton
+            testID={`instruction-${request.id}-approve`}
+            size={size}
+            variant="destructive"
+            disabledReason={busy ? "Another installation action is running" : null}
+            onPress={approve}
+          >
+            Apply to all agents
+          </RestartActionButton>
+        )}
       </ActionFooter>
     </View>
   );
@@ -1831,9 +1981,18 @@ function SessionHostCard({
   );
   if (!overview) return null;
   const review = { busy: state.busy, unlocked: state.unlocked };
+  const shownJobs = visibleSessionHostJobs(overview.jobs);
+  // Fix lands on the request that needs the owner, or on the card when none does.
+  const anchorJob = recordsNeedingReview(overview.jobs, byTargetAndOperation).find((job) =>
+    shownJobs.includes(job),
+  )?.id;
   return (
     <>
-      <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="session-host-card">
+      <View
+        style={[styles.cardBody, settingsStyles.rowBorder]}
+        testID="session-host-card"
+        {...(anchorJob ? null : healthCardAnchorProps("host", "session-host"))}
+      >
         <View style={styles.requestHeader}>
           <Text style={settingsStyles.rowTitle}>Session host</Text>
           <StatusBadge
@@ -1909,12 +2068,14 @@ function SessionHostCard({
           </Text>
         ) : null}
       </View>
-      {visibleSessionHostJobs(overview.jobs).map((job) => (
+      {shownJobs.map((job) => (
         <SessionHostRequest
           key={`${job.id}:${job.revision}`}
           job={job}
           model={model}
           busy={state.busy}
+          anchored={job.id === anchorJob}
+          superseded={isSupersededFailure(job, overview.jobs, byTargetAndOperation)}
         />
       ))}
     </>
@@ -1930,10 +2091,14 @@ function SessionHostRequest({
   job,
   model,
   busy,
+  anchored = false,
+  superseded = false,
 }: {
   job: SessionHostJob;
   model: InstallationPanelModel;
   busy: boolean;
+  anchored?: boolean;
+  superseded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const size = useVortonTouch() ? "md" : "sm";
@@ -1944,11 +2109,13 @@ function SessionHostRequest({
     <View
       style={[styles.cardBody, settingsStyles.rowBorder]}
       testID={`session-host-request-${job.id}`}
+      {...(anchored ? healthCardAnchorProps("host", "session-host") : null)}
     >
       <View style={styles.requestHeader}>
         <Text style={settingsStyles.rowTitle}>{sessionHostOperationTitle(job.operation)}</Text>
-        <StatusBadge label={job.status} variant={job.status === "failed" ? "warning" : "muted"} />
+        <RequestStatusBadge job={job} superseded={superseded} recoveryLabel="Needs recovery" />
       </View>
+      <FailedRequestNote job={job} superseded={superseded} />
       <Text style={styles.text}>{sessionHostReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
       {reviewing ? null : (

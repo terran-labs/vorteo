@@ -531,6 +531,13 @@ test("enrollment status is owner-only and reading it cannot approve or dispatch 
       expect(
         (await f.request(`/api/installation/owner/claude/oauth/${upgrade}`, credential, {})).status,
       ).toBe(401);
+  // Adopting a legacy Codex account changes what signs Dev in, so only the owner may.
+  for (const operation of ["adoptions", "adopt", "unadopt"])
+    for (const credential of [undefined, "host-agent-test-token", "guest-agent-test-token"])
+      expect(
+        (await f.request(`/api/installation/owner/codex/signin/${operation}`, credential, {}))
+          .status,
+      ).toBe(401);
   const recovery = "/api/installation/claude/oauth/recovery";
   expect((await f.request(recovery, undefined, {})).status).toBe(401);
   expect((await f.request(recovery, "owner-test-password", {})).status).toBe(401);

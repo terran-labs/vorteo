@@ -6,6 +6,8 @@ export const ar: TranslationResources = {
   previewStatus: previewStatus.ar,
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
     historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",
@@ -2269,6 +2271,13 @@ export const ar: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "تسجيل الخروج في كل البيئات",
+      title: "تسجيل الخروج من Codex في كل البيئات؟",
+      message:
+        "يسجّل هذا خروج المضيف من حساب ChatGPT هذا ويلغي تسجيل دخوله، فيفقده المضيف وبيئة التطوير حتى تتصل مجددًا.",
+      confirm: "تسجيل الخروج في كل مكان",
+    },
     checkUsage: "التحقق من الاستخدام",
     checkUsageHint: "ينطبق على {{host}} على جميع الأجهزة",
     off: "التحقق من الاستخدام متوقف على {{host}}.",

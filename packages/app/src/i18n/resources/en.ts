@@ -2711,6 +2711,13 @@ export const en = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "Sign out on every environment",
+      title: "Sign out of Codex on every environment?",
+      message:
+        "This signs the Host out of this ChatGPT account and revokes its sign-in, so Host and Dev both lose it until you connect again.",
+      confirm: "Sign out everywhere",
+    },
     checkUsage: "Check usage",
     checkUsageHint: "Applies to {{host}} on every device",
     off: "Usage is off on {{host}}.",
@@ -3857,6 +3864,56 @@ export const en = {
         saving: "Saving...",
         cancel: "Cancel",
       },
+    },
+  },
+  // DRAFT wording for adopting a legacy Codex account; awaiting approval.
+  codexAdoption: {
+    title: "Use the Host's sign-in on Dev",
+    description:
+      "Dev keeps this account's history and settings and uses the Host's sign-in instead of its own. The Host keeps it renewed.",
+    unavailable: "This account cannot use the Host's sign-in yet: {{reason}}",
+    checking: "Checking this account...",
+    status: {
+      inProgress: "Checking the Host and Dev...",
+      pending: "Synchronization pending. Waiting for Dev to confirm.",
+      adopted: "Dev uses the Host's sign-in for this account.",
+      failed: "Could not switch Dev to the Host's sign-in: {{reason}}",
+      failedUnknown: "Could not switch Dev to the Host's sign-in.",
+      needsConfirmation:
+        "Needs your confirmation: {{reason}} Until then, Dev will need the Host's sign-in again once its current one expires.",
+      cancelled:
+        "Stopped because this account's Dev connection changed. Dev's files for this account were left as they were. Dev will need the Host's sign-in again once its current one expires.",
+      unadopting: "Stopping...",
+      unadopted: "Dev no longer uses the Host's sign-in.",
+      restored:
+        "Dev's earlier sign-in was put back. If Dev shows Needs sign-in, use the Host's sign-in again.",
+      restoreSkipped:
+        "Dev's earlier sign-in was not put back. Any copy of the Host's sign-in left on Dev stops working once it expires. Use the Host's sign-in again to reconnect Dev.",
+      signedOut:
+        "Dev had no saved sign-in to put back. Use the Host's sign-in again to reconnect Dev.",
+      requestFailed: "Could not reach the installation. Try again.",
+      hostSignedIn: "The Host is signed in. Try again to use its sign-in on Dev.",
+    },
+    actions: {
+      adopt: "Use the Host's sign-in",
+      retry: "Try again",
+      hostSignIn: "Sign in on the Host",
+      confirm: "Confirm and try again",
+      unadopt: "Stop using the Host's sign-in",
+    },
+    unadoptNote: "Stopping never signs the Host out.",
+    copyDeleteBlocked: "The saved sign-in on Dev could not be deleted. {{reason}}",
+    adoptConfirm: {
+      title: "Use the Host's sign-in on Dev?",
+      message:
+        "Dev's own sign-in for this account is replaced by the Host's. A backup is kept for up to 30 days so you can undo this. After this, Sign out on every environment signs this account out on the Host and Dev.",
+      confirm: "Use the Host's sign-in",
+    },
+    unadoptConfirm: {
+      title: "Stop using the Host's sign-in on Dev?",
+      message:
+        "This never signs the Host out. Dev stops receiving the Host's sign-in, and its earlier sign-in is put back if one was saved.",
+      confirm: "Stop using it",
     },
   },
   vorteoSetup: {

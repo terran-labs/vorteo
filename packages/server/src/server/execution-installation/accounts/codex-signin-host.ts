@@ -15,6 +15,7 @@ import { CodexLoginSession } from "../../agent/providers/codex/login.js";
 import { execCommand, spawnProcess } from "../../../utils/spawn.js";
 import { isTrustedCredentialsFile } from "./claude-oauth-credentials-file.js";
 import type { CodexAccessProjection } from "./codex-signin-delivery.js";
+import { codexIdTokenPerson, jwtClaims } from "./codex-signin-identity.js";
 import type { HostRefreshIdentity } from "./host-owned-refresher.js";
 
 /**
@@ -61,16 +62,20 @@ const AuthFileSchema = z.object({
 
 /** The `exp` claim of an unverified JWT, in milliseconds. Only used for scheduling. */
 export function jwtExpiry(token: string): number | null {
-  const payload = token.split(".")[1];
-  if (!payload) return null;
-  try {
-    const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    const exp =
-      claims && typeof claims === "object" ? (claims as Record<string, unknown>).exp : undefined;
-    return typeof exp === "number" && Number.isSafeInteger(exp) && exp > 0 ? exp * 1000 : null;
-  } catch {
-    return null;
-  }
+  const exp = jwtClaims(token)?.exp;
+  return typeof exp === "number" && Number.isSafeInteger(exp) && exp > 0 ? exp * 1000 : null;
+}
+
+const EmailClaimsSchema = z.object({
+  email: z.string().optional(),
+  "https://api.openai.com/profile": z.object({ email: z.string().optional() }).optional(),
+});
+
+/** The signed-in email Codex itself shows, read from the ID token without starting Codex. */
+function idTokenEmail(idToken: string): string | null {
+  const claims = EmailClaimsSchema.safeParse(jwtClaims(idToken));
+  if (!claims.success) return null;
+  return claims.data.email ?? claims.data["https://api.openai.com/profile"]?.email ?? null;
 }
 
 function toGrant(value: unknown): CodexHostGrant | null {
@@ -115,6 +120,70 @@ export function codexAccessProjection(grant: CodexHostGrant | null): CodexAccess
     accountId: grant.accountId,
     expiresAt: grant.expiresAt,
     lastRefresh: grant.lastRefresh,
+  };
+}
+
+/** Adoption needs this much access token lifetime left, so it never has to refresh. */
+export const CODEX_ADOPTION_MIN_REMAINING_MS = 30 * 60_000;
+
+/** Reasons a Host sign-in on that account repairs; the app offers it beside them. */
+export const HOST_NOT_SIGNED_IN =
+  "The Host is not signed in to this account. Sign in on the Host, then try again.";
+export const HOST_CANNOT_RENEW =
+  "The Host's sign-in for this account cannot renew itself. Sign in on the Host, then try again.";
+export const HOST_NOT_CHATGPT =
+  "The Host's sign-in for this account is not a ChatGPT sign-in. Sign in on the Host, then try again.";
+export const HOST_NO_PERSON =
+  "The Host's sign-in for this account does not say which ChatGPT user it belongs to. Sign in on the Host, then try again.";
+export const HOST_SIGN_IN_REASONS: ReadonlySet<string> = new Set([
+  HOST_NOT_SIGNED_IN,
+  HOST_CANNOT_RENEW,
+  HOST_NOT_CHATGPT,
+  HOST_NO_PERSON,
+]);
+
+export type CodexHostSessionCheck =
+  | { verified: true; identity: HostRefreshIdentity }
+  | { verified: false; reason: string };
+
+/**
+ * Whether the Host account's own `auth.json` holds a usable ChatGPT sign-in, judged from the file
+ * alone. Starting Codex is not an option here: even `account/read` with `refreshToken: false`
+ * refreshes proactively when the access token is within five minutes of expiry (Codex 0.167.2).
+ */
+export function verifyCodexHostSession(
+  grant: CodexHostGrant | null,
+  now: number,
+): CodexHostSessionCheck {
+  if (!grant)
+    return {
+      verified: false,
+      reason: HOST_NOT_SIGNED_IN,
+    };
+  if (!grant.hasRefreshToken)
+    return {
+      verified: false,
+      reason: HOST_CANNOT_RENEW,
+    };
+  if (!grant.accountId)
+    return {
+      verified: false,
+      reason: HOST_NOT_CHATGPT,
+    };
+  // The workspace alone is shared by every member of a Team workspace; Dev compares the person.
+  if (!codexIdTokenPerson(grant.idToken))
+    return {
+      verified: false,
+      reason: HOST_NO_PERSON,
+    };
+  if (grant.expiresAt === null || grant.expiresAt - now <= CODEX_ADOPTION_MIN_REMAINING_MS)
+    return {
+      verified: false,
+      reason: "The Host's sign-in for this account is about to renew. Try again in a few minutes.",
+    };
+  return {
+    verified: true,
+    identity: { email: idTokenEmail(grant.idToken), orgId: grant.accountId },
   };
 }
 
@@ -178,10 +247,10 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
       return child as ChildProcessWithoutNullStreams;
     });
 
-  async function open(codexHome: string): Promise<CodexAppServerClient> {
+  async function open(codexHome: string, startTimeoutMs = 15_000): Promise<CodexAppServerClient> {
     const client = new CodexAppServerClient(await spawnAppServer(codexHome), logger);
     try {
-      await client.request("initialize", INITIALIZE_PARAMS, 15_000);
+      await client.request("initialize", INITIALIZE_PARAMS, startTimeoutMs);
       client.notify("initialized", {});
       return client;
     } catch (error) {
@@ -204,13 +273,34 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
 
   return {
     /**
-     * Asks the official Host Codex to refresh its own grant and save it under its own storage
-     * rules. Success is judged by re-reading the grant, not by this request's result.
+     * Starts and initializes the official Host Codex for one account, so that its startup time
+     * is spent before any lease is taken. `refresh` asks it to refresh its own grant and save it
+     * under its own storage rules; success is judged by re-reading the grant. `close` ends the
+     * process, which also aborts a refresh that ran out of time.
      */
-    refresh: (codexHome: string): Promise<void> =>
-      withClient(codexHome, async (client) => {
-        await client.request("account/read", { refreshToken: true }, 60_000);
-      }),
+    async openRefresh(
+      codexHome: string,
+      start: { startTimeoutMs?: number } = {},
+    ): Promise<CodexHostRefreshSession> {
+      const client = await open(codexHome, start.startTimeoutMs);
+      return {
+        async refresh(timeoutMs: number) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const deadline = new Promise<"timed-out">((resolve) => {
+            timer = setTimeout(() => resolve("timed-out"), timeoutMs);
+          });
+          const request = client
+            .request("account/read", { refreshToken: true }, timeoutMs + 1_000)
+            .then(() => "done" as const);
+          try {
+            return await Promise.race([request, deadline]);
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        close: () => client.dispose(),
+      };
+    },
     /** `codex logout` removes the Host grant and asks OpenAI to revoke it. */
     async logout(codexHome: string): Promise<void> {
       const launch = await resolveLaunch();
@@ -246,3 +336,9 @@ export function createCodexHostCli(options: HostCliOptions = {}) {
   };
 }
 export type CodexHostCli = ReturnType<typeof createCodexHostCli>;
+
+export interface CodexHostRefreshSession {
+  /** "timed-out" when the refresh did not answer in time; close the session to abort it. */
+  refresh(timeoutMs: number): Promise<"done" | "timed-out">;
+  close(): Promise<void>;
+}

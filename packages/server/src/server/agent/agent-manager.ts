@@ -662,6 +662,11 @@ export interface AgentManagerOptions {
     agentId: string;
     expectedTurnId: string;
   }) => Promise<void>;
+  /**
+   * A pending wait while the installation coordinator refreshes this provider's Codex sign-in,
+   * or undefined. The daemon ends every hold within its lease bound.
+   */
+  holdProviderStart?: (provider: AgentProvider) => Promise<void> | undefined;
   logger: Logger;
 }
 
@@ -1874,6 +1879,7 @@ export class AgentManager {
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
+  private readonly holdProviderStart?: AgentManagerOptions["holdProviderStart"];
   private acceptingAgentRegistrations = true;
   private readonly stoppedRestartContinuations = new Set<string>();
   private readonly releasedRestartContinuations = new Set<string>();
@@ -1923,6 +1929,7 @@ export class AgentManager {
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = this.resolveRescueTimeouts(options);
     this.beforeSteerUnavailableFallback = options.beforeSteerUnavailableFallback;
+    this.holdProviderStart = options.holdProviderStart;
     this.agentStreamCoalescer = new AgentStreamCoalescer({
       windowMs: options.agentStreamCoalesceWindowMs ?? AGENT_STREAM_COALESCE_DEFAULT_WINDOW_MS,
       timers: { setTimeout, clearTimeout },
@@ -3351,6 +3358,21 @@ export class AgentManager {
       .map((agent) => Object.assign({}, agent));
   }
 
+  /**
+   * For the coordinator's Codex refresh lease: `busy` while any session is being started, resumed,
+   * reloaded or switched, or a turn runs on this provider; `loaded` when a session on it is loaded
+   * but idle. Registrations do not yet name their final provider, so any one counts as busy.
+   */
+  providerSessionActivity(provider: AgentProvider): "busy" | "loaded" | "none" {
+    if (this.agentRegistrationTasks.size > 0) return "busy";
+    const sessions = Array.from(this.agents.values()).filter(
+      (agent) => agent.provider === provider,
+    );
+    if (sessions.some((agent) => isAgentBusy(agent.lifecycle) || this.runs.hasRun(agent.id)))
+      return "busy";
+    return sessions.length > 0 ? "loaded" : "none";
+  }
+
   isProviderInUse(provider: AgentProvider): boolean {
     // A registering session can already own credentials before entering agents.
     // Its final provider is not indexed yet, so defer deletion until registration settles.
@@ -3922,6 +3944,7 @@ export class AgentManager {
       this.detachPluginTools(resolvedAgentId);
       throw error;
     }
+    await this.awaitProviderStart(storedConfig.provider);
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
     const parentId = options.labels?.[PARENT_AGENT_ID_LABEL];
@@ -4099,6 +4122,7 @@ export class AgentManager {
       { ...buildResumeOpening(), toolAccess: storedConfig.toolAccess },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
+    await this.awaitProviderStart(storedConfig.provider);
     const session = await client.resumeSession(
       handle,
       providerLaunchConfig,
@@ -4292,6 +4316,7 @@ export class AgentManager {
       this.assertAcceptingAgentRegistrations();
 
       this.paseoToolPolicies.set(agentId, paseoToolPolicy);
+      await this.awaitProviderStart(storedConfig.provider);
       session = handle
         ? await client.resumeSession(handle, providerLaunchConfig, launchContext)
         : await client.createSession(providerLaunchConfig, launchContext);
@@ -4716,6 +4741,7 @@ export class AgentManager {
       this.assertAcceptingAgentRegistrations();
 
       this.paseoToolPolicies.set(agentId, paseoToolPolicy);
+      await this.awaitProviderStart(storedConfig.provider);
       session = await client.createSession(providerLaunchConfig, launchContext);
       await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
       this.assertAcceptingAgentRegistrations();
@@ -10150,6 +10176,11 @@ export class AgentManager {
 
   private getConfiguredProviderIds(): AgentProvider[] {
     return Array.from(new Set([...this.providerEnabled.keys(), ...this.clients.keys()]));
+  }
+
+  /** Waits only while the installation coordinator holds a Codex refresh lease on it. */
+  private async awaitProviderStart(provider: AgentProvider): Promise<void> {
+    await this.holdProviderStart?.(provider);
   }
 
   private requireClient(provider: AgentProvider): AgentClient {

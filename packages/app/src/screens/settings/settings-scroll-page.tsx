@@ -222,6 +222,16 @@ const PRIMARY_CONTROL =
 const FOCUSABLE =
   'button, input, select, textarea, a[href], [role="switch"], [role="button"], [role="radio"], [tabindex="0"]';
 
+function firstEnabledControl(root: HTMLElement): HTMLElement | null {
+  const controls = root.querySelectorAll<HTMLElement>(FOCUSABLE);
+  for (const control of controls) {
+    if (control.getAttribute("aria-disabled") === "true" || control.hasAttribute("disabled"))
+      continue;
+    return control;
+  }
+  return null;
+}
+
 /**
  * Where keyboard focus lands after a jump: a row's first control, a pane's first heading, or a
  * section's title, so screen reader and keyboard users arrive where the page scrolled.
@@ -232,7 +242,10 @@ function focusElementFor(
   node: HTMLElement,
 ): HTMLElement | null {
   if (offset.row) {
-    // An anchor names a whole region, such as the health list; land on the region itself.
+    // A request card hands focus to its first enabled control, such as Approve or Dismiss.
+    if (target.anchorId && offset.row.dataset?.settingsJump === "card")
+      return firstEnabledControl(offset.row) ?? offset.row;
+    // Any other anchor names a whole region, such as the health list; land on the region itself.
     if (target.anchorId) return offset.row;
     return (
       offset.row.querySelector<HTMLElement>(PRIMARY_CONTROL) ??

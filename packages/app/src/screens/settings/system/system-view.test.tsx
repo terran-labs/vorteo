@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import type { ReactNode } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SystemView } from "./system-view";
 import { deriveSystemEnvironment } from "./system-status-model";
+import { revealHealthCard } from "@/execution-installation/health-cards";
 // Partial: platform checks reached through imports keep their real exports.
 vi.mock("react-native", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-native")>()),
@@ -84,4 +85,24 @@ it("keeps a pending update unavailable and enables its retry after failure", () 
   );
   fireEvent.click(screen.getByRole("button", { name: action.label }));
   expect(onAction).toHaveBeenCalledWith(action);
+});
+
+// #639: a Health Fix opens the Details holding its card once. The reveal is consumed, so
+// collapsing the Details afterwards, or a later render, does not open them again.
+it("opens Details once per Health reveal aimed at its environment", () => {
+  const row = (name: "Host" | "Dev") => ({
+    name,
+    status: "attention" as const,
+    action: null,
+    onAction: vi.fn(),
+    details: <span>{`${name} card`}</span>,
+  });
+  const { rerender } = render(<SystemView environments={[row("Host"), row("Dev")]} />);
+  act(() => revealHealthCard("broker", "host"));
+  expect(screen.queryByText("Host card")).not.toBeNull();
+  expect(screen.queryByText("Dev card")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Host Details" }));
+  expect(screen.queryByText("Host card")).toBeNull();
+  rerender(<SystemView environments={[row("Host"), row("Dev")]} />);
+  expect(screen.queryByText("Host card")).toBeNull();
 });

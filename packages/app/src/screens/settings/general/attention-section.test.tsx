@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   system: null as object | null,
   owner: "none" as string,
   providerItems: [] as object[],
+  dialog: { visible: false, onClose: () => {} } as { visible: boolean; onClose: () => void },
 }));
 vi.mock("@/components/settings", () => ({
   SettingsCard: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -24,7 +25,19 @@ vi.mock("@/components/settings", () => ({
   ),
 }));
 vi.mock("@/components/ui/button", () => ({
-  Button: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
+  Button: ({
+    children,
+    onPress,
+    testID,
+  }: {
+    children: ReactNode;
+    onPress?: () => void;
+    testID?: string;
+  }) => (
+    <button type="button" onClick={onPress} data-testid={testID}>
+      {children}
+    </button>
+  ),
 }));
 vi.mock("react-native", () => ({
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -48,7 +61,12 @@ vi.mock("@/execution-installation/panel", () => ({
 vi.mock("@/execution-installation/owner-access", () => ({
   useOwnerAccess: () => ({ status: state.owner }),
 }));
-vi.mock("@/components/settings/owner-lock", () => ({ OwnerUnlockDialog: () => null }));
+vi.mock("@/components/settings/owner-lock", () => ({
+  OwnerUnlockDialog: (props: { visible: boolean; onClose: () => void }) => {
+    state.dialog = props;
+    return null;
+  },
+}));
 vi.mock("@/execution-installation/use-installation-upgrades", () => ({
   useInstallationUpgradeStatus: () => ({ data: null }),
 }));
@@ -197,4 +215,48 @@ it("never stays on Checking while settings are locked", () => {
   // Shared settings never load while locked.
   state.data = undefined;
   expect(rows(render())).toEqual(["locked"]);
+});
+
+// #639: a locked card asks to unlock first; cancelling leaves the page where it was.
+it("asks to unlock before a Fix whose card needs owner access, and drops it on cancel", () => {
+  state.owner = "locked";
+  state.system = {
+    unlocked: false,
+    restartSummary: { requested: 0, queued: 0, running: 0, previewBroker: { requested: 1 } },
+  };
+  onFix.mockClear();
+  const view = mount(withClient(<SystemHealthSection onFix={onFix} />));
+  const fix = () =>
+    act(() => {
+      view.getByTestId("settings-attention-service-previewBroker-fix").click();
+    });
+  fix();
+  expect(state.dialog.visible).toBe(true);
+  expect(onFix).not.toHaveBeenCalled();
+  act(() => state.dialog.onClose());
+  expect(state.dialog.visible).toBe(false);
+  expect(onFix).not.toHaveBeenCalled();
+  // Unlocking closes the dialog. The Fix waits for the unlocked rows, then follows the row for
+  // the same card there, not the locked one.
+  fix();
+  state.owner = "unlocked";
+  act(() => state.dialog.onClose());
+  expect(onFix).not.toHaveBeenCalled();
+  // Access reports unlocked before the queues load; the Fix keeps waiting for its row.
+  const empty = { unlocked: true, jobs: [], pendingJobs: [], helperJobs: [], monitorJobs: [] };
+  state.system = { ...empty, brokerJobs: [] };
+  view.rerender(withClient(<SystemHealthSection onFix={onFix} />));
+  expect(onFix).not.toHaveBeenCalled();
+  state.system = {
+    ...empty,
+    brokerJobs: [{ status: "failed", target: "preview-broker", createdAt: "2026-11-14T00:00:00Z" }],
+  };
+  view.rerender(withClient(<SystemHealthSection onFix={onFix} />));
+  expect(onFix).toHaveBeenCalledTimes(1);
+  expect(onFix.mock.calls[0][0]).toMatchObject({
+    pane: "system.overview",
+    anchorId: "system-health-card-host-broker",
+    focus: true,
+  });
+  cleanup();
 });

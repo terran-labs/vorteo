@@ -6,6 +6,8 @@ export const ptBR: TranslationResources = {
   previewStatus: previewStatus["pt-BR"],
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure:
       "Não foi possível pesquisar nesta conversa. Verifique a conexão com o host e tente novamente.",
@@ -2307,6 +2309,13 @@ export const ptBR: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "Sair em todos os ambientes",
+      title: "Sair do Codex em todos os ambientes?",
+      message:
+        "Isso desconecta o Host desta conta do ChatGPT e revoga o login, então Host e Dev perdem o acesso até você conectar de novo.",
+      confirm: "Sair em todos",
+    },
     checkUsage: "Consultar uso",
     checkUsageHint: "Aplica-se a {{host}} em todos os dispositivos",
     off: "O uso está desativado em {{host}}.",

@@ -330,6 +330,7 @@ export function createClaudeOAuthRuntime(
       logger.warn(event, "Claude sign-in is gone from its account directory; sign in again");
     else if (event.kind === "expiring")
       logger.warn(event, "Claude access token is expiring without a successful refresh");
+    else if (event.kind === "refreshSkipped") logger.info(event, "Claude sign-in refresh skipped");
     else if (event.outcome === "refreshed") logger.info(event, "Claude sign-in refreshed");
     else logger.warn(event, "Claude sign-in refresh did not renew the token");
   }

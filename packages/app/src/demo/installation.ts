@@ -63,11 +63,14 @@ interface DemoConnection {
   email: string | null;
   state: ConnectionState;
   accountSuffix: string;
+  /** From before the installation managed Codex: no setup record, so it can be adopted. */
+  legacy?: true;
 }
 
 /**
  * Claude has four connections (two working, one expired, one signed out) so "Reconnect expired"
- * appears; Codex has one working connection; OpenCode has a single signed-out connection.
+ * appears; Codex has one working connection and one legacy connection the owner can adopt;
+ * OpenCode has a single signed-out connection.
  * Provider IDs match the sample usage in `usage.ts`.
  */
 const CONNECTIONS: readonly DemoConnection[] = [
@@ -115,6 +118,16 @@ const CONNECTIONS: readonly DemoConnection[] = [
     email: "team@example.com",
     state: "connected",
     accountSuffix: "c05",
+  },
+  {
+    definitionId: "demo-codex-personal",
+    providerId: "codex-account-personal",
+    providerType: "codex",
+    label: "Personal",
+    email: "codex-personal@example.com",
+    state: "connected",
+    accountSuffix: "c07",
+    legacy: true,
   },
   {
     definitionId: "demo-opencode",
@@ -190,6 +203,14 @@ function providerDefinition(connection: DemoConnection, order: number): Installa
       providerType: "opencode",
       bindings,
       policy: { order, enabled: true },
+    };
+  if (connection.legacy)
+    return {
+      id: connection.definitionId,
+      providerType: connection.providerType,
+      accountId: accountId(connection),
+      bindings,
+      policy: { label: connection.label, order, enabled: true },
     };
   return {
     id: connection.definitionId,
@@ -335,6 +356,18 @@ interface DemoAttempt {
 const STARTING_MS = 900;
 const CODEX_WAIT_MS = 5000;
 const VERIFYING_MS = 1500;
+/** A demo adoption checks the Host, pins Dev's home, then waits for Dev to confirm. */
+const ADOPTION_STEPS: readonly [number, string][] = [
+  [1500, "verifying-host"],
+  [3000, "pinning"],
+  [7000, "projecting"],
+];
+const UNADOPTING_MS = 2000;
+
+interface DemoAdoption {
+  startedAt: number;
+  unadoptedAt: number | null;
+}
 const DEV_SYNC_MS = 4000;
 
 export interface OwnerSessionStore {
@@ -362,6 +395,7 @@ export class DemoCoordinator {
   private name: string | null = "Demo Lab";
   private attempts = new Map<string, DemoAttempt>();
   private attemptOrdinal = 0;
+  private adoptions = new Map<string, DemoAdoption>();
   private profilesRevision = 1;
   private profiles = createProfiles();
   /** When shared settings last changed; Dev applies them a few seconds later. */
@@ -411,11 +445,10 @@ export class DemoCoordinator {
     if (path === "owner/maintenance-services/query")
       return ok({ installationId: INSTALLATION_ID, available: true, jobs: [] });
     if (path === "owner/profiles" && method === "PATCH") return this.saveProfiles(body);
-    const signIn =
-      /^owner\/(claude\/oauth|codex\/signin)\/(read|start|submit|cancel|sign-out)$/.exec(path);
-    if (signIn)
-      return this.signIn(signIn[1] === "codex/signin" ? "codex" : "claude", signIn[2], body);
-    return { status: 404, body: { error: "Not available in the demo." } };
+    return (
+      this.adoptionRoute(path, body) ??
+      this.signInRoute(path, body) ?? { status: 404, body: { error: "Not available in the demo." } }
+    );
   }
 
   private unlockPayload() {
@@ -569,6 +602,73 @@ export class DemoCoordinator {
         })),
       },
     });
+  }
+
+  /** Legacy Codex accounts, each adoptable, with its adoption walking the real sequence. */
+  private legacyAccounts() {
+    return CONNECTIONS.filter((entry) => entry.legacy).map((entry) => ({
+      definitionId: entry.definitionId,
+      eligible: true,
+      reason: null,
+      adoption: this.adoptionView(entry.definitionId),
+    }));
+  }
+
+  private adoptionView(definitionId: string) {
+    const adoption = this.adoptions.get(definitionId);
+    if (!adoption) return null;
+    const now = this.now();
+    const view = {
+      error: null,
+      startedAt: adoption.startedAt,
+      projectedAt: null as number | null,
+      renewedAt: null,
+      provenAt: null,
+      copyForgottenAt: null,
+      restored: null as { copyAgeMs: number; mayNeedSignIn: true } | null,
+    };
+    if (adoption.unadoptedAt !== null) {
+      if (now - adoption.unadoptedAt < UNADOPTING_MS) return { ...view, status: "unadopting" };
+      return {
+        ...view,
+        status: "unadopted",
+        restored: { copyAgeMs: adoption.unadoptedAt - adoption.startedAt, mayNeedSignIn: true },
+      };
+    }
+    const step = ADOPTION_STEPS.find(([until]) => now - adoption.startedAt < until);
+    if (step) return { ...view, status: step[1] };
+    return { ...view, status: "adopted", projectedAt: adoption.startedAt + 7000 };
+  }
+
+  private signInRoute(path: string, body: unknown): DemoReply | null {
+    const signIn =
+      /^owner\/(claude\/oauth|codex\/signin)\/(read|start|submit|cancel|sign-out)$/.exec(path);
+    return signIn
+      ? this.signIn(signIn[1] === "codex/signin" ? "codex" : "claude", signIn[2], body)
+      : null;
+  }
+
+  private adoptionRoute(path: string, body: unknown): DemoReply | null {
+    if (path === "owner/codex/signin/adoptions") return ok({ definitions: this.legacyAccounts() });
+    const adoption = /^owner\/codex\/signin\/(adopt|unadopt)$/.exec(path);
+    return adoption ? this.changeAdoption(adoption[1] === "adopt", body) : null;
+  }
+
+  private changeAdoption(adopt: boolean, body: unknown): DemoReply {
+    const definitionId = readString(body, "definitionId") ?? "";
+    if (!CONNECTIONS.some((entry) => entry.legacy && entry.definitionId === definitionId))
+      return { status: 409, body: { error: "Unknown connection." } };
+    const current = this.adoptionView(definitionId);
+    if (adopt) {
+      if (!current || current.status === "unadopted")
+        this.adoptions.set(definitionId, { startedAt: this.now(), unadoptedAt: null });
+    } else {
+      const adoption = this.adoptions.get(definitionId);
+      if (!adoption || adoption.unadoptedAt !== null)
+        return { status: 409, body: { error: "Nothing to un-adopt." } };
+      adoption.unadoptedAt = this.now();
+    }
+    return ok({ adoption: this.adoptionView(definitionId) });
   }
 
   /** The attempt's state, derived from elapsed time so polling walks the real sequence. */

@@ -307,6 +307,16 @@
                 "readFileSync",
                 "unlinkSync"
               ],
+              // TODO: adopted legacy homes reuse the synchronous sign-in file helpers; migrate with codex-signin-auth-file.ts.
+              "server/execution-installation/accounts/codex-signin-legacy-home.ts": [
+                "closeSync",
+                "fstatSync",
+                "lstatSync",
+                "openSync",
+                "readFileSync",
+                "realpathSync",
+                "unlinkSync"
+              ],
               // TODO: host sign-in reads the reviewed auth descriptor; retain identity checks during asynchronous migration.
               "server/execution-installation/accounts/codex-signin-host.ts": [
                 "closeSync",

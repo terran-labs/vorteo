@@ -1088,6 +1088,7 @@ export async function requestInstallationOwner(
       "coordinator-settings/query",
       "claude/oauth/read",
       "claude/oauth/upgrade/read",
+      "codex/signin/adoptions",
     ].includes(path) &&
     response.ok &&
     !response.headers.get("content-type")?.includes("application/json")

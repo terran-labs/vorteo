@@ -4,6 +4,7 @@ import { z } from "zod";
 import { isTrustedCredentialsFile, replaceAtomically } from "./claude-oauth-credentials-file.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { CodexSignInDeliveryError, type CodexAccessProjection } from "./codex-signin-delivery.js";
+import { sameCodexSignIn } from "./codex-signin-identity.js";
 
 /** Codex keeps ChatGPT sign-in in `<CODEX_HOME>/auth.json` with its default file storage. */
 const AUTH_FILE = "auth.json";
@@ -13,7 +14,11 @@ const LOCAL_SIGN_IN_COPY = "local-sign-in.json";
 
 const ExistingSchema = z.object({
   tokens: z
-    .object({ refresh_token: z.string().optional(), account_id: z.string().nullish() })
+    .object({
+      refresh_token: z.string().optional(),
+      account_id: z.string().nullish(),
+      id_token: z.string().nullish(),
+    })
     .nullish(),
 });
 
@@ -50,7 +55,9 @@ function readExisting(file: string): Record<string, unknown> | null {
 function localSignIn(existing: Record<string, unknown> | null) {
   const parsed = ExistingSchema.safeParse(existing);
   const tokens = parsed.success ? parsed.data.tokens : undefined;
-  return tokens?.refresh_token ? { accountId: tokens.account_id ?? null } : null;
+  return tokens?.refresh_token
+    ? { accountId: tokens.account_id ?? null, idToken: tokens.id_token ?? null }
+    : null;
 }
 
 /**
@@ -58,7 +65,7 @@ function localSignIn(existing: Record<string, unknown> | null) {
  * The caller has already verified that `home` is the binding's owned account directory.
  *
  * An earlier sign-in made in this environment is replaced only when it belongs to the same
- * ChatGPT account, and a copy is kept once as rollback material. A different or unverifiable
+ * person in the same ChatGPT workspace, and a copy is kept once as rollback material. A different or unverifiable
  * account is refused and stays in place. A withdrawal never removes such a local sign-in.
  */
 export function writeCodexAccessProjection(
@@ -79,8 +86,7 @@ export function writeCodexAccessProjection(
     return;
   }
   if (local) {
-    if (!access.accountId || local.accountId !== access.accountId)
-      throw new CodexSignInDeliveryError();
+    if (!sameCodexSignIn(local, access)) throw new CodexSignInDeliveryError();
     const copy = join(home, CODEX_SIGNIN_STATE_DIRECTORY, LOCAL_SIGN_IN_COPY);
     if (readClaudeSetupFile(copy) === null) writeClaudeSetupFile(copy, existing);
   }

@@ -122,6 +122,12 @@ export type HostRefreshEvent =
       failure?: string;
     }
   | {
+      /** The refresh port declined to refresh; not a failure. */
+      kind: "refreshSkipped";
+      definitionId: string;
+      reason: HostRefreshSkipped["reason"];
+    }
+  | {
       /** A signed-in account's Host grant is gone or erased. Emitted once per loss. */
       kind: "signInLost";
       definitionId: string;
@@ -133,6 +139,16 @@ export type HostRefreshEvent =
       expiresAt: number;
       lastRefresh: "refreshed" | "unchanged" | "failed" | null;
     };
+
+/**
+ * Thrown by a refresh port that declined to refresh, for example because a Host session may be
+ * renewing the same grant. It is not a failure: the refresher reads and projects what is there.
+ */
+export class HostRefreshSkipped extends Error {
+  constructor(readonly reason: "lease_unavailable" | "native_session" | "lease_expired") {
+    super("The Host refresh was skipped.");
+  }
+}
 
 export interface HostRefresherPorts<G extends HostGrant, P> {
   installationId: string;
@@ -146,7 +162,7 @@ export interface HostRefresherPorts<G extends HostGrant, P> {
   policy(definitionId: string): HostRefreshPolicy;
   /** The Host account's grant, read from its own CLI storage. Throws when the Host is unreachable. */
   grant(definitionId: string): Promise<G | null>;
-  /** Asks the official Host CLI to refresh under its own locks. */
+  /** Asks the official Host CLI to refresh under its own locks. May throw HostRefreshSkipped. */
   refresh(definitionId: string): Promise<void>;
   deliver(delivery: HostProjectionDelivery<P>): Promise<HostProjectionReceipt>;
   now(): number;
@@ -274,6 +290,38 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     });
   }
 
+  /**
+   * Ends the current generation without asking policy or delivering anything, for an account
+   * whose policy no longer exists. The generation still advances, so a later sign-in is newer
+   * than anything a consumer already holds.
+   */
+  retire(definitionId: string): Promise<void> {
+    return this.enqueue(definitionId, async () => {
+      const previous = this.records.find((item) => item.definitionId === definitionId);
+      if (!previous?.signedIn) return;
+      const policy = {
+        revision: previous.policyRevision,
+        removed: true,
+        targets: previous.targets,
+      };
+      this.replace(definitionId, policy, {
+        signedIn: false,
+        identity: previous.identity,
+        digest: this.adapter.digest(null),
+      });
+    });
+  }
+
+  /** Whether every target acknowledged the withdrawal of a signed-out account. */
+  withdrawn(definitionId: string): boolean {
+    const record = this.records.find((item) => item.definitionId === definitionId);
+    return (
+      record !== undefined &&
+      !record.signedIn &&
+      record.targets.every((target) => target.appliedRotation === record.rotation)
+    );
+  }
+
   reconcile(): Promise<void> {
     if (this.reconciliation) return this.reconciliation;
     const task = Promise.all(
@@ -365,15 +413,22 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     now: number,
     recovery: boolean,
   ): Promise<P | null | undefined> {
-    const due = this.isDue(next, now) || (recovery && next.refreshFailures === 0);
+    const scheduled = this.isDue(next, now);
+    // Recovery re-reads the Host and re-delivers even while refreshes fail, so a Dev copy that
+    // was overwritten is repaired. Only scheduled work, inside the retry budget, may then
+    // refresh; recovery alone never spends a retry.
+    const due = scheduled || recovery;
+    // A recovery-only read while refreshes fail neither refreshes nor counts a failure, so
+    // repeated recovery calls cannot push the scheduled retry further out.
+    const allowRefresh = scheduled || next.refreshFailures === 0;
     // Preserve the previous deadline even if this read immediately discovers a renewed grant.
     if (next.expiresAt !== null && now >= next.expiresAt) next.missedExpiry = next.expiresAt;
     let desired: P | null | undefined;
     if (due) {
       try {
-        desired = await this.readHost(next.definitionId, next, now);
+        desired = await this.readHost(next.definitionId, next, now, allowRefresh);
       } catch {
-        this.recordFailure(next, now, "storage_unreadable");
+        if (allowRefresh) this.recordFailure(next, now, "storage_unreadable");
         next.checkedAt = now;
       }
     }
@@ -389,6 +444,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     definitionId: string,
     next: HostRefreshRecord,
     now: number,
+    allowRefresh = true,
   ): Promise<P | null> {
     let grant = await this.ports.grant(definitionId);
     // A newer Host token (a Host agent refreshed it, or the owner signed in) clears failures.
@@ -411,8 +467,8 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       } else delete next.failureReason;
       delete next.refreshRetry;
     }
-    if (grant === null) this.recordFailure(next, now, "grant_missing");
-    if (this.shouldRefresh(next, grant, now))
+    if (grant === null && allowRefresh) this.recordFailure(next, now, "grant_missing");
+    if (allowRefresh && this.shouldRefresh(next, grant, now))
       grant = await this.refreshHost(definitionId, grant, next, now);
     next.checkedAt = now;
     next.expiresAt = grant?.expiresAt ?? null;
@@ -436,6 +492,10 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     try {
       await this.ports.refresh(definitionId);
     } catch (error) {
+      if (error instanceof HostRefreshSkipped) {
+        this.emit({ kind: "refreshSkipped", definitionId, reason: error.reason });
+        return grant;
+      }
       // The CLI can save a rotated token before the model request fails or times out.
       failed = true;
       failure = failureCategory(error);

@@ -15,6 +15,11 @@ import {
 } from "./panel";
 import { useSessionStore } from "@/stores/session-store";
 import { sessionHostJobFixture, sessionHostStatusFixture } from "./session-host-review.fixture";
+import { brokerReviewFixture } from "./preview-broker-review.fixture";
+import { monitorReviewFixture } from "./preview-monitor-review.fixture";
+import { helperReviewFixture } from "./helper-review.fixture";
+import { healthCardAnchorId, revealHealthCard } from "./health-cards";
+import { systemHealthItems } from "@/screens/settings/system/health-model";
 import type { SessionHostAction, SessionHostOverview } from "./session-host-review";
 
 vi.mock("./use-installation-upgrades", () => ({
@@ -90,6 +95,15 @@ vi.mock("react-native-unistyles", async (original) => {
 });
 
 let overview: SessionHostOverview | null = { jobs: [], status: sessionHostStatusFixture };
+// Queues the Health Fix case table fills; every other test leaves them empty.
+const noQueues = () => ({
+  restarts: [] as never[],
+  helpers: [] as never[],
+  monitors: [] as never[],
+  brokers: [] as never[],
+  instructions: null as never,
+});
+let queues = noQueues();
 let summary: RestartSummary | null = null;
 // Locking ends the server session, so a later refresh must not restore owner access.
 let sessionValid = true;
@@ -107,9 +121,11 @@ const client: ConstructorParameters<typeof InstallationPanelModel>[0] = {
     sessionValid = false;
   }),
   restartSummary: vi.fn(async () => summary),
-  listRestarts: vi.fn(async () => []),
-  listHelpers: vi.fn(async () => []),
-  listMonitors: vi.fn(async () => []),
+  listRestarts: vi.fn(async () => queues.restarts),
+  listHelpers: vi.fn(async () => queues.helpers),
+  listMonitors: vi.fn(async () => queues.monitors),
+  listBrokers: vi.fn(async () => queues.brokers),
+  listInstructionRequests: vi.fn(async () => queues.instructions),
   profileSharingStatus: vi.fn(async () => null),
   resolveProfileConflict: vi.fn(forbidden),
   decide: vi.fn(forbidden),
@@ -481,5 +497,102 @@ test("a pending session host request raises one System notice while controls are
     act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  }
+});
+
+// #639: every Health row's Fix lands on its card, in the Details that hold it, with an enabled
+// control to focus. The anchor ties the Health row to the card the panel actually renders.
+const failed = { status: "failed", detail: "It stopped.", createdAt: "2026-11-14T00:00:00.000Z" };
+test.each([
+  [
+    "session host",
+    () => ({ sessionHost: [{ ...sessionHostJobFixture, ...failed, stage: "failed" }] }),
+  ],
+  ["broker", () => ({ brokers: [{ ...brokerReviewFixture, ...failed }] })],
+  ["monitor", () => ({ monitors: [{ ...monitorReviewFixture, ...failed }] })],
+  ["helper", () => ({ helpers: [{ ...helperReviewFixture, status: "pending" }] })],
+  [
+    "instructions",
+    () => ({
+      instructions: {
+        revision: 3,
+        appendSystemPrompt: "old",
+        requests: [
+          {
+            id: "6f1c2a8e-8a8b-4d7e-9a43-6f0d1c2b3a4d",
+            status: "pending",
+            environment: "host",
+            requester: "agent",
+            reason: "Add a rule",
+            baseRevision: 3,
+            baseSha256: "a".repeat(64),
+            appendSystemPrompt: "new",
+            proposedSha256: "b".repeat(64),
+            createdAt: failed.createdAt,
+            decidedAt: null,
+            appliedRevision: null,
+            detail: null,
+          },
+        ],
+      },
+    }),
+  ],
+  [
+    "failed restart",
+    () => ({
+      restarts: [
+        {
+          id: "restart-1",
+          revision: "restart-1",
+          target: "host",
+          requestedBy: "host-agent",
+          reason: "Restart",
+          createdAt: failed.createdAt,
+          expiresAt: "9999-12-31T00:00:00Z",
+          status: "failed",
+          detail: "It stopped.",
+        },
+      ],
+    }),
+  ],
+])("the %s Health row's Fix lands on an enabled control in its card", async (_name, fill) => {
+  vi.stubGlobal("React", React);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const filled = fill() as Partial<ReturnType<typeof noQueues>> & {
+    sessionHost?: SessionHostJob[];
+  };
+  queues = { ...noQueues(), ...filled };
+  overview = { jobs: filled.sessionHost ?? [], status: sessionHostStatusFixture };
+  sessionValid = true;
+  await page.viewport(390, 900);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<InstallationSystemDetails target="host" />));
+    const model = await vi.waitFor(() => {
+      expect(capture.model).toBeDefined();
+      return capture.model!;
+    });
+    await act(() => model.initialize());
+    await act(() => model.refresh());
+    const items = systemHealthItems(model.getState());
+    expect(items).toHaveLength(1);
+    const [item] = items;
+    if (!item.cardInSheet) act(() => revealHealthCard(item.card!, item.cardHost!));
+    const anchor = await vi.waitFor(() => {
+      const element = document.getElementById(healthCardAnchorId(item.cardHost!, item.card!));
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    const controls = [...anchor.querySelectorAll<HTMLElement>('[role="button"], button')].filter(
+      (control) => control.getAttribute("aria-disabled") !== "true",
+    );
+    expect(controls.length).toBeGreaterThan(0);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    queues = noQueues();
+    overview = { jobs: [], status: sessionHostStatusFixture };
   }
 });

@@ -16,6 +16,7 @@ import { useProviderUsage } from "@/provider-usage/use-provider-usage";
 import { useFactoryServerIds } from "@/screens/factory/overview-sources";
 import { providersNeedingAttention } from "../shared-providers-model";
 import { useProviderDetection } from "../use-provider-detection";
+import type { HealthCard, HealthCardHost } from "@/execution-installation/health-cards";
 import type { SystemHealthItem } from "./health-model";
 
 /**
@@ -33,6 +34,13 @@ export interface AttentionItem {
   pane: string;
   /** Catalog entry whose row Fix lands on, when one row owns the fix. */
   settingId?: string;
+  /** The request card Fix opens, expanding the section that holds it. */
+  card?: HealthCard;
+  cardHost?: HealthCardHost;
+  /** The card needs owner access; Fix asks to unlock first. */
+  needsUnlock?: boolean;
+  /** The card opens as a sheet; Fix reveals it without scrolling the page. */
+  cardInSheet?: boolean;
 }
 
 const NO_ENVIRONMENTS: never[] = [];
@@ -185,6 +193,10 @@ export function installationHealthRows(items: readonly SystemHealthItem[]): Atte
     hint: item.status,
     pane: item.pane,
     settingId: item.settingId,
+    card: item.card,
+    cardHost: item.cardHost,
+    needsUnlock: item.needsUnlock,
+    cardInSheet: item.cardInSheet,
   }));
 }
 

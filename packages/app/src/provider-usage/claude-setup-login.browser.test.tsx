@@ -5,6 +5,7 @@ import { page, userEvent } from "vitest/browser";
 import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
 import { ProviderLoginPanel } from "./login-panel";
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { CodexAdoptionSection } from "./codex-adoption";
 import {
   useClaudeSignInUpgradeAvailable,
   useProviderLogin,
@@ -25,6 +26,11 @@ vi.mock("@/utils/open-external-url", () => ({ openExternalUrl: vi.fn() }));
 vi.mock("@/utils/confirm-dialog", () => ({ confirmDialog: vi.fn() }));
 // Post-sign-in refresh talks to live daemons; the panel's rendering is what these tests cover.
 vi.mock("./refresh-after-sign-in", () => ({ useRefreshAfterSignIn: () => undefined }));
+// Adoption of legacy Codex accounts has its own coverage; these cases test the sign-in panel.
+vi.mock("./codex-adoption", () => ({
+  CodexAdoptionSection: vi.fn(() => null),
+  useCodexAdoptionOffered: () => false,
+}));
 vi.mock("./use-provider-login", () => ({
   useProviderLogin: vi.fn(),
   useSharedInstallationSignIn: vi.fn(),
@@ -112,8 +118,13 @@ test("shared success shows pending delivery and allows renewal or installation-w
 
 test("a shared Codex account connects once and shows Dev synchronization", async () => {
   const start = vi.fn();
+  const signOut = vi.fn();
   // Opened from Dev, whose daemon session is not loaded here: the coordinator handles it.
   vi.mocked(useSharedInstallationSignIn).mockReturnValue(true);
+  // The adoption section failing to render never takes the sign-in panel down.
+  vi.mocked(CodexAdoptionSection).mockImplementation(() => {
+    throw new Error("synthetic adoption section failure");
+  });
   vi.mocked(useProviderLogin).mockReturnValue({
     state: { status: "idle" },
     shared: true,
@@ -130,7 +141,7 @@ test("a shared Codex account connects once and shows Dev synchronization", async
     actionFailed: false,
     refreshing: false,
     start,
-    signOut: vi.fn(),
+    signOut,
     cancel: vi.fn(),
     submitCode: vi.fn(),
     refresh: vi.fn(),
@@ -149,6 +160,15 @@ test("a shared Codex account connects once and shows Dev synchronization", async
   expect(start).toHaveBeenCalledOnce();
   expect(vi.mocked(useProviderLogin)).toHaveBeenCalledWith("dev", "codex-one", "codex");
   expect(vi.mocked(useSharedInstallationSignIn)).toHaveBeenCalledWith("dev", "codex", "codex-one");
+  // Signing out runs `codex logout` on the Host, which revokes it everywhere: it always asks.
+  vi.mocked(confirmDialog).mockResolvedValueOnce(false);
+  await page.getByTestId("provider-login-sign-out").click();
+  await expect.poll(() => vi.mocked(confirmDialog).mock.calls.length).toBe(1);
+  expect(vi.mocked(confirmDialog).mock.calls[0]![0]).toMatchObject({ destructive: true });
+  expect(signOut).not.toHaveBeenCalled();
+  vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+  await page.getByTestId("provider-login-sign-out").click();
+  await expect.poll(() => signOut.mock.calls.length).toBe(1);
 });
 
 type Login = ReturnType<typeof useProviderLogin>;

@@ -10,13 +10,19 @@ import {
 } from "@/execution-installation/panel";
 import { useOwnerAccess } from "@/execution-installation/owner-access";
 import { useInstallationUpgradeStatus } from "@/execution-installation/use-installation-upgrades";
+import { healthCardAnchorId, revealHealthCard } from "@/execution-installation/health-cards";
 import { SYSTEM_HEALTH_ANCHOR_ID, type SettingsJumpTarget } from "../settings-jump";
 import { systemHealthItems } from "../system/health-model";
 import { publishHealthExtras, useHealthListMounted } from "../system/health-extras";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSystemHealthRows, type AttentionItem } from "../system/system-health-rows";
+import {
+  installationHealthRows,
+  useSystemHealthRows,
+  type AttentionItem,
+} from "../system/system-health-rows";
 
 const NO_SUBSCRIPTION = () => () => {};
+const UNLOCK_REPLAY_MS = 10_000;
 const NO_STATE = () => null;
 
 /** What the installation reports as needing the owner, from the same state the button reads. */
@@ -28,7 +34,10 @@ function useInstallationItems() {
     model?.getState ?? NO_STATE,
   );
   const upgrades = useInstallationUpgradeStatus(useInstallationOwnerClient());
-  return systemHealthItems(state, upgrades.data?.upgrades);
+  return {
+    items: systemHealthItems(state, upgrades.data?.upgrades),
+    unlocked: state?.unlocked === true,
+  };
 }
 
 /** Says what a locked installation hides, with the Unlock that reveals it. Not a problem row. */
@@ -50,17 +59,34 @@ function LockedHealthRow() {
   );
 }
 
+/**
+ * Opens the card that resolves a row: expands the section holding it, then jumps there. The
+ * settings page waits for the card to render, scrolls it into view and focuses its first
+ * control. Rows without a card keep their catalog target.
+ */
+function openFix(item: AttentionItem, onFix: (target: SettingsJumpTarget) => void): void {
+  if (item.card && item.cardHost) {
+    revealHealthCard(item.card, item.cardHost);
+    // A sheet takes focus itself; scrolling the page under it would pull focus back out.
+    if (item.cardInSheet) return;
+    onFix({
+      pane: item.pane,
+      anchorId: healthCardAnchorId(item.cardHost, item.card),
+      focus: true,
+    });
+    return;
+  }
+  onFix({ pane: item.pane, settingId: item.settingId });
+}
+
 function AttentionRow({
   item,
   onFix,
 }: {
   item: AttentionItem;
-  onFix: (target: SettingsJumpTarget) => void;
+  onFix: (item: AttentionItem) => void;
 }) {
-  const fix = useCallback(
-    () => onFix({ pane: item.pane, settingId: item.settingId }),
-    [item.pane, item.settingId, onFix],
-  );
+  const fix = useCallback(() => onFix(item), [item, onFix]);
   return (
     <SettingsRow label={item.label} hint={item.hint} testID={`settings-attention-${item.id}`}>
       <Button
@@ -89,7 +115,46 @@ const regionProps = isWeb
  */
 export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTarget) => void }) {
   const locked = useOwnerAccess().status === "locked";
-  const installationItems = useInstallationItems();
+  // A Fix whose card needs owner access waits here while the unlock dialog is open. Cancelling
+  // drops it, so nothing expands and the page stays where it was.
+  const [awaitingUnlock, setAwaitingUnlock] = useState<AttentionItem | null>(null);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const fix = useCallback(
+    (item: AttentionItem) => {
+      if (item.needsUnlock && locked) {
+        setAwaitingUnlock(item);
+        setUnlockOpen(true);
+        return;
+      }
+      openFix(item, onFix);
+    },
+    [locked, onFix],
+  );
+  const closeUnlock = useCallback(() => setUnlockOpen(false), []);
+  const installation = useInstallationItems();
+  const installationItems = installation.items;
+  useEffect(() => {
+    if (unlockOpen || !awaitingUnlock) return;
+    // The dialog closes itself once access unlocks; any other close is a cancel.
+    if (locked) {
+      setAwaitingUnlock(null);
+      return;
+    }
+    // Locked rows only know public counts, such as which card, not which environment. Wait for
+    // the unlocked rows, which load after access unlocks, then follow the row for the same card.
+    // When none appears, the timer below drops the Fix: nothing there needs the owner any more.
+    if (!installation.unlocked) return;
+    const current = installationItems.find((item) => item.card === awaitingUnlock.card);
+    if (!current) return;
+    setAwaitingUnlock(null);
+    openFix(installationHealthRows([current])[0], onFix);
+  }, [awaitingUnlock, installation.unlocked, installationItems, locked, onFix, unlockOpen]);
+  // A Fix still waiting for the unlocked rows after this long is dropped, not replayed later.
+  useEffect(() => {
+    if (!awaitingUnlock || unlockOpen) return;
+    const timer = setTimeout(() => setAwaitingUnlock(null), UNLOCK_REPLAY_MS);
+    return () => clearTimeout(timer);
+  }, [awaitingUnlock, unlockOpen]);
   const items = useSystemHealthRows({ installationItems, locked });
   // Hand the sidebar button the rows it cannot compute without the settings queries.
   const extraIds = items
@@ -119,7 +184,7 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
         testID="settings-attention-clear"
       />
     );
-  else rows = items.map((item) => <AttentionRow key={item.id} item={item} onFix={onFix} />);
+  else rows = items.map((item) => <AttentionRow key={item.id} item={item} onFix={fix} />);
   // While locked, say what is hidden instead of claiming all is well.
   const lockedRow = locked && items !== null ? <LockedHealthRow key="locked" /> : null;
   return (
@@ -129,6 +194,7 @@ export function SystemHealthSection({ onFix }: { onFix: (target: SettingsJumpTar
           {rows}
           {lockedRow}
         </SettingsCard>
+        <OwnerUnlockDialog visible={unlockOpen} onClose={closeUnlock} />
       </View>
     </SettingsSection>
   );

@@ -22,7 +22,7 @@ import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useForceProviderUsageRefresh } from "./use-provider-usage";
 
-function useOwnerAllowed(serverId?: string | null) {
+export function useOwnerAllowed(serverId?: string | null) {
   const { status } = useOwnerAccess();
   const localConnection =
     serverId !== undefined &&

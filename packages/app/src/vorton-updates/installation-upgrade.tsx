@@ -15,11 +15,19 @@ import { formatTimeAgo } from "@/utils/time";
 import { useVortonTouch } from "@/vorton-touch";
 import type { InstallationClient } from "@/execution-installation/client";
 import { useInstallationOwnerClient } from "@/execution-installation/panel";
-import { InstallationUpgradeDetails } from "@/execution-installation/installation-upgrade-card";
+import {
+  InstallationUpgradeDetails,
+  UpgradeAcknowledgeButton,
+} from "@/execution-installation/installation-upgrade-card";
+import { healthCardAnchorProps } from "@/execution-installation/health-cards";
+import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
 import {
   activeUpgrade,
-  latestFinishedUpgrade,
+  failedUpgradesNeedingReview,
+  shownFinishedUpgrade,
   supportsUpdatePolicy,
+  upgradeCanBeDismissed,
+  upgradeFailureDetail,
   upgradeApprovalText,
   upgradeOffer,
 } from "@/execution-installation/installation-upgrades-model";
@@ -60,10 +68,27 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
     if (offer) create.mutate(offer);
   }, [create, offer]);
   if (!client || !status.data?.available) return null;
-  const shown = activeUpgrade(status.data) ?? latestFinishedUpgrade(status.data);
+  const shown = activeUpgrade(status.data) ?? shownFinishedUpgrade(status.data);
+  const failures = failedUpgradesNeedingReview(status.data).filter(
+    (upgrade) => upgrade.id !== shown?.id,
+  );
   const policy = supportsUpdatePolicy(status.data);
   return (
-    <View style={[styles.body, settingsStyles.rowBorder]} testID="installation-upgrade-section">
+    <View
+      style={[styles.body, settingsStyles.rowBorder]}
+      testID="installation-upgrade-section"
+      {...(failures.length ? null : healthCardAnchorProps("updates", "upgrades"))}
+    >
+      {failures.length ? (
+        <View
+          {...healthCardAnchorProps("updates", "upgrades")}
+          testID="installation-upgrade-failures"
+        >
+          {failures.map((upgrade) => (
+            <FailedUpgrade key={upgrade.id} client={client} upgrade={upgrade} />
+          ))}
+        </View>
+      ) : null}
       {policy ? <UpdatePolicyControls client={client} status={status.data} /> : null}
       {offer ? (
         <>
@@ -87,6 +112,33 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
         <InstallationUpgradeDetails client={client} upgrade={shown} status={status.data} />
       ) : null}
       <SettingsStatusLine message={create.error ? toErrorMessage(create.error) : null} />
+    </View>
+  );
+}
+
+/** One failed upgrade that still counts on the Health list, with why it failed. */
+function FailedUpgrade({
+  client,
+  upgrade,
+}: {
+  client: InstallationClient;
+  upgrade: InstallationUpgrade;
+}) {
+  return (
+    <View style={styles.failure} testID={`installation-upgrade-failure-${upgrade.id}`}>
+      <Text style={settingsStyles.rowTitle}>
+        {upgrade.release ? `Upgrade to ${upgrade.release} failed` : "Upgrade failed"}
+      </Text>
+      <Text selectable style={styles.hint}>
+        {`${formatTimeAgo(new Date(upgrade.createdAt))}: ${upgradeFailureDetail(upgrade)}`}
+      </Text>
+      {upgradeCanBeDismissed(upgrade) ? (
+        <UpgradeAcknowledgeButton
+          client={client}
+          upgrade={upgrade}
+          accessibilityLabel="Dismiss failed Vorteo upgrade"
+        />
+      ) : null}
     </View>
   );
 }
@@ -186,4 +238,5 @@ const styles = StyleSheet.create((theme) => ({
   controlText: { flexGrow: 1, flexShrink: 1, flexBasis: 200, minWidth: 0 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   hint: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
+  failure: { gap: theme.spacing[1], paddingBottom: theme.spacing[2] },
 }));

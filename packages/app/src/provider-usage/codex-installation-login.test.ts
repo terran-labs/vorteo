@@ -1,12 +1,14 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import {
   codexAccountUsesInstallationSignIn,
+  codexAdoptionRead,
   codexInstallationRequest,
   codexInstallationSignInAvailable,
 } from "./codex-installation-login";
 import { requestInstallationSettings } from "@/execution-installation/settings";
 import {
   InstallationRequestFailed,
+  InstallationRouteUnavailable,
   OwnerAccessExpired,
   requestInstallationOwner,
 } from "@/execution-installation/client";
@@ -22,6 +24,7 @@ vi.mock("@/execution-installation/client", () => ({
     }
   },
   OwnerAccessExpired: class extends Error {},
+  InstallationRouteUnavailable: class extends Error {},
 }));
 const read = vi.mocked(requestInstallationSettings);
 const request = vi.mocked(requestInstallationOwner);
@@ -113,4 +116,43 @@ test("only the coordinator's refusal of an unknown definition enables shared Cod
   await expect(codexInstallationSignInAvailable()).resolves.toBe(false);
   request.mockRejectedValueOnce(new OwnerAccessExpired("locked"));
   await expect(codexInstallationSignInAvailable()).rejects.toThrow("locked");
+});
+
+test("an older coordinator hides adoption, and only an adopted legacy account signs in on the Host", async () => {
+  const legacy = {
+    ...account,
+    accountSetup: undefined,
+    accountId: "33333333-3333-4333-8333-333333333333",
+  };
+  settings([legacy]);
+  request.mockRejectedValueOnce(new InstallationRouteUnavailable("missing"));
+  await expect(codexAdoptionRead("dev", "codex-one")).resolves.toBeNull();
+  request.mockRejectedValueOnce(new InstallationRouteUnavailable("missing"));
+  expect(await codexAccountUsesInstallationSignIn("dev", "codex-one")).toBe(false);
+  const listed = (status: string) => ({
+    definitions: [
+      {
+        definitionId: "shared-codex",
+        eligible: true,
+        reason: null,
+        adoption: { status, error: null, restored: null },
+      },
+    ],
+  });
+  request.mockResolvedValueOnce(listed("needs-owner-confirmation"));
+  await expect(codexAdoptionRead("dev", "codex-one")).resolves.toMatchObject({
+    definitionId: "shared-codex",
+    adoption: { status: "needs-owner-confirmation" },
+  });
+  request.mockResolvedValueOnce(listed("adopted"));
+  expect(await codexAccountUsesInstallationSignIn("dev", "codex-one")).toBe(true);
+  for (const status of ["failed", "cancelled", "unadopted"]) {
+    request.mockResolvedValueOnce(listed(status));
+    expect(await codexAccountUsesInstallationSignIn("dev", "codex-one")).toBe(false);
+  }
+  // A managed account never asks for adoptions.
+  settings([account]);
+  request.mockClear();
+  await expect(codexAdoptionRead("dev", "codex-one")).resolves.toBeNull();
+  expect(request).not.toHaveBeenCalled();
 });

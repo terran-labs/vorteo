@@ -6,6 +6,8 @@ export const ru: TranslationResources = {
   previewStatus: previewStatus.ru,
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
+  // Draft English until the wording is approved, then translated.
+  codexAdoption: en.codexAdoption,
   paneFind: {
     connectionFailure:
       "Не удалось выполнить поиск в чате. Проверьте подключение к хосту и повторите попытку.",
@@ -2313,6 +2315,13 @@ export const ru: TranslationResources = {
     },
   },
   providerUsage: {
+    codexSignOut: {
+      action: "Выйти во всех средах",
+      title: "Выйти из Codex во всех средах?",
+      message:
+        "Host выйдет из этого аккаунта ChatGPT, и вход будет отозван: Host и Dev потеряют доступ, пока вы не подключитесь снова.",
+      confirm: "Выйти везде",
+    },
     checkUsage: "Проверять использование",
     checkUsageHint: "Применяется к {{host}} на всех устройствах",
     off: "Проверка использования отключена на {{host}}.",
