@@ -1878,6 +1878,10 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  const factoryHosts = () => {
+    if (!wsServer) throw new Error("Daemon is not accepting host operations");
+    return wsServer.toolHosts();
+  };
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
@@ -1929,11 +1933,9 @@ export async function createPaseoDaemon(
       providers: providerSnapshotManager,
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
-      hosts: () => {
-        if (!wsServer) throw new Error("Daemon is not accepting host operations");
-        return wsServer.toolHosts();
-      },
+      hosts: factoryHosts,
     }),
+    hosts: factoryHosts,
     schedules: scheduleService,
     onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),
     logger,
