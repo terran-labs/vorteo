@@ -9,7 +9,12 @@ import type { WaitForFinishResult } from "@getpaseo/client/internal/daemon-clien
 import type { AgentMessageDelivery } from "../agent-messages/index.js";
 import { buildStoredAgentPayload } from "../agent-projections.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
+import { AgentManager } from "../agent-manager.js";
+import { AgentStorage } from "../agent-storage.js";
+import { ensureAgentLoaded } from "../agent-loading.js";
+import { createTestAgentClient } from "../../test-utils/fake-agent-client.js";
 import {
+  createFinishObservation,
   createFinishSubscriptions,
   createJsonFinishSubscriptionStore,
   type FinishObservation,
@@ -247,14 +252,29 @@ test("a quota-latched parent keeps the finish notification until the latch clear
   await state.service.register(intent);
   await until(() => state.observation.waits.length === 1);
   state.hold(true);
-  state.observation.waits[0]!.result.resolve(outcome());
+  state.observation.waits[0]!.result.resolve({
+    ...outcome(),
+    lastMessage: `Partial work saved ${"x".repeat(5000)}`,
+  });
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(state.delivery.prompts).toHaveLength(0);
   expect(await state.store.list()).toHaveLength(1);
-  state.hold(false);
-  await until(() => state.delivery.prompts.length === 1);
-  state.delivery.acknowledgments[0]!.resolve("steered");
-  await expect.poll(async () => (await state.store.list()).length).toBe(0);
+  // The outcome is captured, so the finished child's runtime may go; the caller stays protected.
+  expect(state.service.hasPendingForChild("child")).toBe(false);
+  expect(state.service.hasPendingForCaller("parent")).toBe(true);
+  // A restart while the outcome waits delivers that outcome, without observing the child again.
+  await expect.poll(async () => (await state.store.list())[0]?.captured?.status).toBe("idle");
+  // The stored copy keeps only what the notice formats.
+  const stored = (await state.store.list())[0]!.captured!;
+  expect(stored.lastMessage).toHaveLength(4000);
+  expect(Object.keys(stored.final ?? {}).sort()).toEqual(["labels", "status", "title"]);
+  await state.service.close();
+  const restarted = await scenario(state.home);
+  await until(() => restarted.delivery.prompts.length === 1);
+  expect(restarted.delivery.prompts[0]).toContain("Partial work saved");
+  expect(restarted.observation.openedSignals).toHaveLength(0);
+  restarted.delivery.acknowledgments[0]!.resolve("steered");
+  await expect.poll(async () => (await restarted.store.list()).length).toBe(0);
 });
 
 test("permission checkpoint retains intent and completion reports after permission clears", async () => {
@@ -546,4 +566,161 @@ test("finish recovery protects callers before durable intent has loaded", async 
   await starting;
   expect(recovered.hasPendingForCaller("parent")).toBe(true);
   expect(recovered.hasPendingForCaller("unrelated")).toBe(false);
+});
+
+/**
+ * A daemon restart: the previous worker closed or archived the child at shutdown, and a fresh
+ * manager on the same storage restores the durable subscription with the real local observation.
+ */
+async function restartedDaemon(
+  shutdown: "close" | "archive",
+  adopting: boolean,
+  options: { reopenFails?: boolean } = {},
+) {
+  const home = await mkdtemp(join(tmpdir(), "finish-restart-"));
+  homes.push(home);
+  const logger = createTestLogger();
+  const storage = new AgentStorage(join(home, "agents"), logger);
+  const turnHeld = deferred<void>();
+  const clients = {
+    codex: createTestAgentClient("codex", {
+      beforeResumeSession: async () => {
+        if (options.reopenFails) throw new Error("Provider unavailable");
+      },
+      beforeTurnComplete: (prompt) =>
+        String(prompt).includes("HOLD") ? turnHeld.promise : Promise.resolve(),
+    }),
+  };
+  const before = new AgentManager({ clients, registry: storage, logger });
+  const child = await before.createAgent(
+    { provider: "codex", cwd: home, modeId: "full-access" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await (shutdown === "archive" ? before.archiveAgent(child.id) : before.closeAgent(child.id));
+  const store = createJsonFinishSubscriptionStore(home);
+  await store.put({ id: "durable", callerAgentId: "parent", childAgentId: child.id });
+  const manager = new AgentManager({ clients, registry: storage, logger });
+  const adoptions = new Set(adopting ? [child.id] : []);
+  const delivery = new Delivery();
+  const start = async () => {
+    const service = createFinishSubscriptions({
+      store,
+      messages: () => delivery,
+      callerIsActive: async () => true,
+      serverId: "origin",
+      logger,
+      retryDelayMs: 1,
+      ...createFinishObservation({
+        agentManager: manager,
+        agentStorage: storage,
+        waitForResume: async () => {},
+        messages: () => delivery,
+        hosts: () => {
+          throw new Error("No remote hosts");
+        },
+        pendingAdoption: (agentId) => adoptions.has(agentId),
+        serverId: "origin",
+        logger,
+      }),
+    });
+    services.push(service);
+    await service.start();
+    return service;
+  };
+  // The child's session reopens busy (an adopted turn, or a resume) and its turn completes.
+  const finishChildTurn = async () => {
+    const reported = delivery.prompts.length;
+    await ensureAgentLoaded(child.id, { agentManager: manager, agentStorage: storage, logger });
+    const turn = (async () => {
+      for await (const _event of manager.streamAgent(child.id, "HOLD work")) {
+        /* drain the turn */
+      }
+    })();
+    await until(() => manager.getAgent(child.id)?.lifecycle === "running");
+    adoptions.delete(child.id);
+    await new Promise((resolve) => setTimeout(resolve, 2 * 250));
+    // A busy reopened child reports nothing until its turn really completes.
+    expect(delivery.prompts).toHaveLength(reported);
+    turnHeld.resolve();
+    await turn;
+  };
+  // The adoption load applies a turn that finished during the restart as history: the child
+  // arrives idle and no live turn_completed is emitted.
+  const adoptFinished = async () => {
+    await ensureAgentLoaded(child.id, { agentManager: manager, agentStorage: storage, logger });
+    adoptions.delete(child.id);
+  };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  // The adoption load gave up without loading the child.
+  const abandonAdoption = () => adoptions.delete(child.id);
+  return { child, store, delivery, start, finishChildTurn, adoptFinished, abandonAdoption, settle };
+}
+
+test("a subscription armed before a restart delivers the adopted child's completion once", async () => {
+  const daemon = await restartedDaemon("close", true);
+  await daemon.start();
+  // The shutdown left the child stored as closed; that is not its outcome.
+  await daemon.settle();
+  expect(daemon.delivery.prompts).toHaveLength(0);
+  await daemon.finishChildTurn();
+  await until(() => daemon.delivery.prompts.length === 1);
+  expect(daemon.delivery.prompts[0]).toContain("finished");
+  daemon.delivery.acknowledgments[0]!.resolve("steered");
+  await expect.poll(async () => (await daemon.store.list()).length).toBe(0);
+  await daemon.settle();
+  expect(daemon.delivery.prompts).toHaveLength(1);
+});
+
+test("a restart-time close reports the child is not running once and keeps the subscription", async () => {
+  const daemon = await restartedDaemon("close", false);
+  const first = await daemon.start();
+  await until(() => daemon.delivery.prompts.length === 1);
+  expect(daemon.delivery.prompts[0]).toContain("is not running");
+  expect(daemon.delivery.prompts[0]).not.toContain("was closed");
+  daemon.delivery.acknowledgments[0]!.resolve("steered");
+  await expect.poll(async () => (await daemon.store.list())[0]?.notRunningNoticeSent).toBe(true);
+  // Another restart does not repeat the notice.
+  await first.close();
+  await daemon.start();
+  await daemon.settle();
+  expect(daemon.delivery.prompts).toHaveLength(1);
+  // The armed subscription reports the child's real outcome once its session reopens.
+  await daemon.finishChildTurn();
+  await until(() => daemon.delivery.prompts.length === 2);
+  expect(daemon.delivery.prompts[1]).toContain("finished");
+  daemon.delivery.acknowledgments[1]!.resolve("steered");
+  await expect.poll(async () => (await daemon.store.list()).length).toBe(0);
+});
+
+test("an archived child still reports closed and ends the subscription", async () => {
+  const daemon = await restartedDaemon("archive", false);
+  await daemon.start();
+  await until(() => daemon.delivery.prompts.length === 1);
+  expect(daemon.delivery.prompts[0]).toContain("was closed");
+  daemon.delivery.acknowledgments[0]!.resolve("steered");
+  await expect.poll(async () => (await daemon.store.list()).length).toBe(0);
+});
+
+test("a turn the adoption load applies as history is still reported once", async () => {
+  const daemon = await restartedDaemon("close", true);
+  await daemon.start();
+  await daemon.settle();
+  await daemon.adoptFinished();
+  await until(() => daemon.delivery.prompts.length === 1);
+  expect(daemon.delivery.prompts[0]).toContain("finished");
+});
+
+test("an adoption that cannot be reopened ends the watch with an honest notice", async () => {
+  const daemon = await restartedDaemon("close", true, { reopenFails: true });
+  const service = await daemon.start();
+  await daemon.settle();
+  daemon.abandonAdoption();
+  await until(() => daemon.delivery.prompts.length === 1);
+  expect(daemon.delivery.prompts[0]).toContain("could not be reopened");
+  expect(daemon.delivery.prompts[0]).not.toContain(") finished.");
+  daemon.delivery.acknowledgments[0]!.resolve("steered");
+  await expect.poll(async () => (await daemon.store.list()).length).toBe(0);
+  expect(service.hasPendingForChild(daemon.child.id)).toBe(false);
+  expect(service.hasPendingForCaller("parent")).toBe(false);
 });

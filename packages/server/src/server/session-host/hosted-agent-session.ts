@@ -170,7 +170,7 @@ export interface HostedAgentSessionOptions {
    * Called once when the host no longer runs the session, with what the end of its provider
    * process interrupted, so the agent continues only when it had work in progress.
    */
-  onLost?(loss: HostedSessionLoss): void;
+  onLost?(loss: HostedSessionLoss, reason: HostedSessionLossReason): void;
   logger: Logger;
 }
 
@@ -231,6 +231,15 @@ function goalIntent(args: string): "goal" | undefined {
  * the agent) that died with it, or idle with nothing to continue.
  */
 export type HostedSessionLoss = "turn" | "background" | "idle";
+
+/** Why a loss was classified as it was, for the log line that reports the agent's recovery. */
+export type HostedSessionLossReason =
+  | "turn_in_flight"
+  | "permission_pending"
+  | "turn_call_cut"
+  | "background_work"
+  | "no_cached_answer"
+  | "nothing_in_progress";
 
 /**
  * How long after a turn ends the provider is asked whether it holds background work. A provider
@@ -843,16 +852,15 @@ export class HostedAgentSession implements AgentSession {
    * the host never answered for counts as having background work only if this worker saw it run
    * a turn, so sessions merely loaded for reading are released without a prompt.
    */
-  private lossKind(): HostedSessionLoss {
-    if (
-      this.snapshot.activeTurnId ||
-      this.snapshot.pendingPermissions.length > 0 ||
-      this.turnCallCut
-    )
-      return "turn";
-    if (this.backgroundWork === true) return "background";
-    if (this.backgroundWork === null && this.turnSeen) return "background";
-    return "idle";
+  private lossKind(): { loss: HostedSessionLoss; reason: HostedSessionLossReason } {
+    if (this.snapshot.activeTurnId) return { loss: "turn", reason: "turn_in_flight" };
+    if (this.snapshot.pendingPermissions.length > 0)
+      return { loss: "turn", reason: "permission_pending" };
+    if (this.turnCallCut) return { loss: "turn", reason: "turn_call_cut" };
+    if (this.backgroundWork === true) return { loss: "background", reason: "background_work" };
+    if (this.backgroundWork === null && this.turnSeen)
+      return { loss: "background", reason: "no_cached_answer" };
+    return { loss: "idle", reason: "nothing_in_progress" };
   }
 
   /** Applies state entries to the mirror and turns everything else into an event, or nothing. */
@@ -1146,7 +1154,7 @@ export class HostedAgentSession implements AgentSession {
    */
   private markLost(): void {
     // Read before releaseTurn clears the turn and permissions it reports.
-    const loss = this.lossKind();
+    const { loss, reason } = this.lossKind();
     this.status = "lost";
     this.clearBackgroundCheck();
     this.releaseTurn({
@@ -1155,7 +1163,7 @@ export class HostedAgentSession implements AgentSession {
       reason: "The session host stopped. This task continues from a queued continuation.",
     });
     try {
-      this.options.onLost?.(loss);
+      this.options.onLost?.(loss, reason);
     } catch (error) {
       this.options.logger.warn({ err: error }, "Hosted session loss handler threw");
     }

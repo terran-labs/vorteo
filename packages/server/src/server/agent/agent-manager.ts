@@ -652,6 +652,18 @@ export function isQuotaAdmissionRefusal(error: unknown): boolean {
 }
 
 /**
+ * The team a quota latch covers: a worker-profile supervisor and its workers. A thread whose
+ * parent is not such a supervisor is its own root. Shared by the stop and the startup release.
+ */
+function quotaTeamRoot(
+  thread: { id: string },
+  parentId: string | undefined,
+  parentConfig: { profileLaunch?: { worker?: unknown } | null } | null | undefined,
+): string {
+  return parentId && parentConfig?.profileLaunch?.worker ? parentId : thread.id;
+}
+
+/**
  * The quota latch a child inherits from its parent. A parent's latch means its account is
  * limited, so it holds only a child on that same account; see pauseQuotaTeam.
  */
@@ -1561,7 +1573,7 @@ export class AgentManager {
     if (!parentId) return failed.id;
     const config =
       this.agents.get(parentId)?.config ?? (await this.registry?.get(parentId))?.config;
-    return config?.profileLaunch?.worker ? parentId : failed.id;
+    return quotaTeamRoot(failed, parentId, config);
   }
 
   /**
@@ -1660,8 +1672,8 @@ export class AgentManager {
     const byId = new Map(records.map((record) => [record.id, record]));
     // Same team root as quotaRootId: a worker-profile supervisor and its workers.
     const rootOf = (record: StoredAgentRecord) => {
-      const parent = byId.get(record.labels[PARENT_AGENT_ID_LABEL] ?? "");
-      return parent?.config?.profileLaunch?.worker ? parent.id : record.id;
+      const parentId = record.labels[PARENT_AGENT_ID_LABEL];
+      return quotaTeamRoot(record, parentId, parentId ? byId.get(parentId)?.config : undefined);
     };
     const heldAccounts = new Set<string>();
     for (const record of records) {
@@ -1722,6 +1734,8 @@ export class AgentManager {
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   /** Agents whose idle session is being released; no run may start until the close settles. */
   private readonly automaticCloses = new Set<string>();
+  /** Agents whose closed state is being emitted by an automatic release, not an explicit close. */
+  private readonly releasingRuntimes = new Set<string>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
   private readonly collectingRuntimes = new Set<string>();
@@ -2833,11 +2847,16 @@ export class AgentManager {
   async continueAfterHostedSessionLoss(
     agentId: string,
     loss: "turn" | "background" | "idle" = "turn",
+    reason?: string,
   ): Promise<void> {
     if (loss === "idle") {
-      await this.releaseAfterHostedSessionLoss(agentId);
+      await this.releaseAfterHostedSessionLoss(agentId, reason);
       return;
     }
+    this.logger.info(
+      { agentId, loss, reason },
+      "Hosted session ended with its host; the agent continues its work",
+    );
     if (this.agents.has(agentId)) {
       await this.drainSessionEvents(agentId).catch(() => {});
       // During a restart drain no session may open. The next worker loads the agent afresh and
@@ -2866,7 +2885,7 @@ export class AgentManager {
    * such as for an agent with a live goal, keeps the agent loaded on its lost session, which the
    * next prompt replaces. Neither path starts a provider; queued work still runs.
    */
-  private async releaseAfterHostedSessionLoss(agentId: string): Promise<void> {
+  private async releaseAfterHostedSessionLoss(agentId: string, reason?: string): Promise<void> {
     if (this.agents.has(agentId)) {
       await this.drainSessionEvents(agentId).catch(() => {});
       if (!this.isRestartDraining()) {
@@ -2878,7 +2897,7 @@ export class AgentManager {
           return false;
         });
         this.logger.info(
-          { agentId, released },
+          { agentId, released, loss: "idle", reason },
           "Idle agent's hosted session ended with its host; it reopens on demand",
         );
       }
@@ -4391,6 +4410,14 @@ export class AgentManager {
     }
   }
 
+  /**
+   * True while an automatic release (idle release, hosted upgrade release, runtime collector)
+   * emits this agent's closed state. Subscribers run synchronously inside that emit.
+   */
+  isReleasingRuntime(agentId: string): boolean {
+    return this.releasingRuntimes.has(agentId);
+  }
+
   private isIdleReleasable(agentId: string, expected?: IdleSessionObservation): boolean {
     const agent = this.agents.get(agentId);
     if (!agent?.session || agent.lifecycle !== "idle" || agent.internal) return false;
@@ -4448,7 +4475,15 @@ export class AgentManager {
       persistError = error;
     }
     this.detachPluginTools(agentId);
-    this.emitClosedAgent(closedAgent, { persist: false });
+    // Idle release, the hosted upgrade release and the runtime collector close a runtime that
+    // reopens on demand. Watchers must not take that close as the agent's end.
+    const automatic = condition !== undefined || this.automaticCloses.has(agentId);
+    if (automatic) this.releasingRuntimes.add(agentId);
+    try {
+      this.emitClosedAgent(closedAgent, { persist: false });
+    } finally {
+      this.releasingRuntimes.delete(agentId);
+    }
     this.logger.trace(
       {
         agentId,
@@ -5249,7 +5284,29 @@ export class AgentManager {
   }
 
   async clearAgentAttention(agentId: string): Promise<void> {
-    const agent = this.requireAgent(agentId);
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      // Viewing a thread must not start its provider, so an unloaded agent's record is updated.
+      // Resume runs in the same lane, so its writes cannot interleave with this read and write,
+      // and a thread it loaded meanwhile takes the loaded path.
+      await this.runLifecycleMutation(agentId, async () => {
+        if (this.agents.has(agentId)) return this.clearAgentAttention(agentId);
+        const registry = this.requireRegistry();
+        const record = await registry.get(agentId);
+        if (!record) throw new Error(`Agent not found: ${agentId}`);
+        if (record.archivedAt || !record.requiresAttention) return;
+        const nextRecord: StoredAgentRecord = {
+          ...record,
+          updatedAt: this.nextStoredUpdatedAt(record),
+          requiresAttention: false,
+          attentionReason: null,
+          attentionTimestamp: null,
+        };
+        await registry.upsert(nextRecord);
+        this.dispatchStoredAgentState(nextRecord);
+      });
+      return;
+    }
     if (agent.attention.requiresAttention) {
       agent.attention = { requiresAttention: false };
       await this.persistSnapshot(agent);
@@ -5277,24 +5334,28 @@ export class AgentManager {
       return;
     }
 
-    const registry = this.requireRegistry();
-    const record = await registry.get(agentId);
-    const hasFinishedStatus = record?.lastStatus === "idle" || record?.lastStatus === "closed";
-    const canMarkUnread =
-      record && !record.internal && !record.archivedAt && !record.requiresAttention;
-    if (!canMarkUnread || !hasFinishedStatus) {
-      throw new Error(`Agent is no longer finished and read: ${agentId}`);
-    }
-    const updatedAt = this.nextStoredUpdatedAt(record);
-    const nextRecord: StoredAgentRecord = {
-      ...record,
-      updatedAt,
-      requiresAttention: true,
-      attentionReason: "finished",
-      attentionTimestamp: updatedAt,
-    };
-    await registry.upsert(nextRecord);
-    this.dispatchStoredAgentState(nextRecord);
+    // Same lane as resume, as for clearing attention.
+    return this.runLifecycleMutation(agentId, async () => {
+      if (this.agents.has(agentId)) return this.markAgentUnread(agentId);
+      const registry = this.requireRegistry();
+      const record = await registry.get(agentId);
+      const hasFinishedStatus = record?.lastStatus === "idle" || record?.lastStatus === "closed";
+      const canMarkUnread =
+        record && !record.internal && !record.archivedAt && !record.requiresAttention;
+      if (!canMarkUnread || !hasFinishedStatus) {
+        throw new Error(`Agent is no longer finished and read: ${agentId}`);
+      }
+      const updatedAt = this.nextStoredUpdatedAt(record);
+      const nextRecord: StoredAgentRecord = {
+        ...record,
+        updatedAt,
+        requiresAttention: true,
+        attentionReason: "finished",
+        attentionTimestamp: updatedAt,
+      };
+      await registry.upsert(nextRecord);
+      this.dispatchStoredAgentState(nextRecord);
+    });
   }
 
   async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {

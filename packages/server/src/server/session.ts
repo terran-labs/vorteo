@@ -6447,22 +6447,16 @@ export class Session {
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
     try {
-      await Promise.all(
-        agentIds.map((id) =>
-          ensureAgentLoaded(id, {
-            agentManager: this.agentManager,
-            agentStorage: this.agentStorage,
-            logger: this.sessionLogger,
-          }),
-        ),
-      );
+      // Clearing attention updates an unloaded agent's record without starting its provider.
       await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
       if (requestId) {
         const agents = (
           await Promise.all(
             agentIds.map(async (id) => {
               const agent = this.agentManager.getAgent(id);
-              return agent ? this.buildAgentPayload(agent) : null;
+              if (agent) return this.buildAgentPayload(agent);
+              const record = await this.agentStorage.get(id);
+              return record ? this.buildStoredAgentPayload(record) : null;
             }),
           )
         ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);

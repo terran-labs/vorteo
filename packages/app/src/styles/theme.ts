@@ -681,6 +681,8 @@ interface AppearancePalette {
   // Accent-coloured text when neither the accent (light) nor bright (dark) reaches 4.5:1 on
   // root through raised.
   accentText?: string;
+  // Focus ring when it differs from bright.
+  ring?: string;
 }
 const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
   "starship-light": {
@@ -697,6 +699,8 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     // (4.83:1 on root); white text on it is 6.20:1. Was #2997ff at 2.35:1.
     accent: "#0a5fbd",
     bright: "#1672c8",
+    // Vorton's ring: 4.83:1 on root, the worst surface (was #1672c8 at 3.82:1).
+    ring: "#0a5fbd",
   },
   "starship-dark": {
     root: "#222222",
@@ -805,7 +809,7 @@ function buildAppearanceTheme(id: AppearanceId) {
     destructive: light ? "#b3261e" : "#ff7168",
     terminalBlack: light ? "#353540" : "#777780",
     terminalBrightBlack: light ? "#5f5f69" : "#aeaeb2",
-    ring: p.bright,
+    ring: p.ring ?? p.bright,
   };
   const base = light
     ? buildLightTheme(buildLightSemanticColors(config))

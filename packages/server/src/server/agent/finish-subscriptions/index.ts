@@ -8,6 +8,7 @@ import type { FinishObservationResult } from "./internal/observation-buffer.js";
 import type { AgentMessageDelivery } from "../agent-messages/index.js";
 import { getParentAddressFromLabels } from "@getpaseo/protocol/agent-labels";
 import {
+  FINISH_NOTIFICATION_MESSAGE_LIMIT,
   formatFinishNotificationBody,
   finishNotificationEvents,
   type FinishNotificationReason,
@@ -21,6 +22,13 @@ export interface FinishSubscription {
   serverId?: string;
   /** Creation subscriptions stop reporting after the child is detached. */
   requireParentOwnership?: boolean;
+  /** The caller was told the child is not running; later restarts do not repeat it. */
+  notRunningNoticeSent?: boolean;
+  /**
+   * The child's outcome, kept until the caller acknowledges it, so a restart while delivery waits
+   * (a quota-paused caller, a restart hold) reports the real result instead of observing anew.
+   */
+  captured?: FinishObservationResult;
 }
 export interface FinishSubscriptionStore {
   list(): Promise<FinishSubscription[]>;
@@ -72,6 +80,8 @@ interface Watch {
   decision: Promise<boolean>;
   decide(accepted: boolean): void;
   pending: boolean;
+  /** A final outcome is held for delivery, so the child's runtime is no longer needed. */
+  captured?: boolean;
   task?: Promise<void>;
 }
 function key(record: FinishSubscription): string {
@@ -177,17 +187,15 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     return result.reason ?? "finished";
   }
   async function deliver(
+    watch: Watch,
     record: FinishSubscription,
     result: FinishObservationResult,
     permissions: Set<string>,
     signal: AbortSignal,
   ): Promise<boolean> {
-    // A latched caller would refuse the notification. The retry path keeps the captured outcome
-    // and durable intent until the latch clears.
-    if (await deps.callerIsHeld?.(record.callerAgentId))
-      throw new Error("The caller is paused at a usage limit; the notification waits.");
-    const requests = result.final?.pendingPermissions ?? [];
     const reason = reasonFor(result);
+    if (!(await admitDelivery(watch, record, reason, result))) return false;
+    const requests = result.final?.pendingPermissions ?? [];
     for (const id of permissions)
       if (!requests.some((request) => request.id === id)) permissions.delete(id);
     const acknowledgments: Promise<unknown>[] = [];
@@ -222,10 +230,73 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
         }),
       );
     }
-    await abortable(Promise.all(acknowledgments), signal);
+    await abortable(Promise.all(acknowledgments), signal).catch(async (error: unknown) => {
+      if (!signal.aborted) await persistOutcome(watch, reason, result);
+      throw error;
+    });
     if (signal.aborted) return false;
-    if (reason !== "needs permission") return true;
-    return false;
+    if (reason === "is not running") await recordNotRunningReported(watch);
+    return !isCheckpoint(reason);
+  }
+  /** Checkpoints keep the subscription; anything else is the outcome this watch reports. */
+  function isCheckpoint(reason: FinishNotificationReason): boolean {
+    return reason === "needs permission" || reason === "is not running";
+  }
+  /** False when this notification must not be sent now; throws when it must wait and retry. */
+  async function admitDelivery(
+    watch: Watch,
+    record: FinishSubscription,
+    reason: FinishNotificationReason,
+    result: FinishObservationResult,
+  ): Promise<boolean> {
+    if (!isCheckpoint(reason)) watch.captured = true;
+    // A latched caller would refuse the notification. The retry path keeps the captured outcome
+    // and durable intent until the latch clears.
+    if (await deps.callerIsHeld?.(record.callerAgentId)) {
+      await persistOutcome(watch, reason, result);
+      throw new Error("The caller is paused at a usage limit; the notification waits.");
+    }
+    // A child still at rest after another restart was already reported; keep waiting quietly.
+    return !(
+      reason === "is not running" && watch.records.every((intent) => intent.notRunningNoticeSent)
+    );
+  }
+  /**
+   * Stores an outcome whose delivery is deferred (a paused caller, a refused dispatch such as a
+   * restart hold), so a restart delivers it instead of observing the child anew. An outcome
+   * dispatched without acknowledgment is not stored and is observed again after a restart.
+   */
+  async function persistOutcome(
+    watch: Watch,
+    reason: FinishNotificationReason,
+    result: FinishObservationResult,
+  ): Promise<void> {
+    if (isCheckpoint(reason)) return;
+    for (const intent of watch.records) {
+      if (intent.captured) continue;
+      intent.captured = storedOutcome(result);
+      await deps.store.put({ ...intent });
+    }
+  }
+  /**
+   * Every subscription write rewrites one JSON file, so a stored outcome keeps only what its
+   * notice formats: the snapshot's status, title and labels, and the response the notice shows.
+   */
+  function storedOutcome(result: FinishObservationResult): FinishObservationResult {
+    const final = result.final;
+    return {
+      ...result,
+      final: final
+        ? ({ status: final.status, title: final.title, labels: final.labels } as typeof final)
+        : null,
+      lastMessage: result.lastMessage?.slice(0, FINISH_NOTIFICATION_MESSAGE_LIMIT) ?? null,
+    };
+  }
+  async function recordNotRunningReported(watch: Watch): Promise<void> {
+    for (const intent of watch.records) {
+      intent.notRunningNoticeSent = true;
+      await deps.store.put({ ...intent });
+    }
   }
   async function run(watch: Watch, group: Set<Watch>): Promise<void> {
     const signal = watch.controller.signal;
@@ -244,6 +315,9 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     let retries = 0;
     let warned = false;
     async function observeNext(): Promise<FinishObservationResult | undefined> {
+      // An outcome captured before a restart is delivered as it was, without observing again.
+      const restored = watch.records.find((intent) => intent.captured)?.captured;
+      if (restored) return restored;
       try {
         observation ??= await deps.open(record, signal);
         const result = await abortable(observation.next(), signal);
@@ -287,7 +361,8 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
             stop(watch, group);
             return;
           }
-          if (!acknowledged) acknowledged = await deliver(record, pending, permissions, signal);
+          if (!acknowledged)
+            acknowledged = await deliver(watch, record, pending, permissions, signal);
           if (acknowledged) {
             // A removal failure retries only the commit, never the already accepted callback.
             await remove(watch);
@@ -327,7 +402,8 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     hasPendingForChild(agentId) {
       if (recovering) return true;
       for (const group of watches.values()) {
-        for (const watch of group) if (watch.records[0]?.childAgentId === agentId) return true;
+        for (const watch of group)
+          if (watch.records[0]?.childAgentId === agentId && !watch.captured) return true;
       }
       return false;
     },

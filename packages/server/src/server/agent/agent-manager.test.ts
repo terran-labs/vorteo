@@ -7774,6 +7774,37 @@ test("markAgentUnread dispatches stored attention to every subscriber", async ()
     attentionReason: "finished",
     attentionTimestamp: expect.any(String),
   });
+
+  // Viewing the closed thread clears its attention without starting its provider.
+  await manager.clearAgentAttention(created.id);
+  expect(manager.getAgent(created.id)).toBeNull();
+  expect(firstClientEvents.at(-1)).toMatchObject({
+    id: created.id,
+    lifecycle: "closed",
+    attention: { requiresAttention: false },
+  });
+  expect(await storage.get(created.id)).toMatchObject({
+    requiresAttention: false,
+    attentionReason: null,
+    attentionTimestamp: null,
+  });
+
+  // A clear that arrives while the thread is resuming waits for the resume and clears the
+  // loaded agent, rather than writing a stale record under it.
+  await manager.markAgentUnread(created.id);
+  const persistence = (await storage.get(created.id))!.persistence!;
+  const resuming = manager.resumeAgentFromPersistence(persistence, undefined, created.id, {
+    attention: {
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: new Date(),
+    },
+  });
+  await manager.clearAgentAttention(created.id);
+  await resuming;
+  expect(manager.getAgent(created.id)?.attention.requiresAttention).toBe(false);
+  expect((await storage.get(created.id))?.requiresAttention).toBe(false);
+  await manager.closeAgent(created.id);
 });
 
 test("reloadAgentSession cancels active run and resumes existing session once thread_started is observed", async () => {
@@ -16326,12 +16357,37 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       now: () => now,
     }).tick();
     expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    // A heartbeat will wake this thread, so in-progress items are left to it; a blocked item
+    // is still reviewed.
+    const dueAfter = async (status: "in_progress" | "blocked") => {
+      await manager.mutateChecklist(agent.id, { operation: "update", id: "blocked", status });
+      await manager.flush();
+      const record = storage.getLoadedRecord(agent.id)!;
+      now =
+        Math.max(
+          Date.parse(record.createdAt),
+          Date.parse(record.lastActivityAt ?? record.createdAt),
+        ) + 300_001;
+      expect(blockedReviewDue(record, now)).toBe(true);
+    };
+    await dueAfter("in_progress");
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => true,
+      scheduledWakes: async () => new Set([agent.id]),
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    await dueAfter("blocked");
     const reviews = new BlockedTaskReviewService({
       agentManager: manager,
       agentStorage: storage,
       logger,
       enabled: () => true,
       pausedFactoryProjects: async () => new Set(["project-2"]),
+      scheduledWakes: async () => new Set([agent.id]),
       now: () => now,
     });
     await reviews.tick();

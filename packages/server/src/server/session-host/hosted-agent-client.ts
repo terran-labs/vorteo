@@ -19,6 +19,7 @@ import {
   type HostedReattachment,
   type HostedReattachPolicy,
   type HostedSessionLoss,
+  type HostedSessionLossReason,
 } from "./hosted-agent-session.js";
 import type { HostedOpenRequest } from "./session-contract.js";
 import type { AppliedSeqStore } from "./applied-store.js";
@@ -40,7 +41,7 @@ export interface HostedSessionRouting {
    * Called when the host no longer runs an agent's session, with what its end interrupted, so an
    * agent with work in progress continues elsewhere and an idle one is released.
    */
-  onSessionLost?(agentId: string, loss: HostedSessionLoss): void;
+  onSessionLost?(agentId: string, loss: HostedSessionLoss, reason: HostedSessionLossReason): void;
 }
 
 /**
@@ -164,7 +165,7 @@ export function createHostedAgentClient(input: {
         ? { store: routing.applied, agentId: params.agentId, hostId: params.hostId }
         : undefined,
       rebuild: params.rebuild,
-      onLost: (loss) => routing.onSessionLost?.(params.agentId, loss),
+      onLost: (loss, reason) => routing.onSessionLost?.(params.agentId, loss, reason),
       logger,
     });
   }

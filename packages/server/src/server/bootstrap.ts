@@ -1807,6 +1807,22 @@ export async function createPaseoDaemon(
           .map((project) => project.projectId),
       );
     },
+    // Only a run that will really happen within a day counts as a wake: a schedule held for
+    // quota may never fire, and a weekly one would hide a stalled thread for a week.
+    scheduledWakes: async () => {
+      const horizon = Date.now() + 24 * 60 * 60_000;
+      return new Set(
+        (await scheduleService.list()).flatMap((schedule) =>
+          schedule.status === "active" &&
+          schedule.quotaState?.state !== "held" &&
+          schedule.nextRunAt &&
+          Date.parse(schedule.nextRunAt) <= horizon &&
+          schedule.target.type === "agent"
+            ? [schedule.target.agentId]
+            : [],
+        ),
+      );
+    },
   });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,
@@ -1838,8 +1854,8 @@ export async function createPaseoDaemon(
   });
   // A hosted session that ends with its host continues the way a restart would when it had a turn
   // or background work in progress; an idle one is released and reopens on demand.
-  sessionHostRouting.onSessionLost = (agentId, loss) => {
-    void agentManager.continueAfterHostedSessionLoss(agentId, loss);
+  sessionHostRouting.onSessionLost = (agentId, loss, reason) => {
+    void agentManager.continueAfterHostedSessionLoss(agentId, loss, reason);
   };
   const hostedIdleRelease = startIdleReleaseForUpgrade(
     config.paseoHome,
@@ -1996,6 +2012,9 @@ export async function createPaseoDaemon(
       agentManager,
       agentStorage,
       waitForResume: restartRecovery.waitForResume,
+      // A hosted turn still running at startup is reported live once adopted, never from the
+      // closed status the previous worker stored at shutdown.
+      pendingAdoption: (agentId) => sessionHostRouting.adoptions.has(agentId),
       serverId,
       logger,
       messages: () => {
@@ -2467,7 +2486,7 @@ export async function createPaseoDaemon(
           .get(agentId)
           .then((record) =>
             record?.lastStatus === "running" && !record.archivedAt
-              ? agentManager.continueAfterHostedSessionLoss(agentId)
+              ? agentManager.continueAfterHostedSessionLoss(agentId, "turn", "recorded_running")
               : undefined,
           )
           .catch((error: unknown) =>

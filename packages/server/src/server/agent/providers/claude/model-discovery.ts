@@ -5,6 +5,7 @@ import { raceProviderRefreshAbort } from "../../provider-refresh-deadline.js";
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
 import { terminateWithTreeKill } from "../../../../utils/tree-kill.js";
 import { claudeQuery, type ClaudeQueryInput, type ClaudeQueryContext } from "./query.js";
+import { waitForClaudeRenewal } from "./account-starts.js";
 import { claudeConfigDir } from "./project-dir.js";
 import { claudeSignInMode } from "./sign-in-mode.js";
 import { readClaudeOAuthGrant } from "../../../execution-installation/accounts/claude-oauth-storage.js";
@@ -110,6 +111,9 @@ export async function discoverClaudeModels(
     () => controller.abort(new Error("Claude model discovery timed out")),
     5_000,
   );
+  // The SDK ends the CLI as soon as its controller aborts. It gets its own, aborted only after
+  // the wait for a renewal, so the five second limit above cannot stop a renewing probe.
+  const sdkAbort = new AbortController();
   let endInput!: () => void;
   const ended = new Promise<void>((resolve) => {
     endInput = resolve;
@@ -143,7 +147,7 @@ export async function discoverClaudeModels(
           strictMcpConfig: true,
           settingSources: ["user"],
           settings: { disableAllHooks: true },
-          abortController: controller,
+          abortController: sdkAbort,
         },
       },
       {
@@ -164,13 +168,27 @@ export async function discoverClaudeModels(
     throw error;
   } finally {
     clearTimeout(timer);
-    endInput();
-    try {
-      query?.close();
-    } finally {
-      if (child) {
-        await terminateWithTreeKill(child, { gracefulTimeoutMs: 200, forceTimeoutMs: 200 });
-      }
-    }
+    await endDiscoveryProbe(options.env, query, child, sdkAbort, endInput);
+  }
+}
+
+/**
+ * Ends the probe's CLI. The expiry guard keeps the probe out of renewals it can predict; should
+ * the account be renewing anyway, that finishes first, within the stop wait.
+ */
+async function endDiscoveryProbe(
+  env: NodeJS.ProcessEnv,
+  query: { close(): void } | undefined,
+  child: ChildProcess | undefined,
+  sdkAbort: AbortController,
+  endInput: () => void,
+): Promise<void> {
+  if (child) await waitForClaudeRenewal(env);
+  endInput();
+  sdkAbort.abort();
+  try {
+    query?.close();
+  } finally {
+    if (child) await terminateWithTreeKill(child, { gracefulTimeoutMs: 200, forceTimeoutMs: 200 });
   }
 }

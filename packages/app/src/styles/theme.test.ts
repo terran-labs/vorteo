@@ -256,8 +256,8 @@ describe("Vorton theme reference", () => {
 
   type ColorField = keyof Theme["colors"];
   // Reference role to the built Vorteo color it governs. Roles Vorteo does not map (divider,
-  // accentDecorative, focusRing, selection) and Vorteo-only fields (accentBright, surface4,
-  // borderAccent) are not compared.
+  // accentDecorative, selection) and Vorteo-only fields (accentBright, surface4, borderAccent)
+  // are not compared.
   const ROLE_FIELDS: ReadonlyArray<readonly [string, ColorField]> = [
     ["background", "surface0"],
     ["surfaceDeep", "surface1"],
@@ -273,6 +273,7 @@ describe("Vorton theme reference", () => {
     ["warning", "statusWarning"],
     ["danger", "statusDanger"],
     ["destructive", "destructive"],
+    ["focusRing", "ring"],
   ];
 
   // One row per exception: theme, Vorteo field, Vorteo value, reference value, reason.
