@@ -122,8 +122,13 @@ function parsePreviewBrokerStatus(json: unknown): PreviewBrokerStatus | null {
   return { publishedAt: parsed.data.publishedAt, lastVisitAt, services };
 }
 
+export type PreviewRestartMode = "start" | "restart" | "stop";
+
 export interface PreviewRestartOutcome {
-  status: "starting" | "failed" | "unconfirmed";
+  /** "starting" and "stopping" are in flight; the rest are finished. */
+  status: "starting" | "stopping" | "failed" | "unconfirmed";
+  /** The request this outcome belongs to, so a failed stop never reads as a failed start. */
+  mode: PreviewRestartMode;
   error: string | null;
   at: number;
 }
@@ -176,6 +181,7 @@ function restartDetails(restart: PreviewRestartOutcome | null): Partial<Workspac
       status: restart.status,
       error: restart.error,
       at: new Date(restart.at * 1000).toISOString(),
+      mode: restart.mode,
     },
   };
 }

@@ -3726,7 +3726,8 @@ export const WorkspaceScriptRestartPreviewRequestSchema = z.object({
   workspaceId: z.string(),
   scriptName: z.string(),
   requestId: z.string(),
-  mode: z.enum(["start", "restart"]).optional(),
+  // "stop" requires `features.previewStop`; an older daemon rejects it.
+  mode: z.enum(["start", "restart", "stop"]).optional(),
 });
 
 export const SubscribeTerminalRequestSchema = z.object({
@@ -4744,6 +4745,10 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(previewRestart): added in Vorteo 2026-11, remove gate after 2027-05-23.
         // The daemon accepts workspace.script.restart_preview.request.
         previewRestart: z.boolean().optional(),
+        // COMPAT(previewStop): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // workspace.script.restart_preview.request accepts mode "stop", and script payloads
+        // carry `preview.origin`.
+        previewStop: z.boolean().optional(),
       })
       .optional(),
   })
@@ -4954,11 +4959,15 @@ export const WorkspaceScriptHealthSchema = z.enum(["healthy", "unhealthy"]);
  * - state: "ready", "not_responding", "starting" or "stopped"
  * - stopReason: "stopped", "exited", "daemon_restart", "config_changed",
  *   "process_changed" or "workspace_unavailable"; absent when the cause is unknown
- * - restart.status: "starting", "failed" or "unconfirmed"
+ * - restart.status: "starting", "stopping", "failed" or "unconfirmed"
+ * - restart.mode: "start", "restart" or "stop", the request the outcome belongs to, so a
+ *   failed stop is not shown as a failed start; absent from older daemons
  * Times are ISO 8601. `stale` means the broker has not reported for over a minute.
  */
 export const WorkspaceScriptPreviewSchema = z.object({
   state: z.string(),
+  /** The broker's reserved HTTPS origin, stopped or running, so a link can be matched to it. */
+  origin: z.string().nullable().optional(),
   stopReason: z.string().nullable().optional(),
   stoppedAt: z.string().nullable().optional(),
   restartedAt: z.string().nullable().optional(),
@@ -4971,6 +4980,7 @@ export const WorkspaceScriptPreviewSchema = z.object({
       status: z.string(),
       error: z.string().nullable().optional(),
       at: z.string(),
+      mode: z.string().optional(),
     })
     .nullable()
     .optional(),
@@ -5657,7 +5667,11 @@ export const WorkspaceScriptRestartPreviewResponseMessageSchema = z.object({
     workspaceId: z.string(),
     scriptName: z.string(),
     accepted: z.boolean(),
-    /** Why it was refused, such as "owner_app_only", "needs_review" or "busy". */
+    /**
+     * Why it was refused, such as "owner_app_only", "needs_review", "busy" (this preview is
+     * already starting or stopping) or "capacity" (the session's share or the daemon's limit
+     * is in use). Clients show the error text for a code they do not know.
+     */
     refusalCode: z.string().nullable().optional(),
     error: z.string().nullable(),
   }),

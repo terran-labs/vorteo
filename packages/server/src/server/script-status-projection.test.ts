@@ -84,9 +84,17 @@ async function loadConfig(repoRoot: string): Promise<PaseoConfig | null> {
 
 describe("script-status-projection", () => {
   it("projects broker URLs only for running services and preserves the local route", async () => {
+    const now = Date.now() / 1000;
     const managedPreviews = {
-      brokerStatus: null,
+      brokerStatus: {
+        publishedAt: now,
+        lastVisitAt: now,
+        services: new Map([
+          ["workspace.web", { workspaceId: "workspace", service: "web", desired: "stopped" }],
+        ]),
+      },
       origins: new Map([["web", "https://preview.example.ts.net:32780"]]),
+      matchableOrigins: new Set(["https://preview.example.ts.net:32780"]),
     };
     const runtimeStore = new WorkspaceScriptRuntimeStore();
     runtimeStore.set({
@@ -109,6 +117,15 @@ describe("script-status-projection", () => {
     expect(running.publicProxyUrl).toBe("https://preview.example.ts.net:32780");
     expect(running.proxyUrl).toBe(running.publicProxyUrl);
     expect(running.localProxyUrl).toBe("http://web--repo.localhost:6767");
+    // A duplicated origin costs only the gallery match, never the preview's working link.
+    const duplicated = (
+      await buildPayloads({
+        ...input,
+        managedPreviews: { ...managedPreviews, matchableOrigins: new Set<string>() },
+      })
+    )[0];
+    expect(duplicated.publicProxyUrl).toBe("https://preview.example.ts.net:32780");
+    expect(duplicated.preview?.origin).toBeUndefined();
     runtimeStore.set({
       workspaceId: "workspace",
       scriptName: "web",
@@ -117,7 +134,10 @@ describe("script-status-projection", () => {
       terminalId: null,
       exitCode: 0,
     });
-    expect((await buildPayloads(input))[0].publicProxyUrl).toBeNull();
+    const stopped = (await buildPayloads(input))[0];
+    expect(stopped.publicProxyUrl).toBeNull();
+    // A stopped preview still names its reserved origin, so a gallery link can find it.
+    expect(stopped.preview?.origin).toBe("https://preview.example.ts.net:32780");
   });
 
   it("defaults omitted workspace script terminal ids to null", () => {

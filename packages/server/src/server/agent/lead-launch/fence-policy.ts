@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
-import { open, rm } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, open, rm } from "node:fs/promises";
 import type { Logger } from "pino";
 import path from "node:path";
 import { PresetFencePolicySchema, type PresetFencePolicy } from "@getpaseo/protocol/messages";
@@ -69,12 +70,25 @@ export function presetFencePolicyPath(paseoHome: string): string {
 /**
  * Reads at most MAX_POLICY_BYTES from a regular file, without following a symbolic link and
  * without blocking on a FIFO, so a hostile file cannot hang or bloat daemon startup.
+ *
+ * - `lstat` first refuses a symbolic link (on Windows, also a junction) and anything that is not
+ *   a regular file, on every platform. Windows has no O_NOFOLLOW, so opening would follow a link.
+ * - On POSIX, O_NOFOLLOW and O_NONBLOCK still guard the open itself.
+ * - The opened file must be the one `lstat` saw (same device and file ID where the platform
+ *   reports them), so a link or another file swapped in between the two is refused.
  */
 async function readPolicyText(file: string): Promise<{ text: string } | { problem: string }> {
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const seen = await lstat(file);
+  if (seen.isSymbolicLink()) return { problem: "a symbolic link" };
+  if (!seen.isFile()) return { problem: "not a regular file" };
+  const handle = await open(
+    file,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) return { problem: "not a regular file" };
+    if (!sameFile(seen, stat)) return { problem: "replaced while it was being read" };
     if (stat.size > MAX_POLICY_BYTES) return { problem: `larger than ${MAX_POLICY_BYTES} bytes` };
     const buffer = Buffer.alloc(MAX_POLICY_BYTES + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
@@ -83,6 +97,12 @@ async function readPolicyText(file: string): Promise<{ text: string } | { proble
   } finally {
     await handle.close();
   }
+}
+
+/** The same file, by device and file ID. A platform reporting no file ID (0) compares by device. */
+function sameFile(left: Stats, right: Stats): boolean {
+  if (left.dev !== right.dev) return false;
+  return left.ino === 0 || right.ino === 0 || left.ino === right.ino;
 }
 
 /** Reads the stored policy. A missing file is the default; anything unusable is reported. */

@@ -531,6 +531,23 @@ process.stdout.write(found[0].value);
             raise ValueError('Workspace alias changed during verification')
         return {**entry, 'cwd': cwd, 'fingerprint': digest(definition), 'workspaceId': workspace, 'service': service}
 
+    def stoppable(self, workspace, service):
+        """The daemon's service of that name, for a stop only.
+
+        Start policy (an archived, moved or unapproved workspace) does not apply: stopping is
+        always safe, and the daemon stops exactly the script it runs under this workspace and
+        name. A workspace the daemon no longer knows has no service to name, so that stop says
+        why in a fixed message."""
+        try:
+            scripts = self.cli(['script', 'ls', '--workspace', workspace])
+        except (OSError, ValueError, subprocess.SubprocessError):
+            scripts = []
+        entry = next((s for s in scripts if isinstance(s, dict) and s.get('scriptName') == service
+                      and s.get('type') == 'service'), None) if isinstance(scripts, list) else None
+        if not entry:
+            raise WorkspaceUnavailable('Link withdrawn; its workspace is unavailable, so the service could not be found to stop')
+        return {**entry, 'workspaceId': workspace, 'service': service}
+
     def registered_ports(self):
         ports = set()
         seen = set()
@@ -1113,7 +1130,11 @@ class Broker:
             self.save()
             if entry.get('backend'):
                 self.remove(entry)
-            current = self.runtime.current(r['workspaceId'], r['service'])
+            try:
+                current = self.runtime.current(r['workspaceId'], r['service'])
+            except WorkspaceUnavailable:
+                # An archived workspace can no longer start, but its service must still stop.
+                current = self.runtime.stoppable(r['workspaceId'], r['service'])
             if current['lifecycle'] == 'running':
                 self.runtime.lifecycle('stop', current)
             return {'status': 'stopped'}

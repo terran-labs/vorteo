@@ -9549,6 +9549,7 @@ export class Session {
         workspaceId,
         scriptName,
         requester: this.getSessionId(),
+        mode: request.mode ?? "start",
       });
       if (refusal || !restarter) {
         respond(false, refusal?.code ?? "broker_unavailable", refusal?.message ?? null);

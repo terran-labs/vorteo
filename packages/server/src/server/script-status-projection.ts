@@ -1,4 +1,7 @@
-import { readWorkspacePreviewOrigins } from "./workspace-preview-origin.js";
+import {
+  matchablePreviewOrigins,
+  readWorkspacePreviewOrigins,
+} from "./workspace-preview-origin.js";
 import {
   previewServiceKey,
   projectWorkspaceScriptPreview,
@@ -48,6 +51,8 @@ export interface ManagedPreviewContext {
   brokerStatus: PreviewBrokerStatus | null;
   /** The broker's reserved HTTPS origin for each service of the workspace. */
   origins: ReadonlyMap<string, string>;
+  /** Origins that no other reservation claims, the only ones `preview.origin` may name. */
+  matchableOrigins: ReadonlySet<string>;
 }
 
 /** Reads, without blocking, what the synchronous projection needs about previews. */
@@ -58,7 +63,8 @@ export async function loadManagedPreviewContext(
     readPreviewBrokerStatus(),
     readWorkspacePreviewOrigins(workspaceId),
   ]);
-  return { brokerStatus, origins };
+  const matchableOrigins = await matchablePreviewOrigins(workspaceId, origins);
+  return { brokerStatus, origins, matchableOrigins };
 }
 
 export async function readPaseoConfigForProjection(
@@ -292,12 +298,13 @@ export function buildWorkspaceScriptPayloads(
 function applyManagedPreviews(
   payloads: WorkspaceScriptPayload[],
   workspaceId: string,
-  { brokerStatus: broker, origins }: ManagedPreviewContext,
+  { brokerStatus: broker, origins, matchableOrigins }: ManagedPreviewContext,
 ): void {
   const restarter = previewBrokerRestarter();
   const stale = broker ? previewBrokerIsStale(broker, Date.now() / 1000) : false;
   for (const payload of payloads) {
     if (payload.type !== "service") continue;
+    const origin = origins.get(payload.scriptName) ?? null;
     const entry = broker?.services.get(previewServiceKey(workspaceId, payload.scriptName));
     if (broker && entry) {
       payload.preview = projectWorkspaceScriptPreview({
@@ -307,9 +314,10 @@ function applyManagedPreviews(
         health: payload.health,
         restart: restarter?.outcome(workspaceId, payload.scriptName) ?? null,
       });
+      // Only an origin no other reservation claims, so a link matches at most one preview.
+      if (origin && matchableOrigins.has(origin)) payload.preview = { ...payload.preview, origin };
     }
     if (payload.lifecycle !== "running") continue;
-    const origin = origins.get(payload.scriptName);
     if (origin) {
       // publicProxyUrl means reachable beyond localhost, including private tailnets.
       payload.publicProxyUrl = origin;

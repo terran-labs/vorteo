@@ -3368,7 +3368,7 @@ export class DaemonClient {
   async restartWorkspaceScriptPreview(
     workspaceId: string,
     scriptName: string,
-    mode: "start" | "restart" = "start",
+    mode: "start" | "restart" | "stop" = "start",
     requestId?: string,
   ): Promise<
     Extract<
