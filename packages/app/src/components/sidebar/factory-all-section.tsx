@@ -1,7 +1,8 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { SidebarFactoryIcon } from "./leading-slot";
 import { FactoryStageBar } from "./factory-card-stage-bar";
 import { memo, useCallback, useMemo } from "react";
-import { Text, View } from "react-native";
+import { Text, View, type GestureResponderEvent } from "react-native";
 import { useTranslation } from "react-i18next";
 import { router, usePathname, type Href } from "expo-router";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -14,12 +15,13 @@ import { useInstalledPlugins } from "@/plugins/registry";
 import type { InstalledPlugin } from "@/plugins/types";
 import { useHosts } from "@/runtime/host-runtime";
 import { allFactoriesOverviewRoute } from "@/screens/factory/routes";
-import { loadFactoryQueue, type FactoryQueue } from "@/screens/factory/queue";
+import { loadFactoryQueue } from "@/screens/factory/queue";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import type { ProjectFactoryList } from "../../../../../plugins/factory/shared/project";
 import {
   boundedFactoryRead,
+  factoryQueueNeedsInitialRead,
   factoryListQueryKey,
   loadFactoryList,
 } from "@/screens/factory/factory-reads";
@@ -27,10 +29,10 @@ import { FACTORY_CARD_QUEUE_REFRESH_MS, factoryCardReadsQueue } from "./factory-
 import { factoryStageCounts, factoryOverviewPathTarget } from "./factory-card-model";
 import {
   aggregateFactories,
+  factorySummaryState,
   isListedFactory,
   type FactorySummaryInput,
 } from "./factory-global-model";
-import { ProjectFactoryStateSchema, type ProjectFactoryState } from "./factory-state";
 
 const SELECTED_STATE = { selected: true };
 
@@ -56,16 +58,13 @@ function factoryProjectName(session: SessionSnapshot | undefined, projectId: str
   return stored?.projectCustomName ?? stored?.projectDisplayName ?? projectId;
 }
 
-function combineData<T>(results: { data?: T }[]): (T | undefined)[] {
-  return results.map((result) => result.data);
-}
-
 /**
  * Every Factory on every connected host, read through the same query keys as the project cards
  * and the overview, so the caches are shared and nothing is read twice.
  */
 function useAllFactories(collapsed: boolean) {
   const active = useRetainedPanelActive();
+  const queryClient = useQueryClient();
   const plugins = useInstalledPlugins();
   const factoryPlugins = useMemo(
     () => plugins.filter((plugin) => plugin.id === "factory"),
@@ -78,46 +77,40 @@ function useAllFactories(collapsed: boolean) {
       queryKey: factoryListQueryKey(plugin.serverId),
       enabled: active,
       refetchInterval: active ? STATE_REFRESH_MS : false,
-      queryFn: () => boundedFactoryRead(() => loadFactoryList(plugin.invoke)),
+      queryFn: () => loadFactoryList(plugin.invoke),
     })),
-    combineData<ProjectFactoryList>,
   );
   const listed = useMemo(
     () =>
       factoryPlugins.flatMap((plugin, index): ListedFactory[] =>
-        (lists[index]?.projects ?? [])
+        (lists[index]?.data?.projects ?? [])
           .filter(isListedFactory)
           .map((project) => ({ project, plugin })),
       ),
     [factoryPlugins, lists],
-  );
-  const states = useFetchQueries(
-    listed.map(({ project, plugin }) => ({
-      dataShape: "value" as const,
-      staleTimeMs: 30_000,
-      queryKey: ["projectFactory", plugin.serverId, project.projectId],
-      enabled: active,
-      refetchInterval: active ? STATE_REFRESH_MS : false,
-      queryFn: () =>
-        boundedFactoryRead(async () =>
-          ProjectFactoryStateSchema.parse(
-            await plugin.invoke("factory.project.get", { projectId: project.projectId }),
-          ),
-        ),
-    })),
-    combineData<ProjectFactoryState>,
   );
   const queues = useFetchQueries(
     listed.map(({ project, plugin }) => ({
       dataShape: "value" as const,
       staleTimeMs: 30_000,
       queryKey: ["factoryQueue", plugin.serverId, project.projectId],
-      enabled: factoryCardReadsQueue({ active, collapsed, state: project }),
+      // A paused Factory reads once to recover its last snapshot, then stays quiet.
+      enabled:
+        factoryCardReadsQueue({ active, collapsed, state: project }) ||
+        (active &&
+          factoryQueueNeedsInitialRead(
+            queryClient.getQueryState(["factoryQueue", plugin.serverId, project.projectId]),
+          )),
       refetchInterval: (query: { state: { data: unknown } }) =>
-        query.state.data !== null ? FACTORY_CARD_QUEUE_REFRESH_MS : false,
-      queryFn: () => boundedFactoryRead(() => loadFactoryQueue(plugin.invoke, project.projectId)),
+        factoryCardReadsQueue({ active, collapsed, state: project }) && query.state.data !== null
+          ? FACTORY_CARD_QUEUE_REFRESH_MS
+          : false,
+      queryFn: () =>
+        boundedFactoryRead(() => loadFactoryQueue(plugin.invoke, project.projectId), {
+          priority: "summary",
+        }),
+      retry: false,
     })),
-    combineData<FactoryQueue | null>,
   );
   const sessions = useSessionStore((store) => store.sessions);
   const hosts = useHosts();
@@ -134,12 +127,27 @@ function useAllFactories(collapsed: boolean) {
           ? (hosts.find((host) => host.serverId === serverId)?.label ?? serverId)
           : null,
         listed: project,
-        state: states[index],
-        issues: queues[index]?.issues ?? null,
+        issues: queues[index]?.data?.issues ?? null,
       };
     });
-  }, [listed, states, queues, sessions, hosts]);
-  return { factories, plugins: factoryPlugins };
+  }, [listed, queues, sessions, hosts]);
+  const errors = useMemo(
+    () => [
+      ...lists.filter((list) => list.isError),
+      ...queues.filter((queue) => queue.isError || queue.data?.error),
+    ],
+    [lists, queues],
+  );
+  const fetchedAt = queues.flatMap((queue) => (queue.data ? [queue.data.fetchedAt] : [])).sort()[0];
+  const retry = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      void Promise.all(errors.map((queue) => queue.refetch()));
+    },
+    [errors],
+  );
+  const visible = factoryPlugins.length > 0 && (factories.length > 0 || errors.length > 0);
+  return { factories, errors, fetchedAt, retry, visible };
 }
 
 /** A three-line global pipeline summary. The whole block opens the overview. */
@@ -153,7 +161,7 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
   onBeforeNavigate?: () => void;
 }) {
   const { t } = useTranslation();
-  const { factories } = useAllFactories(false);
+  const { factories, errors, fetchedAt, retry, visible } = useAllFactories(false);
   const aggregate = useMemo(() => aggregateFactories(factories), [factories]);
   const counts = useMemo(() => factoryStageCounts(aggregate.issues), [aggregate.issues]);
   const firstServerId = factories[0]?.serverId ?? null;
@@ -163,8 +171,9 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
     onBeforeNavigate?.();
     router.navigate(allFactoriesOverviewRoute(firstServerId) as Href);
   }, [firstServerId, onBeforeNavigate]);
-  if (!mainSidebar || focused || factories.length === 0) return null;
-  const anyQueue = factories.some((factory) => factory.issues !== null);
+  if (!mainSidebar || focused || !visible) return null;
+  const summary = factorySummaryState(factories);
+  const anyQueue = summary.hasQueue;
   const queued = counts.find((entry) => entry.segment === "queued")?.count ?? 0;
   const review = counts.find((entry) => entry.segment === "review")?.count ?? 0;
   const active = counts
@@ -189,11 +198,27 @@ export const AllFactoriesSection = memo(function AllFactoriesSection({
       </View>
       <View style={styles.details}>
         <Text style={styles.counts} numberOfLines={1}>
-          {anyQueue
-            ? t("projectFactory.scope.pipelineSummary", { queued, active, review })
-            : t("projectFactory.loading")}
+          {t("projectFactory.scope.sidebarSummary", summary)}
         </Text>
-        <FactoryStageBar issues={aggregate.issues} onPress={openOverview} fullWidth />
+        <Text style={styles.counts} numberOfLines={1}>
+          {anyQueue ? t("projectFactory.scope.pipelineSummary", { queued, active, review }) : null}
+        </Text>
+        {fetchedAt ? (
+          <Text style={styles.counts}>
+            {t("projectFactory.scope.snapshotAt", {
+              time: new Date(fetchedAt).toLocaleString(),
+              minutes: Math.max(0, Math.floor((Date.now() - Date.parse(fetchedAt)) / 60_000)),
+            })}
+          </Text>
+        ) : null}
+        {errors.length > 0 ? (
+          <PressHighlight onPress={retry} accessibilityRole="button">
+            <Text style={styles.counts}>{t("projectFactory.scope.queueRetry")}</Text>
+          </PressHighlight>
+        ) : null}
+        {anyQueue ? (
+          <FactoryStageBar issues={aggregate.issues} onPress={openOverview} fullWidth />
+        ) : null}
       </View>
     </PressHighlight>
   );

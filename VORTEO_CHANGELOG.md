@@ -20,6 +20,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.902 - 2026-11-09
 
 Hourly blocked-work reviews, which reread whole conversations and could spend a large share of a weekly Claude limit, are now off by default. When an owner turns them back on in Settings, a blocked thread gets at most three reviews, at 5, 15 and 30 minutes, inside the prompt cache window, then none until someone writes to it. This release also brings Lab live development, Claude reset visibility, and phone, tablet and queue refinements.
