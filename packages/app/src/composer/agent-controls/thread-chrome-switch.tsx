@@ -17,6 +17,7 @@ import { RadarRing } from "@/components/ui/radar-ring";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
+import { SPINNER_PERIOD_MS } from "@/styles/spinner";
 
 export const THREAD_CHROME_FEATURE_ID = "chrome";
 
@@ -37,7 +38,10 @@ function ChromeSwitchIcon({ size, color, pending }: AgentControlIconProps & { pe
   useEffect(() => {
     if (!pending) return undefined;
     rotation.value = 0;
-    rotation.value = withRepeat(withTiming(360, { duration: 900, easing: Easing.linear }), -1);
+    rotation.value = withRepeat(
+      withTiming(360, { duration: SPINNER_PERIOD_MS, easing: Easing.linear }),
+      -1,
+    );
     return () => cancelAnimation(rotation);
   }, [pending, rotation]);
   const ringStyle = useAnimatedStyle(() => ({

@@ -1,7 +1,7 @@
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
-import { FactoryCard } from "./sidebar/factory-card";
-import { AllFactoriesCard } from "./sidebar/factory-global-card";
+import { FactorySection } from "./sidebar/factory-section";
+import { AllFactoriesSection } from "./sidebar/factory-all-section";
 import { factoryCardModels } from "./sidebar/factory-card-model";
 import { useFactoryCardStore } from "./sidebar/factory-card-store";
 import { FactoryInstructionsPanel, useProjectFactories } from "./sidebar/factory-instructions";
@@ -2609,7 +2609,7 @@ function ProjectBlock({
           ) : null}
           {isSidebarSectionShown(focus, "factory")
             ? factoryCards.map((card) => (
-                <FactoryCard
+                <FactorySection
                   key={card.key}
                   card={card}
                   entries={workspaceEntriesByKey}
@@ -3702,7 +3702,7 @@ function ProjectModeListContent({
   const pinnedRows = (
     <>
       {pinnedFactoryCards.map(({ card, projectName }) => (
-        <FactoryCard
+        <FactorySection
           key={card.key}
           card={card}
           entries={workspaceEntriesByKey}
@@ -3746,7 +3746,7 @@ function ProjectModeListContent({
     <>
       {listTopComponent}
       {/* The main sidebar only; a single project's rail flyout has no global section. */}
-      <AllFactoriesCard
+      <AllFactoriesSection
         mainSidebar={rootFolders}
         focused={focus !== null}
         onBeforeNavigate={onWorkspacePress}

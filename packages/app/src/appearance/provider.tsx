@@ -37,7 +37,8 @@ import {
 } from "@/styles/theme";
 import { isWeb } from "@/constants/platform";
 import { useColorScheme } from "react-native";
-import { applyShellAppearance } from "./apply-shell";
+import { applyShellAppearance, applyShellTopChrome } from "./apply-shell";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { applyAppearance } from "./apply";
 import type { AppearanceId } from "@/styles/appearance-catalog";
 import { AppearanceSystemBars } from "./system-bars";
@@ -100,6 +101,8 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const systemScheme = useColorScheme();
 
   useEffect(() => applyVortonWeb(touch), [touch]);
+  const compact = useIsCompactFormFactor();
+  useEffect(() => applyShellTopChrome(compact), [compact]);
   const [hasAppliedAppearance, setHasAppliedAppearance] = useState(false);
   const lastTransitionTheme = useRef<string | null>(null);
   useEffect(() => {

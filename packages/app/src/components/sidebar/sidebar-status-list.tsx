@@ -1,5 +1,5 @@
 import { useScrollReporter } from "../use-scroll-divider";
-import { AllFactoriesCard } from "./factory-global-card";
+import { AllFactoriesSection } from "./factory-all-section";
 import { NestableScrollDivider } from "../nestable-scroll-divider";
 import { useWorkspaceSessionMenu } from "@/workspace/use-workspace-session-menu";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
@@ -236,7 +236,7 @@ export function SidebarStatusWorkspaceList({
   const content = (
     <>
       {listTopComponent}
-      <AllFactoriesCard onBeforeNavigate={onWorkspacePress} />
+      <AllFactoriesSection onBeforeNavigate={onWorkspacePress} />
       {pinnedWorkspaces.length > 0 ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
           <PinnedSectionRow

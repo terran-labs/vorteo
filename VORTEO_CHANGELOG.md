@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## Unreleased - 2026-11-09
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.701 - 2026-11-07
 
 Beta that adds an All Factories view with a Needs you panel and a Stop all switch, delegates coordinator updates, settings and routine installation changes under the full maintenance grant, gives the Foreman stricter dispatch rules, and fixes Factory account picks.

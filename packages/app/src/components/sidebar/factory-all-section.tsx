@@ -1,12 +1,11 @@
 import { memo, useCallback, useMemo } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { router, type Href } from "expo-router";
+import { router, usePathname, type Href } from "expo-router";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { Activity, CircleAlert } from "lucide-react-native";
+import { Activity } from "lucide-react-native";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { PressHighlight } from "@/components/ui/press-highlight";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { Tooltip, TooltipContent, TooltipText, TooltipTrigger } from "@/components/ui/tooltip";
 import { isNative } from "@/constants/platform";
 import { useFetchQueries } from "@/data/query";
@@ -27,11 +26,12 @@ import {
 } from "@/screens/factory/factory-reads";
 import {
   FACTORY_CARD_QUEUE_REFRESH_MS,
-  FactoryCardFrame,
+  FactorySectionRow,
   factoryCardReadsQueue,
-} from "./factory-card";
-import { factoryCardPassThrough } from "./factory-card-hover";
-import { factoryChipStyles } from "./factory-card-roles";
+} from "./factory-section";
+import { factoryCardKey, factoryOverviewPathTarget } from "./factory-card-model";
+import { factoryChipStyles, factoryTileRowStyle } from "./factory-card-roles";
+import { FactorySubheading } from "./factory-subheading";
 import { FactoryRunners } from "./factory-card-runners";
 import { useFactoryCardStore } from "./factory-card-store";
 import {
@@ -40,22 +40,19 @@ import {
   type FactoryChipSummary,
   type FactorySummaryInput,
 } from "./factory-global-model";
-import {
-  collectNeedsYou,
-  factoryScopeKey,
-  type FactoryScopeEntry,
-  type NeedsYouItem,
-} from "@/screens/factory/all-factories-model";
-import { useFactoryQuestions } from "@/screens/factory/overview-sources";
 import { ProjectFactoryStateSchema, type ProjectFactoryState } from "./factory-state";
 import { factoryOverviewRoute } from "./project-factory-model";
+
+const SELECTED_STATE = { selected: true };
+
+/** A root section, like Pinned. */
+const ALL_FACTORIES_LEVEL = 0;
 
 /** The device-store key for the All Factories card's collapse state. */
 export const ALL_FACTORIES_CARD_KEY = "all";
 
 /** Factory state and list reads are local daemon reads, refreshed like the project cards. */
 const STATE_REFRESH_MS = 60_000;
-const MAX_NEEDS_YOU_LINES = 8;
 
 interface ListedFactory {
   project: ProjectFactoryList["projects"][number];
@@ -156,32 +153,14 @@ function useAllFactories(collapsed: boolean) {
       };
     });
   }, [listed, states, queues, sessions, hosts]);
-  // The overview's needs-you model, so the card and the overview count the same things.
-  const entries = useMemo(
-    (): FactoryScopeEntry[] =>
-      factories.map((factory, index) => ({
-        key: factoryScopeKey(factory.serverId, factory.projectId),
-        serverId: factory.serverId,
-        projectId: factory.projectId,
-        name: factory.projectName,
-        hostLabel: factory.hostLabel,
-        state: states[index] ?? null,
-        status: factory.listed.state,
-        drain: factory.listed.drain,
-        issues: factory.issues ? [...factory.issues] : null,
-      })),
-    [factories, states],
-  );
-  const questions = useFactoryQuestions(entries);
-  const needsYou = useMemo(() => collectNeedsYou({ entries, questions }), [entries, questions]);
-  return { factories, needsYou, plugins: factoryPlugins };
+  return { factories, plugins: factoryPlugins };
 }
 
 /**
  * Every project's Factory summed into one card above Pinned, shaped like a project's Factory card:
  * per-Factory chips replace the role chips, and runners carry their project.
  */
-export const AllFactoriesCard = memo(function AllFactoriesCard({
+export const AllFactoriesSection = memo(function AllFactoriesSection({
   mainSidebar = true,
   focused = false,
   onBeforeNavigate,
@@ -197,141 +176,89 @@ export const AllFactoriesCard = memo(function AllFactoriesCard({
   const collapsed = useFactoryCardStore((state) =>
     state.collapsed.includes(ALL_FACTORIES_CARD_KEY),
   );
-  const { factories, needsYou, plugins } = useAllFactories(collapsed);
-  const aggregate = useMemo(() => aggregateFactories(factories, needsYou), [factories, needsYou]);
+  const { factories, plugins } = useAllFactories(collapsed);
+  const aggregate = useMemo(() => aggregateFactories(factories), [factories]);
   const firstServerId = factories[0]?.serverId ?? null;
+  // All Factories is selected on its own overview; a project overview selects that project's chip.
+  const routeTarget = factoryOverviewPathTarget(usePathname());
   const openOverview = useCallback(() => {
     if (!firstServerId) return;
     onBeforeNavigate?.();
     router.navigate(allFactoriesOverviewRoute(firstServerId) as Href);
   }, [firstServerId, onBeforeNavigate]);
-  const pill = useMemo(
-    () => ({
-      pill: aggregate.pill,
-      description: aggregate.chips
-        .map((chip) =>
-          t("sidebar.factoryCard.stateSummary", {
-            project: chip.hostLabel ? `${chip.name} · ${chip.hostLabel}` : chip.name,
-            state: t(`sidebar.factoryCard.states.${chip.pill.label}`),
-          }),
-        )
-        .join("\n"),
-    }),
-    [aggregate, t],
-  );
-  const badge = useMemo(
-    () =>
-      aggregate.needsYou.length > 0 ? (
-        <NeedsYouBadge items={aggregate.needsYou} onPress={openOverview} />
-      ) : null,
-    [aggregate.needsYou, openOverview],
-  );
   if (!mainSidebar || focused || factories.length === 0) return null;
   // Show the queue once any Factory has reported one; hide it while none has.
   const anyQueue = factories.some((factory) => factory.issues !== null);
   return (
-    <FactoryCardFrame
-      cardKey={ALL_FACTORIES_CARD_KEY}
-      level={0}
+    <FactorySectionRow
+      sectionKey={ALL_FACTORIES_CARD_KEY}
+      level={ALL_FACTORIES_LEVEL}
       title={t("sidebar.factoryCard.allTitle")}
-      subtitle={null}
-      pill={pill}
-      badge={badge}
+      pill={null}
       issues={anyQueue ? aggregate.issues : null}
       onOpenOverview={firstServerId ? openOverview : null}
+      selected={routeTarget !== null && routeTarget.projectId === null}
       pinnable={false}
     >
-      <FactorySummaryChips
-        chips={aggregate.chips}
-        plugins={plugins}
+      {aggregate.chips.length > 0 ? (
+        <>
+          <FactorySubheading
+            label={t("sidebar.factoryCard.factories")}
+            level={ALL_FACTORIES_LEVEL + 1}
+          />
+          <FactorySummaryChips
+            chips={aggregate.chips}
+            level={ALL_FACTORIES_LEVEL + 2}
+            selectedKey={
+              routeTarget?.projectId
+                ? factoryCardKey(routeTarget.serverId, routeTarget.projectId)
+                : null
+            }
+            plugins={plugins}
+            onBeforeNavigate={onBeforeNavigate}
+          />
+        </>
+      ) : null}
+      <FactoryRunners
+        runners={aggregate.runners}
+        level={ALL_FACTORIES_LEVEL + 1}
         onBeforeNavigate={onBeforeNavigate}
       />
-      <FactoryRunners runners={aggregate.runners} onBeforeNavigate={onBeforeNavigate} />
-    </FactoryCardFrame>
+    </FactorySectionRow>
   );
 });
 
-const warningColor = (theme: Theme) => ({ color: theme.colors.statusWarning });
-const ThemedCircleAlert = withUnistyles(CircleAlert);
-const needsYouIcon = <ThemedCircleAlert size={11} uniProps={warningColor} />;
 const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const ThemedActivity = withUnistyles(Activity);
 const inFlightIcon = <ThemedActivity size={11} uniProps={mutedColor} />;
 
-function needsYouLine(t: ReturnType<typeof useTranslation>["t"], item: NeedsYouItem): string {
-  const subject = item.number !== null ? `#${item.number} ${item.subject}` : item.subject;
-  const text = t(`projectFactory.needsYou.kinds.${item.kind}`, { subject });
-  return `${text} · ${item.projectLabel}`;
-}
-
-/** What waits on the owner across every Factory; opens the overview like the card. */
-function NeedsYouBadge({
-  items,
-  onPress,
-}: {
-  items: readonly NeedsYouItem[];
-  onPress: () => void;
-}) {
-  const { t } = useTranslation();
-  const shown = items.slice(0, MAX_NEEDS_YOU_LINES);
-  const more = items.length - shown.length;
-  const lines = shown.map((item) => ({
-    key: item.key,
-    text: needsYouLine(t, item),
-  }));
-  if (more > 0)
-    lines.push({ key: "more", text: t("sidebar.factoryCard.moreIssues", { count: more }) });
-  return (
-    <Tooltip delayDuration={300}>
-      <TooltipTrigger
-        accessible={false}
-        focusable={false}
-        tabIndex={-1}
-        aria-hidden
-        onPress={onPress}
-        style={styles.passThrough}
-        testID="factory-card-needs-you"
-      >
-        <StatusBadge
-          label={String(items.length)}
-          variant="warning"
-          size="xs"
-          leading={needsYouIcon}
-        />
-      </TooltipTrigger>
-      <TooltipContent side="top" maxWidth={340}>
-        <View style={styles.tooltipBody}>
-          <Text style={styles.tooltipHeader}>
-            {t("sidebar.factoryCard.needsYouHeader", { count: items.length })}
-          </Text>
-          {lines.map((line) => (
-            <Text key={line.key} style={styles.tooltipLine} numberOfLines={2}>
-              {line.text}
-            </Text>
-          ))}
-        </View>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 /** One chip per Factory, standing in for the role chips; each zooms into its project. */
 function FactorySummaryChips({
   chips,
+  level,
+  selectedKey,
   plugins,
   onBeforeNavigate,
 }: {
   chips: readonly FactoryChipSummary[];
+  level: number;
+  /** The chip whose project overview is the current page. */
+  selectedKey: string | null;
   plugins: readonly InstalledPlugin[];
   onBeforeNavigate?: () => void;
 }) {
   if (chips.length === 0) return null;
   return (
-    <View pointerEvents="box-none" style={factoryChipStyles.grid} testID="factory-card-factories">
+    <View
+      pointerEvents="box-none"
+      style={[factoryChipStyles.grid, factoryTileRowStyle(level)]}
+      testID="factory-card-factories"
+    >
       {chips.map((chip) => (
         <View key={chip.key} pointerEvents="box-none" style={factoryChipStyles.cell}>
           <FactorySummaryChip
             chip={chip}
+            selected={chip.key === selectedKey}
             plugin={plugins.find((plugin) => plugin.serverId === chip.serverId)}
             onBeforeNavigate={onBeforeNavigate}
           />
@@ -343,10 +270,12 @@ function FactorySummaryChips({
 
 function FactorySummaryChip({
   chip,
+  selected,
   plugin,
   onBeforeNavigate,
 }: {
   chip: FactoryChipSummary;
+  selected: boolean;
   plugin: InstalledPlugin | undefined;
   onBeforeNavigate?: () => void;
 }) {
@@ -381,14 +310,15 @@ function FactorySummaryChip({
             accessibilityHint={t("sidebar.factoryCard.chipCounts", {
               state,
               inFlight: chip.inFlight,
-              needsYou: chip.needsYou,
             })}
+            accessibilityState={selected ? SELECTED_STATE : undefined}
+            aria-current={selected ? "page" : undefined}
             disabled={!route}
             onPress={open}
             style={[
               factoryChipStyles.chip,
               touch && factoryChipStyles.chipTouch,
-              factoryChipStyles.chipHoverable,
+              selected ? factoryChipStyles.chipSelected : factoryChipStyles.chipHoverable,
             ]}
             highlightStyle={factoryChipStyles.chipPressed}
             testID={`factory-card-factory-${chip.key}`}
@@ -405,12 +335,6 @@ function FactorySummaryChip({
                 <Text style={styles.count}>{chip.inFlight}</Text>
               </View>
             ) : null}
-            {chip.needsYou > 0 ? (
-              <View style={styles.countGroup}>
-                {needsYouIcon}
-                <Text style={[styles.count, styles.needsYouCount]}>{chip.needsYou}</Text>
-              </View>
-            ) : null}
           </PressHighlight>
         </View>
       </TooltipTrigger>
@@ -419,12 +343,9 @@ function FactorySummaryChip({
           label={`${name} · ${state}`}
           description={[
             chip.held && chip.reason
-              ? t("projectFactory.needsYou.kinds.held", { subject: chip.reason })
+              ? t("sidebar.factoryCard.heldReason", { reason: chip.reason })
               : chip.reason,
-            t("sidebar.factoryCard.chipCountsShort", {
-              inFlight: chip.inFlight,
-              needsYou: chip.needsYou,
-            }),
+            t("sidebar.factoryCard.inFlight", { count: chip.inFlight }),
           ]
             .filter(Boolean)
             .join("\n")}
@@ -435,14 +356,6 @@ function FactorySummaryChip({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  passThrough: { flexShrink: 0, ...factoryCardPassThrough },
-  tooltipBody: { gap: 2 },
-  tooltipHeader: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.medium,
-  },
-  tooltipLine: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   dotSlot: { minWidth: 16, alignItems: "center", justifyContent: "center" },
   dot: { width: 7, height: 7, borderRadius: theme.borderRadius.full },
   success: { backgroundColor: theme.colors.statusSuccess },
@@ -453,7 +366,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontVariant: ["tabular-nums"],
   },
-  needsYouCount: { color: theme.colors.statusWarning },
   countGroup: { flexDirection: "row", alignItems: "center", gap: 2 },
 }));
 

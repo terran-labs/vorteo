@@ -20,6 +20,8 @@ import {
 import type { DraggableListDragHandleProps } from "@/components/draggable-list.types";
 import { SidebarCountBadge } from "@/components/sidebar/sidebar-count-badge";
 import { useSidebarRowDensity } from "@/components/sidebar/use-sidebar-row-density";
+import { useSidebarActionSize } from "@/components/sidebar/use-sidebar-action-size";
+import { sidebarTrailingActionStyles } from "@/components/sidebar/trailing-actions";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
@@ -141,11 +143,14 @@ function FolderKebabMenu({
   onOpenChange?: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
+  // The project rows' kebab contract: a fixed, centered box, 44px on touch, so the glyph sits on
+  // the row's centerline instead of the top of a box the touch rule enlarged.
+  const actionSize = useSidebarActionSize();
+  const style = useMemo(() => [sidebarTrailingActionStyles.kebab, actionSize], [actionSize]);
   return (
     <DropdownMenu compactMode="sheet" open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger
-        hitSlop={8}
-        style={styles.kebab}
+        style={style}
         accessibilityRole="button"
         accessibilityLabel={t("sidebar.folders.actions.menu")}
         testID={`sidebar-folder-kebab-${folder.id}`}
@@ -280,20 +285,24 @@ export function SidebarFolderRow({
             />
           ) : null}
         </ContextMenuTrigger>
-        {rowFocus.buttonAction ? (
-          <SidebarFocusButton
-            name={folder.name}
-            onPress={rowFocus.buttonAction}
-            testID={`sidebar-folder-focus-${folder.id}`}
-          />
-        ) : null}
-        <View style={alwaysShowActions ? undefined : styles.kebabReveal}>
-          <FolderKebabMenu
-            folder={folder}
-            scope={scope}
-            open={menuOpen}
-            onOpenChange={setMenuOpen}
-          />
+        <View
+          style={[sidebarTrailingActionStyles.rail, touch && sidebarTrailingActionStyles.railTouch]}
+        >
+          {rowFocus.buttonAction ? (
+            <SidebarFocusButton
+              name={folder.name}
+              onPress={rowFocus.buttonAction}
+              testID={`sidebar-folder-focus-${folder.id}`}
+            />
+          ) : null}
+          <View style={alwaysShowActions ? undefined : styles.kebabReveal}>
+            <FolderKebabMenu
+              folder={folder}
+              scope={scope}
+              open={menuOpen}
+              onOpenChange={setMenuOpen}
+            />
+          </View>
         </View>
       </View>
       <ContextMenuContent align="start" width={220} testID={`sidebar-folder-context-${folder.id}`}>
@@ -315,12 +324,4 @@ const styles = StyleSheet.create((theme) => ({
   // A calm title regains full strength while the row is hovered.
   rowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   kebabReveal: revealOnGroupHover(FOLDER_ROW_HOVER_GROUP),
-  kebab: {
-    padding: 2,
-    borderRadius: 4,
-    ...hoverStyle(
-      { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
-      { color: theme.colors.foregroundMuted },
-    ),
-  },
 }));

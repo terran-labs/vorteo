@@ -24,6 +24,11 @@ interface PageLayoutProps {
   fixedHeader?: ReactNode;
   /** A working surface, such as a dashboard: widens the column from 720 to 1440. */
   wide?: boolean;
+  /**
+   * Put the title and actions in the screen header, as History does, instead of a document
+   * heading inside the page. The content then starts right under the header's border.
+   */
+  headerTitle?: boolean;
   children: ReactNode;
 }
 
@@ -40,20 +45,23 @@ export function PageLayout({
   actions,
   fixedHeader,
   wide = false,
+  headerTitle = false,
   children,
 }: PageLayoutProps) {
   const isCompact = useIsCompactFormFactor();
   const insets = useSafeAreaInsets();
   const scrollContentStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
-  const showTitle = !isCompact && title !== undefined;
+  const showTitle = !isCompact && !headerTitle && title !== undefined;
+  let header = <MenuHeader borderless />;
+  if (isCompact) {
+    header = <BackHeader title={title} onBack={onBack} rightContent={actions} />;
+  } else if (headerTitle) {
+    header = <MenuHeader title={title} rightContent={actions} />;
+  }
 
   return (
     <View style={styles.container}>
-      {isCompact ? (
-        <BackHeader title={title} onBack={onBack} rightContent={actions} />
-      ) : (
-        <MenuHeader borderless />
-      )}
+      {header}
       {fixedHeader ? (
         <View style={[styles.fixedHeader, wide && styles.wide]}>{fixedHeader}</View>
       ) : null}
@@ -66,7 +74,7 @@ export function PageLayout({
         automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
       >
-        <View style={[styles.content, wide && styles.wide]}>
+        <View style={[styles.content, wide && styles.wide, headerTitle && styles.headerTitled]}>
           {showTitle ? (
             <View style={styles.titleRow} testID={titleTestID}>
               <Text style={styles.title} testID="page-title">
@@ -103,6 +111,9 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     maxWidth: 720,
     alignSelf: "center",
+  },
+  headerTitled: {
+    paddingTop: theme.spacing[4],
   },
   wide: {
     maxWidth: 1440,

@@ -8,13 +8,7 @@ import { ScrollView } from "@/components/ui/scroll-view";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { hoverStyle } from "@/styles/hover";
-import {
-  DrainBanners,
-  FactoriesStrip,
-  NeedsYouPanel,
-  ScopeControls,
-  StopSwitch,
-} from "./overview-command";
+import { DrainBanners, FactoriesStrip, ScopeControls, StopSwitch } from "./overview-command";
 import {
   FactoryControlNotes,
   FactoryModelsAndRoles,
@@ -32,21 +26,23 @@ import {
 } from "./overview-kit";
 import { factoryIssueKey, type FactoryLane } from "./overview-model";
 import {
-  AccountPicksPanel,
-  BudgetPanel,
   KpiStrip,
-  LedgerTable,
-  ProviderSpendPanel,
   QueueNotices,
-  QuotaPanel,
-  ReportCell,
-  ReportGrid,
+  ReportPanels,
   ReportsFootnote,
   RoutingPanel,
   type FactoryKpi,
+  type ReportPanelItem,
 } from "./overview-reports";
 
 type LaneFilter = FactoryLane | "all";
+const LEDGER_PANELS: ReportPanelItem[] = [
+  { report: "ledger", size: "lg" },
+  { report: "providerSpend" },
+  { report: "quota", dense: true },
+  { report: "budgets" },
+  { report: "accountPicks", size: "sm" },
+];
 const LEDGER_KPIS: FactoryKpi[] = ["tokens", "spend", "costPerPr", "passRate", "queueAge"];
 
 /**
@@ -74,7 +70,6 @@ export function LedgerOverview({ data }: { data: FactoryOverviewData }) {
   const rail = { data: view, filter, onFilter: setFilter, project, onProject: setProject };
   return (
     <View style={styles.stack} testID="factory-overview-ledger">
-      {data.scope === "all" ? <NeedsYouPanel data={data} expanded /> : null}
       <DrainBanners data={data} />
       <View style={compact ? styles.stack : styles.columns}>
         {compact ? <CompactRail {...rail} /> : <Rail {...rail} />}
@@ -233,7 +228,6 @@ function Main({ data, filter }: { data: FactoryOverviewData; filter: LaneFilter 
   );
   return (
     <View style={styles.main}>
-      {data.scope === "project" ? <NeedsYouPanel data={data} /> : null}
       <KpiStrip data={data} kpis={LEDGER_KPIS} />
       {data.queue.data || data.queue.error || data.queue.loading ? (
         <SettingsSection title={t("projectFactory.board.workInProgress")} trailing={meta} flush>
@@ -252,24 +246,8 @@ function Main({ data, filter }: { data: FactoryOverviewData; filter: LaneFilter 
           ))}
         </SettingsSection>
       ) : null}
-      <ReportGrid>
-        <ReportCell size="lg">
-          <LedgerTable data={data} />
-        </ReportCell>
-        <ReportCell>
-          <ProviderSpendPanel data={data} />
-        </ReportCell>
-        <ReportCell>
-          <QuotaPanel data={data} dense />
-        </ReportCell>
-        <ReportCell>
-          <BudgetPanel data={data} />
-        </ReportCell>
-        <ReportCell size="sm">
-          <AccountPicksPanel data={data} />
-        </ReportCell>
-      </ReportGrid>
-      <ReportsFootnote />
+      <ReportPanels data={data} items={LEDGER_PANELS} />
+      <ReportsFootnote data={data} />
     </View>
   );
 }

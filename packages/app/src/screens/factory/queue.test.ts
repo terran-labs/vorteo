@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { loadFactoryQueue, factoryAgentStatusKey, type FactoryInvoke } from "./queue";
 import { ProjectFactoryStateSchema } from "@/components/sidebar/factory-state";
-import { FACTORY_LANES, factoryLanes, factoryTrack } from "./overview-model";
+import { FACTORY_LANES, factoryLanes, factoryTrack, shownReports } from "./overview-model";
 import {
   activeDrains,
   aggregateStageCounts,
   canResumeHost,
   canStopHost,
-  collectNeedsYou,
   hostStopState,
   selectFreshTargets,
 } from "./all-factories-model";
@@ -124,6 +123,14 @@ it("places repair work in the Review lane and maps each stage onto the five-box 
     agents: [],
   }));
   const lanes = factoryLanes(issues);
+  expect(aggregateStageCounts([issues, null, undefined])).toEqual({
+    queued: 1,
+    planning: 1,
+    building: 1,
+    review: 2,
+    merging: 1,
+    blocked: 1,
+  });
   expect(lanes.map((group) => group.lane)).toEqual([...FACTORY_LANES]);
   expect(
     lanes.find((group) => group.lane === "review")?.issues.map((issue) => issue.stage),
@@ -143,72 +150,6 @@ it("places repair work in the Review lane and maps each stage onto the five-box 
       pr: { number: 1, url: "", headSha: "", checks: null, reviewDecision: null },
     }),
   ).toEqual(["done", "done", "blocked", "pending", "pending"]);
-});
-
-it("orders what needs the owner across Factories: questions and proposals before issues", () => {
-  const issue = (number: number, extra: object) => ({
-    number,
-    title: `Issue ${number}`,
-    url: `https://github.com/owner/repo/issues/${number}`,
-    label: "running" as const,
-    stage: "review" as const,
-    pr: null,
-    agents: [],
-    ...extra,
-  });
-  const failingPr = { number: 9, url: "pr", headSha: "h", checks: "failing", reviewDecision: null };
-  const state = ProjectFactoryStateSchema.parse({
-    ...oldState,
-    roles: [
-      {
-        role: "factory-mechanic",
-        title: "Mechanic",
-        workspaceId: null,
-        agentId: null,
-        heartbeat: null,
-        launch: { provider: null, profileId: null },
-        status: null,
-        instructions: { revision: 1, review: "proposed" },
-      },
-    ],
-  });
-  const entry = {
-    key: "host:project",
-    serverId: "host",
-    projectId: "project",
-    name: "Project",
-    hostLabel: null,
-    state,
-    status: "on" as const,
-    drain: null,
-    issues: [
-      issue(1, { stage: "blocked" }),
-      issue(2, { pr: failingPr }),
-      issue(3, { pr: failingPr, stage: "repair" }),
-      issue(4, { label: "human-review" }),
-    ],
-  };
-  const question = {
-    id: "00000000-0000-4000-8000-000000000001",
-    question: "Ship it?",
-    why: "Because.",
-    recommendedDefault: "Yes",
-    askedAt: "2026-11-07T10:00:00Z",
-    askedBy: "agent",
-    status: "open" as const,
-  };
-  const items = collectNeedsYou({
-    entries: [entry],
-    questions: [{ factoryKey: entry.key, serverId: "host", agentId: "worker", question }],
-  });
-  expect(items.map((item) => `${item.kind}:${item.number ?? item.subject}`)).toEqual([
-    "question:Ship it?",
-    "proposal:Mechanic",
-    "humanReview:4",
-    "failingChecks:2",
-    "blocked:1",
-  ]);
-  expect(aggregateStageCounts([entry.issues, null]).review).toBe(3);
 });
 
 it("shows one stop per host and reason, however many per-project drain ids it holds", () => {
@@ -263,9 +204,12 @@ it("shows one stop per host and reason, however many per-project drain ids it ho
       canStopHost,
     ),
   ).toEqual({ act: ["b"], unreadable: ["a"], skipped: ["c"] });
-  const stops = collectNeedsYou({ entries, questions: [] }).filter((item) => item.kind === "drain");
-  expect(stops.map((item) => [item.serverId, item.action.kind])).toEqual([
-    ["other", "stop"],
-    ["host", "stop"],
-  ]);
+});
+
+it("shows no sample-backed report in Live mode and every report in Sample factory mode", () => {
+  const kpis = ["inFlight", "merged7d", "cycleTime", "tokens", "monthCap", "queueAge"] as const;
+  expect(shownReports(kpis, false)).toEqual(["inFlight", "tokens"]);
+  expect(shownReports(kpis, true)).toEqual([...kpis]);
+  const panels = [{ report: "velocityChart" }, { report: "quota" }, { report: "budgets" }] as const;
+  expect(shownReports(panels, false).map((panel) => panel.report)).toEqual(["quota"]);
 });
