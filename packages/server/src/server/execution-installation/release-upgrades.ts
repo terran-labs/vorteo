@@ -5,6 +5,8 @@ import { z } from "zod";
 import {
   CoordinatorFollowJobSchema,
   InstallationUpgradeSchema,
+  ReleaseTagSchema,
+  SourceUpgradeSchema,
   UpgradeStepNameSchema,
   type AgentUpdateStatus,
   type CoordinatorFollowDecision,
@@ -12,6 +14,9 @@ import {
   type CoordinatorFollowStatus,
   type InstallationUpgrade,
   type ReleaseNotes,
+  type SourceUpgrade,
+  type SourceUpgradeDecision,
+  type SourceUpgradeStatus,
   type UpgradeDecision,
   type UpgradeStep,
   type UpgradeStepName,
@@ -21,8 +26,8 @@ import type { HandoffOutcome } from "./coordinator-handoff.js";
 import { RestartRequestError } from "./restarts.js";
 
 /**
- * Owner-approved upgrade to one tested GitHub release. Steps run in order:
- * snapshot, fetch, Host build and restart, coordinator replacement, Dev image.
+ * Owner-approved upgrades to one tested GitHub release or one reviewed commit on `main`. Steps
+ * run in order: snapshot, fetch, Host build and restart, coordinator replacement, Dev image.
  * An installation made before the one-command installer first moves to its layout
  * inside the snapshot step (see `runAdoption`), since snapshots need that layout.
  * Every transition is written to the journal before its effect starts, so a
@@ -59,10 +64,43 @@ const UpgradePrivateSchema = z.strictObject({
 });
 type UpgradePrivate = z.infer<typeof UpgradePrivateSchema>;
 
-const UpgradeRecordSchema = InstallationUpgradeSchema.extend({
-  private: UpgradePrivateSchema,
-});
+/**
+ * Release and source upgrade records share every step. Each kind has its own journal file, so a
+ * coordinator rolled back to a release without source upgrades never reads a record it refuses.
+ */
+const UpgradeRecordSchema = z.union([
+  InstallationUpgradeSchema.extend({ private: UpgradePrivateSchema }),
+  SourceUpgradeSchema.extend({ private: UpgradePrivateSchema }),
+]);
 type UpgradeRecord = z.infer<typeof UpgradeRecordSchema>;
+
+/** A release upgrade or a source upgrade, as replies show it. */
+export type UpgradeJob = InstallationUpgrade | SourceUpgrade;
+
+export function isSourceUpgrade(job: UpgradeJob): job is SourceUpgrade {
+  return "kind" in job && job.kind === "source-upgrade";
+}
+
+function isReleaseUpgrade(job: UpgradeJob): job is InstallationUpgrade {
+  return !isSourceUpgrade(job);
+}
+
+/** How details name the target: its release tag, or the short commit. */
+export function upgradeTarget(job: UpgradeJob): string {
+  return isSourceUpgrade(job) ? `commit ${job.sourceCommit.slice(0, 12)}` : job.release;
+}
+
+/** Why a rollback can no longer run because its 24-hour window ended, or null. */
+function rollbackExpired(job: UpgradeJob, now: Date): string | null {
+  if (!isSourceUpgrade(job) || !job.rollbackUntil) return null;
+  return now.getTime() >= Date.parse(job.rollbackUntil)
+    ? "The 24-hour rollback window has ended."
+    : null;
+}
+
+function automatic(job: UpgradeJob): boolean {
+  return isReleaseUpgrade(job) && job.automatic === true;
+}
 
 const UpgradeJournalSchema = z.strictObject({
   version: z.literal(1),
@@ -115,7 +153,7 @@ export interface UpgradePorts {
   /** True while this installation predates the installer layout (no `deployment`). */
   adoptionRequired: boolean;
   /** Starts the installer engine's in-place adoption, detached; it restarts this coordinator. */
-  launchAdoption(upgrade: InstallationUpgrade): void;
+  launchAdoption(upgrade: UpgradeJob): void;
   adoptionOutcome(upgradeId: string): AdoptionOutcome | null;
   /** How long adoption (Dev and gate image builds included) may take before it is judged failed. */
   adoptionDeadlineMs: number;
@@ -129,9 +167,9 @@ export interface UpgradePorts {
   /** The commit a release tag names on GitHub. */
   resolveRelease(release: string): Promise<string>;
   /** Takes a safety snapshot and prunes old ones; returns its id. */
-  snapshot(upgrade: InstallationUpgrade): Promise<string>;
+  snapshot(upgrade: UpgradeJob): Promise<string>;
   /** Fetches the tag into the source directory and checks it still names sourceCommit. */
-  fetchRelease(upgrade: InstallationUpgrade): Promise<void>;
+  fetchRelease(upgrade: UpgradeJob): Promise<void>;
   /** False once the owner has turned automatic updates off. */
   automaticAllowed(): boolean;
   /** True when the installer engine, not a restart-queue source update, restarts the Host. */
@@ -142,14 +180,14 @@ export interface UpgradePorts {
    */
   directHostBuild: boolean;
   /** Starts the build-only Host release for the upgrade, detached. */
-  launchHostBuild(upgrade: InstallationUpgrade): void;
+  launchHostBuild(upgrade: UpgradeJob): void;
   /** How long the build-only Host release may run before the upgrade fails. */
   hostBuildDeadlineMs: number;
   hostBuild(upgradeId: string): { status: "running" | "succeeded" | "failed"; detail: string };
   /** Null when no agent on the target is working or starting; otherwise what still runs. */
   busy(target: "host" | "container-daemon"): Promise<string | null>;
   /** Stages the release as a Host source update and approves it in the restart queue. */
-  requestHostUpdate(upgrade: InstallationUpgrade): Promise<string>;
+  requestHostUpdate(upgrade: UpgradeJob): Promise<string>;
   hostUpdate(jobId: string): { status: "running" | "succeeded" | "failed"; detail: string };
   /** The Host release directory selected now. */
   hostRelease(): string;
@@ -157,7 +195,7 @@ export interface UpgradePorts {
   runningRelease(): string;
   /** The release the coordinator service link selects. */
   coordinatorRelease(): string;
-  launchCoordinatorSwap(upgrade: InstallationUpgrade, next: string, previous: string): void;
+  launchCoordinatorSwap(upgrade: UpgradeJob, next: string, previous: string): void;
   coordinatorOutcome(upgradeId: string): HandoffOutcome | null;
   /** How long the swap helper may take before the step is judged from the link alone. */
   coordinatorDeadlineMs: number;
@@ -165,23 +203,23 @@ export interface UpgradePorts {
    * Refreshes Dev's deployment scripts from the release, then answers whether Dev can move
    * by swapping only its daemon release ("release") or needs a new image ("image").
    */
-  prepareDev(upgrade: InstallationUpgrade): Promise<"release" | "image">;
+  prepareDev(upgrade: UpgradeJob): Promise<"release" | "image">;
   /** The same answer without touching Dev's deployment, for builds before any restart. */
-  devUpgradeMode(upgrade: InstallationUpgrade): Promise<"release" | "image">;
+  devUpgradeMode(upgrade: UpgradeJob): Promise<"release" | "image">;
   /** Copies the release's deployment scripts into Dev's deployment. */
-  refreshDevScripts(upgrade: InstallationUpgrade): Promise<void>;
+  refreshDevScripts(upgrade: UpgradeJob): Promise<void>;
   /** False when Docker no longer has the image, such as after a prune. */
   hasDevImage(image: string): Promise<boolean>;
   /** The selected Dev release's commit, or "none" when Dev runs its image's own daemon. */
   devRelease(): Promise<string>;
   /** Builds the upgrade's Dev release on the Host; reuses one already built. */
-  buildDevRelease(upgrade: InstallationUpgrade): Promise<void>;
+  buildDevRelease(upgrade: UpgradeJob): Promise<void>;
   /** Restarts Dev's daemon on a release, or "none". Throws when Dev does not become healthy. */
   selectDevRelease(release: string): Promise<void>;
   /** Removes old Dev releases, keeping the selected, previous and newest ones. */
   pruneDevReleases(): Promise<void>;
   devImage(): Promise<string>;
-  buildDevImage(upgrade: InstallationUpgrade): Promise<string>;
+  buildDevImage(upgrade: UpgradeJob): Promise<string>;
   /** Recreates Dev on an image. Throws when Dev does not become healthy. */
   replaceDevImage(image: string): Promise<void>;
   /** Throws unless the coordinator reaches the recreated Dev daemon. */
@@ -197,12 +235,12 @@ type StepResult =
       snapshotId?: string;
     };
 
-function project(record: UpgradeRecord): InstallationUpgrade {
+function project(record: UpgradeRecord): UpgradeJob {
   const { private: _private, ...upgrade } = record;
   return upgrade;
 }
 
-function upgradeIsActive(record: InstallationUpgrade): boolean {
+function upgradeIsActive(record: UpgradeJob): boolean {
   return ["pending", "approved", "running"].includes(record.status);
 }
 
@@ -232,104 +270,83 @@ function coordinatorSwapResult(
       };
 }
 
-export class InstallationUpgrades {
-  private records: UpgradeRecord[];
+/**
+ * The steps every upgrade runs, whatever it targets. Release upgrades and source upgrades each
+ * keep one instance with its own journal; neither starts while the other is approved or running.
+ */
+abstract class UpgradePipeline<Ports extends UpgradePorts = UpgradePorts> {
+  protected records: UpgradeRecord[];
   private draining = false;
 
   constructor(
     private readonly journal: UpgradeJournal,
-    private readonly ports: UpgradePorts,
+    protected readonly ports: Ports,
   ) {
     this.records = journal.read();
   }
 
-  list(): InstallationUpgrade[] {
+  /** Newest first. */
+  protected jobs(): UpgradeJob[] {
     return this.records.map(project).toReversed();
   }
 
-  active(): InstallationUpgrade | null {
+  protected activeJob(): UpgradeJob | null {
     const record = this.activeRecord();
     return record ? project(record) : null;
   }
 
-  private activeRecord(): UpgradeRecord | undefined {
+  /** True while an upgrade is approved or running, which keeps the other kind from starting. */
+  dispatching(): boolean {
+    const record = this.activeRecord();
+    return record !== undefined && record.status !== "pending";
+  }
+
+  protected activeRecord(): UpgradeRecord | undefined {
     return this.records.find(upgradeIsActive);
   }
 
-  private save(record: UpgradeRecord, changes: Partial<UpgradeRecord>): UpgradeRecord {
+  protected save(record: UpgradeRecord, changes: Partial<UpgradeRecord>): UpgradeRecord {
     const next = UpgradeRecordSchema.parse({ ...record, ...changes, revision: randomUUID() });
     this.records = this.records.map((item) => (item.id === record.id ? next : item));
     this.journal.write(this.records);
     return next;
   }
 
-  private refuseConflict(): void {
-    const conflict = this.ports.conflict();
-    if (conflict) throw new RestartRequestError(conflict);
-  }
-
-  /** Why a pending or approved upgrade was withdrawn without the owner, such as a newer release. */
-  withdraw(id: string, detail: string): InstallationUpgrade {
-    const record = this.records.find((item) => item.id === id);
-    if (!record || !["pending", "approved"].includes(record.status))
-      throw new RestartRequestError("Only an upgrade that has not started can be withdrawn");
-    return project(this.save(record, { status: "cancelled", detail }));
-  }
-
-  /**
-   * Approves an update-check offer under the installation's automatic update policy. The Host
-   * restart always waits until no agents would be interrupted.
-   */
-  approveAutomatically(id: string): InstallationUpgrade {
-    const record = this.records.find((item) => item.id === id);
-    if (record?.status !== "pending" || record.origin !== "update-check")
-      throw new RestartRequestError("Only a pending update-check offer is approved automatically");
-    this.refuseConflict();
-    return project(
-      this.save(record, {
-        status: "approved",
-        approvedAt: this.ports.now().toISOString(),
-        automatic: true,
-        restart: "after-work",
-        detail: "Approved by the automatic update policy. Starting.",
-      }),
-    );
-  }
-
-  async request(
-    release: string,
-    offer?: { origin: "update-check"; notes: ReleaseNotes },
-  ): Promise<InstallationUpgrade> {
-    if (this.activeRecord())
-      throw new RestartRequestError("Another upgrade is already pending or running");
-    this.refuseConflict();
-    const sourceCommit = await this.ports.resolveRelease(release);
-    // The update check, its routes and the owner can request at once; the first one wins.
-    if (this.activeRecord())
-      throw new RestartRequestError("Another upgrade is already pending or running");
-    const previousCommit = this.ports.currentCommit();
-    if (previousCommit === sourceCommit)
-      throw new RestartRequestError(`This installation already runs ${release}`);
-    const now = this.ports.now().toISOString();
-    const record = UpgradeRecordSchema.parse({
-      id: randomUUID(),
-      revision: randomUUID(),
-      release,
-      sourceCommit,
-      previousCommit,
-      createdAt: now,
-      status: "pending",
-      detail: "Waiting for owner approval.",
-      steps: UPGRADE_STEPS.map((name) => ({ name, status: "pending", detail: "" })),
-      ...offer,
-      private: {},
-    });
+  protected add(input: UpgradeRecord): UpgradeJob {
+    const record = UpgradeRecordSchema.parse(input);
     this.records = [...this.records, record];
     this.journal.write(this.records);
     return project(record);
   }
 
-  decide(id: string, revision: string, decision: UpgradeDecision["decision"]): InstallationUpgrade {
+  protected refuseConflict(): void {
+    const conflict = this.ports.conflict();
+    if (conflict) throw new RestartRequestError(conflict);
+  }
+
+  protected refuseActive(): void {
+    if (this.activeRecord())
+      throw new RestartRequestError("Another upgrade is already pending or running");
+  }
+
+  /**
+   * Why the upgrade must stop before its next step or before it restarts the Host, or null.
+   * Restarts already started finish; nothing new restarts.
+   */
+  protected stepRefusal(): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+
+  /** Why an approval must be refused now, beyond conflicts; the record is then cancelled. */
+  protected approvalRefusal(_record: UpgradeRecord): string | null {
+    return null;
+  }
+
+  protected decideJob(
+    id: string,
+    revision: string,
+    decision: UpgradeDecision["decision"],
+  ): UpgradeJob {
     const record = this.records.find((item) => item.id === id);
     if (!record) throw new RestartRequestError("Upgrade not found");
     if (record.revision !== revision)
@@ -340,6 +357,11 @@ export class InstallationUpgrades {
       record.status === "pending"
     ) {
       this.refuseConflict();
+      const refusal = this.approvalRefusal(record);
+      if (refusal) {
+        this.save(record, { status: "cancelled", detail: refusal });
+        throw new RestartRequestError(refusal);
+      }
       return project(
         this.save(record, {
           status: "approved",
@@ -359,7 +381,7 @@ export class InstallationUpgrades {
       return project(
         this.save(record, { restart: "now", detail: "The owner chose to install now." }),
       );
-    if (decision === "acknowledge" && record.automatic && !upgradeIsActive(record))
+    if (decision === "acknowledge" && automatic(record) && !upgradeIsActive(record))
       return project(this.save(record, { acknowledgedAt: now }));
     if (decision === "reject" && record.status === "pending")
       return project(this.save(record, { status: "rejected", detail: "Rejected by the owner." }));
@@ -392,7 +414,7 @@ export class InstallationUpgrades {
     if (index === -1) {
       this.save(record, {
         status: "succeeded",
-        detail: `Upgraded to ${record.release}.`,
+        detail: `Upgraded to ${upgradeTarget(record)}.`,
         private: { ...record.private, ...FORGET_DEV_BUILD },
       });
       return false;
@@ -403,7 +425,11 @@ export class InstallationUpgrades {
       record = this.saveStep(record, index, { status: "running", detail: "", startedAt: now });
     let result: StepResult;
     try {
-      result = await this.run(step.name, record);
+      // Checked where a step starts, so nothing new restarts once the check fails.
+      const refusal = step.status === "pending" ? await this.stepRefusal() : null;
+      result = refusal
+        ? { status: "failed", detail: `${refusal} Nothing more was restarted.` }
+        : await this.run(step.name, record);
     } catch (error) {
       result = { status: "failed", detail: message(error) };
     }
@@ -517,8 +543,15 @@ export class InstallationUpgrades {
   }
 
   private async runFetch(record: UpgradeRecord): Promise<StepResult> {
+    const expired = rollbackExpired(record, this.ports.now());
+    if (expired) return { status: "failed", detail: `${expired} Nothing was restarted.` };
     await this.ports.fetchRelease(project(record));
-    return { status: "succeeded", detail: `Fetched ${record.release} (${record.sourceCommit}).` };
+    return {
+      status: "succeeded",
+      detail: isSourceUpgrade(record)
+        ? `Fetched ${record.sourceCommit} from main.`
+        : `Fetched ${record.release} (${record.sourceCommit}).`,
+    };
   }
 
   private async runHost(record: UpgradeRecord): Promise<StepResult> {
@@ -526,8 +559,10 @@ export class InstallationUpgrades {
     if (!jobId) {
       if (this.ports.currentCommit() === record.sourceCommit)
         return { status: "skipped", detail: "The Host already runs this release." };
+      const changed = this.hostChanged(record);
+      if (changed) return changed;
       // Turning automatic updates off stops an automatic upgrade that has not restarted anything.
-      if (record.automatic && !this.ports.automaticAllowed())
+      if (automatic(record) && !this.ports.automaticAllowed())
         return {
           status: "failed",
           detail:
@@ -580,6 +615,8 @@ export class InstallationUpgrades {
         const busy = await this.ports.busy("host");
         if (busy) return { status: "waiting", detail: `Waiting for current Host work: ${busy}` };
       }
+      const stop = await this.beforeHostRestart(record);
+      if (stop) return stop;
       const created = await this.ports.requestHostUpdate(project(record));
       return {
         status: "waiting",
@@ -593,6 +630,31 @@ export class InstallationUpgrades {
     if (job.status === "running") return { status: "waiting" };
     if (job.status === "failed") return { status: "failed", detail: job.detail };
     return { status: "succeeded", detail: job.detail };
+  }
+
+  /**
+   * Admission proved the reviewed Host commit is in the target. A Host change since then, such
+   * as a source update while this waited for idle agents, would be silently dropped.
+   */
+  private hostChanged(record: UpgradeRecord): StepResult | null {
+    if (!isSourceUpgrade(record) || this.ports.currentCommit() === record.previousCommit)
+      return null;
+    return {
+      status: "failed",
+      detail:
+        "The Host changed after this source upgrade was approved, so installing it could drop that change. Nothing was restarted. Request it again.",
+      private: FORGET_DEV_BUILD,
+    };
+  }
+
+  /** The builds before a Host restart can take an hour; check again immediately before it. */
+  private async beforeHostRestart(record: UpgradeRecord): Promise<StepResult | null> {
+    const changed = this.hostChanged(record);
+    if (changed) return changed;
+    const refusal = await this.stepRefusal();
+    return refusal
+      ? { status: "failed", detail: `${refusal} Nothing was restarted.`, private: FORGET_DEV_BUILD }
+      : null;
   }
 
   private async runCoordinator(record: UpgradeRecord): Promise<StepResult> {
@@ -798,6 +860,324 @@ export class InstallationUpgrades {
       detail: `Dev's daemon runs release ${record.sourceCommit.slice(0, 12)}; its image was kept.`,
       private: { devReplacing: false },
     };
+  }
+}
+
+/**
+ * Owner-approved upgrade to one tested GitHub release. Steps run in order:
+ * snapshot, fetch, Host build and restart, coordinator replacement, Dev image.
+ */
+export class InstallationUpgrades extends UpgradePipeline {
+  list(): InstallationUpgrade[] {
+    return this.jobs().filter(isReleaseUpgrade);
+  }
+
+  active(): InstallationUpgrade | null {
+    const job = this.activeJob();
+    return job && isReleaseUpgrade(job) ? job : null;
+  }
+
+  /** Why another installation operation keeps a release upgrade from starting now, or null. */
+  blocked(): string | null {
+    return this.ports.conflict();
+  }
+
+  /** Why a pending or approved upgrade was withdrawn without the owner, such as a newer release. */
+  withdraw(id: string, detail: string): InstallationUpgrade {
+    const record = this.records.find((item) => item.id === id);
+    if (!record || !["pending", "approved"].includes(record.status) || !isReleaseUpgrade(record))
+      throw new RestartRequestError("Only an upgrade that has not started can be withdrawn");
+    return this.release(project(this.save(record, { status: "cancelled", detail })));
+  }
+
+  /**
+   * Approves an update-check offer under the installation's automatic update policy. The Host
+   * restart always waits until no agents would be interrupted.
+   */
+  approveAutomatically(id: string): InstallationUpgrade {
+    const record = this.records.find((item) => item.id === id);
+    if (
+      record?.status !== "pending" ||
+      !isReleaseUpgrade(record) ||
+      record.origin !== "update-check"
+    )
+      throw new RestartRequestError("Only a pending update-check offer is approved automatically");
+    this.refuseConflict();
+    return this.release(
+      project(
+        this.save(record, {
+          status: "approved",
+          approvedAt: this.ports.now().toISOString(),
+          automatic: true,
+          restart: "after-work",
+          detail: "Approved by the automatic update policy. Starting.",
+        }),
+      ),
+    );
+  }
+
+  async request(
+    release: string,
+    offer?: { origin: "update-check"; notes: ReleaseNotes },
+  ): Promise<InstallationUpgrade> {
+    this.refuseActive();
+    this.refuseConflict();
+    const sourceCommit = await this.ports.resolveRelease(release);
+    // The update check, its routes and the owner can request at once; the first one wins.
+    this.refuseActive();
+    const previousCommit = this.ports.currentCommit();
+    if (previousCommit === sourceCommit)
+      throw new RestartRequestError(`This installation already runs ${release}`);
+    const now = this.ports.now().toISOString();
+    return this.release(
+      this.add({
+        id: randomUUID(),
+        revision: randomUUID(),
+        release,
+        sourceCommit,
+        previousCommit,
+        createdAt: now,
+        status: "pending",
+        detail: "Waiting for owner approval.",
+        steps: UPGRADE_STEPS.map((name) => ({ name, status: "pending", detail: "" })),
+        ...offer,
+        private: {},
+      }),
+    );
+  }
+
+  decide(id: string, revision: string, decision: UpgradeDecision["decision"]): InstallationUpgrade {
+    return this.release(this.decideJob(id, revision, decision));
+  }
+
+  private release(job: UpgradeJob): InstallationUpgrade {
+    if (!isReleaseUpgrade(job))
+      throw new Error("The release upgrade journal holds a source upgrade");
+    return job;
+  }
+}
+
+/** What admission learned about a commit after fetching `main`. */
+export interface SourceFacts {
+  /** The commit is on `main` of the release repository. */
+  onMain: boolean;
+  /** The commit contains the installed Host commit, so it is not a downgrade. */
+  containsInstalled: boolean;
+  /** Whether every check `main`'s ruleset requires passed on the commit. */
+  checks: { passed: boolean; detail: string };
+  /** The newest release tag the commit contains, or null when unknown. */
+  lastRelease: string | null;
+}
+
+export interface SourceUpgradePorts extends UpgradePorts {
+  /** Fetches `main` and inspects the commit. Throws when it cannot; that refuses the request. */
+  inspectSource(commit: string, installed: string): Promise<SourceFacts>;
+  /** The newest release tag a commit contains, or null. Used for rollbacks, which skip admission. */
+  lastRelease(commit: string): Promise<string | null>;
+  /** Null when the Host release built for `commit` can be selected again without a build. */
+  rollbackBlocker(commit: string): string | null;
+  /** Why a source upgrade must stop now, such as the installation having become Lab, or null. */
+  installationBlocker(): Promise<string | null>;
+}
+
+/** How long after a source upgrade finished the owner can roll the Host back to its predecessor. */
+export const SOURCE_ROLLBACK_WINDOW_MS = 24 * 60 * 60_000;
+
+export type SourceRollbackOffer = SourceUpgradeStatus["rollback"];
+
+function hostStep(job: UpgradeJob): UpgradeStep | undefined {
+  return job.steps.find((step) => step.name === "host");
+}
+
+/** Why admission refuses a commit, or null. Checked at request and again at approval. */
+function admissionRefusal(commit: string, installed: string, facts: SourceFacts): string | null {
+  if (!facts.onMain)
+    return `Commit ${commit.slice(0, 12)} is not on main. Only commits on main can be installed.`;
+  if (!facts.containsInstalled)
+    return `Commit ${commit.slice(0, 12)} does not contain the installed Host commit ${installed.slice(0, 12)}. Installing it would be a downgrade.`;
+  if (!facts.checks.passed) return `Required checks have not passed: ${facts.checks.detail}`;
+  return null;
+}
+
+/**
+ * Owner-approved upgrade of a Stable installation to one reviewed commit on `main`. It runs
+ * the release upgrade's steps; only admission, the fetch and the journal differ. Approval is
+ * always the owner's: no update policy approves it. The owner can roll the Host back to the
+ * release it replaced for 24 hours, as another source upgrade with its own approval.
+ */
+export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
+  list(): SourceUpgrade[] {
+    return this.jobs().filter(isSourceUpgrade);
+  }
+
+  active(): SourceUpgrade | null {
+    const job = this.activeJob();
+    return job && isSourceUpgrade(job) ? job : null;
+  }
+
+  /**
+   * Creates a pending source upgrade once admission passes: the commit is on `main`, contains
+   * the installed Host commit and passed `main`'s required checks, and no upgrade runs.
+   */
+  async request(input: {
+    commit: string;
+    reason: string;
+    requestedBy: string;
+  }): Promise<SourceUpgrade> {
+    this.refuseActive();
+    this.refuseConflict();
+    const installed = this.ports.currentCommit();
+    if (!installed)
+      throw new RestartRequestError(
+        "The installed Host commit is unknown, so a source upgrade cannot prove it is not a downgrade.",
+      );
+    if (installed === input.commit)
+      throw new RestartRequestError("The Host already runs this commit.");
+    const facts = await this.ports.inspectSource(input.commit, installed);
+    const refusal = admissionRefusal(input.commit, installed, facts);
+    if (refusal) throw new RestartRequestError(refusal);
+    // Admission fetched and called GitHub; another request may have won meanwhile.
+    this.refuseActive();
+    this.refuseConflict();
+    return this.create({
+      sourceCommit: input.commit,
+      previousCommit: installed,
+      reason: input.reason,
+      requestedBy: input.requestedBy,
+      lastRelease: facts.lastRelease,
+    });
+  }
+
+  /** Creates a pending rollback of the source upgrade the rollback offer names. */
+  async requestRollback(upgradeId: string, requestedBy: string): Promise<SourceUpgrade> {
+    const offer = this.rollbackOffer();
+    if (!offer.available || offer.upgradeId !== upgradeId || !offer.commit)
+      throw new RestartRequestError(offer.detail);
+    this.refuseConflict();
+    const lastRelease = await this.ports.lastRelease(offer.commit).catch(() => null);
+    this.refuseActive();
+    return this.create({
+      sourceCommit: offer.commit,
+      previousCommit: this.ports.currentCommit(),
+      reason: `Roll back the source upgrade to commit ${
+        this.list()
+          .find((job) => job.id === upgradeId)
+          ?.sourceCommit.slice(0, 12) ?? "unknown"
+      }.`,
+      requestedBy,
+      lastRelease,
+      rollbackOf: upgradeId,
+      rollbackUntil: offer.until,
+    });
+  }
+
+  /**
+   * Approval repeats admission (on main, no downgrade, required checks) against `main` as it
+   * is now. A refusal leaves the request pending, so it can be approved once checks pass.
+   */
+  async decide(
+    id: string,
+    revision: string,
+    decision: SourceUpgradeDecision["decision"],
+  ): Promise<SourceUpgrade> {
+    const record = this.records.find((item) => item.id === id);
+    if (
+      record?.status === "pending" &&
+      isSourceUpgrade(record) &&
+      !record.rollbackOf &&
+      record.previousCommit &&
+      (decision === "approve" || decision === "approve-after-work")
+    ) {
+      const facts = await this.ports.inspectSource(record.sourceCommit, record.previousCommit);
+      const refusal = admissionRefusal(record.sourceCommit, record.previousCommit, facts);
+      if (refusal) throw new RestartRequestError(refusal);
+    }
+    const job = this.decideJob(id, revision, decision);
+    if (!isSourceUpgrade(job))
+      throw new Error("The source upgrade journal holds a release upgrade");
+    return job;
+  }
+
+  /**
+   * The rollback of the newest source upgrade that moved the Host: offered for 24 hours after
+   * its Host step succeeded, even when a later step failed, while the Host still runs it and
+   * its previous Host release can be selected without a build.
+   */
+  rollbackOffer(): SourceRollbackOffer {
+    const latest = this.list().find(
+      (job) => !upgradeIsActive(job) && hostStep(job)?.status === "succeeded",
+    );
+    const none = (detail: string): SourceRollbackOffer => ({ available: false, detail });
+    if (!latest || latest.rollbackOf) return none("No source upgrade can be rolled back.");
+    const hostFinished = hostStep(latest)?.finishedAt;
+    const finished = hostFinished ? Date.parse(hostFinished) : null;
+    if (finished === null || !latest.previousCommit)
+      return none("The newest source upgrade did not record what it replaced.");
+    const until = finished + SOURCE_ROLLBACK_WINDOW_MS;
+    if (this.ports.now().getTime() >= until)
+      return none("The 24-hour rollback window of the newest source upgrade has ended.");
+    if (this.ports.currentCommit() !== latest.sourceCommit)
+      return none("The Host no longer runs the newest source upgrade.");
+    const offer = {
+      upgradeId: latest.id,
+      commit: latest.previousCommit,
+      until: new Date(until).toISOString(),
+    };
+    if (this.activeRecord())
+      return { available: false, detail: "Wait for the source upgrade to finish.", ...offer };
+    const blocker = this.ports.rollbackBlocker(latest.previousCommit);
+    if (blocker) return { available: false, detail: blocker, ...offer };
+    return {
+      available: true,
+      detail: `Selects the Host release of ${latest.previousCommit.slice(0, 12)} again without a build.`,
+      ...offer,
+    };
+  }
+
+  /** Only a Stable installation continues a source upgrade, checked before every step. */
+  protected override stepRefusal(): Promise<string | null> {
+    return this.ports.installationBlocker();
+  }
+
+  /** The approval binds the installed commit the owner reviewed against. */
+  protected override approvalRefusal(record: UpgradeRecord): string | null {
+    const expired = rollbackExpired(record, this.ports.now());
+    if (expired) return expired;
+    if (this.ports.currentCommit() !== record.previousCommit)
+      return "The installed Host commit changed after this source upgrade was reviewed. Request it again.";
+    return null;
+  }
+
+  private create(input: {
+    sourceCommit: string;
+    previousCommit: string | null;
+    reason: string;
+    requestedBy: string;
+    lastRelease: string | null;
+    rollbackOf?: string;
+    rollbackUntil?: string;
+  }): SourceUpgrade {
+    const lastRelease = ReleaseTagSchema.safeParse(input.lastRelease);
+    const job = this.add({
+      id: randomUUID(),
+      revision: randomUUID(),
+      kind: "source-upgrade",
+      sourceCommit: input.sourceCommit,
+      previousCommit: input.previousCommit,
+      reason: input.reason.trim().slice(0, 500) || "No reason given.",
+      requestedBy: input.requestedBy,
+      lastRelease: lastRelease.success ? lastRelease.data : null,
+      ...(input.rollbackOf ? { rollbackOf: input.rollbackOf } : {}),
+      ...(input.rollbackUntil ? { rollbackUntil: input.rollbackUntil } : {}),
+      createdAt: this.ports.now().toISOString(),
+      status: "pending",
+      detail: "Waiting for owner approval.",
+      steps: UPGRADE_STEPS.map((name) => ({ name, status: "pending", detail: "" })),
+      private: {},
+    });
+    if (!isSourceUpgrade(job))
+      throw new Error("A source upgrade was recorded as a release upgrade");
+    return job;
   }
 }
 

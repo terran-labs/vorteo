@@ -10,6 +10,7 @@ import {
   buildSidebarTreeRows,
   createSidebarFolderPatch,
   savedSidebarAnchor,
+  selectLimitedTreeRows,
   flattenSidebarScope,
   listSidebarFolderDestinations,
   moveSidebarEntryPatch,
@@ -240,5 +241,37 @@ describe("sidebar folder tree", () => {
       keys: ["s:1", "s:2"],
     });
     expect(patch?.workspaceOrderByProject).toEqual({ proj: ["s:2", "s:1"] });
+  });
+});
+
+describe("limited project trees", () => {
+  test("keep active rows with their folders and lead with the open workspace", () => {
+    const holder: SidebarFolder = { id: "f", name: "Folder" } as SidebarFolder;
+    const rows = [
+      { kind: "item" as const, key: "a", item: "a", depth: 0, folderId: null },
+      { kind: "item" as const, key: "b", item: "b", depth: 0, folderId: null },
+      {
+        kind: "folder" as const,
+        key: "folder:f",
+        folder: holder,
+        depth: 0,
+        collapsed: false,
+        itemCount: 2,
+      },
+      { kind: "item" as const, key: "busy", item: "busy", depth: 1, folderId: "f" },
+      { kind: "item" as const, key: "open", item: "open", depth: 1, folderId: "f" },
+      { kind: "item" as const, key: "done", item: "done", depth: 0, folderId: null },
+    ];
+    const policy = {
+      isActive: (item: string) => item === "busy",
+      isOpen: (item: string) => item === "open",
+    };
+    const collapsed = selectLimitedTreeRows({ rows, expanded: false, limit: 2, ...policy });
+    expect(collapsed.visibleRows.map((row) => row.key)).toEqual(["a", "b", "folder:f", "busy"]);
+    expect(collapsed.leadingItem).toBe("open");
+    expect(collapsed.canToggle).toBe(true);
+    const expanded = selectLimitedTreeRows({ rows, expanded: true, limit: 2, ...policy });
+    expect(expanded.visibleRows).toHaveLength(rows.length);
+    expect(expanded.leadingItem).toBeNull();
   });
 });

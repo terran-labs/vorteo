@@ -12,6 +12,9 @@ import {
 import { factoryCardPassThrough } from "./factory-card-hover";
 
 const MAX_TOOLTIP_ISSUES = 8;
+
+/** A queue issue, tagged with its project when issues from several Factories share one bar. */
+export type StageBarIssue = FactoryQueueIssue & { tag?: string };
 const MAX_SUMMARY_ISSUES_PER_STAGE = 3;
 
 /**
@@ -23,12 +26,10 @@ export function FactoryStageBar({
   issues,
   expanded,
   onOpenOverview,
-  onTooltipOpenChange,
 }: {
-  issues: readonly FactoryQueueIssue[];
+  issues: readonly StageBarIssue[];
   expanded: boolean;
   onOpenOverview: () => void;
-  onTooltipOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   const counts = useMemo(() => factoryStageCounts(issues), [issues]);
@@ -43,7 +44,7 @@ export function FactoryStageBar({
   }
   if (!expanded) {
     return (
-      <Tooltip delayDuration={200} onOpenChange={onTooltipOpenChange}>
+      <Tooltip delayDuration={200}>
         <TooltipTrigger
           accessible={false}
           focusable={false}
@@ -70,7 +71,7 @@ export function FactoryStageBar({
     <View pointerEvents="box-none" style={styles.expanded}>
       <View pointerEvents="box-none" style={styles.segments} testID="factory-card-stage-bar">
         {counts.map((count) => (
-          <Tooltip key={count.segment} delayDuration={200} onOpenChange={onTooltipOpenChange}>
+          <Tooltip key={count.segment} delayDuration={200}>
             <TooltipTrigger
               accessible={false}
               focusable={false}
@@ -99,7 +100,7 @@ export function FactoryStageBar({
   );
 }
 
-function StageIssues({ count, limit }: { count: FactoryStageCount; limit: number }) {
+function StageIssues({ count, limit }: { count: FactoryStageCount<StageBarIssue>; limit: number }) {
   const { t } = useTranslation();
   const shown = count.issues.slice(0, limit);
   const more = count.issues.length - shown.length;
@@ -112,8 +113,13 @@ function StageIssues({ count, limit }: { count: FactoryStageCount; limit: number
         })}
       </Text>
       {shown.map((issue) => (
-        <Text key={issue.number} style={styles.tooltipIssue} numberOfLines={1}>
+        <Text
+          key={`${issue.tag ?? ""}#${issue.number}`}
+          style={styles.tooltipIssue}
+          numberOfLines={1}
+        >
           {t("sidebar.factoryCard.issue", { number: issue.number, title: issue.title })}
+          {issue.tag ? <Text style={styles.tooltipTag}>{` · ${issue.tag}`}</Text> : null}
         </Text>
       ))}
       {more > 0 ? (
@@ -125,7 +131,7 @@ function StageIssues({ count, limit }: { count: FactoryStageCount; limit: number
   );
 }
 
-function StageSummary({ counts }: { counts: readonly FactoryStageCount[] }) {
+function StageSummary({ counts }: { counts: readonly FactoryStageCount<StageBarIssue>[] }) {
   const { t } = useTranslation();
   const total = counts.reduce((sum, count) => sum + count.count, 0);
   return (
@@ -205,6 +211,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
+  tooltipTag: { color: theme.colors.foregroundExtraMuted },
   tooltipMore: {
     color: theme.colors.foregroundExtraMuted,
     fontSize: theme.fontSize.sm,

@@ -9,6 +9,9 @@ import {
   CoordinatorSettingsDecisionSchema,
   CoordinatorSettingsRequestSchema,
   SnapshotRestoreRequestSchema,
+  SourceUpgradeDecisionSchema,
+  SourceUpgradeRequestSchema,
+  SourceUpgradeRollbackRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
   UpdatePolicyChangeSchema,
@@ -82,6 +85,7 @@ import { createInstallationNameStore } from "./installation-name.js";
 import {
   changeInstallationType,
   InstallationTypeStateError,
+  readInstallationType,
   reportedInstallationType,
 } from "./installation-type.js";
 import { createLabSelfUpdateRuntime } from "./lab-self-update-runtime.js";
@@ -631,7 +635,8 @@ export function createInstallationServer(
   });
   // One check for every coordinator restart, at request, approval and dispatch.
   const restartState: CoordinatorRestartState = {
-    upgradeActive: () => Boolean(releaseRuntime?.upgrades?.active()),
+    upgradeActive: () =>
+      Boolean(releaseRuntime?.upgrades?.active() ?? releaseRuntime?.sourceUpgrades?.active()),
     followDispatching: () => Boolean(releaseRuntime?.coordinatorFollow.dispatching()),
     settingsDispatching: () => coordinatorSettings.dispatching() !== null,
     customDomainRunning: () => customDomain.running(),
@@ -654,6 +659,8 @@ export function createInstallationServer(
     conflict: () => {
       if (releaseRuntime?.upgrades?.active())
         return "Wait for the release upgrade to finish before a lab self-update.";
+      if (releaseRuntime?.sourceUpgrades?.active())
+        return "Wait for the source upgrade to finish before a lab self-update.";
       if (releaseRuntime?.coordinatorFollow.dispatching())
         return "Wait for the coordinator update to finish before a lab self-update.";
       if (coordinatorSettings.dispatching())
@@ -663,6 +670,25 @@ export function createInstallationServer(
       return null;
     },
   });
+  /**
+   * Why a source upgrade cannot be requested or approved now, beyond the job checks: only a
+   * Stable installation takes one, and never beside a lab self-update.
+   */
+  const sourceUpgradeBlocker = async (): Promise<string | null> => {
+    if (!releaseRuntime?.sourceUpgrades)
+      return releaseRuntime?.sourceUpgradeStatus().detail ?? "Source upgrades are unavailable";
+    try {
+      if ((await readInstallationType(config.stateDir)).type !== "stable")
+        return "Source upgrades are for Stable installations. A Lab installation updates through lab self-updates.";
+    } catch (error) {
+      if (error instanceof InstallationTypeStateError)
+        return "The installation type is unreadable, so source upgrades are refused.";
+      throw error;
+    }
+    if (await labRuntime.updates.active())
+      return "Wait for the lab self-update to finish before a source upgrade.";
+    return null;
+  };
   const startupReleased = () => {
     if (startupFence && !startupFence.released()) return false;
     restarts.activate();
@@ -751,6 +777,9 @@ export function createInstallationServer(
         void releaseRuntime?.upgrades
           ?.drain()
           .catch((error) => logger.error({ err: error }, "Installation upgrade failed"));
+        void releaseRuntime?.sourceUpgrades
+          ?.drain()
+          .catch((error) => logger.error({ err: error }, "Installation source upgrade failed"));
         // Moving the coordinator onto the Host release restarts this process; the next one
         // resumes the job from its journal here.
         releaseRuntime?.coordinatorFollow.drain();
@@ -1166,6 +1195,7 @@ export function createInstallationServer(
     void (async () => {
       const brokerDeploymentAvailable = host && (await restarts.brokerDeploymentAvailable());
       const labSelfUpdateAvailable = host && (await labRuntime.blocker()) === null;
+      const sourceUpgradeAvailable = host && (await sourceUpgradeBlocker()) === null;
       const brokerCompatible = host ? ((await executor.brokerCompatible?.()) ?? false) : false;
       const monitorCompatible = host ? ((await executor.monitorCompatible?.()) ?? false) : false;
       const coordinator = await coordinatorCapability();
@@ -1245,6 +1275,12 @@ export function createInstallationServer(
             labSelfUpdate: {
               available: labSelfUpdateAvailable,
               ownerApprovalRequired: false,
+            },
+            // Source upgrades of a Stable installation are always the owner's decision. Only the
+            // owner routes under /api/installation/owner/source-upgrades start them.
+            sourceUpgrade: {
+              available: sourceUpgradeAvailable,
+              ownerApprovalRequired: true,
             },
             sessionHostJob: {
               available: host && restarts.sessionHostAvailable(),
@@ -2824,6 +2860,47 @@ export function createInstallationServer(
     const decision = UpgradeDecisionSchema.parse(req.body);
     res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
     void drainRestarts();
+  });
+  app.post("/api/installation/owner/source-upgrades/query", (_req, res) =>
+    res.json(requireReleaseRuntime().sourceUpgradeStatus()),
+  );
+  const requireSourceUpgrades = async () => {
+    const blocker = await sourceUpgradeBlocker();
+    if (blocker) throw new RestartRequestError(blocker);
+    const sourceUpgrades = requireReleaseRuntime().sourceUpgrades;
+    if (!sourceUpgrades) throw new RestartRequestError("Source upgrades are unavailable");
+    return sourceUpgrades;
+  };
+  app.post("/api/installation/owner/source-upgrades", (req, res, next) => {
+    const request = SourceUpgradeRequestSchema.parse(req.body);
+    void requireSourceUpgrades()
+      .then((sourceUpgrades) =>
+        sourceUpgrades.request({ ...request, requestedBy: "Installation owner" }),
+      )
+      .then((upgrade) => res.status(201).json(upgrade), next);
+  });
+  app.post("/api/installation/owner/source-upgrades/rollback", (req, res, next) => {
+    const { upgradeId } = SourceUpgradeRollbackRequestSchema.parse(req.body);
+    void requireSourceUpgrades()
+      .then((sourceUpgrades) => sourceUpgrades.requestRollback(upgradeId, "Installation owner"))
+      .then((upgrade) => res.status(201).json(upgrade), next);
+  });
+  app.post("/api/installation/owner/source-upgrades/:id/decision", (req, res, next) => {
+    const decision = SourceUpgradeDecisionSchema.parse(req.body);
+    const id = z.string().uuid().parse(req.params.id);
+    const approving = decision.decision === "approve" || decision.decision === "approve-after-work";
+    // Rejecting or cancelling never needs the checks that approval repeats.
+    void (
+      approving ? requireSourceUpgrades() : Promise.resolve(requireReleaseRuntime().sourceUpgrades)
+    )
+      .then((sourceUpgrades) => {
+        if (!sourceUpgrades) throw new RestartRequestError("Source upgrades are unavailable");
+        return sourceUpgrades.decide(id, decision.revision, decision.decision);
+      })
+      .then((upgrade) => {
+        void drainRestarts();
+        return res.json(upgrade);
+      }, next);
   });
   app.post("/api/installation/owner/coordinator-follow/query", (_req, res) =>
     res.json(requireReleaseRuntime().coordinatorFollow.status()),

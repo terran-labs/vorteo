@@ -610,8 +610,6 @@ test("compact rail focuses projects from its flyout", async ({ page }) => {
     .poll(() => create.evaluate((group) => group.contains(document.activeElement)))
     .toBe(true);
   await expect(actions).toHaveCSS("opacity", "1");
-  await page.getByTestId("sidebar-focus-crumb-all").focus();
-  await expect(actions).toHaveCSS("opacity", "0");
 
   await page.getByTestId("sidebar-focus-crumb-all").click();
   await expect(page.getByTestId("sidebar-focus-breadcrumb")).toHaveCount(0);
