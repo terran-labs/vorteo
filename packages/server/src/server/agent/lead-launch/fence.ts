@@ -25,6 +25,7 @@ export const PRESET_FENCE_REFUSED_MESSAGE = "Preset fence refused";
 /** The fields the fence reads, available from a loaded thread and from its stored record. */
 export interface FenceAgent {
   id: string;
+  createdByAgentId?: string | null;
   labels: Record<string, string>;
   config?: {
     profileLaunch?: { worker?: { id: string } | null; workers?: readonly { id: string }[] } | null;
@@ -137,10 +138,10 @@ async function lookup(dependencies: FenceLookup, agentId: string): Promise<Fence
 }
 
 /**
- * The nearest thread, starting with the caller and following parent labels, whose launch carries
- * a worker preset. Confirmed leads have no parent label, so they answer to their own preset.
- * A thread created through a Host's remote create answers to the supervisor the Host recorded,
- * read before its parent label (C2).
+ * Start at the caller and look for the nearest supervisor. Local worker proof takes precedence
+ * over the thread's own preset. Forwarded governance takes precedence over ancestry (C2).
+ * Follow the daemon-recorded creator when available, and use parent labels for older records.
+ * Confirmed leads have no creator or parent link, so their own preset governs them.
  */
 export async function governingSupervisor(
   caller: FenceAgent,
@@ -149,18 +150,9 @@ export async function governingSupervisor(
   const visited = new Set<string>([caller.id]);
   let current = caller;
   for (let depth = 0; depth <= MAX_SUPERVISOR_DEPTH; depth += 1) {
+    if (current.workerGovernance) return workerSupervisor(current.workerGovernance);
     const stored = await dependencies.getStored?.(current.id);
-    const local = current.workerGovernance ?? stored?.workerGovernance;
-    if (local) {
-      return {
-        kind: "supervisor",
-        supervisor: {
-          id: local.supervisorAgentId,
-          labels: {},
-          config: { profileLaunch: { workers: [{ id: local.workerProfileId }] } },
-        },
-      };
-    }
+    if (stored?.workerGovernance) return workerSupervisor(stored.workerGovernance);
     const own = ownGovernance(current);
     if (own.kind === "supervisor") return own;
     const forwarded = current.forwardedGovernance ?? stored?.forwardedGovernance;
@@ -174,7 +166,7 @@ export async function governingSupervisor(
         },
         serverId: forwarded.serverId,
       };
-    const parentId: string | undefined = current.labels[PARENT_AGENT_ID_LABEL];
+    const parentId = governanceParentId(current, stored);
     if (!parentId) return { kind: "none" };
     if (visited.has(parentId)) return { kind: "unknown", why: "cycle" };
     visited.add(parentId);
@@ -189,6 +181,26 @@ export async function governingSupervisor(
     current = parent;
   }
   return { kind: "unknown", why: "depth-limit" };
+}
+
+function workerSupervisor(governance: ForwardedGovernance): FenceGovernance {
+  return {
+    kind: "supervisor",
+    supervisor: {
+      id: governance.supervisorAgentId,
+      labels: {},
+      config: { profileLaunch: { workers: [{ id: governance.workerProfileId }] } },
+    },
+  };
+}
+
+function governanceParentId(
+  agent: FenceAgent,
+  stored: FenceAgent | null | undefined,
+): string | undefined {
+  return (
+    stored?.createdByAgentId ?? agent.createdByAgentId ?? agent.labels?.[PARENT_AGENT_ID_LABEL]
+  );
 }
 
 /**
@@ -335,8 +347,12 @@ export async function checkPresetFence(
   let decision: FenceDecision | null;
   try {
     decision = await resolveFenceDecision(dependencies, path, callerAgentId, request);
-  } catch {
-    if (request.kind === "launch" && hasKnownTeamGovernance(dependencies, callerAgentId)) {
+  } catch (error) {
+    if (error instanceof WorkerLaunchRefusal) throw error;
+    if (
+      isProfileSwitch(path) ||
+      (request.kind === "launch" && hasKnownTeamGovernance(dependencies, callerAgentId))
+    ) {
       throw new WorkerLaunchRefusal(
         "Could not verify worker team authority. Retry after thread storage is available.",
         "worker-governance-unavailable",
@@ -360,6 +376,10 @@ export async function checkPresetFence(
   );
 }
 
+function isProfileSwitch(path: PresetFencePath): boolean {
+  return path === "switch_agent_profile" || path === "session_switch_agent_profile";
+}
+
 function hasKnownTeamGovernance(dependencies: FenceLookup, callerAgentId: string): boolean {
   let id: string | undefined = callerAgentId;
   for (let depth = 0; id && depth <= MAX_SUPERVISOR_DEPTH; depth += 1) {
@@ -368,7 +388,7 @@ function hasKnownTeamGovernance(dependencies: FenceLookup, callerAgentId: string
     if (!agent) return false;
     if (cached?.workerGovernance ?? agent.workerGovernance) return true;
     if (agent.config?.profileLaunch?.workers !== undefined) return true;
-    id = agent.labels?.[PARENT_AGENT_ID_LABEL];
+    id = governanceParentId(agent, cached);
   }
   return false;
 }
@@ -399,16 +419,37 @@ interface FenceDecision {
   team: boolean;
 }
 
+async function lookupFenceTarget(
+  dependencies: FenceLookup,
+  path: PresetFencePath,
+  request: PresetFenceRequest,
+): Promise<FenceAgent | null> {
+  if (request.kind !== "change") return null;
+  const target = await lookup(dependencies, request.targetAgentId);
+  if (isProfileSwitch(path)) {
+    if (!target)
+      throw new WorkerLaunchRefusal(
+        "Could not verify the switch target.",
+        "worker-governance-unavailable",
+      );
+    if (ownGovernance(target).kind === "supervisor")
+      throw new WorkerLaunchRefusal(
+        "Ask the owner to switch the governed supervisor's profile.",
+        "supervisor-profile-switch",
+      );
+  }
+  return target;
+}
+
 async function resolveFenceDecision(
   dependencies: FenceLookup,
   path: PresetFencePath,
   callerAgentId: string,
   request: PresetFenceRequest,
 ): Promise<FenceDecision | null> {
+  const target = await lookupFenceTarget(dependencies, path, request);
   const caller = await lookup(dependencies, callerAgentId);
   if (!caller) return null;
-  const target =
-    request.kind === "change" ? await lookup(dependencies, request.targetAgentId) : null;
   const governance = await governingSupervisor(caller, dependencies);
   const supervisor = governance.kind === "supervisor" ? governance.supervisor : null;
   const team = supervisor?.config?.profileLaunch?.workers !== undefined;

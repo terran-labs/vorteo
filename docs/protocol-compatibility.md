@@ -225,6 +225,10 @@ Restart recovery, edit guards and deletion guards recognize unfinished governed 
 
 The profile editor requires both `server_info.features.workerTeams` and the installation profile snapshot's `workerTeams` flag. The coordinator advertises support only when every environment understands teams. An older editor can omit `workerProfileIds` when saving an existing profile. The coordinator preserves the prior list in that case. An empty list explicitly clears the team. The legacy `workerProfileId` field remains available.
 
+A team-aware daemon treats an explicitly empty team as a prohibition on delegation. A nonempty team also saves its first member in the legacy worker slot. On rollback, a daemon that predates worker teams reads only that slot. For an empty team the slot is blank, so the older daemon treats the profile as an ordinary agent profile.
+
+Before rolling back, stop supervisors that rely on an empty team and pause any schedules or automation that could launch or resume them. Resume those threads and launchers after the daemon advertises `workerTeams` again.
+
 ## Shared provider removal
 
 Clients require `server_info.features.installationProviderRemoval === true` from each configured environment before removing a provider from the shared catalog. The optional `removed` marker preserves identity and credentials while disabling new launches.

@@ -3178,6 +3178,7 @@ describe("session checkout merge handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/base-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-to-base",
     });
     expect(github.invalidate).toHaveBeenCalledTimes(1);
@@ -3263,6 +3264,7 @@ describe("session checkout merge handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-from-base",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -3377,6 +3379,7 @@ diff --git a/file.txt b/file.txt
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledTimes(1);
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "commit-changes",
     });
     expect(checkoutDiffManager.scheduleRefreshForCwd).toHaveBeenCalledWith("/tmp/request-worktree");
@@ -3879,6 +3882,7 @@ diff --git a/file.txt b/file.txt
 
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "create-pr",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -3971,6 +3975,7 @@ describe("session checkout pull request merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-pr",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4107,6 +4112,7 @@ describe("session checkout pull request merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "merge-pr",
     });
     expect(messages).toContainEqual({
@@ -4247,6 +4253,7 @@ describe("session checkout pull request auto-merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "enable-pr-auto-merge",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4321,6 +4328,7 @@ describe("session checkout pull request auto-merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "disable-pr-auto-merge",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4570,6 +4578,7 @@ describe("session checkout pull and push handling", () => {
     expect(checkoutGitMocks.pullCurrentBranch).toHaveBeenCalledWith("/tmp/request-worktree");
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "pull",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4600,6 +4609,7 @@ describe("session checkout pull and push handling", () => {
     expect(checkoutGitMocks.pushCurrentBranch).toHaveBeenCalledWith("/tmp/request-worktree");
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       reason: "push",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
@@ -4637,6 +4647,7 @@ describe("session checkout refresh handling", () => {
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
+      afterInFlight: true,
       includeForge: true,
       reason: "manual-refresh",
     });
@@ -5110,6 +5121,7 @@ describe("session checkout switch branch handling", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "switch-branch",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/repo" });
@@ -5243,6 +5255,7 @@ describe("session checkout rename branch handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "rename-branch",
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/repo" });
@@ -5438,6 +5451,7 @@ describe("session stash mutation handling", () => {
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "stash-push",
     });
     expect(messages).toContainEqual({
@@ -5476,6 +5490,7 @@ describe("session stash mutation handling", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "stash-pop",
     });
     expect(messages).toContainEqual({
@@ -5517,12 +5532,14 @@ describe("session paseo worktree creation handling", () => {
 
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
+      afterInFlight: true,
       reason: "create-worktree",
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith(
       "/tmp/paseo/worktrees/new-worktree",
       {
         force: true,
+        afterInFlight: true,
         reason: "create-worktree",
       },
     );
@@ -6861,6 +6878,75 @@ test("only the owner's app can save the preset fence setting, and it waits for a
     expect(effectivePresetFencePolicy()).toBeUndefined();
   } finally {
     rmSync(paseoHome, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  {
+    name: "replace quota policy",
+    patch: { accountQuotaPolicy: { version: 1, ladder: {}, accounts: {} } },
+  },
+  { name: "clear quota policy", patch: { accountQuotaPolicy: null } },
+  {
+    name: "write automatic primary eligibility",
+    patch: { providers: { excluded: { automaticPrimary: true } } },
+  },
+  {
+    name: "remove a provider with automatic primary eligibility",
+    patch: { removeProviders: ["excluded"] },
+  },
+])("only the owner's app can $name through daemon config", async ({ patch }) => {
+  const config = {
+    mcp: { injectIntoAgents: false },
+    providers: { excluded: { automaticPrimary: false }, ordinary: {} },
+  };
+  const patchFromClient = vi.fn(async () => config);
+  const daemonConfigStore = { get: vi.fn(() => config), patchFromClient };
+  const messages: unknown[] = [];
+  const cli = createSessionForTest({ clientType: "cli", messages, daemonConfigStore });
+  const owner = createSessionForTest({ clientType: "browser", daemonConfigStore });
+  try {
+    const request: SessionInboundMessage = {
+      type: "set_daemon_config_request",
+      requestId: "protected-config",
+      config: { ...patch, autoArchiveAfterMerge: true },
+    };
+    await cli.handleMessage(request);
+    expect(patchFromClient).not.toHaveBeenCalled();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "rpc_error",
+        payload: expect.objectContaining({ requestId: request.requestId }),
+      }),
+    );
+    await owner.handleMessage(request);
+    expect(patchFromClient).toHaveBeenCalledExactlyOnceWith(request.config);
+  } finally {
+    await cli.cleanup();
+    await owner.cleanup();
+  }
+});
+
+test("ordinary provider config patches still reach the daemon config store", async () => {
+  const config = {
+    mcp: { injectIntoAgents: false },
+    providers: { excluded: { automaticPrimary: false }, ordinary: {} },
+  };
+  const patchFromClient = vi.fn(async () => config);
+  const cli = createSessionForTest({
+    clientType: "cli",
+    daemonConfigStore: { get: vi.fn(() => config), patchFromClient },
+  });
+  try {
+    const patch = { providers: { excluded: { enabled: false } }, removeProviders: ["ordinary"] };
+    await cli.handleMessage({
+      type: "set_daemon_config_request",
+      requestId: "ordinary-config",
+      config: patch,
+    });
+    expect(patchFromClient).toHaveBeenCalledExactlyOnceWith(patch);
+  } finally {
+    await cli.cleanup();
   }
 });
 

@@ -44,25 +44,36 @@ function shouldUseWindowsShell(
   return process.platform === "win32" && !hasPathSeparator(command) && !extname(command);
 }
 
+export interface SpawnProcessOptions extends SpawnOptions {
+  /** Start `[...wrap, command, ...args]`: the wrap's executable runs the command. */
+  wrap?: readonly [string, ...string[]];
+}
+
 /** Launch a CLI with Windows command-script handling and argv quoting. The caller owns env. */
 export function spawnProcess(
   command: string,
   args: string[],
-  options: SpawnOptions & { stdio: "pipe" },
+  options: SpawnProcessOptions & { stdio: "pipe" },
 ): ChildProcessWithoutNullStreams;
-export function spawnProcess(command: string, args: string[], options?: SpawnOptions): ChildProcess;
 export function spawnProcess(
   command: string,
   args: string[],
-  options?: SpawnOptions,
+  options?: SpawnProcessOptions,
+): ChildProcess;
+export function spawnProcess(
+  command: string,
+  args: string[],
+  options?: SpawnProcessOptions,
 ): ChildProcess {
-  const spawnOptions = options ?? {};
+  const { wrap, ...spawnOptions } = options ?? {};
+  const targetCommand = wrap ? wrap[0] : command;
+  const targetArgs = wrap ? [...wrap.slice(1), command, ...args] : args;
   const isWindows = process.platform === "win32";
-  const shell = shouldUseWindowsShell(command, spawnOptions.shell);
+  const shell = shouldUseWindowsShell(targetCommand, wrap ? false : spawnOptions.shell);
 
   const shouldQuoteForShell = isWindows && shell !== false;
-  const resolvedCommand = shouldQuoteForShell ? quoteWindowsCommand(command) : command;
-  const resolvedArgs = shouldQuoteForShell ? args.map(quoteWindowsArgument) : args;
+  const resolvedCommand = shouldQuoteForShell ? quoteWindowsCommand(targetCommand) : targetCommand;
+  const resolvedArgs = shouldQuoteForShell ? targetArgs.map(quoteWindowsArgument) : targetArgs;
 
   return spawn(resolvedCommand, resolvedArgs, {
     ...spawnOptions,

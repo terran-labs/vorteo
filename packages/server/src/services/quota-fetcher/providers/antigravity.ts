@@ -24,6 +24,76 @@ const NO_QUOTA_PATTERN =
   /\b(?:no\s+account\s+quota|has\s+no\s+account\s+quota|no\s+usage\s+quota)\b/i;
 const UNKNOWN_FLAG_PATTERN = /flag provided but not defined|unknown flag/i;
 
+// Global agy flags that consume the following token as a value (from `agy --help`).
+const AGY_VALUE_FLAGS = new Set([
+  "--add-dir",
+  "--agent",
+  "--conversation",
+  "-r",
+  "--resume",
+  "--effort",
+  "--input-format",
+  "--json-schema",
+  "--log-file",
+  "--mode",
+  "--model",
+  "--output-format",
+  "-p",
+  "--print",
+  "--prompt",
+  "-i",
+  "--prompt-interactive",
+  "--print-timeout",
+  "--project",
+  "--settings",
+]);
+
+// `agy acp` flags that consume the following token as a value (from `agy acp --help`).
+const AGY_ACP_VALUE_FLAGS = new Set([
+  "--add-dir",
+  "--agent",
+  "--app-data-dir",
+  "--app_data_dir",
+  "--cli_dir_name",
+  "--cli_log_file",
+  "--cloud_code_endpoint",
+  "--gemini-dir",
+  "--gemini_dir",
+  "--ide-mcp-port",
+  "--ide_mcp_port",
+  "--log-file",
+  "--override_user_agent_name",
+]);
+
+function isTrailingSubcommandArgs(tail: readonly string[]): boolean {
+  for (let index = 0; index < tail.length; index += 1) {
+    const token = tail[index]!;
+    if (token === "--" || !token.startsWith("-")) return false;
+    if (!token.includes("=") && AGY_ACP_VALUE_FLAGS.has(token)) {
+      if (index + 1 >= tail.length) return false;
+      index += 1;
+    }
+  }
+  return true;
+}
+
+function stripAcpSubcommand(args: readonly string[]): string[] {
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index]!;
+    if (token === "--") break;
+    if (token === "acp" && isTrailingSubcommandArgs(args.slice(index + 1))) {
+      return args.slice(0, index);
+    }
+    if (!token.includes("=") && AGY_VALUE_FLAGS.has(token)) {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return [...args];
+}
+
 const AntigravityQuotaBucketSchema = z.object({
   id: z.string().optional(),
   name: z.string().optional(),
@@ -412,7 +482,7 @@ export class AntigravityQuotaProvider implements ProviderUsageFetcher {
     this.minPollIntervalMs = options.minPollIntervalMs ?? ANTIGRAVITY_MIN_POLL_INTERVAL_MS;
     const configuredCommand = options.command;
     this.command = configuredCommand?.[0] ?? "agy";
-    this.prefixArgs = configuredCommand?.slice(1) ?? [];
+    this.prefixArgs = stripAcpSubcommand(configuredCommand?.slice(1) ?? []);
     this.env = options.env;
     this.cwd = options.cwd ?? tmpdir();
     this.timeoutMs = options.timeoutMs ?? ANTIGRAVITY_USAGE_TIMEOUT_MS;

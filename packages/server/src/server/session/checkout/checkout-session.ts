@@ -488,8 +488,11 @@ export class CheckoutSession {
 
     try {
       (await this.resolveForgeService(resolvedCwd))?.service.invalidate({ cwd: resolvedCwd });
+      // A refresh asked for after a checkout must read after any refresh already running, such
+      // as the one that opening a project starts; joining it would return the old branch.
       await this.workspaceGitService.getSnapshot(resolvedCwd, {
         force: true,
+        afterInFlight: true,
         includeForge: true,
         reason: "manual-refresh",
       });

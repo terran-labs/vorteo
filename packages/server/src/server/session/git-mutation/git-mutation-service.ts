@@ -81,7 +81,8 @@ export function createGitMutationService(deps: {
       workspaceGitService.invalidateForge(cwd);
     }
     try {
-      await workspaceGitService.getSnapshot(cwd, { force: true, reason });
+      // A mutation must report its own result, not join a read that started before it.
+      await workspaceGitService.getSnapshot(cwd, { force: true, afterInFlight: true, reason });
     } catch (error) {
       logger.warn(
         { err: error, cwd, reason },

@@ -423,7 +423,15 @@ describe("CheckoutSession", () => {
       });
 
       expect(snapshotCalls).toEqual([
-        { cwd: "/repo", options: { force: true, includeForge: true, reason: "manual-refresh" } },
+        {
+          cwd: "/repo",
+          options: {
+            force: true,
+            afterInFlight: true,
+            includeForge: true,
+            reason: "manual-refresh",
+          },
+        },
       ]);
       expect(refreshedCwds).toEqual(["/repo"]);
       expect(emitted).toEqual([

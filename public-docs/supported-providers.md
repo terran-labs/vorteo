@@ -23,32 +23,26 @@ Work out of the box once the underlying CLI is installed and authenticated.
 
 ### Antigravity
 
-Install the Antigravity CLI (`agy`) on your daemon host, then run `agy` once to sign in. Pick
-**Antigravity** in Paseo. The provider ships with Paseo; no separate plugin install is required.
+Install the Antigravity CLI (`agy` 1.5.1 or newer) on your daemon host, then run `agy` once to sign
+in. Pick **Antigravity** in Vorteo. The provider ships with Vorteo; no separate plugin install is
+required.
 
-**Full access** is the only permission mode. Antigravity cannot ask for permission when another
-app drives it, so Paseo starts `agy` with `--dangerously-skip-permissions`. Every tool call,
-including shell commands, runs without asking. Each session starts with a warning explaining
-this, including when you reopen a chat. Antigravity's own policy can still deny
-an action.
-
-After a daemon restart, Antigravity remembers the conversation, but Paseo's transcript starts
-fresh because `agy` does not replay its history.
+Vorteo runs `agy acp`, which supports interactive permission modes, Vorteo MCP tools (checklists,
+notes, subagents, schedules), session history replay, per-model thinking levels, and attached
+images. Existing Antigravity sessions continue to resume across upgrades.
 
 This integration uses your installed CLI and sign-in. It is not endorsed by Google.
 
-Paseo MCP tools and steering are unavailable. Your own `agy` MCP servers still work. Attached
-images are passed as file references for the agent to read.
-
-If `agy` is outside your daemon's PATH, override its command in `~/.paseo/config.json`. Use `env`
-for provider-specific environment variables:
+Vorteo checks your daemon's `PATH` and common POSIX user bin folders such as `~/.local/bin`. If
+`agy` lives somewhere else, override its command in `~/.paseo/config.json` (include `"acp"` as the
+subcommand). Use `env` for provider-specific environment variables:
 
 ```json
 {
   "agents": {
     "providers": {
       "antigravity": {
-        "command": ["/absolute/path/to/agy"],
+        "command": ["/absolute/path/to/agy", "acp"],
         "env": { "EXAMPLE_VARIABLE": "value" }
       }
     }

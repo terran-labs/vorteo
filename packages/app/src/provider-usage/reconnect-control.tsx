@@ -15,9 +15,19 @@ import { ActionFooter } from "@/components/ui/action-footer";
 import { CompactAccountButton } from "./compact-account-button";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 
+import type { GetProvidersSnapshotResponseMessage } from "@getpaseo/protocol/messages";
+import {
+  providersSnapshotQueryKey,
+  refreshAndApplyProvidersSnapshot,
+} from "@/data/providers-snapshot";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
-import { accountProviderKind, providerConnectionAction } from "./connection-action";
+import {
+  accountProviderKind,
+  providerConnectionAction,
+  resolveReconnectRecovery,
+} from "./connection-action";
+import { providerInstallHint } from "@/screens/settings/shared-providers-model";
 import { providerUsageQueryKey } from "./use-provider-usage";
 import { retainLastKnownUsage } from "./usage-cache";
 import type { ProviderUsage, ProviderUsageListPayload } from "./types";
@@ -61,7 +71,11 @@ export function ProviderReconnectControl({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
-  const { claude, shared, action } = useConnectionAction(serverId, providerId, usage);
+  const { accountKind, claude, shared, action, snapshotEntry } = useConnectionAction(
+    serverId,
+    providerId,
+    usage,
+  );
   // Opening snapshots the recovery method and title, so a reconnect that succeeds mid-dialog
   // cannot swap the body or rename the open dialog.
   const [opened, setOpened] = useState<{
@@ -80,6 +94,7 @@ export function ProviderReconnectControl({
   const liveTitle = action ? `${action} ${name}` : `${name} connection`;
   const title = opened?.title ?? liveTitle;
   const header = useMemo(() => ({ title }), [title]);
+  const fallbackInstructions = snapshotEntry?.error ?? providerInstallHint(providerId);
   const { controlled, open, close } = useDialogSession({
     openProp,
     onOpenChange,
@@ -88,10 +103,14 @@ export function ProviderReconnectControl({
     begin: useCallback(() => {
       setUsed(true);
       setOpened({
-        recovery: usage?.authRecovery ?? { method: "device_code", instructions: "" },
+        recovery: resolveReconnectRecovery({
+          accountKind,
+          authRecovery: usage?.authRecovery,
+          fallbackInstructions,
+        }),
         title: liveTitle,
       });
-    }, [usage?.authRecovery, liveTitle]),
+    }, [usage?.authRecovery, accountKind, fallbackInstructions, liveTitle]),
     end: useCallback(() => setOpened(null), []),
   });
 
@@ -127,18 +146,21 @@ export function ProviderReconnectControl({
           footer={modalFooter1}
         >
           <View style={styles.body}>
-            {opened.recovery.method === "device_code" || claude || shared ? (
+            {accountKind !== null &&
+            (opened.recovery.method === "device_code" || claude || shared) ? (
               <ProviderLoginPanel
                 serverId={serverId}
                 providerId={providerId}
                 name={name}
-                provider={claude ? "claude" : "codex"}
+                provider={accountKind}
                 onOutcome={reportOutcome}
                 statusId={statusId}
               />
             ) : (
               <ManualRecovery
                 serverId={serverId}
+                providerId={providerId}
+                name={name}
                 usage={usage}
                 instructions={opened.recovery.instructions}
                 outcome={outcome}
@@ -211,12 +233,16 @@ function useDialogSession({
  */
 function ManualRecovery({
   serverId,
+  providerId,
+  name,
   usage,
   instructions,
   outcome,
   statusId,
 }: {
   serverId: string | null;
+  providerId: string;
+  name: string;
   usage: ProviderUsage | undefined;
   instructions: string;
   outcome: { current: Exclude<ConnectionOutcome, "cancelled"> | null };
@@ -228,41 +254,78 @@ function ManualRecovery({
   const [check, setCheck] = useState<CheckState>({ kind: "idle" });
   const pending = check.kind === "pending";
   const checkConnection = useCallback(async () => {
-    if (!client || !connected || !usage || pending) return;
+    if (!client || !connected || pending) return;
     setCheck({ kind: "pending" });
     try {
-      const payload = await client.listProviderUsage({ forceRefresh: true });
-      const account = payload.providers.find((entry) => entry.providerId === usage.providerId);
-      const key = providerUsageQueryKey(serverId);
-      cache.setQueryData(
-        key,
-        retainLastKnownUsage(payload, cache.getQueryData<ProviderUsageListPayload>(key)),
-      );
-      let result: CheckState = {
-        kind: "result",
-        tone: "error",
-        message: "Could not verify the connection. Try again shortly.",
-      };
-      outcome.current = "failed";
-      if (account?.authRecovery)
-        result = {
+      if (usage) {
+        const payload = await client.listProviderUsage({ forceRefresh: true });
+        const account = payload.providers.find((entry) => entry.providerId === usage.providerId);
+        const key = providerUsageQueryKey(serverId);
+        cache.setQueryData(
+          key,
+          retainLastKnownUsage(payload, cache.getQueryData<ProviderUsageListPayload>(key)),
+        );
+        let result: CheckState = {
           kind: "result",
           tone: "error",
-          message: "Still signed out. Finish the steps below, then check again.",
+          message: "Could not verify the connection. Try again shortly.",
         };
-      else if (account?.status === "available") {
-        result = { kind: "result", tone: "success", message: "Connected" };
-        outcome.current = "connected";
+        outcome.current = "failed";
+        if (account?.authRecovery)
+          result = {
+            kind: "result",
+            tone: "error",
+            message: "Still signed out. Finish the steps below, then check again.",
+          };
+        else if (account?.status === "available") {
+          result = { kind: "result", tone: "success", message: "Connected" };
+          outcome.current = "connected";
+        }
+        setCheck(result);
+        return;
       }
-      setCheck(result);
+      if (!serverId || !providerId) {
+        outcome.current = "failed";
+        setCheck({
+          kind: "result",
+          tone: "error",
+          message: `${name} is unavailable on this host.`,
+        });
+        return;
+      }
+      await refreshAndApplyProvidersSnapshot({
+        client,
+        queryClient: cache,
+        serverId,
+        cwd: null,
+        providers: [providerId],
+      });
+      const snapshot = cache.getQueryData<GetProvidersSnapshotResponseMessage["payload"]>(
+        providersSnapshotQueryKey(serverId, null),
+      );
+      const entry = snapshot?.entries.find((item) => item.provider === providerId);
+      if (entry?.status === "ready") {
+        outcome.current = "connected";
+        setCheck({ kind: "result", tone: "success", message: `${name} is ready.` });
+      } else {
+        outcome.current = "failed";
+        setCheck({
+          kind: "result",
+          tone: "error",
+          message: entry?.error ?? `${name} is unavailable on this host.`,
+        });
+      }
     } catch {
       outcome.current = "failed";
       setCheck({ kind: "result", tone: "error", message: "Could not reach the host. Try again." });
     }
-  }, [client, connected, usage, pending, cache, serverId, outcome]);
+  }, [client, connected, usage, pending, cache, serverId, outcome, providerId, name]);
   return (
     <>
-      <StatusLine status={manualCheckStatus(connected, check)} nativeID={statusId} />
+      <StatusLine
+        status={manualCheckStatus(connected, check, name, Boolean(usage))}
+        nativeID={statusId}
+      />
       <Text selectable style={styles.text}>
         {instructions}
       </Text>
@@ -274,7 +337,7 @@ function ManualRecovery({
           focusableWhenDisabled
           onPress={checkConnection}
         >
-          Check connection
+          {`Check ${name}`}
         </Button>
       </ActionFooter>
     </>
@@ -289,15 +352,18 @@ function useConnectionAction(
 ) {
   const { config } = useDaemonConfig(serverId);
   const { entries } = useProvidersSnapshot(serverId);
-  const claude = accountProviderKind(providerId, config?.providers) === "claude";
+  const accountKind = accountProviderKind(providerId, config?.providers);
+  const claude = accountKind === "claude";
+  const codex = accountKind === "codex";
+  const snapshotEntry = entries?.find((entry) => entry.provider === providerId);
   // Installation accounts always offer their connection panel, which shows Dev synchronization.
   const installationSignIn = useSharedInstallationSignIn(
-    serverId,
+    accountKind ? serverId : null,
     claude ? "claude" : "codex",
-    providerId,
+    accountKind ? providerId : undefined,
   );
   // A legacy Codex account the coordinator could adopt offers the panel that adopts it.
-  const adoptable = useCodexAdoptionOffered(claude ? null : serverId, providerId);
+  const adoptable = useCodexAdoptionOffered(codex ? serverId : null, providerId);
   const shared = installationSignIn || adoptable;
   // The coordinator knows when a named Claude account's Host grant is gone, even while its last
   // usage reading still looks fine.
@@ -308,9 +374,9 @@ function useConnectionAction(
         providerId,
         providers: config?.providers,
         usage,
-        snapshot: entries?.find((entry) => entry.provider === providerId),
+        snapshot: snapshotEntry,
       });
-  return { claude, shared, action };
+  return { accountKind, claude, shared, action, snapshotEntry };
 }
 
 function ConnectionButton({
@@ -351,14 +417,21 @@ function ConnectionButton({
   );
 }
 
-function manualCheckStatus(connected: boolean, check: CheckState): ConnectionStatus {
+function manualCheckStatus(
+  connected: boolean,
+  check: CheckState,
+  name: string,
+  hasUsage: boolean,
+): ConnectionStatus {
   if (!connected)
     return { tone: "error", text: "Connection to the host lost. Reconnect to check this account." };
-  if (check.kind === "pending") return { tone: "busy", text: "Checking the connection..." };
+  if (check.kind === "pending") return { tone: "busy", text: `Checking ${name}...` };
   if (check.kind === "result") return { tone: check.tone, text: check.message };
   return {
     tone: "error",
-    text: "Sign-in was rejected. Follow these steps, then check the connection.",
+    text: hasUsage
+      ? "Sign-in was rejected. Follow these steps, then check the connection."
+      : `${name} is unavailable on this host. Follow the steps below, then check again.`,
   };
 }
 

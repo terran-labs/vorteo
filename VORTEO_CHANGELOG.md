@@ -8,125 +8,279 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
-## Unreleased - 2026-11-28
+## 26.11.2700 - 2026-11-27
 
 ### Maintenance
 
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-27
+- Prepare release 26.11.2700 with Antigravity ACP integration, dictation recovery tools, worker teams, Factory intake safeguards and branch refresh repairs.
 
 ### Maintenance
 
-- Combine 1 source contributions; retain their release notes below
+- A workspace Git service test no longer fails at random when its first idle repository refresh lands just after a regular fetch.
+- The usage sources integration test checks each field of the legacy provider usage response exactly, instead of the whole object, so the optional `automaticPrimary` field added in #669 no longer fails it.
+- Prepared an inactive `factory-review` commit status for the Factory's independent review (#311, part of #252). It decides success only for an approval of a pull request's exact head from that issue's reviewer on a known account its lead and worker do not use, posts idempotently and refuses without writing when the App credential is missing or malformed. Nothing calls it yet, no GitHub App exists and no status is posted.
+- The preview broker and monitor review browser tests open In progress for approved and running requests, and History for a succeeded result, now that only requests waiting on the owner stay open (#656).
+- The broker and monitor review browser tests open In progress only for approved and running requests and check each card's section, so a waiting card filed under In progress fails (#656).
+- The health dismissal store test makes a save fail with a store directory that is a regular file. A read-only directory did not, because the atomic writer restores the directory's permissions first (#639).
+- The names on decided-request lines are constants, so the settings catalog coverage test does not read them as settings rows (#656).
+- Request card status badges no longer read as settings rows in the catalog coverage test.
+- Cover System Health's Fix targets and counting rule: a browser case per request card checks that each Health row's Fix lands on its card with an enabled control at phone width, a case table checks which failures still count, and the Health list test checks that a locked card asks to unlock and drops the Fix on cancel (#639).
+- Moved the Host Codex refresh lease from the previous change out of the generic server bootstrap: the installation account consumers now create it from a provider-neutral session activity callback and return a neutral start hold to the agent manager. The bootstrap names no provider again, as its architecture test requires, and the circular type inference that broke the `tsc` server build is gone. No behavior change (#563).
+- Narrowed the Host Codex refresh lease from the previous change before release: an idle loaded Host session no longer blocks coordinator refreshes, which would have left Dev's projection to expire. The lease now refuses only while a session starts or runs a turn, and the coordinator leaves the token's last ten minutes to a loaded session. Codex starts before the lease, and a refresh is stopped before the lease ends (#563).
+- Added the coordinator machinery to adopt a legacy Codex account in place (#563, slice 1). Dev keeps its binding, `CODEX_HOME` and thread history; the coordinator projects the Host's access-only grant into that home, and the Host becomes its only refresh writer. Nothing can start an adoption yet: `adopt` and `unadopt` are runtime methods with no owner route, daemon RPC, tool or CLI. The owner selected Codex 1, 2 and 3 on November 24, 2026; Codex 1 is adopted alone first and Codex 3 waits for the owner's confirmation.
+- Adoption verifies the Host from its `auth.json` alone and starts no Codex process, refuses while a Dev session uses the account, pins the Dev home by real path, device and inode with no symbolic links, and refuses two bindings that share one directory. The Dev writer replaces only a same-account sign-in or a projection it wrote itself, re-sends the projection every reconcile and reports when it replaced a Dev refresh, and saves the replaced sign-in for un-adopt under the `codexAdoptionRetention` rule (default `until-unadopt`).
+- Un-adopt withdraws only its own projection and restores the saved sign-in untested, marked as possibly needing a new sign-in. It never runs `codex logout`. A manual Dev rebind cancels an adoption without touching the home; a changed home stops deliveries until the owner confirms again.
+- The coordinator now refreshes a Host Codex account only under a lease from the Host daemon, refused while a session on that account is starting or running a turn and ended by the daemon after 30 seconds. New sessions on the account wait for the lease, never longer than that; turns on loaded sessions are not held. With an idle session loaded, the coordinator leaves the token's last ten minutes to it. Codex starts before the lease is taken, and a refresh that outruns the lease is stopped and counted as skipped. Without a lease it projects what the Host's own Codex wrote. Daemons advertise `codexAccountAdoption`.
+- The Codex sign-out control, which runs `codex logout` on the Host and so revokes the sign-in everywhere, is labelled "Sign out on every environment" and asks for confirmation.
+- Legacy Codex adoption follow-ups before release (#563):
+  - Dev's saved sign-in is deleted on schedule in every adoption state, also after a cancel, a failure or a changed Dev folder. Before, retention ran only while an account stayed adopted, so a stopped adoption kept the copy forever.
+  - Un-adopting a cancelled, failed or confirmation-pending adoption records that Dev's earlier sign-in was not put back, so the app can say so.
+  - Re-sending the Host's copy to Dev, which repairs a Dev refresh that overwrote it, keeps running while Host refreshes fail, without spending refresh retries.
+- Review fixes for legacy Codex adoption before release (#563):
+  - A Dev sign-in is replaced only when it names the same person as the Host's, not just the same ChatGPT workspace. Codex's account ID is the workspace, which every member of a Team workspace shares. Host verification refuses a sign-in that names no person. This also applies to managed Codex homes.
+  - The coordinator reads the Host's credential file before it starts Codex for a refresh. With six minutes or less left on the access token, when Codex could refresh on its own as soon as it is asked anything, it starts Codex only under the Host lease, or not at all.
+  - Dev's shared-folder and idle checks now resolve every Codex provider's home the way a launch does, so the built-in Codex provider's default `~/.codex`, Dev's own `CODEX_HOME` and homes inherited through `extends` count. Before, only providers with their own `CODEX_HOME` counted, so adoption could write into a folder another provider's running session was using.
+  - Against a Host daemon from before the refresh lease, which has no lease route, the coordinator refreshes managed Codex accounts without a lease as it did before, and logs a warning. Previously it would silently have stopped renewing them until the Host was updated. An adopted account on such a Host records a visible refresh failure.
+  - Dev's saved copy of the sign-in an adoption replaced is deleted 7 days after the adoption is proven, and 30 days after the first copy regardless, by default. This is the owner's rule; before, the default kept it until un-adopt.
+  - A first copy Dev refuses fails the adoption and now also stops its refresher, which had kept trying to renew the account and recording a failure on every check.
+- Owner routes `adoptions`, `adopt` and `unadopt` under `/api/installation/owner/codex/signin` list legacy Codex accounts with whether they can be adopted, and start or end one adoption at a time. Replies carry no account ID, email, token, provider ID or Dev path, and refusals answer 409 with their plain reason. Dev's daemon routes still cannot start an adoption.
+- The Codex sign-in read keeps answering for a legacy account in every adoption state, so a failure or cancellation while the dialog polls no longer breaks it. Sign-in, refresh and delivery checks are unchanged.
+- A Host re-sign-in as a different person, from the app or a shell, no longer reaches an adopted Dev account. Setup records a one-way digest of the verified workspace and person, every copy sent to Dev must match it, and a mismatch waits for the owner to confirm, which checks Dev's sessions and folder again.
+- When a switch fails because of the Host's own sign-in for that account (signed out, cannot renew, not a ChatGPT sign-in, or no named user), the section offers "Sign in on the Host". It opens that account's Host device-code sign-in, already started, from either environment's dialog. After a successful sign-in the section reads the account again and offers Try again, which still asks for confirmation.
+- Confirming an adoption again no longer restarts the 30-day limit on Dev's saved sign-in, also when the confirmation fails and is retried, and the message about a different person says that stopping later still puts back the original Dev sign-in.
+- A change of Host person can only go through on the different-person confirmation, also after a failed retry, and the original person signing back in is not treated as a different one.
+- Each Dev folder an account was switched into keeps its own backup clock, so a backup saved in a second folder after a re-switch is also deleted at its 30-day cap. Undo stops tracking a folder's backup only when it actually put that backup back.
+- A failure inside the adoption section renders nothing and is logged, so the Codex sign-in panel always keeps working.
+- When the saved sign-in on Dev cannot be deleted after the 30-day cap, the account says so with the reason.
+- Recovery reads that fail while Host refreshes are failing no longer count as failures, so they cannot push the next scheduled refresh further out. This applies to Claude accounts too.
+- Refusal reasons the owner reads now say what to do or wait for, without internal terms.
+- The browser demo adds a legacy Codex account whose adoption walks the real states.
+- The Unistyles lifecycle browser test reads the stylesheet after an unmount on the next animation frame instead of exactly two microtasks later. Batched stylesheet rebuilds (#609) drop a removed rule one microtask later, which left the old read with no margin; a frame is what a user would observe.
+- A unit test counts stylesheet rebuilds per emitted theme change and fails without the batching, including when a subscriber throws.
+- The re-link test's "unreadable registry" case puts a directory where the registry file was, so the read fails on every platform. It used chmod 0o000, which on Windows only sets the read-only flag and leaves the file readable, and which root can read anyway (#587).
+- The launcher gives each service terminal a launch marker (workspace, script, port, route project slug and branch, script config hash, random nonce) that the terminal worker keeps and lists on adoption; terminal creation from the app and agents cannot set it. The daemon keeps an owner-only record of running services, `workspace-script-terminals.json`, holding only terminal ids, nonces and worker identities. A recorded service is re-linked or stopped only when the worker proves the launch. It is stopped only when the workspace registry read cleanly and reports the workspace archived or absent; a registry read or parse failure stops nothing. A re-linked route keeps its hostname: the branch comes from git as at launch, or from the launch when git cannot say within a second. Startup waits at most 3 seconds. Stop takes a service out of the record before killing it (#587).
+- The preview broker, with restore-after-restart on, accepts a running service after a daemon restart when it is the terminal and backend it last verified; it still requires the same listener process and still refuses any other running service (#587).
+- The preview broker records why it stopped a preview: an explicit stop, its server ending under the same daemon worker, a daemon restart with the restart time, a configuration or process change, or an unavailable workspace. A restart is named only when the new daemon worker started within one broker cycle (30 seconds) of the last verification under the old one; otherwise no cause is recorded. Each broker run writes every reservation's state to `preview-status.json` in the owner-only preview channel, with the time it was published and when each entry was last rechecked. Errors in it are the broker's fixed messages or an exception type name. Nothing shows these yet (#586).
+- A preview restart outcome, `preview.restart`, now names the request it belongs to in an optional `mode` field (`"start"`, `"restart"` or `"stop"`), so the app can say a stop failed instead of showing a failed start (#586).
+- Stopping a preview through the broker is no longer refused because the preview needs review, its workspace is archived or three starts are already running. Stopping is always safe, and before this the owner could be unable to stop anything for about two and a half minutes. A stop still needs the daemon password and waits for any request already running for that preview (#586).
+- When two previews claim the same reserved origin, in one workspace or across workspaces, the daemon leaves that origin out of `preview.origin` for every claimant, so a forged or stale reservation file cannot make a Previews gallery link match the wrong preview. A running preview's working link still comes from its own file, so a duplicate costs only the gallery match. The requesting workspace's files are read fresh, and other workspaces come from an index rebuilt at most once per 5 second status poll, or sooner when a file is added or removed, with one shared read of at most 128 files. When the directory holds more files than that or cannot be listed, no origin is matchable (#586).
+- The daemon advertises `previewStopOutcome` beside `previewStop`, saying every preview restart outcome names its mode. Apps send broker stops only with both, because a daemon released between the two reports a failed stop like a failed start (#586).
+- Behind `previewStop`, the scripts menu's Stop for a reserved preview goes through the preview broker so the stop records as explicit; otherwise it ends the terminal as before.
+- Behind the new `previewStop` capability, `workspace.script.restart_preview.request` accepts mode `"stop"`: the daemon asks the preview broker to stop the preview, under the same password check, refusals and concurrency limits as a start, so an owner's stop records as an explicit stop. Every reserved service's `preview` now carries `origin`, the broker's reserved HTTPS origin, stopped or running, so the Previews gallery can match a stopped preview's link. A refusal for the restart limits now has its own code, `capacity`, apart from `busy` for a preview already in flight (#586).
+- The bounded reader for the preview broker's files checks each path with `lstat` first and refuses links, junctions and anything that is not a regular file on every platform, then confirms the opened file is the one it checked. Windows has no `O_NOFOLLOW`, so a link there was followed before. This matches the preset fence policy reader (#595).
+- Workspace script status carries an optional `preview` state for services the preview broker has reserved: ready, not responding, starting or stopped, with the broker's recorded cause and times and whether the state is stale. The daemon re-sends script status when the broker's published state changes (#586).
+- New `workspace.script.restart_preview.request`, gated by `previewRestart`, starts or restarts a managed preview through the broker so its link stays the same. Only sessions that signed in with the daemon password may use it; the local credential, service, plugin and password-less sessions are refused. The client SDK adds `restartWorkspaceScriptPreview`. The app does not use it yet (#586).
+- Sessions record how they were admitted (password, local credential, service, plugin or no password configured), from transport admission only, per socket, so a socket that resumes the owner app's session keeps its own weaker kind.
+- The broker's reservation, status and receipt files are read with bounded, non-blocking reads that refuse links and anything but a regular file, so a FIFO or device planted in Dev's agent-writable channel cannot stall the daemon. The reservation lookup is no longer synchronous.
+- When a Host agent creates a thread on a connected Dev, the Host now sends who governs the caller: the nearest supervisor with a worker preset, its server and that preset. Dev stores it once on the new thread's record, which no snapshot, import, label edit or later create can set, clear or replace, and the preset fence reads it before the parent label. A Dev worker's launch off that preset is now logged as `preset-required` with `governance: forwarded` and the supervisor's server, instead of `parent-remote`. Still report-only; nothing with a remote parent is refused (#360).
+- Dev decides from the socket that sent the create, not the session: a session can hold a host-link socket and an ordinary one at once, and only the host-link socket's creates may carry governance. A failure to store it is logged and never fails the create (#360).
+- Dev accepts the value only from a session that arrived through a host-link channel, with no calling agent, naming another server that matches both the link's producer and the new thread's parent label. Anything else is dropped with a "Forwarded governance ignored" warning and the create proceeds unchanged. Daemons that store it advertise `forwardedGovernance`; the Host sends it only to those. Older Dev daemons strip the field and keep logging `parent-remote` (#360).
+- Test that forwarded governance survives the `agent.create.request` path the Host actually uses, from a host-link socket through the creation service to admission. Dropping the sending socket at any hop now fails the test (#360).
+- The preset fence reports why a parent chain cannot be followed (`parent-remote`, `parent-unresolved`, `cycle`, `depth-limit`), reports permission-mode changes separately as `mode-change`, tags Factory role chains `factory-role-unverified` without exempting them, and covers `paseo agent switch-profile` when the CLI names its calling agent (#360).
+- `paseo.lead-launch-id`, `paseo.lead-requested-by` and `vorteo.factory-role` can no longer be set by agent tool calls or by session requests from non-app clients; only daemon code sets them (#360).
+- The terminal worker test for a worker from a newer Paseo now waits for that worker's process to disappear after a closing stop, instead of checking once. This brings in upstream Paseo's fix (#9290) for a test that failed once in CI (#624).
+- The Dev image installs Codex 0.167.2 instead of 0.153.4, matching the version Builds installed in Dev on November 23, so a rebuilt image does not ship an older CLI. Which Codex the Dev daemon runs is set by its configured provider command, not by the image.
+- The app test run no longer hangs after every test passes. Vitest shuts down the browser tests' fixture server before it closes Chromium, and the server waited for connections Chromium still held, so the job sat silent until its 30 minute CI limit (#609). The fixture now ends held responses and closes those connections.
+- Agent paths that could start or reshape a coordinator's threads outside its worker preset, from the coordinator or any thread beneath it, including while the coordinator is idle or closed (local, remote and CLI creates, `update_agent`, `set_agent_mode`, `send_agent_prompt` with a mode, `switch_agent_profile` and agent schedule tools) now log "Preset fence would refuse" with the path, reason and thread IDs. Nothing is refused yet; enforcement follows a day of installed logs (#360).
 
-## Unreleased - 2026-11-27
+### Features
 
-### Maintenance
+- Installation owners can choose worker presets from several providers for a supervisor. The daemon chooses a permitted account using each account's lowest remaining quota window and the owner's quota floors. The supervisor can reopen a worker from its saved history after a provider reports a usage limit.
+- Settings > System shows only what waits on the owner (#656). In Host and Dev Details, approvals the owner must give, failures that still count and recoveries to reconcile stay open with their one action. Work in progress folds into "In progress (N)", unattended maintenance into "Maintenance", finished requests from every queue into "History (N)", and transport, version, process and commits into "Diagnostics". A Fix or deep link still opens the section that holds its card.
+- A restart that another agent handles, or that the installation's recorded policy will approve, shows one plain line ("Being handled by …", "Preparing; it will be approved automatically") with its reason behind Show reason, and no Approve button. Without recorded policy fields a request waits on the owner and Approve shows.
+- Open Dashboard above All Factories to see hourly project, workspace and usage measurements, with optional GitHub, Brevo and Syn3h reporting.
+- System threads no longer wait for you to choose a primary connection (#657). Automatic is now the default: the Optimizer and Factory start on the ready, signed-in account with the most usage left, and stay on it while it can run them. A connection you choose is never overridden. Providers shows which account Automatic uses now in each environment, the owner can keep each connection out of Automatic, and Health shows one row only when no account can run system threads.
+- System Health offers Dismiss on every failed record that still counts: preview broker, preview monitor, native helper, session host and service maintenance requests, and failed Vorteo upgrades, including ones that were not automatic. A dismissed failure stops counting and stays in its card marked Dismissed. When Fix lands on a failed record, keyboard focus goes to its Dismiss (#639).
+- The coordinator records the owner's dismissals beside the records, behind owner-only routes that no agent door or maintenance grant reaches, and accepts Dismiss for any failed release upgrade, advertised as `acknowledgesFailures`. Older coordinators answer without these, and the interface then offers no Dismiss on those records (#639).
+- The owner can adopt a legacy Codex account from its connection dialog, so Dev uses the Host's sign-in while keeping its history (#563, slice 2). The dialog shows the adoption's progress, a pending synchronization until Dev confirms, a failure or confirmation request with its reason, and an un-adopt control that never signs the Host out and says whether Dev's earlier sign-in was put back. The switch asks for confirmation first, because it replaces Dev's own sign-in. Once adopted, the dialog signs in on the Host, which repairs Dev too. The wording is provisional until the owner confirms it.
+- A workspace service, such as a managed preview, whose terminal survives a daemon restart is re-linked to its script before the new daemon listens. It keeps showing as running, Stop works, and its port, proxy route and health check come back. This applies to restarts that already keep terminals: crash restarts, Dev installs, Host installs that wait for idle, and held restarts. Host installs that replace the daemon immediately still close terminals, so their previews still stop until a later change (#587).
+- In the scripts menu, a preview stop that fails or can't be confirmed now says so as a stop, with the broker's message when it is short plain text, and points to Stop to try again. Before, it would have read as a failed start (#586).
+- A preview whose link the broker has withdrawn while its server is still running says "Link withdrawn, but the server is still running." instead of "Stopped", on wide and phone menus. When the broker's report is old, the line states both knowns: "Server is running. Link last known withdrawn, checked at 7:31 PM." (#586).
+- A refused preview start says which limit applies: this preview is already starting or stopping, or several previews are. A stop in progress reads "Stopping the preview." (#586).
+- Preview status in the scripts menu and on the Previews gallery is now translated into Arabic, Chinese, French, Japanese, Korean, Portuguese, Russian and Spanish, following each language's existing terms for host, workspace and preview. The translations are machine-written and not yet reviewed by native speakers (#586).
+- The scripts menu shows a managed preview's state in one plain line under its name: running, starting, not responding, or stopped with the time and, when the broker recorded it, why (a Vorteo restart, a settings change or another program taking its place). Times are local and to the minute. When the broker's state is old, the line says only what was last known and when it was checked. Start and Restart for these previews go through the preview broker, so the link stays the same, and Restart on a running preview asks first. Previews waiting for a link repair, in an archived workspace or already starting offer no Start (#586).
+- Live-link tiles on the Previews gallery now show their preview's state, such as Stopped, Starting, Not responding or Link withdrawn, as a small badge over the thumbnail. An old report shows a dimmed badge, and a running preview whose report is old reads "Not current". Opening the tile shows the same sentence and button as the scripts menu: Start, Try again, Restart with its confirmation, or Stop (#586).
+- The preset fence now has an owner setting, `presetFence`, with `report` (the default) or `enforce`, and per-path exceptions that keep logging. Only the owner's app can save it. It is kept in its own file, `preset-fence.json`, not `config.json`, and is read once at the next daemon restart. This release never enforces: a stored `enforce` is kept but logged at warn and treated as report until a later release enables it. The daemon logs the policy in force and where it came from at startup, and warns when a stored policy is unusable, names an unknown path, or is not a small regular file (#360).
+- An unanswered lead launch request now closes after 24 hours. Its card shows "Expired: no choice within 24 hours, so nothing was started.", and the coordinator is told to ask again (#360).
+- A Host source update on a macOS Host now keeps managed previews running. The coordinator asks the Host daemon to shut down keeping its terminals, instead of replacing its service with a signal that closes them, and the new daemon re-links each preview before it listens. It does this only when both the new release and the one it would fall back to re-link surviving services; otherwise, when the running daemon did not answer before the restart, on a Linux Host, and whenever the request fails, the install replaces the service as before and records why in its receipt (#587).
+- The Factory stage controls in the app now include where issue agents run, Dev or This host (#360). Choosing This host asks for confirmation first, because the project's code then runs on this host, and the picker shows why Dev is unavailable when it is. It is hidden on daemons that do not report the setting.
+- A thread that wears the project's Foreman label while no Foreman is recorded, which is what a lost Factory state file leaves, offers Make this thread the Foreman in its tab menu. It asks for confirmation and turns on Factory with that thread adopted as the Foreman.
+- An Unsent recordings list shows dictation recordings no composer is showing, including ones from an earlier page load and partial ones, with their date, length, whether they are complete and which thread they belong to. Each can be retried in the current composer, saved as audio or discarded. The list opens from a quiet line above the composer, which can be hidden for the session, and from a failed dictation.
+- A coordinator bound to a worker preset can ask for a lead thread on another preset with `request_lead_launch`. The daemon stores the exact launch, asks the owner on the coordinator's thread and starts the lead only when the owner picks an option in the app; a retried or simultaneous click, any edit to the preset, or a withdrawn question starts nothing, while an unrelated settings save does not block it. The card shows an excerpt of the lead's first task, what each preset allows, and recommends no option (#360).
+- A failed dictation offers Save audio, which saves the recording as a WAV file without deleting it: through the share sheet on iPhone and the installed web app, as a download in other browsers, and through the share sheet in the native app. The file is prepared while the failure shows, so the press opens the share sheet at once; if saving fails, a notice says so. Save audio always saves the recording of the thread on screen, and recordings over 20 minutes are prepared when pressed, with the button waiting and a notice while that runs; when the file is ready the notice asks for a second press, since the first press can no longer open the share sheet.
 
-- Combine 1 source contributions; retain their release notes below
+### Fixes
 
-## Unreleased - 2026-11-26
+- Worker placement reuses cached quota readings and skips accounts under an active usage hold, including aliases. Team presets retain their first worker on rollback. An explicitly empty team disables delegation on a daemon that supports teams.
+- Agent sessions admitted before a restart hold can finish registering and join the drain. The published configuration schema includes worker team membership.
+- Worker team supervisors keep their assigned preset when a worker, peer or supervisor requests a switch. A legacy coordinator switching itself off an exhausted account now receives `supervisor-profile-switch`. The owner can switch the coordinator from the app.
+- Direct edits to quota thresholds and automatic account eligibility use the same app controls as preset fence settings.
+- When Claude rate-limits a usage check, the saved reading keeps the time it was fetched.
+- Team workers keep their creator's permission notifications when the daemon records their supervisor.
+- The sidebar's Dashboard row and All Factories block now use the same calm text and icon colors as the Pinned and project rows, and line up with them, including inside a project (#672).
+- The All Factories block highlights as one surface on hover, and opens the Factories page from anywhere on it. Its color bar and "Queue snapshot" line are gone; the title and two count lines remain (#672).
+- The settings sidebar spaces its "This device" and "Vorteo" group labels evenly. The band above "This device" was the lock control's empty space for an unlock error; the sidebar now makes that room only when an error appears, and every group label gets the same space above it (#671).
+- When you edit a queued message that has already been sent, the Queue card now says so, with the time it was sent when the conversation shows it, and offers **Send my edit as a new message** or **Discard my edit**. Before, it said only that the change was kept locally and offered no way to send it. The card also says when the message had started sending, was removed in another window or was changed in another window. A queued message can still be sent while you are editing it; holding it is planned.
+- A queued message that is open for editing is no longer sent while you edit it. The daemon holds it, and the messages queued behind it, until you save or cancel the edit, for at most two minutes after the editor last checks in, so a closed window cannot block the queue for long. A hold renews for at most 30 minutes; after that the message sends as written once the current hold ends, and the editor shows "This message has been held for editing for 30 minutes, so it will send as written in about 2 minutes. Save your edit now to change it." Other windows show "Being edited" on the message, and the host refuses their edit or send now with "This message is being edited in another window." On an older host that cannot hold messages, opening the editor first warns "This message may be sent as it is while you edit it."
+- The project menu and project settings no longer pick a project's first environment when it is offline. A project such as Syn3h that the paused Dev container lists first now opens its settings and offers Turn on Factory on the Host (#682).
+- When no environment can edit a project, its settings say which environment is offline, or that no online environment has the project's folder, and the project menu says why Factory is unavailable in place of leaving it out.
+- Refreshing a workspace right after switching its branch shows the new branch, and so does the state shown after a branch switch, create, rename, discard, stash, commit, merge, pull, push or pull request action. It could keep the old one when the refresh arrived while the daemon was still reading the workspace, for example just after the project was opened. Refs #675.
+- A workspace no one is viewing shows its new branch right after a checkout or branch switch, in the sidebar and the command center, instead of keeping the old branch for up to 30 minutes. Refs #675.
+- The daemon no longer runs `git fetch` every three minutes for every repository a client lists. A repository fetches on that interval only while one of its workspaces is viewed or has a running or starting agent. A stale repository fetches as soon as a workspace becomes active (#675).
+- A fetch or other ref change refreshes only active workspaces of the repository. Every 30 minutes each repository fetches and refreshes its idle workspaces, even while a sibling workspace is active, so an idle workspace's sidebar status can lag by up to 30 minutes. The first of these comes within five minutes of the daemon starting, staggered per repository, and at most four run at once (#675).
+- The daemon logs when an agent has been initializing for over ten minutes, since that keeps its repository on the frequent fetch (#675).
+- Factory issue workspaces, including those in Dev, now list under the Factory that owns their issue instead of in the project's ordinary list. A running issue's Runners row opens its workspace, and issue workspaces with nothing running sit in a folded Idle group, each row showing its issue number, title and workspace status. An issue with several workspaces, such as a respawned repair worker, lists all of them; its Runners row opens the newest (#683).
+- A Factory issue workspace whose worker finished no longer shows the green "finished, unread" dot, which read as running; it shows the neutral state. Green keeps its meaning everywhere else (#683).
 
-### Maintenance
+- The Idle group's menu offers "Archive finished issue workspaces" when an issue workspace's issue has closed and its pull request merged. After the owner confirms, each workspace is checked first: one with uncommitted or untracked files, commits ahead of its upstream, no upstream, a git state not yet read, or archive protection is skipped (#683).
+- Crew shows the roles the Factory reports, however many, plus the owner's Standing workspaces. A workspace kept from an older Factory that no role claims returns to the project's own list instead of showing as a crew chip (#683).
+- Factory takes work only from trusted accounts on public repositories. Claiming an issue now refuses it unless the owner, an organization admin or a delegated approver applied `factory:ready` after anyone else last wrote, edited or retitled it, and says what to do. Any read that fails refuses too.
+- Claiming refuses when the issue's pull request, from the claim branch or an older `<prefix>/factory-issue-<n>` branch, changes `.github/delivery-approvers.json` or `.github/factory.json`; the owner reviews and merges such a pull request. Only those two files are guarded; the rest of Factory's trust code relies on review.
+- The claim names the pull request head it checked, and the Foreman merges only that commit when the reviewer approved it, pinned with `gh pr merge --match-head-commit`, so a push after the review or the check never merges.
+- Leads, workers and reviewers now get an issue brief: the approved task, comments from the owner's account, quoted agent notes and every other comment quoted in a block marked as outside text. Every role charter treats outside text as data, never runs commands, opens links or installs anything it asks for, and does not open links in an approved issue unless the owner's words ask to.
+- Autonomous Triage no longer labels an issue an untrusted account wrote, edited or retitled; it asks the owner.
+- Pull requests from forks no longer count as an issue's pull request, as overlapping work or as claim markers, and the queue ignores reviews from untrusted accounts and shows why an issue waits.
+- Changed behavior for several installations on one repository: claim markers now count only in comments by trusted accounts, so every installation must post from the owner's account, an organization admin or a login in `.github/delivery-approvers.json`.
+- The sidebar's Factory Runners list counts only issues with an agent running or starting. Blocked issues and issues whose threads finished long ago no longer show as active runners; they still appear in the Factory row's stage bar (#683).
+- Runners and Crew under a Factory fold like every other sidebar level, with the same arrow and remembered state, and show their count while folded (#683).
+- The All Factories summary reads "queued · active · stalled · review", where stalled counts issues past the queue with nothing running (#683).
+- A thread whose project also owns a workspace on a parent folder, such as Builds on the Projects folder, no longer files every new workspace beneath that folder under its own project. New local workspaces join the deepest project that contains their folder, and a new git repository inside a plain folder project becomes its own project.
+- An approval's owner escalation is now re-sent for the thread as it is at that moment, and question requests keep passing through a pending-list refresh unchanged (#659).
+- Report Antigravity account quota windows in profile selection, the sidebar quota card, and plugin usage reports by reading `agy --log-file /dev/null -p /usage --output-format json` at most once every 5 minutes unless explicitly refreshed by a client (staying unavailable when `agy` is missing, signed out, or has no account quota).
+- Providers outside Claude and Codex (such as Antigravity) no longer trigger Codex shared sign-in checks, render a "Connect Codex" button, or hang on "Checking sign-in..." in the connection dialog. They now show their own provider name, diagnostic instructions, and a bounded readiness check.
+- A message whose attached images are too large for the session host no longer ends the turn that is running, or every other hosted turn on the connection, with "Session host frame is too large." The daemon now measures the message before sending it and refuses only that message, shown once beside the composer with the draft restored: "These attachments are too large to send together (36 MB; the limit is 32 MB). Send fewer or smaller images." A queued message refused this way shows the same reason on its queue item and waits for you instead of being retried.
+- The Codex switch check now compares login sessions rather than current refresh tokens, so Dev holding a stale copy of the Host's sign-in is still treated as the Host's own and held while it is replaced. Dev makes the decision inside the write from fingerprints the coordinator sends with each delivery, and the separate comparison request and its flag are gone (#658).
+- Switching a legacy Codex account on Dev to the Host's sign-in is no longer refused because an idle, failing or running Dev thread has the account loaded. The coordinator now checks whether Dev actually holds a copy of the Host's grant, with a single-use keyed hash that keeps neither token. Only then does a running Dev thread block the switch, and the reply names it by title (#658).
+- When Dev does hold the Host's own grant, Dev pauses new sessions on that account while it replaces the sign-in, and refuses while a thread is running a turn. An older Dev keeps the earlier rule. Dev advertises the new `codexLegacySessionHold` capability (#658).
+- Large images are now made smaller when you attach them, so ordinary screenshots fit in a message. Images picked, pasted or dropped into the composer, or added to a queued message, are scaled to at most 2,576 pixels on the long edge and 3 MiB each. Transparent images stay PNG; others become JPEG when that is smaller. Small images, GIFs and other files are unchanged.
+- A request the owner decides in Settings > System stays in view as one line, with its status and then its result, until they leave the page, instead of folding into In progress as soon as they tap. Its full card stays in its section (#656).
+- The sidebar badge and the Health list no longer count a pending restart that another agent is handling or that recorded policy will approve, matching the Host card and Details (#656).
+- "Coordinator maintenance is unavailable" no longer appears as a red error with internal phase and class codes. It reads as one muted line in Maintenance that says the reason is not known yet and that restarts and updates still work.
+- A failed coordinator status refresh reads "Status could not be refreshed. Retrying." It turns red only after three failures in a row, saying the Host is not answering and retries by itself.
+- Host's Diagnostics show the installed commit from the upgrade status when unattended maintenance does not report one; Dev omits the line instead of saying Unknown.
+- A permission card for a removal Claude Code knows is dangerous no longer says it "could not rule out" deleting files. A critical path, the working directory or an ancestor, a possibly-empty variable path, a drive root, a mounted drive or an unplaceable Windows path now reads "Claude Code's safety check stopped this command because it would remove a dangerous target." followed by Claude Code's own reason and path. The "could not rule out" sentence stays for removals whose target the check could not tell (#659).
+- A Claude tool permission card now says why it appeared and which mode the thread is in. When Claude Code's dangerous-removal safety check stops a command, even in Bypass mode, the card reads "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check." with the path it names. A prompt forced by one of the owner's own ask rules says so, and a permission rule that denies a command inside a shell -c script says that; any other prompt shows Claude Code's own reason. Reason, path and title text is flattened to one line and capped. "This thread is in Bypass mode." (or the thread's mode) appears beside it (#659).
+- "Open" on a question in the sidebar's Open questions card now lands on that question: the thread opens with its Open questions card expanded and the question highlighted, and the conversation scrolls to where it was asked, loading older history when needed. Each question has its own Open. When the place cannot be found, the thread says "Couldn't find where this question was asked in the conversation." instead of showing the latest message (#660).
+- CI's dependency signature audit no longer fails a pull request when npm's attestations endpoint briefly answers with a non-JSON body. The `lint` job runs the same pinned `npm@11.19.1 audit signatures` through a small script that retries only a registry fetch or parse error, up to three attempts with a 5 and 15 second backoff. Every attempt audits with a fresh, empty npm cache, so it fetches from the registry: npm caches attestation responses for a year and CI restores the npm cache between runs. A package that fails verification still fails the step on the first report, and any other error fails at once (#646).
+- A failed upgrade is hidden only when it was offered by the update check or installed automatically, both of which only move forward, and the installed release is strictly newer than its target. A failure to the installed release itself, and an owner-requested upgrade that may have been a rollback, stay visible (#639).
+- After a jump lands, the settings page lets go as soon as the reader moves the page in any way it did not, such as dragging the scrollbar or momentum scrolling (#639).
+- "System needs attention" lands the System Health heading at the top of the page, and keeps it there while rows above it finish loading. After any jump the reader starts, the page re-measures its target as layout changes and corrects the scroll until layout is quiet, the reader scrolls, types or moves focus, or four seconds pass (#639).
+- The Host and Dev cards, the Health list, its badge and the Updates card no longer report a failed upgrade to a release the installation has already moved past, however it got there (#639).
+- An optional feature left off, such as unattended maintenance that was never activated, paused or revoked, no longer shows "System services: Needs attention" (#639).
+- The coordinator starts with no dismissals when its dismissal file cannot be read, instead of stopping, and sets a damaged file aside (#639).
+- A failed restart can be dismissed from System Health like the other failed records, so the Health badge can reach zero (#639).
+- A record that needs recovery cannot be dismissed: the coordinator refuses it and the interface does not offer Dismiss on it (#639).
+- A dismissal the coordinator could not save no longer shows as dismissed until the next restart (#639).
+- After the owner dismisses a failed restart, the Host or Dev card stops reporting that the latest restart failed, so the card, the Health list and its badge agree (#639).
+- Each dismissal write saves the list as it stands when the write runs, so a dismissal whose own save failed does not reappear after a restart (#639).
+- Restarts are ordered by parsed time when choosing the one Dismiss applies to (#639).
+- CI's dependency signature audit no longer fails on runners in one GitHub region. The desktop packaging tool electron-builder moves from 26.18.0 to the 26.18.1 patch release, which moves electron-publish off the 26.18.0 version whose attestations a network edge was answering with "OK" instead of JSON (#646).
+- A failed Dismiss now reads "Could not dismiss this. Refresh and try again.", so it no longer looks like a Dismiss button label (#639).
+- Dashboard sampling cancels as soon as daemon shutdown begins. Shutdown and startup failure cleanup wait for any dashboard write already in progress.
+- An adopted legacy Codex account that Dev paused only because its folder changed now resumes by itself on an updated Dev, after Dev pins the same path again and, when needed, confirms no Dev session uses the account. One paused because the Host signed in as a different person still waits for the owner (#647).
+- Saved Dev sign-in backups keep one clock per folder path, so a recreated folder is still cleaned up 30 days after the first switch, and a ninth folder is refused with a plain reason instead of losing track of an older backup (#647).
+- The coordinator reads adoption records one by one and keeps fields it does not know. A record it cannot read is kept, still guards its folder, and the account shows "This account's saved switch record could not be read, so nothing is changed. Update Vorteo, or ask for help if this stays." (#647).
+- Stopping the Host's sign-in for an adopted legacy Codex account no longer turns back into an adoption when Dev pauses it for a changed folder: a paused record resumes only to the status it paused, so the undo continues. Records the earlier release paused, which cannot tell the two apart, wait for the owner (#647).
+- Confirming a changed Dev folder no longer waits for Dev sessions to stop when Dev already held the Host's sign-in in that folder; every other check still runs, and a different person still asks first (#647).
+- The coordinator keeps the new adoption facts in a separate file, so rolling it back to the earlier release needs no preparation. When another account's saved switch record cannot be read, the reason now says so (#647).
+- Dev now knows an adopted legacy Codex folder by its real path, so inode numbers that drift on Dev's virtiofs mount no longer stop the Host's sign-in from reaching it, and the saved backup there can still be deleted on time. Each drift is logged. Dev advertises the new `codexLegacyPinByPath` capability (#647).
+- An adopted folder's projection now counts as Vorteo's only for the account it was written for, so another account's folder moved into place is replaced only when it holds a sign-in of the same person. The `.vorteo-signin` folder must be a real folder, and Dev restores a saved sign-in only for a person the coordinator names (#647).
+- On an adopted legacy Codex account that Dev paused for a changed folder, "Stop using the Host's sign-in" now withdraws the Host's sign-in and puts Dev's own back when the folder is still there, and confirming a paused stop is refused because it finishes by itself. A pause from the earlier release, which cannot say whether it was switching or stopping, offers both actions instead of "Confirm and try again" (#647).
+- A Health Fix started while locked now waits for the unlocked rows to load before following the row for its card, instead of being dropped when access unlocks a moment before the queues arrive (#639).
+- System Health's Fix buttons open the card that resolves each row instead of scrolling to the top of a pane. Fix expands the Host, Dev or Updates Details holding the card, scrolls it into view and focuses its first enabled control. A pending restart opens its Restart sheet. Rows whose card needs owner access ask to unlock first; cancelling leaves the page unchanged (#639).
+- Health no longer counts a failed broker, monitor, helper, service, session host, restart or upgrade request once a later request for the same service succeeded, or once the owner dismissed it. The failure that is the latest state of its service keeps counting. Superseded failures stay visible in their card, marked Superseded (#639).
+- A pending agent instruction change written against older instructions is marked Stale, does not count on Health and offers only Reject (#639).
+- The Updates card no longer shows a dismissed upgrade result beside the current status, and lists each failed upgrade that still counts with its detail and, for automatic upgrades, Dismiss (#639).
+- Host, Dev and Updates Details grow with the Settings page instead of scrolling inside a fixed-height box, so a jump to a card inside them lands on it on phones (#639).
+- A failed session host install, remove or restart keeps counting on Health until the same operation succeeds; a successful restart no longer hides a failed install (#639).
+- A Health Fix opens its card once. A Fix whose card was not there, such as a restart that finished meanwhile, no longer opens the Restart sheet later when another request arrives. After an unlock, Fix follows the unlocked row for the same card, so a Dev restart opens Dev's sheet (#639).
+- Health compares request times as times, so a record with fractional seconds orders correctly against one without (#639).
+- A Factory page opened before its host connects says it is loading instead of "Factory unavailable". The plugin catalog sync treated a host that had not yet reported its features as one without plugins, so a cold start against a slow or unreachable host marked the catalog settled with no Factory plugin until the connection completed (#637). The catalog now stays loading until the host first reports whether it supports plugins.
+- Crossing the compact width, switching theme or light and dark, or changing an interface font no longer freezes the web interface for seconds. Unistyles 3.2.4 rebuilt its whole stylesheet once for every component it restyled, so each of those changes cost the component count times the stylesheet size. The patched library now rebuilds the sheet once after all components restyle, still synchronously, and folds the removals of unused styles into one rebuild per task. In a production export on Settings > Appearance, one breakpoint crossing dropped from 7.0 to 7.6 seconds of main-thread work to 0.9 to 1.4 seconds on the same machine (#609).
+- The wide scripts menu now scrolls within the window. With many scripts, or previews that each show a status line, it ran past the bottom of the window and the wheel scrolled the panel behind it, so the last rows could not be reached. This predates the preview status work, which made it worse (#586).
+- When several workspace services survive a daemon restart, the daemon reads their scripts and git branches at the same time instead of one after another, so three or more services in slow checkouts no longer use up the 3 second startup limit and leave every service unlinked (#587).
+- A bare `paseo-preview status` on the Host answers at once from the broker's published summary. It used to send one broker request for each reserved preview, one after another, which took minutes and printed nothing until it finished. The summary carries no link: agents get a verified link to share only from `start`, `restart` or a named `status SCRIPT --workspace ID`, and the preview skill and agent instructions now say so. A missing, truncated or unknown-version summary falls back to asking the broker.
+- A preview that stops because Vorteo restarts is more often shown as stopped by the restart, instead of as a changed process or a stop with no cause. On Nov 23 at 6:35 PM, the broker recorded one preview, stopped while it was being checked, as a changed process, and missed another by 0.19 seconds (#587).
+- On phones, a running preview whose stop is in progress, failed or unconfirmed now shows that line under its name instead of a plain "Running", so a failed stop is visible without opening the row (#586).
+- In the scripts menu, Stop and Restart stay disabled while the broker is still starting or stopping that preview, not only until the request is sent; a second press would only be refused (#586).
+- A preview whose link was withdrawn while its server still runs no longer shows a green, healthy mark beside "Link withdrawn"; it shows the plain running mark (#586).
+- A broker message quoted after "Couldn't start:" or "Couldn't stop:" now ends with a period when it has none, so the sentence ends (#586).
+- The app sends a preview stop through the broker only when the daemon also advertises `previewStopOutcome`, so a daemon released before outcomes named their mode can never show a failed stop as "Couldn't start". Otherwise Stop ends the terminal as before (#586).
+- The out-of-date badge on the Previews gallery now plainly means "not up to date" in Spanish, Portuguese, French, Japanese, Korean and Arabic. The earlier words could read as "latest status", the opposite of what the badge says. Korean's out-of-date sentences now say "last confirmed state" to match (#586).
+- A terminal stop that is still being sent holds only its own preview's buttons in the scripts menu and the gallery, as a broker request already did (#586).
+- A Previews gallery badge for a start or stop that could not be confirmed now reads "Unconfirmed" instead of "Starting" or "Stopping", which claimed what nobody knows, matching the opened tile's "Couldn't confirm" line (#586).
+- A Previews gallery badge for an old preview report stays readable: it drops the state's colour instead of fading, which made it unreadable on phones in the light theme (#586).
+- On the Previews gallery, a badge from an out-of-date preview report now reads "Last known" for every state except an unavailable workspace, so it never passes for current; the opened tile carries the last known state. Before, a stale "Stopped" looked exactly like a current one (#586).
+- The opened tile's button waits while a start or stop for that preview is still being sent or still with the broker, as the scripts menu does (#586).
+- One preview's pending request no longer briefly disables Stop and Restart on every other row of the scripts menu (#586).
+- A preview's link on the Host no longer drops for 10 to 30 seconds when the broker happens to check while the daemon restarts. If the preview's server is still the same process and answering, the link stays up for up to a minute while the daemon comes back. The first check afterwards must find the same service and server, so a preview that did not survive the restart is still withdrawn at once. A Stop pressed while the daemon is restarting is now carried out once it is back (#587).
+- The Host's preview broker no longer withdraws a healthy preview's link because its own checks time out under load. While the preview's server is the same process, still listening and accepting connections, the link stays up for up to 10 minutes of timed-out checks, and the status says checks are delayed. After that, the link is withdrawn with its own status, `withdrawn`, and returns by itself with the first check that succeeds (#358).
+- Stopping a preview whose workspace is archived now stops its server. Before, the broker withdrew the link and recorded the stop, then failed while checking the workspace, so the server kept running and the stop was reported as failed. If the daemon no longer knows the workspace at all, the link is still withdrawn and the result says the service could not be found to stop (#586).
+- On Windows, a symbolic link at the preset fence policy file was followed instead of refused, so a link to a missing file looked like no policy at all. The daemon now checks the path itself before opening it and refuses a link or junction on every platform (#360).
+- Agent chats render again. The Make this thread the Foreman hook (#360, #625) selected a new object from the session store on every render, so every thread tab re-rendered until React stopped with "Maximum update depth exceeded" and the app showed its error screen instead of the chat. The hook now selects only the thread's project, folder, Foreman label value and archived state, compared shallowly, so an agent update that leaves those unchanged no longer re-renders its tab.
+- A dictation closed before any audio arrived no longer leaves an empty stored recording behind.
+- A recording handed over before the microphone finished stopping now says it may be missing its end.
+- Discarding from an Unsent recordings list that another tab has since changed no longer deletes a recording that tab is retrying.
+- A Retry from the list that hits a storage error now says so and leaves the recording listed instead of hiding it until the tab closes.
+- The sidebar's Open questions card and All Factories summary no longer redraw on every streamed update from any thread, which made the interface slower while agents were working.
+- A queued message that a restart left unconfirmed no longer reopens its closed thread every minute. Vorteo now checks it against the thread's saved history without starting the agent. If the message still cannot be confirmed after 15 minutes, it shows in the thread's queue as "delivery could not be confirmed", with Retry and Discard, because it may already have arrived. Nothing is sent or deleted automatically.
+- The Host stops closing and reopening the same idle thread every minute while a session-host update waits, and stops retrying cleanup of a thread whose provider session went stale every minute. Each now waits 5 minutes, doubling to an hour, until the thread is used again.
+- A thread no longer stops showing new messages after its history was read while the Host had the thread closed. That read hands the app a different version of the history than the live stream, and the app used to drop every new event without asking to catch up, so the thread looked frozen until Reload agent. The app now asks the Host for the current history and resumes live updates. A burst of mismatched events asks once, and if the mismatch persists the app asks again at most every 30 seconds instead of fetching on every event.
+- A failed dictation says its recording is kept only once every part of it is on this device; when device storage failed, or writes have not landed after 10 seconds, it says the recording is not saved and the page should stay open until it is sent.
+- A notice appears once when this device cannot store recordings, and when an older unsent recording is removed to free space.
+- Starting dictation waits for the microphone to finish stopping, so a new recording cannot overlap the end of the previous one, and closing the composer during the microphone permission prompt no longer leaves the microphone on.
+- Dictation state now belongs to one thread for its whole life: switching threads closes the composer's dictation and opens a fresh one, so one thread's unsent recording can never show, send or save in another. A recording left unsent is offered back when its thread opens again, from the device or, when the device could not store it, from memory for as long as the page is open.
+- A recording's Host is updated when a draft switches Host before sending, so removing a Host deletes exactly the recordings sent to it, including audio held only in memory.
+- A microphone stop that never finishes no longer blocks dictation: after five seconds a new recording starts anyway and a closing composer hands its recording over. Audio held in memory shares the 128 MB storage budget, and the owner is told when the oldest is removed; a recording just handed over is never the one removed.
+- Reading the history of a thread the Host closed while idle now returns the same timeline the thread had while running, so open apps keep their place instead of reloading the whole thread. These reads also skip re-reading the thread's transcript, which took seconds on long threads after a reconnect.
+- A Claude subscription account that nothing on the Host is using no longer stays expired until its next use. Claude Code renews a sign-in only when a session starts or makes a request, so an idle account expired after eight hours and its copy in Dev reported "Claude is not connected" until someone used the account on the Host; on one installation that lasted about 42 hours. The daemon now renews a full sign-in about a minute after it expires unrenewed, by starting one Claude Code process with no prompt and letting it finish.
+- Agents that create a local workspace in a folder outside their own project no longer file it under their project. The workspace joins the project that contains the folder, or the folder becomes a new project.
 
-- Combine 1 source contributions; retain their release notes below
+### Tests
 
-## Unreleased - 2026-11-25
+- Update `usage-sources.e2e.test.ts` to expect the built-in Antigravity entry in `provider.usage.list` alongside the other built-in usage providers.
 
-### Maintenance
+### Tooling
 
-- Combine 1 source contributions; retain their release notes below
+- Lint now refuses relative imports with a `.js` extension in code the app bundles, and any relative value import in shared plugin files. Both broke the web bundle while every existing check passed: Metro cannot resolve `./x.js` for a `.ts` file, Vitest can, and shared plugin files are also loaded by the daemon's Node runtime, which needs the extension.
 
-## Unreleased - 2026-11-25
+### Improvements
 
-### Maintenance
+- Antigravity now runs over the official `agy acp` Agent Client Protocol integration backported from upstream Paseo (`#9396`, `#9467`, `#10193`, `#10310`, `#10379`, `#10383`, `#10428`, `#10469`, `#10524`, `#10992`, `#11047`). Antigravity threads now receive Vorteo's built-in MCP server (checklists, Open Questions, journals, subagent tools, browser tools), interactive permission modes (`Full access`, `Default`, `Accept edits`, `Plan`), conversation history replay across restarts, per-model thinking levels, inline skill suggestions, polished tool call details, background-tool turn handling, SSH sign-in diagnostics, and automatic session reopening after an unexpected idle exit.
+- Provider CLI discovery on macOS and Linux now checks common per-user bin folders (`~/.local/bin`, `~/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) when a command is missing from the daemon's `PATH`, while keeping explicit `PATH` entries and configured overrides first. Missing CLI diagnostics now list the command name, searched folders, and how to set `agents.providers.<id>.command` in `config.json`.
+- The connection dialog for a legacy Codex account that can switch now leads with "Use the Host's sign-in" as its one primary action. Dev's own sign-in follows as a quiet "Sign in on Dev" option instead of a second large sign-in block. A refusal that names running Dev threads is shown in full (#658).
+- A thread stopped on an approval that no supervising thread will answer now shows in the sidebar's Open questions card: "<thread> is stopped until you answer.", the thread's mode, its working directory, the reason, and the command. Accept appears only once the whole command has been on screen, because it fit in its box or the box was scrolled to its end; the button shows the command's line count. Until then the card offers Open thread, which lands on the approval. Deny is one tap. Plan, mode and other approvals show with Open thread only, since their choices live in the thread. An approval unanswered for 3 minutes reaches the owner whoever created the thread, even when another approval of the same thread was answered meanwhile. The card shows hidden and control characters in a command as visible escapes, quotes the thread's title, and offers only Open thread for commands over 200 lines. When Vorteo's own scan found a delete in the command, the card says so on a "Deletes:" line. The card's count reads "N open questions and approvals across all threads" (#659).
+- Dashboard records observed hourly usage changes and separates Factory queue stages, merges and linked closures. Phone navigation works across sidebar views, and charts preserve missing observations.
+- Each daemon now preserves recoverable observations from damaged dashboard history and cancels outstanding source reads during shutdown.
+- The Factory overview's scope selector now lists Sample Factory, its own page of sample data where every control is off and changes nothing. The Live and Sample switch is gone, and All Factories always shows live data (#638).
+- Each live Factory has a settings gear at the top right. It opens that Factory's settings: where its home is, the models for each issue stage and where issue agents run, each role's model and instructions, and the role assignments. These moved there from the overview's "Models & roles" disclosure. State, Pause, Resume and Planning stay on the overview. The owner-only lock from #360 still applies to every change.
+- The Factory's model pickers open on whichever side of their button has room. When neither side fits the whole picker, they open on the larger side, shortened to its space, so the Activate button stays inside the window in short windows.
+- A Factory page whose host is offline now says the plugin host is offline, as other plugin pages do, instead of loading until the host reconnects.
+- Agents can pass `newProject: true` to `create_workspace` to register a local folder as its own project.
 
-- Combine 1 source contributions; retain their release notes below
+### Changes
 
-## Unreleased - 2026-11-25
+- Vorteo can now decide, for a Claude thread in Bypass mode, whether Claude Code's removal prompt for a command it could not analyse is safe to answer by itself: its own scan must find no delete command, and the prompt must come from the removal check alone. The answer stays off until the owner's setting arrives in a later change, so every such prompt still asks (#659).
+- When the scan does find a delete, the permission request records what it found; the approval card from #667 shows it on a "Deletes:" line.
+- Thread notifications can carry collapsible details, used for the record of an automatic answer.
 
-### Maintenance
+### Fixed
 
-- Combine 1 source contributions; retain their release notes below
+- A preview whose link checks are delayed no longer reads "not responding" with a Restart button. The scripts menu says it is running with its link up, and the Previews gallery badges it Unconfirmed, so Restart is not offered on a preview that still works (#616).
+- A preview whose link the broker withdrew after its checks kept timing out now says the link comes back by itself when a check finishes, and offers Restart only for when it does not.
 
-## Unreleased - 2026-11-25
+### Security
 
-### Maintenance
+- Only the owner's app can now name which thread holds a Factory role or change the presets Factory launches (#360). `factory.project.enable` with `adopt`, and `factory.project.configure` when it sets a role's provider or profile, the planner, worker or reviewer profile, or where issue agents run, are refused for the CLI and any other non-app client. Each refusal is answered with an `rpc_error` whose code is `factory_owner_only`, so callers can tell it from a failure, and logged once at warn with the writer, method, field names, project and role. Enable without `adopt`, `configure` with only `planning`, `status set` and every other Factory call behave as before.
+- Factory no longer adopts a thread as the Foreman because it wears the Foreman's role label. If the Factory state file is lost, enabling Factory again reuses the other labelled role threads but creates a new Foreman, and logs the labelled thread it passed over so the owner can archive it.
+- Limitation: the client type is self-declared (#525), so this stops agent tools, the CLI and accidents, not a process holding the daemon credential that claims to be the app. The app has no control for where issue agents run, so `--issue-agents` can no longer be changed until it gains one; the current setting is kept.
+- Turning on Factory no longer creates a second Foreman when the state file was lost but the old Foreman still runs. It refuses with the code `factory_foreman_unadopted` and changes nothing, so the owner can adopt that thread from the app or archive it.
 
-- Combine 1 source contributions; retain their release notes below
+- The app's connection probe for a host reached through another host now declares itself as the app, like every other app connection. It declared itself as the CLI, and when it became the active connection the owner's owner-only writes on that host were refused.
 
-## Unreleased - 2026-11-25
+### Documentation
 
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-24
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-24
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-23
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-23
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-23
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-23
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-23
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-23
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-22
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-22
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
-
-## Unreleased - 2026-11-22
-
-### Maintenance
-
-- Combine 1 source contributions; retain their release notes below
+- The terminal worker guide, the instance continuity guide and the preview skill now say which restarts keep running previews and which close them, that a supervisor started before keep-terminals support closes terminals on every worker restart, and that worker changes reach a long-lived worker only through a protocol bump (#587).
 
 ## 26.11.2100 - 2026-11-21
 

@@ -332,17 +332,23 @@ it("waits out a rate limit with the last good reading instead of polling again",
       now: () => now,
     }).fetchUsage();
 
-  expect((await fetchUsage()).windows.map((window) => window.usedPct)).toEqual([21, 63]);
+  const firstFetchedAt = new Date(now).toISOString();
+  const first = await fetchUsage();
+  expect(first.windows.map((window) => window.usedPct)).toEqual([21, 63]);
+  expect(first.fetchedAt).toBe(firstFetchedAt);
+
+  now += 30_000;
   const limited = await fetchUsage();
   expect(limited.windows.map((window) => window.usedPct)).toEqual([21, 63]);
+  expect(limited.fetchedAt).toBe(firstFetchedAt);
   expect(limited.details?.find((detail) => detail.id === "claude-rate-limited")?.value).toContain(
     "10m",
   );
   now += 5 * 60_000;
-  await fetchUsage();
+  expect((await fetchUsage()).fetchedAt).toBe(firstFetchedAt);
   expect(fetch).toHaveBeenCalledTimes(2);
   now += 6 * 60_000;
-  await fetchUsage();
+  expect((await fetchUsage()).fetchedAt).toBe(new Date(now).toISOString());
   expect(fetch).toHaveBeenCalledTimes(3);
 });
 

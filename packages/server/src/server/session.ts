@@ -6280,6 +6280,19 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "set_daemon_config_request" }>,
   ): Promise<void> {
     const { presetFence, ...rest } = msg.config;
+    if (!isOwnerAppClient(this.clientType)) {
+      if (Object.hasOwn(rest, "accountQuotaPolicy"))
+        throw new Error("Only the owner's app can change the account quota policy.");
+      const changesAutomatic = Object.values(rest.providers ?? {}).some((provider) =>
+        Object.hasOwn(provider, "automaticPrimary"),
+      );
+      const removesAutomatic = rest.removeProviders?.some(
+        (id) => this.daemonConfigStore.get().providers[id]?.automaticPrimary !== undefined,
+      );
+      // The store independently admits full installation projections against coordinator state.
+      if (changesAutomatic || removesAutomatic)
+        throw new Error("Only the owner's app can change automatic primary account eligibility.");
+    }
     if (Object.hasOwn(msg.config, "presetFence")) await this.savePresetFence(presetFence ?? null);
     const config =
       Object.keys(rest).length > 0

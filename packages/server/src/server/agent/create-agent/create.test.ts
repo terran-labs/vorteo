@@ -1020,14 +1020,26 @@ test("team dispatch uses the chosen account and preserves the frozen worker sett
     ).rejects.toMatchObject({
       code: "team-worker-launch",
     });
-    vi.spyOn(storage, "get").mockRejectedValueOnce(new Error("Storage unavailable"));
-    await expect(
-      createAgentCommand(dependencies, {
-        ...launch,
-        callerAgentId: result.snapshot.id,
-        provider: "codex/frozen",
-      }),
-    ).rejects.toMatchObject({ code: "worker-governance-unavailable" });
+    expect(agentManager.getAgent(result.snapshot.id)?.workerGovernance).toEqual(
+      (await storage.get(result.snapshot.id))?.workerGovernance,
+    );
+    const reloaded = await agentManager.reloadAgentSession(result.snapshot.id);
+    expect(reloaded.workerGovernance).toEqual(result.snapshot.workerGovernance);
+    const readStorage = vi
+      .spyOn(storage, "get")
+      .mockRejectedValue(new Error("Storage unavailable"));
+    try {
+      await expect(
+        createAgentCommand(dependencies, {
+          ...launch,
+          callerAgentId: result.snapshot.id,
+          provider: "codex/frozen",
+        }),
+      ).rejects.toMatchObject({ code: "team-worker-launch" });
+      expect(readStorage).not.toHaveBeenCalled();
+    } finally {
+      readStorage.mockRestore();
+    }
     await expect(
       createAgentCommand(dependencies, { ...launch, callerAgentId: undefined }),
     ).rejects.toThrow("provider/model is required");
