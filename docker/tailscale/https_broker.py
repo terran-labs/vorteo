@@ -80,6 +80,18 @@ def safe_dir(path):
         raise
 
 
+def private_directory(path):
+    """Fail closed unless this is a real directory, owned by this user, closed to others.
+
+    Installers write executable broker files, pins and node state into such directories.
+    An existing one is never adopted on trust or silently tightened: another local user
+    who can write there could replace what the broker runs.
+    """
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError(f'{path} must be a directory owned by this user with mode 0700')
+
+
 def atomic(path, value, mode=0o600):
     path = Path(path)
     fd = safe_dir(path.parent)
@@ -386,7 +398,11 @@ class NativeRuntime(Runtime):
         return value
 
     def ts(self, args):
-        return self.command([self.c['tailscale'], *args])
+        # Previews may be published by a dedicated Tailscale node with its own daemon, so
+        # preview links never share a hostname with the interface. That daemon is
+        # addressed by socket; without one, the default system daemon is used.
+        socket = self.c.get('tailscaleSocket')
+        return self.command([self.c['tailscale'], *(['--socket=' + socket] if socket else []), *args])
 
     def canonical_workspace_cwd(self, cwd):
         return cwd
