@@ -931,6 +931,51 @@ describe("ClaudeAgentSession features", () => {
     await fs.rm(settingsDir, { recursive: true, force: true });
   });
 
+  test("launches a tool-less thread with no route to any tool", async () => {
+    const { queryFactory } = createQueryMock();
+    const client = new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession({
+      provider: "claude",
+      cwd: process.cwd(),
+      modeId: "bypassPermissions",
+      toolAccess: "none",
+      mcpServers: { custom: { type: "stdio", command: "custom-mcp" } },
+      providerOptions: {
+        allowedTools: ["Bash"],
+        extraArgs: { "mcp-config": "/tmp/extra.json" },
+      },
+    });
+
+    await session.startTurn("hello");
+
+    const options = queryFactory.mock.calls[0]?.[0].options;
+    expect(options).toMatchObject({
+      tools: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      plugins: [],
+      skills: [],
+      settingSources: [],
+      permissionMode: "default",
+      allowDangerouslySkipPermissions: false,
+    });
+    expect(options?.allowedTools).toBeUndefined();
+    expect(options?.extraArgs).toBeUndefined();
+    expect(options?.agents).toBeUndefined();
+    await expect(
+      options?.canUseTool?.("Bash", { command: "ls" }, {
+        signal: new AbortController().signal,
+        toolUseID: "tool-1",
+      } as Parameters<NonNullable<typeof options.canUseTool>>[2]),
+    ).resolves.toMatchObject({ behavior: "deny" });
+    await expect(session.setMode("bypassPermissions")).rejects.toThrow("without tools");
+    await session.close();
+  });
+
   test("keeps inline extraArgs settings JSON for internal agents", async () => {
     const { queryFactory } = createQueryMock();
     const client = new ClaudeAgentClient({

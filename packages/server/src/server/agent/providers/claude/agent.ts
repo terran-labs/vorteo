@@ -433,6 +433,78 @@ const DEFAULT_MODES: AgentMode[] = [
 
 const VALID_CLAUDE_MODES = new Set(DEFAULT_MODES.map((mode) => mode.id));
 
+/** Modes that never approve a tool call without asking, which a tool-less thread always denies. */
+const TOOL_LESS_PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set(["default", "plan"]);
+
+const TOOL_LESS_DENIAL = "This thread has no tool access. Reply in text only.";
+
+/** canUseTool for a tool-less thread: every request is refused. */
+const denyEveryTool: CanUseTool = async () => ({
+  behavior: "deny",
+  message: TOOL_LESS_DENIAL,
+});
+
+/** Claude settings a tool-less launch keeps; permissions and anything else are dropped. */
+const TOOL_LESS_SETTING_KEYS = ["fastMode", "ultracode", "apiKeyHelper"] as const;
+
+/**
+ * Query options for a thread with `toolAccess: "none"`. Removes every route to a tool: built-in
+ * tools, MCP servers from any source, plugins, skills, subagents, filesystem settings that can
+ * load MCP servers, plugins or hooks, CLI flag passthrough, and permission-skipping modes.
+ * canUseTool denies anything that still asks.
+ */
+export function applyToolLessClaudeOptions(options: ClaudeOptions): ClaudeOptions {
+  const {
+    allowedTools: _allowedTools,
+    agents: _agents,
+    agent: _agent,
+    extraArgs: _extraArgs,
+    toolAliases: _toolAliases,
+    additionalDirectories: _additionalDirectories,
+    managedSettings: _managedSettings,
+    settings,
+    ...rest
+  } = options;
+  const kept: Record<string, unknown> = {};
+  if (settings && typeof settings === "object") {
+    for (const key of TOOL_LESS_SETTING_KEYS) {
+      if (key in settings) kept[key] = (settings as Record<string, unknown>)[key];
+    }
+  }
+  const permissionMode: PermissionMode =
+    rest.permissionMode && TOOL_LESS_PERMISSION_MODES.has(rest.permissionMode)
+      ? rest.permissionMode
+      : "default";
+  return {
+    ...rest,
+    tools: [],
+    mcpServers: {},
+    strictMcpConfig: true,
+    plugins: [],
+    skills: [],
+    settingSources: [],
+    settings: { ...kept, disableAllHooks: true },
+    permissionMode,
+    allowDangerouslySkipPermissions: false,
+    canUseTool: denyEveryTool,
+    // claude.ai account connectors are MCP servers that do not come from mcpServers.
+    env: { ...rest.env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+  };
+}
+
+/** A provider command that adds CLI arguments could re-enable tools, so a tool-less launch refuses it. */
+function assertToolLessClaudeCommand(runtimeSettings: ProviderRuntimeSettings | undefined): void {
+  const command = runtimeSettings?.command;
+  const addsArguments =
+    (command?.mode === "append" && (command.args?.length ?? 0) > 0) ||
+    (command?.mode === "replace" && command.argv.length > 1);
+  if (addsArguments) {
+    throw new Error(
+      "A thread without tools cannot run on a Claude provider whose command adds arguments.",
+    );
+  }
+}
+
 const REWIND_COMMAND_NAME = "rewind";
 const REWIND_COMMAND: AgentSlashCommand = {
   name: REWIND_COMMAND_NAME,
@@ -2536,6 +2608,9 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     this.currentMode = isPermissionMode(config.modeId) ? config.modeId : "default";
+    if (config.toolAccess === "none" && !TOOL_LESS_PERMISSION_MODES.has(this.currentMode)) {
+      this.currentMode = "default";
+    }
     if (this.currentMode !== "plan") {
       this.planResumeMode = this.currentMode;
     }
@@ -2840,6 +2915,9 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     const normalized = isPermissionMode(modeId) ? modeId : "default";
+    if (this.config.toolAccess === "none" && !TOOL_LESS_PERMISSION_MODES.has(normalized)) {
+      throw new Error(`A thread without tools cannot use the '${modeId}' mode.`);
+    }
     assertClaudeModeCanRun(normalized, this.harnessEnvironment);
     const previousMode = this.currentMode;
     const previousQuery = this.query;
@@ -4001,6 +4079,10 @@ class ClaudeAgentSession implements AgentSession {
       ];
     }
     if (selectedSkills) base.skills = selectedSkills;
+    if (this.config.toolAccess === "none") {
+      assertToolLessClaudeCommand(this.runtimeSettings);
+      return applyToolLessClaudeOptions(base);
+    }
     return base;
   }
 

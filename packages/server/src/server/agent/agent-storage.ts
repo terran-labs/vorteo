@@ -80,6 +80,7 @@ const SERIALIZABLE_CONFIG_SCHEMA = z
     usageLimitHold: UsageLimitHoldSchema.optional(),
     quotaReserve: QuotaReserveConfigSchema.optional(),
     mcpServers: z.record(z.string(), z.any()).nullable().optional(),
+    toolAccess: z.literal("none").optional(),
   })
   .nullable()
   .optional();
@@ -170,6 +171,7 @@ export type SerializableAgentConfig = Pick<
   | "usageLimitHold"
   | "quotaReserve"
   | "mcpServers"
+  | "toolAccess"
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
@@ -624,6 +626,7 @@ export class AgentStorage {
       const record = mutate(existing);
       if (!record) return undefined;
       preserveOwnedRecordFields({ record, existing, options });
+      preserveToolAccess(record, existing);
       // Loading sessions and metadata writers can hold snapshots from before
       // a reserve transition. All writes preserve the newest durable revision.
       const reserve = existing?.config?.quotaReserve;
@@ -983,6 +986,13 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
   if (!options.blockedReviewWrite && existing)
     record.lastBlockedReviewAt = existing.lastBlockedReviewAt;
+}
+
+/** Tool access is fixed at creation. No later snapshot or update can widen it. */
+function preserveToolAccess(record: StoredAgentRecord, existing: StoredAgentRecord | null): void {
+  if (existing?.config?.toolAccess === "none" && record.config?.toolAccess !== "none") {
+    record.config = { ...record.config, toolAccess: "none" };
+  }
 }
 
 class CorruptJournalError extends Error {

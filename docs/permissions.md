@@ -11,7 +11,7 @@ principal -> grants
     `-- opens a session with equal or narrower authority
 ```
 
-A principal is the durable identity the daemon authorizes. A credential proves that a device or service represents it. Keep them separate so you can rotate credentials, attach more than one device, and revoke a Hub user without inventing daemon user accounts.
+A principal is the durable identity the daemon authorizes: the owner, a Hub relationship or a [service principal](#service-principals). A credential proves that a device or service represents it. Keep them separate so you can rotate credentials, attach more than one device, and revoke a Hub user without inventing daemon user accounts.
 
 A pairing invitation is neither. It is an expiring, single-use exchange that creates a principal and credential with the permissions selected by its issuer.
 
@@ -39,9 +39,68 @@ Owner, operator, and viewer are UI presets expanded into explicit permissions. D
 
 Permissions are additive allows. Missing authority denies the operation. Do not add deny precedence.
 
+## Service principals
+
+A service principal is a non-interactive identity for another program, such as a personal dashboard, with permissions the owner chooses. Create, list and revoke them with `paseo access service` or in the host's Settings under Service access:
+
+```sh
+paseo access service create --label "Vorton observer" --read-only
+paseo access service list
+paseo access service revoke <id>
+```
+
+Pass `--expires-at <ISO time>` to make a credential stop working at that time; live sessions are disconnected when it expires. Only the principal that issued a service principal, or the owner, can change its grants or revoke it.
+
+`--read-only` grants `workspace.read`, the only permission a service principal can hold today. The others are refused until [resource-scoped grants](#resources) exist: `daemon.read` returns daemon configuration, which carries provider environment variables such as API keys, and the write, manage and access permissions are owner-equivalent because agents and terminals execute code. The issuer can grant only permissions its own session holds.
+
+Service sessions may send only an explicit list of operations: `project.list.request`, `fetch_workspaces_request` and `fetch_agents_request` for observation, the five agent-grant operations below, and `subscription.release.request`. Every other operation is refused before permissions are considered, so a new operation stays closed to service principals until it is reviewed and added in `authorization/service-restrictions.ts`.
+
+Service sessions read individual agents (fetching one, its timeline, or following it) only through agent grants, never through daemon-wide `workspace.read`. Directory data they receive with `workspace.read` (agent and workspace lists, project lists and their updates) is projected at the transport to identity, status and timestamps: paths, permission requests, journals, questions, errors, runtime metadata, scripts, terminals and git or forge state are replaced with empty values. Give external applications an [overview observer token](execution-installation.md#read-only-overview) or exact agent grants; daemon-wide `workspace.read` is meant for the installation coordinator's own overview principal.
+
+A second, computed layer also refuses any operation whose request carries a path-addressing field, every terminal operation and every `hosts.*` routing operation, because file, git and terminal requests take an arbitrary `cwd` or `path` and would read any file the daemon can, including its owner credential. Allowed observation still returns agent timelines, which can contain anything an agent printed.
+
+Creation prints a token once. The daemon stores only its SHA-256 hash in `$PASEO_HOME/service-principals.json` (mode 0600). A client presents it in `hello.auth` as `{kind: "serviceCredential", token}`; with `@getpaseo/client`, pass `serviceCredential` to `DaemonClient`. Daemons that support this advertise `server_info.features.servicePrincipals`. The session holds exactly the principal's permissions and every operation is checked against them. Service tokens grant nothing as an HTTP or WebSocket header bearer.
+
+Revocation is immediate: the daemon removes the principal's authority from its live sessions, closes their sockets and refuses the token afterwards. Revoked principals stay listed for audit. If `service-principals.json` cannot be parsed, the daemon admits no service principal and refuses changes rather than overwriting the file, so its revocation history survives until it is repaired.
+
+A daemon without a password admits any client that presents no credential as owner, so it refuses to issue service credentials.
+
+### Agent grants
+
+A service principal can also hold agent grants: resource-scoped authority over specific agents, separate from daemon-wide permissions. Each grant lists actions and the agents it covers. `agent.message` and `agent.cancel` name exact agent IDs only. `agent.read` may also name workspaces, covering every agent they own, including full-tool agents created there later, with their pending permission requests and timelines. Prefer exact agent IDs; Vorton's grants use exact IDs only:
+
+```json
+[
+  { "actions": ["agent.read", "agent.message", "agent.cancel"], "agentIds": ["<lane agent id>"] },
+  { "actions": ["agent.read", "agent.message"], "agentIds": ["<intake agent id>"] }
+]
+```
+
+| Action          | Operations                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `agent.read`    | `fetch_agent_request`, `fetch_agent_timeline_request`, `agent.timeline.set_subscription.request` |
+| `agent.message` | `send_agent_message_request` with `activeTurnBehavior: "steer"` and text only                    |
+| `agent.cancel`  | `cancel_agent_request`                                                                           |
+
+Pass grants with `paseo access service create --grants-file <json>` and replace them with `paseo access service set-grants <id> --grants-file <json>`. Changing grants disconnects the principal's sessions so they reconnect with the new grants. Issuing grants requires the issuer to hold `workspace.read` and `workspace.write`. Daemons that support grants advertise `server_info.features.serviceAgentGrants`.
+
+Grant checks use exact agent IDs; prefix and title resolution would reveal other agents. A granted message is plain steering text: it cannot set a session mode, attachments, images, `origin` or sender attribution, and text starting with `/` is refused because it would run provider commands and skills, such as `/rewind`. The daemon wraps every service message between `[Message <tag> from service credential "<label>", not from the owner]` and `[End of service credential message <tag>]`, which the agent and the timeline both show, and never records it as owner evidence. The tag is random per message, so text cannot imitate either marker, and the label loses control, format, line-separator, quote and bracket characters. A leading `@` in a word becomes a full-width `＠`, because Claude expands `@path` mentions into file contents without any tool call; email-style addresses are unchanged. A granted message steers without answering the owner's pending approvals, cannot reach archived or internal agents, and does not set the agent's title. Messaging an idle agent starts a turn.
+
+`agent.message` is delegated action, not read access. The target agent acts on the caller's text with its own tools, which can include running commands, editing files and creating or prompting other agents. A message grant on a full-tool agent therefore lets the credential make that agent do anything it can do. The daemon therefore allows `agent.message` and `agent.cancel` only on agents created with `toolAccess: "none"` (see below), and rechecks that on every request; cancelling a full-tool agent would end the owner's or another caller's turn.
+
+Replies from a granted agent reach the service as ordinary agent output, without a daemon tag. Treat them as untrusted: they reflect whatever text the service sent, and a consumer that relays them to people or other agents must label them as coming from that agent.
+
+Agent grants authorize no other operation: listing agents, workspaces, files and every other operation still need daemon-wide permissions, and path-addressed operations stay refused. A service session must advertise `owned_subscriptions` and `selective_agent_timeline`, so it receives only replies to its own requests and its own subscriptions. The transport delivers a message to it only when every agent the message names is one the session was allowed to address.
+
+### Tool-less agents
+
+The owner can create an agent that cannot call any tool by setting `toolAccess: "none"` in its creation config, for example `createAgent({ config: { provider: "claude", cwd, toolAccess: "none" } })`. Only owner sessions may set it, and only at creation; no later update removes it. Daemons that support it advertise `server_info.features.agentToolAccess`, and the client refuses to send it to a daemon that does not, which would otherwise drop the field and launch the agent with every tool.
+
+It runs only on the Claude provider family, resolved through the provider registry, so `claude-account-*` entries qualify. The daemon launches it without Paseo tools, plugin tools or MCP servers. The Claude provider passes `tools: []`, empty MCP servers with `strictMcpConfig`, no plugins, skills, subagents or setting sources, disabled hooks and a `canUseTool` that denies everything. It refuses permission-skipping modes and provider commands that add CLI arguments. A provider or mode switch that would break these rules is refused, and a tool-less agent never adopts a hosted session, which was launched with its host's tools.
+
 ## Resources
 
-Permissions are daemon-wide today. Future grants may select workspaces or agents, but operation classification remains inside the authorization module:
+Permissions are daemon-wide. [Agent grants](#agent-grants) are the first resource-scoped authority; they cover agent operations only. Broader workspace-scoped grants remain future work, and operation classification remains inside the authorization module:
 
 ```ts
 type Grant = {

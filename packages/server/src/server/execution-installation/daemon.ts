@@ -177,15 +177,17 @@ export async function submitInstallationCoordinator(
 export async function connectInstallationDaemon(
   config: InstallationConfig,
   kind: ExecutionEnvironmentKind,
+  // A service credential replaces the environment password with a scoped principal.
+  auth?: { serviceCredential: string; clientId?: string },
 ): Promise<DaemonClient> {
   const target = config[kind];
   const descriptor = config.public.environments.find((environment) => environment.kind === kind);
   if (!target || !descriptor) throw new Error("Installation environment is missing");
   const client = new DaemonClient({
     url: `ws://${target.endpoint}/ws`,
-    password: target.password,
+    ...(auth ? { serviceCredential: auth.serviceCredential } : { password: target.password }),
     expectedServerId: descriptor.serverId,
-    clientId: `installation-${randomUUID()}`,
+    clientId: auth?.clientId ?? `installation-${randomUUID()}`,
     clientType: "cli",
     connectTimeoutMs: DAEMON_RESPONSE_TIMEOUT_MS,
     reconnect: { enabled: false },
