@@ -117,7 +117,11 @@ import {
   resolveStoredAgentUpdatedAt,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
-import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import {
+  AgentNotFoundError,
+  ensureAgentLoaded,
+  ensureUnarchivedAgentLoaded,
+} from "./agent/agent-loading.js";
 import {
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
@@ -9974,17 +9978,28 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "agent.provider_subagents.list.request" }>,
   ): Promise<void> {
     try {
-      await ensureUnarchivedAgentLoaded(msg.parentAgentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
+      // The sidebar polls this for every thread, so it must never start or resume a provider
+      // session: that made each poll retry threads that cannot load. Provider subagents live
+      // only in a loaded session, so an unloaded thread has none to report. Opening the thread
+      // loads it, and its subagents then arrive through `agent.provider_subagents.update`.
+      const record = await this.agentStorage.get(msg.parentAgentId);
+      if (record?.archivedAt) {
+        throw new Error(`Agent is archived: ${msg.parentAgentId}`);
+      }
+      const loaded = this.agentManager.getAgent(msg.parentAgentId) !== null;
+      if (!loaded && !record) {
+        throw new AgentNotFoundError(msg.parentAgentId);
+      }
+      if (!loaded && record?.internal) {
+        // Matches the loaded path, which hides internal agents from this list.
+        throw new Error(`Unknown agent '${msg.parentAgentId}'`);
+      }
       this.emit({
         type: "agent.provider_subagents.list.response",
         payload: {
           requestId: msg.requestId,
           parentAgentId: msg.parentAgentId,
-          subagents: this.agentManager.listProviderSubagents(msg.parentAgentId),
+          subagents: loaded ? this.agentManager.listProviderSubagents(msg.parentAgentId) : [],
           error: null,
         },
       });

@@ -6407,6 +6407,11 @@ export class AgentManager {
     const agent = this.requireSessionAgent(agentId);
     try {
       await this.hydrateTimelineFromLegacyProviderHistory(agent, options);
+      // Quiet history hydration still needs to restore descriptors cleared by an unloaded list.
+      // Publish the final snapshot without replaying the parent's timeline or child history.
+      for (const subagent of this.providerSubagents.list(agentId)) {
+        this.dispatch({ type: "provider_subagent", event: { type: "upsert", subagent } });
+      }
     } finally {
       // Rows from history are committed (or were already); held live events may follow them now.
       agent.session.historyApplied?.();
