@@ -153,7 +153,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.17.1",
     "@anthropic-ai/claude-agent-sdk": "0.3.246",
-    "@anthropic-ai/claude-code": "2.1.318",
+    "@anthropic-ai/claude-code": "2.1.321",
     "@anthropic-ai/sdk": "^0.104.2",
     "@getpaseo/client": "26.11.902",
     "@getpaseo/highlight": "26.11.902",
