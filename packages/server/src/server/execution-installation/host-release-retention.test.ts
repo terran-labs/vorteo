@@ -33,8 +33,10 @@ import {
 import { sessionHostReleaseRoot } from "../session-host/service.js";
 import { linkedReleasePathsInCommands, releaseProcessPaths } from "./host-release-processes.js";
 import {
+  HostReleaseCleanupUnsupportedError,
   hostReleaseRetentionIdle,
   pruneHostReleases,
+  restoreHostReleasesAtStart,
   recordLinkTargets,
   ReleaseRootLockedError,
   removeReleaseTree,
@@ -1188,4 +1190,49 @@ test("a real run records its plan before the first deletion", async () => {
   });
   expect(events[0]).toBe("plan 4");
   expect(events.filter((event) => event === "delete").length).toBeGreaterThan(0);
+});
+
+/** Run `body` while process.platform reports `platform`. */
+async function onPlatform<T>(platform: NodeJS.Platform, body: () => Promise<T>): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  try {
+    return await body();
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+test("on Windows every cleanup entry point refuses before touching anything", async () => {
+  const f = fixture(4);
+  renameSync(path.join(f.root, id(0)), setAside(f, 0));
+  const historyFile = path.join(f.base, "release-link-history.json");
+  const before = treeSnapshot(f.base);
+  const logged: string[] = [];
+  const logger = {
+    info: (message: string) => logged.push(message),
+    warn: (_fields: Record<string, unknown>, message: string) => logged.push(message),
+  };
+  await onPlatform("win32", async () => {
+    for (const dryRun of [false, true])
+      await expect(
+        pruneHostReleases({ releaseRoot: f.root, referenced: [f.current], keepNewest: 1, dryRun }),
+      ).rejects.toBeInstanceOf(HostReleaseCleanupUnsupportedError);
+    await expect(restoreSetAsideReleases(f.root)).rejects.toThrow(
+      "Host release cleanup is not supported on Windows",
+    );
+    await expect(
+      recordLinkTargets({ releaseRoot: f.root, links: [f.current], historyFile }),
+    ).rejects.toBeInstanceOf(HostReleaseCleanupUnsupportedError);
+    // Coordinator start goes on: the startup restore is a no-op and throws nothing.
+    expect(() => restoreHostReleasesAtStart({ releaseRoot: f.root }, logger)).not.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(logged).toEqual([]);
+  expect(existsSync(historyFile)).toBe(false);
+  expect(treeSnapshot(f.base)).toEqual(before);
+  // Elsewhere the same startup call puts the set-aside release back.
+  restoreHostReleasesAtStart({ releaseRoot: f.root }, logger);
+  await expect.poll(() => existsSync(f.release(0))).toBe(true);
+  expect(logged).toEqual(["Put back a Host release left set aside"]);
 });

@@ -2748,6 +2748,33 @@ test("source builds fail before activation, uncertain dispatch retains selection
     });
     expect(failedDryRun.receipt.note).toContain("Dry run could not finish");
     config.hostReleaseCleanup = undefined;
+    // On Windows the run records why it refused and writes no link history.
+    const historyFile = path.join(config.stateDir, "source-updates", "release-link-history.json");
+    // An empty history, which any run that got as far as recording link targets would fill.
+    const history = `${JSON.stringify({ version: 1, targets: [] })}\n`;
+    await writeFile(historyFile, history);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const details: Record<string, unknown> = {};
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      const note = await (
+        updates as unknown as {
+          retainHostReleases(
+            previous: string,
+            record: (more: Record<string, unknown>) => void,
+          ): Promise<string>;
+        }
+      ).retainHostReleases(previous, (more) => Object.assign(details, more));
+      expect(note).toContain("Host release cleanup is not supported on Windows");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+    expect(details).toEqual({
+      mode: "dry-run",
+      keepNewest: 3,
+      error: "Host release cleanup is not supported on Windows",
+    });
+    expect(await readFile(historyFile, "utf8")).toBe(history);
 
     const nextUpdate = { ...update, baseCommit: chainCommit, sourceCommit: "d".repeat(40) };
     updates.stage(nextUpdate, bundle);

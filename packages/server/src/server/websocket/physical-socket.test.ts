@@ -213,3 +213,140 @@ test("an awaited framing failure terminates its real socket immediately", async 
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test("server fan-out accounts each recipient and separates routed frames at the burst boundary", async () => {
+  const { VoiceAssistantWebSocketServer } = await import("../websocket-server.js");
+  const { VirtualHostSocket } = await import("../connected-hosts/link.js");
+  const { WebSocketRuntimeMetricsWindow } = await import("./runtime-metrics.js");
+  let now = 0;
+  let clockThrows = false;
+  const metrics = new WebSocketRuntimeMetricsWindow(() => {
+    if (clockThrows) throw new Error("observer clock failed");
+    return now;
+  });
+  const sent: Array<string | Uint8Array | ArrayBuffer> = [];
+  const direct = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send: (frame: string | Uint8Array | ArrayBuffer) => {
+      sent.push(frame);
+    },
+  };
+  const routed = new VirtualHostSocket(
+    async (frame) => {
+      sent.push(frame);
+    },
+    () => undefined,
+    () => 0,
+    (hello) => hello,
+  );
+  const identities = new Map([
+    [direct, { connectionId: "direct" }],
+    [routed, { connectionId: "routed" }],
+  ]);
+  for (const [socket, { connectionId }] of identities) {
+    metrics.traffic.open({
+      connectionId,
+      transport: "direct",
+      peer: "external",
+      browserOrigin: true,
+    });
+    metrics.traffic.hello({
+      connectionId,
+      continuityKey: connectionId,
+      clientType: "browser",
+      resumed: false,
+      routed: socket === routed,
+    });
+  }
+  // Use the actual public broadcast and send methods without constructing a listening daemon.
+  const server: InstanceType<typeof VoiceAssistantWebSocketServer> = Object.create(
+    VoiceAssistantWebSocketServer.prototype,
+  );
+  Object.assign(server, {
+    runtimeMetrics: metrics,
+    chunkedSockets: new WeakMap(),
+    socketIdentities: identities,
+    sessions: new Map(
+      [...identities.keys()].map((socket) => [
+        socket,
+        { session: { supportsForSource: () => true } },
+      ]),
+    ),
+    logger: { warn: () => undefined },
+  });
+  now = 1000;
+  server.broadcast({ type: "pong" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const bytes = Buffer.byteLength(JSON.stringify({ type: "pong" }));
+  const snapshot = metrics.traffic.snapshotAndReset();
+  if (!("totals" in snapshot)) throw new Error("accounting failed");
+  expect(sent).toHaveLength(2);
+  expect(snapshot.totals.logicalAttempts).toEqual([2, bytes * 2]);
+  expect(snapshot.totals.publications).toBe(1);
+  expect(snapshot.totals.physicalFrames.attempted).toEqual([1, bytes]);
+  expect(snapshot.totals.routedFrames.attempted).toEqual([1, bytes]);
+  expect(snapshot.burstConnections[0]).toContainEqual([
+    [0, 0],
+    [bytes, bytes],
+    [bytes, bytes],
+  ]);
+  clockThrows = true;
+  expect(() => server.broadcast({ type: "pong" })).not.toThrow();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(sent).toHaveLength(4);
+  expect(metrics.traffic.snapshotAndReset().accountingErrors).toBeGreaterThan(0);
+  clockThrows = false;
+  metrics.traffic.dispose();
+});
+
+test("throwing observers cannot change send success or transport failure", async () => {
+  const failure = new Error("transport failed");
+  const observe = () => {
+    throw new Error("observer failed");
+  };
+  for (const error of [undefined, failure]) {
+    const callbackSocket = {
+      readyState: 1,
+      send: (_frame: string | Uint8Array | ArrayBuffer, callback?: (error?: Error) => void) => {
+        queueMicrotask(() => callback?.(error));
+      },
+    };
+    const promisedSocket = {
+      readyState: 1,
+      send: () => (error ? Promise.reject(error) : Promise.resolve()),
+    };
+    for (const socket of [callbackSocket, promisedSocket]) {
+      const result = sendBoundedPhysicalFrameAndWait({
+        socket,
+        frame: "é🌊",
+        observe,
+        onHighWater: () => undefined,
+      });
+      if (error) await expect(result).rejects.toBe(error);
+      else await expect(result).resolves.toBe(true);
+    }
+    expect(
+      sendBoundedPhysicalFrame({
+        socket: promisedSocket,
+        frame: "é🌊",
+        observe,
+        onHighWater: () => undefined,
+      }),
+    ).toBe(true);
+  }
+  const socket = {
+    readyState: 1,
+    send: () => {
+      throw failure;
+    },
+  };
+  expect(() =>
+    sendBoundedPhysicalFrame({ socket, frame: "x", observe, onHighWater: () => undefined }),
+  ).toThrow(failure);
+  await expect(
+    sendBoundedPhysicalFrameAndWait({ socket, frame: "x", observe, onHighWater: () => undefined }),
+  ).rejects.toBe(failure);
+  // Vitest reports any observer exception or derived-promise rejection left unhandled here.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});

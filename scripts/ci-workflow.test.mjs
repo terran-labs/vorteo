@@ -209,6 +209,10 @@ test("focused contracts stay inside existing required checks", () => {
   assert.match(desktop, /npm run test --workspace=@getpaseo\/desktop/);
   assert.ok(!jobs.has("desktop-browser-bridge"));
   assert.ok(!jobs.has("playwright-desktop"));
+  assert.match(
+    jobs.get("typecheck").join("\n"),
+    /name: Install website test browsers\n        timeout-minutes: 12[\s\S]*for attempt in 1 2; do[\s\S]*run_phase recovery sudo timeout --kill-after=5s 30s[\s\S]*run_phase dependencies sudo timeout --kill-after=5s 180s[^\n]*install-deps chromium webkit[\s\S]*run_phase browsers timeout --kill-after=5s 120s[^\n]*install chromium webkit/,
+  );
 });
 
 test("PR routing ignores manifests whose only change is the Vorteo version", () => {
