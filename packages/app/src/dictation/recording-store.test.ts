@@ -223,4 +223,80 @@ describe("DictationRecordingStore", () => {
     expect(events).toEqual([]);
     expect((await store.findPending("long"))?.segments).toEqual(["x".repeat(120)]);
   });
+
+  it("lists unsent recordings, partial ones as partial, but never another tab's", async () => {
+    const locks = new Set<string>();
+    const backend = new MemoryDictationRecordingBackend(locks);
+    let clock = 1_000_000;
+    const now = () => clock;
+    // A previous page: one complete recording, one that lost a write.
+    const previous = new DictationRecordingStore(backend, { retryDelayMs: 0, now });
+    const complete = previous.begin("dictation:a", FORMAT)!;
+    previous.append(complete, "c0");
+    const partial = previous.begin("dictation:b", FORMAT)!;
+    previous.append(partial, "p0");
+    await previous.flush();
+    backend.failNextSegmentWrites = 3;
+    previous.append(partial, "p1");
+    await previous.flush();
+    previous.release(complete);
+    previous.release(partial);
+    // Another tab is recording right now.
+    const otherTab = new DictationRecordingStore(backend, { now });
+    const live = otherTab.begin("dictation:c", FORMAT)!;
+    otherTab.append(live, "l0");
+    await otherTab.flush();
+    clock += 60_000;
+
+    const store = new DictationRecordingStore(backend, { now });
+    store.retainInMemory("dictation:d", {
+      segments: ["m0"],
+      createdAt: 5,
+      format: FORMAT,
+      storedId: null,
+    });
+    const listed = await store.listUnsent();
+    const byScope = Object.fromEntries(listed.map((row) => [row.scope, row]));
+    expect(Object.keys(byScope).sort()).toEqual(["dictation:a", "dictation:b", "dictation:d"]);
+    expect(byScope["dictation:a"]?.completeness).toBe("complete");
+    expect(byScope["dictation:b"]?.completeness).toBe("partial");
+    expect(byScope["dictation:b"]?.segmentCount).toBe(1);
+    expect(byScope["dictation:d"]?.memoryOnly).toBe(true);
+    expect(await store.readUnsent(partial)).toEqual(["p0"]);
+  });
+
+  it("never deletes from a stale list a recording another tab took, and lets a failed take go", async () => {
+    const locks = new Set<string>();
+    const backend = new MemoryDictationRecordingBackend(locks);
+    const previous = new DictationRecordingStore(backend, { retryDelayMs: 0 });
+    const id = previous.begin("dictation:a", FORMAT)!;
+    previous.append(id, "a0");
+    await previous.flush();
+    previous.release(id);
+
+    const tabA = new DictationRecordingStore(backend, { retryDelayMs: 0 });
+    const tabB = new DictationRecordingStore(backend, { retryDelayMs: 0 });
+    const [staleRow] = await tabB.listUnsent();
+    expect(staleRow?.key).toBe(id);
+
+    // Moving it fails on a storage error: the claim is let go, so every tab lists it again.
+    const putRecording = backend.putRecording.bind(backend);
+    backend.putRecording = () => Promise.reject(new Error("QuotaExceededError"));
+    await expect(tabA.adoptUnsent(id, "dictation:here", undefined)).rejects.toThrow();
+    backend.putRecording = putRecording;
+    expect(locks.has(id)).toBe(false);
+    expect((await tabB.listUnsent()).map((row) => row.key)).toEqual([id]);
+
+    // Tab A takes it for Retry; tab B's stale Discard is refused and the audio survives.
+    expect((await tabA.adoptUnsent(id, "dictation:here", undefined))?.segments).toEqual(["a0"]);
+    expect(await tabB.discardUnsent(staleRow!.key)).toBe("unavailable");
+    expect(backend.segments.get(id)).toEqual(["a0"]);
+    expect(tabA.persistence(id, 1)).toBe("stored");
+
+    // Once tab A lets it go, Discard deletes it and leaves no claim behind.
+    tabA.release(id);
+    expect(await tabB.discardUnsent(id)).toBe("discarded");
+    expect(backend.recordings.has(id)).toBe(false);
+    expect(locks.size).toBe(0);
+  });
 });

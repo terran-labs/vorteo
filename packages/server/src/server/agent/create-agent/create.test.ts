@@ -35,7 +35,21 @@ import { inventorySkills } from "../../orchestration-skills/internal/inventory.j
 
 import type { AgentSessionConfig } from "../agent-sdk-types.js";
 
-import { createAgentCommand, launchCodexHome } from "./create.js";
+import {
+  createAgentCommand,
+  launchCodexHome,
+  leadLaunchCreateInput,
+  prepareLeadLaunch,
+  startConfirmedLeadLaunch,
+} from "./create.js";
+import {
+  LEAD_LAUNCH_ID_LABEL,
+  leadLaunchQuestion,
+  type LeadLaunchRecord,
+} from "../lead-launch/model.js";
+import { randomUUID } from "node:crypto";
+import { planProviderPreferencesMigration } from "../provider-preferences/migration.js";
+import { sharedWorkflowProfileId } from "@getpaseo/protocol/provider-preferences";
 
 import { QuotaReserveAdmissionError } from "../quota-reserve/admission.js";
 
@@ -1647,3 +1661,398 @@ test.each([undefined, "selected-workspace"])(
     }
   },
 );
+
+test("a lead on another preset starts once, only on the owner's choice, with the confirmed values", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "lead-launch-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = new AgentManager({
+    clients: { one: createTestAgentClient("one") },
+    registry: storage,
+    logger,
+  });
+  const delivered: string[] = [];
+  agentManager.setMessageQueueControl({
+    pause: vi.fn(),
+    wake: vi.fn(),
+    acceptedHistory: async () => [],
+    recordProviderMessageId: vi.fn(),
+    reconcileHistory: vi.fn(),
+    suppressHistoryRestoration: vi.fn(),
+    queueRestartContinuation: vi.fn(),
+    queueQuestionAnswer: async (_agentId: string, _questionId: string, text: string) => {
+      delivered.push(text);
+    },
+  } as unknown as Parameters<AgentManager["setMessageQueueControl"]>[0]);
+  try {
+    const worker = { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" };
+    const profiles: Array<{
+      id: string;
+      name: string;
+      provider: string;
+      model: string;
+      thinkingOptionId?: string;
+      instructions?: string;
+    }> = [
+      { id: "lead", name: "Lead", provider: "one", model: "gpt-5.4", thinkingOptionId: "high" },
+      { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" },
+    ];
+    const supervisor = await agentManager.createAgent(
+      {
+        provider: "one",
+        cwd: workdir,
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "one", workerProfileId: worker.id },
+          worker,
+        },
+      },
+      undefined,
+      { workspaceId: "ws-team", owner: { kind: "user" } },
+    );
+    const dependencies = {
+      agentManager,
+      agentStorage: storage,
+      logger,
+      providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+      getAgentProfiles: () => profiles,
+    };
+    agentManager.setLeadLauncher((confirmed, record) =>
+      startConfirmedLeadLaunch(dependencies, confirmed, record),
+    );
+    const request = async (): Promise<LeadLaunchRecord> => {
+      const id = randomUUID();
+      const prompt = "Lead the new workspace";
+      const binding = await prepareLeadLaunch(
+        dependencies,
+        leadLaunchCreateInput({
+          callerAgentId: supervisor.id,
+          launchId: id,
+          profileId: "lead",
+          provider: "one",
+          title: "Lead",
+          initialPrompt: prompt,
+          cwd: workdir,
+          workspaceId: "ws-lead",
+          leadLaunch: { phase: "prepare" },
+        }),
+      );
+      const record: LeadLaunchRecord = {
+        id,
+        callerAgentId: supervisor.id,
+        requestedAt: new Date().toISOString(),
+        title: "Lead",
+        reason: "Needs a stronger model",
+        initialPrompt: prompt,
+        options: [{ optionId: "requested", profileId: "lead", label: "Start on Lead", binding }],
+        status: "pending",
+      };
+      await agentManager.requestLeadLaunch(
+        supervisor.id,
+        record,
+        leadLaunchQuestion({
+          record,
+          callerTitle: "Coordinator",
+          workerBinding: null,
+          workspaceLabel: "lead",
+          now: record.requestedAt,
+        }),
+      );
+      return record;
+    };
+    const leads = () =>
+      agentManager.listAgents().filter((agent) => agent.labels[LEAD_LAUNCH_ID_LABEL]);
+    const answer = (questionId: string, optionIds?: string[], text = "Start on Lead") =>
+      agentManager.answerQuestion(supervisor.id, {
+        questionId,
+        answer: text,
+        answeredBy: "browser:owner",
+        ...(optionIds ? { optionIds, source: "option" as const } : {}),
+      });
+
+    // create_agent still refuses the other preset and points to the confirmed route.
+    await expect(
+      createAgentCommand(dependencies, {
+        kind: "mcp",
+        provider: "one",
+        profileId: "lead",
+        callerAgentId: supervisor.id,
+        title: "Lead",
+        background: true,
+        notifyOnFinish: false,
+      }),
+    ).rejects.toThrow("request_lead_launch");
+
+    // Asking starts nothing, and the launch path refuses a record the owner has not claimed.
+    const first = await request();
+    expect(leads()).toEqual([]);
+    // The card recommends nothing; the agent's requested escalation is not a default.
+    const card = (await agentManager.readQuestions(supervisor.id)).find((q) => q.id === first.id);
+    expect(card?.recommendedOptionIds).toBeUndefined();
+    await expect(
+      startConfirmedLeadLaunch(
+        dependencies,
+        { launchId: first.id, callerAgentId: supervisor.id, option: first.options[0]! },
+        first,
+      ),
+    ).rejects.toThrow("not been confirmed");
+    // Only a listed option counts; free text is never interpreted as consent.
+    await expect(answer(first.id, ["alternative-9"])).rejects.toThrow();
+    await expect(answer(first.id, undefined, "sure, go ahead")).rejects.toThrow();
+    expect(leads()).toEqual([]);
+
+    await answer(first.id, ["requested"]);
+    await answer(first.id, ["requested"]);
+    expect(leads()).toHaveLength(1);
+    const lead = leads()[0]!;
+    expect(lead.config).toMatchObject({
+      provider: "one",
+      model: "gpt-5.4",
+      thinkingOptionId: "high",
+    });
+    expect(lead.config.profileLaunch?.profile.id).toBe("lead");
+    expect(lead.labels[PARENT_AGENT_ID_LABEL]).toBeUndefined();
+    expect(lead.workspaceId).toBe("ws-lead");
+    expect(await agentManager.readLeadLaunch(supervisor.id, first.id)).toMatchObject({
+      status: "launched",
+      launchedAgentId: lead.id,
+      approvedBy: "browser:owner",
+    });
+    expect(delivered.at(-1)).toContain(lead.id);
+
+    // Two answers racing each other still claim the launch once.
+    const concurrent = await request();
+    await Promise.all([answer(concurrent.id, ["requested"]), answer(concurrent.id, ["requested"])]);
+    expect(leads()).toHaveLength(2);
+
+    // Any edit to the preset after the ask refuses the launch, including settings the card does
+    // not display, such as the preset's instructions.
+    const second = await request();
+    profiles[0] = { ...profiles[0]!, instructions: "Also push to main." };
+    await answer(second.id, ["requested"]);
+    expect(leads()).toHaveLength(2);
+    expect(await agentManager.readLeadLaunch(supervisor.id, second.id)).toMatchObject({
+      status: "failed",
+      failureCode: "lead-binding-changed",
+    });
+
+    // Withdrawing cancels the launch for good.
+    const third = await request();
+    await agentManager.mutateQuestions(supervisor.id, { operation: "withdraw", id: third.id });
+    await expect(answer(third.id, ["requested"])).rejects.toThrow("withdrew");
+    expect(await agentManager.readLeadLaunch(supervisor.id, third.id)).toMatchObject({
+      status: "cancelled",
+    });
+    expect(leads()).toHaveLength(2);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("a supervisor's worker launching off the worker preset is logged by the preset fence", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "worker-hop-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = new AgentManager({
+    clients: { one: createTestAgentClient("one") },
+    registry: storage,
+    logger,
+  });
+  try {
+    const worker = { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" };
+    const profiles = [worker, { id: "lead", name: "Lead", provider: "one", model: "gpt-5.5" }];
+    const supervisor = await agentManager.createAgent(
+      {
+        provider: "one",
+        cwd: workdir,
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "one", workerProfileId: worker.id },
+          worker,
+        },
+      },
+      undefined,
+      { workspaceId: "ws-team", owner: { kind: "user" } },
+    );
+    // A worker preset never has a worker of its own, so the worker's create_agent is open.
+    const child = await agentManager.createAgent({ provider: "one", cwd: workdir }, undefined, {
+      workspaceId: "ws-team",
+      labels: { [PARENT_AGENT_ID_LABEL]: supervisor.id },
+      owner: { kind: "user" },
+    });
+    const warnings: Array<{ fields: unknown; message: unknown }> = [];
+    const recording = Object.assign(Object.create(logger), {
+      warn: (fields: unknown, message: unknown) => warnings.push({ fields, message }),
+    }) as typeof logger;
+    const launch = (profileId: string, detached: boolean) =>
+      createAgentCommand(
+        {
+          agentManager,
+          agentStorage: storage,
+          logger: recording,
+          providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+          getAgentProfiles: () => profiles,
+        },
+        {
+          kind: "mcp",
+          provider: "one",
+          profileId,
+          callerAgentId: child.id,
+          title: "Hop",
+          detached,
+          background: true,
+          notifyOnFinish: false,
+        },
+      );
+
+    // Report-only for now: the hop still launches, but it is no longer silent.
+    const hop = await launch("lead", true);
+    expect(hop.snapshot.config.profileLaunch?.profile.id).toBe("lead");
+    expect(warnings).toContainEqual({
+      message: "Preset fence would refuse",
+      fields: expect.objectContaining({
+        path: "create_agent",
+        reason: "preset-required",
+        callerAgentId: child.id,
+        supervisorAgentId: supervisor.id,
+        workerProfileId: worker.id,
+      }),
+    });
+
+    // A builder's attached reviewer on the supervisor's worker preset stays unflagged.
+    warnings.length = 0;
+    await launch(worker.id, false);
+    expect(warnings).toEqual([]);
+
+    // An idle coordinator is closed out of memory; its stored record still governs the worker.
+    await agentManager.closeAgent(supervisor.id);
+    expect(agentManager.getAgent(supervisor.id)).toBeNull();
+    warnings.length = 0;
+    await launch("lead", true);
+    expect(warnings).toContainEqual({
+      message: "Preset fence would refuse",
+      fields: expect.objectContaining({
+        reason: "preset-required",
+        supervisorAgentId: supervisor.id,
+      }),
+    });
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("an unrelated settings save between the ask and the click still launches the confirmed lead", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "lead-launch-unrelated-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = new AgentManager({
+    clients: { one: createTestAgentClient("one") },
+    registry: storage,
+    logger,
+  });
+  agentManager.setMessageQueueControl({
+    pause: vi.fn(),
+    wake: vi.fn(),
+    acceptedHistory: async () => [],
+    recordProviderMessageId: vi.fn(),
+    reconcileHistory: vi.fn(),
+    suppressHistoryRestoration: vi.fn(),
+    queueRestartContinuation: vi.fn(),
+    queueQuestionAnswer: vi.fn(async () => {}),
+  } as unknown as Parameters<AgentManager["setMessageQueueControl"]>[0]);
+  try {
+    const providers = { one: { extends: "codex" } };
+    const { preferences } = planProviderPreferencesMigration({
+      profiles: [
+        { id: "lead", name: "Lead", provider: "one", model: "gpt-5.4", thinkingOptionId: "high" },
+        { id: "other", name: "Other", provider: "one", model: "gpt-5.4" },
+      ],
+      providers,
+    });
+    let settings = MutableDaemonConfigSchema.parse({
+      mcp: { injectIntoAgents: false },
+      providers,
+      sharedProviderPreferences: preferences,
+    });
+    const worker = { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" };
+    const supervisor = await agentManager.createAgent(
+      {
+        provider: "one",
+        cwd: workdir,
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "one", workerProfileId: worker.id },
+          worker,
+        },
+      },
+      undefined,
+      { workspaceId: "ws-team", owner: { kind: "user" } },
+    );
+    const dependencies = {
+      agentManager,
+      agentStorage: storage,
+      logger,
+      providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+      getSharedProviderConfig: () => settings,
+      validateSharedConfiguration: async () => [],
+    };
+    agentManager.setLeadLauncher((confirmed, record) =>
+      startConfirmedLeadLaunch(dependencies, confirmed, record),
+    );
+    const id = randomUUID();
+    const profileId = sharedWorkflowProfileId("one", "lead");
+    const binding = await prepareLeadLaunch(
+      dependencies,
+      leadLaunchCreateInput({
+        callerAgentId: supervisor.id,
+        launchId: id,
+        profileId,
+        provider: "one",
+        title: "Lead",
+        initialPrompt: "Lead the new workspace",
+        cwd: workdir,
+        workspaceId: "ws-lead",
+        leadLaunch: { phase: "prepare" },
+      }),
+    );
+    const record: LeadLaunchRecord = {
+      id,
+      callerAgentId: supervisor.id,
+      requestedAt: new Date().toISOString(),
+      title: "Lead",
+      reason: "Needs a stronger model",
+      initialPrompt: "Lead the new workspace",
+      options: [{ optionId: "requested", profileId, label: "Start on Lead", binding }],
+      status: "pending",
+    };
+    await agentManager.requestLeadLaunch(
+      supervisor.id,
+      record,
+      leadLaunchQuestion({
+        record,
+        callerTitle: "Coordinator",
+        workerBinding: null,
+        workspaceLabel: "lead",
+        now: record.requestedAt,
+      }),
+    );
+
+    // The owner saves a different preset, which bumps the shared preferences revision.
+    const edited = structuredClone(preferences);
+    edited.revision += 1;
+    const other = edited.providers.codex!.workflows.find((workflow) => workflow.id === "other")!;
+    other.thinkingOptionId = "low";
+    settings = MutableDaemonConfigSchema.parse({
+      mcp: { injectIntoAgents: false },
+      providers,
+      sharedProviderPreferences: edited,
+    });
+
+    await agentManager.answerQuestion(supervisor.id, {
+      questionId: id,
+      answer: "Start on Lead",
+      answeredBy: "browser:owner",
+      optionIds: ["requested"],
+      source: "option",
+    });
+    expect(await agentManager.readLeadLaunch(supervisor.id, id)).toMatchObject({
+      status: "launched",
+    });
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});

@@ -19,6 +19,13 @@ import {
 } from "./questions/model.js";
 import { editThreadGoal, type ThreadGoalEdit } from "./agent-goal.js";
 import {
+  LEAD_LAUNCH_ID_LABEL,
+  leadLaunchOutcomeText,
+  chosenOptionId,
+  type ConfirmedLeadLaunch,
+  type LeadLaunchRecord,
+} from "./lead-launch/model.js";
+import {
   AGENT_LAUNCH_GUIDANCE,
   composeSystemPromptParts,
   ownerTimeZoneGuidance,
@@ -2102,6 +2109,116 @@ export class AgentManager {
         })();
       },
     };
+  }
+
+  private leadLauncher:
+    | ((launch: ConfirmedLeadLaunch, record: LeadLaunchRecord) => Promise<{ agentId: string }>)
+    | null = null;
+  /** Launches this process is running now; recovery must not mark them interrupted. */
+  private readonly leadLaunchesInFlight = new Set<string>();
+
+  /** The daemon's create path for owner-confirmed lead launches, set once at startup. */
+  setLeadLauncher(
+    launcher: (
+      launch: ConfirmedLeadLaunch,
+      record: LeadLaunchRecord,
+    ) => Promise<{ agentId: string }>,
+  ): void {
+    this.leadLauncher = launcher;
+  }
+
+  async readLeadLaunch(agentId: string, launchId: string): Promise<LeadLaunchRecord | null> {
+    return this.requireRegistry().readLeadLaunch(agentId, launchId);
+  }
+
+  /** Stores the launch record and asks the owner on the caller's thread. Starts nothing. */
+  async requestLeadLaunch(
+    agentId: string,
+    record: LeadLaunchRecord,
+    question: import("@getpaseo/protocol/agent-questions").AgentQuestion,
+  ): Promise<void> {
+    const agent = this.requireAgent(agentId);
+    if (!this.leadLauncher)
+      throw new QuestionError("unavailable", "This daemon cannot start confirmed lead launches.");
+    agent.questions = await this.requireRegistry().requestLeadLaunch(agentId, record, question);
+    this.emitState(agent, { persist: false });
+  }
+
+  /**
+   * Runs a launch the owner just confirmed. The claim is a single serialized write, so a repeated
+   * or concurrent answer finds the record no longer pending and starts nothing.
+   */
+  private async runConfirmedLeadLaunch(
+    agentId: string,
+    question: import("@getpaseo/protocol/agent-questions").AgentQuestion,
+  ): Promise<"done" | "already-claimed"> {
+    const registry = this.requireRegistry();
+    const optionId = question.answerOptionIds?.[0];
+    if (!optionId || !question.answeredBy) return "done";
+    let claimed: LeadLaunchRecord;
+    try {
+      claimed = await registry.updateLeadLaunch(agentId, question.id, {
+        kind: "claim",
+        optionId,
+        approvedBy: question.answeredBy,
+      });
+    } catch {
+      // A launch another request is still starting delivers its own outcome; a settled one is
+      // delivered again here, which the stable answer message ID makes idempotent.
+      const current = await registry.readLeadLaunch(agentId, question.id);
+      return current?.status === "starting" ? "already-claimed" : "done";
+    }
+    if (claimed.status !== "starting") return "done";
+    const option = claimed.options.find((candidate) => candidate.optionId === optionId)!;
+    try {
+      if (!this.leadLauncher) throw new Error("lead launcher unavailable");
+      const { agentId: launchedAgentId } = await this.leadLauncher(
+        { launchId: claimed.id, callerAgentId: agentId, option },
+        claimed,
+      );
+      await registry.updateLeadLaunch(agentId, claimed.id, {
+        kind: "finish",
+        status: "launched",
+        agentId: launchedAgentId,
+      });
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error && typeof error.code === "string"
+          ? error.code
+          : "error";
+      this.logger.warn({ agentId, launchId: claimed.id, code }, "Confirmed lead launch failed");
+      await registry
+        .updateLeadLaunch(agentId, claimed.id, {
+          kind: "finish",
+          status: "failed",
+          failureCode: code,
+        })
+        .catch(() => undefined);
+    }
+    return "done";
+  }
+
+  /**
+   * After a restart, a confirmed launch left pending or starting never resumes on its own. One
+   * that registered its thread before the stop is recorded as launched; any other is interrupted.
+   */
+  private async settleInterruptedLeadLaunch(agentId: string, launchId: string): Promise<void> {
+    if (this.leadLaunchesInFlight.has(launchId)) return;
+    const registry = this.requireRegistry();
+    const record = await registry.readLeadLaunch(agentId, launchId);
+    if (!record || (record.status !== "pending" && record.status !== "starting")) return;
+    const launched =
+      record.status === "starting"
+        ? (await registry.list()).find((item) => item.labels[LEAD_LAUNCH_ID_LABEL] === launchId)
+        : undefined;
+    await registry
+      .updateLeadLaunch(agentId, launchId, {
+        kind: "finish",
+        ...(launched
+          ? { status: "launched" as const, agentId: launched.id }
+          : { status: "interrupted" as const }),
+      })
+      .catch(() => undefined);
   }
 
   setMessageQueueControl(
@@ -6262,11 +6379,35 @@ export class AgentManager {
     const agent = this.requireAgent(agentId);
     if (!this.messageQueueControl?.queueQuestionAnswer)
       throw new QuestionError("unavailable", "This daemon cannot deliver answers to the thread.");
-    const { questions, answered } = await this.requireRegistry().answerQuestion(agentId, input);
-    agent.questions = questions;
-    this.emitState(agent, { persist: false });
-    if (answered.answerDeliveredAt) return structuredClone(questions);
-    return this.deliverAnswer(agentId, answered);
+    const launch = await this.requireRegistry().readLeadLaunch(agentId, input.questionId);
+    if (launch) {
+      // A launch answer must name exactly one stored option; free text is never interpreted.
+      const question = (await this.readQuestions(agentId)).find(
+        (item) => item.id === input.questionId,
+      );
+      if (question?.status === "open") {
+        try {
+          input = { ...input, optionIds: [chosenOptionId(question, input)], source: "option" };
+        } catch (error) {
+          throw new QuestionError("invalid", (error as Error).message);
+        }
+      }
+    }
+    // Recovery must not settle this launch between the answer's write and its claim.
+    const guarded = launch && !this.leadLaunchesInFlight.has(launch.id) ? launch.id : null;
+    if (guarded) this.leadLaunchesInFlight.add(guarded);
+    try {
+      const { questions, answered } = await this.requireRegistry().answerQuestion(agentId, input);
+      agent.questions = questions;
+      this.emitState(agent, { persist: false });
+      if (answered.answerDeliveredAt) return structuredClone(questions);
+      if (launch && (await this.runConfirmedLeadLaunch(agentId, answered)) === "already-claimed")
+        // Another answer request owns this launch and delivers its outcome.
+        return structuredClone(questions);
+      return this.deliverAnswer(agentId, answered);
+    } finally {
+      if (guarded) this.leadLaunchesInFlight.delete(guarded);
+    }
   }
 
   /**
@@ -6285,7 +6426,13 @@ export class AgentManager {
     // An acceptance committed before a crash cut off its record needs only the record.
     if ((await queue.acceptedHistory(agentId)).some((entry) => entry.item.id === messageId))
       return this.recordAnswerReceived(agentId, question.id);
-    await queue.queueQuestionAnswer(agentId, question.id, answerMessage(question));
+    const launch = await this.requireRegistry().readLeadLaunch(agentId, question.id);
+    const outcome = leadLaunchOutcomeText(launch ?? undefined);
+    await queue.queueQuestionAnswer(
+      agentId,
+      question.id,
+      outcome ? `${answerMessage(question)}\n\n${outcome}` : answerMessage(question),
+    );
     const steered = await queue.steerQueuedMessage?.(agentId, messageId, async (item) => {
       const agent = this.agents.get(agentId);
       const turnId = agent?.activeForegroundTurnId ?? agent?.activeTurnId;
@@ -6352,7 +6499,10 @@ export class AgentManager {
     const pending = (this.agents.get(agentId)?.questions ?? []).filter(
       (question) => question.status === "answered" && !question.answerDeliveredAt,
     );
-    for (const question of pending) await this.deliverAnswer(agentId, question);
+    for (const question of pending) {
+      await this.settleInterruptedLeadLaunch(agentId, question.id);
+      await this.deliverAnswer(agentId, question);
+    }
   }
 
   private checklistWakeMonitorAvailable: ChecklistWakeAvailability = () => false;

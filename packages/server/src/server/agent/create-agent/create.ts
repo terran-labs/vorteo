@@ -51,6 +51,16 @@ import { normalizeClientMessageId, resolveClientMessageId } from "../../client-m
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
 import { resolveCreateAgentIntent } from "./intent.js";
 import { ProfileLaunchError, resolveProfileLaunch } from "./profile.js";
+import { checkPresetFence } from "../lead-launch/fence.js";
+import {
+  LEAD_LAUNCH_ID_LABEL,
+  LEAD_LAUNCH_REQUESTED_BY_LABEL,
+  launchBinding,
+  sameBinding,
+  type ConfirmedLeadLaunch,
+  type LeadLaunchBinding,
+  type LeadLaunchRecord,
+} from "../lead-launch/model.js";
 import {
   readInstallationProfileConfig,
   type InstallationProfileReader,
@@ -132,6 +142,12 @@ export interface CreateAgentFromMcpInput {
   }) => void | Promise<void>;
   onWorktreeCreated?: (createdWorktree: CreatePaseoWorktreeWorkflowResult) => void;
   callerAgentId?: string;
+  /**
+   * Set only by daemon code for an owner-confirmed lead launch (#360); no tool or wire schema
+   * carries it. `prepare` resolves the binding the owner will be shown without creating anything.
+   * `launch` creates the thread only if the claimed record and the fresh resolution both match.
+   */
+  leadLaunch?: { phase: "prepare" } | { phase: "launch"; confirmed: ConfirmedLeadLaunch };
   callerContext?: {
     lockedCwd?: string;
     allowCustomCwd?: boolean;
@@ -366,6 +382,172 @@ async function admitAndCreateAgent(
   dependencies: CreateAgentCommandDependencies,
   input: CreateAgentCommandInput,
 ) {
+  if (input.kind === "mcp" && input.leadLaunch?.phase === "prepare")
+    throw new Error("A lead launch preview never creates a thread.");
+  await fenceInheritedWorkerLaunch(dependencies, input);
+  const admitted = await admitAgent(dependencies, input);
+  if (input.kind === "mcp" && input.leadLaunch?.phase === "launch") {
+    await assertConfirmedLeadLaunch(
+      admitted.dependencies,
+      input,
+      input.leadLaunch.confirmed,
+      admitted.resolved,
+    );
+  }
+  const { resolved } = admitted;
+  dependencies = admitted.dependencies;
+  const snapshot = await dependencies.agentManager.createAgent(
+    resolved.config,
+    input.kind === "session" ? input.agentId : undefined,
+    resolved.createOptions,
+  );
+  return { dependencies, resolved, snapshot };
+}
+
+/** The input both the preview and the launch of a confirmed lead resolve, so their bindings agree. */
+export function leadLaunchCreateInput(params: {
+  callerAgentId: string;
+  launchId: string;
+  profileId: string;
+  provider: string;
+  title: string;
+  initialPrompt: string;
+  cwd: string;
+  workspaceId: string;
+  leadLaunch: NonNullable<CreateAgentFromMcpInput["leadLaunch"]>;
+}): CreateAgentFromMcpInput {
+  return {
+    kind: "mcp",
+    profileId: params.profileId,
+    provider: params.provider,
+    title: params.title,
+    initialPrompt: params.initialPrompt,
+    cwd: params.cwd,
+    workspaceId: params.workspaceId,
+    // A lead is a peer, not the coordinator's worker. The labels keep its provenance.
+    detached: true,
+    labels: {
+      [LEAD_LAUNCH_REQUESTED_BY_LABEL]: params.callerAgentId,
+      [LEAD_LAUNCH_ID_LABEL]: params.launchId,
+    },
+    notifyOnFinish: false,
+    promptFailure: "log",
+    callerAgentId: params.callerAgentId,
+    leadLaunch: params.leadLaunch,
+  };
+}
+
+/** Starts a launch the owner confirmed. The create path re-checks the record and binding. */
+export async function startConfirmedLeadLaunch(
+  dependencies: CreateAgentCommandDependencies,
+  confirmed: ConfirmedLeadLaunch,
+  record: LeadLaunchRecord,
+): Promise<{ agentId: string }> {
+  const { binding } = confirmed.option;
+  const created = await createAgentCommand(
+    dependencies,
+    leadLaunchCreateInput({
+      callerAgentId: confirmed.callerAgentId,
+      launchId: confirmed.launchId,
+      profileId: confirmed.option.profileId,
+      provider: binding.provider,
+      title: record.title,
+      initialPrompt: record.initialPrompt,
+      cwd: binding.cwd,
+      workspaceId: binding.workspaceId,
+      leadLaunch: { phase: "launch", confirmed },
+    }),
+  );
+  return { agentId: created.snapshot.id };
+}
+
+/**
+ * Resolves and admits a lead launch exactly as the confirmed launch will, and returns its binding
+ * without creating a thread or workspace. Refusals surface now, before the owner is asked.
+ */
+export async function prepareLeadLaunch(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentFromMcpInput,
+): Promise<LeadLaunchBinding> {
+  if (input.leadLaunch?.phase !== "prepare" || !input.workspaceId || input.worktree)
+    throw new Error("A lead launch preview needs an existing workspace and no new worktree.");
+  const { resolved } = await admitAgent(dependencies, input);
+  return resolvedBinding(input, resolved);
+}
+
+function resolvedBinding(input: CreateAgentFromMcpInput, resolved: ResolvedCreateAgent) {
+  return launchBinding({
+    config: resolved.config,
+    workspaceId: requireResolvedWorkspaceId(resolved.createOptions.workspaceId),
+    prompt: input.initialPrompt ?? "",
+  });
+}
+
+/**
+ * The gate for a confirmed launch, checked on the create path itself: the stored record must be
+ * claimed for this exact option by the owner's answer, and the launch must resolve to the same
+ * binding the owner saw. A preset, account or setting that changed since then refuses the launch.
+ */
+async function assertConfirmedLeadLaunch(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentFromMcpInput,
+  confirmed: ConfirmedLeadLaunch,
+  resolved: ResolvedCreateAgent,
+): Promise<void> {
+  if (input.callerAgentId !== confirmed.callerAgentId)
+    throw new WorkerLaunchRefusal("The confirmed launch belongs to another thread.", "lead-caller");
+  const record = await dependencies.agentManager.readLeadLaunch(
+    confirmed.callerAgentId,
+    confirmed.launchId,
+  );
+  const stored = record?.options.find((option) => option.optionId === confirmed.option.optionId);
+  if (
+    !record ||
+    record.status !== "starting" ||
+    record.chosenOptionId !== confirmed.option.optionId ||
+    !record.approvedBy ||
+    !stored ||
+    !sameBinding(stored.binding, confirmed.option.binding)
+  )
+    throw new WorkerLaunchRefusal(
+      "This launch has not been confirmed by the owner.",
+      "lead-unconfirmed",
+    );
+  if (!sameBinding(resolvedBinding(input, resolved), stored.binding))
+    throw new WorkerLaunchRefusal(
+      "The preset or its settings changed after the owner confirmed this launch, so nothing was started. Ask again with request_lead_launch.",
+      "lead-binding-changed",
+    );
+}
+
+/**
+ * A caller beneath a supervisor with a worker preset has no worker preset of its own, so the
+ * refusal in resolveMcpProfileInput does not reach it. The preset fence reports it instead
+ * (#360, log-only until slice C). The supervisor's own launches are refused there and skipped here.
+ */
+async function fenceInheritedWorkerLaunch(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+): Promise<void> {
+  if (input.kind !== "mcp" || !input.callerAgentId || input.leadLaunch) return;
+  if (dependencies.agentManager.getAgent(input.callerAgentId)?.config.profileLaunch?.worker) return;
+  await checkPresetFence(
+    {
+      logger: dependencies.logger,
+      getAgent: (id) => dependencies.agentManager.getAgent(id),
+      getStored: (id) => dependencies.agentStorage.get(id),
+    },
+    "create_agent",
+    input.callerAgentId,
+    { kind: "launch", profileId: input.profileId ?? null, detached: input.detached ?? false },
+  );
+}
+
+/** Admission, preset resolution and policy, without registering the agent. */
+async function admitAgent(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+) {
   const bindings = observeLaunchBindings(dependencies);
   dependencies = await admitProfileDependencies(
     bindings.dependencies,
@@ -386,13 +568,7 @@ async function admitAndCreateAgent(
   }
 
   bindings.assertCurrent();
-
-  const snapshot = await dependencies.agentManager.createAgent(
-    resolved.config,
-    input.kind === "session" ? input.agentId : undefined,
-    resolved.createOptions,
-  );
-  return { dependencies, resolved, snapshot };
+  return { dependencies, resolved };
 }
 
 const LOG_STRING_LIMIT = 200;
@@ -638,13 +814,18 @@ function resolveMcpProfileInput(
   const caller = input.callerAgentId
     ? requireParentAgent(dependencies.agentManager, input.callerAgentId)
     : null;
-  const worker = caller?.config.profileLaunch?.worker;
+  // An owner-confirmed lead is checked against its stored record instead; see
+  // assertConfirmedLeadLaunch. It resolves against every preset, not only the worker's.
+  const confirmedLead = Boolean(caller && input.leadLaunch);
+  const worker = confirmedLead ? undefined : caller?.config.profileLaunch?.worker;
   if (worker && input.profileId !== worker.id) {
     throw new WorkerLaunchRefusal(
-      `This supervisor must launch its configured worker preset: ${worker.id}`,
+      `This supervisor must launch its configured worker preset: ${worker.id}. To start a lead thread on another preset, use request_lead_launch; the owner confirms it.`,
       "preset-required",
     );
   }
+  if (confirmedLead && !input.profileId)
+    throw new WorkerLaunchRefusal("A lead launch needs a preset.", "lead-preset-required");
   if (worker && input.detached)
     throw new WorkerLaunchRefusal(
       "Managed workers cannot be detached from their supervisor.",

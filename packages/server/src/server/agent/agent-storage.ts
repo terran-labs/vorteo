@@ -44,6 +44,12 @@ import { z } from "zod";
 import type { Logger } from "pino";
 import { QueueGoalHoldSchema, type QueueGoalHold } from "../message-queue/goal-hold.js";
 import { ProfileSwitchRecordSchema } from "./profile-switch/history.js";
+import {
+  claimLeadLaunch,
+  LeadLaunchError,
+  LeadLaunchRecordSchema,
+  type LeadLaunchRecord,
+} from "./lead-launch/model.js";
 import { SwitchHistoryStore } from "./profile-switch/history-store.js";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
@@ -132,6 +138,8 @@ export type ChecklistWakeGeneration = z.infer<typeof ChecklistWakeGenerationSche
 const STORED_AGENT_SCHEMA = z.object({
   journal: z.array(AgentJournalEntrySchema).optional(),
   questions: z.array(AgentQuestionSchema).optional(),
+  // Daemon-owned launch records behind confirmation questions; written only with questions.
+  leadLaunches: z.array(LeadLaunchRecordSchema).optional(),
   tasks: z.array(AgentTaskItemSchema).optional(),
   checklistWakeGenerations: z.array(ChecklistWakeGenerationSchema).optional(),
   goalSubmissions: z.array(GoalSubmissionSchema).optional(),
@@ -586,7 +594,17 @@ export class AgentStorage {
           now: new Date().toISOString(),
           taskIds,
         });
-        return committed === questions ? null : { ...record, questions: committed };
+        if (committed === questions) return null;
+        // Withdrawing a confirmation question cancels its launch in the same write.
+        const leadLaunches =
+          mutation.operation === "withdraw"
+            ? record.leadLaunches?.map((launch) =>
+                launch.id === mutation.id && launch.status === "pending"
+                  ? { ...launch, status: "cancelled" as const }
+                  : launch,
+              )
+            : record.leadLaunches;
+        return { ...record, questions: committed, ...(leadLaunches ? { leadLaunches } : {}) };
       },
       { questionsWrite: true },
     );
@@ -613,6 +631,108 @@ export class AgentStorage {
     );
     if (committed === null)
       throw new QuestionError("not_found", "The thread was deleted before the answer was saved.");
+    return structuredClone(committed);
+  }
+
+  /** Stores a launch record and its daemon-owned question in one write. */
+  async requestLeadLaunch(
+    agentId: string,
+    launch: LeadLaunchRecord,
+    question: AgentQuestion,
+  ): Promise<AgentQuestion[]> {
+    await this.load();
+    let committed: AgentQuestion[] | null = null;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || record.archivedAt)
+          throw new QuestionError("not_found", "Only an active thread can request a launch.");
+        const questions = record.questions ?? [];
+        if (questions.some((item) => item.id === question.id))
+          throw new QuestionError("conflict", "This launch ID is already in use.");
+        committed = [...questions, question];
+        const launches = record.leadLaunches ?? [];
+        const isOpen = (item: LeadLaunchRecord) =>
+          item.status === "pending" || item.status === "starting";
+        const finished = launches.filter((item) => !isOpen(item));
+        return {
+          ...record,
+          questions: committed,
+          leadLaunches: [
+            ...finished.slice(-RETAINED_LEAD_LAUNCHES),
+            ...launches.filter(isOpen),
+            launch,
+          ],
+        };
+      },
+      { questionsWrite: true },
+    );
+    if (committed === null)
+      throw new QuestionError("not_found", "The thread was deleted before the launch was saved.");
+    return structuredClone(committed);
+  }
+
+  async readLeadLaunch(agentId: string, launchId: string): Promise<LeadLaunchRecord | null> {
+    const record = await this.get(agentId);
+    const launch = record?.leadLaunches?.find((item) => item.id === launchId);
+    return launch ? structuredClone(launch) : null;
+  }
+
+  /**
+   * Moves a launch to its next state in one serialized write. `claim` admits only a pending
+   * record whose question the owner answered with this option, so a launch starts at most once.
+   */
+  async updateLeadLaunch(
+    agentId: string,
+    launchId: string,
+    change:
+      | { kind: "claim"; optionId: string; approvedBy: string }
+      | {
+          kind: "finish";
+          status: "launched" | "failed" | "interrupted";
+          agentId?: string;
+          failureCode?: string;
+        },
+  ): Promise<LeadLaunchRecord> {
+    await this.load();
+    let committed: LeadLaunchRecord | null = null;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        const launch = record?.leadLaunches?.find((item) => item.id === launchId);
+        if (!record || !launch) throw new LeadLaunchError("not_found", "Launch record not found.");
+        let next: LeadLaunchRecord;
+        if (change.kind === "claim") {
+          const question = record.questions?.find((item) => item.id === launchId);
+          if (
+            question?.status !== "answered" ||
+            question.answerOptionIds?.length !== 1 ||
+            question.answerOptionIds[0] !== change.optionId
+          )
+            throw new LeadLaunchError("not_pending", "The owner has not confirmed this option.");
+          next = claimLeadLaunch(launch, { ...change, now: new Date().toISOString() });
+        } else {
+          if (
+            launch.status !== "starting" &&
+            !(change.status === "interrupted" && launch.status === "pending")
+          )
+            throw new LeadLaunchError("not_pending", `This launch is already ${launch.status}.`);
+          next = {
+            ...launch,
+            status: change.status,
+            ...(change.agentId ? { launchedAgentId: change.agentId } : {}),
+            ...(change.failureCode ? { failureCode: change.failureCode } : {}),
+          };
+        }
+        committed = next;
+        return {
+          ...record,
+          leadLaunches: record.leadLaunches!.map((item) => (item.id === launchId ? next : item)),
+        };
+      },
+      { questionsWrite: true },
+    );
+    if (committed === null) throw new LeadLaunchError("not_found", "Launch record not found.");
     return structuredClone(committed);
   }
 
@@ -1276,7 +1396,10 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
   if (!options.goalReviewWrite && existing)
     record.blockedGoalReviewNeeded = existing.blockedGoalReviewNeeded;
   if (!options.journalWrite && existing) record.journal = existing.journal;
-  if (!options.questionsWrite && existing) record.questions = existing.questions;
+  if (!options.questionsWrite && existing) {
+    record.questions = existing.questions;
+    record.leadLaunches = existing.leadLaunches;
+  }
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
   if (!options.checklistWakeWrite)
     record.checklistWakeGenerations = existing?.checklistWakeGenerations;
@@ -1292,6 +1415,9 @@ function preserveToolAccess(record: StoredAgentRecord, existing: StoredAgentReco
     record.config = { ...record.config, toolAccess: "none" };
   }
 }
+
+/** Finished launch records kept for audit beyond the open ones. */
+const RETAINED_LEAD_LAUNCHES = 20;
 
 class CorruptJournalError extends Error {
   constructor(cause: unknown) {

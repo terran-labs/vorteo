@@ -22,6 +22,7 @@ import {
   PCM_DICTATION_FORMAT,
   SHORT_CAPTURE_DISCARD_MS,
   toError,
+  type AdoptUnsentResult,
   type DictationCancelOptions,
   type SaveAudioState,
   type DictationStatus,
@@ -167,6 +168,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     token: number;
     promise: Promise<PreparedDictationExport | null>;
   } | null>(null);
+  /** The recording in the sender was handed over before its stop finished; its end may be missing. */
+  const [recordingMayBeTruncated, setRecordingMayBeTruncated] = useState(false);
   const [recordingPersistence, setRecordingPersistence] =
     useState<DictationRecordingPersistence | null>(null);
 
@@ -248,6 +251,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
   const clearStreamingState = useCallback(() => {
     senderRef.current?.clearAll();
+    if (mountedRef.current) {
+      setRecordingMayBeTruncated(false);
+    }
     latestPartialTranscriptRef.current = "";
     setPartialTranscript("");
     markAudioChanged(true);
@@ -701,6 +707,58 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   ]);
   retryRef.current = retryFailedDictation;
 
+  /**
+   * Retries an unsent recording from the list in this composer. Refuses while this composer is
+   * recording, sending or holding unsent audio of its own: two recordings are never merged.
+   */
+  const adoptUnsentRecording = useCallback(
+    async (key: string): Promise<AdoptUnsentResult> => {
+      const sender = senderRef.current;
+      const store = recordingStoreRef.current;
+      if (
+        !sender ||
+        !store ||
+        !scope ||
+        isRecordingRef.current ||
+        isProcessingRef.current ||
+        sender.hasSegments() ||
+        statusRef.current !== "idle"
+      ) {
+        return "busy";
+      }
+      const adopted = await store.adoptUnsent(key, scope, recordingServerIdRef.current);
+      if (!adopted) {
+        return "gone";
+      }
+      if (!mountedRef.current || sender.hasSegments() || statusRef.current !== "idle") {
+        // Something started meanwhile: put the recording back rather than merge.
+        store.retainInMemory(adopted.recording.scope, {
+          segments: adopted.segments,
+          createdAt: adopted.recording.createdAt,
+          format: adopted.recording.format,
+          storedId:
+            adopted.memoryOnly && adopted.recording.id.startsWith("memory-")
+              ? null
+              : adopted.recording.id,
+          serverId: adopted.recording.serverId,
+          ...(adopted.completeness === "may-be-truncated" ? { mayBeTruncated: true } : {}),
+        });
+        return "busy";
+      }
+      storedRecordingIdRef.current = adopted.recording.id;
+      recordingCreatedAtRef.current = adopted.recording.createdAt;
+      recordingFormatRef.current = adopted.recording.format;
+      sender.loadSegments(adopted.segments);
+      markAudioChanged(true);
+      setRecordingMayBeTruncated(adopted.completeness === "may-be-truncated");
+      setError(null);
+      setStatus("failed");
+      void retryRef.current();
+      return "adopted";
+    },
+    [markAudioChanged, scope, setStatus],
+  );
+
   const reportSaveFailure = useCallback(
     (err: unknown) => {
       console.error("[useDictation] Failed to save dictation audio", err);
@@ -892,6 +950,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       recordingFormatRef.current = pending.recording.format;
       current.loadSegments(pending.segments);
       markAudioChanged(true);
+      setRecordingMayBeTruncated(pending.mayBeTruncated === true);
       setError(null);
       setStatus("failed");
     };
@@ -945,8 +1004,17 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         // A stop that never settles must not hold the recording back from the next mount: hand
         // over after a bounded wait with whatever audio has arrived.
         let stopTimer: ReturnType<typeof setTimeout> | null = null;
+        let stopFinished = false;
+        const stopping = async () => {
+          try {
+            await audioStop.current();
+          } catch {
+            // A failed stop still finished; nothing more will arrive.
+          }
+          stopFinished = true;
+        };
         await Promise.race([
-          audioStop.current().catch(() => undefined),
+          stopping(),
           new Promise<void>((resolve) => {
             stopTimer = setTimeout(resolve, HANDOVER_STOP_WAIT_MS);
           }),
@@ -960,18 +1028,24 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
           if (store && scope && sender?.hasSegments()) {
             await store.flush();
             const count = sender.getSegmentCount();
-            if (store.persistence(storedId, count) !== "stored") {
+            // A stop that did not finish may still owe its last audio: say the copy may be short.
+            if (!stopFinished || store.persistence(storedId, count) !== "stored") {
               store.retainInMemory(scope, {
                 segments: sender.getSegments(),
                 createdAt: recordingCreatedAtRef.current || Date.now(),
                 format: recordingFormatRef.current,
                 storedId: storedId && !storedId.startsWith("memory-") ? storedId : null,
                 serverId: recordingServerIdRef.current,
+                ...(stopFinished ? {} : { mayBeTruncated: true }),
               });
               return;
             }
           }
-          if (storedId) {
+          if (storedId && !sender?.hasSegments()) {
+            // Closed before any audio arrived (for example during the permission prompt): the
+            // stored row is empty, and memory always holds at least what the device holds.
+            void store?.delete(storedId);
+          } else if (storedId) {
             store?.release(storedId);
           }
         } finally {
@@ -1039,7 +1113,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     discardFailedDictation,
     saveFailedRecording,
     recordingPersistence,
+    recordingMayBeTruncated,
     saveAudioState,
+    adoptUnsentRecording,
     reset,
   };
 }

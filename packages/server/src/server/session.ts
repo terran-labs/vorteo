@@ -182,6 +182,7 @@ import type {
   ManagedAgent,
 } from "./agent/agent-manager.js";
 import { createAgentCommand } from "./agent/create-agent/create.js";
+import { checkPresetFence } from "./agent/lead-launch/fence.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { normalizeClientMessageId } from "./client-message-id.js";
 import { createAgentForMessage, AgentCreationRequestError } from "./agent/create-agent/requests.js";
@@ -5939,6 +5940,7 @@ export class Session {
         createdWorktree,
         workspacePromptTitle,
       });
+      await this.checkSessionPresetFence(msg.callerAgentId, resolvedIntent);
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
@@ -6027,6 +6029,27 @@ export class Session {
       });
       throw error;
     }
+  }
+
+  /** An agent creating through the CLI is held to its worker preset like create_agent (#360). */
+  private checkSessionPresetFence(
+    callerAgentId: string | undefined,
+    resolved: { config: { profileId?: string }; intent: { parentAgentId: string | null } },
+  ): Promise<void> {
+    return checkPresetFence(
+      {
+        logger: this.sessionLogger,
+        getAgent: (id) => this.agentManager.getAgent(id),
+        getStored: (id) => this.agentStorage.get(id),
+      },
+      "session_create_agent",
+      callerAgentId,
+      {
+        kind: "launch",
+        profileId: resolved.config.profileId ?? null,
+        detached: !resolved.intent.parentAgentId,
+      },
+    );
   }
 
   private async resolveSessionCreateAgentIntent(input: {

@@ -51,6 +51,7 @@ import {
 } from "./mcp-server.js";
 
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
+import { presetFenceReason, type PresetFenceRequest } from "./lead-launch/fence.js";
 
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 
@@ -6311,6 +6312,140 @@ describe("update_agent MCP tool", () => {
 
     expect(spies.agentStorage.get).not.toHaveBeenCalled();
     expect(spies.agentManager.updateAgentMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe("preset fence (#360)", () => {
+  const workerPreset = { id: "worker-preset", name: "Worker", provider: "codex", model: "gpt-5.4" };
+  const worker = workerPreset;
+  const supervisor = {
+    id: "supervisor",
+    labels: {},
+    config: {
+      provider: "codex",
+      cwd: REPO_CWD,
+      profileLaunch: {
+        profile: { id: "team", name: "Team", provider: "codex", workerProfileId: worker.id },
+        worker,
+      },
+    },
+  } as unknown as ManagedAgent;
+  const thread = (id: string, labels: Record<string, string>) =>
+    ({ id, labels, config: { provider: "codex", cwd: REPO_CWD } }) as unknown as ManagedAgent;
+  const agents: Record<string, ManagedAgent> = {
+    supervisor,
+    child: thread("child", { "paseo.parent-agent-id": "supervisor" }),
+    lead: thread("lead", { "paseo.lead-requested-by": "supervisor" }),
+    other: thread("other", {}),
+  };
+
+  it("decides each path for a supervisor's own threads and launches", () => {
+    const cases: Array<[ManagedAgent | null, PresetFenceRequest, string | null]> = [
+      [null, { kind: "launch", profileId: worker.id }, null],
+      [null, { kind: "launch", profileId: "other-preset" }, "preset-required"],
+      [null, { kind: "launch", profileId: null }, "preset-required"],
+      [null, { kind: "launch", profileId: worker.id, detached: true }, "detached"],
+      [
+        agents.child!,
+        { kind: "change", targetAgentId: "child", settings: true },
+        "settings-change",
+      ],
+      [
+        agents.child!,
+        { kind: "change", targetAgentId: "child", labels: { "paseo.parent-agent-id": "" } },
+        "governance-label",
+      ],
+      [agents.lead!, { kind: "change", targetAgentId: "lead", settings: true }, "settings-change"],
+      [agents.child!, { kind: "change", targetAgentId: "child", labels: { role: "x" } }, null],
+      [agents.other!, { kind: "change", targetAgentId: "other", settings: true }, null],
+    ];
+    for (const [target, request, reason] of cases)
+      expect(presetFenceReason(supervisor, target, request)).toBe(reason);
+    // The supervisor's worker is held to the same preset (the worker hop, #360 review B1).
+    const workerThread = agents.child!;
+    const governed = { kind: "supervisor" as const, supervisor };
+    const launchOther = { kind: "launch" as const, profileId: "other-preset" };
+    expect(presetFenceReason(workerThread, null, launchOther, governed)).toBe("preset-required");
+    expect(
+      presetFenceReason(
+        workerThread,
+        null,
+        { kind: "launch", profileId: workerPreset.id },
+        governed,
+      ),
+    ).toBeNull();
+    // A parent chain that cannot be followed is reported, never treated as ungoverned.
+    const unknown = { kind: "unknown" as const, why: "parent-unresolved" as const };
+    expect(presetFenceReason(workerThread, null, launchOther, unknown)).toBe("supervisor-unknown");
+    expect(presetFenceReason(workerThread, null, launchOther, { kind: "none" })).toBeNull();
+    expect(presetFenceReason(agents.other!, null, { kind: "launch", profileId: "x" })).toBeNull();
+  });
+
+  it("logs a would-refuse decision from update_agent and still applies the change", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((id: string) => agents[id] ?? null);
+    const warnings: Array<{ fields: unknown; message: unknown }> = [];
+    const recording: ReturnType<typeof createTestLogger> = Object.assign(
+      Object.create(createTestLogger()),
+      {
+        warn: (fields: unknown, message: unknown) => warnings.push({ fields, message }),
+        child: () => recording,
+      },
+    );
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger: recording,
+      callerAgentId: "supervisor",
+    });
+    await registeredTool(server, "update_agent").handler({
+      agentId: "child",
+      labels: { "paseo.parent-agent-id": "" },
+    });
+    expect(spies.agentManager.updateAgentMetadata).toHaveBeenCalled();
+    expect(warnings).toContainEqual({
+      message: "Preset fence would refuse",
+      fields: expect.objectContaining({
+        path: "update_agent",
+        reason: "governance-label",
+        enforced: false,
+        targetAgentId: "child",
+      }),
+    });
+  });
+
+  it("logs a worker clearing its own parent label, which would otherwise end the walk", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((id: string) => agents[id] ?? null);
+    const warnings: Array<{ fields: unknown; message: unknown }> = [];
+    const recording: ReturnType<typeof createTestLogger> = Object.assign(
+      Object.create(createTestLogger()),
+      {
+        warn: (fields: unknown, message: unknown) => warnings.push({ fields, message }),
+        child: () => recording,
+      },
+    );
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger: recording,
+      callerAgentId: "child",
+    });
+    await registeredTool(server, "update_agent").handler({
+      agentId: "child",
+      labels: { "paseo.parent-agent-id": "" },
+    });
+    expect(warnings).toContainEqual({
+      message: "Preset fence would refuse",
+      fields: expect.objectContaining({
+        path: "update_agent",
+        reason: "governance-label",
+        callerAgentId: "child",
+        supervisorAgentId: "supervisor",
+      }),
+    });
   });
 });
 

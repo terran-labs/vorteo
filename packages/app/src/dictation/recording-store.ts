@@ -42,6 +42,11 @@ export interface DictationRecordingBackend {
    * Backends without other instances to coordinate with may omit it.
    */
   claim?(id: string): Promise<DictationRecordingClaimRelease | null>;
+  /**
+   * Ids of recordings another tab or instance currently holds, found without taking any claim.
+   * Backends that cannot tell omit it, and the store falls back to the updated-at heartbeat.
+   */
+  heldByOthers?(): Promise<Set<string>>;
 }
 
 /** What the store tells the interface, so it never claims audio is safe when it is not. */
@@ -50,7 +55,9 @@ export type DictationRecordingStoreEvent =
   | { kind: "unavailable"; error: Error }
   | { kind: "incomplete"; id: string }
   /** More of a recording reached the device; the persistence state may have changed. */
-  | { kind: "written"; id: string };
+  | { kind: "written"; id: string }
+  /** An unsent recording was taken over or discarded; open lists should refresh. */
+  | { kind: "unsent-changed" };
 
 /**
  * Where a recording's audio currently lives. "stored" is positive evidence: every segment the
@@ -61,6 +68,8 @@ export type DictationRecordingPersistence = "stored" | "saving" | "memory-only" 
 export interface PendingDictationRecording {
   recording: StoredDictationRecording;
   segments: string[];
+  /** Handed over before its microphone stop finished; the end may be missing. */
+  mayBeTruncated?: boolean;
   /**
    * The audio came from a composer's memory, not the device: the device copy is missing or
    * incomplete, so the notice must not say it is kept. recording.id is the incomplete device row
@@ -77,11 +86,44 @@ export interface RetainedDictationRecording {
   /** The device row holding part of it, if any; adopting the audio adopts this row too. */
   storedId: string | null;
   serverId?: string;
+  /** The closing composer's microphone stop did not finish in time; the end may be missing. */
+  mayBeTruncated?: boolean;
+}
+
+/** A recording no composer is showing, for the Unsent recordings list. */
+export interface UnsentDictationRecording {
+  /** Device row id, or a key for audio held only in memory. */
+  key: string;
+  scope: string;
+  serverId?: string;
+  createdAt: number;
+  segmentCount: number;
+  /** Encoded size held, for the length shown; derived from what is actually held. */
+  bytes: number;
+  /**
+   * "complete": not marked incomplete; "partial": a write was lost, so only the part before the
+   * gap is held; "may-be-truncated": handed over before its microphone stop finished.
+   */
+  completeness: "complete" | "partial" | "may-be-truncated";
+  /** Held in this page's memory only; lost when the page closes. */
+  memoryOnly: boolean;
+  format: string;
+}
+
+/** An unsent recording taken over by a composer, with its audio. */
+/** "unavailable": another composer or tab holds it, or it is already gone; nothing was deleted. */
+export type DiscardUnsentResult = "discarded" | "unavailable";
+
+export interface AdoptedDictationRecording {
+  recording: StoredDictationRecording;
+  segments: string[];
+  completeness: UnsentDictationRecording["completeness"];
+  memoryOnly: boolean;
 }
 
 const MEMORY_RECORDING_PREFIX = "memory-";
 
-type RetainedEntry = RetainedDictationRecording & { retainedAt: number };
+type RetainedEntry = RetainedDictationRecording & { retainedAt: number; key: string };
 
 /**
  * About 50 minutes of 16 kHz 16-bit mono audio in base64; a 4 minute recording is about 10 MB.
@@ -320,7 +362,11 @@ export class DictationRecordingStore {
       this.active.add(recording.storedId);
     }
     const list = this.retained.get(scope) ?? [];
-    const entry: RetainedEntry = { ...recording, retainedAt: this.now() };
+    const entry: RetainedEntry = {
+      ...recording,
+      retainedAt: this.now(),
+      key: `${MEMORY_RECORDING_PREFIX}${this.createId()}`,
+    };
     list.push(entry);
     this.retained.set(scope, list);
     this.boundRetained(entry);
@@ -355,7 +401,18 @@ export class DictationRecordingStore {
     }
   }
 
-  private dropRetained(scope: string, entry: RetainedEntry, reason: "space" | "host"): void {
+  private dropRetained(scope: string, entry: RetainedEntry, reason: "space" | "silent"): void {
+    this.removeRetained(scope, entry);
+    if (entry.storedId) {
+      this.release(entry.storedId);
+    }
+    if (reason === "space") {
+      this.emit({ kind: "evicted", recording: this.describeRetained(scope, entry), reason });
+    }
+  }
+
+  /** Takes an entry out of the memory list without releasing its device row. */
+  private removeRetained(scope: string, entry: RetainedEntry): void {
     const list = this.retained.get(scope);
     if (!list) {
       return;
@@ -366,12 +423,6 @@ export class DictationRecordingStore {
     }
     if (list.length === 0) {
       this.retained.delete(scope);
-    }
-    if (entry.storedId) {
-      this.release(entry.storedId);
-    }
-    if (reason === "space") {
-      this.emit({ kind: "evicted", recording: this.describeRetained(scope, entry), reason });
     }
   }
 
@@ -438,7 +489,7 @@ export class DictationRecordingStore {
     for (const [scope, list] of Array.from(this.retained)) {
       for (const entry of Array.from(list)) {
         if (entry.serverId === serverId) {
-          this.dropRetained(scope, entry, "host");
+          this.dropRetained(scope, entry, "silent");
         }
       }
     }
@@ -510,7 +561,244 @@ export class DictationRecordingStore {
       },
       segments: entry.segments,
       fromMemory: true,
+      ...(entry.mayBeTruncated ? { mayBeTruncated: true } : {}),
     };
+  }
+
+  /**
+   * Recordings no composer is showing: device rows this instance does not own and no other tab
+   * holds, complete or incomplete, and audio held in memory from closed composers. Never takes a
+   * claim, so listing cannot interfere with another tab.
+   */
+  async listUnsent(): Promise<UnsentDictationRecording[]> {
+    const memory: UnsentDictationRecording[] = [];
+    for (const [scope, list] of this.retained) {
+      for (const entry of list) {
+        memory.push({
+          key: entry.key,
+          scope,
+          ...(entry.serverId ? { serverId: entry.serverId } : {}),
+          createdAt: entry.createdAt,
+          segmentCount: entry.segments.length,
+          bytes: entry.segments.reduce((total, segment) => total + segment.length, 0),
+          completeness: entry.mayBeTruncated ? "may-be-truncated" : "partial",
+          memoryOnly: true,
+          format: entry.format,
+        });
+      }
+    }
+    const backend = this.backend;
+    if (!backend) {
+      return memory;
+    }
+    const device = await this.exclusive(async () => {
+      this.known = null;
+      const known = await this.loadKnown(backend);
+      const heldElsewhere = backend.heldByOthers ? await backend.heldByOthers() : null;
+      const liveCutoff = this.now() - DICTATION_RECORDING_LIVE_WINDOW_MS;
+      const rows: UnsentDictationRecording[] = [];
+      for (const recording of known.values()) {
+        if (recording.segmentCount === 0 || this.active.has(recording.id)) {
+          continue;
+        }
+        // Another tab's recording is never listed: by its Web Lock, or without Web Locks by a
+        // heartbeat written in the last few seconds.
+        if (heldElsewhere ? heldElsewhere.has(recording.id) : recording.updatedAt > liveCutoff) {
+          continue;
+        }
+        rows.push({
+          key: recording.id,
+          scope: recording.scope,
+          ...(recording.serverId ? { serverId: recording.serverId } : {}),
+          createdAt: recording.createdAt,
+          segmentCount: recording.segmentCount,
+          bytes: recording.bytes,
+          completeness: recording.incomplete ? "partial" : "complete",
+          memoryOnly: false,
+          format: recording.format,
+        });
+      }
+      return rows;
+    }).catch((error: unknown) => {
+      console.warn("[DictationRecordingStore] Failed to list unsent recordings", error);
+      return [] as UnsentDictationRecording[];
+    });
+    return [...memory, ...device].sort((left, right) => right.createdAt - left.createdAt);
+  }
+
+  /** Reads an unsent recording's audio without taking it over, for Save audio. */
+  async readUnsent(key: string): Promise<string[]> {
+    for (const list of this.retained.values()) {
+      const entry = list.find((candidate) => candidate.key === key);
+      if (entry) {
+        return [...entry.segments];
+      }
+    }
+    const backend = this.backend;
+    if (!backend) {
+      return [];
+    }
+    return this.exclusive(async () => {
+      const known = await this.loadKnown(backend);
+      const recording = known.get(key);
+      return recording ? backend.readSegments(key, recording.segmentCount) : [];
+    });
+  }
+
+  /**
+   * Takes over an unsent recording for a composer: claims it, moves it to the composer's thread
+   * and Host, and returns its audio. Null when another tab or composer took it meanwhile.
+   */
+  async adoptUnsent(
+    key: string,
+    scope: string,
+    serverId: string | undefined,
+  ): Promise<AdoptedDictationRecording | null> {
+    for (const [fromScope, list] of this.retained) {
+      const index = list.findIndex((candidate) => candidate.key === key);
+      if (index < 0) {
+        continue;
+      }
+      const [entry] = list.splice(index, 1);
+      if (list.length === 0) {
+        this.retained.delete(fromScope);
+      }
+      if (entry.storedId) {
+        this.active.add(entry.storedId);
+        this.incomplete.add(entry.storedId);
+        this.rescope(entry.storedId, scope, serverId);
+      }
+      this.emit({ kind: "unsent-changed" });
+      return {
+        recording: {
+          id: entry.storedId ?? entry.key,
+          scope,
+          ...(serverId ? { serverId } : {}),
+          format: entry.format,
+          createdAt: entry.createdAt,
+          updatedAt: this.now(),
+          segmentCount: entry.segments.length,
+          bytes: entry.segments.reduce((total, segment) => total + segment.length, 0),
+          incomplete: true,
+        },
+        segments: entry.segments,
+        completeness: entry.mayBeTruncated ? "may-be-truncated" : "partial",
+        memoryOnly: true,
+      };
+    }
+    const backend = this.backend;
+    if (!backend) {
+      return null;
+    }
+    return this.exclusive(async () => {
+      const known = await this.loadKnown(backend);
+      const recording = known.get(key);
+      if (!recording || this.active.has(key)) {
+        return null;
+      }
+      if (!(await this.claimFor(backend, key))) {
+        return null;
+      }
+      this.active.add(key);
+      let segments: string[];
+      try {
+        segments = await backend.readSegments(key, recording.segmentCount);
+      } catch (error) {
+        this.release(key);
+        throw error;
+      }
+      const partial = recording.incomplete === true || segments.length !== recording.segmentCount;
+      // Never let a partial copy read as kept: the notice line depends on this.
+      if (partial) {
+        this.incomplete.add(key);
+      }
+      const moved: StoredDictationRecording = {
+        ...recording,
+        scope,
+        ...(serverId ? { serverId } : {}),
+        segmentCount: segments.length,
+      };
+      try {
+        await this.withRetry(() => backend.putRecording(moved));
+      } catch (error) {
+        // The row is unchanged on the device; let it go so every tab lists it again.
+        this.incomplete.delete(key);
+        this.release(key);
+        throw error;
+      }
+      known.set(key, moved);
+      this.durable.set(key, segments.length);
+      this.emit({ kind: "unsent-changed" });
+      return {
+        recording: moved,
+        segments,
+        completeness: partial ? "partial" : "complete",
+        memoryOnly: false,
+      };
+    });
+  }
+
+  /**
+   * Discards an unsent recording from the list: the only deletion the list performs. A list can be
+   * stale, so this refuses a recording any composer or tab holds now, and deletes only under its
+   * claim; the claim is released after the row is gone, never before.
+   */
+  async discardUnsent(key: string): Promise<DiscardUnsentResult> {
+    for (const [scope, list] of this.retained) {
+      const entry = list.find((candidate) => candidate.key === key);
+      if (entry) {
+        this.removeRetained(scope, entry);
+        if (entry.storedId) {
+          // Still owned by this instance since the handover; delete() releases it afterwards.
+          await this.delete(entry.storedId);
+        }
+        this.emit({ kind: "unsent-changed" });
+        return "discarded";
+      }
+    }
+    const backend = this.backend;
+    if (!backend) {
+      return "unavailable";
+    }
+    const result = await this.exclusive(async (): Promise<DiscardUnsentResult> => {
+      // Re-read: another tab may have taken or deleted it since the list was built.
+      this.known = null;
+      const known = await this.loadKnown(backend);
+      const recording = known.get(key);
+      if (!recording || this.active.has(key)) {
+        return "unavailable";
+      }
+      if (!(await this.claimFor(backend, key))) {
+        return "unavailable";
+      }
+      if (!backend.claim && recording.updatedAt > this.now() - DICTATION_RECORDING_LIVE_WINDOW_MS) {
+        // Without a claim API, a fresh heartbeat means another tab is still writing it.
+        this.release(key);
+        return "unavailable";
+      }
+      try {
+        await this.deleteNow(backend, key);
+      } finally {
+        this.incomplete.delete(key);
+        this.durable.delete(key);
+        this.release(key);
+      }
+      return "discarded";
+    });
+    this.emit({ kind: "unsent-changed" });
+    return result;
+  }
+
+  private rescope(id: string, scope: string, serverId: string | undefined): void {
+    this.enqueue(id, async (backend, known) => {
+      const recording = known.get(id);
+      if (!recording) {
+        return;
+      }
+      const next = { ...recording, scope, ...(serverId ? { serverId } : {}) };
+      known.set(id, next);
+      await this.withRetry(() => backend.putRecording(next));
+    });
   }
 
   private async findPendingNow(
@@ -773,6 +1061,8 @@ export class MemoryDictationRecordingBackend implements DictationRecordingBacken
     this.recordings.delete(id);
     this.segments.delete(id);
   }
+
+  heldByOthers = async (): Promise<Set<string>> => new Set(this.locks ?? []);
 
   claim = async (id: string): Promise<DictationRecordingClaimRelease | null> => {
     const locks = this.locks;
