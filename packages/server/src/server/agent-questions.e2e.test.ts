@@ -76,10 +76,13 @@ test("agents ask through MCP and the owner's answer is saved, journaled and deli
     await expect(bridge.answerAgentQuestion(agent.id, questionId, "us-east")).rejects.toThrow(
       "Answer open questions from the Vorteo app.",
     );
-    const answered = await owner.answerAgentQuestion(agent.id, questionId, " eu-west ");
-    expect(answered[0]).toMatchObject({ status: "answered", answer: "eu-west" });
-    expect(answered[0]?.answeredBy).toMatch(/^browser:/);
-    expect(answered[0]?.answerDeliveredAt).toBeDefined();
+    const saved = await owner.answerAgentQuestion(agent.id, questionId, " eu-west ");
+    expect(saved[0]).toMatchObject({ status: "answered", answer: "eu-west" });
+    expect(saved[0]?.answeredBy).toMatch(/^browser:/);
+    // Delivery is recorded when the thread's queued turn accepts the answer.
+    const answered = (
+      await owner.waitForAgentUpsert(agent.id, (value) => !!value.questions?.[0]?.answerDeliveredAt)
+    ).questions!;
     expect(await owner.answerAgentQuestion(agent.id, questionId, "eu-west")).toEqual(answered);
     await expect(owner.answerAgentQuestion(agent.id, questionId, "us-east")).rejects.toThrow(
       "already answered",

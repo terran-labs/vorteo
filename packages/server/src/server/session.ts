@@ -4834,7 +4834,10 @@ export class Session {
       await this.emitWorkspaceUpdatesForWorkspaceIds([...changedWorkspaces]);
   }
 
-  /** Points matching workspaces' memberships at `to`. Factory-managed workspaces keep theirs. */
+  /**
+   * Points matching workspaces' memberships at `to`. Factory-managed workspaces follow too: a
+   * membership only groups the sidebar, and Factory binds by project and its own membership.
+   */
   private async moveProjectMemberships(
     matches: (workspace: PersistedWorkspaceRecord) => boolean,
     from: string,
@@ -4843,7 +4846,7 @@ export class Session {
     changedWorkspaces: Set<string>,
   ): Promise<void> {
     for (const workspace of await this.workspaceRegistry.list()) {
-      if (workspace.projectMembership?.key !== from || workspace.factoryMembership) continue;
+      if (workspace.projectMembership?.key !== from) continue;
       if (!matches(workspace)) continue;
       await this.workspaceRegistry.update(workspace.workspaceId, (current) =>
         current.projectMembership?.key === from
