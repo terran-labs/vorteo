@@ -95,6 +95,7 @@ test("truncated card values reveal non-interactive details without changing row 
     await mobileTask.scrollIntoViewIfNeeded();
     await mobileTask.getByText(title, { exact: true }).click();
     await expect(tooltip).toBeHidden();
+    await page.getByTestId("checklist-edit-mode").filter({ visible: true }).click();
     await mobileTask.getByRole("button", { name: `Details for ${title}`, exact: true }).click();
     await expect(page.getByText("Task details", { exact: true })).toBeVisible();
   } finally {

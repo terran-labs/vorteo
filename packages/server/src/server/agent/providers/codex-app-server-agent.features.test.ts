@@ -1,5 +1,5 @@
 import pino from "pino";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { AgentSession, AgentSessionConfig } from "../agent-sdk-types.js";
 import { CodexAppServerAgentSession } from "./codex-app-server-agent.js";
@@ -10,6 +10,13 @@ import {
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 
 const CODEX_PROVIDER = "codex";
+
+// The owner's Chrome profile exists on developer Macs and not in CI; pin availability per test.
+const chromeAvailability = vi.hoisted(() => ({ available: false }));
+vi.mock("./codex/chrome-devtools.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./codex/chrome-devtools.js")>()),
+  isChromeAvailableForCodex: () => chromeAvailability.available,
+}));
 
 interface CollaborationModeRecord {
   name: string;
@@ -589,6 +596,44 @@ describe("Codex app-server provider features", () => {
     await expect(appServer.waitForTurnStart()).resolves.toMatchObject({
       serviceTier: "default",
     });
+  });
+
+  test("Chrome toggle restarts the app-server with the pinned DevTools MCP server", async () => {
+    chromeAvailability.available = true;
+    try {
+      const servers = [createFakeCodexAppServer(), createFakeCodexAppServer()];
+      let spawned = 0;
+      const session = new CodexAppServerAgentSession(
+        { ...createConfig(), provider: CODEX_PROVIDER },
+        null,
+        createTestLogger(),
+        async () => servers[spawned++]!.child,
+      );
+      await session.connect();
+      expect(session.features).toContainEqual(
+        expect.objectContaining({ id: "chrome", value: false }),
+      );
+
+      await session.setFeature?.("chrome", true);
+      await session.startTurn("hello");
+
+      expect(spawned).toBe(2);
+      expect(await servers[1]!.waitForRequest("thread/start")).toMatchObject({
+        config: {
+          mcp_servers: {
+            "chrome-devtools": {
+              args: expect.arrayContaining([
+                "chrome-devtools-mcp@1.12.0",
+                "--autoConnect",
+                "--no-usage-statistics",
+              ]),
+            },
+          },
+        },
+      });
+    } finally {
+      chromeAvailability.available = false;
+    }
   });
 
   test("startTurn switches collaboration mode when plan mode is enabled", async () => {

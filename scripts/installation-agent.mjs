@@ -585,6 +585,10 @@ if (
       // Batch details include each contribution's merge result, such as a conflict.
       resource = `/api/installation/restart-requests/${positionals[1]}?sourceBatches=1`;
       break;
+    case "update-status":
+      // Read-only: update policy, the last release check and the upgrade waiting or running.
+      resource = "/api/installation/update-status";
+      break;
     case "read-instructions":
       // Prints the shared agent instructions and the revision a change must be based on.
       resource = "/api/installation/settings/admission";

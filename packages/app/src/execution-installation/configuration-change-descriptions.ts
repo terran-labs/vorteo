@@ -15,6 +15,10 @@ type Descriptions = {
  * new setting cannot reach approval without a description here.
  */
 const DESCRIPTIONS: Descriptions = {
+  supervisorMaintenance: (config) =>
+    config === null
+      ? "Remove the tracked Dev supervisor maintenance plan."
+      : `Configure Dev supervisor maintenance plan ${config.sha256}. Replacing the supervisor still requires a separate tracked approval.`,
   operationalTelemetryEnabled: (config) =>
     config === null
       ? "Turn off future coordinator performance samples. Keep retained private logs."

@@ -8,13 +8,16 @@ import {
   type ReactNode,
 } from "react";
 import { ScrollView, View, type LayoutChangeEvent } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { DraggedCardHeightHandle, useDraggedCardHeight } from "@/components/card-height-handle";
 import { CardDisclosure } from "@/agent-stream/card-disclosure";
-import { TaskCard, TaskCardHeader } from "@/agent-stream/task-card";
+import { TaskCard, TaskCardBodyInsetContext, TaskCardHeader } from "@/agent-stream/task-card";
+import { TASK_CARD_BOTTOM_INSET } from "@/agent-stream/task-card-styles";
 import { CountBadge } from "@/components/ui/count-badge";
 import { usePanelStore } from "@/stores/panel-store";
 import { SUPPORTING_CARD_DEFAULTS } from "@/stores/panel-store/state";
+import { SidebarInsetContext, SidebarSectionRule } from "./sidebar-separator";
 
 /** Cards that span every thread and account, as opposed to the focused tab's right-hand cards. */
 export type GlobalCardKind = "globalQuestions" | "globalQuota";
@@ -78,10 +81,33 @@ export function useGlobalCardDisclosure(kind: GlobalCardKind) {
   return [expanded, toggle] as const;
 }
 
+const SectionContext = createContext(false);
+
+/**
+ * How far a divider inside a footer section extends past its content to reach the navigation
+ * card's edges. Apply it as a negative horizontal margin with matching extra padding, so the line
+ * spans the card while the content stays put. Zero outside a section.
+ */
+export function useSectionDividerBleed(): number {
+  const inSection = useContext(SectionContext);
+  const sidebarInset = useContext(SidebarInsetContext);
+  const bodyInset = useContext(TaskCardBodyInsetContext);
+  return inSection ? sidebarInset + bodyInset : 0;
+}
+
+/** Margin and padding that carry a top divider to the card edges; `padding` is the content's own. */
+export function sectionDividerBleedStyle(bleed: number, padding = 0) {
+  return bleed > 0 ? { marginHorizontal: -bleed, paddingHorizontal: padding + bleed } : null;
+}
+
 /** Dragging never lets the cards take more than this share of the window. */
 const MAX_DRAGGED_SHARE = 0.75;
 
-/** A collapsible sidebar card whose body scrolls inside its height budget or dragged height. */
+/**
+ * A collapsible section of the sidebar footer block. It sits inside the navigation card without
+ * its own card chrome, below a partial-width rule. While open, that rule is the section's resize
+ * grip: dragging it up grows the body, and a double press returns to automatic height.
+ */
 export function GlobalCard({
   kind,
   title,
@@ -128,8 +154,25 @@ export function GlobalCard({
     setBodyHeight(event.nativeEvent.layout.height);
   }, []);
   return (
-    <View>
-      <TaskCard scrollBody={false} flushBody testID={testID} bodyVisible={expanded}>
+    <View testID={`${testID}-section`}>
+      <SidebarSectionRule testID={`${testID}-rule`}>
+        {expanded ? (
+          <DraggedCardHeightHandle
+            card={dragged}
+            cardKey={testID}
+            height={bodyHeight}
+            maxHeight={maxDraggedHeight}
+            placement="divider"
+          />
+        ) : null}
+      </SidebarSectionRule>
+      <TaskCard
+        scrollBody={false}
+        flushBody
+        testID={testID}
+        bodyVisible={expanded}
+        style={styles.section}
+      >
         <TaskCardHeader>
           <CardDisclosure
             icon={icon}
@@ -141,25 +184,55 @@ export function GlobalCard({
           />
         </TaskCardHeader>
         {expanded ? (
-          <ScrollView
-            style={bodyStyle}
-            onLayout={onBodyLayout}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-            testID={`${testID}-body-scroll`}
-          >
+          <SectionBody style={bodyStyle} onLayout={onBodyLayout} testID={`${testID}-body-scroll`}>
             {children}
-          </ScrollView>
+          </SectionBody>
         ) : null}
       </TaskCard>
-      {expanded ? (
-        <DraggedCardHeightHandle
-          card={dragged}
-          cardKey={testID}
-          height={bodyHeight}
-          maxHeight={maxDraggedHeight}
-        />
-      ) : null}
     </View>
   );
 }
+
+/**
+ * The scrolling body spans the navigation card's full width, so dividers inside it can reach the
+ * card edges without being clipped; its content padding puts everything else back in place.
+ */
+function SectionBody({
+  style,
+  onLayout,
+  testID,
+  children,
+}: {
+  style: { maxHeight: number } | { height: number };
+  onLayout: (event: LayoutChangeEvent) => void;
+  testID: string;
+  children: ReactNode;
+}) {
+  const bleed = useContext(SidebarInsetContext) + useContext(TaskCardBodyInsetContext);
+  const layout = useMemo(
+    () => ({
+      scroll: [style, styles.flushScroll, { marginHorizontal: -bleed }],
+      content: { paddingHorizontal: bleed },
+    }),
+    [bleed, style],
+  );
+  return (
+    <ScrollView
+      style={layout.scroll}
+      contentContainerStyle={layout.content}
+      onLayout={onLayout}
+      nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
+      testID={testID}
+    >
+      <SectionContext.Provider value>{children}</SectionContext.Provider>
+    </ScrollView>
+  );
+}
+
+// The navigation card supplies the surface; a section only contributes its rule and content.
+const styles = StyleSheet.create({
+  section: { backgroundColor: "transparent", borderWidth: 0, borderRadius: 0 },
+  // Scrolling content runs to the next section's rule instead of stopping at the body inset.
+  flushScroll: { marginBottom: -TASK_CARD_BOTTOM_INSET },
+});

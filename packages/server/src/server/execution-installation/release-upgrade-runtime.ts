@@ -38,6 +38,12 @@ import {
   type UpgradePorts,
 } from "./release-upgrades.js";
 import { VORTEO_RELEASE_GIT_URL, VORTEO_RELEASE_REPOSITORY } from "./release-source.js";
+import {
+  ReleaseUpdates,
+  createUpdatePolicyStore,
+  fetchGitHubReleases,
+  type ReleaseUpdatePorts,
+} from "./release-updates.js";
 import { RestartRequestError, type InstallationRestarts } from "./restarts.js";
 import { managedServices, runCommand, type CommandRunner } from "./service-control.js";
 import {
@@ -60,6 +66,8 @@ const COMMIT = /^[a-f0-9]{40}$/;
 
 export interface ReleaseUpgradeRuntime {
   upgrades: InstallationUpgrades | null;
+  /** The update policy and release check. Null when upgrades are unavailable. */
+  updates: ReleaseUpdates | null;
   /**
    * After a Host source update this process saw succeed, moves an installation from before
    * the installer to its layout, once. Upgrades from the interface do the same first.
@@ -181,6 +189,8 @@ export function createReleaseUpgradeRuntime(input: {
   logger: Logger;
   run?: CommandRunner;
   entrypoint?: string;
+  /** Replaces the GitHub Releases API in tests. */
+  listReleases?: ReleaseUpdatePorts["listReleases"];
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
@@ -411,6 +421,22 @@ export function createReleaseUpgradeRuntime(input: {
       ? null
       : "The installer did not record the coordinator release link. Restart the coordinator with the vorteo update command.",
     currentCommit,
+    // `updates` is created below from these ports; it exists before any upgrade runs.
+    automaticAllowed: () => updates?.policy().mode === "automatic",
+    directHost: directHostUpgrades(config),
+    async busy(target) {
+      try {
+        const impact = (await restarts.impacts()).find((item) => item.target === target);
+        if (!impact) return "agent activity is unknown.";
+        if (impact.error) return impact.error;
+        const working = impact.agents.length + impact.pendingStarts;
+        return working === 0
+          ? null
+          : `${working} ${working === 1 ? "agent" : "agents"} still working.`;
+      } catch (error) {
+        return error instanceof Error ? error.message : "agent activity is unknown.";
+      }
+    },
     async resolveRelease(release) {
       const output = await run(
         "git",
@@ -472,13 +498,17 @@ export function createReleaseUpgradeRuntime(input: {
         {
           target: "host",
           reason: `${UPGRADE_REASON_PREFIX} to ${upgrade.release} (${upgrade.id})`,
-          requester: "Release upgrade",
+          requester: upgrade.automatic ? "Automatic release update policy" : "Release upgrade",
         },
         "owner",
         update,
       );
-      // The owner approved this exact release; the bundle is derived from its reviewed commit.
-      restarts.decide(job.id, job.revision, "approve", update.sha256);
+      // The owner, or the owner's automatic update policy, approved this exact release; the
+      // bundle is derived from its reviewed commit. An upgrade approved to install after current
+      // work takes the automatic updates' path: hold new work, build, then restart when idle.
+      if (upgrade.restart === "after-work")
+        restarts.decide(job.id, job.revision, "finish-current-turns", update.sha256);
+      else restarts.decide(job.id, job.revision, "approve", update.sha256);
       return job.id;
     },
     hostUpdate(jobId) {
@@ -614,6 +644,32 @@ export function createReleaseUpgradeRuntime(input: {
     ? null
     : new InstallationUpgrades(createUpgradeJournal(upgradeDirectory), ports);
 
+  /** The version in the selected Host release's manifest, such as 26.10.3001. */
+  function installedVersion(): string | null {
+    try {
+      const manifest = JSON.parse(
+        readFileSync(path.join(ports.hostRelease(), "package.json"), "utf8"),
+      );
+      return typeof manifest.version === "string" ? manifest.version : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const updates = upgrades
+    ? new ReleaseUpdates(
+        createUpdatePolicyStore(config.stateDir),
+        upgrades,
+        {
+          now: () => new Date(),
+          listReleases: input.listReleases ?? (() => fetchGitHubReleases()),
+          installedVersion,
+        },
+        logger,
+      )
+    : null;
+  void updates?.load();
+
   function upgradeDetail(): string {
     if (blocker) return blocker;
     const steps = config.container
@@ -637,6 +693,7 @@ export function createReleaseUpgradeRuntime(input: {
 
   return {
     upgrades,
+    updates,
     adoptAfterSourceUpdate,
     snapshots,
     snapshotList() {
@@ -727,6 +784,7 @@ export function createReleaseUpgradeRuntime(input: {
           : null,
         container: config.container !== undefined,
         upgrades: upgrades?.list() ?? [],
+        ...(updates ? { policy: updates.policy(), check: updates.lastCheck() } : {}),
       };
     },
   };

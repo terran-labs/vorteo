@@ -7,7 +7,10 @@ import type {
 } from "@getpaseo/protocol/installation-upgrades";
 import {
   activeUpgrade,
+  installationUpdateEntry,
   latestFinishedUpgrade,
+  pendingUpgradeDecisions,
+  upgradeDecisions,
   restoreProgress,
   snapshotPartsSummary,
   snapshotReasonLabel,
@@ -147,6 +150,51 @@ describe("release upgrades", () => {
         status: upgrades([upgrade("running", "2026-10-30T00:00:00.000Z")]),
       }),
     ).toBeNull();
+  });
+
+  it("follows the coordinator's channel check and policy decisions when it has a policy", () => {
+    const status: UpgradeStatus = {
+      ...upgrades([]),
+      policy: { mode: "manual", channel: "beta" },
+      check: {
+        checkedAt: "2026-10-30T00:00:00.000Z",
+        error: null,
+        installedVersion: "26.10.3001",
+        latest: {
+          release: "release-26.10.3003-beta",
+          channel: "beta",
+          notes: { summary: "", security: true, charterChanges: [], url: "https://example.com" },
+        },
+      },
+    };
+    // The app's stable-only GitHub check no longer decides the offer.
+    expect(upgradeOffer({ status, latestRelease: undefined, updateAvailable: false })).toBe(
+      "release-26.10.3003-beta",
+    );
+    expect(pendingUpgradeDecisions(status)).toEqual(["approve-after-work", "approve", "reject"]);
+    expect(pendingUpgradeDecisions(upgrades([]))).toEqual(["approve", "reject"]);
+    // An upgrade waiting for current work offers only Install now.
+    const waiting = {
+      ...upgrade("running", "2026-10-30T00:00:00.000Z"),
+      restart: "after-work" as const,
+    };
+    expect(upgradeDecisions(status, waiting)).toEqual(["approve"]);
+    expect(upgradeDecisions(status, { ...waiting, restart: "now" as const })).toEqual([]);
+  });
+
+  it("asks about a pending upgrade and notices an unacknowledged automatic one", () => {
+    const policy = { policy: { mode: "automatic", channel: "stable" } } as const;
+    const pending = upgrade("pending", "2026-10-30T00:00:00.000Z");
+    expect(installationUpdateEntry(upgrades([pending]))).toEqual({
+      kind: "question",
+      upgrade: pending,
+    });
+    const automatic = { ...upgrade("failed", "2026-10-30T00:00:00.000Z"), automatic: true };
+    expect(installationUpdateEntry({ ...upgrades([automatic]), ...policy })?.kind).toBe("notice");
+    const dismissed = { ...automatic, acknowledgedAt: "2026-10-30T01:00:00.000Z" };
+    expect(installationUpdateEntry({ ...upgrades([dismissed]), ...policy })).toBeNull();
+    // Without a policy the coordinator cannot accept an acknowledgement.
+    expect(installationUpdateEntry(upgrades([automatic]))).toBeNull();
   });
 
   it("explains approval with and without Dev", () => {

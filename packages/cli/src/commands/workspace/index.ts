@@ -4,6 +4,7 @@ import { addJsonAndDaemonHostOptions } from "../../utils/command-options.js";
 import { runArchiveCommand } from "./archive.js";
 import { runCreateCommand } from "./create.js";
 import { runLsCommand } from "./ls.js";
+import { runMoveCommand } from "./move.js";
 import { runRenameCommand } from "./rename.js";
 import { runSetupCommand } from "./setup.js";
 
@@ -57,6 +58,14 @@ export function createWorkspaceCommand(): Command {
       // the first word of an unquoted multi-word title and silently drop the rest.
       .allowExcessArguments(false),
   ).action(withOutput(runRenameCommand));
+
+  addJsonAndDaemonHostOptions(
+    workspace
+      .command("move")
+      .description("Move a workspace and its chats into another project on its host")
+      .argument("<workspace-id>", "Workspace id")
+      .requiredOption("--project <id>", "Destination project id"),
+  ).action(withOutput(runMoveCommand));
 
   addJsonAndDaemonHostOptions(
     workspace

@@ -1,6 +1,10 @@
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
+import {
+  installationUpdateNeedsOwner,
+  type InstallationUpdateEntry,
+} from "@/execution-installation/installation-upgrades-model";
 
 /** One host's threads, as the global card reads them from the session store. */
 export interface QuestionHostInput {
@@ -63,8 +67,13 @@ export function collectThreadQuestions(hosts: readonly QuestionHostInput[]): Thr
   return threads.sort(compareThreads);
 }
 
-export function globalOpenQuestionCount(threads: readonly ThreadQuestions[]): number {
-  return threads.reduce((total, thread) => total + thread.questions.length, 0);
+/** Thread questions plus an installation update that waits for the owner. */
+export function globalOpenQuestionCount(
+  threads: readonly ThreadQuestions[],
+  update: InstallationUpdateEntry | null = null,
+): number {
+  const questions = threads.reduce((total, thread) => total + thread.questions.length, 0);
+  return questions + (installationUpdateNeedsOwner(update) ? 1 : 0);
 }
 
 function projectLabel(

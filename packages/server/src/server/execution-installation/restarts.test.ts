@@ -1210,7 +1210,7 @@ test("host preflight refuses a failing release before connecting or dispatching"
   }
 });
 
-test("source installation requires approval of the bundle digest and cannot use an idle restart", async () => {
+test("source installation requires approval of the bundle digest; a single update may finish current turns first", async () => {
   const restart = vi.fn(async () => "ready");
   const installUpdate = vi.fn(async () => "installed and ready");
   const queue = new InstallationRestarts(new MemoryJournal(), { restart, installUpdate });
@@ -1232,10 +1232,10 @@ test("source installation requires approval of the bundle digest and cannot use 
     "exact source update",
   );
   expect(() => queue.decide(job.id, job.revision, "approve-when-idle", update.sha256)).toThrow(
-    "Idle updates",
+    "exact source update",
   );
-  expect(() => queue.decide(job.id, job.revision, "finish-current-turns", update.sha256)).toThrow(
-    "Idle updates",
+  expect(() => queue.decide(job.id, job.revision, "finish-current-turns")).toThrow(
+    "exact source update",
   );
   expect(() => queue.decide(job.id, job.revision, "request-again", update.sha256)).toThrow(
     "exact source update",
@@ -1246,6 +1246,25 @@ test("source installation requires approval of the bundle digest and cannot use 
   expect(installUpdate).toHaveBeenCalledOnce();
   expect(restart).not.toHaveBeenCalled();
   expect(queue.list()[0]?.status).toBe("succeeded");
+
+  // A release upgrade approved to install after current work takes the automatic updates' path:
+  // hold new work, build the candidate, then restart when idle.
+  const finishQueue = new InstallationRestarts(new MemoryJournal(), {
+    restart,
+    installUpdate,
+    restartWhenIdle: restart,
+    inspect: vi.fn(),
+    holdCurrentTurns: vi.fn(),
+    releaseCurrentTurns: vi.fn(),
+  });
+  const finish = finishQueue.request(
+    { target: "host", reason: "Release upgrade" },
+    "owner",
+    update,
+  );
+  expect(
+    finishQueue.decide(finish.id, finish.revision, "finish-current-turns", update.sha256),
+  ).toMatchObject({ status: "approved", whenIdle: true, finishCurrentTurns: true });
 });
 
 test("unavailable source installers refuse requests and interrupted updates never replay", async () => {

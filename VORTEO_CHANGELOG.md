@@ -6,6 +6,165 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge current `main` into the release updates branch, keeping both sides' changelog and inventory entries.
+
+### Added
+
+- Installations update themselves from GitHub Releases. Each installation chooses manual or automatic updates and the stable or beta channel in Settings. The coordinator checks hourly and offers each new release once in the sidebar's Open questions card, with its summary, a security marker, changed Factory charters and the rollback path. Install after current work holds new Host turns and waits for running turns and Dev agents before restarting; automatic mode installs that way without asking. Agents read the policy with `installation-agent.mjs update-status`. Older coordinators keep the previous Settings behavior.
+- While a release upgrade waits for current work, Install now ends the wait from Open questions or Settings, and turning automatic updates off stops an automatic upgrade before its Host restart.
+- The restart queue lets the owner approve a single reviewed source update to finish current turns first when the decision names its exact digest, as automatic Host updates already do. Combined batches still restart at once.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Synchronize projects across the Host and Dev. The installation coordinator joins each environment's projects by their folder in the shared Projects folder, gives each one fixed key that git no longer re-derives, and registers a project on every environment where its folder exists. Git remotes no longer join different folders. Vorteo System gets one identity, and Vorton appears on the Host.
+- File new worktrees under their repository's project even when the requesting thread names another, and let a misfiled checkout or worktree move into its repository's project. Builders started from Vorteo System had filed Vorton worktrees under it.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Recover a wedged Dev through the tracked supervisor maintenance route. `supervisorMaintenance` is a registered coordinator setting that an owner-reviewed renewal can carry, and `scripts/maintenance/dev-supervisor-recovery.mjs` prepares a protected plan for it. After a failed Dev source activation leaves the `paseo` program FATAL or its worker failing, the plan selects the previous release named by the protected Host receipts, starts only `paseo`, and verifies a replacement worker and container health, with intent, rollback and result records. It refuses anything else and never replays.
+
+### Changed
+
+- Supervisor maintenance runs when Dev does not answer and then accepts any worker that answers. The review of such a request offers **Repair Dev supervisor now, Dev is not answering**, an immediate approval of the exact plan, in place of a finish-turns choice it cannot honor.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Record in the customizations inventory that the Codex Chrome toggle launches Chrome DevTools MCP with its usage statistics and CrUX lookups off.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- Add an owner-only Chrome toggle to Codex threads on machines with Google Chrome. Threads with it on attach a pinned Chrome DevTools MCP server to the owner's running Chrome, with its usage statistics and CrUX lookups off, restarting the thread's Codex process on the next turn and keeping the conversation. It is off by default, needs remote debugging turned on once at chrome://inspect/#remote-debugging, and is never available to quota-managed workers or enabled by agents.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Show a Chrome switch next to Choose profile in threads that offer Chrome. Profile-based composers hid every thread toggle, so the owner had no way to turn on Claude in Chrome. The switch changes only that thread and is not saved as a default for new threads.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Clear completed removes every completed task from the card at once instead of one row at a time. Deletes still run in order in the background; tasks left by an error reappear with it.
+- Keep hover tooltips open while another part of the window scrolls. A streaming agent reply scrolls the chat, which closed any task tooltip you were reading; tooltips now close only when a scroll moves the item they describe.
+
+### Changed
+
+- Task cards are agent managed by default. Rows no longer offer completion toggles, edit pencils or dragging, and the header hides Add task, until you press the new Edit tasks toggle at the right end of the card header, which stays pushed in while editing. Edit mode resets when you switch threads or reload. Interface only.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Hovering a workspace in the sidebar shows where it lives: its root folders, project and project folders as a breadcrumb, so pinned workspaces say which project they belong to.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Pinned in the sidebar now looks and behaves like a root folder: a pin icon, the same title size as folders, and the whole row folds it. Pinned workspaces indent under it.
+- Pinned workspaces also stay in their project or status group, marked with a pin icon before their right-side icons, so pinning no longer moves them out of place.
+
+### Added
+
+- Focus into Pinned with its Focus button to see only pinned workspaces.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Show working subagents in the collapsed Subagents tile as their count inside a spinning ring. When every subagent is idle, the tile keeps its icon above the count.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Full maintenance delegation may approve a renewal that attaches the preview broker deployment or broker settings, as the owner decided. Consumer deployment and channel rebind still need the owner.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Let an owner-reviewed coordinator renewal attach the preview broker deployment or broker channel configuration, one section per renewal, so installations that update through renewals can restore the managed preview broker. Each section passes its existing protected file, scope and recovery reader checks before admission, rollback keeps the live configuration, and maintenance delegation cannot approve it. Consumer deployment and channel rebind remain separate owner decisions.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge current `main` into the sidebar placement branch, keeping both sides' changelog and customizations entries.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- New projects, workspaces and folders now appear as the first row of the list that holds them, and stay where they are on every device. Before, the sidebar saved new rows only on the device that saw them, so each sync update could move them, and a project with a saved folder order slotted new workspaces into the middle. In the Created and Last prompt sorts, workspaces inside folders follow the sort again, and drops there change only folder membership and folder positions. A device waits for its first Host snapshot before placing new rows, so it never replays a stale order over newer drags.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
+
+## Unreleased - 2026-11-04
+
+### Live tweaks
+
+- Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix again, bringing in the combined sidebar footer block and the Dev boot-entry switch fix; the changelog kept every dated entry.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix; the changelog kept both dated entries.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Moving a workspace with the keyboard in the web sidebar now shows its drop line on the first arrow key. Previously an arrow pressed right after Space picked the row up could be lost, so the move could not be placed. The sidebar reorder browser test also opens sorting through the current View preferences menu again.
+
+## Unreleased - 2026-11-04
+
+### Changes
+
+- Each release now ships Claude Code 2.1.311 instead of 2.1.284, so the Host and Dev daemons can offer Haiku 5.5, which needs 2.1.293 or later. Its Keychain item naming, credentials file and storage lock match 2.1.284.
+
+## Unreleased - 2026-11-04
+
+### Changes
+
+- Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
+
+## Unreleased - 2026-11-04
+
+### Features
+
+- Triple click anywhere in Vorteo with a mouse or trackpad to start dictating into the active message field; triple click again to stop and edit the text, or press Send. Terminals, file editors and other text fields keep their usual triple-click selection.
+
+## Unreleased - 2026-11-04
+
 ### Features
 
 - A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.

@@ -294,6 +294,47 @@ function verifyMonitorBootstrapBinding(
     );
 }
 
+/** An attached broker section must already pass its executor's own protected-file,
+ * hash-pin, scope and recovery reader checks, read from the candidate configuration.
+ * The executors repeat them before every broker effect. */
+async function verifyBrokerConfigurationInputs(
+  plan: CoordinatorBootstrapPlan,
+  host: BootstrapAdmissionHost,
+): Promise<void> {
+  const attached = reviewedConfigurationChanges(plan).filter(
+    (change) =>
+      (change.setting === "previewBrokerDeployment" || change.setting === "previewBroker") &&
+      change.value !== null,
+  );
+  if (attached.length === 0) return;
+  const config = InstallationConfigSchema.parse(
+    readPrivateBootstrapConfiguration(plan.candidate.configuration.path, process.getuid!()),
+  );
+  const writableMountRoots = () => inspectBootstrapWritableMountRoots(host);
+  for (const change of attached) {
+    if (change.setting === "previewBrokerDeployment") {
+      const { createPreviewBrokerDeploymentExecutor } =
+        await import("./preview-broker-deployment-executor.js");
+      const executor = createPreviewBrokerDeploymentExecutor({
+        config,
+        configurationFile: plan.candidate.configuration,
+        assertActive() {},
+        writableMountRoots,
+      });
+      if (!(await executor.brokerDeploymentCompatible()))
+        throw new BootstrapRequestConflict(
+          "Consumer deployment configuration fails its protected input or recovery reader checks",
+        );
+    } else {
+      const { createPreviewBrokerExecutor } = await import("./preview-broker-executor.js");
+      if (!(await createPreviewBrokerExecutor({ config, writableMountRoots }).brokerCompatible()))
+        throw new BootstrapRequestConflict(
+          "Broker configuration fails its protected input or recovery reader checks",
+        );
+    }
+  }
+}
+
 /** Source update tooling a Host install runs: the preparer, the publisher and every
  * module the preparer imports. A selected release must hold each as a protected file. */
 export const SOURCE_UPDATE_TOOLING_FILES = [
@@ -371,6 +412,7 @@ export async function verifyBootstrapPlan(
     );
     await verifySourceUpdateTooling(plan, roots);
     await verifyBootstrapRecoveryArtifacts(plan, roots);
+    await verifyBrokerConfigurationInputs(plan, host);
     for (const release of new Set([
       plan.previous,
       plan.candidate,

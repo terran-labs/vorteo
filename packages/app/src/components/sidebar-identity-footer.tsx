@@ -3,15 +3,16 @@ import { Pressable, Text, View } from "react-native";
 import { router } from "expo-router";
 import { StyleSheet } from "react-native-unistyles";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
+import { SidebarSectionRule } from "@/components/sidebar/sidebar-separator";
 import { useInstallationName } from "@/execution-installation/installation-name";
 import { resolveAppVersion } from "@/utils/app-version";
 import { buildSettingsSectionRoute } from "@/utils/host-routes";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 
 /**
- * The same footer closes the main and settings sidebars: which installation this is on
- * the left, its version on the right. The version checks for updates and opens
- * Maintenance, where update status lives.
+ * The same footer closes the main and settings sidebars, below the footer block's last rule:
+ * which installation this is, then its version, spaced evenly across the card. The version
+ * checks for updates and opens Maintenance, where update status lives.
  */
 export function SidebarIdentityFooter({
   onOpenUpdates,
@@ -33,33 +34,35 @@ export function SidebarIdentityFooter({
     router.push(buildSettingsSectionRoute("maintenance"));
   }, [onOpenUpdates, checkNow]);
   return (
-    <View style={styles.footer} testID="sidebar-identity-footer">
-      <Text style={styles.name} numberOfLines={1} testID="sidebar-installation-name">
-        {name}
-      </Text>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${versionText}, check for updates`}
-        onPress={openUpdates}
-        style={styles.versionButton}
-        testID={versionTestID}
-      >
-        <Text style={styles.version} numberOfLines={1}>
-          {versionText}
+    <>
+      <SidebarSectionRule />
+      <View style={styles.footer} testID="sidebar-identity-footer">
+        <Text style={styles.name} numberOfLines={1} testID="sidebar-installation-name">
+          {name}
         </Text>
-      </Pressable>
-    </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${versionText}, check for updates`}
+          onPress={openUpdates}
+          style={styles.versionButton}
+          testID={versionTestID}
+        >
+          <Text style={styles.version} numberOfLines={1}>
+            {versionText}
+          </Text>
+        </Pressable>
+      </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // Equal space before the name, between the two, and after the version.
   footer: {
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
+    justifyContent: "space-evenly",
   },
   name: {
     flexShrink: 1,

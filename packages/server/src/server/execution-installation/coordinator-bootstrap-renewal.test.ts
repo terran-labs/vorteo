@@ -1472,6 +1472,139 @@ test.runIf(process.platform === "darwin")(
 );
 
 test.runIf(process.platform === "darwin")(
+  "renewal attaches one broker section alone and retains the live configuration for rollback",
+  async () => {
+    const f = await fixture();
+    const setup = (await f.derive())!;
+    const pin = (name: string) => ({ path: `/fixture/${name}`, sha256: sha(name) });
+    const recovery = {
+      node: pin("node"),
+      journal: pin("journal.js"),
+      queue: pin("queue.js"),
+      configModule: pin("config.js"),
+    };
+    const binding = (root: string) => ({
+      root,
+      domain: `gui/${process.getuid!()}`,
+      label: "local.fixture.broker",
+      plist: pin("broker.plist"),
+      interpreter: "/usr/bin/python3",
+      argv: ["/usr/bin/python3", `${root}/https_broker.py`, "--serve"],
+    });
+    const deployment = {
+      docker: "/fixture/docker",
+      socket: "/fixture/docker.sock",
+      containerId: "a".repeat(64),
+      roots: ["/fixture/native", "/fixture/dev"] as [string, string],
+      bindings: [binding("/fixture/native"), binding("/fixture/dev")],
+      scope: pin("scope.json"),
+      nativeInspector: pin("inspector"),
+      python: pin("python3"),
+      worker: pin("worker.py"),
+      modules: [pin("broker_deployment.py")],
+      evidenceRoot: "/fixture/evidence",
+      recovery,
+    };
+    const broker = {
+      docker: "/fixture/docker",
+      socket: "/fixture/docker.sock",
+      containerId: "a".repeat(64),
+      configPaths: ["/fixture/native/config.json", "/fixture/dev/config.json"],
+      python: pin("python3"),
+      worker: pin("broker_rebind.py"),
+      identityModule: pin("channel_identity.py"),
+      consumerFiles: ["native", "dev"].flatMap((root) =>
+        ["https_broker.py", "https-preview.py", "host_config.py"].map((name) =>
+          pin(`${root}/${name}`),
+        ),
+      ),
+      evidenceRoot: "/fixture/evidence",
+      recovery,
+    };
+    const base = {
+      ...f.plan,
+      previous: f.coordinator,
+      automaticRecovery: "restore-compatible" as const,
+      compatibleRecovery: f.host,
+    };
+    const attach = (name: string, section: Record<string, unknown>) => ({
+      ...base,
+      candidate: {
+        ...f.host,
+        configuration: f.save(path.join(f.root, `${name}.json`), { ...f.config, ...section }),
+      },
+    });
+    const deploying = attach("broker-deployment", { previewBrokerDeployment: deployment });
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...deploying,
+        configurationChanges: [{ setting: "previewBrokerDeployment", value: deployment }],
+      }),
+    ).resolves.toBeUndefined();
+    const brokering = attach("broker", { previewBroker: broker });
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...brokering,
+        configurationChanges: [{ setting: "previewBroker", value: broker }],
+      }),
+    ).resolves.toBeUndefined();
+    // The rollback reader must keep the live configuration, never the attached section.
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...brokering,
+        compatibleRecovery: brokering.candidate,
+        configurationChanges: [{ setting: "previewBroker", value: broker }],
+      }),
+    ).rejects.toThrow("Recovery must preserve");
+    const both = attach("broker-both", {
+      previewBrokerDeployment: deployment,
+      previewBroker: broker,
+    });
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...both,
+        configurationChanges: [
+          { setting: "previewBrokerDeployment", value: deployment },
+          { setting: "previewBroker", value: broker },
+        ],
+      }),
+    ).rejects.toThrow("single configuration change");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...deploying,
+        configurationChanges: [
+          { setting: "previewBrokerDeployment", value: deployment },
+          { setting: "claudeHostRefresh", value: true },
+        ],
+      }),
+    ).rejects.toThrow("single configuration change");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...deploying,
+        configurationChanges: [
+          { setting: "previewBrokerDeployment", value: { ...deployment, modules: [] } },
+        ],
+      }),
+    ).rejects.toThrow("Invalid value for configuration setting: previewBrokerDeployment");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...brokering,
+        configurationChanges: [{ setting: "previewBroker", value: { ...broker, worker: "x" } }],
+      }),
+    ).rejects.toThrow("Invalid value for configuration setting: previewBroker");
+    // Policy, helper and monitor stay outside renewal.
+    for (const refused of [
+      { hostRequestsAfter: "2026-10-11T00:00:00.000Z" },
+      { nativeHelperConfiguration: null },
+      { configurationChanges: [{ setting: "previewMonitor", value: null }] },
+    ])
+      await expect(verifyRenewalPlan(setup, { ...deploying, ...refused })).rejects.toThrow(
+        "cannot change policy, helper or monitor",
+      );
+  },
+);
+
+test.runIf(process.platform === "darwin")(
   "retained watchdog survives Host disappearance/selection change and detects snapshot substitution",
   async () => {
     const f = await fixture();

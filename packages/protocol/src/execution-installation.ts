@@ -100,6 +100,16 @@ export const HostLauncherUpdateConfigurationSchema = z.strictObject({
 });
 export type HostLauncherUpdateConfiguration = z.infer<typeof HostLauncherUpdateConfigurationSchema>;
 
+/** A protected Host Node script that repairs the Dev supervisor. The coordinator
+ * runs the exact verified bytes once per approved tracked request. */
+export const SupervisorMaintenanceConfigurationSchema = z.strictObject({
+  node: z.string().startsWith("/"),
+  script: z.string().startsWith("/"),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type SupervisorMaintenanceConfiguration = z.infer<
+  typeof SupervisorMaintenanceConfigurationSchema
+>;
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const PinnedFileSchema = z.strictObject({ path: z.string().startsWith("/"), sha256: Sha256Schema });
 

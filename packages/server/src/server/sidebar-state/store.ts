@@ -77,6 +77,26 @@ export class SidebarStateStore {
     );
   }
 
+  /**
+   * Moves saved state from one project view key to another, after installation project
+   * synchronization gave the project a new shared key. The new key's own state wins.
+   */
+  renameProjectKey(from: string, to: string): Promise<SidebarStateSnapshot> {
+    const operation = this.pending.then(async () => {
+      const previous = await this.load();
+      if (!previous.state) return previous;
+      const rewritten = rewriteSidebarStateProjectKeys(previous.state, (key) =>
+        key === from ? to : key,
+      );
+      if (!rewritten) return previous;
+      const next = { revision: previous.revision + 1, state: SidebarStateSchema.parse(rewritten) };
+      await writeJsonFileAtomic(this.file, next);
+      return next;
+    });
+    this.pending = operation.catch(() => undefined);
+    return operation;
+  }
+
   change(change: SidebarStateChange): Promise<SidebarStateSnapshot> {
     const operation = this.pending.then(async () => {
       const previous = await this.load();

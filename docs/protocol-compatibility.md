@@ -263,6 +263,17 @@ would form a cycle returns to its previous parent; and projects can map only to 
 workspaces only to folders of their own project when the flat orders show which project that is.
 The Host rejects only folder records stored under another id or naming themselves as parent.
 
+## Sidebar placement
+
+`server_info.features.sidebarPlacement` advertises that the sidebar authority applies the
+optional `placeFirst` patch field. It lists keys for `projectOrder`, `workspaceOrderByProject`
+and `childOrder`; applying it puts each key the saved list does not already contain at the top
+and leaves keys it does contain in place. `childOrder` entries apply only to containers that
+already have a saved order. The Host applies placement after the patch's replacements, against
+its current state, so devices that discover the same new row converge without overwriting each
+other's drags. Older daemons strip the field, so clients send whole-list replacements to them
+instead.
+
 ## Installation worker-launch preparation
 
 Worker-launch hints and retained child records are optional additions to the existing installation request schema. They use pure structural declarations. Legacy restart digests omit absent hints, and ordinary HTTP restart replies remove the new fields for older strict requesters. Only explicit `workerLaunch=1` negotiation returns the child record.

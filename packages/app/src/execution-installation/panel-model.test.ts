@@ -13,6 +13,7 @@ import {
   restartNoticeVisible,
   restartBlockingReason,
   restartActionDisabledReason,
+  supervisorRepairNeedsImmediateApproval,
   passwordCopyCommand,
 } from "./panel-model";
 import type { RestartJob } from "@getpaseo/protocol/execution-installation";
@@ -516,6 +517,38 @@ test("sidebar distinguishes blocked source updates from owner approval", () => {
   expect(restartBannerTitle({ ...job, target: "container-daemon" })).toBe(
     "Dev daemon update awaiting agent repair",
   );
+});
+
+test("a wedged Dev offers immediate review of only its exact supervisor repair", () => {
+  const job: RestartJob = {
+    id: "request",
+    revision: "revision",
+    target: "container-daemon",
+    requestedBy: "host-agent",
+    reason: "Dev supervisor is FATAL after a source update",
+    createdAt: new Date().toISOString(),
+    expiresAt: "9999-12-31T23:59:59.999Z",
+    status: "pending",
+    detail: "Owner approval required",
+    supervisorPlanSha256: "a".repeat(64),
+    impact: {
+      target: "container-daemon",
+      checkedAt: new Date().toISOString(),
+      agents: [],
+      pendingStarts: 0,
+      idleRestartSupported: false,
+      error: "Cannot verify agent activity. The target may be offline.",
+    },
+  };
+  expect(supervisorRepairNeedsImmediateApproval(job)).toBe(true);
+  // An answering Dev keeps the finish-turns route; a plain restart never gains this action.
+  expect(
+    supervisorRepairNeedsImmediateApproval({ ...job, impact: { ...job.impact!, error: null } }),
+  ).toBe(false);
+  expect(supervisorRepairNeedsImmediateApproval({ ...job, supervisorPlanSha256: undefined })).toBe(
+    false,
+  );
+  expect(supervisorRepairNeedsImmediateApproval({ ...job, status: "approved" })).toBe(false);
 });
 
 test("disabled restart actions explain their blocker and recovery without enabling approval", () => {

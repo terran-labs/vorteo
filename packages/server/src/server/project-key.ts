@@ -32,6 +32,17 @@ export function deriveProjectKey(input: {
   return input.serverId ? `host:${input.serverId}:${localPath}` : localPath;
 }
 
+/**
+ * The key a refresh should store. The System project's key is daemon-owned, and a key the
+ * installation pinned is the project's synchronized identity, so neither follows git.
+ */
+export function retainedProjectKey(
+  project: { projectKey: string | null; systemProject?: unknown; projectKeyPinned?: boolean },
+  derivedKey: string | null,
+): string | null {
+  return project.systemProject || project.projectKeyPinned ? project.projectKey : derivedKey;
+}
+
 export function deriveProjectGroupingDisplayName(input: {
   rootPath: string;
   remoteUrl: string | null;

@@ -104,7 +104,12 @@ export const AgentTracks = memo(function AgentTracks({
   return (
     <>
       <OpenQuestionsCard key={`questions:${agentId}`} serverId={serverId} agentId={agentId} />
-      <ChecklistCard serverId={serverId} agentId={agentId} tasks={tasks} />
+      <ChecklistCard
+        key={`checklist:${agentId}`}
+        serverId={serverId}
+        agentId={agentId}
+        tasks={tasks}
+      />
       <JournalCard key={agentId} serverId={serverId} agentId={agentId} />
       <ContextCard key={`context:${agentId}`} serverId={serverId} agentId={agentId} />
       <SubagentsTrack

@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   InstallationUpgrade,
+  UpdatePolicyChange,
   UpgradeDecision,
+  UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
 import { useFetchQuery } from "@/data/query";
 import type { InstallationClient } from "./client";
@@ -26,7 +28,13 @@ export function useInstallationUpgradeStatus(client: InstallationClient | null) 
     queryFn: () => requireClient(client).upgradeStatus(),
     enabled: client !== null,
     staleTimeMs: 0,
-    refetchInterval: (query) => (activeUpgrade(query.state.data) ? 5000 : 60_000),
+    // Poll quickly only while an upgrade runs; a pending one can wait for the owner for days,
+    // and the sidebar mounts this query in every open interface.
+    refetchInterval: (query) => {
+      const status = activeUpgrade(query.state.data)?.status;
+      // An upgrade can wait for current work for a long time; 15 seconds is enough to follow it.
+      return status === "approved" || status === "running" ? 15_000 : 60_000;
+    },
     retry: false,
   });
 }
@@ -34,6 +42,8 @@ export function useInstallationUpgradeStatus(client: InstallationClient | null) 
 export function useInstallationUpgradeActions(client: InstallationClient | null) {
   const queryClient = useQueryClient();
   const refresh = () => queryClient.invalidateQueries({ queryKey: INSTALLATION_UPGRADES_KEY });
+  const store = (status: UpgradeStatus) =>
+    queryClient.setQueryData(INSTALLATION_UPGRADES_KEY, status);
   const create = useMutation({
     mutationFn: (release: string) => requireClient(client).requestUpgrade(release),
     onSettled: refresh,
@@ -43,7 +53,17 @@ export function useInstallationUpgradeActions(client: InstallationClient | null)
       requireClient(client).decideUpgrade(input.upgrade, input.decision),
     onSettled: refresh,
   });
-  return { create, decide };
+  const changePolicy = useMutation({
+    mutationFn: (change: UpdatePolicyChange) => requireClient(client).changeUpdatePolicy(change),
+    onSuccess: store,
+    onSettled: refresh,
+  });
+  const check = useMutation({
+    mutationFn: () => requireClient(client).checkForUpdates(),
+    onSuccess: store,
+    onSettled: refresh,
+  });
+  return { create, decide, changePolicy, check };
 }
 
 /** Snapshot list; data is null when the coordinator predates snapshots. */

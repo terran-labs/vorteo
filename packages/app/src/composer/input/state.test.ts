@@ -18,14 +18,20 @@ import {
 const connected = { isConnected: true } as never;
 const disconnected = { isConnected: false } as never;
 
-function createDictationKeyboard({ startsRecording }: { startsRecording: boolean }) {
+function createDictationKeyboard({
+  startsRecording,
+  action = "dictation-toggle",
+}: {
+  startsRecording: boolean;
+  action?: "dictation-toggle" | "dictation-insert-toggle";
+}) {
   let isRecording = false;
   const actions: string[] = [];
 
   return {
     actions,
     pressDictationShortcut: () =>
-      runMessageInputKeyboardAction("dictation-toggle", {
+      runMessageInputKeyboardAction(action, {
         focusInput: () => undefined,
         isDictationRecording: () => isRecording,
         markTranscriptForSend: () => actions.push("send transcript"),
@@ -167,6 +173,18 @@ describe("dictation keyboard behavior", () => {
     keyboard.pressDictationShortcut();
 
     expect(keyboard.actions).toEqual(["start", "start"]);
+  });
+
+  it("keeps the pointer toggle's transcript in the field instead of sending it", () => {
+    const keyboard = createDictationKeyboard({
+      startsRecording: true,
+      action: "dictation-insert-toggle",
+    });
+
+    keyboard.pressDictationShortcut();
+    keyboard.pressDictationShortcut();
+
+    expect(keyboard.actions).toEqual(["start", "confirm"]);
   });
 });
 

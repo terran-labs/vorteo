@@ -59,6 +59,7 @@ import {
   type SnapshotList,
   type SnapshotPartKind,
   type SnapshotRestoreStatus,
+  type UpdatePolicyChange,
   type UpgradeDecision,
   type UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
@@ -798,6 +799,16 @@ export class InstallationClient {
     if (result.id !== upgrade.id)
       throw new Error("Upgrade receipt changed. Refresh before another action.");
     return result;
+  }
+
+  /** Saves the update policy and re-checks. Call only when the status reports `policy`. */
+  async changeUpdatePolicy(change: UpdatePolicyChange): Promise<UpgradeStatus> {
+    return UPGRADE_STATUS_READER.parse(await this.request("update-policy", change));
+  }
+
+  /** Checks the installation's channel now. Call only when the status reports `policy`. */
+  async checkForUpdates(): Promise<UpgradeStatus> {
+    return UPGRADE_STATUS_READER.parse(await this.request("update-check", {}));
   }
 
   private request(path: string, body: unknown): Promise<unknown> {

@@ -3,6 +3,25 @@ import type { CoordinatorBootstrapPlan } from "@getpaseo/protocol/coordinator-bo
 import { describeConfigurationChanges } from "./configuration-change-descriptions";
 
 describe("describeConfigurationChanges", () => {
+  it("separates supervisor plan configuration from approval to replace it", () => {
+    const value = {
+      node: "/protected/bin/node",
+      script: "/protected/supervisor-plan.mjs",
+      sha256: "a".repeat(64),
+    };
+    expect(
+      describeConfigurationChanges({
+        configurationChanges: [{ setting: "supervisorMaintenance", value }],
+      } as CoordinatorBootstrapPlan),
+    ).toEqual([
+      `Configure Dev supervisor maintenance plan ${value.sha256}. Replacing the supervisor still requires a separate tracked approval.`,
+    ]);
+    expect(
+      describeConfigurationChanges({
+        configurationChanges: [{ setting: "supervisorMaintenance", value: null }],
+      } as CoordinatorBootstrapPlan),
+    ).toEqual(["Remove the tracked Dev supervisor maintenance plan."]);
+  });
   it("distinguishes the updater executable from a running supervisor replacement", () => {
     expect(
       describeConfigurationChanges({

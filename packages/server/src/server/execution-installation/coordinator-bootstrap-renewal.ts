@@ -1108,25 +1108,37 @@ export async function verifyRenewalPlan(setup: RunnerSetup, plan: CoordinatorBoo
       );
   }
 
-  // Registered settings marked for renewal may change through an owner-reviewed
-  // renewal: every coordinator replacement now runs through this path. Automatic
-  // plans still refuse them (assertAutomaticCoordinatorPlan), and
-  // verifyBootstrapConfiguration below admits only the exact listed changes.
-  if (
-    plan.nativeHelperConfiguration !== undefined ||
-    reviewedConfigurationChanges(plan).some(
-      (change) => !REVIEWED_CONFIGURATION_SETTINGS[change.setting].renewal,
-    ) ||
-    plan.hostRequestsAfter !== null
-  )
-    throw new BootstrapRequestConflict(
-      "Runner renewal cannot change policy, helper or monitor configuration",
-    );
+  verifyRenewalConfigurationChanges(plan);
   verifyBootstrapConfiguration({
     plan,
     configurationFile: renewal.configuration.path,
     daemonId: setup.daemonId,
   });
+}
+
+/** Registered settings marked for renewal may change through an owner-reviewed
+ * renewal: every coordinator replacement now runs through this path. Automatic
+ * plans still refuse them (assertAutomaticCoordinatorPlan), and
+ * verifyBootstrapConfiguration admits only the exact listed changes. Broker
+ * sections attach one per renewal; the review service still runs the full Host
+ * admission (verifyBootstrapPlan) for their binding and protected inputs. */
+function verifyRenewalConfigurationChanges(plan: CoordinatorBootstrapPlan): void {
+  const changes = reviewedConfigurationChanges(plan);
+  if (
+    plan.nativeHelperConfiguration !== undefined ||
+    changes.some((change) => !REVIEWED_CONFIGURATION_SETTINGS[change.setting].renewal) ||
+    plan.hostRequestsAfter !== null
+  )
+    throw new BootstrapRequestConflict(
+      "Runner renewal cannot change policy, helper or monitor configuration",
+    );
+  if (
+    changes.length > 1 &&
+    changes.some((change) => REVIEWED_CONFIGURATION_SETTINGS[change.setting].renewal === "alone")
+  )
+    throw new BootstrapRequestConflict(
+      "Runner renewal may attach broker configuration only as its single configuration change",
+    );
 }
 
 /** Verify a completed repair's retained runtime without granting current dispatch authority. */

@@ -92,7 +92,11 @@ import {
 } from "@/components/sidebar-resize-handle-layout";
 
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
-import { SidebarSeparator, SidebarInsetContext } from "@/components/sidebar/sidebar-separator";
+import {
+  SidebarInsetContext,
+  SidebarSectionRule,
+  SidebarSeparator,
+} from "@/components/sidebar/sidebar-separator";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
 
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
@@ -806,6 +810,7 @@ function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void
   if (visibleItems.length === 0) return null;
   return (
     <>
+      <SidebarSectionRule testID="sidebar-footer-separator" />
       <View ref={rowsRef} collapsable={false} style={styles.footerRows}>
         {visibleItems.map((item) =>
           item.kind === "plugin" ? (
@@ -821,7 +826,6 @@ function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void
           ),
         )}
       </View>
-      <SidebarSeparator testID="sidebar-footer-separator" />
     </>
   );
 }
@@ -1247,6 +1251,7 @@ function DesktopSidebar({
             </>
           )}
 
+          {!compact ? <SidebarGlobalCards /> : null}
           <SidebarSyncNotice compact={compact} />
           <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
           {!compact ? <DemoControls /> : null}
@@ -1262,8 +1267,6 @@ function DesktopSidebar({
             testID="left-sidebar-resize-handle"
           />
         </View>
-        {/* Global cards stand beside the navigation card rather than nesting inside it. */}
-        {!compact ? <SidebarGlobalCards detached /> : null}
       </Animated.View>
     </SidebarPresentation>
   );

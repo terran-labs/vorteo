@@ -13,6 +13,7 @@ import {
   TaskCardInfo,
 } from "@/agent-stream/task-card";
 import { CountBadge } from "@/components/ui/count-badge";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { taskCardStyles } from "@/agent-stream/task-card-styles";
 import { useVortonTouch } from "@/vorton-touch";
 import { useCallback, useMemo, useState, type ReactNode, type ReactElement } from "react";
@@ -44,7 +45,7 @@ import type { Theme } from "@/styles/theme";
 import { getPanelManifest } from "@/panels/panel-manifest";
 import { useSheetPanePage } from "@/screens/workspace/sheet-pane";
 import type { SheetTab } from "@/stores/workspace-layout-store";
-import type { SubagentRow } from "./select";
+import { isActiveSubagent, type SubagentRow } from "./select";
 import { isFinishedSubagent } from "./archive-finished";
 import { useProviderSubagentStore } from "./provider-store";
 import type { ArchiveFinishedStatus } from "./use-archive-finished";
@@ -58,6 +59,7 @@ import {
 const ThemedX = withUnistyles(X);
 const ThemedArchive = withUnistyles(Archive);
 const ThemedUnlink = withUnistyles(Unlink);
+const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -191,6 +193,11 @@ function SubagentsGroup({
     () => <CountBadge label={String(rows.length)} accessibilityLabel={title} />,
     [rows.length, title],
   );
+  const working = rows.some(isActiveSubagent);
+  const activityIndicator = useMemo(
+    () => (working ? <SubagentActivityRing count={rows.length} label={title} /> : null),
+    [working, rows.length, title],
+  );
   if (rows.length === 0 && status.kind === "idle") return null;
   const canClear = kind === "provider" || Boolean(onArchiveFinished);
   const showClear = canClear && (countFinishedSubagents(rows) > 0 || status.kind !== "idle");
@@ -203,6 +210,7 @@ function SubagentsGroup({
         onPress={toggleExpanded}
         testID={`subagents-group-${kind}-toggle`}
         count={countBadge}
+        compactIndicator={activityIndicator}
       />
       <TaskCardActions>
         <TaskCardInfo
@@ -250,6 +258,24 @@ function SubagentsGroup({
           {body}
         </>
       )}
+    </View>
+  );
+}
+
+const ACTIVITY_RING_SIZE = 28;
+
+/** A collapsed tile shows working subagents as their count inside a spinning ring. */
+function SubagentActivityRing({ count, label }: { count: number; label: string }): ReactElement {
+  return (
+    <View style={styles.activityRing} testID="subagents-activity-ring">
+      <ThemedLoadingSpinner
+        size={ACTIVITY_RING_SIZE}
+        style={styles.activitySpinner}
+        uniProps={foregroundMutedColorMapping}
+      />
+      <Text style={styles.activityCount} accessibilityLabel={label} numberOfLines={1}>
+        {count}
+      </Text>
     </View>
   );
 }
@@ -712,6 +738,15 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foreground,
   },
+  activityRing: {
+    width: ACTIVITY_RING_SIZE,
+    height: ACTIVITY_RING_SIZE,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  activitySpinner: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
+  activityCount: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
 }));
 
 const HEADING_ICON = <TaskCardIcon kind="subagents" />;

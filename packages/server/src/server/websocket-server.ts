@@ -2291,6 +2291,7 @@ export class VoiceAssistantWebSocketServer {
         workspaceMultiplicity: true,
         workspaceProjectMembership: true,
         workspaceProjectPlacement: true,
+        projectSync: true,
         workspaceCreateProjectMembership: true,
         workspaceTaskEnvironments: true,
         idleRestart: true,
@@ -2360,6 +2361,8 @@ export class VoiceAssistantWebSocketServer {
         checklistBlockedStatus: true,
         sidebarState: this.supportsSidebarState(),
         sidebarFolders: this.supportsSidebarState(),
+        // COMPAT(sidebarPlacement): added 2026-11-03; retain until the client floor includes it.
+        sidebarPlacement: this.supportsSidebarState(),
         checklistReviewStatus: true,
         checklistProgress: true,
         agentJournal: true,

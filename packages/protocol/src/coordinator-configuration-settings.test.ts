@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { z } from "zod";
+import { SupervisorMaintenanceConfigurationSchema } from "./execution-installation.js";
 import {
   CoordinatorBootstrapPlanSchema,
   type CoordinatorBootstrapPlan,
@@ -91,6 +92,64 @@ test("a reviewed Dev updater Node change accepts only an absolute path", () => {
     ok: false,
     reason: "Invalid value for configuration setting: containerSourceUpdateNode",
   });
+});
+
+test("a supervisor maintenance plan requires an explicit reviewed setting", () => {
+  const ordinary = telemetryPlan();
+  const value = {
+    node: "/protected/bin/node",
+    script: "/protected/supervisor-plan.mjs",
+    sha256: "a".repeat(64),
+  };
+  expect(planConfigurationChanges(ordinary)).toEqual({ ok: true, changes: [] });
+  expect(
+    planConfigurationChanges({
+      ...ordinary,
+      configurationChanges: [{ setting: "supervisorMaintenance", value }],
+    }),
+  ).toEqual({
+    ok: true,
+    changes: [{ setting: "supervisorMaintenance", value }],
+  });
+  expect(
+    planConfigurationChanges({
+      ...ordinary,
+      configurationChanges: [{ setting: "supervisorMaintenance", value: null }],
+    }),
+  ).toEqual({
+    ok: true,
+    changes: [{ setting: "supervisorMaintenance", value: null }],
+  });
+});
+
+test("the reviewed supervisor setting uses the runtime schema exactly", () => {
+  const runtime = SupervisorMaintenanceConfigurationSchema;
+  const reviewed = REVIEWED_CONFIGURATION_SETTINGS.supervisorMaintenance;
+  const valid = {
+    node: "/protected/bin/node",
+    script: "/protected/supervisor-plan.mjs",
+    sha256: "a".repeat(64),
+  };
+  expect(reviewed.path).toEqual(["container", "supervisorMaintenance"]);
+  expect(reviewed.value).toBe(runtime);
+  expect(reviewed.renewal).toBe(true);
+  for (const value of [valid, { ...valid, node: "/", script: "/" }]) {
+    expect(reviewed.value.parse(value)).toEqual(runtime.parse(value));
+  }
+  for (const value of [
+    { ...valid, node: "node" },
+    { ...valid, script: "supervisor-plan.mjs" },
+    { ...valid, node: "" },
+    { ...valid, sha256: "a".repeat(63) },
+    { ...valid, sha256: "A".repeat(64) },
+    { ...valid, extra: true },
+    { node: valid.node, sha256: valid.sha256 },
+    undefined,
+    null,
+  ]) {
+    expect(runtime.safeParse(value).success).toBe(false);
+    expect(reviewed.value.safeParse(value).success).toBe(false);
+  }
 });
 
 test("every per-setting plan field is registered or deliberately special", () => {

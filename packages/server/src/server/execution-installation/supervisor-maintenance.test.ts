@@ -21,7 +21,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
-import { runSupervisorMaintenance, supervisorPlanDigest } from "./supervisor-maintenance.js";
+import {
+  runSupervisorMaintenance,
+  runSupervisorReplacement,
+  supervisorPlanDigest,
+} from "./supervisor-maintenance.js";
 
 test("supervisor execution binds reviewed bytes and fails before changed code can run", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "supervisor-plan-"));
@@ -492,4 +496,38 @@ test("gated supervisor extraction cannot release with a reconstructed child proo
   expect(f.writes).toEqual([]);
   expect(f.arrangement.snapshot().releaseAttempted).toBe(true);
   expect(() => f.arrangement.invoke(f.consumed(original), original)).toThrow("already attempted");
+});
+
+test("a wedged Dev still runs the reviewed repair once and accepts the answering worker", async () => {
+  let clock = 0;
+  const answers: (number | Error)[] = [new Error("ECONNREFUSED"), new Error("starting"), 42];
+  const run = vi.fn(async () => {});
+  const result = await runSupervisorReplacement({
+    async readPid() {
+      const answer = answers.shift() ?? 42;
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
+    run,
+    wait: async (ms) => {
+      clock += ms;
+    },
+    now: () => clock,
+  });
+  expect(result).toEqual({ previousPid: null, pid: 42 });
+  expect(run).toHaveBeenCalledTimes(1);
+
+  // An answering Dev requires a changed worker; an unchanged one times out without a second run.
+  const unchanged = vi.fn(async () => {});
+  await expect(
+    runSupervisorReplacement({
+      readPid: async () => 7,
+      run: unchanged,
+      wait: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+    }),
+  ).resolves.toBeNull();
+  expect(unchanged).toHaveBeenCalledTimes(1);
 });

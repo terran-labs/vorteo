@@ -100,6 +100,7 @@ import {
   restartBlockingReason,
   restartRepairGuidance,
   restartActionDisabledReason,
+  supervisorRepairNeedsImmediateApproval,
   passwordCopyCommand,
 } from "./panel-model";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
@@ -1942,6 +1943,60 @@ function finishLabel(job: RestartJob): string {
   return restartOperationView(job)?.finishLabel ?? "Finish turns and restart";
 }
 
+/** The approval a pending request without source offers: an immediate exact-plan
+ * approval when there is no work to finish, otherwise Finish turns. */
+function PendingApprovalAction({
+  job,
+  busy,
+  gracefulRestarts,
+  approve,
+  finish,
+}: {
+  job: RestartJob;
+  busy: boolean;
+  gracefulRestarts: boolean;
+  approve: () => void;
+  finish: () => void;
+}) {
+  if (job.engineRecoveryPlanSha256)
+    return (
+      <RestartActionButton
+        variant="destructive"
+        disabledReason={busy ? "Request in progress" : null}
+        onPress={approve}
+        testID={`restart-recover-${job.id}`}
+      >
+        Recover Docker now, interrupt unknown work
+      </RestartActionButton>
+    );
+  if (supervisorRepairNeedsImmediateApproval(job))
+    return (
+      <RestartActionButton
+        variant="destructive"
+        disabledReason={busy ? "Request in progress" : null}
+        onPress={approve}
+        testID={`restart-supervisor-now-${job.id}`}
+      >
+        Repair Dev supervisor now, Dev is not answering
+      </RestartActionButton>
+    );
+  return (
+    <RestartActionButton
+      variant="outline"
+      disabledReason={restartActionDisabledReason(
+        job,
+        "finish",
+        busy,
+        Boolean(gracefulRestarts && job.impact?.gracefulRestartSupported),
+      )}
+      onPress={finish}
+      testID={`restart-finish-${job.id}`}
+    >
+      {finishLabel(job)}
+    </RestartActionButton>
+  );
+}
+
 export function RestartActions({
   job,
   model,
@@ -2006,30 +2061,13 @@ export function RestartActions({
               Restart when idle
             </RestartActionButton>
           ) : null}
-          {job.engineRecoveryPlanSha256 ? (
-            <RestartActionButton
-              variant="destructive"
-              disabledReason={busy ? "Request in progress" : null}
-              onPress={install}
-              testID={`restart-recover-${job.id}`}
-            >
-              Recover Docker now, interrupt unknown work
-            </RestartActionButton>
-          ) : (
-            <RestartActionButton
-              variant="outline"
-              disabledReason={restartActionDisabledReason(
-                job,
-                "finish",
-                busy,
-                Boolean(installation?.gracefulRestarts && job.impact?.gracefulRestartSupported),
-              )}
-              onPress={finish}
-              testID={`restart-finish-${job.id}`}
-            >
-              {finishLabel(job)}
-            </RestartActionButton>
-          )}
+          <PendingApprovalAction
+            job={job}
+            busy={busy}
+            gracefulRestarts={Boolean(installation?.gracefulRestarts)}
+            approve={install}
+            finish={finish}
+          />
           {plainHostRestart ? <ForceRestartButton job={job} model={model} busy={busy} /> : null}
           <Button variant="ghost" disabled={busy} onPress={cancel}>
             Cancel

@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { deriveProjectGroupingDisplayName, deriveProjectKey } from "./project-key.js";
+import {
+  deriveProjectGroupingDisplayName,
+  deriveProjectKey,
+  retainedProjectKey,
+} from "./project-key.js";
 
 describe("deriveProjectKey", () => {
   const rootPath = path.resolve("repo");
@@ -102,6 +106,16 @@ describe("deriveProjectKey", () => {
 
     expect(deriveSubproject(path.resolve("host-a", "repo"))).toBe(
       deriveSubproject(path.resolve("host-b", "different", "repo")),
+    );
+  });
+});
+
+describe("retainedProjectKey", () => {
+  test("keeps a synchronized key when git would derive another", () => {
+    const pinned = { projectKey: "host:srv_dev:/work/app", projectKeyPinned: true };
+    expect(retainedProjectKey(pinned, "remote:github.com/acme/app")).toBe("host:srv_dev:/work/app");
+    expect(retainedProjectKey({ projectKey: "old" }, "remote:github.com/acme/app")).toBe(
+      "remote:github.com/acme/app",
     );
   });
 });

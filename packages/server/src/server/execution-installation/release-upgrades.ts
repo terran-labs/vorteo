@@ -6,6 +6,8 @@ import {
   InstallationUpgradeSchema,
   UpgradeStepNameSchema,
   type InstallationUpgrade,
+  type ReleaseNotes,
+  type UpgradeDecision,
   type UpgradeStep,
   type UpgradeStepName,
 } from "@getpaseo/protocol/installation-upgrades";
@@ -103,6 +105,12 @@ export interface UpgradePorts {
   snapshot(upgrade: InstallationUpgrade): Promise<string>;
   /** Fetches the tag into the source directory and checks it still names sourceCommit. */
   fetchRelease(upgrade: InstallationUpgrade): Promise<void>;
+  /** False once the owner has turned automatic updates off. */
+  automaticAllowed(): boolean;
+  /** True when the installer engine, not a restart-queue source update, restarts the Host. */
+  directHost: boolean;
+  /** Null when no agent on the target is working or starting; otherwise what still runs. */
+  busy(target: "host" | "container-daemon"): Promise<string | null>;
   /** Stages the release as a Host source update and approves it in the restart queue. */
   requestHostUpdate(upgrade: InstallationUpgrade): Promise<string>;
   hostUpdate(jobId: string): { status: "running" | "succeeded" | "failed"; detail: string };
@@ -138,6 +146,10 @@ function project(record: UpgradeRecord): InstallationUpgrade {
   return upgrade;
 }
 
+function upgradeIsActive(record: InstallationUpgrade): boolean {
+  return ["pending", "approved", "running"].includes(record.status);
+}
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -163,7 +175,7 @@ export class InstallationUpgrades {
   }
 
   private activeRecord(): UpgradeRecord | undefined {
-    return this.records.find((item) => ["pending", "approved", "running"].includes(item.status));
+    return this.records.find(upgradeIsActive);
   }
 
   private save(record: UpgradeRecord, changes: Partial<UpgradeRecord>): UpgradeRecord {
@@ -173,10 +185,43 @@ export class InstallationUpgrades {
     return next;
   }
 
-  async request(release: string): Promise<InstallationUpgrade> {
+  /** Why a pending or approved upgrade was withdrawn without the owner, such as a newer release. */
+  withdraw(id: string, detail: string): InstallationUpgrade {
+    const record = this.records.find((item) => item.id === id);
+    if (!record || !["pending", "approved"].includes(record.status))
+      throw new RestartRequestError("Only an upgrade that has not started can be withdrawn");
+    return project(this.save(record, { status: "cancelled", detail }));
+  }
+
+  /**
+   * Approves an update-check offer under the installation's automatic update policy. The Host
+   * restart always waits until no agents would be interrupted.
+   */
+  approveAutomatically(id: string): InstallationUpgrade {
+    const record = this.records.find((item) => item.id === id);
+    if (record?.status !== "pending" || record.origin !== "update-check")
+      throw new RestartRequestError("Only a pending update-check offer is approved automatically");
+    return project(
+      this.save(record, {
+        status: "approved",
+        approvedAt: this.ports.now().toISOString(),
+        automatic: true,
+        restart: "after-work",
+        detail: "Approved by the automatic update policy. Starting.",
+      }),
+    );
+  }
+
+  async request(
+    release: string,
+    offer?: { origin: "update-check"; notes: ReleaseNotes },
+  ): Promise<InstallationUpgrade> {
     if (this.activeRecord())
       throw new RestartRequestError("Another upgrade is already pending or running");
     const sourceCommit = await this.ports.resolveRelease(release);
+    // The update check, its routes and the owner can request at once; the first one wins.
+    if (this.activeRecord())
+      throw new RestartRequestError("Another upgrade is already pending or running");
     const previousCommit = this.ports.currentCommit();
     if (previousCommit === sourceCommit)
       throw new RestartRequestError(`This installation already runs ${release}`);
@@ -191,6 +236,7 @@ export class InstallationUpgrades {
       status: "pending",
       detail: "Waiting for owner approval.",
       steps: UPGRADE_STEPS.map((name) => ({ name, status: "pending", detail: "" })),
+      ...offer,
       private: {},
     });
     this.records = [...this.records, record];
@@ -198,20 +244,36 @@ export class InstallationUpgrades {
     return project(record);
   }
 
-  decide(
-    id: string,
-    revision: string,
-    decision: "approve" | "reject" | "cancel",
-  ): InstallationUpgrade {
+  decide(id: string, revision: string, decision: UpgradeDecision["decision"]): InstallationUpgrade {
     const record = this.records.find((item) => item.id === id);
     if (!record) throw new RestartRequestError("Upgrade not found");
     if (record.revision !== revision)
       throw new RestartRequestError("The upgrade changed. Review it again.");
     const now = this.ports.now().toISOString();
-    if (decision === "approve" && record.status === "pending")
+    if (
+      (decision === "approve" || decision === "approve-after-work") &&
+      record.status === "pending"
+    )
       return project(
-        this.save(record, { status: "approved", approvedAt: now, detail: "Approved. Starting." }),
+        this.save(record, {
+          status: "approved",
+          approvedAt: now,
+          restart: decision === "approve" ? "now" : "after-work",
+          detail: "Approved. Starting.",
+        }),
       );
+    // Install now on an upgrade waiting for current work: later restarts stop waiting. A Host
+    // restart already queued to finish current turns is forced from Installation controls.
+    if (
+      decision === "approve" &&
+      ["approved", "running"].includes(record.status) &&
+      record.restart === "after-work"
+    )
+      return project(
+        this.save(record, { restart: "now", detail: "The owner chose to install now." }),
+      );
+    if (decision === "acknowledge" && record.automatic && !upgradeIsActive(record))
+      return project(this.save(record, { acknowledgedAt: now }));
     if (decision === "reject" && record.status === "pending")
       return project(this.save(record, { status: "rejected", detail: "Rejected by the owner." }));
     if (decision === "cancel" && (record.status === "pending" || record.status === "approved"))
@@ -257,6 +319,9 @@ export class InstallationUpgrades {
     const latest = this.records.find((item) => item.id === record.id) ?? record;
     const privateState = { ...latest.private, ...result.private };
     if (result.status === "waiting") {
+      // The drain runs every few seconds; a wait that changed nothing is not rewritten.
+      if (!result.private && (!result.detail || result.detail === latest.steps[index]?.detail))
+        return false;
       this.save(latest, {
         private: privateState,
         ...(result.detail
@@ -369,6 +434,18 @@ export class InstallationUpgrades {
     if (!jobId) {
       if (this.ports.currentCommit() === record.sourceCommit)
         return { status: "skipped", detail: "The Host already runs this release." };
+      // Turning automatic updates off stops an automatic upgrade that has not restarted anything.
+      if (record.automatic && !this.ports.automaticAllowed())
+        return {
+          status: "failed",
+          detail:
+            "Automatic updates were turned off before the Host restart. Nothing was restarted.",
+        };
+      // The restart queue holds new work and waits on its own; the installer engine does not.
+      if (record.restart === "after-work" && this.ports.directHost) {
+        const busy = await this.ports.busy("host");
+        if (busy) return { status: "waiting", detail: `Waiting for current Host work: ${busy}` };
+      }
       const created = await this.ports.requestHostUpdate(project(record));
       return {
         status: "waiting",
@@ -422,15 +499,26 @@ export class InstallationUpgrades {
     if (!this.ports.hasContainer)
       return { status: "skipped", detail: "This installation has no Dev container." };
     let state = record.private;
+    // Saves only real changes, so a Dev wait leaves the revision the owner decides on intact.
     const persist = (changes: Partial<UpgradePrivate>) => {
       const latest = this.records.find((item) => item.id === record.id) ?? record;
-      state = { ...latest.private, ...changes };
-      this.save(latest, { private: state });
+      const next = { ...latest.private, ...changes };
+      state = next;
+      if (
+        Object.entries(changes).some(
+          ([key, value]) => latest.private[key as keyof UpgradePrivate] !== value,
+        )
+      )
+        this.save(latest, { private: next });
     };
     const previous = state.devPreviousImage ?? (await this.ports.devImage());
     persist({ devPreviousImage: previous });
     const image = state.devImage ?? (await this.ports.buildDevImage(project(record)));
     persist({ devImage: image });
+    if (record.restart === "after-work" && state.devReplacing !== true) {
+      const busy = await this.ports.busy("container-daemon");
+      if (busy) return { status: "waiting", detail: `Waiting for current Dev work: ${busy}` };
+    }
     // A coordinator that restarted while Dev was being recreated checks what runs now.
     const resumed = state.devReplacing === true && (await this.ports.devImage()) === image;
     persist({ devReplacing: true });
