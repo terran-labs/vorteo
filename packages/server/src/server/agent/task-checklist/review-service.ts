@@ -2,7 +2,7 @@ import type { Logger } from "pino";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentStorage } from "../agent-storage.js";
 import { ensureUnarchivedAgentLoaded } from "../agent-loading.js";
-import { blockedReviewDue, BLOCKED_REVIEW_INTERVAL_MS } from "./blocked-review.js";
+import { blockedReviewDue, BLOCKED_REVIEW_DELAYS_MS } from "./blocked-review.js";
 
 interface ReviewServiceOptions {
   agentManager: AgentManager;
@@ -59,7 +59,7 @@ export class BlockedTaskReviewService {
         const now = this.now();
         const attempted = this.attempts.get(record.id);
         const recentlyAttempted =
-          attempted !== undefined && now - attempted < BLOCKED_REVIEW_INTERVAL_MS;
+          attempted !== undefined && now - attempted < BLOCKED_REVIEW_DELAYS_MS[0]!;
         if (recentlyAttempted || !blockedReviewDue(record, now)) continue;
         if (!limited.has(record.provider))
           limited.set(
@@ -87,6 +87,7 @@ export class BlockedTaskReviewService {
         // AgentManager owns timeline delivery, usage accounting and lifecycle updates.
         void event;
       }
+      await this.options.agentStorage.finishBlockedReview(agentId, this.now());
     } catch (error) {
       // Failed preparation or inference must not retry every scheduler tick.
       this.options.logger.warn({ err: error, agentId }, "Blocked-task review could not complete");

@@ -2958,9 +2958,9 @@ export const ptBR: TranslationResources = {
           info: "Encerra o processo do agente e mantém a conversa. Envie uma mensagem para retomar.\n\nTrabalho ativo, notificações pendentes e verificações de segurança do provedor impedem a limpeza.",
         },
         blockedWorkReview: {
-          title: "Revisar trabalho bloqueado a cada hora",
-          hint: "Desativado por padrão. Cada revisão recarrega toda a conversa do tópico e pode consumir muito do seu plano.",
-          info: "A cada hora, tópicos inativos com uma tarefa ou objetivo bloqueado recebem uma mensagem para reavaliar seus bloqueios e continuar. Cada mensagem retoma a conversa completa, então poucos tópicos bloqueados podem consumir boa parte do limite semanal do provedor.\n\nTópicos aguardando a redefinição de um limite de uso são retomados separadamente.",
+          title: "Revisar trabalho bloqueado",
+          hint: "Desativado por padrão. Até três revisões curtas depois que um tópico para; então ele espera uma mensagem.",
+          info: "Quando um tópico para com uma tarefa ou objetivo bloqueado, ele recebe até três mensagens, cerca de 5, 15 e 30 minutos depois, para reavaliar seus bloqueios e continuar. Depois as revisões param até alguém enviar uma mensagem ao tópico.\n\nCada revisão retoma a conversa do tópico. Os intervalos curtos reaproveitam o cache de prompts do provedor e custam bem menos que uma retomada a frio, mas muitos tópicos bloqueados ainda somam.\n\nBloqueios que aguardam uma pergunta aberta são ignorados; sua resposta reativa o tópico.",
         },
       },
       workspaces: {
