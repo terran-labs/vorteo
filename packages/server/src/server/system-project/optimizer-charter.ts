@@ -12,6 +12,7 @@ Each review covers:
 - Workspaces. List workspaces with no activity for weeks, and archived workspaces whose files or worktrees still take significant space.
 - Providers. Note provider connections that fail, need a new sign in, or are close to a usage limit.
 - Updates. Say whether a newer Vorteo release or source update is available.
+- CI and builds. For the Vorteo repository, measure jobs started per pull request push, how long required checks wait for a runner, superseded runs still running, flaky reruns, and pull requests forced to rerun or re-resolve conflicts when the default branch moves. Recommend routing heavy suites to the merge queue, nightly or release, path filters, caching, concurrency cancellation and conflict-free changelog fragments, with the measured cost.
 - Settings. Flag settings that need attention, such as a provider that is off but still used by schedules or profiles.
 The paseo-help skill says where Vorteo keeps its files and how to read them.
 

@@ -1,3 +1,4 @@
+import type { CustomDomainStatus } from "@getpaseo/protocol/custom-domain";
 import type { LiveDevMode, LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import { brokerActionDisabledReason, type BrokerAction } from "./preview-broker-review";
@@ -56,6 +57,9 @@ interface InstallationPanelState {
   maintenanceDelegationError: string | null;
   liveDev: LiveDevStatus | null;
   liveDevError: string | null;
+  /** Null hides the Custom domain card: locked, or a coordinator without the route. */
+  customDomain: CustomDomainStatus | null;
+  customDomainError: string | null;
   maintenanceStatus: InstallationMaintenanceStatus | null;
   daemonAutomationError: string | null;
   restartSummary: RestartSummary | null;
@@ -101,6 +105,8 @@ export class InstallationPanelModel {
     maintenanceDelegationError: null,
     liveDev: null,
     liveDevError: null,
+    customDomain: null,
+    customDomainError: null,
     maintenanceStatus: null,
     daemonAutomationError: null,
     restartSummary: null,
@@ -162,6 +168,8 @@ export class InstallationPanelModel {
           | "changeMaintenanceDelegation"
           | "liveDev"
           | "changeLiveDev"
+          | "customDomain"
+          | "changeCustomDomain"
           | "maintenanceStatus"
           | "enrollmentStatus"
           | "recoveryAccess"
@@ -233,6 +241,8 @@ export class InstallationPanelModel {
         maintenanceDelegationError: null,
         liveDev: null,
         liveDevError: null,
+        customDomain: null,
+        customDomainError: null,
         maintenanceStatus: null,
         recoveryAccess: null,
         recoveryAccessError: null,
@@ -321,6 +331,7 @@ export class InstallationPanelModel {
         sessionHost,
         instructionRequests,
         liveDev,
+        customDomain,
       ] = await Promise.all([
         this.client.listRestarts(),
         this.client.profileSharingStatus(),
@@ -371,6 +382,7 @@ export class InstallationPanelModel {
           },
         ),
         this.loadLiveDev(),
+        this.loadCustomDomain(),
       ]);
       if (generation !== this.accessGeneration) return;
       const targets = new Set(
@@ -394,6 +406,7 @@ export class InstallationPanelModel {
         sessionHost,
         instructionRequests,
         liveDev,
+        customDomain,
         pendingJobs: pending,
         profileSharing,
         ...(automationGeneration === this.automationGeneration
@@ -616,6 +629,45 @@ export class InstallationPanelModel {
     } catch (error) {
       if (generation !== this.accessGeneration) return;
       this.publish({ liveDevError: toErrorMessage(error) });
+      if (error instanceof OwnerAccessExpired) this.fail(error);
+    } finally {
+      if (generation === this.accessGeneration) this.publish({ busy: false });
+    }
+  }
+
+  /** The Custom domain card never blocks the rest of Installation controls. */
+  private async loadCustomDomain(): Promise<CustomDomainStatus | null> {
+    try {
+      const status = (await this.client.customDomain?.()) ?? null;
+      this.publish({ customDomainError: null });
+      return status;
+    } catch (error) {
+      if (error instanceof OwnerAccessExpired) throw error;
+      this.publish({ customDomainError: failureMessage(error, "Custom domain is unavailable") });
+      return this.state.customDomain;
+    }
+  }
+
+  /** Saves the custom domain; the coordinator restarts by itself and Installation controls reconnect. */
+  async changeCustomDomain(origin: string | null): Promise<void> {
+    const status = this.state.customDomain;
+    if (this.state.busy || !this.state.unlocked || !status?.available) return;
+    if (!this.client.changeCustomDomain) return;
+    const generation = this.accessGeneration;
+    this.publish({ busy: true, error: null, customDomainError: null, notice: null });
+    try {
+      const saved = await this.client.changeCustomDomain(status, origin);
+      if (generation !== this.accessGeneration) return;
+      this.publish({
+        customDomain: saved,
+        notice:
+          saved.lastChange?.status === "running"
+            ? "The coordinator is restarting with the new domain. Agents keep running."
+            : null,
+      });
+    } catch (error) {
+      if (generation !== this.accessGeneration) return;
+      this.publish({ customDomainError: toErrorMessage(error) });
       if (error instanceof OwnerAccessExpired) this.fail(error);
     } finally {
       if (generation === this.accessGeneration) this.publish({ busy: false });
@@ -946,6 +998,8 @@ export class InstallationPanelModel {
         maintenanceDelegationError: null,
         liveDev: null,
         liveDevError: null,
+        customDomain: null,
+        customDomainError: null,
         maintenanceStatus: null,
         daemonAutomationError: null,
         recoveryAccess: null,

@@ -10,6 +10,18 @@
 # made before this installer (scripts/install-execution-host.mjs) is upgraded in place at its
 # own folder after one confirmation, the proceed question.
 #
+# An installation this installer made, from any release since 26.11.103, is compared with
+# the fetched release: the installer shows "Installed: X" and "Latest: Y" and, when Y
+# differs, asks to upgrade it in place (the upgrade question) and whether to change its
+# settings meanwhile (change-settings). Only the installation name and, on releases that
+# have them, the in-app update mode and channel can change; the Dev container, Projects
+# folder and remote access stay as installed, because changing them moves data or
+# addresses. The upgrade builds the new release beside the running one, takes a snapshot,
+# then restarts the Host daemon, the coordinator and Dev on it, each returning to its
+# previous release when it does not come back healthy. A rerun resumes a stopped upgrade.
+# The installer never downgrades. Keeping the installed release returns ~/vorteo/source to
+# where it was, so nothing changes. --repair repairs what is installed without fetching.
+#
 # Options (each question also has an environment variable; flags win):
 #   --yes, -y                       Take the default answer for every question (VORTEO_YES=1).
 #                                   It never answers install-node, install-git, install-docker,
@@ -35,8 +47,18 @@
 #   --skip-prerequisites            Install no prerequisites; report each missing one with its
 #                                   fix (VORTEO_SKIP_PREREQUISITES=1).
 #   --proceed=yes|no                Approve the plan without being asked (VORTEO_PROCEED).
+#   --upgrade=yes|no                Upgrade an existing installation to the fetched release
+#                                   (VORTEO_UPGRADE).
+#   --change-settings=yes|no        Change an existing installation's settings
+#                                   (VORTEO_CHANGE_SETTINGS). Passing --name, --update-mode
+#                                   or --update-channel implies yes.
+#   --update-mode=manual|automatic  In-app updates: approve each release, or install new ones
+#                                   when idle (VORTEO_UPDATE_MODE).
+#   --update-channel=stable|beta    Which releases in-app updates follow
+#                                   (VORTEO_UPDATE_CHANNEL).
 #   --demo                 Preview every setup step and five minutes of animation; change nothing.
-#   --repair                        Repair an existing installation.
+#   --repair                        Repair an existing installation without fetching or
+#                                   upgrading it.
 #   --version=<tag>                 Install this release tag instead of the latest
 #                                   (VORTEO_VERSION).
 #   --root=<path>                   Installation folder, default ~/vorteo (VORTEO_ROOT).
@@ -64,6 +86,13 @@
 #   VORTEO_RESULT local-origin <address on this machine>
 #   VORTEO_RESULT password-file <path of the owner password file>
 # The password itself is never printed; it is copied to the clipboard when one is available.
+#
+# For an existing installation, agent mode also prints:
+#   VORTEO_STATUS installed-version <version>    what runs now
+#   VORTEO_STATUS target-version <version>       the fetched release
+#   VORTEO_STATUS upgraded <from> <to>           after an upgrade
+#   VORTEO_STATUS up-to-date <version>           when nothing needed upgrading
+#   VORTEO_STATUS installed <root>               where it is installed
 #
 # Exit status: 0 done, 1 failed (the output names the fix; rerun to resume), 2 bad option,
 # 3 questions need answers, 4 the owner declined the plan.
@@ -975,7 +1004,14 @@ vorteo_install() {
   # shellcheck disable=SC2088 # A ~ shown to the owner, expanded later by expand_path.
   local auth_key_file="" tailscale_attempts=0 failures=0 projects_default="~/dev"
   # Set by json_vars from the engine's detect report.
-  local existing_paths="" existing_projects="" existing_root="" existing_resume=""
+  local existing_paths="" existing_projects="" existing_root="" existing_resume="" existing_state=""
+  # The source checkout's commit before this run fetched the release, restored when the
+  # owner keeps the installed release.
+  local previous_source=""
+  # Set by plan_upgrade from the engine's comparison of an existing installation.
+  local comparison="" installed_label="" installed_version="" target_label="" target_version=""
+  local unsupported_reason="" unsupported_fix="" current_name="" current_mode="" current_channel=""
+  local upgrade_summary=""
   local pre_node_ok="" pre_node_fix="" pre_git_ok=""
   local pre_git_fix="" pre_docker_ok="" pre_docker_running="" pre_docker_fix="" pre_ts_ok=""
   local pre_ts_running="" pre_ts_logged_in="" pre_ts_fix=""
@@ -1032,7 +1068,11 @@ vorteo_install() {
     say "  --install-tailscale=yes|no        Install Tailscale for remote access"
     say "  --skip-prerequisites              Install nothing; report missing prerequisites with their fixes"
     say "  --proceed=yes|no                  Approve the plan without being asked"
-    say "  --repair                          Repair an existing installation"
+    say "  --upgrade=yes|no                  Upgrade an existing installation to the release"
+    say "  --change-settings=yes|no          Change an existing installation's settings"
+    say "  --update-mode=manual|automatic    How the installation takes later releases"
+    say "  --update-channel=stable|beta      Which releases it follows"
+    say "  --repair                          Repair an existing installation without upgrading it"
     say "  --version=<tag>                   Install this release instead of the latest"
     say "  --root=<path>                     Installation folder (~/vorteo)"
     say "  --no-open                         Do not open the browser at the end"
@@ -1079,10 +1119,24 @@ vorteo_install() {
   validate_answer() {
     case "$1" in
       dev-container | install-node | install-git | install-docker | start-docker | \
-        install-tailscale | proceed)
+        install-tailscale | proceed | upgrade | change-settings)
         normalize_bool "$2"
         ;;
       remote) normalize_remote "$2" ;;
+      update-mode)
+        case "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" in
+          m | manual) printf 'manual' ;;
+          a | automatic | auto) printf 'automatic' ;;
+          *) return 1 ;;
+        esac
+        ;;
+      update-channel)
+        case "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" in
+          s | stable) printf 'stable' ;;
+          b | beta) printf 'beta' ;;
+          *) return 1 ;;
+        esac
+        ;;
       projects-folder) expand_path "$2" >/dev/null && printf '%s' "$2" ;;
       name)
         if [ -n "$2" ] && [ "${#2}" -le 64 ]; then printf '%s' "$2"; else return 1; fi
@@ -1100,10 +1154,12 @@ vorteo_install() {
   answer_hint() {
     case "$1" in
       dev-container | install-node | install-git | install-docker | start-docker | \
-        install-tailscale | proceed)
+        install-tailscale | proceed | upgrade | change-settings)
         printf 'yes or no'
         ;;
       remote) printf 'tailscale or local' ;;
+      update-mode) printf 'manual or automatic' ;;
+      update-channel) printf 'stable or beta' ;;
       name) printf '1 to 64 characters' ;;
       projects-folder | tailscale-auth-key-file) printf 'an absolute path or one starting with ~/' ;;
     esac
@@ -1199,7 +1255,7 @@ vorteo_install() {
         ;;
       --name | --projects-folder | --remote | --tailscale-auth-key-file | --install-node | \
         --install-git | --install-docker | --start-docker | --install-tailscale | --proceed | \
-        --version | --root)
+        --upgrade | --change-settings | --update-mode | --update-channel | --version | --root)
         if [ "$#" -eq 0 ]; then
           printf 'Option %s needs a value.\n' "$arg" >&2
           exit 2
@@ -1216,13 +1272,14 @@ vorteo_install() {
     case "$arg" in
       --*=* | --name | --projects-folder | --remote | --tailscale-auth-key-file | \
         --install-node | --install-git | --install-docker | --start-docker | \
-        --install-tailscale | --proceed | --version | --root)
+        --install-tailscale | --proceed | --upgrade | --change-settings | --update-mode | \
+        --update-channel | --version | --root)
         case "$key" in
           version) pinned_version="$value" ;;
           root) root="$value" ;;
           dev-container | name | projects-folder | remote | tailscale-auth-key-file | \
             install-node | install-git | install-docker | start-docker | install-tailscale | \
-            proceed)
+            proceed | upgrade | change-settings | update-mode | update-channel)
             option_answer "$key" "$value"
             ;;
           *)
@@ -1255,7 +1312,8 @@ vorteo_install() {
     tailscale-auth-key-file:VORTEO_TAILSCALE_AUTH_KEY_FILE install-node:VORTEO_INSTALL_NODE \
     install-git:VORTEO_INSTALL_GIT install-docker:VORTEO_INSTALL_DOCKER \
     start-docker:VORTEO_START_DOCKER install-tailscale:VORTEO_INSTALL_TAILSCALE \
-    proceed:VORTEO_PROCEED; do
+    proceed:VORTEO_PROCEED upgrade:VORTEO_UPGRADE change-settings:VORTEO_CHANGE_SETTINGS \
+    update-mode:VORTEO_UPDATE_MODE update-channel:VORTEO_UPDATE_CHANNEL; do
     id="${env_pair%%:*}"
     env_name="${env_pair#*:}"
     if [ -z "$(get_answer "$id")" ] && [ -n "${!env_name-}" ]; then
@@ -1379,6 +1437,7 @@ VORTEO_BANNER
       existing_projects='d.existing && d.existing.paths && d.existing.paths.projectsFolder' \
       existing_root='d.existing && d.existing.paths && d.existing.paths.root' \
       existing_resume='d.existing && d.existing.resume' \
+      existing_state='d.existing && d.existing.state' \
       pre_node_ok='d.prerequisites.node.ok' pre_node_fix='d.prerequisites.node.fix' \
       pre_git_ok='d.prerequisites.git.ok' pre_git_fix='d.prerequisites.git.fix' \
       pre_docker_ok='d.prerequisites.docker.ok' pre_docker_running='d.prerequisites.docker.running' \
@@ -1462,6 +1521,7 @@ VORTEO_BANNER
         "Move it somewhere else, then rerun."
     fi
     if [ -d "$source_dir/.git" ]; then
+      previous_source=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null 3<&-)
       if verify_checkout "$source_dir"; then
         ok "Vorteo $release_tag is already in $source_dir"
         return 0
@@ -1579,24 +1639,210 @@ VORTEO_BANNER
 
   # Existing installations --------------------------------------------------------------
 
-  handle_current() {
-    heading "Vorteo is already installed in $root"
-    if [ -n "$want_repair" ]; then
-      heading "Repairing"
-      if ! apply_with_progress no-result repair; then
-        resume_hint
-        exit 1
-      fi
-      run_engine status --json >"$work/result.json" ||
-        fail "Repair completed, but connection details could not be read." "Run: vorteo status"
-      finish
-      return 0
-    fi
+  # Shows how to reach an existing installation, and how to repair it.
+  show_current() {
     run_engine status --json >"$work/result.json" ||
       fail "Connection details could not be read." "Run: vorteo doctor"
     finish
     say "  Repair it:  $(rerun_command --repair)"
     if [ -z "$interactive" ]; then say "VORTEO_STATUS installed $root"; fi
+  }
+
+  # --repair re-registers what is installed with the installed release's engine; it never
+  # fetches or upgrades.
+  repair_current() {
+    heading "Vorteo is already installed in $root"
+    heading "Repairing"
+    if ! apply_with_progress no-result repair; then
+      resume_hint
+      exit 1
+    fi
+    run_engine status --json >"$work/result.json" ||
+      fail "Repair completed, but connection details could not be read." "Run: vorteo status"
+    finish
+  }
+
+  # Returns the source checkout to the release it held before this run, so keeping the
+  # installed release leaves nothing changed. A checkout named by VORTEO_INSTALL_SOURCE
+  # is never moved.
+  restore_source() {
+    if [ -z "$previous_source" ] || [ "$previous_source" = "$release_commit" ] ||
+      [ -n "${VORTEO_INSTALL_SOURCE:-}" ]; then
+      return 0
+    fi
+    git -C "$source_dir" -c advice.detachedHead=false checkout --quiet --detach "$previous_source" \
+      </dev/null 3<&- || problem "Could not return $source_dir to $previous_source."
+  }
+
+  # plan_upgrade [engine args]: the engine's comparison of the installed release with the
+  # fetched one, and a plan when the arguments ask for a change.
+  plan_upgrade() {
+    run_engine plan --upgrade --source "$source_dir" --revision "$release_commit" \
+      ${release_tag:+--release "$release_tag"} "$@" --json >"$work/upgrade.json" 2>"$work/plan.log" ||
+      fail "The installer engine could not plan the upgrade: $(tail -n 3 "$work/plan.log")" \
+        "Fix the problem it names, then rerun."
+    json_vars "$work/upgrade.json" \
+      comparison='d.comparison' \
+      installed_label='d.installed.version ? d.installed.version + (d.installed.release ? " (" + d.installed.release + ")" : "") : (d.installed.revision || "unknown").slice(0, 12)' \
+      installed_version='d.installed.version || d.installed.revision' \
+      target_label='(d.target.version || d.target.revision.slice(0, 12)) + (d.target.release && !/^[0-9a-f]{40}$/.test(d.target.release) ? " (" + d.target.release + ")" : "")' \
+      target_version='d.target.version || d.target.revision' \
+      unsupported_reason='d.unsupported && d.unsupported.reason' \
+      unsupported_fix='d.unsupported && d.unsupported.fix' \
+      current_name='d.settings.name' current_mode='d.settings.updateMode' \
+      current_channel='d.settings.updateChannel' \
+      upgrade_summary='d.summary' ||
+      fail "The installer engine returned an unreadable upgrade plan." "Rerun the installer."
+  }
+
+  # Asks the settings an existing installation can change, defaulting to their values now.
+  # Folders, remote access and the Dev container stay as installed: changing them moves
+  # data or addresses, which a fresh installation does deliberately.
+  ask_settings() {
+    ask name "$current_name" "Installation name?"
+    if [ -n "$current_mode" ]; then
+      ask update-mode "$current_mode" "In-app updates: manual (you approve each release) or automatic (installed when idle)?"
+      ask update-channel "$current_channel" "Update channel: stable or beta?"
+    fi
+  }
+
+  write_settings() {
+    if [ "$(get_answer change-settings)" != yes ]; then
+      printf '{}\n' >"$work/settings.json"
+      return 0
+    fi
+    A_NAME="$(get_answer name)" A_MODE="$(get_answer update-mode)" \
+      A_CHANNEL="$(get_answer update-channel)" "$node_bin" -e '
+        const e = process.env;
+        const settings = {};
+        if (e.A_NAME) settings.name = e.A_NAME;
+        if (e.A_MODE) settings.updateMode = e.A_MODE;
+        if (e.A_CHANNEL) settings.updateChannel = e.A_CHANNEL;
+        process.stdout.write(JSON.stringify(settings) + "\n");
+      ' >"$work/settings.json" 3<&- || fail "Could not record the settings."
+  }
+
+  # apply_upgrade: applies the plan in $work/upgrade.json and shows the result.
+  apply_upgrade() {
+    "$node_bin" -e '
+      const fs = require("fs");
+      const output = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      fs.writeFileSync(process.argv[2], JSON.stringify(output.plan, null, 2) + "\n", { mode: 0o600 });
+    ' "$work/upgrade.json" "$work/plan.json" 3<&- || fail "Could not record the plan."
+    if ! apply_with_progress result upgrade --plan "$work/plan.json"; then
+      say ""
+      say "The upgrade stopped. The step above names the problem; a Host daemon or coordinator that"
+      say "failed to start runs its previous release again, and Dev keeps its previous image."
+      say "A snapshot from before the upgrade can be restored from Settings in the interface."
+      resume_hint
+      exit 1
+    fi
+    finish
+  }
+
+  # An installation made by this installer: compare it with the fetched release, then offer
+  # the upgrade and a settings change, or say it is current.
+  handle_current() {
+    heading "Vorteo is already installed in $root"
+    if [ "$existing_state" != installed ]; then
+      show_current
+      return 0
+    fi
+    plan_upgrade
+    local target_word="Latest"
+    if [ -n "$pinned_version" ]; then target_word="Requested"; fi
+    say "  Installed: $installed_label"
+    say "  $target_word: $(printf '%*s' $((9 - ${#target_word})) '')$target_label"
+    if [ -z "$interactive" ]; then
+      say "VORTEO_STATUS installed-version $installed_version"
+      say "VORTEO_STATUS target-version $target_version"
+    fi
+    if [ -n "$(get_answer dev-container)$(get_answer projects-folder)$(get_answer remote)$(get_answer tailscale-auth-key-file)" ]; then
+      say "  The Dev container, Projects folder and remote access stay as installed; a fresh"
+      say "  installation in another folder changes them."
+    fi
+    if [ -n "$unsupported_reason" ]; then
+      restore_source
+      say "  $unsupported_reason"
+      fix "$unsupported_fix"
+      show_current
+      return 0
+    fi
+    # A setting given as an option is a request to change settings.
+    if [ -z "$(get_answer change-settings)" ] &&
+      [ -n "$(get_answer name)$(get_answer update-mode)$(get_answer update-channel)" ]; then
+      set_answer change-settings yes
+    fi
+    case "$comparison" in
+      newer | different | unfinished)
+        case "$comparison" in
+          newer) heading "Vorteo $target_label is available" ;;
+          different) heading "Release $target_label is a different build of the installed version" ;;
+          unfinished) heading "An upgrade to $target_label stopped part way; upgrading again resumes it" ;;
+        esac
+        printf '%s\n' "$upgrade_summary" | sed 's/^/  • /'
+        say ""
+        if [ -z "$interactive" ] && [ -z "$assume_yes" ] && [ -z "$(get_answer upgrade)" ]; then
+          pending_plan=$(printf '%s\n' "$upgrade_summary" | sed 's/^/VORTEO_PLAN /')$'\n'
+        fi
+        ask upgrade yes "Upgrade this installation to $target_label?"
+        if [ "$(get_answer upgrade)" != no ]; then
+          ask change-settings no "Change installation settings while upgrading?"
+        fi
+        if [ -n "$pending_questions" ]; then restore_source; fi
+        flush_questions
+        if [ "$(get_answer upgrade)" != yes ]; then
+          restore_source
+          say "Kept Vorteo $installed_label. Nothing in $root changed."
+          exit 4
+        fi
+        if [ "$(get_answer change-settings)" = yes ]; then
+          ask_settings
+          if [ -n "$pending_questions" ]; then restore_source; fi
+          flush_questions
+        fi
+        write_settings
+        plan_upgrade --settings "$work/settings.json"
+        if [ "$(get_answer change-settings)" = yes ]; then
+          printf '%s\n' "$upgrade_summary" | grep -E '^(Rename|In-app updates)' | sed 's/^/  • /'
+        fi
+        heading "Upgrading"
+        apply_upgrade
+        if [ -z "$interactive" ]; then say "VORTEO_STATUS upgraded $installed_version $target_version"; fi
+        return 0
+        ;;
+      same)
+        ok "This installation runs the $(printf '%s' "$target_word" | tr '[:upper:]' '[:lower:]') release."
+        # Agents ask only when they pass an answer; a plain rerun just reports.
+        if [ -n "$interactive" ] || [ -n "$(get_answer change-settings)" ]; then
+          ask change-settings no "Change installation settings?"
+          flush_questions
+        fi
+        if [ "$(get_answer change-settings)" = yes ]; then
+          ask_settings
+          flush_questions
+          write_settings
+          plan_upgrade --settings "$work/settings.json" --settings-only
+          if [ -n "$upgrade_summary" ]; then
+            heading "Saving the settings"
+            apply_upgrade
+            say "  Repair it:  $(rerun_command --repair)"
+            if [ -z "$interactive" ]; then say "VORTEO_STATUS up-to-date $installed_version"; fi
+            return 0
+          fi
+          say "  The settings are unchanged."
+        fi
+        show_current
+        if [ -z "$interactive" ]; then say "VORTEO_STATUS up-to-date $installed_version"; fi
+        ;;
+      older)
+        restore_source
+        say "  The installed release is newer than $target_label, and the installer does not downgrade."
+        say "  To go back, restore a snapshot from Settings in the interface."
+        show_current
+        ;;
+      *) fail "The installer engine reported an unknown comparison: $comparison." "Rerun the installer." ;;
+    esac
   }
 
   # A Host installation from before this installer (scripts/install-execution-host.mjs) is
@@ -1651,23 +1897,31 @@ VORTEO_BANNER
   # Run ---------------------------------------------------------------------------------
 
   heading "Preparing"
-  # An earlier run's engine can recognize a finished installation without the network.
-  if [ -f "$source_dir/scripts/installer/main.mjs" ] && detect soft; then
-    if [ "$existing_kind" = current ]; then
+  # Repair works with the engine of the installed release, without the network.
+  if [ -n "$want_repair" ]; then
+    if [ -f "$source_dir/scripts/installer/main.mjs" ] && detect soft &&
+      [ "$existing_kind" = current ]; then
       if [ -n "$existing_root" ]; then root="$existing_root"; fi
-      handle_current
+      repair_current
       return 0
     fi
-  fi
-  if [ -n "$want_repair" ]; then
     say "  No complete installation was found, so the installer continues with a new install."
   fi
+  # The release comes first, so an existing installation is compared with it and its
+  # engine reads every older layout.
   fetch_release
   detect
 
   case "$existing_kind" in
     current)
-      if [ -n "$existing_root" ]; then root="$existing_root"; fi
+      # An installation in another folder upgrades from its own source checkout.
+      if [ -n "$existing_root" ] && [ "$existing_root" != "$root" ]; then
+        restore_source
+        root="$existing_root"
+        source_dir="$root/source"
+        previous_source=""
+        fetch_release
+      fi
       handle_current
       return 0
       ;;

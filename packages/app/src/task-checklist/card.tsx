@@ -4,7 +4,7 @@ import { useCardDisclosure } from "@/agent-stream/use-card-disclosure";
 import { CardDisclosure } from "@/agent-stream/card-disclosure";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Text } from "react-native";
+import { StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import { BrushCleaning, Check, Circle, CircleAlert, Eye, Pencil, Plus } from "lucide-react-native";
 import { useMutation } from "@tanstack/react-query";
 import { useShallow } from "zustand/shallow";
@@ -20,7 +20,6 @@ import { isNative } from "@/constants/platform";
 import { LIST_ROW_ACTION_SIZE, LIST_ROW_TOUCH_ACTION_SIZE } from "@/styles/list-row-metrics";
 import { StatusRing } from "@/components/status-ring";
 import type { Theme } from "@/styles/theme";
-import { controlIconSize } from "@/components/ui/control-geometry";
 import { ReviewTaskBadge } from "@/task-checklist/review-badge";
 import { BlockedTaskBadge } from "@/task-checklist/blocked-badge";
 import { Button } from "@/components/ui/button";
@@ -53,13 +52,21 @@ interface ChecklistCardProps {
 }
 type EditorState = { open: false } | { open: true; task: AgentTaskItem | null };
 const EMPTY_TASKS: AgentTaskItem[] = [];
-const TASK_RUNNING_ICON = <StatusRing variant="task" />;
+// Task status glyphs run smaller than the default control icon so the checklist matches the
+// sidebar's compact status column: a 12px Lucide circle draws a 10px ring, the same footprint
+// as the status ring scaled to 80%.
+const compactRingStyles = RNStyleSheet.create({ ring: { transform: [{ scale: 0.8 }] } });
+const TASK_RUNNING_ICON = (
+  <View style={compactRingStyles.ring}>
+    <StatusRing variant="task" />
+  </View>
+);
 const COMPACT_COLUMN_DATA = { vortonRowHandle: "true" };
 const ThemedCheck = withUnistyles(Check);
 const ThemedCircle = withUnistyles(Circle);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedEye = withUnistyles(Eye);
-const STATUS_ICON_SIZE = controlIconSize.sm;
+const STATUS_ICON_SIZE = 12;
 const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 function inactiveTaskIcon(status: AgentTaskItem["status"]) {
   if (status === "blocked") return CircleAlert;

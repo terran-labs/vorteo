@@ -99,7 +99,7 @@ It creates:
 
 On Windows, the installer probably won't work yet, even inside WSL. Full WSL support is planned in [#35](https://github.com/terran-labs/vorteo/issues/35).
 
-Every later change happens in the interface, from connecting accounts to updating Vorteo. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. Custom Compose overrides require review before conversion to the network gate; the installer stops before changing such a deployment. See [host and container execution](docs/execution-installation.md) for what it installs.
+Every later change happens in the interface, from connecting accounts to updating Vorteo. Rerunning the command on an existing installation shows its version and the latest one and offers to upgrade it in place, keeping its identity, agents and data. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. Custom Compose overrides require review before conversion to the network gate; the installer stops before changing such a deployment. See [host and container execution](docs/execution-installation.md) for what it installs.
 
 On Linux, Host and Dev share the selected Projects folder through explicit file permissions while preserving ownership. The installer checks access in both directions and retains permission backups. See [Projects folder](docs/execution-installation.md#projects-folder) for filesystem requirements and recovery.
 
