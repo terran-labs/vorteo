@@ -29,7 +29,7 @@ export function claudeSignInEnvironment(mode: ClaudeSignInMode): Record<string, 
  * OAuth grant stored for the account's own CLAUDE_CONFIG_DIR. Inherited daemon variables could
  * otherwise sign it in as someone else, switch it off the subscription, or move its storage.
  * `undefined` removes a variable. CLAUDE_SECURESTORAGE_CONFIG_DIR must be absent rather than
- * empty: Claude Code 2.1.284 through 2.1.311 maps an empty value to the shared default Keychain item and
+ * empty: Claude Code 2.1.284 through 2.1.318 maps an empty value to the shared default Keychain item and
  * `~/.claude/.credentials.json`.
  */
 export function claudeFullSignInEnvironment(): Record<string, string | undefined> {

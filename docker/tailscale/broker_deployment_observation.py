@@ -8,6 +8,7 @@ import selectors
 import stat
 import subprocess
 import time
+import uuid
 from broker_deployment_kernel import DarwinKernel, ProcessGone
 from broker_deployment import sha, encode
 from channel_identity import read_file, file_identity, physical_directory, verify_channel
@@ -110,6 +111,27 @@ class NativeObservation:
             raise ValueError('Native process custody changed')
         return {'pid': pid, 'birth': before['birth'], 'uid': os.getuid(), 'argv': argv}
 
+    def inventory_process(self, pid):
+        """Stable identity and argv for any listed pid, whatever its credentials."""
+        try:
+            before = self.kernel.info(pid)
+            argv = self.kernel.argv(pid)
+            after = self.kernel.info(pid)
+        except ProcessGone:
+            return None
+        if before != after or before['pid'] != pid:
+            raise ValueError('Native process custody changed')
+        return before, argv
+
+    def broker_related(self, arg):
+        """Broad match for processes outside full owner custody: any broker root path
+        or consumer module name, not only the exact routes."""
+        names = ('https_broker', 'https-preview', 'host_config', 'channel_identity',
+                 'broker_deployment', 'broker_rebind')
+        return (any(arg == binding['root'] or arg.startswith(binding['root'] + '/')
+                    or binding['root'] + '/' in arg for binding in self.bindings)
+                or any(name in arg for name in names))
+
     def old_process_exited(self, expected):
         if expected is None:
             return True
@@ -118,7 +140,8 @@ class NativeObservation:
 
     def state(self, binding):
         self.guard()
-        if self.kernel.boot() != self.plan['bootUUID']:
+        # Compare canonical forms: sysctl prints uppercase, the kernel adapter lowercase.
+        if str(uuid.UUID(self.kernel.boot())) != str(uuid.UUID(self.plan['bootUUID'])):
             raise ValueError('Deployment boot changed')
         domain = f'gui/{os.getuid()}'
         if binding['domain'] != domain:
@@ -180,6 +203,20 @@ class NativeObservation:
         routes = {str(Path(binding['root']) / name) for binding in self.bindings
                   for name in ('https_broker.py', 'https-preview.py')}
         for pid in self.kernel.pids(os.getuid()):
+            # The inventory filters by effective UID only, so it also lists processes
+            # such as loginwindow (euid owner, ruid and svuid root). A mixed-credential
+            # process is skipped only when its argv names no broker root, route or
+            # module; otherwise it is refused like any unlisted caller. An unreadable
+            # argv raises. Every sweep re-reads credentials, so a later drop to full
+            # owner UIDs takes the strict process() path below.
+            observed = self.inventory_process(pid)
+            if observed is None:
+                continue
+            info, argv = observed
+            if info['uids'] != [os.getuid()] * 3:
+                if any(self.broker_related(arg) for arg in argv):
+                    raise ValueError('Unlisted broker caller or waiting generation remains')
+                continue
             process = self.process(pid)
             if process is not None and any(arg in routes for arg in process['argv']):
                 if admitted.get(pid) != process:

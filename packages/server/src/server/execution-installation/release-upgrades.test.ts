@@ -205,6 +205,20 @@ test("turning automatic updates off stops an automatic upgrade before the Host r
   expect(statuses(upgrades).status).toBe("failed");
 });
 
+test("a Dev the installer does not manage is skipped, never rebuilt", async () => {
+  const fake = fakePorts({ devUnmanaged: true });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  fake.finishHost("succeeded");
+  await upgrades.drain();
+  fake.reportCoordinator("succeeded");
+  await upgrades.drain();
+  await upgrades.drain();
+  expect(fake.calls.filter((call) => call.startsWith("dev-"))).toEqual([]);
+  expect(upgrades.list()[0]).toMatchObject({ status: "succeeded" });
+  expect(upgrades.list()[0].steps[4]).toMatchObject({ status: "skipped" });
+});
+
 test("a restarted coordinator resumes from the journal without repeating finished effects", async () => {
   const first = fakePorts();
   const upgrades = new InstallationUpgrades(journal, first.ports);

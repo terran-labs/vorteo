@@ -5,7 +5,7 @@ import {
   type ClaudeOAuthProjectionDelivery,
   type ClaudeOAuthProjectionReceipt,
 } from "./claude-oauth-delivery.js";
-import type { ClaudeOAuthGrant } from "./claude-oauth-host.js";
+import type { ClaudeOAuthGrant } from "./claude-oauth-storage.js";
 
 const INSTALLATION = "00000000-0000-4000-8000-000000000000";
 const MINUTE = 60_000;
@@ -30,6 +30,7 @@ function harness(options: { excluded?: boolean } = {}) {
   let online = true;
   let tokens = 1;
   let reads = 0;
+  let readable = true;
   const deliveries: ClaudeOAuthProjectionDelivery[] = [];
   const persisted: string[] = [];
   // Option A: the official CLI rotates the token under its own locks.
@@ -48,6 +49,7 @@ function harness(options: { excluded?: boolean } = {}) {
       policy: () => policy,
       grant: async () => {
         reads += 1;
+        if (!readable) throw new Error("Credential storage unavailable");
         return grant;
       },
       refresh,
@@ -74,6 +76,9 @@ function harness(options: { excluded?: boolean } = {}) {
     },
     now: () => now,
     reads: () => reads,
+    setReadable: (value: boolean) => {
+      readable = value;
+    },
     setGrant: (value: ClaudeOAuthGrant | null) => {
       grant = value;
     },
@@ -241,30 +246,29 @@ async function tick(refresher: ClaudeOAuthRefresher, h: ReturnType<typeof harnes
   }
 }
 
-it("gives up on an expired grant after repeated failed refreshes and asks for sign-in", async () => {
+it("keeps an expired grant recoverable through a prolonged outage without asking for sign-in", async () => {
   const h = harness();
   const refresher = h.create();
   await refresher.connected("one", null);
   await refresher.reconcile();
-  // The CLI runs but cannot refresh (revoked grant, network down) and writes no dead marker.
-  h.refresh.mockImplementation(async () => {});
+  h.refresh.mockImplementation(async () => {
+    throw new Error("network down");
+  });
   h.advance(56 * MINUTE);
   await tick(refresher, h, 240);
-  expect(h.refresh).toHaveBeenCalledTimes(3);
-  expect(h.deliveries.at(-1)).toMatchObject({ access: null });
+  expect(h.refresh.mock.calls.length).toBeGreaterThan(3);
+  expect(h.refresh.mock.calls.length).toBeLessThanOrEqual(27);
+  expect(h.deliveries).toHaveLength(1);
   expect(refresher.status("one")).toMatchObject({
-    needsSignIn: true,
-    environments: [{ serverId: "dev", status: "disconnected" }],
+    needsSignIn: false,
+    environments: [{ serverId: "dev", status: "pending" }],
   });
-  // Given up: the Host is read only on the normal five-minute cadence.
-  const reads = h.reads();
-  await tick(refresher, h, 20);
-  expect(h.reads() - reads).toBeLessThanOrEqual(2);
-  // A newer Host token (a Host agent refreshed it) recovers without a new sign-in.
-  h.setGrant({
-    ...h.grant()!,
-    accessToken: "synthetic-access-recovered",
-    expiresAt: h.now() + 60 * MINUTE,
+  h.refresh.mockImplementation(async () => {
+    h.setGrant({
+      ...h.grant()!,
+      accessToken: "synthetic-access-recovered",
+      expiresAt: h.now() + 60 * MINUTE,
+    });
   });
   h.advance(5 * MINUTE);
   await refresher.reconcile();
@@ -275,6 +279,45 @@ it("gives up on an expired grant after repeated failed refreshes and asks for si
     needsSignIn: false,
     environments: [{ serverId: "dev", status: "ready" }],
   });
+});
+
+it("delivers a saved rotation even when the CLI subsequently fails", async () => {
+  const h = harness();
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  h.refresh.mockImplementation(async () => {
+    h.setGrant({ ...h.grant()!, accessToken: "synthetic-saved", expiresAt: h.now() + 60 * MINUTE });
+    throw new Error("request timed out after saving");
+  });
+  h.advance(56 * MINUTE);
+  await refresher.reconcile();
+  expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-saved" } });
+  expect(refresher.status("one").refresh).toMatchObject({ outcome: "refreshed" });
+});
+
+it("preserves the last grant on an unreadable refresh result, but withdraws a confirmed missing grant", async () => {
+  const h = harness();
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  h.refresh.mockImplementation(async () => {
+    h.setReadable(false);
+    throw new Error("request failed");
+  });
+  h.advance(56 * MINUTE);
+  await refresher.reconcile();
+  expect(h.deliveries).toHaveLength(1);
+  expect(refresher.status("one").needsSignIn).toBe(false);
+  h.setReadable(true);
+  h.refresh.mockImplementation(async () => {
+    h.setGrant(null);
+    throw new Error("grant revoked");
+  });
+  h.advance(5 * MINUTE);
+  await refresher.reconcile();
+  expect(h.deliveries.at(-1)).toMatchObject({ access: null });
+  expect(refresher.status("one").needsSignIn).toBe(true);
 });
 
 it("does not refresh for an unreachable Dev and backs off Host reads until it returns", async () => {

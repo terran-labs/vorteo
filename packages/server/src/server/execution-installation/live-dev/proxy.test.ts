@@ -7,6 +7,7 @@ import express from "express";
 import pino from "pino";
 import { afterEach, expect, test } from "vitest";
 import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
+import { INJECTED_BODY_HTML } from "../../web-ui.js";
 import { createLiveDevMiddleware } from "./proxy.js";
 import { changeLiveDevMode, readLiveDevMode, LiveDevStateError } from "./state.js";
 
@@ -47,9 +48,15 @@ async function app(metroPort: number, owner: boolean): Promise<number> {
       installation: () => ({}) as ExecutionInstallation,
       logger: pino({ level: "silent" }),
       secureCookies: false,
+      liveMode: () => true,
+      serverStatus: () => ({ state: "ready", detail: null }),
     }),
   );
-  server.use((_req, res) => res.status(200).send("static interface"));
+  // Stands in for the static page server, which places the requested indicator in the page.
+  server.use((_req, res) => {
+    const indicator: unknown = res.locals[INJECTED_BODY_HTML];
+    res.status(200).send(`static interface${typeof indicator === "string" ? indicator : ""}`);
+  });
   return listen(server);
 }
 
@@ -72,6 +79,7 @@ test("only the owner gets live code, and only through allowlisted Metro paths", 
   const seen: string[] = [];
   const metro = await fakeMetro(seen);
   const visitor = await app(metro, false);
+  // Visitors never see the owner's Live dev indicator.
   expect((await get(visitor, "/", page)).body).toBe("static interface");
   expect((await get(visitor, "/node_modules/entry.bundle?platform=web")).body).toBe(
     "static interface",
@@ -80,7 +88,7 @@ test("only the owner gets live code, and only through allowlisted Metro paths", 
   const owner = await app(metro, true);
   const live = await get(owner, "/settings/general", page);
   expect(live.body).toContain("live page");
-  expect(live.body).toContain("vorteo-live-dev-marker");
+  expect(live.body).toContain('data-state="live"');
   expect((await get(owner, "/node_modules/entry.bundle?platform=web")).body).toBe("live bundle");
   // Editor launchers, the debugger and anything unlisted never reach Metro, whether or not
   // the request asks for a page, and encoded or dotted paths cannot be normalized into them.
@@ -101,6 +109,24 @@ test("only the owner gets live code, and only through allowlisted Metro paths", 
   expect(seen.filter((url) => url !== "/" && !url.endsWith("platform=web"))).toEqual([]);
 });
 
+test("a slow live page reuses the last one instead of falling back to static", async () => {
+  let pages = 0;
+  const metro = await listen((req, res) => {
+    // The first page answers; later ones fail, as a timeout under load would.
+    if ((req.headers.accept ?? "").includes("text/html") && pages++ === 0) {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><body>live page</body></html>");
+      return;
+    }
+    res.writeHead(503).end();
+  });
+  const owner = await app(metro, true);
+  expect((await get(owner, "/", page)).body).toContain("live page");
+  const again = await get(owner, "/", page);
+  expect(again.body).toContain("live page");
+  expect(again.cookie).toBeNull();
+});
+
 test("the safe interface choice serves static until the owner picks live again", async () => {
   const owner = await app(await fakeMetro([]), true);
   const choose = await get(owner, "/?interface=safe");
@@ -108,7 +134,10 @@ test("the safe interface choice serves static until the owner picks live again",
   // The redirect never echoes the request path, so it cannot point at another host.
   expect((await get(owner, "//evil.example?interface=safe")).location).toBe("/");
   const cookie = choose.cookie?.split(";")[0] ?? "";
-  expect((await get(owner, "/", { ...page, cookie })).body).toBe("static interface");
+  // The static page still carries the indicator, in its safe state.
+  const safe = (await get(owner, "/", { ...page, cookie })).body;
+  expect(safe).toContain("static interface");
+  expect(safe).toContain('data-state="safe"');
   expect((await get(owner, "/?interface=live", { cookie })).cookie).toContain("vorteo-interface=;");
 });
 

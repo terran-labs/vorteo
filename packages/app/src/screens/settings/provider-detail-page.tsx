@@ -45,7 +45,6 @@ import {
 } from "@/execution-installation/settings";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { ProviderLoginPanel } from "@/provider-usage/login-panel";
 import { ProviderReconnectControl } from "@/provider-usage/reconnect-control";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
 import { ProviderUsageWindowBar } from "@/provider-usage/window-bar";
@@ -474,6 +473,7 @@ function ConnectionRow({
           error={error}
           secrets={secrets}
           states={states}
+          cliLogin={account.id === "default/claude"}
         />
         <View style={styles.controls}>
           {signInEnvironment && signInId ? (
@@ -537,7 +537,9 @@ function ConnectionStatusLines({
   error,
   secrets,
   states,
+  cliLogin,
 }: {
+  cliLogin: boolean;
   accountId: string;
   name: string;
   status: string;
@@ -551,6 +553,9 @@ function ConnectionStatusLines({
   return (
     <View style={settingsStyles.rowContent}>
       <Text style={settingsStyles.rowTitle}>{name}</Text>
+      {cliLogin ? (
+        <Text style={settingsStyles.rowHint}>Uses the existing Claude CLI login.</Text>
+      ) : null}
       <Text
         style={attention ? settingsStyles.rowError : settingsStyles.rowHint}
         testID={`provider-connection-status-${accountId}`}
@@ -623,7 +628,7 @@ function ConnectionMenu({
   );
 }
 
-/** Sign-ins and runtime installs happen on Host unless the owner picks the Dev container. */
+/** Account creation starts on Host and shares the connection with the installation. */
 function AddConnectionSheet({
   visible,
   environments,
@@ -635,10 +640,7 @@ function AddConnectionSheet({
 }) {
   const host = environments.find((environment) => environment.kind === "host");
   const dev = environments.find((environment) => environment.kind === "container");
-  const [useDev, setUseDev] = useState(false);
-  const target = (useDev ? dev : host) ?? host ?? dev;
-  const other = target === host ? dev : host;
-  const switchTarget = useCallback(() => setUseDev((value) => !value), []);
+  const target = host ?? dev;
   const header = useMemo(() => ({ title: "Add connection" }), []);
   return (
     <AdaptiveModalSheet
@@ -651,11 +653,6 @@ function AddConnectionSheet({
         Sign in once. Vorteo shares the connection with every environment.
       </Text>
       {target ? <ProvidersSection serverId={target.serverId} runtimeOnly /> : null}
-      {other ? (
-        <Button variant="ghost" size="sm" onPress={switchTarget}>
-          {`Install in ${environmentLabel(other)} instead`}
-        </Button>
-      ) : null}
     </AdaptiveModalSheet>
   );
 }
@@ -850,23 +847,12 @@ function EnvironmentAccessSheet({
 }) {
   const provider = primaryDefinition(account, environments);
   const header = useMemo(() => ({ title: `${account.name}: environment access` }), [account.name]);
-  const host = environments.find((environment) => environment.kind === "host");
-  const claudeHost =
-    provider.providerType === "claude" && host && provider.bindings[host.serverId] ? host : null;
   return (
     <AdaptiveModalSheet testID="provider-manage-sheet" visible onClose={onClose} header={header}>
       <Text style={settingsStyles.rowHint}>
         Connections are shared by every environment. Turn one off here only when an environment must
         not use it.
       </Text>
-      {claudeHost ? (
-        <ProviderLoginPanel
-          serverId={claudeHost.serverId}
-          providerId={provider.bindings[claudeHost.serverId]!}
-          name={providerName(provider)}
-          provider="claude"
-        />
-      ) : null}
       <View style={settingsStyles.card}>
         {environments.map((environment, index) => (
           <EnvironmentAccessRow
@@ -941,14 +927,6 @@ function EnvironmentAccessRow({
           <SettingsStatusLine message={!excluded ? state?.error : null} />
         </View>
         <View style={styles.controls}>
-          {localId ? (
-            <ProviderReconnectControl
-              serverId={environment.serverId}
-              providerId={localId}
-              name={providerName(provider)}
-              usage={state?.usage}
-            />
-          ) : null}
           <Switch
             value={!excluded}
             onValueChange={toggle}

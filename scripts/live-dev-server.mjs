@@ -25,10 +25,10 @@ if (!readFileSync(server, "utf8").includes("PASEO_LIVE_PREVIEW_ORIGIN"))
   throw new Error("Apply repository dependency patches before starting live dev mode");
 
 // The page learns its daemon from the coordinator's injected hint, never from build-time values.
+// No build label either: the coordinator's floating marker already says this is Live dev.
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("EXPO_PUBLIC_")) delete process.env[key];
 }
-process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL = "Live dev";
 process.env.EXPO_NO_DOTENV = "1";
 process.env.EXPO_NO_TELEMETRY = "1";
 process.env.EXPO_OFFLINE = "1";

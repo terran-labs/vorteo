@@ -101,8 +101,41 @@ function readEnvImage(directory: string): string {
  * has no `deployment` and sits beside the old installer's installation.json. Upgrades
  * move it to the installer layout first, through the engine's `adopt` command.
  */
+/**
+ * The folder holding installation.json at or above the config's folder. A coordinator updated
+ * through a reviewed plan runs a config inside `<root>/coordinator-plans/<plan>/`, so the
+ * config's own folder is not always the installation root (scripts/installer/detect.mjs).
+ */
+export function installationRootOf(
+  configFile: string,
+  installationId: string,
+  levels = 3,
+): string | null {
+  let folder = path.dirname(path.resolve(configFile));
+  for (let level = 0; level <= levels; level += 1) {
+    // Only the record of this installation counts, never another installation's folder.
+    if (recordInstallationId(path.join(folder, "installation.json")) === installationId)
+      return folder;
+    const parent = path.dirname(folder);
+    if (parent === folder) break;
+    folder = parent;
+  }
+  return null;
+}
+
+function recordInstallationId(file: string): string | null {
+  try {
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    return typeof record?.installationId === "string" ? record.installationId : null;
+  } catch {
+    return null;
+  }
+}
+
 export function adoptionRequired(config: InstallationConfig, configFile: string): boolean {
-  return !config.deployment && existsSync(path.join(path.dirname(configFile), "installation.json"));
+  return (
+    !config.deployment && installationRootOf(configFile, config.public.installationId) !== null
+  );
 }
 
 /** Why upgrades cannot run on this installation, or null. */
@@ -116,6 +149,16 @@ export function upgradeBlocker(config: InstallationConfig, adoptable = false): s
   const services = managedServices(config);
   if (typeof services === "string") return services;
   return null;
+}
+
+/**
+ * True when upgrades rebuild Dev: an installation with Dev whose deployment the installer
+ * manages. Adoption records `containerDirectory` only for such a Dev; an installation not yet
+ * adopted keeps the old behavior until adoption decides.
+ */
+function managedDev(config: InstallationConfig): boolean {
+  if (config.container === undefined) return false;
+  return !config.deployment || config.deployment.containerDirectory !== undefined;
 }
 
 /** True when the installer engine, not Host source updates, builds Host releases. */
@@ -294,7 +337,7 @@ export function createReleaseUpgradeRuntime(input: {
         adoptionEngine(),
         "adopt",
         "--root",
-        path.dirname(configFile),
+        installationRootOf(configFile, config.public.installationId) ?? path.dirname(configFile),
         "--outcome",
         path.join(directory, "adoption.json"),
       ],
@@ -416,7 +459,8 @@ export function createReleaseUpgradeRuntime(input: {
     adoptionOutcome: (upgradeId) =>
       readAdoptionOutcome(path.join(upgradeDirectory, upgradeId, "adoption.json")),
     adoptionDeadlineMs: ADOPTION_DEADLINE_MS,
-    hasContainer: config.container !== undefined,
+    hasContainer: managedDev(config),
+    devUnmanaged: config.container !== undefined && !managedDev(config),
     coordinatorReplacement: config.deployment?.coordinator
       ? null
       : "The installer did not record the coordinator release link. Restart the coordinator with the vorteo update command.",
@@ -672,12 +716,15 @@ export function createReleaseUpgradeRuntime(input: {
 
   function upgradeDetail(): string {
     if (blocker) return blocker;
-    const steps = config.container
+    // Before adoption the coordinator cannot tell whether Dev is installer-managed; the
+    // adoption plan decides, and leaves an unmanaged Dev untouched.
+    const dev = managedDev(config);
+    const steps = dev
       ? "takes a snapshot, then restarts the Host daemon, replaces the coordinator and recreates the Dev container."
       : "takes a snapshot, then restarts the Host daemon and replaces the coordinator.";
     return adoptable
-      ? `This installation predates the one-command installer. An upgrade first moves it to the installer layout in place${config.container ? ", with Dev in gate mode" : ""}, then ${steps}`
-      : `An upgrade ${steps}`;
+      ? "This installation predates the one-command installer. An upgrade first moves it to the installer layout in place, then takes a snapshot, restarts the Host daemon and replaces the coordinator. A Dev the installer made also moves to gate mode and is recreated; any other Dev is left exactly as it is."
+      : `An upgrade ${steps}${config.container && !dev ? " Dev is not managed by the installer and is left as it is." : ""}`;
   }
 
   function readRestoreStatus(): SnapshotRestoreStatus | null {
@@ -728,6 +775,12 @@ export function createReleaseUpgradeRuntime(input: {
       ].sort();
       if (JSON.stringify(confirmed) !== JSON.stringify(snapshotPartKinds(snapshot)))
         throw new RestartRequestError("The snapshot's contents changed. Review the restore again.");
+      // An older snapshot can hold Dev's home; never write it into a Dev this installation
+      // does not manage.
+      if (!services.dev && snapshot.parts.some((part) => part.kind === "dev-home"))
+        throw new RestartRequestError(
+          "This snapshot holds Dev's home, but Dev is not managed by the installer here. Restore it by hand if needed.",
+        );
       // Check every stored part before stopping anything.
       snapshots.storedParts(snapshot);
       // The current state stays restorable: take one more snapshot before replacing it.
@@ -782,7 +835,7 @@ export function createReleaseUpgradeRuntime(input: {
                   ?.release ?? null,
             }
           : null,
-        container: config.container !== undefined,
+        container: managedDev(config),
         upgrades: upgrades?.list() ?? [],
         ...(updates ? { policy: updates.policy(), check: updates.lastCheck() } : {}),
       };
