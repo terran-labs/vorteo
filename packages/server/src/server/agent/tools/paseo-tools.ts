@@ -134,6 +134,14 @@ import {
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 import { createThreadGoalTools } from "./thread-goal.js";
+import {
+  beginCeilingReport,
+  reportIfSwitched,
+  reportRemoteOperation,
+  reportSchedule,
+  reportSessionMode,
+  type CeilingOperation,
+} from "../access-ceiling/admit.js";
 import { createPauseGoalTool } from "./pause-goal.js";
 import { createJournalTools } from "../journal/tools.js";
 import { createChecklistTools } from "../task-checklist/tools.js";
@@ -712,6 +720,19 @@ function createToolCatalog(
     component: "paseo-tool-catalog",
   });
   const callerContext = resolveToolCallerContext(callerAgentId, resolveCallerContext);
+  // Report-only access ceiling (#530): logs, never refuses, never awaited. See admit.ts.
+  const ceilingReport = (operation: CeilingOperation) =>
+    beginCeilingReport(
+      {
+        getAgent: (id) => agentManager.getAgent(id),
+        logger: childLogger,
+        serverId: options.serverId,
+        paseoHome: options.paseoHome,
+        worktreesRoot: options.worktreesRoot,
+      },
+      callerAgentId,
+      operation,
+    );
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
@@ -847,6 +868,14 @@ function createToolCatalog(
           if (response.isError) await remoteNotification?.reject();
           else remoteNotification?.accept();
           await registerRemoteCreation(name, destination, input, response);
+          reportRemoteOperation(
+            ceilingReport,
+            name,
+            destination,
+            options.serverId,
+            input,
+            response.isError,
+          );
           return {
             ...response,
             structuredContent: {
@@ -1853,6 +1882,7 @@ function createToolCatalog(
             selection,
           });
       const results: AgentProfileSwitchResult[] = [];
+      const ceiling = ceilingReport("switch_agent_profile");
       for (const id of candidates) {
         try {
           const record = await agentStorage.get(id);
@@ -1935,6 +1965,7 @@ function createToolCatalog(
               },
             ),
           );
+          reportIfSwitched(ceiling, results.at(-1));
         } catch (error) {
           const refusal = toolSwitchRefusal(id, error, dryRun);
           logRefusal(childLogger, "Profile switch refused", {
@@ -2033,6 +2064,7 @@ function createToolCatalog(
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
+      void ceilingReport("create_agent").report(snapshot.id, { detached: resolvedArgs.detached });
       const guidance =
         callerAgentId && notifyOnFinish && initialPromptStarted
           ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
@@ -2478,6 +2510,13 @@ function createToolCatalog(
         void receipt.dispatched.catch(() => {
           rejectNotification();
         });
+        reportSessionMode(
+          () => ceilingReport("send_agent_prompt"),
+          (id) => agentManager.getAgent(id),
+          agentId,
+          sessionMode,
+          receipt.dispatched,
+        );
         return {
           content: [],
           structuredContent: {
@@ -2780,8 +2819,10 @@ function createToolCatalog(
     },
     async ({ agentId, name, labels, settings }) => {
       assertAgentCanSetFeatures(settings?.features);
+      const ceiling = ceilingReport("update_agent");
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
+        void ceiling.report(agentId, { change: "mode" });
       }
       if (settings?.model !== undefined) {
         await agentManager.setAgentModel(agentId, settings.model);
@@ -2792,6 +2833,7 @@ function createToolCatalog(
       if (settings?.features) {
         for (const [featureId, value] of Object.entries(settings.features)) {
           await agentManager.setAgentFeature(agentId, featureId, value);
+          void ceiling.report(agentId, { change: "feature" });
         }
       }
 
@@ -3190,6 +3232,7 @@ function createToolCatalog(
         ...(maxRuns === undefined ? {} : { maxRuns }),
         ...(expiresAt === undefined ? {} : { expiresAt }),
       });
+      reportSchedule(ceilingReport("create_schedule"), schedule);
 
       return {
         content: [],
@@ -3336,6 +3379,7 @@ function createToolCatalog(
       }
 
       await requireScheduleTarget(id, "new-agent");
+      // Not reported to the access ceiling: pausing only stops future agents.
       await runScheduleAction(() => scheduleService.pause(id));
       return {
         content: [],
@@ -3361,8 +3405,9 @@ function createToolCatalog(
         throw new Error("Schedule service is not configured");
       }
 
-      await requireScheduleTarget(id, "new-agent");
+      const schedule = await requireScheduleTarget(id, "new-agent");
       await runScheduleAction(() => scheduleService.resume(id));
+      reportSchedule(ceilingReport("resume_schedule"), schedule, { triggered: true });
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
@@ -3458,8 +3503,9 @@ function createToolCatalog(
         throw new Error("Schedule service is not configured");
       }
 
-      await requireScheduleTarget(input.id, "new-agent");
+      const previous = await requireScheduleTarget(input.id, "new-agent");
       const schedule = await scheduleService.update(buildScheduleUpdateInput(input));
+      reportSchedule(ceilingReport("update_schedule"), schedule, { previous });
 
       return {
         content: [],
@@ -3508,6 +3554,7 @@ function createToolCatalog(
       }
       await requireScheduleTarget(id, "new-agent");
       const schedule = await runScheduleAction(() => scheduleService.runOnce(id));
+      reportSchedule(ceilingReport("run_schedule_once"), schedule, { triggered: true });
       return {
         content: [],
         structuredContent: ensureValidJson(schedule),
@@ -3712,7 +3759,9 @@ function createToolCatalog(
       },
     },
     async ({ agentId, modeId }) => {
+      const ceiling = ceilingReport("set_agent_mode");
       const result = await setAgentModeCommand({ agentManager }, { agentId, modeId });
+      void ceiling.report(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({
@@ -3773,6 +3822,8 @@ function createToolCatalog(
       },
     },
     async ({ agentId, requestId, response }) => {
+      const ceiling = ceilingReport("respond_to_permission");
+      ceiling.noteTarget(agentId);
       await respondToAgentPermission({
         agentManager,
         agentId,
@@ -3780,6 +3831,9 @@ function createToolCatalog(
         response,
         logger: childLogger,
       });
+      // Who answered whose prompt is the fact the ceiling depends on.
+      if (callerAgentId && callerAgentId !== agentId)
+        void ceiling.reportPermissionAnswer(agentId, response);
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
