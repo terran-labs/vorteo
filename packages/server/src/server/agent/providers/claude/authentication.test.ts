@@ -14,12 +14,58 @@ describe("Claude authentication monitoring", () => {
         expect(args).toEqual(["--settings", "/account/settings.json", "auth", "status"]);
         expect(options).toMatchObject({
           envOverlay: { CLAUDE_CONFIG_DIR: "/account" },
-          timeout: 5000,
+          timeout: 15_000,
           signal,
         });
         return { stdout: JSON.stringify({ loggedIn: true, authMethod: "api_key" }), stderr: "" };
       },
     });
+  });
+
+  it("retries a timed-out check once, then fails without retrying further or after cancellation", async () => {
+    const timedOut = () =>
+      Object.assign(new Error("timed out"), { killed: true, signal: "SIGTERM" });
+    const signedIn = { stdout: JSON.stringify({ loggedIn: true }), stderr: "" };
+    let calls = 0;
+    await requireClaudeAuthentication({
+      executable: "claude",
+      args: [],
+      async run() {
+        calls += 1;
+        if (calls === 1) throw timedOut();
+        return signedIn;
+      },
+    });
+    expect(calls).toBe(2);
+
+    calls = 0;
+    await expect(
+      requireClaudeAuthentication({
+        executable: "claude",
+        args: [],
+        async run() {
+          calls += 1;
+          throw timedOut();
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CHECK_FAILED" });
+    expect(calls).toBe(2);
+
+    calls = 0;
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(
+      requireClaudeAuthentication({
+        executable: "claude",
+        args: [],
+        signal: cancelled.signal,
+        async run() {
+          calls += 1;
+          throw timedOut();
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CHECK_FAILED" });
+    expect(calls).toBe(1);
   });
 
   it.each([0, 1])("rejects a signed-out CLI with exit status %s", async (code) => {

@@ -12,6 +12,22 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixed
+
+- Claude threads no longer fail with "Could not verify Claude authentication" when the machine is busy. The sign-in check now allows the Claude CLI 15 seconds instead of 5 and retries a timed-out check once, so a slow start is no longer reported as a failed sign-in. Signed-out and unreadable results still fail immediately.
+
+## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
 ### Improvements
 
 - A coordinator update reaches its claim about a minute sooner after its cancellation window. The launcher no longer re-reads the candidate before starting the runner, which re-reads every byte under its exclusive lock, and the claim reuses the runner's own runtime digest from admission; the digest it replaces was never compared. Every live process and service check at the claim stays.
