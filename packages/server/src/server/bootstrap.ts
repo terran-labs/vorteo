@@ -1061,6 +1061,7 @@ export async function createPaseoDaemon(
     store: daemonConfigStore,
     providerSessionActivity: (providerId) => agentManager.providerSessionActivity(providerId),
     providerInUse,
+    logger,
     onApplied: (providerId) => {
       void providerSnapshotManager
         .refreshSettingsSnapshot({ providers: [providerId] })

@@ -97,9 +97,14 @@ function adoptionStatus(
   }
 }
 
-function adoptLabel(t: Translate, status: string | undefined): string | null {
+function adoptLabel(t: Translate, adoption: CodexAdoption | null): string | null {
+  const status = adoption?.status;
   if (status === undefined || status === "unadopted") return t("codexAdoption.actions.adopt");
   if (status === "failed" || status === "cancelled") return t("codexAdoption.actions.retry");
+  // Unknown whether a switch or an undo was paused: switching is offered as its own choice,
+  // beside stopping.
+  if (status === "needs-owner-confirmation" && adoption?.directionUnknown === true)
+    return t("codexAdoption.actions.adopt");
   if (status === "needs-owner-confirmation") return t("codexAdoption.actions.confirm");
   return null;
 }
@@ -116,7 +121,7 @@ function sectionModel(
     busy: pending || MOVING.has(status ?? ""),
     // A failed record already states the coordinator's reason.
     text: (status !== "failed" ? notice : null) ?? adoptionStatus(t, entry),
-    adoptText: entry.eligible ? adoptLabel(t, status) : null,
+    adoptText: entry.eligible ? adoptLabel(t, entry.adoption) : null,
     // A failure before Dev acknowledged any copy left Dev untouched: nothing to stop.
     canUnadopt:
       UNADOPTABLE.has(status ?? "") &&

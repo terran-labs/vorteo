@@ -1,6 +1,10 @@
 import type { ErrorRequestHandler, Express, Response } from "express";
 import { z } from "zod";
-import { CodexAdoptionBusy, type CodexAdoptionRecord } from "./codex-signin-adoption.js";
+import {
+  adoptionDirectionUnknown,
+  CodexAdoptionRefusal,
+  type CodexAdoptionRecord,
+} from "./codex-signin-adoption.js";
 import { HOST_SIGN_IN_REASONS } from "./codex-signin-host.js";
 import type { CodexSignInRuntime } from "./codex-signin-runtime.js";
 
@@ -15,7 +19,7 @@ const ADOPTION_FAILURE = "Could not finish switching this account. Refresh and t
  * What the owner's app sees of an adoption: its state, plain reason and times. Never the account
  * ID, email, token, provider IDs or Dev's pinned directory.
  */
-function adoptionView(record: CodexAdoptionRecord) {
+export function adoptionView(record: CodexAdoptionRecord) {
   return {
     status: record.status,
     error: record.error,
@@ -27,6 +31,8 @@ function adoptionView(record: CodexAdoptionRecord) {
     restored: record.restored,
     ...(record.restoreSkipped ? { restoreSkipped: true as const } : {}),
     ...(record.copyDeleteBlocked ? { copyDeleteBlocked: record.copyDeleteBlocked } : {}),
+    // A paused folder change that may have been a switch or an undo: the app offers both.
+    ...(adoptionDirectionUnknown(record) ? { directionUnknown: true as const } : {}),
     // A failure a Host sign-in repairs; the app offers "Sign in on the Host" beside it.
     ...(record.status === "failed" && record.error && HOST_SIGN_IN_REASONS.has(record.error)
       ? { hostSignInNeeded: true as const }
@@ -102,10 +108,10 @@ export function mountCodexSignInRoutes(app: Express, runtime: CodexSignInRuntime
               : await runtime.unadopt(definitionId),
           );
         } catch (error) {
-          // Only the busy refusal's fixed text is passed on; nothing else reaches logs or replies.
-          res
-            .status(error instanceof z.ZodError ? 400 : 409)
-            .json({ error: error instanceof CodexAdoptionBusy ? error.message : ADOPTION_FAILURE });
+          // Only a refusal's fixed text is passed on; nothing else reaches logs or replies.
+          res.status(error instanceof z.ZodError ? 400 : 409).json({
+            error: error instanceof CodexAdoptionRefusal ? error.message : ADOPTION_FAILURE,
+          });
         }
       })();
     });

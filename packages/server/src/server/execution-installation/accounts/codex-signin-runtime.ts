@@ -11,8 +11,8 @@ import { connectInstallationDaemon, createInstallationRegistrationAdmission } fr
 import type { InstallationSettingsService } from "../settings/service.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import {
-  CodexAdoptionJournalSchema,
   createCodexAdoption,
+  wireTarget,
   type DevUsageObservation,
 } from "./codex-signin-adoption.js";
 import {
@@ -54,6 +54,7 @@ interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
   codexInstallationSignIn?: boolean;
   codexAccountAdoption?: boolean;
+  codexLegacyPinByPath?: boolean;
 }
 
 interface RuntimeOverrides {
@@ -96,6 +97,8 @@ export function createCodexSignInRuntime(
   const configuration = structuredClone(config);
   const file = join(config.stateDir, "codex-signin", "state.json");
   const adoptionFile = join(config.stateDir, "codex-signin", "adoption.json");
+  /** Facts the first adoption release's strict reader would refuse; see codex-signin-adoption.ts. */
+  const adoptionExtraFile = join(config.stateDir, "codex-signin", "adoption-extra.json");
   const cli = overrides.cli ?? createCodexHostCli();
   const readGrant = overrides.readGrant ?? readCodexHostGrant;
   const request = overrides.fetch ?? fetch;
@@ -146,8 +149,11 @@ export function createCodexSignInRuntime(
   }
 
   const journal = {
-    read: () => CodexAdoptionJournalSchema.parse(readClaudeSetupFile(adoptionFile) ?? []),
-    write: (records: unknown) => writeClaudeSetupFile(adoptionFile, records),
+    read: () => readClaudeSetupFile(adoptionFile) ?? [],
+    write: (records: unknown[]) => writeClaudeSetupFile(adoptionFile, records),
+    readExtra: () => readClaudeSetupFile(adoptionExtraFile) ?? {},
+    writeExtra: (extras: Record<string, unknown>) =>
+      writeClaudeSetupFile(adoptionExtraFile, extras),
   };
 
   /**
@@ -422,7 +428,7 @@ export function createCodexSignInRuntime(
         ? {
             ...delivery,
             adoption: {
-              target: adopted.target!,
+              target: wireTarget(adopted.target!),
               keepLocalSignIn:
                 adopted.copyForgottenAt === null &&
                 codexAdoptionRetention(config, delivery.definitionId).mode !== "none",
@@ -463,6 +469,7 @@ export function createCodexSignInRuntime(
       }
       return true;
     },
+    pinByPath: async () => (await daemonFeatures("container"))?.codexLegacyPinByPath === true,
     hostHome: (definitionId, hostProviderId, revision) =>
       bindingHome({
         installationId: config.public.installationId,

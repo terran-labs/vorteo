@@ -489,6 +489,11 @@ test("a failed Host build stops before the coordinator and Dev", async () => {
     steps: ["succeeded", "succeeded", "failed", "skipped", "skipped"],
   });
   expect(fake.calls).toEqual(["snapshot", "fetch", "host-request"]);
+  // #639: the owner can dismiss a failed upgrade that was not automatic; it stays in the list.
+  const [failed] = upgrades.list();
+  expect(failed.automatic).not.toBe(true);
+  expect(upgrades.decide(failed.id, failed.revision, "acknowledge").acknowledgedAt).toBeDefined();
+  expect(upgrades.list()).toHaveLength(1);
 });
 
 test("approval names the reviewed revision and only one upgrade is active", async () => {
@@ -503,6 +508,10 @@ test("approval names the reviewed revision and only one upgrade is active", asyn
   expect(fake.calls).toEqual([]);
   const rejected = upgrades.decide(pending.id, pending.revision, "reject");
   expect(rejected.status).toBe("rejected");
+  // Only a failure, or a finished automatic upgrade, can be acknowledged.
+  expect(() => upgrades.decide(pending.id, rejected.revision, "acknowledge")).toThrow(
+    "cannot be changed",
+  );
   const current = fakePorts({ currentCommit: () => RELEASE_COMMIT });
   await expect(
     new InstallationUpgrades(journal, current.ports).request("release-26.10.3000"),

@@ -226,6 +226,45 @@ it.each([
     [],
   ],
   [
+    "broker failure the owner dismissed on the coordinator",
+    {
+      brokerJobs: [broker("failed", "1")],
+      healthDismissals: {
+        dismissals: [{ queue: "preview-broker", id: "failed-1", dismissedAt: "2" }],
+      },
+    },
+    [],
+    [],
+  ],
+  [
+    "a dismissal recorded for another queue does not hide a broker failure",
+    {
+      brokerJobs: [broker("failed", "1")],
+      healthDismissals: {
+        dismissals: [{ queue: "session-host", id: "failed-1", dismissedAt: "2" }],
+      },
+    },
+    [],
+    ["broker"],
+  ],
+  [
+    "latest failed restart the owner dismissed",
+    {
+      jobs: [job("r1", "failed", "2026-11-14T00:00:00Z")],
+      healthDismissals: { dismissals: [{ queue: "restart", id: "r1", dismissedAt: "2" }] },
+    },
+    [],
+    [],
+    "healthy",
+  ],
+  [
+    "latest failed restart",
+    { jobs: [job("r1", "failed", "2026-11-14T00:00:00Z")] },
+    [],
+    ["restarts"],
+    "attention",
+  ],
+  [
     "dismissed session host failure",
     { sessionHost: { jobs: [host("failed", "1", { acknowledgedAt: "2" })], status: null } },
     [],
@@ -268,11 +307,19 @@ it.each([
     [],
     ["instructions"],
   ],
-])("Health counting: %s", (_name, fields, upgrades, rows) => {
-  const state = { ...empty, unlocked: true, ...fields } as unknown as InstallationSystemState;
-  expect(
-    systemHealthItems(state, upgrades as unknown as Parameters<typeof systemHealthItems>[1]).map(
-      (item) => item.id,
-    ),
-  ).toEqual(rows);
-});
+] as [string, object, object[], string[], string?][])(
+  "Health counting: %s",
+  (_name, fields, upgrades, rows, hostStatus) => {
+    const state = { ...empty, unlocked: true, ...fields } as unknown as InstallationSystemState;
+    expect(
+      systemHealthItems(state, upgrades as unknown as Parameters<typeof systemHealthItems>[1]).map(
+        (item) => item.id,
+      ),
+    ).toEqual(rows);
+    // The Host card reads the same restarts, so it agrees with the Health list and its badge.
+    if (hostStatus)
+      expect(systemEnvironmentState({ target: "host", snapshot, installation: state }).status).toBe(
+        hostStatus,
+      );
+  },
+);

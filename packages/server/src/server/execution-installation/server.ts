@@ -173,6 +173,8 @@ import {
 } from "./settings/service.js";
 import type { InstructionRequestEnvironment } from "@getpaseo/protocol/instruction-requests";
 import { InstructionRequestError, InstructionRequests } from "./settings/instruction-requests.js";
+import { HealthDismissalError, HealthDismissalStore } from "./health-dismissals.js";
+import type { HealthDismissalQueue } from "@getpaseo/protocol/health-dismissals";
 
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
@@ -2497,6 +2499,31 @@ export function createInstallationServer(
     res.json(job);
     void restarts.drain().catch(() => logger.error("Monitor lifecycle journal failed"));
   });
+  // The owner's dismissals of failed maintenance records. Owner session only: front-door.ts lists
+  // the write as owner-only, so no agent door or maintenance grant reaches it.
+  const dismissibleRecords: Record<
+    HealthDismissalQueue,
+    () => readonly { id: string; status: string; stage?: string }[]
+  > = {
+    "preview-broker": () => [...restarts.listBrokers(), ...restarts.listBrokerDeployments()],
+    "preview-monitor": () => restarts.listMonitors(),
+    "native-helper": () => restarts.listHelpers(),
+    "session-host": () => restarts.listSessionHosts(),
+    "maintenance-service": () => restarts.listServices(),
+    restart: () => restarts.list(),
+  };
+  const healthDismissals = HealthDismissalStore.open(config.stateDir, {
+    lookup: (queue, id) => dismissibleRecords[queue]().find((record) => record.id === id),
+    warn: (message) => logger.warn(message),
+  });
+  app.post("/api/installation/owner/health-dismissals/query", (_req, res, next) => {
+    void healthDismissals.then((store) => res.json(store.list()), next);
+  });
+  app.post("/api/installation/owner/health-dismissals", (req, res, next) => {
+    void healthDismissals
+      .then((store) => store.dismiss(req.body))
+      .then((dismissals) => res.json(dismissals), next);
+  });
   app.post("/api/installation/owner/instruction-requests/query", (_req, res) => {
     const snapshot = settings.snapshot();
     res.json({
@@ -3467,7 +3494,7 @@ export function createInstallationServer(
       res.status(400).json({ error: error.message, reference: error.reference });
       return;
     }
-    if (error instanceof InstructionRequestError) {
+    if (error instanceof InstructionRequestError || error instanceof HealthDismissalError) {
       res.status(error.status).json({ error: error.message });
       return;
     }

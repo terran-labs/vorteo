@@ -129,9 +129,19 @@ export function failedUpgradesNeedingReview(
   );
 }
 
-/** The coordinator accepts Dismiss for this failure. Older ones accept it for automatic upgrades. */
-export function upgradeCanBeDismissed(upgrade: InstallationUpgrade): boolean {
-  return upgrade.automatic === true && !upgradeIsActive(upgrade);
+/**
+ * The coordinator accepts Dismiss for this upgrade: a failure on one that reports
+ * `acknowledgesFailures`, otherwise only a finished automatic upgrade.
+ */
+export function upgradeCanBeDismissed(
+  upgrade: InstallationUpgrade,
+  status: UpgradeStatus | null | undefined,
+): boolean {
+  if (upgradeIsActive(upgrade)) return false;
+  if (upgrade.automatic === true) return true;
+  // COMPAT(acknowledgesFailures): coordinators before #639 acknowledge only automatic upgrades.
+  // Remove once every coordinator in use reports the flag.
+  return upgrade.status === "failed" && status?.acknowledgesFailures === true;
 }
 
 /** The coordinator reports an update policy, so it accepts the policy routes and decisions. */

@@ -5,9 +5,11 @@ import {
   instructionRequestIsStale,
   recordsNeedingReview,
   upgradeTarget,
+  withDismissals,
   type ReviewableRecord,
   type TargetKey,
 } from "@/execution-installation/failure-review";
+import type { HealthDismissalQueue } from "@getpaseo/protocol/health-dismissals";
 import type { HealthCard, HealthCardHost } from "@/execution-installation/health-cards";
 import { currentSystemRestarts, type InstallationSystemState } from "./system-adapter-model";
 
@@ -65,6 +67,8 @@ interface QueueDefinition {
    * pending one counts until it is decided or goes stale.
    */
   targetKey: TargetKey<ReviewableJob>;
+  /** Where the owner's dismissals of this queue's failures are recorded. */
+  dismissalQueue?: HealthDismissalQueue;
   card: HealthCard;
   pane: string;
 }
@@ -83,6 +87,7 @@ function currentInstructionRequests(state: InstallationSystemState): ReviewableJ
 const QUEUES: readonly QueueDefinition[] = [
   {
     id: "restarts",
+    dismissalQueue: "restart",
     noun: "restart request",
     jobs: currentSystemRestarts,
     targetKey: byTarget as TargetKey<ReviewableJob>,
@@ -91,6 +96,7 @@ const QUEUES: readonly QueueDefinition[] = [
   },
   {
     id: "helper",
+    dismissalQueue: "native-helper",
     noun: "native helper request",
     jobs: (state) => state.helperJobs,
     targetKey: byTarget as TargetKey<ReviewableJob>,
@@ -99,6 +105,7 @@ const QUEUES: readonly QueueDefinition[] = [
   },
   {
     id: "broker",
+    dismissalQueue: "preview-broker",
     noun: "preview broker request",
     jobs: (state) => state.brokerJobs,
     targetKey: byTarget as TargetKey<ReviewableJob>,
@@ -107,6 +114,7 @@ const QUEUES: readonly QueueDefinition[] = [
   },
   {
     id: "monitor",
+    dismissalQueue: "preview-monitor",
     noun: "preview monitor request",
     jobs: (state) => state.monitorJobs,
     targetKey: byTarget as TargetKey<ReviewableJob>,
@@ -115,6 +123,7 @@ const QUEUES: readonly QueueDefinition[] = [
   },
   {
     id: "services",
+    dismissalQueue: "maintenance-service",
     noun: "service maintenance request",
     jobs: (state) => state.serviceQueue?.jobs ?? [],
     targetKey: byTarget as TargetKey<ReviewableJob>,
@@ -123,6 +132,7 @@ const QUEUES: readonly QueueDefinition[] = [
   },
   {
     id: "session-host",
+    dismissalQueue: "session-host",
     noun: "session host request",
     jobs: (state) => state.sessionHost?.jobs ?? [],
     targetKey: byTargetAndOperation as TargetKey<ReviewableJob>,
@@ -228,7 +238,12 @@ export function systemHealthItems(
   if (!state.unlocked) return lockedItems(state.restartSummary);
   const items: SystemHealthItem[] = [];
   for (const queue of QUEUES) {
-    const jobs = recordsNeedingReview(queue.jobs(state), queue.targetKey);
+    const records = withDismissals(
+      queue.jobs(state) as (ReviewableJob & { id: string })[],
+      state.healthDismissals,
+      queue.dismissalQueue,
+    );
+    const jobs = recordsNeedingReview(records, queue.targetKey);
     if (!jobs.length) continue;
     items.push({
       id: queue.id,

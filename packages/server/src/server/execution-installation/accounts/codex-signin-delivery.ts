@@ -69,19 +69,34 @@ export const CodexSignInLeaseResponseSchema = z.discriminatedUnion("granted", [
   z.strictObject({ granted: z.literal(false) }),
 ]);
 
-/** Dev only, behind `codexAccountAdoption`: pinning and restoring an adopted legacy home. */
+/**
+ * Dev only, behind `codexAccountAdoption`: pinning and restoring an adopted legacy home. The
+ * `inspect` operation and the restore's `persons` need `codexLegacyPinByPath`.
+ */
 export const CODEX_SIGNIN_LEGACY_ROUTE = "/api/installation/codex/signin/legacy";
 
 /**
  * An adopted legacy home, as Dev reported it when the owner adopted the account: its real path
- * and the directory's device and inode, as decimal strings because they can exceed 2^53.
+ * and the directory's device and inode, as decimal strings because they can exceed 2^53. Dev
+ * daemons with `codexLegacyPinByPath` identify the home by its real path alone, because inode
+ * numbers on a virtiofs mount change without any change to the directory; they still report
+ * the device and inode, which older daemons require.
  */
 export const CodexLegacyTargetSchema = z.strictObject({
   realpath: z.string().startsWith("/").max(4096),
-  dev: z.string().regex(/^\d{1,20}$/),
-  ino: z.string().regex(/^\d{1,20}$/),
+  dev: z
+    .string()
+    .regex(/^\d{1,20}$/)
+    .optional(),
+  ino: z
+    .string()
+    .regex(/^\d{1,20}$/)
+    .optional(),
 });
 export type CodexLegacyTarget = z.infer<typeof CodexLegacyTargetSchema>;
+
+/** SHA-256 of a sign-in's ChatGPT workspace and person; see codexSignInKeyDigest. */
+const PersonDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const CodexSignInLegacyRequestSchema = z.discriminatedUnion("operation", [
   ProjectionBindingRequestSchema.extend({ operation: z.literal("pin") }),
@@ -91,7 +106,17 @@ export const CodexSignInLegacyRequestSchema = z.discriminatedUnion("operation", 
   ProjectionBindingRequestSchema.extend({
     operation: z.literal("restore"),
     target: CodexLegacyTargetSchema,
+    /**
+     * Requires `codexLegacyPinByPath`: the people the saved sign-in may belong to. Dev restores
+     * nothing for anyone else. Older daemons refuse the unknown field.
+     */
+    persons: z.array(PersonDigestSchema).max(4).optional(),
   }),
+  /**
+   * Requires `codexLegacyPinByPath`: pins the home as `pin` does and says what its `auth.json`
+   * holds, so the coordinator can resume a paused adoption without asking the owner.
+   */
+  ProjectionBindingRequestSchema.extend({ operation: z.literal("inspect") }),
   /** Deletes the saved local sign-in when its retention ends. */
   ProjectionBindingRequestSchema.extend({
     operation: z.literal("forget-copy"),
@@ -100,6 +125,15 @@ export const CodexSignInLegacyRequestSchema = z.discriminatedUnion("operation", 
 ]);
 export type CodexSignInLegacyRequest = z.infer<typeof CodexSignInLegacyRequestSchema>;
 export const CodexLegacyPinResponseSchema = z.strictObject({ target: CodexLegacyTargetSchema });
+/**
+ * `projection`: a projection written for this definition; `none`: no `auth.json`; `other`:
+ * anything else, such as a sign-in made in Dev or another account's projection.
+ */
+export const CodexLegacyInspectResponseSchema = z.strictObject({
+  target: CodexLegacyTargetSchema,
+  signIn: z.enum(["projection", "none", "other"]),
+});
+export type CodexLegacyInspection = z.infer<typeof CodexLegacyInspectResponseSchema>;
 export const CodexLegacySessionsResponseSchema = z.strictObject({ active: z.boolean() });
 export const CodexLegacyRestoreResponseSchema = z.discriminatedUnion("restored", [
   z.strictObject({ restored: z.literal(false) }),
@@ -112,7 +146,8 @@ export const CodexSignInProjectionDeliverySchema = projectionDeliverySchema(
 ).extend({
   /**
    * Present only for an adopted legacy binding, which keeps its own CODEX_HOME. Dev refuses the
-   * delivery unless that home still matches the pinned target exactly. Older daemons refuse it.
+   * delivery unless that home is still the pinned target: by real path on daemons with
+   * `codexLegacyPinByPath`, by real path, device and inode on older ones. Older daemons refuse it.
    */
   adoption: z
     .strictObject({

@@ -385,9 +385,14 @@ test("service maintenance status and cancellation require owner access", async (
     await f.request("/api/installation/capabilities", "host-agent-test-token")
   ).json();
   expect(capabilities.maintenanceServices).toEqual({ available: false, operations: [] });
+  // #639: dismissing a failure hides it from the owner's Health count, so no agent may.
+  const dismissals = "/api/installation/owner/health-dismissals";
+  const dismissal = { queue: "maintenance-service", id: randomUUID() };
   for (const credential of [undefined, "host-agent-test-token", "guest-agent-test-token"]) {
     expect((await f.request(query, credential, {})).status).toBe(401);
     expect((await f.request(cancel, credential, {})).status).toBe(401);
+    expect((await f.request(dismissals, credential, dismissal)).status).toBe(401);
+    expect((await f.request(`${dismissals}/query`, credential, {})).status).toBe(401);
   }
   const response = await f.request(query, "owner-test-password", {});
   expect(response.status).toBe(200);

@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { relative as relativePath } from "node:path";
 import test from "node:test";
 import { isVersionOnlyChange } from "./ci-neutralize-version-bumps.mjs";
+import { AUDIT_COMMAND, auditInFreshCache, runAuditWithRetry } from "./npm-audit-signatures.mjs";
 import { runInNewContext } from "node:vm";
 
 const repoRoot = new URL("../", import.meta.url);
@@ -872,7 +881,7 @@ test("quality preserves commands and routes each domain independently after fail
   const lint = jobs.get("lint").join("\n");
   for (const command of [
     "npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity",
-    "npx --yes npm@11.19.1 audit signatures",
+    "node scripts/npm-audit-signatures.mjs",
     "npm run lint",
   ]) {
     assert.ok(
@@ -1202,4 +1211,87 @@ test("Nix desktop packaging resolves the workspace-local builder", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+// Captured from the lint job of run 45544279102 (#646): npm's attestations endpoint answered "OK".
+const AUDIT_FETCH_FAULT = `npm error code FETCH_ERROR
+npm error errno FETCH_ERROR
+npm error invalid json response body at https://registry.npmjs.org/-/npm/v1/attestations/electron-publish@26.18.0 reason: Unexpected token 'O', "OK
+npm error " is not valid JSON
+npm error A complete log of this run can be found in: /home/runner/.npm/_logs/2026-11-25T04_07_24_721Z-debug-0.log
+`;
+// npm 11's verification report for a tampered package, as lib/utils/verify-signatures.js prints it.
+const AUDIT_MISMATCH = `audited 3011 packages in 9s
+
+3010 packages have verified registry signatures
+
+1 package has an \u001b[91minvalid\u001b[39m registry signature:
+
+electron-publish@26.18.0 (https://registry.npmjs.org/)
+
+Someone might have tampered with this package since it was published on the registry!
+`;
+const AUDIT_PASS =
+  "audited 3011 packages in 9s\n\n3011 packages have verified registry signatures\n";
+
+test("dependency signature audit retries only a transient registry fetch error", async () => {
+  assert.deepEqual(AUDIT_COMMAND, ["npx", "--yes", "npm@11.19.1", "audit", "signatures"]);
+  const audit = async (results) => {
+    const queue = [...results];
+    let calls = 0;
+    const waits = [];
+    const exitCode = await runAuditWithRetry({
+      runAttempt: async () => {
+        calls++;
+        return queue.shift();
+      },
+      wait: async (ms) => waits.push(ms),
+      log: () => undefined,
+    });
+    return { exitCode, calls, waits };
+  };
+  const fault = { output: AUDIT_FETCH_FAULT, exitCode: 1 };
+
+  // The endpoint's bad body clears on a later attempt.
+  assert.deepEqual(await audit([fault, { output: AUDIT_PASS, exitCode: 0 }]), {
+    exitCode: 0,
+    calls: 2,
+    waits: [5_000],
+  });
+  // A failed verification fails on its first occurrence, with no retry.
+  assert.deepEqual(await audit([{ output: AUDIT_MISMATCH, exitCode: 1 }, fault]), {
+    exitCode: 1,
+    calls: 1,
+    waits: [],
+  });
+  // Any error npm reports that is not a registry fetch fault fails at once, with no retry.
+  assert.deepEqual(
+    await audit([
+      {
+        output: "npm error code EEXPIREDSIGNATUREKEY\nnpm error The registry key has expired\n",
+        exitCode: 1,
+      },
+      fault,
+    ]),
+    { exitCode: 1, calls: 1, waits: [] },
+  );
+  // Every attempt audits in its own empty npm cache, removed afterwards: a restored ~/.npm may
+  // hold the bad body, and a signature check should not trust it.
+  const caches = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await auditInFreshCache(async (args) => {
+      assert.equal(args[0], "--cache");
+      assert.deepEqual(readdirSync(args[1]), []);
+      caches.push(args[1]);
+      return { output: AUDIT_PASS, exitCode: 0 };
+    });
+  }
+  assert.notEqual(caches[0], caches[1]);
+  assert.ok(caches.every((cache) => !existsSync(cache)));
+  // A fault that persists fails after three attempts.
+  assert.deepEqual(await audit([fault, fault, fault, fault]), {
+    exitCode: 1,
+    calls: 3,
+    waits: [5_000, 15_000],
+  });
 });

@@ -26,6 +26,7 @@ import { writePrivateFileAtomicSync } from "../private-files.js";
  * - `snapshot-restore`: restoring a pre-install safety snapshot.
  * - `source-upgrade-rollback`: rolling back a Stable source upgrade.
  * - `account-credentials`: connecting, editing or synchronizing provider accounts.
+ * - `health-dismissal`: dismissing a failed maintenance record from System Health.
  */
 export const OWNER_ONLY_OPERATIONS: readonly string[] = [
   // Owner decision 2026-11-07: agents never edit their own guardrails. An approved request
@@ -39,6 +40,8 @@ export const OWNER_ONLY_OPERATIONS: readonly string[] = [
   // Every Factory charter forbids agents to touch credentials or account settings, and the
   // maintenance grant never alters credentials.
   "account-credentials",
+  // Issue #639: dismissing a failure hides it from the owner's Health count. Only the owner may.
+  "health-dismissal",
 ];
 
 /** Whether the full maintenance grant may approve the operation. Default in. */

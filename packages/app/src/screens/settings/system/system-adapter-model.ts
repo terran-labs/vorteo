@@ -6,22 +6,30 @@ import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrad
 import type { RestartJob } from "@getpaseo/protocol/execution-installation";
 import type { HostRuntimeSnapshot } from "@/runtime/host-runtime";
 import { deriveSystemEnvironment, deriveSystemServices } from "./system-status-model";
+import { latestRestart } from "@/execution-installation/failure-review";
 
 export type InstallationSystemState = ReturnType<InstallationPanelModel["getState"]>;
 export type SystemTarget = "host" | "container-daemon";
-/** Finished requests remain in history; an old failed request must not mask a later success. */
+/**
+ * Finished requests remain in history; an old failed request must not mask a later success, and
+ * a failure the owner dismissed stops asking for attention (issue #639). The environment cards,
+ * the Health list and its badge all read this, so they agree.
+ */
 export function currentSystemRestarts(state: InstallationSystemState): RestartJob[] {
   if (!state.unlocked) return [];
   const pending = new Set(state.pendingJobs.map((job) => job.id));
   const current = state.jobs.filter(
     (job) => pending.has(job.id) || job.status === "approved" || job.status === "running",
   );
+  const dismissed = new Set(
+    (state.healthDismissals?.dismissals ?? [])
+      .filter((entry) => entry.queue === "restart")
+      .map((entry) => entry.id),
+  );
   for (const target of ["host", "container-daemon"] as const) {
     if (current.some((job) => job.target === target)) continue;
-    const latest = state.jobs
-      .filter((job) => job.target === target)
-      .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-    if (latest?.status === "failed") current.push(latest);
+    const latest = latestRestart(state.jobs.filter((job) => job.target === target));
+    if (latest?.status === "failed" && !dismissed.has(latest.id)) current.push(latest);
   }
   return current;
 }

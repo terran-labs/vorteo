@@ -15,6 +15,7 @@ import type {
 import { monitorActionDisabledReason, type MonitorAction } from "./preview-monitor-review";
 import type { NativeHelperJob } from "@getpaseo/protocol/native-helper-maintenance";
 import type { InstructionRequestQuery } from "@getpaseo/protocol/instruction-requests";
+import type { HealthDismissalQueue, HealthDismissals } from "@getpaseo/protocol/health-dismissals";
 
 type InstructionRequest = InstructionRequestQuery["requests"][number];
 import { helperActionDisabledReason, type HelperReviewAction } from "./helper-review";
@@ -81,6 +82,8 @@ interface InstallationPanelState {
   sessionHostError: string | null;
   /** Null hides the instruction request card: locked, or a coordinator without the route. */
   instructionRequests: InstructionRequestQuery | null;
+  /** The owner's dismissals of failed records; null where the coordinator has no Dismiss. */
+  healthDismissals: HealthDismissals | null;
   instructionError: string | null;
   pendingJobs: RestartJob[];
   profileSharing: ProfileSharingStatus | null;
@@ -127,6 +130,7 @@ export class InstallationPanelModel {
     sessionHostError: null,
     instructionRequests: null,
     instructionError: null,
+    healthDismissals: null,
     pendingJobs: [],
     profileSharing: null,
     passwordFile: null,
@@ -183,6 +187,8 @@ export class InstallationPanelModel {
           | "decideSessionHost"
           | "listInstructionRequests"
           | "decideInstructionRequest"
+          | "listHealthDismissals"
+          | "dismissHealthFailure"
         >
       >,
     private readonly options: {
@@ -234,6 +240,7 @@ export class InstallationPanelModel {
         sessionHostError: null,
         instructionRequests: null,
         instructionError: null,
+        healthDismissals: null,
         pendingJobs: [],
         profileSharing: null,
         daemonAutomation: null,
@@ -441,10 +448,34 @@ export class InstallationPanelModel {
         lastUpdatedAt: new Date().toISOString(),
         error: null,
       });
+      await this.refreshHealthDismissals();
     } catch (error) {
       this.fail(error);
     } finally {
       this.refreshing = false;
+    }
+  }
+
+  /** A failed read keeps the last answer: Dismiss stays where it was offered. */
+  private async refreshHealthDismissals(): Promise<void> {
+    const dismissals = await (this.client.listHealthDismissals?.() ?? Promise.resolve(null)).catch(
+      () => this.state.healthDismissals,
+    );
+    this.publish({ healthDismissals: dismissals });
+  }
+
+  /** Dismisses a failed record from System Health. It stays in its card's history. */
+  async dismissHealthFailure(queue: HealthDismissalQueue, id: string): Promise<void> {
+    if (this.state.busy || !this.client.dismissHealthFailure) return;
+    this.publish({ busy: true, error: null, notice: null });
+    try {
+      this.publish({ healthDismissals: await this.client.dismissHealthFailure(queue, id) });
+    } catch (error) {
+      this.publish({
+        error: failureMessage(error, "Could not dismiss this. Refresh and try again."),
+      });
+    } finally {
+      this.publish({ busy: false });
     }
   }
 
@@ -1030,6 +1061,7 @@ export class InstallationPanelModel {
         sessionHostError: null,
         instructionRequests: null,
         instructionError: null,
+        healthDismissals: null,
         pendingJobs: [],
         profileSharing: null,
         daemonAutomation: null,
