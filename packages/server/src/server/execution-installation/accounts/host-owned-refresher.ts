@@ -108,6 +108,25 @@ export interface HostGrantAdapter<G extends HostGrant, P> {
   error(): Error;
 }
 
+/** Secret-free evidence for the coordinator log: identifiers, outcomes and expiry only. */
+export type HostRefreshEvent =
+  | {
+      kind: "refresh";
+      definitionId: string;
+      outcome: "refreshed" | "unchanged" | "failed";
+      previousExpiresAt: number | null;
+      expiresAt: number | null;
+      durationMs: number;
+      reason?: "refresh_failed" | "refresh_unchanged" | "storage_unreadable";
+    }
+  | {
+      /** The access token is inside the lead window and no refresh has renewed it. */
+      kind: "expiring";
+      definitionId: string;
+      expiresAt: number;
+      lastRefresh: "refreshed" | "unchanged" | "failed" | null;
+    };
+
 export interface HostRefresherPorts<G extends HostGrant, P> {
   installationId: string;
   read(): unknown;
@@ -124,6 +143,7 @@ export interface HostRefresherPorts<G extends HostGrant, P> {
   refresh(definitionId: string): Promise<void>;
   deliver(delivery: HostProjectionDelivery<P>): Promise<HostProjectionReceipt>;
   now(): number;
+  log?(event: HostRefreshEvent): void;
 }
 
 /** Normal cadence for noticing a rotation made by a Host agent or a new sign-in. */
@@ -264,6 +284,11 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     return this.reconciliation;
   }
 
+  /** Runs an account operation, such as sign-out, in the same per-account queue as refresh. */
+  exclusive(definitionId: string, operation: () => Promise<void>): Promise<void> {
+    return this.enqueue(definitionId, operation);
+  }
+
   /** Recovery uses the same per-account writer and retry budget as scheduled work. */
   recover(definitionId: string, expectedPolicyRevision?: number): Promise<void> {
     const revision = expectedPolicyRevision ?? this.ports.policy(definitionId).revision;
@@ -307,6 +332,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     let desired: P | null | undefined = null;
     if (next.signedIn && !policy.removed) {
       desired = await this.readDueHost(next, now, recovery);
+      if (desired !== undefined) this.warnIfExpiring(next, now);
     }
 
     // Policy may change while storage or the official CLI is pending.
@@ -393,6 +419,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     now: number,
   ): Promise<G | null> {
     const before = grant?.expiresAt ?? null;
+    const started = Date.now();
     let failed = false;
     try {
       await this.ports.refresh(definitionId);
@@ -404,7 +431,17 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     try {
       after = await this.ports.grant(definitionId);
     } catch {
-      this.recordFailure(next, now, failed ? "refresh_failed" : "storage_unreadable");
+      const reason = failed ? "refresh_failed" : "storage_unreadable";
+      this.recordFailure(next, now, reason);
+      this.emit({
+        kind: "refresh",
+        definitionId,
+        outcome: "failed",
+        previousExpiresAt: before,
+        expiresAt: null,
+        durationMs: Date.now() - started,
+        reason,
+      });
       return grant;
     }
     const advanced =
@@ -415,7 +452,41 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     next.refreshFailures = advanced ? 0 : next.refreshFailures + 1;
     if (advanced) delete next.failureReason;
     else next.failureReason = failed ? "refresh_failed" : "refresh_unchanged";
+    this.emit({
+      kind: "refresh",
+      definitionId,
+      outcome,
+      previousExpiresAt: before,
+      expiresAt: after?.expiresAt ?? null,
+      durationMs: Date.now() - started,
+      ...(advanced ? {} : { reason: next.failureReason }),
+    });
     return after;
+  }
+
+  /** A token inside the lead window after a Host read means no refresh has renewed it. */
+  private warnIfExpiring(next: HostRefreshRecord, now: number): void {
+    if (
+      !this.adapter.refreshForHost ||
+      next.hostGrant !== "present" ||
+      next.expiresAt === null ||
+      next.expiresAt - now > this.adapter.leadMs
+    )
+      return;
+    this.emit({
+      kind: "expiring",
+      definitionId: next.definitionId,
+      expiresAt: next.expiresAt,
+      lastRefresh: next.refresh?.outcome ?? null,
+    });
+  }
+
+  private emit(event: HostRefreshEvent): void {
+    try {
+      this.ports.log?.(event);
+    } catch {
+      // Logging must never interrupt renewal.
+    }
   }
 
   private async deliverPending(

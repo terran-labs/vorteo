@@ -1,5 +1,4 @@
 import {
-  loadTestClientFactory,
   loadTestServiceOptions,
   startSessionHostService,
 } from "../src/server/session-host/service.js";
@@ -15,7 +14,6 @@ import {
  */
 async function main(): Promise<void> {
   await startSessionHostService({
-    createClient: await loadTestClientFactory(process.env),
     ...loadTestServiceOptions(process.env),
   });
 }
