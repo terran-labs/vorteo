@@ -1,3 +1,4 @@
+import { maintenanceHeadline } from "@/execution-installation/maintenance-dashboard-model";
 import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
 import type { HostProfile } from "@/types/host-connection";
 import type { InstallationPanelModel } from "@/execution-installation/panel-model";
@@ -138,4 +139,18 @@ export function selectSystemEnvironments(
       installation?.environments.find((environment) => environment.kind === "container")
         ?.serverId ?? null,
   };
+}
+
+/** Public summaries describe the installation, never an inferred Host or Dev failure. */
+export function systemServicesReason(state: InstallationSystemState | null): string | undefined {
+  if (!state) return undefined;
+  if (state.unlocked && state.enrollmentStatus)
+    return maintenanceHeadline(state.enrollmentStatus).explanation;
+  if (!state.restartSummary) return undefined;
+  const count = publicAttentionCount({ ...state.restartSummary, requested: 0 });
+  if (count > 0)
+    return `${count} installation service items need review. Unlock System controls in Details to see their reasons.`;
+  if (systemServicesState(state) === "updating")
+    return "Installation service maintenance is queued, running or awaiting verification.";
+  return undefined;
 }

@@ -27,6 +27,7 @@ import {
   selectSystemEnvironments,
   systemEnvironmentState,
   systemServicesState,
+  systemServicesReason,
   type SystemTarget,
 } from "./system-adapter-model";
 const noSubscription = () => () => {};
@@ -183,6 +184,7 @@ function buildEnvironmentStatuses({
 }) {
   return {
     services: systemServicesState(state),
+    servicesReason: systemServicesReason(state),
     hostStatus: systemEnvironmentState({
       target: "host",
       snapshot: host,

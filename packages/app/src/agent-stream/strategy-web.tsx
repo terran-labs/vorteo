@@ -1,3 +1,4 @@
+import { CARD_GAP } from "./columns/geometry";
 import { getInterfaceScale } from "@/appearance/interface-zoom";
 import React, {
   type CSSProperties,
@@ -1223,7 +1224,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       flexDirection: "column",
       minHeight: "100%",
       paddingTop: CONTENT_PADDING_TOP_PX,
-      paddingBottom: 16,
+      paddingBottom: CARD_GAP,
       paddingLeft: isMobileBreakpoint ? 8 : 16,
       paddingRight: isMobileBreakpoint ? 8 : 16,
       boxSizing: "border-box",

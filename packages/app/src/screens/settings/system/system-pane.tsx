@@ -327,7 +327,11 @@ export function SystemPane({
           Add a Host from the sidebar More menu to view its status.
         </Text>
       ) : null}
-      <SystemView environments={environments} services={adapter.services} />
+      <SystemView
+        environments={environments}
+        services={adapter.services}
+        servicesReason={adapter.servicesReason}
+      />
       <SystemUpdatesRow />
       <View testID="system-restart-recovery-slot">
         {restartRecovery ??

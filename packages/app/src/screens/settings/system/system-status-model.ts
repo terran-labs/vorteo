@@ -114,7 +114,7 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     activeJob?.reason ||
     (upgrade ? `Update to ${upgrade.release}` : undefined) ||
     live?.server.detail ||
-    undefined;
+    (status === "attention" ? attentionReason(input) : undefined);
   return { status, action, ...(reason ? { reason } : {}) };
 }
 
@@ -125,4 +125,40 @@ export function deriveSystemServices(
   const headline = maintenanceHeadline(enrollment);
   if (headline.label === "Ready") return null;
   return headline.variant === "error" || headline.variant === "muted" ? "attention" : "updating";
+}
+
+/** Reasons use the same evidence as the badge without exposing protected target details. */
+function attentionReason(input: SystemEnvironmentInput): string | undefined {
+  if (input.connection.lastError && !input.reconnectingAfterAction)
+    return input.connection.lastError;
+  if (["offline", "error", "idle"].includes(input.connection.connectionStatus))
+    return "This environment is not connected.";
+  if (input.locked) return lockedAttentionReason(input);
+  if (input.enrollment?.activation === "recovery-required")
+    return maintenanceHeadline(input.enrollment).explanation;
+  const blocked = input.enrollment?.services.find(
+    (service) => service.target === input.target && service.readiness === "blocked",
+  );
+  if (blocked) return blocked.reason || "This environment's service reports a readiness problem.";
+  const failed = input.restartJobs?.find(
+    (job) => job.target === input.target && job.status === "failed",
+  );
+  if (failed)
+    return `The latest restart failed. ${failed.reason || "Open Details to review its result."}`;
+  const upgrade = input.upgrades?.find(
+    (job) => job.status === "failed" && job.automatic && !job.acknowledgedAt,
+  );
+  if (upgrade)
+    return `The automatic update to ${upgrade.release} failed. Open Details to review its result.`;
+  if (input.liveDev?.mode === "live" && input.liveDev.server.state === "failed")
+    return "The live development server failed. Open Details to review its status.";
+  if (input.availableVersion) return `Vorteo ${input.availableVersion} is available.`;
+  return "A request needs review. Open Details for the recorded reason.";
+}
+
+function lockedAttentionReason(input: SystemEnvironmentInput): string | undefined {
+  if (input.restartSummary?.requested)
+    return "The installation has requests awaiting approval. Unlock System controls to review the affected environments.";
+  if (input.availableVersion) return `Vorteo ${input.availableVersion} is available.`;
+  return undefined;
 }

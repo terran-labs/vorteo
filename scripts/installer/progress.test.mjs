@@ -133,8 +133,10 @@ test("live progress reports elapsed time and quiet output without claiming a sta
 test("redirected progress prints periodic heartbeats and stops at EOF", (t) => {
   t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1000 });
   let output = "";
-  const renderer = createRenderer({ write: (text) => (output += text) });
-  renderer.handle(JSON.stringify({ step: "build", status: "start", message: "Building" }));
+  const renderer = createRenderer({ write: (text) => (output += text), banner: true });
+  renderer.handle(
+    JSON.stringify({ step: "upgrade-release", status: "start", message: "Building" }),
+  );
   t.mock.timers.tick(30000);
   assert.match(output, /0:30 elapsed/);
   assert.ok(!output.includes("\u001b"));
@@ -172,42 +174,44 @@ test("a narrow terminal keeps the counter and latest Docker stage visible", () =
   renderer.finish();
 });
 
-test("build animation preserves ordinary output across resize and stops before prompts", (t) => {
-  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1000 });
-  for (const completion of [
-    { step: "release", status: "done", message: "Built" },
-    { step: "release", status: "fail", message: "Build failed" },
-    { result: { name: "Vorteo" } },
-    null,
-  ]) {
-    let output = "";
-    let columns = 120;
-    let rows = 40;
-    const renderer = createRenderer({
-      write: (text) => (output += text),
-      animate: true,
-      banner: true,
-      columns: () => columns,
-      rows: () => rows,
-    });
-    renderer.handle(JSON.stringify({ step: "release", status: "start", message: "Building" }));
-    assert.equal(output.split("\u001b[?1049h").length - 1, 1);
-    columns = 40;
-    rows = 10;
-    t.mock.timers.tick(1000);
-    assert.match(output, /Phase 0:01/);
-    columns = 100;
-    rows = 35;
-    t.mock.timers.tick(1000);
-    assert.equal(output.split("\u001b[?1049h").length - 1, 1);
-    if (completion) renderer.handle(JSON.stringify(completion));
-    renderer.finish();
-    assert.equal(output.split("\u001b[?1049l").length - 1, 1);
-    const stopped = output;
-    t.mock.timers.tick(1000);
-    assert.equal(output, stopped);
-  }
-});
+for (const step of ["release", "upgrade-release", "upgrade-dev-build"]) {
+  test(`${step} animation preserves ordinary output across resize and stops before prompts`, (t) => {
+    t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1000 });
+    for (const completion of [
+      { step, status: "done", message: "Built" },
+      { step, status: "fail", message: "Build failed" },
+      { result: { name: "Vorteo" } },
+      null,
+    ]) {
+      let output = "";
+      let columns = 120;
+      let rows = 40;
+      const renderer = createRenderer({
+        write: (text) => (output += text),
+        animate: true,
+        banner: true,
+        columns: () => columns,
+        rows: () => rows,
+      });
+      renderer.handle(JSON.stringify({ step, status: "start", message: "Building" }));
+      assert.equal(output.split("\u001b[?1049h").length - 1, 1);
+      columns = 40;
+      rows = 10;
+      t.mock.timers.tick(1000);
+      assert.match(output, /Phase 0:01/);
+      columns = 100;
+      rows = 35;
+      t.mock.timers.tick(1000);
+      assert.equal(output.split("\u001b[?1049h").length - 1, 1);
+      if (completion) renderer.handle(JSON.stringify(completion));
+      renderer.finish();
+      assert.equal(output.split("\u001b[?1049l").length - 1, 1);
+      const stopped = output;
+      t.mock.timers.tick(1000);
+      assert.equal(output, stopped);
+    }
+  });
+}
 
 test("demo walks every installation step with five minutes of simulated build time", async () => {
   const { runDemo } = await import("./demo.mjs");

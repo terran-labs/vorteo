@@ -1,3 +1,4 @@
+import { View } from "react-native";
 import {
   createContext,
   useCallback,
@@ -45,7 +46,11 @@ export function SidebarFooterBlock({ children }: { children: ReactNode }) {
     () => ({ sectionsShown, setSectionsShown, visible, setVisible }),
     [sectionsShown, setVisible, visible],
   );
-  return <FooterRulesContext.Provider value={value}>{children}</FooterRulesContext.Provider>;
+  return (
+    <FooterRulesContext.Provider value={value}>
+      <View style={footerContainerStyle}>{children}</View>
+    </FooterRulesContext.Provider>
+  );
 }
 
 /**
@@ -72,3 +77,5 @@ export function useFooterLeadingRule(row: SidebarFooterRow, shown = true): boole
 export function useReportSectionsShown(): ((shown: boolean) => void) | null {
   return useContext(FooterRulesContext)?.setSectionsShown ?? null;
 }
+
+const footerContainerStyle = { flexShrink: 1, minHeight: 0 };

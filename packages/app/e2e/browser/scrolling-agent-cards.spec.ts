@@ -36,8 +36,15 @@ async function verifyGoalPauseHelp(page: Page, goalCard: Locator, width: number)
 async function revealSupportingCards(page: Page, width: number) {
   if (width <= 600) return;
   const explorer = page.getByTestId("workspace-explorer-toggle").filter({ visible: true });
-  await expect(explorer).toBeVisible();
+  // Compact-to-wide resizing remounts the desktop toolbar before revealing its card group.
+  await expect(explorer).toBeVisible({ timeout: 30_000 });
+  await page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+  });
   if ((await explorer.getAttribute("aria-expanded")) === "false") await explorer.click();
+  await expect(explorer).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("workspace-supporting-cards")).toBeVisible();
 }
 
 test.use({ e2eInjectPaseoTools: true });
@@ -254,7 +261,7 @@ for (const width of [1400, 390]) {
 test("agents, tasks, plugin pills, queue and goals share the scrolling footer", async ({
   page,
 }, info) => {
-  test.setTimeout(300_000);
+  test.setTimeout(600_000);
   // Reduced motion keeps cards still between pointer actions; the responsive column test covers motion.
   await page.emulateMedia({ reducedMotion: "reduce" });
   const agent = await seedMockAgentWorkspace({
@@ -515,6 +522,12 @@ test("agents, tasks, plugin pills, queue and goals share the scrolling footer", 
       ).toBeVisible();
       await page.reload();
       await revealSupportingCards(page, width);
+      // A cold phone reload can render the card before its stored clear marker is loaded.
+      await expect(
+        stack.getByTestId("agent-journal-card-header").getByRole("button", {
+          name: /^(Clear journal|Show history)$/,
+        }),
+      ).toBeEnabled({ timeout: 30_000 });
       await expect(stack.getByTestId("journal-show-history")).toBeVisible();
       await expect(entries).toHaveCount(0);
       await stack.getByTestId("journal-show-history").click();

@@ -273,7 +273,7 @@ export function PresetControls({
 const styles = StyleSheet.create((theme) => ({
   inline: { height: NEW_WORKSPACE_CARD_HEIGHT, width: "100%" },
   inlineCompact: { height: 340, width: "100%" },
-  touchControls: { flex: 1, flexWrap: "nowrap" },
+  touchControls: { flexShrink: 1, flexWrap: "nowrap" },
   centerControls: { justifyContent: "center", marginHorizontal: 8 },
   controls: {
     minWidth: 0,

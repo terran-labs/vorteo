@@ -14,6 +14,25 @@ export function factoryCardKey(serverId: string, projectId: string): string {
   return `${serverId}:${projectId}`;
 }
 
+/**
+ * Which Factory overview a pathname shows: `/h/<server>/factory` is All Factories (projectId
+ * null) and `/h/<server>/factory/<project>` is one project's. Anything else is null.
+ */
+export function factoryOverviewPathTarget(
+  pathname: string | null | undefined,
+): { serverId: string; projectId: string | null } | null {
+  const match = /^\/h\/([^/]+)\/factory(?:\/([^/]+))?\/?$/.exec(pathname ?? "");
+  if (!match) return null;
+  try {
+    return {
+      serverId: decodeURIComponent(match[1]!),
+      projectId: match[2] ? decodeURIComponent(match[2]) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export type FactoryQueueIssue = FactoryQueue["issues"][number];
 export type FactoryQueueStage = FactoryQueueIssue["stage"];
 
@@ -125,7 +144,7 @@ export function factoryStateReason(
   t: TFunction,
 ): string | undefined {
   if (state.drain && !isOwnerStop(state.drain)) {
-    return t("projectFactory.needsYou.kinds.held", { subject: state.drain.reason });
+    return t("sidebar.factoryCard.heldReason", { reason: state.drain.reason });
   }
   return state.drain?.reason ?? state.reason ?? undefined;
 }

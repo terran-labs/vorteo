@@ -3224,15 +3224,18 @@ export class AgentManager {
     if ((await this.readStoredToolAccess(resolvedAgentId)) === "none")
       config = { ...config, toolAccess: "none" };
     await this.deleteAgentState(resolvedAgentId);
+    this.assertAcceptingAgentRegistrations();
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
       { env: options?.env },
     );
+    this.assertAcceptingAgentRegistrations();
     this.requireEnabledProvider(storedConfig.provider);
     const client = await this.requireAvailableClient({
       provider: storedConfig.provider,
     });
+    this.assertAcceptingAgentRegistrations();
     this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
     function buildCreateOpening() {
       return {
@@ -3254,6 +3257,14 @@ export class AgentManager {
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
     assertInternalBindings();
+    // Setup may yield while shutdown closes ingress. No session owns this context yet.
+    try {
+      this.assertAcceptingAgentRegistrations();
+    } catch (error) {
+      this.paseoToolPolicies.delete(resolvedAgentId);
+      this.detachPluginTools(resolvedAgentId);
+      throw error;
+    }
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
     const parentId = options.labels?.[PARENT_AGENT_ID_LABEL];

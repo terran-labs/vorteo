@@ -44,7 +44,7 @@ vi.mock("@/components/ui/button", () => ({
   ),
 }));
 afterEach(cleanup);
-it("keeps the full reason accessible on a single secondary line outside the approval button", () => {
+it("keeps the full reason readable outside the approval button", () => {
   const reason =
     "Apply a source update with a lengthy explanation that should never be a button label";
   const state = deriveSystemEnvironment({
@@ -57,8 +57,7 @@ it("keeps the full reason accessible on a single secondary line outside the appr
   expect(screen.getByRole("button", { name: "Approve restart" }).textContent).toBe(
     "Approve restart",
   );
-  expect(screen.getByLabelText(reason).getAttribute("data-lines")).toBe("1");
-  expect(screen.getByLabelText(reason).textContent).toBe(reason);
+  expect(screen.getByText(reason).textContent).toBe(reason);
 });
 
 it("keeps a pending update unavailable and enables its retry after failure", () => {

@@ -79,7 +79,7 @@ export function SystemUpdatesRow() {
       <View style={styles.row}>
         <View style={styles.description}>
           <Text style={settingsStyles.rowTitle}>Updates</Text>
-          <SettingsStatusLine message={status} />
+          <Text style={styles.status}>{status}</Text>
         </View>
         <Button
           onPress={check}
@@ -142,13 +142,16 @@ function updateStatusText(
 
 const styles = StyleSheet.create((theme) => ({
   row: {
-    height: 88,
+    minHeight: 88,
+    paddingVertical: theme.spacing[3],
+    flexWrap: "wrap",
     paddingHorizontal: theme.spacing[4],
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
   },
-  description: { flex: 1, minWidth: 0 },
+  description: { flexGrow: 1, flexShrink: 1, flexBasis: 240, gap: theme.spacing[1] },
+  status: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm, lineHeight: 20 },
   details: { height: 500 },
   body: { padding: theme.spacing[4], gap: theme.spacing[3] },
 }));

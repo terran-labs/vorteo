@@ -62,7 +62,7 @@ import {
   type NativeHelperJob,
   type NativeHelperPlan,
 } from "@getpaseo/protocol/native-helper-maintenance";
-import type { LifecycleJob } from "./lifecycle-journal.js";
+import { parseLifecycleJournal, type LifecycleJob } from "./lifecycle-journal.js";
 import {
   MaintenanceServiceJobSchema,
   type MaintenanceServiceJob,
@@ -2898,8 +2898,19 @@ export class InstallationRestarts {
         await this.executor.releaseCurrentTurns(job.target, job.id);
       }
       const current = this.jobs.find((item) => item.id === job.id);
-      if (current) this.replace({ ...withoutCaptureId(current), holdReleased: true });
-    } catch {
+      if (current) {
+        const waitingForHold =
+          current.status === "succeeded" &&
+          current.detail === "Waiting for the environment to release its restart hold.";
+        this.replace({
+          ...withoutCaptureId(current),
+          holdReleased: true,
+          detail: waitingForHold ? "Restart completed and its hold was released." : current.detail,
+        });
+      }
+    } catch (error) {
+      const detail = (error instanceof Error ? error.message : String(error)).split(/\r?\n/, 1)[0];
+      this.progress("Restart hold release failed", { jobId: job.id, target: job.target, detail });
       const current = this.jobs.find((item) => item.id === job.id);
       if (current)
         this.replace({
@@ -3700,7 +3711,7 @@ export class InstallationRestarts {
     for (const job of remaining.values()) activity?.change(undefined, job);
     next.push(...remaining.values());
     this.journal.write(next, evidence);
-    this.snapshot = next;
+    this.snapshot = parseLifecycleJournal(next);
     this.jobs = jobs;
     this.helpers = helpers;
     this.monitors = monitors;

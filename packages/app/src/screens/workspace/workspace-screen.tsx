@@ -3586,9 +3586,6 @@ function WorkspaceScreenContent({
           subtitle={workspaceHeaderSubtitle}
           isSubtitleDistinct={isWorkspaceHeaderSubtitleDistinct}
           serverId={normalizedServerId}
-          onToggleExplorer={handleToggleExplorerSidebar}
-          explorerToggleLabel={explorerSidebarToggleLabel}
-          explorerToggleAccessibilityState={explorerSidebarToggleAccessibilityState}
         >
           <MobileWorkspaceTabSwitcher
             tabs={tabs}
@@ -3627,8 +3624,6 @@ function WorkspaceScreenContent({
       activeTabKey,
       compactHeaderScripts,
       createTerminalDisabled,
-      explorerSidebarToggleAccessibilityState,
-      explorerSidebarToggleLabel,
       handleCloseOtherTabs,
       handleCloseTabById,
       handleCloseTabsToLeft,
@@ -3644,7 +3639,6 @@ function WorkspaceScreenContent({
       handleReloadAgent,
       handleRenameTab,
       handleSelectSwitcherTab,
-      handleToggleExplorerSidebar,
       isMobile,
       isWorkspaceHeaderLoading,
       isWorkspaceHeaderSubtitleDistinct,

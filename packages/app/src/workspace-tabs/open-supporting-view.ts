@@ -69,6 +69,13 @@ export function openComposerChanges(input: OpenWorkspaceChangesInput): string | 
 /** Opens the workspace pull request at its semantic destination. */
 export function openWorkspacePullRequest(input: OpenWorkspacePullRequestInput): string | null {
   if (!input.workspaceKey) return null;
+  if (input.isCompact) {
+    return useWorkspaceLayoutStore.getState().openTab({
+      workspaceKey: input.workspaceKey,
+      target: { kind: "pull_request" },
+      intent: "reveal",
+    });
+  }
   let tabId: string | null;
   if (supportingViewsBelongInExplorer(input) || input.destination === "explorer") {
     const store = useWorkspaceLayoutStore.getState();

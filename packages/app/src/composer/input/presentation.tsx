@@ -40,6 +40,7 @@ export function ComposerInputPresentation({
   showFullscreenButton,
   fullscreenButtonPlacement,
   onEnter,
+  rail,
   overlay,
 }: {
   fullscreen: boolean;
@@ -57,6 +58,8 @@ export function ComposerInputPresentation({
   /** Where the inline Fullscreen button sits when the top-right corner is taken. */
   fullscreenButtonPlacement?: { top: number; right: number };
   onEnter: () => void;
+  /** Phone controls positioned against the surface itself, outside its padded rows. */
+  rail?: ReactNode;
   overlay: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -131,6 +134,7 @@ export function ComposerInputPresentation({
             ) : null}
           </View>
           {fullscreen ? null : toolbar}
+          {fullscreen ? null : rail}
         </View>
       </ComposerFullscreenBody>
       {fullscreen ? (

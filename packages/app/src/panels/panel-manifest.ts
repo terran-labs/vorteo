@@ -7,6 +7,8 @@ export type PaneHost = "main" | "explorer" | "sheet";
 export interface CompactSheetPolicy {
   /** The sheet offers Open as tab, which moves the same tab into the focused pane. */
   openAsTab: boolean;
+  /** Phone navigation remains a sheet even when its desktop dock tab already exists. */
+  preferSheet?: boolean;
 }
 
 /** Facts about a target that live outside the layout, resolved lazily by the workspace. */
@@ -95,7 +97,7 @@ const manifests = {
     supportedHosts: ["explorer"],
     showCloseButton: false,
     singleton: true,
-    compactSheet: null,
+    compactSheet: { openAsTab: false, preferSheet: true },
     resourceKey: () => "changes_tree",
   },
   files: {
@@ -103,7 +105,7 @@ const manifests = {
     supportedHosts: ["explorer"],
     showCloseButton: false,
     singleton: true,
-    compactSheet: null,
+    compactSheet: { openAsTab: false, preferSheet: true },
     resourceKey: () => "files",
   },
   pull_request: {
@@ -111,7 +113,7 @@ const manifests = {
     supportedHosts: ["main", "explorer"],
     showCloseButton: true,
     singleton: false,
-    compactSheet: null,
+    compactSheet: { openAsTab: false, preferSheet: true },
     resourceKey: () => "pull_request",
   },
   file: {

@@ -2,7 +2,109 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## Unreleased - 2026-11-08
+## Unreleased - 2026-11-09
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.901 - 2026-11-09
+
+This candidate includes the reviewed shutdown registration repair alongside the interface and installer updates prepared in 26.11.900. Release validation and installed acceptance are required before promotion.
+
+### Fixes
+
+- Stop agent creation before starting a provider session when shutdown begins during setup. Sessions already starting still complete their required cleanup.
+
+### Maintenance
+
+- Isolate the supervisor stop regression from automatic System agent startup while preserving its shutdown and no-respawn assertions.
+
+## 26.11.900 - 2026-11-09
+
+Release preparation combines the reviewed interface, Factory and installation updates. Physical iOS keyboard, safe-area and native hit-target acceptance remains unverified.
+
+### Fixes
+
+- Add the missing Minus, Clock and Circle icons to the shared Lucide test stub for provider settings test collection and linked browser test imports.
+- Normalize the installation queue snapshot after a successful journal write so broker consumer deployment preparation can retain prepared or failed outcomes without a false reservation conflict. Genuine changes by another writer still invalidate the reservation.
+- Creating a workspace on another host without a path now returns a readable error instead of a bare validation error.
+- Fixed succeeded restarts retaining waiting-for-hold status after hold release succeeds on retry
+- Record the first line of hold release errors in existing coordinator diagnostics
+- The board icon is gone from Factory headers; the Overview button replaces it.
+- The sidebar no longer shows a Needs you count on All Factories or on Factory tiles. Questions for the owner stay in the Open questions card.
+
+- Factory pages use the History heading style. Live mode hides sample-backed reports, and owner questions replace the overview Needs you panel while issue badges remain.
+- Mobile Settings and sidebar toolbars share their surface and underline. Composer buttons no longer overlap, fullscreen keeps dictation, reset pills stay compact, folder menus align vertically and the footer clears rounded phone corners.
+- Every rotating loading indicator uses the same calm 2.7-second cycle, including the boot screen.
+- Factory account picks now treat a usage reading without its own timestamp as read when its usage list was, so fresh accounts qualify instead of every pick falling back to the configured default.
+- Factory picks for another environment reject globally disabled accounts even before that environment refreshes its readiness snapshot.
+- Factory account picks for Dev now find accounts set up through managed sign-in, such as Claude accounts, which previously never qualified there. Two accounts count as the same only when the installation's provider definitions bind both, never because their local names match.
+- Read Factory stage and runner colors when rendering so they follow the saved theme at startup.
+- Vorteo's dependencies install inside the Dev container. Node's built-in `fs.cpSync` directory copy fails with a permission error on Dev's shared Projects folder, on Node 22 and 24 alike, and `@shopify/react-native-skia` uses it during install, so every `npm ci` there failed. Linux installs now load `scripts/lib/cp-sync-js.cjs`, which keeps `fs.cpSync` calls that pass no filter of their own on Node's ordinary copy path.
+- Restore the installer animation during Host and Dev release builds when updating an existing installation from the terminal.
+
+### Changes
+
+- The Factory Foreman now gives each lead the go to start its worker, after checking the plan's files against all work in flight. Overlapping issues wait without holding a worker slot instead of colliding.
+- The Foreman picks every agent's account itself, including a planning lead's worker, so leads and workers no longer call the Factory service.
+- After each merge, the Foreman removes the merged issue's clean worktree and tells in-flight issues that touch the same files to merge the default branch right away, so conflicts appear before merge time. Issues are never combined into one branch or pull request.
+- Foreman dispatch: waiting plans never block each other (the oldest overlapping issue goes first), planning-off issues get the same overlap check from a Foreman-posted file list, a worker stops before touching a file outside its plan until the Foreman clears the wider plan, and only the Foreman checks for a pause before sending a go.
+- Factory now runs the Foreman's per-issue leads, workers and reviewers in the Dev container by default, because they run the repository's code, while the Factory role agents stay on the Host. `vorteo factory project configure --issue-agents host` keeps them on the Host. Existing Factories move new issue agents to Dev when this ships; running ones finish where they are.
+- `vorteo factory project show` reports where issue agents run and whether Dev can take them. When Dev is unavailable, the Foreman waits and says why instead of starting issue agents on the Host.
+- The Factory queue includes issue agents running on Dev, even after a switch to host mode, and still shows the Host's agents when Dev cannot be read.
+- Factory can pick a quota-aware account for an agent that will start on a connected host such as Dev: `vorteo factory project pick-account --server <server-id>` returns that host's own id for the same installation account, so work never starts on an account the host lacks or excludes. An unreadable host fails the pick instead of falling back, and a stage profile bound to one account is refused for another host because it cannot launch there.
+
+### Features
+
+- All Factories shows a compact pipeline summary above Pinned; pressing it opens the overview. Each project's Factory remains a folder-like row with a stage bar and an Overview button; pressing the row folds its contents.
+- The Foreman leads each project's Factory as a full-width tile labeled "Talk to the Factory", the place to start a conversation with the Factory. The other roles follow under Crew, then the runners.
+- The sidebar marks which Factory overview is open: the All Factories row, or a project's Factory row together with its tile under All Factories.
+- A repository's Factory now runs in one environment of an installation, its Factory home, by default the Host. Turning Factory on in Dev for a repository the Host already runs, or the reverse, is refused with a message naming where it runs, so one installation never has two Builds or two Mechanics for one repository. `vorteo factory project show` and the Factory Overview show the home.
+- Host agents can start agents in the Dev container that report back. The installation saves Dev as a connected host named "Dev container" on the Host daemon, so the ordinary agent tools with `serverId` create Dev agents with labels and a parent link, deliver their finish notices and read their status and activity.
+- Creating an agent on another host accepts `profileId`, a shared preset on the destination. The destination applies the preset's model and instructions, and the provider still selects the account. A preset bound to a different account is refused instead of quietly switching accounts.
+- Installation controls show Stable source upgrades under **Source upgrades**, with when a delegated one starts, and Install, Reject and Cancel. An open page checks for new delegated requests every ten seconds, well inside their thirty-second window.
+- Builds can request a Stable source upgrade with `request-source-upgrade` and follow it with `source-upgrade-status`. Under full maintenance delegation it starts after a thirty-second window, finishing current turns before the Host restarts; otherwise the owner approves it. Rollbacks stay with the owner.
+
+### Maintenance
+
+- Reconciled the Factory and mobile polish branch with current main without changing its reviewed interface implementation.
+- In task worktrees and `paseo.json` workspace setup, a full dependency install now waits for the environment's heavy-job slot, as the queue's rules already required. Heavy jobs mark their commands with `VORTEO_HEAVY_JOB=1`, so an install that already runs inside one, or as Builds, does not wait on itself. Installer, coordinator, web build and live dev installs keep running at once, since they can run while the Builds gate holds the slot.
+- The dependency cache stays macOS-only. Measured in Dev, copying a cached install onto the shared Projects folder took about 1m45s against about 2 minutes for `npm ci`, for a 5.6 GB cache.
+- Disabling the saved Dev host keeps it off. The coordinator only follows a changed Dev password, detected by a hash of the connection stored in the registration's metadata, and only touches the registration it owns, matched by its source and key.
+- Every owner route now has an agent request command, an exclusion or a pinned exemption; the front-door gap list is empty.
+- Reconcile published main with the installed Factory home-lock source before the next Host update.
+- Update the packaged shared metadata case to observe the error toast after a rejected save and its absence after retry. Open Settings before unlocking the retry on phone. Preserve the saved selection and both environments’ configuration checks.
+- Update the shared policy case to open Dev maintenance details through System after the old Environments shortcut was removed. Wait for Environments to render before checking that no direct restart button appears, and repeat that check after Dev details open. Preserve policy saves, draft conflicts, retries and unlocked owner access.
+- Update five packaged installation test groups to use provider Settings and inline draft profiles, and read project identity before opening the handoff sheet. Preserve compatibility, shared edits, environment exclusions, draft attachments and workspace membership checks.
+- Apply and verify the fixture's final shared settings revision before starting background reconciliation and agent launches.
+
+- Scope compatibility editor controls to the visible Settings screen and environment icons to the open profile picker, excluding retained hidden screens and sidebar rows. Merge current main validation and dependency-order fixes into the task branch.
+
+- Reopen provider details after reloading Settings, and use the compact workspace header menu for cross-environment project moves while retaining directory, membership, chat and reload checks.
+
+- Scope phone workspace actions to the destination workspace deck. Verify saved alias permissions in the shared profile record and require launch requests to leave those permissions to the daemon.
+
+- Select the visible phone workspace header when retained route screens contain the same workspace deck, preserving all project-move checks.
+
+### Interface
+
+- Combine the Factory Kanban board and statistics in one view, with a Factory selector in the title and a compact pipeline summary in the sidebar.
+- Move phone workspace details into tiles and sheets, align touch composer controls and support tablet conversation resizing.
+- Add a globe menu for thread browser access and an evenly segmented context usage ring.
+- Explain System attention, improve narrow update rows and restore weekly provider history charts.
+
+### Fixed
+
+- Restore cross-environment model compatibility warnings in the routed profile editor. Saved aliases remain unchanged, and unsupported or unavailable environment catalogs retain their existing warnings.
+
+## Unreleased - 2026-11-09
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-09
 
 ### Maintenance
 

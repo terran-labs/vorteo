@@ -1279,10 +1279,10 @@ describe("thread column preferences", () => {
     await saveAppSettings({
       queryClient,
       deps,
-      updates: { threadTextWidth: 720, threadCardsWidth: 220 },
+      updates: { threadTextWidth: 480, threadCardsWidth: 220 },
     });
     const settings = await loadAppSettingsFromStorage(deps);
-    expect(settings.threadTextWidth).toBe(720);
+    expect(settings.threadTextWidth).toBe(480);
     expect(settings.threadCardsWidth).toBe(220);
     expect(settings.contentMaxWidth).toBeNull();
   });

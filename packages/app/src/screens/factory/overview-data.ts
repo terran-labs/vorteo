@@ -1,7 +1,7 @@
 import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 import type { QuotaAccount } from "@/provider-usage/global-quota";
 import type { FactoryControls } from "./overview-controls";
-import type { activeDrains, FactoryScopeEntry, NeedsYouItem } from "./all-factories-model";
+import type { activeDrains, FactoryScopeEntry } from "./all-factories-model";
 import type { StopAllControls } from "./overview-sources";
 import type { FactoryLaneGroup, FactoryQueueFigures, FactoryUsageSummary } from "./overview-model";
 import type { FactoryHistory } from "./overview-sample";
@@ -17,8 +17,6 @@ export interface FactoryOverviewData {
   focus: { projectId: string; state: ProjectFactoryState; controls: FactoryControls } | null;
   /** Every Factory shown: one in project scope. */
   factories: FactoryScopeEntry[];
-  /** Everything waiting on the owner, most urgent first. */
-  needsYou: NeedsYouItem[];
   drains: ReturnType<typeof activeDrains>;
   stopAll: StopAllControls;
   /** Opens one Factory's overview from the All Factories scope. */

@@ -150,7 +150,7 @@ it("offers no Resume for a project another process holds, and re-checks before r
   const drain = { id: "drain-1", reason: "drain before restart", pausedAt: "2026-11-07T12:00:00Z" };
   fixture.invoke.mockResolvedValueOnce({ ...off, state: "paused", drain });
   renderActions();
-  await screen.findByText("projectFactory.needsYou.kinds.held");
+  await screen.findByText("sidebar.factoryCard.heldReason");
   expect(screen.queryByText("projectFactory.resumeMenu")).toBeNull();
   cleanup();
   // Paused by hand when the menu opened, but held by the time Resume is pressed.

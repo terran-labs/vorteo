@@ -1,3 +1,4 @@
+import { ContextUsageRing } from "./ring";
 import { useCallback, useMemo } from "react";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -76,11 +77,13 @@ function ContextCardContent({
     ),
     [percentage, t],
   );
+  const ring = useMemo(() => <ContextUsageRing percentage={percentage} />, [percentage]);
   return (
     <TaskCard testID="agent-context-card" bodyVisible={expanded}>
       <TaskCardHeader>
         <CardDisclosure
           icon={HEADING_ICON}
+          compactIndicator={ring}
           title={t("contextWindow.title")}
           expanded={expanded}
           onPress={toggle}

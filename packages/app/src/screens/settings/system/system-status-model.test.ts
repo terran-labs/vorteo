@@ -13,6 +13,7 @@ it.each(["offline", "idle", "error"] as const)("reconnects when %s", (connection
   expect(derive({ ...base, connection: { connectionStatus, lastError: null } })).toEqual({
     status: "attention",
     action: { kind: "reconnect", label: "Reconnect" },
+    reason: "This environment is not connected.",
   }),
 );
 it.each(["pending", "failed", "approved", "running"] as const)("handles restart %s", (status) => {
@@ -54,6 +55,13 @@ it("requires a connection before approval and keeps approval ahead of updates", 
   expect(derive({ ...base, availableVersion: "v2" }).action?.label).toBe("Update to v2");
 });
 it("uses public counts when locked", () => {
+  const locked = derive({
+    ...base,
+    locked: true,
+    restartSummary: { requested: 1, queued: 0, running: 0 },
+  });
+  expect(locked.reason).toContain("installation");
+  expect(locked.action).toBeNull();
   expect(
     derive({
       ...base,

@@ -2,8 +2,8 @@ import { describe, expect, test } from "vitest";
 import { getSyncedLoaderDotOpacity, getSyncedLoaderStep } from "./synced-loader-state";
 
 describe("synced loader state", () => {
-  test("advances through six wall-clock-aligned steps every 950 milliseconds", () => {
-    const sampleTimes = [0, 158, 159, 316, 317, 474, 475, 633, 634, 791, 792, 949, 950];
+  test("advances through six wall-clock-aligned steps every spinner period", () => {
+    const sampleTimes = [0, 449, 450, 899, 900, 1349, 1350, 1799, 1800, 2249, 2250, 2699, 2700];
 
     const steps = sampleTimes.map(getSyncedLoaderStep);
 

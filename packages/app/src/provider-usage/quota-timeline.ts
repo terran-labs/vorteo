@@ -56,10 +56,22 @@ export const QUOTA_CELL_MIN_WIDTH = 22;
 export const QUOTA_OVERFLOW_WIDTH = 24;
 
 /**
- * Window lengths are not on the wire. Session windows (Claude `five_hour`, Codex `session`) last
- * five hours; every other enforced window here is weekly.
+ * Codex keeps stable primary/secondary IDs even when their durations change. The installed
+ * daemon exposes that duration in its label, so prefer it to the legacy ID fallback.
  */
-export function quotaWindowLengthMs(window: Pick<QuotaWindowRow, "id">): number {
+export function quotaWindowLengthMs(window: Pick<QuotaWindowRow, "id" | "label">): number {
+  if (window.label === "Weekly") return WEEK_MS;
+  const duration = /^(\d+)-(day|hour|minute|second)$/.exec(window.label);
+  if (duration) {
+    const units: Record<string, number> = {
+      day: 24 * HOUR_MS,
+      hour: HOUR_MS,
+      minute: 60_000,
+      second: 1000,
+    };
+    const length = Number(duration[1]) * units[duration[2]!]!;
+    if (length > 0 && Number.isFinite(length)) return length;
+  }
   return window.id === "five_hour" || window.id === "session" ? SESSION_MS : WEEK_MS;
 }
 

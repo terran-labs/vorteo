@@ -947,18 +947,6 @@ export function TrackBoxes({ issue }: { issue: Pick<FactoryIssue, "stage" | "pr"
   );
 }
 
-/** The legend for the five-box track, shown once per board. */
-export function TrackLegend() {
-  const { t } = useTranslation();
-  const compact = useIsCompactFormFactor();
-  if (compact) return null;
-  return (
-    <Text style={styles.trackLegend}>
-      {FACTORY_TRACK_STEPS.map((step) => t(`projectFactory.board.track.${step}`)).join(" · ")}
-    </Text>
-  );
-}
-
 function IssueCost({ issue, context }: { issue: FactoryIssue; context: CardContext }) {
   const usage = context.usage?.get(factoryIssueKey(issue));
   const started = context.startedAt?.get(factoryIssueKey(issue)) ?? null;
@@ -991,7 +979,7 @@ export function LaneRow({
           horizontal
           showsHorizontalScrollIndicator
           contentContainerStyle={styles.laneRow}
-          style={styles.laneScroller}
+          style={[styles.laneScroller, styles.edgeScroller]}
         >
           {lanes.map((group) => (
             <Lane key={group.lane} group={group} context={context} width={laneWidth} />
@@ -1028,7 +1016,12 @@ export function LaneTabs({
   const group = lanes.find((entry) => entry.lane === selected) ?? lanes[0]!;
   return (
     <View style={styles.laneTabs}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.edgeScroller}
+        contentContainerStyle={styles.edgeContent}
+      >
         <SegmentedControl
           options={options}
           value={selected}
@@ -1157,7 +1150,9 @@ const styles = StyleSheet.create((theme) => ({
   meterLimit: { color: theme.colors.foregroundExtraMuted },
   meterDetail: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.sm },
   laneScroller: { flexGrow: 0 },
-  laneRow: { gap: LANE_GAP, alignItems: "flex-start" },
+  laneRow: { gap: LANE_GAP, alignItems: "flex-start", paddingHorizontal: theme.spacing[4] },
+  edgeScroller: { marginHorizontal: -theme.spacing[4] },
+  edgeContent: { paddingHorizontal: theme.spacing[4] },
   lane: {
     borderWidth: 1,
     borderColor: theme.colors.border,
