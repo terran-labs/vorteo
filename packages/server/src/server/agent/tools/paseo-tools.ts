@@ -44,6 +44,7 @@ import {
 } from "../agent-projections.js";
 import { summarizeAgentActivity } from "../activity-curator.js";
 import type { AgentStorage } from "../agent-storage.js";
+import { reopenWorkerAfterUsageLimit } from "../usage-limit/worker-recovery.js";
 import { AgentNotFoundError, ensureAgentLoaded } from "../agent-loading.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
 import {
@@ -128,11 +129,14 @@ import {
 import type { ForgeService } from "../../../services/forge-service.js";
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
 import type {
+  PersistedProjectRecord,
   PersistedWorkspaceRecord,
   ProjectRegistry,
   WorkspaceRegistry,
 } from "../../workspace-registry.js";
 import { resolveWorktreeSourceCwd } from "../../workspace-source.js";
+import { findArchivedProjectAt, resolveLocalWorkspaceOwner } from "./workspace-ownership.js";
+import { ProjectsFolderError } from "../../projects-folder.js";
 import type { WorkspaceScriptsService } from "../../session/workspace-scripts/workspace-scripts-service.js";
 import {
   type ArchiveCommandDependencies,
@@ -170,6 +174,7 @@ import { createPreviewTools } from "../../previews/tools.js";
 
 export interface PaseoToolHostDependencies {
   agentMessages?: () => AgentMessageDelivery;
+  pickTeamWorkerAccount?: CreateAgentCommandDependencies["pickTeamWorkerAccount"];
   finishSubscriptions?: () => FinishSubscriptions;
   serverId?: string;
   hosts?: () => ToolHosts;
@@ -202,6 +207,11 @@ export interface PaseoToolHostDependencies {
       callerWorkspaceId?: string;
     },
   ) => Promise<PersistedWorkspaceRecord>;
+  /**
+   * Registers a directory as its own project, or returns the project already rooted there.
+   * Applies the Projects folder rule, exactly as adding a project from the interface does.
+   */
+  registerProjectForDirectory?: (cwd: string) => Promise<PersistedProjectRecord>;
   workspaceScripts?: Pick<WorkspaceScriptsService, "list" | "launch" | "stop">;
   markWorkspaceArchiving?: ArchiveDependencies["markWorkspaceArchiving"];
   clearWorkspaceArchiving?: ArchiveDependencies["clearWorkspaceArchiving"];
@@ -763,6 +773,7 @@ function createToolCatalog(
       {
         logger: childLogger,
         getAgent: (id) => agentManager.getAgent(id),
+        getCached: (id) => agentStorage.getLoadedRecord?.(id),
         getStored: (id) => agentStorage.get(id),
         serverId: options.serverId,
       },
@@ -1424,9 +1435,7 @@ function createToolCatalog(
     profileId: z
       .string()
       .optional()
-      .describe(
-        "Launch a saved preset, including instructions. A supervisor must use its configured worker preset.",
-      ),
+      .describe("Launch a saved preset. Supervisors choose from their frozen worker presets."),
     title: z
       .string()
       .trim()
@@ -1466,6 +1475,9 @@ function createToolCatalog(
   };
   const agentToAgentInputSchema = {
     ...canonicalCreateAgentFields,
+    provider: ProviderModelInputSchema.optional().describe(
+      "Provider/model pair. Only a worker team supervisor can omit it for quota-aware account selection.",
+    ),
     notifyOnFinish: z
       .boolean()
       .optional()
@@ -1487,6 +1499,7 @@ function createToolCatalog(
   const legacyAgentToAgentInputSchema = {
     ...commonCreateAgentFields,
     ...legacyCreateAgentPlacementFields,
+    provider: agentToAgentInputSchema.provider,
     notifyOnFinish: agentToAgentInputSchema.notifyOnFinish,
   };
   const legacyTopLevelCreateAgentInputSchema = {
@@ -1661,7 +1674,20 @@ function createToolCatalog(
     });
   }
 
-  async function resolveWorkspaceOwnership(projectId: string | undefined) {
+  interface WorkspaceOwnership {
+    ownerProjectId: string | undefined;
+    inheritedMembership: PersistedWorkspaceRecord["projectMembership"] | undefined;
+  }
+
+  // An explicit projectId wins. Otherwise a worktree inherits the caller's project, which
+  // provisioning corrects to the repository's own project, and a local workspace inherits it
+  // only when its folder belongs to the caller's project. See workspace-ownership.ts.
+  async function resolveWorkspaceOwnership(input: {
+    projectId: string | undefined;
+    isolation: "local" | "worktree";
+    cwd: string | null;
+  }): Promise<WorkspaceOwnership> {
+    const { projectId } = input;
     if (projectId || !callerAgentId)
       return { ownerProjectId: projectId, inheritedMembership: undefined };
     const caller = resolveCallerAgent();
@@ -1673,10 +1699,75 @@ function createToolCatalog(
         "An active caller workspace is required to inherit project ownership. Supply projectId explicitly.",
       );
     }
-    return {
+    const inherited: WorkspaceOwnership = {
       ownerProjectId: parentWorkspace.projectId,
       inheritedMembership: parentWorkspace.projectMembership,
     };
+    if (input.isolation !== "local" || !input.cwd) return inherited;
+    const callerProject = await options.projectRegistry?.get(parentWorkspace.projectId);
+    // COMPAT(createWorkspaceUnknownCallerProject): added 2026-11-14, remove after 2027-05-14.
+    // Hosts without a project registry, or with a dangling caller project, keep inheriting.
+    if (!callerProject || !options.projectRegistry || !options.workspaceRegistry) return inherited;
+
+    const [projects, workspaces, checkoutRepoRoot] = await Promise.all([
+      options.projectRegistry.list(),
+      options.workspaceRegistry.list(),
+      readCheckoutRepoRoot(input.cwd),
+    ]);
+    const owner = resolveLocalWorkspaceOwner({
+      cwd: input.cwd,
+      callerProject,
+      projects,
+      workspaces,
+      checkoutRepoRoot,
+    });
+    if (owner.kind === "caller") return inherited;
+    if (owner.kind === "existing") {
+      return { ownerProjectId: owner.project.projectId, inheritedMembership: undefined };
+    }
+    const registered = await registerNewProject(input.cwd);
+    return { ownerProjectId: registered.projectId, inheritedMembership: undefined };
+  }
+
+  async function registerNewProject(cwd: string): Promise<PersistedProjectRecord> {
+    if (!options.registerProjectForDirectory) {
+      throw new Error(
+        `${cwd} is outside every registered project, and project registration is not configured. Pass projectId to file it under an existing project.`,
+      );
+    }
+    // Registering an archived project's root would create a new active project there and
+    // return what the owner archived to the sidebar. Session settings sync refuses the same.
+    const archived = findArchivedProjectAt((await options.projectRegistry?.list()) ?? [], cwd);
+    if (archived) {
+      throw new PaseoToolInputError(
+        `${cwd} belongs to a project the owner archived (${archived.projectId}). Pass projectId to file it under an existing project, or ask the owner to restore the archived one.`,
+      );
+    }
+    try {
+      return await options.registerProjectForDirectory(cwd);
+    } catch (error) {
+      // The Projects folder rule and the daemon's own state refuse some folders; say the way out.
+      if (error instanceof ProjectsFolderError) {
+        throw new ProjectsFolderError(
+          error.code,
+          `${error.message} Pass projectId to file it under an existing project.`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Main repository root of a git checkout, so a manual worktree stays with its repository. */
+  async function readCheckoutRepoRoot(cwd: string): Promise<string | null> {
+    if (!options.workspaceGitService) return null;
+    try {
+      const snapshot = await options.workspaceGitService.getSnapshot(cwd);
+      if (!snapshot?.git.isGit) return null;
+      return snapshot.git.mainRepoRoot ?? snapshot.git.repoRoot ?? null;
+    } catch (error) {
+      childLogger.debug({ err: error, cwd }, "Could not read checkout for workspace ownership");
+      return null;
+    }
   }
 
   registerTool(
@@ -1705,8 +1796,15 @@ function createToolCatalog(
     "create_workspace",
     {
       title: "Create workspace",
-      description:
+      description: [
         "Create a workspace using an existing local checkout or a new Vorteo-managed worktree.",
+        "Project ownership: projectId, when given, owns the workspace.",
+        "Otherwise a local workspace joins the deepest registered project that contains its folder, which may be yours.",
+        "A checkout of your project's own repository, and a folder inside one of your project's worktrees that no project contains, stay in your project.",
+        "A git repository root inside a plain directory project, and any folder no project contains, are registered as a new project. An archived project's root is refused; pass projectId to file the workspace under an existing project.",
+        "Set newProject true to register the local folder as its own project explicitly, for example a nested repository.",
+        "A worktree belongs to its source repository's project.",
+      ].join(" "),
       inputSchema: {
         isolation: z.enum(["local", "worktree"]),
         path: z
@@ -1719,7 +1817,13 @@ function createToolCatalog(
           .string()
           .optional()
           .describe(
-            "Existing project id to own the workspace. Defaults to the caller agent's project.",
+            "Existing project id to own the workspace. When omitted, ownership follows the folder; see the tool description.",
+          ),
+        newProject: z
+          .boolean()
+          .optional()
+          .describe(
+            "Local isolation on this host only. True registers path as its own project, reusing a project already rooted there, and files the workspace under it. Cannot be combined with projectId or serverId, and never restores an archived project.",
           ),
         title: z.string().trim().min(1).optional(),
         background: z
@@ -1765,6 +1869,7 @@ function createToolCatalog(
       isolation,
       path,
       projectId,
+      newProject,
       title,
       background,
       mode,
@@ -1775,13 +1880,24 @@ function createToolCatalog(
       prNumber,
       forge,
     }) => {
-      const { ownerProjectId, inheritedMembership } = await resolveWorkspaceOwnership(projectId);
+      if (newProject && projectId) {
+        throw new PaseoToolInputError("newProject cannot be combined with projectId");
+      }
+      if (newProject && isolation !== "local") {
+        throw new PaseoToolInputError("newProject requires isolation local");
+      }
       let workspace: PersistedWorkspaceRecord;
       if (isolation === "local") {
         const cwd = resolveScopedCwd(path, { required: true });
         if (!(await isExistingDirectory(cwd))) {
           throw new PaseoToolInputError(`Directory not found: ${cwd}`);
         }
+        const { ownerProjectId, inheritedMembership } = newProject
+          ? {
+              ownerProjectId: (await registerNewProject(cwd)).projectId,
+              inheritedMembership: undefined,
+            }
+          : await resolveWorkspaceOwnership({ projectId, isolation, cwd });
         assertOptionsAbsent(
           [
             ["mode", mode],
@@ -1803,6 +1919,11 @@ function createToolCatalog(
           callerWorkspaceId: resolveCallerAgent()?.workspaceId,
         });
       } else {
+        const { ownerProjectId, inheritedMembership } = await resolveWorkspaceOwnership({
+          projectId,
+          isolation,
+          cwd: null,
+        });
         let cwd =
           path !== undefined || !projectId ? resolveScopedCwd(path, { required: true }) : null;
         if (!cwd) {
@@ -2065,11 +2186,42 @@ function createToolCatalog(
   );
 
   registerTool(
+    "reopen_worker_after_usage_limit",
+    {
+      title: "Reopen a worker after a usage limit",
+      description:
+        "Reopen one of your team workers on another eligible account after a recorded usage stop. Keeps the worker's thread, saved context, and workspace. Does not send a prompt. A waiting result includes the earliest known reset.",
+      inputSchema: { agentId: z.string().min(1) },
+    },
+    async ({ agentId }) => {
+      const caller = resolveCallerAgent();
+      if (!caller) throw new PaseoToolInputError("Reopening requires an agent-scoped session");
+      const dependencies = { ...createAgentDependencies(), providerSnapshotManager };
+      const result = await reopenWorkerAfterUsageLimit(
+        {
+          agentStorage,
+          getSharedProviderConfig: dependencies.getSharedProviderConfig,
+          pickTeamWorkerAccount: dependencies.pickTeamWorkerAccount,
+          switchProfile: (target, settings) =>
+            switchAgentProfileCommand(dependencies, target, settings),
+        },
+        {
+          agentId,
+          supervisorId: caller.id,
+          serverId: options.serverId,
+          inScope: (cwd) => isSameOrDescendantPath(resolveScopedCwd(cwd), expandUserPath(cwd)),
+        },
+      );
+      return { content: [], structuredContent: ensureValidJson(result) };
+    },
+  );
+
+  registerTool(
     "create_agent",
     {
       title: "Create agent",
       description:
-        "Create an agent. Agent-scoped creation defaults to your workspace and creates your subagent. Top-level creation without workspaceId creates a new local workspace. Requires provider/model (for example codex/gpt-5.4) and an initial prompt. For a different provider, set settings.modeId from inspect_provider; omission is accepted for targets with no modes and for unattended execution supported by the target. Do not guess; call list_providers and list_models first if uncertain.",
+        "Create an agent. Agent-scoped creation defaults to your workspace and creates your subagent. Top-level creation without workspaceId creates a new local workspace. Requires an initial prompt. Only a worker team supervisor can omit provider/model for quota-aware account selection. For a different provider, set settings.modeId from inspect_provider; omission is accepted for targets with no modes and for unattended execution supported by the target. Do not guess; call list_providers and list_models first if uncertain.",
       inputSchema: createAgentInputSchema,
       outputSchema: {
         agentId: z.string(),
@@ -2080,6 +2232,8 @@ function createToolCatalog(
         currentModeId: z.string().nullable(),
         availableModes: z.array(ProviderModeSchema),
         guidance: z.string().optional(),
+        accountChoiceReason: z.string().optional(),
+        accountChoiceCode: z.string().optional(),
       },
     },
     async (args: unknown) => {
@@ -2093,11 +2247,14 @@ function createToolCatalog(
       const notifyOnFinish = resolveNotifyOnFinish();
       assertAgentCanSetFeatures(parsedArgs.settings?.features);
       if (callerAgentId) assertNoReservedLabels(parsedArgs.labels);
-      const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
-      const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
-      const { snapshot, initialPromptStarted } = await createAgentCommand(
-        createAgentDependencies(),
-        {
+      const selectedProvider = parsedArgs.provider
+        ? resolveRequiredProviderModel(parsedArgs.provider).provider
+        : undefined;
+      const inheritedConfig = selectedProvider
+        ? resolveInheritedProviderConfig(selectedProvider)
+        : undefined;
+      const { snapshot, initialPromptStarted, accountChoiceReason, accountChoiceCode } =
+        await createAgentCommand(createAgentDependencies(), {
           kind: "mcp",
           profileId: parsedArgs.profileId,
           provider: parsedArgs.provider,
@@ -2124,8 +2281,7 @@ function createToolCatalog(
           detached: resolvedArgs.detached,
           callerAgentId,
           callerContext,
-        },
-      );
+        });
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
@@ -2146,7 +2302,9 @@ function createToolCatalog(
           ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
           currentModeId: currentSnapshot.currentModeId,
           availableModes: currentSnapshot.availableModes,
-          ...(guidance ? { guidance } : {}),
+          guidance,
+          ...(accountChoiceReason ? { accountChoiceReason } : {}),
+          ...(accountChoiceCode ? { accountChoiceCode } : {}),
         }),
       };
       return response;
@@ -2185,7 +2343,14 @@ function createToolCatalog(
       if (!callerAgentId)
         throw new PaseoToolInputError("request_lead_launch requires an agent-scoped session");
       const caller = resolveCallerAgent()!;
-      const worker = caller.config.profileLaunch?.worker;
+      if ((await agentStorage.get(callerAgentId))?.workerGovernance)
+        throw new PaseoToolInputError(
+          "Team workers cannot request lead launches. Ask your supervisor.",
+        );
+      const launch = caller.config.profileLaunch;
+      if (launch?.workers?.length === 0)
+        throw new PaseoToolInputError("This preset disables delegation.");
+      const worker = launch?.workers?.[0] ?? launch?.worker;
       if (!worker)
         throw new PaseoToolInputError(
           "You have no worker preset, so create_agent already accepts any preset.",
@@ -2304,6 +2469,7 @@ function createToolCatalog(
     return {
       agentManager,
       agentStorage,
+      pickTeamWorkerAccount: options.pickTeamWorkerAccount,
       finishSubscriptions: options.finishSubscriptions?.(),
       logger: childLogger,
       paseoHome: options.paseoHome,
@@ -2351,10 +2517,16 @@ function createToolCatalog(
       throw new PaseoToolInputError("workspaceId cannot be combined with legacy placement fields");
     }
     if (callerAgentId) {
+      const assertProvider = (provider: string | undefined): void => {
+        if (!provider && resolveCallerAgent()?.config.profileLaunch?.workers === undefined) {
+          throw new PaseoToolInputError("provider/model is required outside worker team launches");
+        }
+      };
       if (hasLegacyCreateAgentPlacement(args)) {
         // COMPAT(nestedCreateAgentPlacement): accept the old relationship/workspace shape without
         // advertising it to models. Added in v0.2.0; remove after 2027-01-17.
         const parsed = parseToolArguments(legacyAgentToAgentCreateAgentArgsSchema, args);
+        assertProvider(parsed.provider);
         const { cwd, workspaceId, worktree } = await resolveCreateAgentWorkspace(parsed.workspace, {
           prompt: parsed.initialPrompt,
         });
@@ -2368,6 +2540,7 @@ function createToolCatalog(
         };
       }
       const parsed = parseToolArguments(agentToAgentCreateAgentArgsSchema, args);
+      assertProvider(parsed.provider);
       const { cwd, workspaceId } = await resolveCanonicalCreateAgentWorkspace(parsed.workspaceId, {
         prompt: parsed.initialPrompt,
       });

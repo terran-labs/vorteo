@@ -2,6 +2,7 @@ import { useCallback, type ReactNode } from "react";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import { SidebarSectionRow } from "./container-row";
 import { SidebarDisclosureBody } from "./disclosure-body";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 
 /**
  * A group inside a Factory section, such as Crew or Runners. It folds like every other
@@ -13,6 +14,8 @@ export function FactoryGroup({
   title,
   count,
   level,
+  defaultCollapsed = false,
+  menu,
   testID,
   children,
 }: {
@@ -23,12 +26,17 @@ export function FactoryGroup({
   count: number;
   /** The group row's level; its items sit one further in. */
   level: number;
+  /** Starts folded; the stored key then records that the owner opened it. */
+  defaultCollapsed?: boolean;
+  /** Menu items the row offers on right-click or long press. */
+  menu?: ReactNode;
   testID: string;
   children: ReactNode;
 }) {
-  const collapsed = useSidebarCollapsedSectionsStore((state) =>
+  const toggled = useSidebarCollapsedSectionsStore((state) =>
     state.collapsedWorkspaceGroupKeys.has(groupKey),
   );
+  const collapsed = defaultCollapsed ? !toggled : toggled;
   const toggleGroupCollapsed = useSidebarCollapsedSectionsStore(
     (state) => state.toggleWorkspaceGroupCollapsed,
   );
@@ -36,16 +44,30 @@ export function FactoryGroup({
     () => toggleGroupCollapsed(groupKey),
     [toggleGroupCollapsed, groupKey],
   );
+  const row = (
+    <SidebarSectionRow
+      title={title}
+      count={count}
+      collapsed={collapsed}
+      onToggle={toggle}
+      level={level}
+      testID={testID}
+    />
+  );
   return (
     <>
-      <SidebarSectionRow
-        title={title}
-        count={count}
-        collapsed={collapsed}
-        onToggle={toggle}
-        level={level}
-        testID={testID}
-      />
+      {menu ? (
+        <ContextMenu>
+          <ContextMenuTrigger contextOnly testID={`${testID}-menu-trigger`}>
+            {row}
+          </ContextMenuTrigger>
+          <ContextMenuContent align="start" width={260} testID={`${testID}-menu`}>
+            {menu}
+          </ContextMenuContent>
+        </ContextMenu>
+      ) : (
+        row
+      )}
       <SidebarDisclosureBody expanded={!collapsed}>{children}</SidebarDisclosureBody>
     </>
   );

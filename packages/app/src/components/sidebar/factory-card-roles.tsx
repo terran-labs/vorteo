@@ -63,14 +63,14 @@ export function factoryChips(
     status: role.status,
     isRole: true,
   }));
+  // Crew is the roles the Factory reports, however many, plus the owner's Standing workspaces.
+  // Before the Factory reports, its members stand in, named by their titles.
   const claimed = new Set((roles ?? []).flatMap((role) => role.workspaceId ?? []));
   for (const member of members) {
-    if (claimed.has(member.workspaceId)) continue;
-    const fallbackRole = roles
-      ? undefined
-      : PROJECT_FACTORY_ROLE_IDS.find((role) =>
-          member.name.endsWith(`:: ${fallbackFactoryRoleTitle(role)}`),
-        );
+    if (claimed.has(member.workspaceId) || (roles && !member.standing)) continue;
+    const fallbackRole = PROJECT_FACTORY_ROLE_IDS.find((role) =>
+      member.name.endsWith(`:: ${fallbackFactoryRoleTitle(role)}`),
+    );
     chips.push({
       key: member.workspaceKey,
       label: factoryShortName(member.name),

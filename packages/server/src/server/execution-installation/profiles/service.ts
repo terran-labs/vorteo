@@ -80,6 +80,7 @@ export interface ProfileEnvironment {
   kind: "host" | "container";
   readyProviders?: string[];
   workerAccounts?: boolean;
+  workerTeams?: boolean;
   uncappedManagedWorkers?: boolean;
   read(): Promise<MutableDaemonConfig>;
   patch(patch: MutableDaemonConfigPatch): Promise<MutableDaemonConfig>;
@@ -152,6 +153,7 @@ export class InstallationProfiles {
     return {
       ...status,
       providers: structuredClone(this.state.providers),
+      workerTeams: this.environments.every((environment) => environment.workerTeams === true),
       workerAccounts: this.environments.every((environment) => environment.workerAccounts === true),
       uncappedManagedWorkers: this.environments.every(
         (environment) => environment.uncappedManagedWorkers === true,
@@ -201,20 +203,7 @@ export class InstallationProfiles {
         "Update every environment before selecting uncapped workers.",
       ]);
     }
-    for (const [type, group] of Object.entries(next.providers)) {
-      const previous = state.providers[type];
-      const changed = [group.defaults, ...group.workflows].some((profile, index) => {
-        const original =
-          index === 0
-            ? previous?.defaults
-            : previous?.workflows.find((item) => item.id === group.workflows[index - 1].id);
-        return Boolean(profile.workerAccount) && profile.workerAccount !== original?.workerAccount;
-      });
-      if (changed && !this.environments.every((environment) => environment.workerAccounts === true))
-        throw new ProfileSharingConflict([
-          "Update every environment before selecting a worker account.",
-        ]);
-    }
+    this.validateWorkerEdits(state, next);
     this.validateRetainedWorkflows(next);
     validateProviderPreferences({
       preferences: {
@@ -255,6 +244,43 @@ export class InstallationProfiles {
         "Environment profiles are read-only projections. Edit installation profiles instead.",
       ]);
     await this.reconcile();
+  }
+
+  private validateWorkerEdits(state: ProfileSharingState, next: ProfileSharingState): void {
+    for (const [type, group] of Object.entries(next.providers)) {
+      const previous = state.providers[type];
+      for (const [index, profile] of [group.defaults, ...group.workflows].entries()) {
+        const original =
+          index === 0
+            ? previous?.defaults
+            : previous?.workflows.find((item) => item.id === group.workflows[index - 1].id);
+        // COMPAT(workerTeams): older editors omit the team when replacing a profile.
+        if (profile.workerProfileIds === undefined && original?.workerProfileIds !== undefined)
+          profile.workerProfileIds = [...original.workerProfileIds];
+        if (
+          !isDeepStrictEqual(profile.workerProfileIds, original?.workerProfileIds) &&
+          !this.environments.every((environment) => environment.workerTeams === true)
+        )
+          throw new ProfileSharingConflict([
+            "Update every environment before changing a worker team.",
+          ]);
+        if (profile.workerProfileIds !== undefined) {
+          // COMPAT(workerTeams): older daemons resolve the first member through the legacy slot.
+          // Empty strings also block inherited worker and account defaults after rollback.
+          profile.workerProfileId = profile.workerProfileIds[0] ?? "";
+          if (index > 0 && group.defaults.workerAccount) profile.workerAccount = "";
+          else delete profile.workerAccount;
+        }
+        if (
+          profile.workerAccount &&
+          profile.workerAccount !== original?.workerAccount &&
+          !this.environments.every((environment) => environment.workerAccounts === true)
+        )
+          throw new ProfileSharingConflict([
+            "Update every environment before selecting a worker account.",
+          ]);
+      }
+    }
   }
 
   private validateRetainedWorkflows(state: ProfileSharingState): void {

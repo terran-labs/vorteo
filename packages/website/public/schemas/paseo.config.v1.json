@@ -460,6 +460,12 @@
               "workerProfileId": {
                 "type": "string"
               },
+              "workerProfileIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
               "workerAccount": {
                 "type": "string"
               },
@@ -676,6 +682,12 @@
                       "workerProfileId": {
                         "type": "string"
                       },
+                      "workerProfileIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
                       "workerAccount": {
                         "type": "string"
                       },
@@ -844,6 +856,12 @@
                         },
                         "workerProfileId": {
                           "type": "string"
+                        },
+                        "workerProfileIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
                         },
                         "workerAccount": {
                           "type": "string"

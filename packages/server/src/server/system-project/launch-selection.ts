@@ -110,7 +110,7 @@ export function launchAttempts(launch: Launch): Launch[] {
   return launch.profileId ? [launch, { provider: launch.provider }] : [launch];
 }
 
-function safeProviderType(provider: string, settings: MutableDaemonConfig): string {
+export function safeProviderType(provider: string, settings: MutableDaemonConfig): string {
   try {
     return resolveProviderType(provider, settings.providers ?? {});
   } catch {
@@ -238,16 +238,19 @@ export type LaunchHomes = ReadonlyMap<string, string | null>;
  * The real credential home of every provider that is switched off for Automatic, and of every
  * ready provider, but only when some provider is switched off: otherwise nothing is compared.
  */
-async function resolveLaunchHomes(
+export async function resolveLaunchHomes(
   ready: readonly Pick<ProviderSnapshotEntry, "provider">[],
   settings: MutableDaemonConfig,
   env: NodeJS.ProcessEnv = process.env,
+  additional: readonly string[] = [],
 ): Promise<LaunchHomes> {
   const switchedOff = Object.entries(settings.providers ?? {})
     .filter(([, provider]) => provider.automaticPrimary === false)
     .map(([provider]) => provider);
-  if (switchedOff.length === 0) return new Map();
-  const providers = [...new Set([...switchedOff, ...ready.map((entry) => entry.provider)])];
+  if (switchedOff.length === 0 && additional.length === 0) return new Map();
+  const providers = [
+    ...new Set([...switchedOff, ...additional, ...ready.map((entry) => entry.provider)]),
+  ];
   const homes = await Promise.all(
     providers.map(async (provider): Promise<[string, string | null]> => {
       const home = launchHomePath(provider, settings, env);
@@ -260,6 +263,23 @@ async function resolveLaunchHomes(
     }),
   );
   return new Map(homes);
+}
+
+/** Accounts opted out of automatic placement, including aliases using the same credential home. */
+export function automaticPlacementExclusions(
+  settings: MutableDaemonConfig,
+  homes: LaunchHomes,
+  additional: readonly string[] = [],
+): (provider: string) => boolean {
+  const switchedOff = Object.entries(settings.providers ?? {})
+    .filter(([, provider]) => provider.automaticPrimary === false)
+    .map(([provider]) => provider);
+  const excluded = new Set([...switchedOff, ...additional]);
+  const blockedHomes = new Set([...excluded].flatMap((provider) => homes.get(provider) ?? []));
+  return (provider) => {
+    const home = homes.get(provider);
+    return excluded.has(provider) || (home != null && blockedHomes.has(home));
+  };
 }
 
 /**
@@ -289,17 +309,9 @@ export function rankAutomaticCandidates(
   const groups = classifyProviders(ready, usage);
   const confirmed = new Set([...groups.signedIn, ...groups.unmetered]);
   const preferred = settings.sharedProviderPreferences?.defaultProvider;
-  const switchedOff = Object.entries(settings.providers ?? {}).filter(
-    ([, provider]) => provider.automaticPrimary === false,
-  );
-  const blockedHomes = new Set(switchedOff.flatMap(([provider]) => homes.get(provider) ?? []));
-  const eligible = (provider: string) => {
-    if (settings.providers?.[provider]?.automaticPrimary === false) return false;
-    const home = blockedHomes.size > 0 ? homes.get(provider) : null;
-    return home === null || home === undefined || !blockedHomes.has(home);
-  };
+  const excluded = automaticPlacementExclusions(settings, homes);
   const candidates = ready.flatMap(({ provider }, order) => {
-    if (!confirmed.has(provider) || !eligible(provider)) return [];
+    if (!confirmed.has(provider) || excluded(provider)) return [];
     const remaining = remainingQuota(usage.find((item) => item.providerId === provider));
     if (remaining !== null && remaining <= 0) return [];
     return [{ provider, remaining, order }];

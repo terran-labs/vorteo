@@ -374,6 +374,40 @@ export function createProjectsFolderPolicy(input: ProjectsFolderConfig): Project
   };
 }
 
+/** Registries whose known paths stay usable as projects wherever they are. */
+export interface KnownProjectPathSources {
+  projectRegistry: { list(): Promise<Array<{ rootPath: string }>> };
+  workspaceRegistry: { list(): Promise<Array<{ cwd: string }>> };
+}
+
+/**
+ * Applies the Projects folder rule to a directory about to become a project. Every path that
+ * registers a new project (the add project request and the `create_workspace` tool) uses this,
+ * so an agent cannot register a folder the interface would refuse.
+ */
+export async function findNewProjectRejection(
+  policy: ProjectsFolderPolicy | null,
+  directory: string,
+  sources: KnownProjectPathSources,
+): Promise<ProjectsFolderError | null> {
+  if (!policy) return null;
+  const [projects, workspaces] = await Promise.all([
+    sources.projectRegistry.list(),
+    sources.workspaceRegistry.list(),
+  ]);
+  const paths = [
+    ...projects.map((project) => project.rootPath),
+    ...workspaces.map((workspace) => workspace.cwd),
+  ];
+  try {
+    await policy.assertNewProjectDirectory(directory, { paths });
+    return null;
+  } catch (error) {
+    if (error instanceof ProjectsFolderError) return error;
+    throw error;
+  }
+}
+
 /** True when `directory` holds a git checkout marker. */
 export async function hasGitMarker(directory: string): Promise<boolean> {
   return stat(path.join(directory, ".git")).then(

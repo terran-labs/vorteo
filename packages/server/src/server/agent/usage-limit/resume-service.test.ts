@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import pino from "pino";
+import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { UsageLimitHold } from "@getpaseo/protocol/usage-limit";
-import type { ProviderUsage } from "@getpaseo/protocol/messages";
+import type { AgentProfile, ProviderUsage } from "@getpaseo/protocol/messages";
 import type { StoredAgentRecord } from "../agent-storage.js";
+import type { TeamWorkerAccountChoice } from "../create-agent/create.js";
+import { reopenWorkerAfterUsageLimit } from "./worker-recovery.js";
 import {
   CONTINUED_FROM_LABEL,
   readingFromProviderUsage,
@@ -37,6 +40,130 @@ function hold(overrides: Partial<UsageLimitHold> = {}): UsageLimitHold {
     ...overrides,
   };
 }
+
+describe("supervisor usage-stop recovery", () => {
+  const worker: AgentProfile = { id: "worker", name: "Worker", provider: "codex", model: "model" };
+  const supervisor = record("supervisor", undefined, {
+    config: {
+      profileLaunch: { profile: { ...worker, id: "supervisor" }, workers: [worker] },
+    },
+  });
+  const governance = {
+    supervisorAgentId: supervisor.id,
+    serverId: "host",
+    workerProfileId: worker.id,
+  };
+  const input = {
+    agentId: "child",
+    supervisorId: supervisor.id,
+    serverId: "host",
+    inScope: (cwd: string) => cwd === "/team",
+  };
+
+  function recoveryHarness(
+    child: StoredAgentRecord,
+    choice: TeamWorkerAccountChoice = {
+      provider: "alternate",
+      reason: "known-headroom",
+      earliestResetAt: null,
+    },
+  ) {
+    const dependencies: Parameters<typeof reopenWorkerAfterUsageLimit>[0] = {
+      agentStorage: {
+        get: async (id) => {
+          if (id === child.id) return child;
+          if (id === supervisor.id) return supervisor;
+          if (id === "unrelated-supervisor") return { ...supervisor, id };
+          return null;
+        },
+      },
+      pickTeamWorkerAccount: vi.fn(async () => choice),
+      switchProfile: vi.fn(async (target, options) => {
+        await options.validateScope?.({
+          provider: child.provider,
+          cwd: child.cwd,
+          workspaceId: child.workspaceId,
+        });
+        return { agentId: target.agentId, outcome: "switched" };
+      }),
+    };
+    return dependencies;
+  }
+
+  function workerRecord(proof: StoredAgentRecord["workerGovernance"]): StoredAgentRecord {
+    return record(input.agentId, undefined, {
+      provider: "codex",
+      cwd: "/team",
+      labels: { [PARENT_AGENT_ID_LABEL]: supervisor.id },
+      config: { profileLaunch: { profile: worker }, usageLimitHold: hold() },
+      workerGovernance: proof,
+    });
+  }
+
+  it("reopens the same worker with a recorded quota switch", async () => {
+    const child = workerRecord(governance);
+    const dependencies = recoveryHarness(child);
+    expect(await reopenWorkerAfterUsageLimit(dependencies, input)).toEqual({
+      outcome: "reopened",
+      provider: "alternate",
+      reason: "known-headroom",
+    });
+    expect(dependencies.switchProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: child.id, profileId: worker.id, reason: "quota" }),
+      expect.objectContaining({ workerRecovery: true }),
+    );
+    expect(dependencies.pickTeamWorkerAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ worker, avoidProvider: child.provider }),
+    );
+  });
+
+  it("refuses another supervisor even when its roster contains the same worker profile", async () => {
+    const dependencies = recoveryHarness(workerRecord(governance));
+    expect(
+      await reopenWorkerAfterUsageLimit(dependencies, {
+        ...input,
+        supervisorId: "unrelated-supervisor",
+      }),
+    ).toEqual({ outcome: "refused", reason: "not-supervised-worker" });
+    expect(dependencies.pickTeamWorkerAccount).not.toHaveBeenCalled();
+    expect(dependencies.switchProfile).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, { ...governance, supervisorAgentId: "different-supervisor" }])(
+    "refuses a matching parent label without matching daemon governance (%j)",
+    async (proof) => {
+      const dependencies = recoveryHarness(workerRecord(proof));
+      expect(await reopenWorkerAfterUsageLimit(dependencies, input)).toEqual({
+        outcome: "refused",
+        reason: "not-supervised-worker",
+      });
+      expect(dependencies.switchProfile).not.toHaveBeenCalled();
+      expect(dependencies.pickTeamWorkerAccount).not.toHaveBeenCalled();
+    },
+  );
+
+  it("records an unreadable alternate and the low account skipped during recovery", async () => {
+    const child = workerRecord(governance);
+    const dependencies = recoveryHarness(child, {
+      provider: "alternate",
+      reason: "alternate-usage-unreadable",
+      earliestResetAt: null,
+      droppedLowProviders: ["low"],
+    });
+    expect(await reopenWorkerAfterUsageLimit(dependencies, input)).toEqual({
+      outcome: "reopened",
+      provider: "alternate",
+      reason: "alternate-usage-unreadable",
+      droppedLowProviders: ["low"],
+    });
+    expect(dependencies.switchProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        explanation: expect.stringContaining("Skipped accounts at or below the quota floor: low."),
+      }),
+      expect.anything(),
+    );
+  });
+});
 
 /** A daemon stand-in: holds live on stored records, and released threads record their prompt. */
 function harness(

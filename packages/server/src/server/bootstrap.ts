@@ -196,6 +196,8 @@ import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { ProjectFactoryService } from "./factory/project/service.js";
 import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
+import { pickWorkerAccount } from "./agent/account-pool/worker-account.js";
+import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -211,7 +213,12 @@ import {
   FileBackedWorkspaceRegistry,
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
-import { setActiveProjectsFolder } from "./projects-folder.js";
+import {
+  findNewProjectRejection,
+  projectsFolderPolicyFor,
+  setActiveProjectsFolder,
+} from "./projects-folder.js";
+import { isDaemonStateDirectory } from "./agent/tools/workspace-ownership.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { QuotaSchedulePreflight } from "./schedule/quota-preflight.js";
@@ -1172,6 +1179,8 @@ export async function createPaseoDaemon(
   const agentStorage = new AgentStorage(config.agentStoragePath, logger);
   // Before any registry parses a path, so alias paths load and store in logical form.
   setActiveProjectsFolder(config.projectsFolder);
+  // The same Projects folder rule the add project request applies to agent-registered projects.
+  const newProjectPolicy = projectsFolderPolicyFor(config.projectsFolder);
   const projectRegistry = new FileBackedProjectRegistry(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
@@ -1689,6 +1698,29 @@ export async function createPaseoDaemon(
   };
 
   const createAgentCommandDependencies: CreateAgentCommandDependencies = {
+    pickTeamWorkerAccount: async ({ worker, requestedProvider, avoidProvider }) => {
+      const settings = daemonConfigStore.get();
+      const [ready, usage, limits] = await Promise.all([
+        providerSnapshotManager.listProviders({ wait: false }),
+        providerUsageService
+          .listUsage({ forceRefresh: false })
+          .catch(() => ({ fetchedAt: "", providers: [] })),
+        agentManager.usageLimitsByProvider(),
+      ]);
+      return pickWorkerAccount({
+        settings,
+        ready: requestedProvider
+          ? ready.filter((entry) => entry.provider === requestedProvider)
+          : ready,
+        usage,
+        providerType: resolveProviderType(worker.provider, settings.providers ?? {}),
+        defaultProvider: worker.provider,
+        avoidProvider,
+        usageLimitedUntilByProvider: Object.fromEntries(limits),
+        priority: "normal",
+        nowMs: Date.now(),
+      });
+    },
     getAgentProfiles: () => daemonConfigStore.get().agentProfiles ?? [],
     getSharedProviderConfig: () => daemonConfigStore.get(),
     validateSharedConfiguration: (selection) =>
@@ -2159,6 +2191,8 @@ export async function createPaseoDaemon(
     serverId,
     logger,
     waitForRestartHoldRelease: (signal) => agentManager.waitForRestartHoldRelease(signal),
+    // A creator that stops watching a child no longer counts as able to answer its approvals.
+    onWatchesChanged: (childAgentId) => agentManager.refreshCreatorWatch(childAgentId),
     messages: () => {
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return wsServer.agentMessages;
@@ -2193,6 +2227,10 @@ export async function createPaseoDaemon(
       },
     }),
   });
+
+  agentManager.setCreatorWatchProbe((creatorAgentId, childAgentId) =>
+    finishSubscriptions.isWatchedBy(creatorAgentId, childAgentId),
+  );
 
   const idleRuntimeCleanup = createIdleRuntimeCleanup({
     enabled: daemonConfigStore.get().idleRuntimeCleanup !== false,
@@ -2248,6 +2286,20 @@ export async function createPaseoDaemon(
       await emitWorkspaceUpdatesExternal([workspace.workspaceId]);
       return workspace;
     },
+    registerProjectForDirectory: async (cwd) => {
+      // Whatever the Projects folder policy says, the daemon's own state is never a project.
+      if (isDaemonStateDirectory(cwd, config.paseoHome)) {
+        throw new Error(
+          `${cwd} holds or contains this daemon's own state, so it cannot become a project. Pass projectId to file it under an existing project.`,
+        );
+      }
+      const rejection = await findNewProjectRejection(newProjectPolicy, cwd, {
+        projectRegistry,
+        workspaceRegistry,
+      });
+      if (rejection) throw rejection;
+      return workspaceProvisioning.findOrCreateProjectForDirectory(cwd);
+    },
     workspaceScripts: createWorkspaceScriptsService({
       serviceProxy,
       scriptRuntimeStore,
@@ -2270,6 +2322,7 @@ export async function createPaseoDaemon(
     markWorkspaceArchiving: markWorkspaceArchivingExternal,
     clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
     ensureWorkspaceForCreate: createAgentCommandDependencies.ensureWorkspaceForCreate,
+    pickTeamWorkerAccount: createAgentCommandDependencies.pickTeamWorkerAccount,
     createPaseoWorktree: createAgentCommandDependencies.createPaseoWorktree,
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,

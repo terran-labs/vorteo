@@ -18,10 +18,13 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import { openConversationTarget } from "./conversation-target";
 import { OpenQuestion, useQuestionAnswer } from "./card";
+import { ApprovalItem } from "./approval-item";
 import {
+  collectThreadApprovals,
   collectThreadQuestions,
   globalOpenQuestionCount,
   type QuestionHostInput,
+  type ThreadApproval,
   type ThreadQuestions,
 } from "./global-model";
 import { InstallationUpdateItem, useInstallationUpdate } from "./installation-update";
@@ -66,10 +69,44 @@ function useThreadQuestions(): ThreadQuestions[] {
   }, [hosts, pending, sources]);
 }
 
+// Hosts that record who created each thread; only their approvals can be routed to the owner.
+function selectApprovalSources(state: SessionState): HostQuestionSources {
+  const sources: HostQuestionSources = [];
+  for (const [serverId, session] of Object.entries(state.sessions)) {
+    if (!session?.serverInfo?.features?.agentCreatedBy) continue;
+    sources.push(serverId, session.agents, session.workspaces);
+  }
+  return sources;
+}
+
+/** Tool approvals no supervising thread can answer, on every connected host (#659). */
+function useThreadApprovals(): ThreadApproval[] {
+  const sources = useSessionStore(useShallow(selectApprovalSources));
+  const hosts = useHosts();
+  const pending = usePendingArchiveState();
+  return useMemo(() => {
+    const labels = new Map(hosts.map((host) => [host.serverId, host.label]));
+    const inputs: QuestionHostInput[] = [];
+    for (let index = 0; index < sources.length; index += 3) {
+      const serverId = sources[index] as string;
+      inputs.push({
+        serverId,
+        hostLabel: labels.get(serverId) ?? serverId,
+        agents: (sources[index + 1] as HostSession["agents"]).values(),
+        workspaces: sources[index + 2] as HostSession["workspaces"],
+        pendingArchive: selectPendingArchiveAgentIds(pending, serverId),
+        approvalsSupported: true,
+      });
+    }
+    return collectThreadApprovals(inputs);
+  }, [hosts, pending, sources]);
+}
+
 export function GlobalOpenQuestionsCard({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const threads = useThreadQuestions();
+  const approvals = useThreadApprovals();
   const update = useInstallationUpdate();
-  const count = globalOpenQuestionCount(threads, update?.entry ?? null);
+  const count = globalOpenQuestionCount(threads, update?.entry ?? null, approvals);
   // An update in progress shows without counting, so the card can be visible at zero.
   if (count === 0 && !update) return null;
   return (
@@ -78,15 +115,27 @@ export function GlobalOpenQuestionsCard({ onBeforeNavigate }: { onBeforeNavigate
       title="Open questions"
       icon={HEADING_ICON}
       count={count}
-      countLabel={`${count} open ${count === 1 ? "question" : "questions"}${update ? " including the installation update" : " across all threads"}`}
+      countLabel={
+        approvals.length > 0
+          ? `${count} open questions and approvals across all threads`
+          : `${count} open ${count === 1 ? "question" : "questions"}${update ? " including the installation update" : " across all threads"}`
+      }
       testID="global-open-questions-card"
     >
       {update ? <InstallationUpdateItem {...update} /> : null}
+      {approvals.map((approval, index) => (
+        <ApprovalItem
+          key={approval.key}
+          approval={approval}
+          first={index === 0 && !update}
+          onBeforeNavigate={onBeforeNavigate}
+        />
+      ))}
       {threads.map((thread, index) => (
         <ThreadQuestionGroup
           key={thread.key}
           thread={thread}
-          first={index === 0 && !update}
+          first={index === 0 && !update && approvals.length === 0}
           onBeforeNavigate={onBeforeNavigate}
         />
       ))}

@@ -155,6 +155,7 @@ export function useSharedProviderProfiles(serverId: string, provider: string) {
     saveDefaults,
     saveGroup,
     installation,
+    workerTeams: sharedSnapshot?.workerTeams === true,
     error: installationError,
   };
 }

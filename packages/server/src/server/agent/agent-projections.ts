@@ -119,6 +119,7 @@ export function toStoredAgentRecord(
       : null,
     internal: options?.internal,
     owner: agent.owner,
+    ...(agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {}),
   } satisfies StoredAgentRecord;
 }
 
@@ -152,6 +153,16 @@ function projectActiveTurn(agent: ManagedAgent): AgentSnapshotPayload["activeTur
   return agent.activeTurnId
     ? { turnId: agent.activeTurnId, startedAt: agent.activeTurnStartedAt?.toISOString() ?? null }
     : null;
+}
+
+/** Who created the thread and whether it still watches it (#659), when known. */
+function creatorFields(agent: ManagedAgent) {
+  return {
+    ...(agent.createdByAgentId !== undefined ? { createdByAgentId: agent.createdByAgentId } : {}),
+    ...(agent.createdByAgentId && agent.permissionWatchedByCreator !== undefined
+      ? { permissionWatchedByCreator: agent.permissionWatchedByCreator }
+      : {}),
+  };
 }
 
 export function toAgentPayload(
@@ -197,6 +208,7 @@ export function toAgentPayload(
     labels: agent.labels,
     archivedAt: options?.archivedAt ?? null,
     ...(agent.internal ? { internal: true } : {}),
+    ...creatorFields(agent),
   };
 
   const usage = sanitizeUsage(agent.lastUsage);
@@ -316,6 +328,7 @@ export function buildStoredAgentPayload(
     ...projectStoredAttention(record),
     archivedAt: record.archivedAt ?? null,
     ...(record.internal ? { internal: true } : {}),
+    ...(record.createdByAgentId !== undefined ? { createdByAgentId: record.createdByAgentId } : {}),
     labels: normalizeLabels(record.labels),
     ...(typeof record.lastError === "string" ? { lastError: record.lastError } : {}),
     ...storedUsagePayload(record.lastUsage),

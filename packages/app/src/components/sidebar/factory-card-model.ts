@@ -5,7 +5,7 @@ import type {
   SidebarWorkspaceEntry,
   SidebarWorkspacePlacement,
 } from "@/hooks/sidebar-workspaces-view-model";
-import { factoryOverviewTargets } from "@/workspace/lifecycle/grouping";
+import { factoryIssueOwner, factoryOverviewTargets } from "@/workspace/lifecycle/grouping";
 import type { ProjectFactoryState } from "./factory-state";
 import { factoryOverviewRoute } from "./project-factory-model";
 
@@ -152,6 +152,56 @@ export function factoryRunnerAgent(issue: Pick<FactoryQueueIssue, "agents">) {
   );
 }
 
+type IssueMember = Pick<SidebarWorkspaceEntry, "factoryIssue" | "statusBucket" | "statusEnteredAt">;
+
+/** Running first, then the latest status change: the workspace a Runners row should open. */
+function newestFirst(left: IssueMember, right: IssueMember): number {
+  const running =
+    Number(right.statusBucket === "running") - Number(left.statusBucket === "running");
+  if (running !== 0) return running;
+  return (right.statusEnteredAt?.getTime() ?? 0) - (left.statusEnteredAt?.getTime() ?? 0);
+}
+
+/**
+ * A Factory card's members split into crew and issue workspaces. An issue can have several
+ * workspaces, such as a respawned repair worker; each issue keeps all of them, newest first.
+ */
+export function groupFactoryMembers<Entry extends IssueMember>(members: readonly Entry[]) {
+  const crew: Entry[] = [];
+  const byIssue = new Map<number, Entry[]>();
+  for (const member of members) {
+    const issue = member.factoryIssue?.issue;
+    if (issue === undefined) {
+      crew.push(member);
+      continue;
+    }
+    const list = byIssue.get(issue) ?? [];
+    list.push(member);
+    byIssue.set(issue, list);
+  }
+  for (const list of byIssue.values()) list.sort(newestFirst);
+  return { crew, byIssue };
+}
+
+/**
+ * Which workspace each running issue's row opens, and the Idle list: every other issue workspace,
+ * so a second workspace for a running issue still shows.
+ */
+export function factoryIssueRows<Entry extends IssueMember>(
+  byIssue: ReadonlyMap<number, readonly Entry[]>,
+  running: ReadonlySet<number>,
+) {
+  const opened = new Map<number, Entry>();
+  const idle: Entry[] = [];
+  for (const [issue, list] of byIssue) {
+    const [first, ...rest] = list;
+    if (first && running.has(issue)) opened.set(issue, first);
+    else if (first) idle.push(first);
+    idle.push(...rest);
+  }
+  return { opened, idle };
+}
+
 /** "Vorteo :: Foreman" and "Vorteo System :: Mechanic" read as "Foreman" and "Mechanic". */
 export function factoryShortName(title: string): string {
   const parts = title.split("::");
@@ -220,14 +270,28 @@ export function factoryCardModels(input: {
     new Set(plugins.filter((plugin) => plugin.id === "factory").map((plugin) => plugin.serverId)),
     states,
   ).filter((target) => factoryOverviewRoute(target, factoryPlugin(target.serverId)) !== null);
+  // Issue workers belong to the Factory their labels name, which may sit on another host.
+  const owner = (member: SidebarWorkspacePlacement) =>
+    factoryIssueOwner(member, entries.get(member.workspaceKey));
+  const belongs = (member: SidebarWorkspacePlacement, serverId: string, projectId: string) => {
+    const issueOwner = owner(member);
+    return issueOwner
+      ? issueOwner.serverId === serverId && issueOwner.projectId === projectId
+      : member.serverId === serverId;
+  };
   const cards: FactoryCardModel[] = targets.map((target) => ({
     key: factoryCardKey(target.serverId, target.projectId),
     serverId: target.serverId,
     projectId: target.projectId,
     installationId: target.installationId,
-    members: members.filter((member) => member.serverId === target.serverId),
+    members: members.filter((member) => belongs(member, target.serverId, target.projectId)),
   }));
+  // An issue worker whose owning Factory has no card here, for example no overview on that host.
+  const orphans = members.filter(
+    (member) => owner(member) !== null && !cards.some((card) => card.members.includes(member)),
+  );
   for (const member of members) {
+    if (owner(member)) continue;
     if (cards.some((card) => card.serverId === member.serverId)) continue;
     const projectId = entries.get(member.workspaceKey)?.projectId;
     if (!projectId) continue;
@@ -236,8 +300,24 @@ export function factoryCardModels(input: {
       serverId: member.serverId,
       projectId,
       installationId: null,
-      members: members.filter((candidate) => candidate.serverId === member.serverId),
+      members: members.filter(
+        (candidate) => candidate.serverId === member.serverId && !owner(candidate),
+      ),
     });
+  }
+  // An orphan keeps its own Factory: a card for its owner with no overview, keyed and read by the
+  // owner's server and project, so no other Factory's state, queue or Runners row touches it. The
+  // owner has no card here by definition, so this never duplicates one.
+  for (const member of orphans) {
+    const issueOwner = owner(member);
+    if (!issueOwner) continue;
+    const key = factoryCardKey(issueOwner.serverId, issueOwner.projectId);
+    let card = cards.find((candidate) => candidate.key === key);
+    if (!card) {
+      card = { key, ...issueOwner, installationId: null, members: [] };
+      cards.push(card);
+    }
+    card.members.push(member);
   }
   return cards;
 }

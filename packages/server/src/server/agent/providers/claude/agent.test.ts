@@ -23,6 +23,7 @@ import {
   resolveClaudeCodeVersion,
   toClaudeSdkMcpConfig,
 } from "./agent.js";
+import type { AutoAnswerSetting } from "./auto-answer.js";
 import { createImportDescriptorScheduler } from "./import-descriptor-scheduler.js";
 import { claudeProjectDirSync } from "./project-dir.js";
 
@@ -4739,6 +4740,159 @@ describe("Claude question permission notifications", () => {
 
     expect(request.title).toBeUndefined();
     expect(request.description).toBeUndefined();
+  });
+});
+
+// #659 part B: Vorteo answers Claude Code's removal prompt itself only in Bypass mode, for an
+// unanalysable command its own scan finds no delete in, and only when the owner's setting reads
+// a clear "on". Until part B2 supplies that setting, every case here must ask.
+describe("Claude automatic answers to removal prompts", () => {
+  const UNRESOLVED =
+    "Dangerous rm operation not ruled out \u2014 too many nested command substitutions to analyze";
+  const NO_DELETE = "cd /work/app && tar -czf /work/archive/app.tgz $(git ls-files)";
+
+  async function prompt(input: {
+    setting?: AutoAnswerSetting;
+    command?: string;
+    decisionReason?: string;
+    beforeAnswer?: (session: object) => void;
+    times?: number;
+    /** Starts a new turn before each prompt, as a thread that keeps going would. */
+    newTurnEachTime?: boolean;
+  }) {
+    let session: Awaited<ReturnType<ClaudeAgentClient["createSession"]>> | null = null;
+    const setting: AutoAnswerSetting | undefined = input.setting
+      ? async () => {
+          input.beforeAnswer?.(session!);
+          return input.setting!();
+        }
+      : undefined;
+    session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      autoAnswerSetting: setting,
+    }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "bypassPermissions" });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    const internal = session as unknown as {
+      handlePermissionRequest: (
+        toolName: string,
+        input: Record<string, unknown>,
+        options: Record<string, unknown>,
+      ) => Promise<unknown>;
+    };
+    const results: unknown[] = [];
+    const pending: Promise<unknown>[] = [];
+    try {
+      for (let index = 0; index < (input.times ?? 1); index += 1) {
+        if (input.newTurnEachTime) {
+          (session as unknown as { autoAnswersThisTurn: number }).autoAnswersThisTurn = 0;
+        }
+        const answer = internal
+          .handlePermissionRequest(
+            "Bash",
+            { command: input.command ?? NO_DELETE },
+            {
+              signal: new AbortController().signal,
+              toolUseID: `tool-${index}`,
+              decisionReason: input.decisionReason ?? UNRESOLVED,
+              suggestions: [
+                { type: "addRules", rules: [], behavior: "allow", destination: "session" },
+              ],
+            },
+          )
+          .catch(() => "closed");
+        pending.push(answer);
+        // An automatic answer settles at once; an asked one waits for the owner.
+        results.push(
+          await Promise.race([answer, new Promise((r) => setTimeout(() => r("asked"), 50))]),
+        );
+      }
+    } finally {
+      await session.close();
+      await Promise.all(pending);
+    }
+    const requested = events.flatMap((event) =>
+      event.type === "permission_requested" ? [event.request] : [],
+    );
+    const notes = events.flatMap((event) =>
+      event.type === "timeline" && event.item.type === "notification" ? [event.item] : [],
+    );
+    return { results, requested, notes };
+  }
+
+  test.each([
+    ["no setting source", undefined],
+    ["a setting that reads off", async () => false],
+    ["a setting that fails", async () => Promise.reject(new Error("coordinator unreachable"))],
+    ["a setting that is not a clear on", async () => "true" as unknown as boolean],
+  ])("%s asks", async (_label, setting) => {
+    const { results, requested, notes } = await prompt({ setting });
+    expect(results).toEqual(["asked"]);
+    expect(requested).toHaveLength(1);
+    expect(notes).toEqual([]);
+  });
+
+  test("with the setting on, allows each call once, applies no rule, records it, and stops at the turn bound", async () => {
+    const { results, requested, notes } = await prompt({ setting: async () => true, times: 6 });
+    expect(results).toHaveLength(6);
+    for (const result of results.slice(0, 5)) {
+      expect(result).toEqual({ behavior: "allow", updatedInput: { command: NO_DELETE } });
+    }
+    // The sixth in one turn asks, and the card says why.
+    expect(results[5]).toBe("asked");
+    expect(requested).toHaveLength(1);
+    expect(requested[0]!.description).toContain(
+      "Vorteo stopped answering automatically: 5 removal prompts were already answered in this turn.",
+    );
+    const info = notes.filter((note) => note.level === "info");
+    expect(info).toHaveLength(5);
+    expect(info[0]!.message).toBe(
+      "Approved automatically in Bypass mode: no delete command found.",
+    );
+    expect(info[0]!.details).toContain(UNRESOLVED);
+    expect(info[0]!.details).toContain(NO_DELETE);
+  });
+
+  test("new turns cannot reset the bound: 20 in 10 minutes, then it asks", async () => {
+    const { results, requested } = await prompt({
+      setting: async () => true,
+      times: 21,
+      newTurnEachTime: true,
+    });
+    expect(results.slice(0, 20).every((result) => result !== "asked")).toBe(true);
+    expect(results[20]).toBe("asked");
+    expect(requested[0]!.description).toContain("in this thread in the last 10 minutes");
+  });
+
+  test("a mode change while the setting is read asks", async () => {
+    const { results, requested } = await prompt({
+      setting: async () => true,
+      beforeAnswer: (session) => {
+        (session as { currentMode: string }).currentMode = "default";
+      },
+    });
+    expect(results).toEqual(["asked"]);
+    expect(requested).toHaveLength(1);
+  });
+
+  test.each([
+    ["rm after cd", "mkdir -p /tmp/p/x && cd /tmp/p/x && rm -rf * && ls"],
+    ["rm after a heredoc", "cat > a.mjs <<'EOF'\nconsole.log(1)\nEOF\nnode a.mjs; rm -f shots/*"],
+    ["rm in a loop", 'for d in a b; do rm -rf "/tmp/$d"; done'],
+    ["a command word from a substitution", "$(which rm) -rf build"],
+  ])("%s asks and shows the finding", async (_label, command) => {
+    const { results, requested } = await prompt({ setting: async () => true, command });
+    expect(results).toEqual(["asked"]);
+    expect(requested[0]!.metadata?.deleteFinding).toEqual(expect.any(String));
+  });
+
+  test("a known dangerous target asks", async () => {
+    const { results } = await prompt({
+      setting: async () => true,
+      decisionReason: "Dangerous rm operation on critical path: /etc",
+    });
+    expect(results).toEqual(["asked"]);
   });
 });
 

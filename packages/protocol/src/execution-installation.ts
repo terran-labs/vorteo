@@ -766,6 +766,8 @@ export type ProfileSharingStatus = z.infer<typeof ProfileSharingStatusSchema>;
 
 export const InstallationProfilesSnapshotSchema = ProfileSharingStatusSchema.extend({
   workerAccounts: z.boolean().optional(),
+  // COMPAT(workerTeams): older installation authorities do not store worker teams.
+  workerTeams: z.boolean().optional(),
   uncappedManagedWorkers: z.boolean().optional(),
   providers: z.record(z.string(), ProviderPreferencesSchema),
 });

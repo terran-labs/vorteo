@@ -26,6 +26,66 @@ if (args.includes("models")) {
   process.stdout.write(fixture("models-api-key").join("\n") + "\n");
   process.exit(0);
 }
+if (args.includes("-p") && args.includes("/usage")) {
+  if (process.env.AGY_TEST_USAGE === "no-quota") {
+    process.stderr.write("No account quota for GEMINI_API_KEY\n");
+    process.exit(2);
+  }
+  if (process.env.AGY_TEST_USAGE === "signed-out") {
+    process.stderr.write(fixture("usage-signed-out", "stderr").join("\n") + "\n");
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "not-logged-into") {
+    process.stderr.write("You are not logged into Antigravity.\n");
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "network-error") {
+    process.stderr.write("network failure while refreshing login\n");
+    process.exit(1);
+  }
+  if (process.env.AGY_TEST_USAGE === "unknown-flag") {
+    process.stderr.write("flag provided but not defined: -log-file\n");
+    process.exit(2);
+  }
+  if (process.env.AGY_TEST_USAGE === "signed-out-hang") {
+    process.stderr.write(fixture("usage-signed-out", "stderr").join("\n") + "\n");
+    setInterval(() => {}, 1000);
+  } else {
+    process.stdout.write(
+      JSON.stringify({
+        conversation_id: "",
+        status: "SUCCESS",
+        command: {
+          name: "usage",
+          data: {
+            groups: [
+              {
+                name: "Gemini Models",
+                buckets: [
+                  {
+                    id: "gemini-weekly",
+                    name: "Weekly Limit Remaining",
+                    window: "weekly",
+                    remaining_fraction: 0.92,
+                    reset_time: "2026-12-04T20:39:17Z",
+                  },
+                  {
+                    id: "gemini-5h",
+                    name: "Five Hour Limit Remaining",
+                    window: "5h",
+                    remaining_fraction: 0.85,
+                    reset_time: "2026-11-28T01:39:17Z",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }) + "\n",
+    );
+    process.exit(0);
+  }
+}
 if (process.env.AGY_TEST_STARTUP === "auth") {
   process.stderr.write(fixture("not-signed-in", "stderr").join("\n"));
   process.stdout.write(JSON.stringify(fixture("not-signed-in")[0]) + "\n");

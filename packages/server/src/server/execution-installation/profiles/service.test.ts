@@ -29,6 +29,7 @@ class Environment implements ProfileEnvironment {
   readyProviders: string[] = [];
   offline = false;
   workerAccounts = false;
+  workerTeams = false;
   uncappedManagedWorkers = false;
   reads = 0;
   loseReply = false;
@@ -1228,6 +1229,79 @@ test("coordinator refuses a new explicit worker account until every environment 
     service.patch({ expectedRevision: snapshot.revision, providers }),
   ).rejects.toBeInstanceOf(ProfileSharingConflict);
   expect(service.snapshot()).toEqual(snapshot);
+});
+
+test("team edits require every environment and survive a save from an older editor", async () => {
+  const { service, host, container, journal } = fixture();
+  host.workerTeams = true;
+  await service.synchronize();
+  const snapshot = service.snapshot()!;
+  const providers = structuredClone(snapshot.providers);
+  const group = providers.codex;
+  const worker = group.workflows[0];
+  group.workflows.push({
+    id: "second-worker",
+    name: "Second worker",
+    provider: "codex",
+    model: "second-model",
+  });
+  const members = [`shared-profile/codex/${worker.id}`, "shared-profile/codex/second-worker"];
+  group.workflows.push({ id: "team", name: "Team", provider: "codex", workerProfileIds: members });
+  await expect(service.patch({ expectedRevision: snapshot.revision, providers })).rejects.toThrow(
+    "Update every environment",
+  );
+  container.workerTeams = true;
+  const saved = await service.patch({ expectedRevision: snapshot.revision, providers });
+  expect(saved.workerTeams).toBe(true);
+  expect(journal.read()?.providers.codex.workflows.at(-1)?.workerProfileId).toBe(members[0]);
+  const oldEditorTeam = group.workflows.at(-1)!;
+  oldEditorTeam.name = "Renamed by old editor";
+  delete oldEditorTeam.workerProfileIds;
+  oldEditorTeam.workerProfileId = "";
+  oldEditorTeam.workerAccount = "stale-account";
+  const preserved = await service.patch({ expectedRevision: saved.revision, providers });
+  expect(preserved.providers.codex.workflows.at(-1)).toMatchObject({
+    name: "Renamed by old editor",
+    workerProfileIds: members,
+    workerProfileId: members[0],
+  });
+  expect(preserved.providers.codex.workflows.at(-1)?.workerAccount).toBeUndefined();
+
+  await service.synchronize();
+  expect(journal.read()?.providers.codex.workflows.at(-1)).toMatchObject({
+    workerProfileIds: members,
+    workerProfileId: members[0],
+  });
+  const projected = materializeSharedProfiles({
+    preferences: host.config.sharedProviderPreferences!,
+    providers: { localAccount: { extends: "codex" } },
+    providerIds: ["localAccount"],
+  }).find((profile) => profile.id === sharedWorkflowProfileId("localAccount", "team"));
+  expect(projected?.workerProfileId).toBe(sharedWorkflowProfileId("localAccount", worker.id));
+
+  const clearedProviders = structuredClone(service.snapshot()!.providers);
+  const clearedGroup = clearedProviders.codex;
+  clearedGroup.defaults.workerProfileId = members[0];
+  clearedGroup.defaults.workerAccount = "inherited-account";
+  host.workerAccounts = true;
+  container.workerAccounts = true;
+  for (const profile of clearedGroup.workflows) profile.workerProfileId = "";
+  clearedGroup.workflows.find((profile) => profile.id === "team")!.workerProfileIds = [];
+  await service.patch({
+    expectedRevision: service.snapshot()!.revision,
+    providers: clearedProviders,
+  });
+  const cleared = journal
+    .read()
+    ?.providers.codex.workflows.find((profile) => profile.id === "team");
+  expect(cleared).toMatchObject({ workerProfileIds: [], workerProfileId: "", workerAccount: "" });
+  await service.synchronize();
+  const clearedProjection = materializeSharedProfiles({
+    preferences: host.config.sharedProviderPreferences!,
+    providers: { localAccount: { extends: "codex" } },
+    providerIds: ["localAccount"],
+  }).find((profile) => profile.id === sharedWorkflowProfileId("localAccount", "team"));
+  expect(clearedProjection?.workerProfileId).toBe("");
 });
 
 test("an explicit worker account cannot fall back to another account when unavailable", async () => {

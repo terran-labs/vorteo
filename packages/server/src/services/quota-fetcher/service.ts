@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { ProviderUsage } from "../../server/messages.js";
 import { createProviderUsageFetchers } from "./manifest.js";
+import { invalidateAntigravityUsageCache } from "./providers/antigravity.js";
 import {
   ClaudeLimitObservations,
   type UsageLimitStop,
@@ -69,13 +70,19 @@ export class ProviderUsageService {
   private readonly sampleIntervalMs: number;
   /** Per provider ID: how long to wait after a refusal or failure, and until when. */
   private readonly backoff = new Map<string, ProviderBackoff>();
-  /** Each provider's latest reading, served while it backs off. */
+  /** Each provider's latest reading, served while it backs off or waits for its minimum interval. */
   private readonly lastReading = new Map<string, ProviderUsage>();
+  /** Timestamp of each provider's last executed fetch, for fetchers with a minimum poll interval. */
+  private readonly lastFetchedAt = new Map<string, number>();
 
-  invalidate(): void {
+  invalidate(providerId?: string): void {
     this.generation += 1;
     this.cached = null;
     this.inFlight = null;
+    if (providerId !== undefined) {
+      this.lastFetchedAt.delete(providerId);
+      invalidateAntigravityUsageCache(providerId);
+    }
   }
 
   /**
@@ -83,7 +90,7 @@ export class ProviderUsageService {
    * Provider-specific parsing stays here so the daemon bootstrap remains provider-neutral.
    */
   recordUsageLimitStop(providerId: string, stop: UsageLimitStop): void {
-    if (this.claudeLimitObservations.record(providerId, stop)) this.invalidate();
+    if (this.claudeLimitObservations.record(providerId, stop)) this.invalidate(providerId);
   }
 
   constructor(options: ProviderUsageServiceOptions) {
@@ -136,12 +143,14 @@ export class ProviderUsageService {
   }
 
   /**
-   * `forceRefresh` bypasses the cache. A forced read from a client (a sign-in finishing, the
-   * Refresh button) also skips back-off; the background sampler's never does.
+   * `forceRefresh` bypasses the 2-minute list cache. A forced read from a client also skips
+   * back-off; the background sampler's never does. Only an explicit `userRefresh` bypasses a
+   * fetcher's `minPollIntervalMs` floor.
    */
   async listUsage(options?: {
     forceRefresh?: boolean;
     background?: boolean;
+    userRefresh?: boolean;
   }): Promise<ProviderUsageListResult> {
     const nowMs = this.now();
     if (
@@ -157,7 +166,8 @@ export class ProviderUsageService {
     }
 
     const respectBackoff = options?.background === true || options?.forceRefresh !== true;
-    const request = this.fetchFreshUsage(nowMs, respectBackoff);
+    const userRefresh = options?.userRefresh === true;
+    const request = this.fetchFreshUsage(nowMs, respectBackoff, userRefresh);
     this.inFlight = request;
     try {
       return await request;
@@ -171,22 +181,37 @@ export class ProviderUsageService {
   private async fetchFreshUsage(
     nowMs: number,
     respectBackoff: boolean,
+    userRefresh: boolean,
   ): Promise<ProviderUsageListResult> {
     const generation = this.generation;
     const fetchers = this.getFetchers();
     const settled = await Promise.allSettled(
       fetchers.map((fetcher) => {
-        const waiting = respectBackoff ? this.backoff.get(fetcher.providerId) : undefined;
         const previous = this.lastReading.get(fetcher.providerId);
-        if (waiting && nowMs < waiting.retryAtMs && previous) return null;
-        return fetcher.fetchUsage();
+        if (previous) {
+          if (respectBackoff) {
+            const waiting = this.backoff.get(fetcher.providerId);
+            if (waiting && nowMs < waiting.retryAtMs) return null;
+          }
+          const minInterval = fetcher.minPollIntervalMs;
+          const lastAt = this.lastFetchedAt.get(fetcher.providerId);
+          if (
+            !userRefresh &&
+            minInterval !== undefined &&
+            lastAt !== undefined &&
+            nowMs - lastAt < minInterval
+          ) {
+            return null;
+          }
+        }
+        return fetcher.fetchUsage({ userRefresh });
       }),
     );
     const fresh: ProviderUsage[] = [];
     const providers = settled.map((result, index) => {
       const fetcher = fetchers[index];
       if (result.status === "fulfilled" && result.value === null) {
-        // Backing off: show the last reading, and log nothing new for this minute.
+        // Backing off or within minPollIntervalMs: reuse the last reading and log nothing new.
         return this.lastReading.get(fetcher.providerId)!;
       }
       let usage: ProviderUsage;
@@ -205,6 +230,7 @@ export class ProviderUsageService {
         });
       }
       this.lastReading.set(fetcher.providerId, usage);
+      this.lastFetchedAt.set(fetcher.providerId, nowMs);
       if (this.updateBackoff(fetcher.providerId, usage, nowMs)) fresh.push(usage);
       return usage;
     });

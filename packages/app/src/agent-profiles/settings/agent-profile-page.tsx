@@ -36,6 +36,7 @@ export interface AgentProfilePageProps {
   onSave: (value: AgentProfileValue) => Promise<void>;
   onDelete?: () => Promise<void>;
   sharedScope?: ProfileSharedScope;
+  workerTeamStorageAvailable?: boolean;
   mode?: "create" | "edit";
   centered?: boolean;
   modelDetails?: (disabled: boolean) => ReactNode;
@@ -66,6 +67,7 @@ export function AgentProfilePage({
   modelDetails,
   additionalDirty = false,
   sharedScope,
+  workerTeamStorageAvailable,
   mode = "edit",
 }: AgentProfilePageProps) {
   const ownerAccess = useOwnerAccess();
@@ -232,6 +234,8 @@ export function AgentProfilePage({
         model={model}
         state={state}
         sharedScope={sharedScope}
+        workerTeamStorageAvailable={workerTeamStorageAvailable && ownerAccess.status === "unlocked"}
+        ownerLocked={ownerLocked}
         modelDetails={modelDetails}
       />
     </>

@@ -829,6 +829,8 @@ export interface NotificationItem {
   timestamp: Date;
   level: NotificationLevel;
   message: string;
+  /** Longer text shown on request, such as the full command of an automatic answer. */
+  details?: string;
 }
 
 export interface CompactionItem {
@@ -1653,6 +1655,7 @@ function reduceTimelineEvent(
         timestamp,
         level: item.level,
         message: item.message,
+        ...(item.details ? { details: item.details } : {}),
       };
       return appendNotification(state, notification);
     }

@@ -637,7 +637,10 @@ export class ProviderCatalogSession {
     msg: Extract<SessionInboundMessage, { type: "provider.usage.list.request" }>,
   ): Promise<void> {
     try {
-      const usage = await this.providerUsageService.listUsage({ forceRefresh: msg.forceRefresh });
+      const usage = await this.providerUsageService.listUsage({
+        forceRefresh: msg.forceRefresh,
+        userRefresh: msg.forceRefresh === true,
+      });
       const automaticPrimary = await this.host.previewAutomaticPrimary?.(usage.providers);
       this.host.emit({
         type: "provider.usage.list.response",

@@ -3,6 +3,9 @@ import { fetchedWindowCovers, findItemAtOrBefore } from "@/agent-stream/jump-pos
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import { expect, test } from "vitest";
 import {
+  MAX_ACCEPT_LINES,
+  visibleText,
+  collectThreadApprovals,
   collectThreadQuestions,
   globalOpenQuestionCount,
   type QuestionHostInput,
@@ -186,6 +189,108 @@ test("opening a question targets that question and where it was asked", async ()
   useConversationTargetStore.getState().clear(second.requestId);
 });
 
+// #659 part C: a pending approval reaches the owner's card when no supervising thread can answer
+// it. The creator is the daemon-recorded one; the parent label is ignored. A worker's creator is
+// watching it unless the case says otherwise.
+const ESCALATED = [
+  {
+    id: "perm-1",
+    provider: "claude",
+    name: "Bash",
+    kind: "tool",
+    input: { command: "ls" },
+    metadata: { ownerEscalated: true },
+  },
+];
+const PLAN = [{ id: "plan-1", provider: "claude", name: "ExitPlanMode", kind: "plan", input: {} }];
+test.each([
+  ["a thread the owner started", { createdByAgentId: null }, [], true],
+  ["a worker whose creator can answer", { createdByAgentId: "lead" }, [], false],
+  ["a worker that cleared its parent label", { createdByAgentId: "lead", labels: {} }, [], false],
+  ["a worker whose creator is archived", { createdByAgentId: "lead" }, ["archived"], true],
+  ["a worker whose creator is closed", { createdByAgentId: "lead" }, ["closed"], true],
+  ["a worker whose creator is missing", { createdByAgentId: "gone" }, [], true],
+  ["a worker whose creator is itself waiting", { createdByAgentId: "lead" }, ["waiting"], true],
+  [
+    "a worker whose waiting creator has a live creator",
+    { createdByAgentId: "lead" },
+    ["waiting", "lead-has-live-creator"],
+    false,
+  ],
+  // A live creator that holds no finish subscription for the worker is never told.
+  [
+    "a worker whose live creator is not watching it",
+    { createdByAgentId: "lead", permissionWatchedByCreator: false },
+    [],
+    true,
+  ],
+  // Waiting past the daemon's bound reaches the owner whoever the creator is.
+  [
+    "a worker waiting too long on a watching creator",
+    { createdByAgentId: "lead", pendingPermissions: ESCALATED },
+    [],
+    true,
+  ],
+  [
+    "a plan approval from a thread nobody created",
+    { createdByAgentId: null, pendingPermissions: PLAN },
+    [],
+    true,
+  ],
+] as const)("an approval from %s reaches the owner: %s", (_label, worker, leadState, expected) => {
+  const pending = {
+    id: "perm-1",
+    provider: "claude",
+    name: "Bash",
+    kind: "tool",
+    input: { command: "rm -rf build" },
+  } as const;
+  const agents = [
+    {
+      id: "worker",
+      title: "Worker",
+      workspaceId: "w1",
+      archivedAt: null,
+      questions: [],
+      status: "running",
+      pendingPermissions: [pending],
+      permissionWatchedByCreator: true,
+      ...worker,
+    },
+    {
+      id: "lead",
+      title: "Lead",
+      workspaceId: "w1",
+      archivedAt: (leadState as readonly string[]).includes("archived") ? new Date() : null,
+      questions: [],
+      status: (leadState as readonly string[]).includes("closed") ? "closed" : "running",
+      pendingPermissions: (leadState as readonly string[]).includes("waiting")
+        ? [{ ...pending, id: "perm-lead" }]
+        : [],
+      createdByAgentId: (leadState as readonly string[]).includes("lead-has-live-creator")
+        ? "root"
+        : null,
+      permissionWatchedByCreator: (leadState as readonly string[]).includes(
+        "lead-has-live-creator",
+      ),
+    },
+    {
+      id: "root",
+      title: "Root",
+      workspaceId: "w1",
+      archivedAt: null,
+      questions: [],
+      status: "idle",
+    },
+  ];
+  const approvals = collectThreadApprovals([
+    { ...host("host", agents as never), approvalsSupported: true },
+  ]).filter((approval) => approval.agentId === "worker");
+  expect(approvals.length === 1).toBe(expected);
+  // A host that does not record creators shows no approvals at all, as before.
+  expect(collectThreadApprovals([host("host", agents as never)])).toEqual([]);
+});
+
 // #660 review: a position means something only in its own timeline epoch, and only where the
 // loaded items around it are contiguous. Anything else must fetch or report "not found".
 test("a jump never matches another epoch or lands across an unloaded gap", () => {
@@ -213,4 +318,19 @@ test("a jump never matches another epoch or lands across an unloaded gap", () =>
   expect(
     findItemAtOrBefore([...head, item("asked", "e1", 41), item("next", "e1", 45)], "e1", 42)?.id,
   ).toBe("asked");
+});
+
+// #659 second review: the card must not show a command differently from what runs.
+test.each([
+  [
+    "a bidirectional override",
+    "echo safe\u202E\u2066fr- mr\u2069",
+    "echo safe⟨U+202E⟩⟨U+2066⟩fr- mr⟨U+2069⟩",
+  ],
+  ["a zero-width space", "r\u200Bm -rf x", "r⟨U+200B⟩m -rf x"],
+  ["a carriage return", "ls\rrm -rf x", "ls⟨U+000D⟩rm -rf x"],
+  ["newlines and tabs", "ls\n\tpwd", "ls\n\tpwd"],
+])("%s shows as visible escapes", (_label, command, shown) => {
+  expect(visibleText(command)).toBe(shown);
+  expect(MAX_ACCEPT_LINES).toBe(200);
 });

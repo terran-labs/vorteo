@@ -49,6 +49,7 @@ export const LeadLaunchBindingSchema = z.object({
   promptDigest: z.string(),
   /** The worker preset the lead itself must use, or null when it may launch any preset. */
   workerPresetId: z.string().nullable(),
+  workerPresetIds: z.array(z.string()).optional(),
   /**
    * Digest of the whole resolved launch configuration: instructions, tool access and policy, MCP
    * servers, provider options, skills, quota reserve and the lead's own worker preset included.
@@ -151,13 +152,14 @@ function canonicalJson(value: unknown): string {
  */
 export function launchConfigDigest(config: AgentSessionConfig): string {
   const stable = structuredClone(config) as unknown as Record<string, unknown>;
-  const launch = stable.profileLaunch as Record<string, unknown> | undefined;
+  const launch = config.profileLaunch ? structuredClone(config.profileLaunch) : undefined;
+  if (launch) stable.profileLaunch = launch;
   for (const snapshot of [stable.skillSnapshot, launch?.skillSnapshot])
     if (snapshot) delete (snapshot as Record<string, unknown>).capturedAt;
   if (launch) {
     delete launch.configurationRevision;
-    for (const preset of [launch.profile, launch.worker])
-      if (preset) delete (preset as Record<string, unknown>).isDefault;
+    for (const preset of [launch.profile, launch.worker, ...(launch.workers ?? [])])
+      if (preset) delete preset.isDefault;
   }
   const reserve = stable.quotaReserve as { state?: Record<string, unknown> } | undefined;
   if (reserve?.state) delete reserve.state.changedAt;
@@ -189,6 +191,9 @@ export function launchBinding(params: {
     title: config.title ?? null,
     promptDigest: promptDigest(params.prompt),
     workerPresetId: config.profileLaunch?.worker?.id ?? null,
+    ...(config.profileLaunch?.workers
+      ? { workerPresetIds: config.profileLaunch.workers.map((worker) => worker.id) }
+      : {}),
     configDigest: launchConfigDigest(config),
   };
 }
@@ -228,14 +233,18 @@ function describe(binding: LeadLaunchBinding): string {
   const features = Object.entries(binding.featureValues)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join(", ");
+  let workerSummary = "may start workers on any preset";
+  if (binding.workerPresetIds?.length) {
+    workerSummary = `may start workers only on these presets: ${binding.workerPresetIds.join(", ")}`;
+  } else if (binding.workerPresetId) {
+    workerSummary = `may start its own workers only on preset ${binding.workerPresetId}`;
+  }
   return [
     `Preset ${binding.profileId ?? "none"} on account ${binding.provider}`,
     `model ${binding.model ?? "default"}, thinking ${binding.thinkingOptionId ?? "default"}`,
     `permission mode ${binding.modeId ?? "provider default"}`,
     `features ${features || "none"}`,
-    binding.workerPresetId
-      ? `may start its own workers only on preset ${binding.workerPresetId}`
-      : "may start other agents on any preset",
+    workerSummary,
   ].join("; ");
 }
 

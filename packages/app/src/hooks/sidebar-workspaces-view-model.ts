@@ -13,7 +13,10 @@ import type {
 import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
 import { aggregateSidebarStateBuckets } from "@/utils/sidebar-agent-state";
 import { shortenPath } from "@/utils/shorten-path";
-import type { WorkspaceAgentActivity } from "@/utils/workspace-agent-activity";
+import type {
+  WorkspaceAgentActivity,
+  WorkspaceFactoryIssue,
+} from "@/utils/workspace-agent-activity";
 import {
   normalizeWorkspaceOpaqueId,
   resolveWorkspaceMapKeyByIdentity,
@@ -53,6 +56,8 @@ export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
   pinnedAt?: string | null;
   standing?: boolean;
   factoryMembership?: WorkspaceDescriptor["factoryMembership"];
+  /** Set when every agent in the workspace works one Factory issue; it then lists under Factory. */
+  factoryIssue?: WorkspaceFactoryIssue;
   projectSystem?: WorkspaceDescriptor["projectSystem"];
   systemMembership?: WorkspaceDescriptor["systemMembership"];
   protected?: boolean;
@@ -162,7 +167,14 @@ export function createSidebarWorkspaceEntry(input: {
   workspaceAgentActivity?: ReadonlyMap<string, WorkspaceAgentActivity>;
 }): SidebarWorkspaceEntry {
   const projectViewKey = input.projectViewKey ?? input.workspace.projectId;
-  const effectiveStatus = deriveEffectiveWorkspaceStatus(input);
+  const factoryIssue = input.workspaceAgentActivity?.get(input.workspace.id)?.factoryIssue;
+  const derivedStatus = deriveEffectiveWorkspaceStatus(input);
+  // A Factory issue worker's finished turn is not news for the owner: nothing runs, so its row
+  // shows the neutral state rather than the unread-finished green.
+  const effectiveStatus =
+    factoryIssue && derivedStatus.status === "attention"
+      ? { ...derivedStatus, status: "done" as const }
+      : derivedStatus;
   const membership = input.workspace.factoryMembership;
   const matchesFactoryIdentity =
     membership?.projectId === input.workspace.projectId && membership?.serverId === input.serverId;
@@ -185,6 +197,7 @@ export function createSidebarWorkspaceEntry(input: {
     standing: input.workspace.standing,
     projectId: input.workspace.projectId,
     factoryMembership: matchesFactoryIdentity ? membership : undefined,
+    ...(factoryIssue ? { factoryIssue } : {}),
     projectSystem: input.workspace.projectSystem,
     systemMembership: input.workspace.systemMembership,
     protected: input.workspace.protected,

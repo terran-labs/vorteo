@@ -1350,11 +1350,23 @@ export const SpeakMessage = memo(function SpeakMessage({
 interface NotificationProps {
   level: "info" | "warning" | "error";
   message: string;
+  /** Shown under the message once the reader asks for it; it may be long. */
+  details?: string;
   disableOuterSpacing?: boolean;
   action?: ReactNode;
 }
 
 const notificationStylesheet = StyleSheet.create((theme) => ({
+  detailsToggle: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    textDecorationLine: "underline",
+  },
+  details: {
+    color: theme.colors.foreground,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+  },
   container: {
     borderRadius: theme.borderRadius.md,
     overflow: "hidden",
@@ -1402,6 +1414,7 @@ const notificationStylesheet = StyleSheet.create((theme) => ({
 export const Notification = memo(function Notification({
   level,
   message,
+  details,
   disableOuterSpacing,
   action,
 }: NotificationProps) {
@@ -1447,6 +1460,7 @@ export const Notification = memo(function Notification({
             <Text style={notificationStylesheet.messageText} selectable>
               {message}
             </Text>
+            {details ? <NotificationDetails details={details} /> : null}
             {action ? <View style={notificationStylesheet.action}>{action}</View> : null}
           </View>
         </View>
@@ -1454,6 +1468,34 @@ export const Notification = memo(function Notification({
     </View>
   );
 });
+
+/** A notification's longer text, collapsed until the reader opens it. */
+function NotificationDetails({ details }: { details: string }) {
+  const [open, setOpen] = useState(false);
+  const toggle = useCallback(() => setOpen((value) => !value), []);
+  return (
+    <View>
+      <Pressable
+        onPress={toggle}
+        accessibilityRole="button"
+        accessibilityState={open ? DETAILS_OPEN : DETAILS_CLOSED}
+        testID="notification-details-toggle"
+      >
+        <Text style={notificationStylesheet.detailsToggle}>
+          {open ? "Hide details" : "Show details"}
+        </Text>
+      </Pressable>
+      {open ? (
+        <Text style={notificationStylesheet.details} selectable testID="notification-details">
+          {details}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+const DETAILS_OPEN = { expanded: true };
+const DETAILS_CLOSED = { expanded: false };
 
 interface TodoListCardProps {
   items: TodoEntry[];

@@ -41,12 +41,14 @@ export function createInstallationProfiles(
       async read() {
         target.readyProviders = [];
         target.workerAccounts = false;
+        target.workerTeams = false;
         target.uncappedManagedWorkers = false;
         assertReady(environment.kind === "host" ? "host" : "container-daemon");
         const client = await connect(environment.kind);
         try {
           if (client.getLastServerInfoMessage()?.features?.installationProfileAuthority !== true)
             throw new Error("Update the daemon to preserve shared profile identities");
+          target.workerTeams = client.getLastServerInfoMessage()?.features?.workerTeams === true;
           target.workerAccounts =
             client.getLastServerInfoMessage()?.features?.explicitWorkerAccounts === true;
           target.uncappedManagedWorkers =

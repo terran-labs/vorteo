@@ -8,6 +8,11 @@ import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
 import type { WorkspaceStructureProject } from "@/projects/workspace-structure";
 import { buildWorkspaceAgentActivityIndex } from "@/utils/workspace-agent-activity";
 import {
+  factoryCardModels,
+  factoryIssueRows,
+  groupFactoryMembers,
+} from "@/components/sidebar/factory-card-model";
+import {
   appendMissingOrderKeys,
   applyStoredOrdering,
   buildSidebarWorkspaceEntries,
@@ -1795,4 +1800,100 @@ it("puts a legacy standing controller after per-project Factory members", () => 
   expect(factoryOverviewTargets([legacy, member], entries, new Set(["one"]))).toEqual([
     { serverId: "one", projectId: base.projectId, installationId: "project-factory:project" },
   ]);
+});
+
+it("lists a Dev issue worker under the Host Factory its labels name, without the unread green (#683)", () => {
+  const base = workspaceWithForge(undefined, "https://github.com/acme/repo/pull/42");
+  const worker = (id: string, workspaceId: string, labels: Record<string, string>) => ({
+    ...agent({ id, workspaceId, status: "closed" }),
+    requiresAttention: true,
+    attentionReason: "finished" as const,
+    labels,
+  });
+  const issueLabels = { "factory.issue": "345", "factory.installation": "host/vorteo" };
+  const agents = new Map([
+    ["a", worker("a", "ws-issue", issueLabels)],
+    // A workspace with any agent outside the issue stays ordinary.
+    ["b", worker("b", "ws-mixed", issueLabels)],
+    ["c", worker("c", "ws-mixed", {})],
+  ]);
+  const activity = buildWorkspaceAgentActivityIndex(agents);
+  const entry = (id: string) =>
+    createSidebarWorkspaceEntry({
+      serverId: "dev",
+      workspace: { ...base, id, projectId: "dev-vorteo", status: "attention" },
+      workspaceAgentActivity: activity,
+    });
+  const issue = entry("ws-issue");
+  const mixed = entry("ws-mixed");
+  expect(issue.factoryIssue).toEqual({ issue: 345, installation: "host/vorteo" });
+  expect(issue.statusBucket).toBe("done");
+  expect(mixed.factoryIssue).toBeUndefined();
+  expect(mixed.statusBucket).toBe("attention");
+  const entries = new Map([
+    [issue.workspaceKey, issue],
+    [mixed.workspaceKey, mixed],
+  ]);
+  const hostFactory = { serverId: "host", projectId: "vorteo", state: "on" as const, roles: [] };
+  const groups = splitFactoryWorkspaces([issue, mixed], entries, new Map([["host", true]]), [
+    hostFactory,
+  ]);
+  expect(groups.factory).toEqual([issue]);
+  expect(groups.work).toEqual([mixed]);
+  // Its Host Factory has no card on this client while Dev runs a Factory of its own: the worker
+  // stays visible on a card for its own Factory, never on Dev's, and no two cards read the same
+  // Factory.
+  const cards = factoryCardModels({
+    members: [issue],
+    entries,
+    states: [{ serverId: "dev", projectId: "dev-vorteo", state: "on", roles: [] }],
+    plugins: [{ id: "factory", serverId: "dev", surfaces: [] }],
+  });
+  expect(cards.map((card) => [card.serverId, card.projectId, card.members])).toEqual([
+    ["dev", "dev-vorteo", []],
+    ["host", "vorteo", [issue]],
+  ]);
+  const pairs = cards.map((card) => `${card.serverId}/${card.projectId}`);
+  expect(new Set(pairs).size).toBe(pairs.length);
+  // A membership no reported role claims, kept from an older Factory, is not crew.
+  const stale = createSidebarWorkspaceEntry({
+    serverId: "host",
+    workspace: {
+      ...base,
+      id: "ws-stale",
+      projectId: "vorteo",
+      factoryMembership: {
+        installationId: "project-factory:vorteo",
+        projectId: "vorteo",
+        serverId: "host",
+        role: "factory",
+      },
+    },
+  });
+  const staleGroups = splitFactoryWorkspaces(
+    [stale],
+    new Map([[stale.workspaceKey, stale]]),
+    new Map([["host", true]]),
+    [hostFactory],
+  );
+  expect(staleGroups.factory).toEqual([]);
+  expect(staleGroups.work).toEqual([stale]);
+});
+
+it("lists every workspace of one Factory issue, opening the newest from its Runners row (#683)", () => {
+  const member = (id: string, statusBucket: "running" | "done", enteredAt: number) => ({
+    id,
+    factoryIssue: { issue: 345, installation: null },
+    statusBucket,
+    statusEnteredAt: new Date(enteredAt),
+  });
+  const repair = member("repair", "done", 2_000);
+  const first = member("first", "done", 1_000);
+  const { byIssue } = groupFactoryMembers([first, repair]);
+  // Not running: both list as Idle.
+  expect(factoryIssueRows(byIssue, new Set()).idle).toEqual([repair, first]);
+  // Running: the row opens the newest, and the other still lists as Idle.
+  const rows = factoryIssueRows(byIssue, new Set([345]));
+  expect(rows.opened.get(345)).toBe(repair);
+  expect(rows.idle).toEqual([first]);
 });

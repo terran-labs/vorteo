@@ -221,6 +221,10 @@ Unused prepared work must revoke dispatch immediately and freeze through trusted
 
 Restart recovery, edit guards and deletion guards recognize unfinished governed work independently of the schedule's editable quota policy. A frozen run remains unfinished. Deletion checks run inside the schedule mutation, and admission verifies the current record before asking the driver to prepare work. Older clients may omit these optional response fields, but replacing the daemon with a policy-unaware version still requires separate installation safeguards.
 
+## Worker teams
+
+The profile editor requires both `server_info.features.workerTeams` and the installation profile snapshot's `workerTeams` flag. The coordinator advertises support only when every environment understands teams. An older editor can omit `workerProfileIds` when saving an existing profile. The coordinator preserves the prior list in that case. An empty list explicitly clears the team. The legacy `workerProfileId` field remains available.
+
 ## Shared provider removal
 
 Clients require `server_info.features.installationProviderRemoval === true` from each configured environment before removing a provider from the shared catalog. The optional `removed` marker preserves identity and credentials while disabling new launches.

@@ -1063,6 +1063,9 @@ export class DaemonConfigStore {
             ? { quotaReservePolicy: previous.quotaReservePolicy }
             : {}),
           ...(previous?.instructions !== undefined ? { instructions: previous.instructions } : {}),
+          ...(previous?.workerProfileIds !== undefined
+            ? { workerProfileIds: previous.workerProfileIds }
+            : {}),
           ...(previous?.workerProfileId !== undefined
             ? { workerProfileId: previous.workerProfileId }
             : {}),

@@ -1,3 +1,12 @@
+import {
+  AUTO_ANSWER_TURN_LIMIT,
+  AUTO_ANSWER_WINDOW_LIMIT,
+  AUTO_ANSWER_WINDOW_MS,
+  evaluateAutoAnswer,
+  readAutoAnswerSetting,
+  type AutoAnswerSetting,
+  type AutoAnswerVerdict,
+} from "./auto-answer.js";
 import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import { verifySkillSnapshot } from "../../../orchestration-skills/internal/policy.js";
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
@@ -606,6 +615,8 @@ interface ClaudeAgentClientOptions {
   /** Claude Code's version for the executable one launch uses; null when it cannot be told. */
   resolveBinaryVersion?: (executable: string) => Promise<string | null>;
   rewindSdk?: ClaudeRewindSdk;
+  /** The owner's setting for answering removal prompts in Bypass mode; absent means ask (#659). */
+  autoAnswerSetting?: AutoAnswerSetting;
 }
 
 type ClaudeImportDescriptorResult =
@@ -624,6 +635,7 @@ interface ClaudeAgentSessionOptions {
   resolveBinary: () => Promise<string>;
   resolveBinaryVersion: (executable: string) => Promise<string | null>;
   rewindSdk?: ClaudeRewindSdk;
+  autoAnswerSetting?: AutoAnswerSetting;
 }
 
 type ClaudeThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -1336,6 +1348,22 @@ export function flattenPromptText(text: string, max: number): string {
 }
 
 /** The owner-readable reason a Claude tool permission prompt appeared, or undefined. */
+/** The card's text: the worded reason, after why an automatic answer stopped, if it did. */
+function describePrompt(reason: string | undefined, stopped: unknown): { description?: string } {
+  const parts = [typeof stopped === "string" ? stopped : undefined, reason].filter(Boolean);
+  return parts.length ? { description: parts.join(" ") } : {};
+}
+
+/** Why the prompt appeared, kept for the record. The card shows the worded reason. */
+function recordPromptReason(
+  metadata: AgentMetadata,
+  options: { decisionReason?: string; blockedPath?: string; matchedAskRule?: object },
+): void {
+  if (options.decisionReason) metadata.decisionReason = options.decisionReason;
+  if (options.blockedPath) metadata.blockedPath = options.blockedPath;
+  if (options.matchedAskRule) metadata.matchedAskRule = { ...options.matchedAskRule };
+}
+
 export function describeClaudePermissionReason(options: {
   decisionReason?: string;
   blockedPath?: string;
@@ -1809,6 +1837,7 @@ export class ClaudeAgentClient implements AgentClient {
   private readonly logger: Logger;
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly queryFactory?: ClaudeQueryFactory;
+  private readonly autoAnswerSetting?: AutoAnswerSetting;
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveVersion: (signal?: AbortSignal) => Promise<string>;
   private readonly resolveBinaryVersion: (executable: string) => Promise<string | null>;
@@ -1829,6 +1858,7 @@ export class ClaudeAgentClient implements AgentClient {
     this.logger = options.logger.child({ module: "agent", provider: "claude" });
     this.runtimeSettings = options.runtimeSettings;
     this.queryFactory = options.queryFactory;
+    this.autoAnswerSetting = options.autoAnswerSetting;
     this.resolveBinary = options.resolveBinary ?? (() => resolveClaudeBinary(this.runtimeSettings));
     this.resolveVersion =
       options.resolveVersion ??
@@ -1860,6 +1890,7 @@ export class ClaudeAgentClient implements AgentClient {
       resolveBinary: this.resolveBinary,
       resolveBinaryVersion: this.resolveBinaryVersion,
       rewindSdk: this.rewindSdk,
+      autoAnswerSetting: this.autoAnswerSetting,
     });
   }
 
@@ -1890,6 +1921,7 @@ export class ClaudeAgentClient implements AgentClient {
       resolveBinary: this.resolveBinary,
       resolveBinaryVersion: this.resolveBinaryVersion,
       rewindSdk: this.rewindSdk,
+      autoAnswerSetting: this.autoAnswerSetting,
     });
     await session.ensureHistoryReady();
     return session;
@@ -2741,6 +2773,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly persistSession?: boolean;
   private readonly logger: Logger;
   private readonly queryFactory?: ClaudeQueryFactory;
+  private readonly autoAnswerSetting?: AutoAnswerSetting;
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveBinaryVersion: (executable: string) => Promise<string | null>;
   private query: Query | null = null;
@@ -2768,6 +2801,10 @@ class ClaudeAgentSession implements AgentSession {
   private claudeSessionId: string | null;
   private persistence: AgentPersistenceHandle | null;
   private currentMode: PermissionMode;
+  /** Automatic answers to removal prompts in the current turn, so a loop shows (#659). */
+  private autoAnswersThisTurn = 0;
+  // When this thread's automatic answers happened, for the rolling bound; survives turns.
+  private autoAnswerTimes: number[] = [];
   private planResumeMode: PermissionMode | null = null;
   private availableModes: AgentMode[] = DEFAULT_MODES;
   private toolUseCache = new Map<string, ToolUseCacheEntry>();
@@ -2876,6 +2913,7 @@ class ClaudeAgentSession implements AgentSession {
     this.persistSession = options.persistSession;
     this.logger = options.logger.child({ agentId: this.agentId });
     this.queryFactory = options.queryFactory;
+    this.autoAnswerSetting = options.autoAnswerSetting;
     this.resolveBinary = options.resolveBinary;
     this.resolveBinaryVersion = options.resolveBinaryVersion;
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
@@ -2991,6 +3029,7 @@ class ClaudeAgentSession implements AgentSession {
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
   ): Promise<{ turnId: string }> {
+    this.autoAnswersThisTurn = 0;
     await this.ensureHistoryReady();
     if (this.closed) {
       throw new Error("Claude session is closed");
@@ -6024,13 +6063,13 @@ class ClaudeAgentSession implements AgentSession {
     if (options.toolUseID) {
       metadata.toolUseId = options.toolUseID;
     }
+    // When it was asked, kept with the request: a hosted session outlives a daemon restart, and the
+    // owner escalation is timed from this (#659).
+    metadata.askedAt = new Date().toISOString();
     if (toolName === "ExitPlanMode" && typeof input.plan === "string") {
       metadata.planText = input.plan;
     }
-    // Why the prompt appeared, kept for the record. The card shows the worded reason below.
-    if (options.decisionReason) metadata.decisionReason = options.decisionReason;
-    if (options.blockedPath) metadata.blockedPath = options.blockedPath;
-    if (options.matchedAskRule) metadata.matchedAskRule = { ...options.matchedAskRule };
+    recordPromptReason(metadata, options);
     this.logger.debug(
       {
         requestId,
@@ -6040,6 +6079,13 @@ class ClaudeAgentSession implements AgentSession {
       "Claude permission request options",
     );
     const reason = kind === "tool" ? describeClaudePermissionReason(options) : undefined;
+    // Await only when an automatic answer may apply, so an ordinary request is raised at once.
+    const verdict =
+      kind === "tool" ? this.scanForAutoAnswer(toolName, input, options, metadata) : null;
+    if (verdict?.answer) {
+      const automatic = await this.answerOrNoteBound(verdict, input, options, metadata);
+      if (automatic) return automatic;
+    }
     const toolDetail =
       kind === "tool"
         ? mapClaudeRunningToolCall({
@@ -6059,7 +6105,7 @@ class ClaudeAgentSession implements AgentSession {
       ...(kind === "tool" && options.title
         ? { title: flattenPromptText(options.title, MAX_REASON_LENGTH) }
         : {}),
-      ...(reason ? { description: reason } : {}),
+      ...describePrompt(reason, metadata.autoAnswerStopped),
       input: requestInput,
       detail: toolDetail,
       suggestions: options.suggestions?.map((suggestion) => ({
@@ -6124,6 +6170,108 @@ class ClaudeAgentSession implements AgentSession {
       });
     });
   };
+
+  /** Scans a tool request for the automatic answer, recording a delete it finds for the card. */
+  private scanForAutoAnswer(
+    toolName: string,
+    input: Record<string, unknown>,
+    options: Parameters<CanUseTool>[2],
+    metadata: AgentMetadata,
+  ): AutoAnswerVerdict {
+    const verdict = evaluateAutoAnswer({
+      modeId: this.currentMode,
+      toolName,
+      toolInput: input,
+      options,
+    });
+    // The owner's card shows what the scan found, beside the reason.
+    if (verdict.scan?.deletes && verdict.scan.finding) {
+      metadata.deleteFinding = flattenPromptText(verdict.scan.finding, MAX_PATH_LENGTH);
+    }
+    return verdict;
+  }
+
+  /**
+   * Answers Claude Code's removal prompt in Bypass mode when the owner's setting reads a clear
+   * "on" (#659). Allows this one call only: the SDK's suggestions are never applied, so no rule
+   * is saved. The mode is read again after the setting, which the owner may change meanwhile.
+   */
+  private async answerAutomatically(
+    verdict: Extract<AutoAnswerVerdict, { answer: true }>,
+    input: Record<string, unknown>,
+    options: { signal?: AbortSignal; toolUseID?: string },
+  ): Promise<PermissionResult | { stopped: string } | null> {
+    if (!(await readAutoAnswerSetting(this.autoAnswerSetting))) return null;
+    if (options.signal?.aborted || this.currentMode !== "bypassPermissions") return null;
+    const stopped = this.autoAnswerBoundReached();
+    if (stopped) {
+      this.logger.info({ toolUseId: options.toolUseID, stopped }, "Automatic answers bounded");
+      return { stopped };
+    }
+    this.autoAnswersThisTurn += 1;
+    this.autoAnswerTimes.push(Date.now());
+    const answeredAt = new Date().toISOString();
+    // The command may hold secrets, so the log keeps only its digest and length.
+    this.logger.info(
+      {
+        toolUseId: options.toolUseID,
+        reason: verdict.reason,
+        commandSha256: createHash("sha256").update(verdict.command).digest("hex"),
+        commandLength: verdict.command.length,
+        scan: "no delete",
+        ruleVersion: verdict.ruleVersion,
+        mode: this.currentMode,
+        answeredAt,
+        answersThisTurn: this.autoAnswersThisTurn,
+      },
+      "Answered Claude Code's removal prompt automatically",
+    );
+    this.enqueueTimeline({
+      type: "notification",
+      level: "info",
+      message: "Approved automatically in Bypass mode: no delete command found.",
+      details: [
+        `Reason from Claude Code: ${verdict.reason}`,
+        `Scan: no delete found (rules version ${verdict.ruleVersion})`,
+        `Mode: ${this.currentMode}`,
+        `Time: ${answeredAt}`,
+        "Command:",
+        verdict.command,
+      ].join("\n"),
+    });
+    return { behavior: "allow", updatedInput: input };
+  }
+
+  /**
+   * The automatic answer, or null to ask. Past a bound it records why in the request's metadata,
+   * so the card can say so.
+   */
+  private async answerOrNoteBound(
+    verdict: Extract<AutoAnswerVerdict, { answer: true }>,
+    input: Record<string, unknown>,
+    options: { signal?: AbortSignal; toolUseID?: string },
+    metadata: AgentMetadata,
+  ): Promise<PermissionResult | null> {
+    const automatic = await this.answerAutomatically(verdict, input, options);
+    if (automatic && "stopped" in automatic) {
+      metadata.autoAnswerStopped = automatic.stopped;
+      return null;
+    }
+    return automatic;
+  }
+
+  /** Why the next automatic answer must ask instead, or null while within both bounds. */
+  private autoAnswerBoundReached(): string | null {
+    const now = Date.now();
+    this.autoAnswerTimes = this.autoAnswerTimes.filter((at) => now - at < AUTO_ANSWER_WINDOW_MS);
+    if (this.autoAnswersThisTurn >= AUTO_ANSWER_TURN_LIMIT) {
+      return `Vorteo stopped answering automatically: ${AUTO_ANSWER_TURN_LIMIT} removal prompts were already answered in this turn.`;
+    }
+    if (this.autoAnswerTimes.length >= AUTO_ANSWER_WINDOW_LIMIT) {
+      return `Vorteo stopped answering automatically: ${AUTO_ANSWER_WINDOW_LIMIT} removal prompts were already answered in this thread in the last ${AUTO_ANSWER_WINDOW_MS / 60_000} minutes.`;
+    }
+    return null;
+  }
 
   private enqueueTimeline(item: AgentTimelineItem) {
     this.pushEvent({ type: "timeline", item, provider: "claude" });

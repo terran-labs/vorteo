@@ -21,15 +21,17 @@ import { LEAD_LAUNCH_ID_LABEL, LEAD_LAUNCH_REQUESTED_BY_LABEL } from "./model.js
  */
 export const PRESET_FENCE_MESSAGE = "Preset fence would refuse";
 export const PRESET_FENCE_REFUSED_MESSAGE = "Preset fence refused";
-const PRESET_FENCE_CODE = "preset_fence";
 
 /** The fields the fence reads, available from a loaded thread and from its stored record. */
 export interface FenceAgent {
   id: string;
   labels: Record<string, string>;
-  config?: { profileLaunch?: { worker?: { id: string } | null } | null } | null;
+  config?: {
+    profileLaunch?: { worker?: { id: string } | null; workers?: readonly { id: string }[] } | null;
+  } | null;
   /** Stored records only: the governance a Host forwarded with this thread's creation (C2). */
   forwardedGovernance?: ForwardedGovernance | null;
+  workerGovernance?: ForwardedGovernance | null;
 }
 
 /**
@@ -38,6 +40,8 @@ export interface FenceAgent {
  */
 export interface FenceLookup {
   getAgent: (agentId: string) => FenceAgent | null | undefined;
+  directLegacyPresetCheck?: boolean;
+  getCached?: (agentId: string) => FenceAgent | null | undefined;
   getStored?: (agentId: string) => Promise<FenceAgent | null | undefined>;
   /** This daemon's server ID, to tell a parent on another host from a missing one. */
   serverId?: string;
@@ -133,19 +137,6 @@ async function lookup(dependencies: FenceLookup, agentId: string): Promise<Fence
 }
 
 /**
- * The governance a Host recorded on this thread at creation. A loaded thread does not carry the
- * stored field, so it is read from the record. The record is written once by the daemon, so a
- * thread cannot shed it by editing its parent label.
- */
-async function forwardedGovernance(
-  agent: FenceAgent,
-  dependencies: FenceLookup,
-): Promise<ForwardedGovernance | null> {
-  if (agent.forwardedGovernance) return agent.forwardedGovernance;
-  return (await dependencies.getStored?.(agent.id))?.forwardedGovernance ?? null;
-}
-
-/**
  * The nearest thread, starting with the caller and following parent labels, whose launch carries
  * a worker preset. Confirmed leads have no parent label, so they answer to their own preset.
  * A thread created through a Host's remote create answers to the supervisor the Host recorded,
@@ -158,8 +149,21 @@ export async function governingSupervisor(
   const visited = new Set<string>([caller.id]);
   let current = caller;
   for (let depth = 0; depth <= MAX_SUPERVISOR_DEPTH; depth += 1) {
-    if (current.config?.profileLaunch?.worker) return { kind: "supervisor", supervisor: current };
-    const forwarded = await forwardedGovernance(current, dependencies);
+    const stored = await dependencies.getStored?.(current.id);
+    const local = current.workerGovernance ?? stored?.workerGovernance;
+    if (local) {
+      return {
+        kind: "supervisor",
+        supervisor: {
+          id: local.supervisorAgentId,
+          labels: {},
+          config: { profileLaunch: { workers: [{ id: local.workerProfileId }] } },
+        },
+      };
+    }
+    const own = ownGovernance(current);
+    if (own.kind === "supervisor") return own;
+    const forwarded = current.forwardedGovernance ?? stored?.forwardedGovernance;
     if (forwarded)
       return {
         kind: "supervisor",
@@ -216,7 +220,7 @@ export async function governanceToForward(
 }
 
 function ownGovernance(caller: FenceAgent): FenceGovernance {
-  return caller.config?.profileLaunch?.worker
+  return caller.config?.profileLaunch?.worker || caller.config?.profileLaunch?.workers !== undefined
     ? { kind: "supervisor", supervisor: caller }
     : { kind: "none" };
 }
@@ -240,18 +244,47 @@ export function presetFenceReason(
   const unknown = governance.kind === "unknown" ? governance.why : null;
   if (request.kind === "launch") {
     if (unknown) return unknown;
-    return launchReason(request, governance.kind === "supervisor" ? governance.supervisor : null);
+    return launchReason(
+      caller,
+      request,
+      governance.kind === "supervisor" ? governance.supervisor : null,
+    );
   }
-  const change = changeReason(caller, target, request);
+  const supervisor = governance.kind === "supervisor" ? governance.supervisor : null;
+  const change =
+    teamChangeReason(caller, target, request, supervisor) ?? changeReason(caller, target, request);
   if (!change) return null;
   return unknown ?? change;
 }
 
+function teamChangeReason(
+  caller: FenceAgent,
+  target: FenceAgent | null,
+  request: Extract<PresetFenceRequest, { kind: "change" }>,
+  supervisor: FenceAgent | null,
+): string | null {
+  if (supervisor?.config?.profileLaunch?.workers === undefined) return null;
+  if (request.labels && PARENT_SERVER_ID_LABEL in request.labels) return "governance-label";
+  const workerChangingSelf = target?.id === caller.id && caller.id !== supervisor.id;
+  const changingTeammate = target?.labels[PARENT_AGENT_ID_LABEL] === supervisor.id;
+  if (!workerChangingSelf && !changingTeammate) return null;
+  if (request.settings) return "settings-change";
+  return request.mode ? "mode-change" : null;
+}
+
 function launchReason(
+  caller: FenceAgent,
   request: Extract<PresetFenceRequest, { kind: "launch" }>,
   supervisor: FenceAgent | null,
 ): string | null {
-  if (request.profileId !== supervisor?.config?.profileLaunch?.worker?.id) return "preset-required";
+  const launch = supervisor?.config?.profileLaunch;
+  if (launch?.workers !== undefined) {
+    if (caller.id !== supervisor?.id) return "team-worker-launch";
+    if (!launch.workers.length) return "delegation-disabled";
+    if (!launch.workers.some((worker) => worker.id === request.profileId)) return "preset-required";
+    return request.detached ? "detached" : null;
+  }
+  if (request.profileId !== launch?.worker?.id) return "preset-required";
   return request.detached ? "detached" : null;
 }
 
@@ -289,8 +322,8 @@ function shouldEnforce(
 }
 
 /**
- * Applies the fence for one agent-initiated operation. A failure to decide never throws or
- * replaces the operation's outcome; an enforced refusal throws before anything changes.
+ * Applies the fence for one agent-initiated operation. The legacy fence reports when it can.
+ * Team launches require a verifiable decision before dispatch.
  */
 export async function checkPresetFence(
   dependencies: FenceLookup & { logger: Logger },
@@ -298,36 +331,147 @@ export async function checkPresetFence(
   callerAgentId: string | undefined,
   request: PresetFenceRequest,
 ): Promise<void> {
-  let reason: string | null = null;
-  let enforce = false;
-  let fields: Record<string, unknown> = {};
-  let workerProfileId: string | null = null;
+  if (!callerAgentId) return;
+  let decision: FenceDecision | null;
   try {
-    const caller = callerAgentId ? await lookup(dependencies, callerAgentId) : null;
-    if (!caller) return;
-    const target =
-      request.kind === "change" ? await lookup(dependencies, request.targetAgentId) : null;
-    const governance = await governingSupervisor(caller, dependencies);
-    reason = presetFenceReason(caller, target, request, governance);
-    if (!reason) return;
-    const supervisor = governance.kind === "supervisor" ? governance.supervisor : null;
-    const role = factoryRole(caller, governance);
-    workerProfileId = supervisor?.config?.profileLaunch?.worker?.id ?? null;
-    enforce = shouldEnforce((dependencies.policy ?? effectivePresetFencePolicy)(), path, reason);
-    fields = fenceFields({ path, reason, enforce, caller, supervisor, governance, role, request });
+    decision = await resolveFenceDecision(dependencies, path, callerAgentId, request);
   } catch {
+    if (request.kind === "launch" && hasKnownTeamGovernance(dependencies, callerAgentId)) {
+      throw new WorkerLaunchRefusal(
+        "Could not verify worker team authority. Retry after thread storage is available.",
+        "worker-governance-unavailable",
+      );
+    }
     return;
   }
+  if (!decision) return;
+  const { reason, enforce, fields, workerProfileId, team } = decision;
   logRefusal(
     dependencies.logger,
     enforce ? PRESET_FENCE_REFUSED_MESSAGE : PRESET_FENCE_MESSAGE,
     fields,
   );
-  if (enforce)
-    throw new WorkerLaunchRefusal(
+  if (!enforce) return;
+  const message = team ? teamRefusalText(reason) : undefined;
+  throw new WorkerLaunchRefusal(
+    message ??
       `${refusalText(reason, workerProfileId)} To start a thread on another preset, call request_lead_launch; the owner confirms it. Retrying this call will be refused again.`,
-      reason ?? PRESET_FENCE_CODE,
-    );
+    reason,
+  );
+}
+
+function hasKnownTeamGovernance(dependencies: FenceLookup, callerAgentId: string): boolean {
+  let id: string | undefined = callerAgentId;
+  for (let depth = 0; id && depth <= MAX_SUPERVISOR_DEPTH; depth += 1) {
+    const cached = lookupCachedFenceAgent(dependencies, id);
+    const agent: FenceAgent | null = dependencies.getAgent(id) ?? cached;
+    if (!agent) return false;
+    if (cached?.workerGovernance ?? agent.workerGovernance) return true;
+    if (agent.config?.profileLaunch?.workers !== undefined) return true;
+    id = agent.labels?.[PARENT_AGENT_ID_LABEL];
+  }
+  return false;
+}
+
+function lookupCachedFenceAgent(dependencies: FenceLookup, id: string): FenceAgent | null {
+  try {
+    return dependencies.getCached?.(id) ?? null;
+  } catch {
+    // Storage may not have initialized. The loaded ancestry can still identify a team.
+    return null;
+  }
+}
+
+function isLocalLegacySupervisor(
+  directLegacyPresetCheck: boolean | undefined,
+  team: boolean,
+  caller: FenceAgent,
+  supervisor: FenceAgent | null,
+): boolean {
+  return directLegacyPresetCheck === true && !team && supervisor?.id === caller.id;
+}
+
+interface FenceDecision {
+  reason: string;
+  enforce: boolean;
+  fields: Record<string, unknown>;
+  workerProfileId: string | null;
+  team: boolean;
+}
+
+async function resolveFenceDecision(
+  dependencies: FenceLookup,
+  path: PresetFencePath,
+  callerAgentId: string,
+  request: PresetFenceRequest,
+): Promise<FenceDecision | null> {
+  const caller = await lookup(dependencies, callerAgentId);
+  if (!caller) return null;
+  const target =
+    request.kind === "change" ? await lookup(dependencies, request.targetAgentId) : null;
+  const governance = await governingSupervisor(caller, dependencies);
+  const supervisor = governance.kind === "supervisor" ? governance.supervisor : null;
+  const team = supervisor?.config?.profileLaunch?.workers !== undefined;
+  // Local legacy supervisor launches still use the original direct preset check.
+  if (isLocalLegacySupervisor(dependencies.directLegacyPresetCheck, team, caller, supervisor))
+    return null;
+  // Team dispatch needs the local create command's frozen snapshot and account picker.
+  const requiresLocalDispatch = team && request.kind === "launch" && path !== "create_agent";
+  const reason =
+    presetFenceReason(caller, target, request, governance) ??
+    (requiresLocalDispatch ? "team-local-dispatch" : null);
+  if (!reason) return null;
+  const role = factoryRole(caller, governance);
+  const enforce =
+    enforceTeamDecision(team, request, reason) ||
+    shouldEnforce((dependencies.policy ?? effectivePresetFencePolicy)(), path, reason);
+  const fields = fenceFields({
+    path,
+    reason,
+    enforce,
+    caller,
+    supervisor,
+    governance,
+    role,
+    request,
+  });
+  return {
+    reason,
+    enforce,
+    fields,
+    workerProfileId: supervisor?.config?.profileLaunch?.worker?.id ?? null,
+    team,
+  };
+}
+
+function enforceTeamDecision(team: boolean, request: PresetFenceRequest, reason: string): boolean {
+  return (
+    team &&
+    (request.kind === "launch" ||
+      reason === "governance-label" ||
+      reason === "settings-change" ||
+      reason === "mode-change")
+  );
+}
+
+function teamRefusalText(reason: string): string | undefined {
+  switch (reason) {
+    case "team-worker-launch":
+      return "Team workers cannot launch agents. Ask your supervisor.";
+    case "delegation-disabled":
+      return "This preset disables delegation.";
+    case "team-local-dispatch":
+      return "Launch team workers through local create_agent.";
+    case "governance-label":
+      return "Team governance labels are fixed by the daemon.";
+    case "preset-required":
+      return "Choose a preset from your frozen worker team. Use request_lead_launch to request a peer lead on another preset.";
+    case "detached":
+      return "Managed workers must stay attached to their supervisor.";
+    case "settings-change":
+    case "mode-change":
+      return "The worker's runtime settings are fixed by its team preset.";
+  }
 }
 
 function fenceFields(input: {
@@ -342,7 +486,7 @@ function fenceFields(input: {
 }): Record<string, unknown> {
   const { caller, supervisor, governance, role, request } = input;
   return {
-    code: PRESET_FENCE_CODE,
+    code: "preset_fence",
     path: input.path,
     reason: input.reason,
     enforced: input.enforce,

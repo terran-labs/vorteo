@@ -142,6 +142,11 @@ const ChecklistWakeGenerationSchema = z.object({
 });
 export type ChecklistWakeGeneration = z.infer<typeof ChecklistWakeGenerationSchema>;
 
+const WorkerGovernanceSchema = ForwardedGovernanceSchema.extend({
+  accountChoice: z.object({ provider: z.string(), reason: z.string() }).optional(),
+});
+export type WorkerGovernance = z.infer<typeof WorkerGovernanceSchema>;
+
 const STORED_AGENT_SCHEMA = z.object({
   journal: z.array(AgentJournalEntrySchema).optional(),
   questions: z.array(AgentQuestionSchema).optional(),
@@ -150,6 +155,7 @@ const STORED_AGENT_SCHEMA = z.object({
   // Daemon-owned and write-once (#360 C2): the governance a Host forwarded with this thread's
   // creation. Only recordForwardedGovernance sets it; every other write keeps the stored value.
   forwardedGovernance: ForwardedGovernanceSchema.optional(),
+  workerGovernance: WorkerGovernanceSchema.optional(),
   tasks: z.array(AgentTaskItemSchema).optional(),
   checklistWakeGenerations: z.array(ChecklistWakeGenerationSchema).optional(),
   goalSubmissions: z.array(GoalSubmissionSchema).optional(),
@@ -199,6 +205,9 @@ const STORED_AGENT_SCHEMA = z.object({
   internal: z.boolean().optional(),
   archivedAt: z.string().nullable().optional(),
   owner: AgentOwnerSchema.optional(),
+  // The creating agent, set by the daemon at creation. Absent for a thread nobody created and
+  // for threads created before it existed; their approvals go to the owner.
+  createdByAgentId: z.string().nullable().optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -667,6 +676,31 @@ export class AgentStorage {
         return { ...record, forwardedGovernance: { ...governance } };
       },
       { forwardedGovernanceWrite: true },
+    );
+    return recorded;
+  }
+
+  /** Saves local team authority once. Generic snapshots and imports cannot set this field. */
+  async recordWorkerGovernance(
+    agentId: string,
+    governance: WorkerGovernance,
+    initial?: { agent: ManagedAgent; title: string | null },
+  ): Promise<boolean> {
+    await this.load();
+    if (initial && initial.agent.id !== agentId)
+      throw new Error("Worker snapshot ID does not match.");
+    let recorded = false;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (record?.workerGovernance) return null;
+        const current =
+          record ?? (initial && toStoredAgentRecord(initial.agent, { title: initial.title }));
+        if (!current) return null;
+        recorded = true;
+        return { ...current, workerGovernance: WorkerGovernanceSchema.parse(governance) };
+      },
+      { workerGovernanceWrite: true },
     );
     return recorded;
   }
@@ -1478,6 +1512,7 @@ interface RecordMutationOptions {
   questionsWrite?: boolean;
   blockedReviewWrite?: boolean;
   forwardedGovernanceWrite?: boolean;
+  workerGovernanceWrite?: boolean;
 }
 
 interface OwnedRecordFields {
@@ -1488,20 +1523,24 @@ interface OwnedRecordFields {
 
 // Snapshot writers cannot rewrite state owned by dedicated serialized mutations.
 function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFields): void {
-  if (!options.goalReviewWrite && existing)
-    record.blockedGoalReviewNeeded = existing.blockedGoalReviewNeeded;
-  if (!options.journalWrite && existing) record.journal = existing.journal;
-  if (!options.questionsWrite && existing) {
-    record.questions = existing.questions;
-    record.leadLaunches = existing.leadLaunches;
-  }
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
   // Never set by a snapshot, an import or a full-record write, and never cleared or replaced.
   if (!options.forwardedGovernanceWrite || existing?.forwardedGovernance)
     record.forwardedGovernance = existing?.forwardedGovernance;
+  if (!options.workerGovernanceWrite || existing?.workerGovernance)
+    record.workerGovernance = existing?.workerGovernance;
   if (!options.checklistWakeWrite)
     record.checklistWakeGenerations = existing?.checklistWakeGenerations;
-  if (!options.blockedReviewWrite && existing) {
+  if (!existing) return;
+  if (!options.goalReviewWrite) record.blockedGoalReviewNeeded = existing.blockedGoalReviewNeeded;
+  if (!options.journalWrite) record.journal = existing.journal;
+  if (!options.questionsWrite) {
+    record.questions = existing.questions;
+    record.leadLaunches = existing.leadLaunches;
+  }
+  // The creator is recorded with the thread's first write and never changes afterwards (#659).
+  if (existing.createdByAgentId !== undefined) record.createdByAgentId = existing.createdByAgentId;
+  if (!options.blockedReviewWrite) {
     record.lastBlockedReviewAt = existing.lastBlockedReviewAt;
     record.blockedReviewCount = existing.blockedReviewCount;
   }
