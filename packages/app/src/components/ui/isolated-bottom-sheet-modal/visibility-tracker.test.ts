@@ -83,8 +83,20 @@ describe("bottom sheet visibility tracker", () => {
 
     tracker.syncDesired({ visible: true });
     expect(sheet.events).toEqual([{ type: "present" }]);
+    tracker.handleSheetIndexChange(0);
 
     tracker.syncDesired({ visible: false });
+    expect(sheet.events).toEqual([{ type: "present" }, { type: "dismiss" }]);
+  });
+
+  it("closes a sheet closed while opening once it reports itself on screen", () => {
+    const { sheet, tracker } = setup();
+    tracker.attachController(sheet);
+    tracker.syncDesired({ visible: true });
+    tracker.syncDesired({ visible: false });
+    expect(sheet.events).toEqual([{ type: "present" }]);
+
+    tracker.handleSheetIndexChange(0);
     expect(sheet.events).toEqual([{ type: "present" }, { type: "dismiss" }]);
   });
 

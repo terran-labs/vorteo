@@ -9,8 +9,8 @@ export async function warmMetro(port) {
   }
   // Node fetch otherwise caps response headers at five minutes, below this configured deadline.
   const dispatcher = new Agent({ headersTimeout: timeoutMs, bodyTimeout: timeoutMs });
+  const origin = `http://127.0.0.1:${port}`;
   try {
-    const origin = `http://127.0.0.1:${port}`;
     const documentResponse = await fetch(origin, {
       dispatcher,
       signal: AbortSignal.timeout(timeoutMs),
@@ -25,22 +25,45 @@ export async function warmMetro(port) {
     if (scriptSources.length === 0) {
       throw new Error("Metro document warmup found no scripts to compile");
     }
+    const lazyChunks = new Set();
     for (const source of scriptSources) {
-      const scriptUrl = new URL(source, origin);
-      if (scriptUrl.origin !== origin) continue;
-      const response = await fetch(scriptUrl, {
-        dispatcher,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!response.ok) {
-        const details = (await response.text()).slice(0, 4000);
-        throw new Error(
-          `Metro bundle warmup failed for ${scriptUrl.pathname}: HTTP ${response.status}\n${details}`,
-        );
-      }
-      await response.arrayBuffer();
+      const bundle = await fetchBundle(new URL(source, origin));
+      for (const chunk of lazyChunkSources(bundle)) lazyChunks.add(chunk);
     }
+    // Lazy `import()` chunks compile on first request. The icon catalog's lucide chunk alone
+    // takes about 20 seconds on a cold runner, which otherwise lands inside whichever test
+    // first renders plugin icons and starves its page loads and connection deadlines.
+    for (const chunk of lazyChunks) await fetchBundle(new URL(chunk, origin));
   } finally {
     await dispatcher.close();
   }
+
+  /** @param {URL} url */
+  async function fetchBundle(url) {
+    if (url.origin !== origin) return "";
+    const response = await fetch(url, { dispatcher, signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) {
+      const details = (await response.text()).slice(0, 4000);
+      throw new Error(
+        `Metro bundle warmup failed for ${url.pathname}: HTTP ${response.status}\n${details}`,
+      );
+    }
+    return response.text();
+  }
+}
+
+/**
+ * Metro lists each lazy chunk in its dependency map as `"paths":{"<module id>":"/<path>.bundle?…"}`.
+ * @param {string} bundle
+ */
+function lazyChunkSources(bundle) {
+  const sources = [];
+  for (const [, paths] of bundle.matchAll(/"paths":(\{[^}]*\})/g)) {
+    try {
+      sources.push(...Object.values(JSON.parse(paths)).filter((path) => typeof path === "string"));
+    } catch {
+      // A source string that merely contains the marker is not a dependency map.
+    }
+  }
+  return sources;
 }

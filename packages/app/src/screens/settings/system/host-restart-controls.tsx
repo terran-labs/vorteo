@@ -21,9 +21,6 @@ import { restartDaemonFromSettings } from "../daemon-lifecycle";
 export function HostRestartControls({ host }: { host: HostProfile }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const graceful = useSessionStore(
-    (state) => state.sessions[host.serverId]?.serverInfo?.features?.gracefulRestart === true,
-  );
   const daemonClient = useHostRuntimeClient(host.serverId);
   const isConnected = useHostRuntimeIsConnected(host.serverId);
   const runtime = getHostRuntimeStore();
@@ -83,7 +80,6 @@ export function HostRestartControls({ host }: { host: HostProfile }) {
 
       let message =
         "This environment restarts. The app reconnects automatically. Review running work before continuing.";
-      if (graceful) message = "Current turns finish before the restart. New work waits.";
       if (killTerminals)
         message =
           "This environment restarts and every terminal closes, ending the programs running in them. The app reconnects automatically.";
@@ -104,11 +100,11 @@ export function HostRestartControls({ host }: { host: HostProfile }) {
             host.serverId,
             `settings_daemon_restart_${host.serverId}`,
             {
+              // A direct restart never drains: the daemon refuses a drain without the approved
+              // request identity, and a drain alone never replaces the worker. Restarts that
+              // let current turns finish go through the installation workflow (system-actions).
               restartServer: (reason, options) =>
-                daemonClient.restartServer(reason, undefined, {
-                  ...options,
-                  ...(!killTerminals && graceful ? { idleMode: "drain" as const } : {}),
-                }),
+                daemonClient.restartServer(reason, undefined, options),
               getStatus: async () => ({
                 ...(await daemonClient.getDaemonStatus()),
                 serverId: daemonClient.getLastServerInfoMessage()?.serverId ?? "",
@@ -127,16 +123,7 @@ export function HostRestartControls({ host }: { host: HostProfile }) {
           }
         });
     },
-    [
-      daemonClient,
-      host.label,
-      host.serverId,
-      isHostConnected,
-      t,
-      waitForDaemonRestart,
-      graceful,
-      toast,
-    ],
+    [daemonClient, host.label, host.serverId, isHostConnected, t, waitForDaemonRestart, toast],
   );
 
   const handleRestart = useCallback(() => startRestart(false), [startRestart]);
@@ -148,7 +135,7 @@ export function HostRestartControls({ host }: { host: HostProfile }) {
         <View style={settingsStyles.rowContent}>
           <Text style={settingsStyles.rowTitle}>{`Restart ${host.label}`}</Text>
           <Text style={settingsStyles.rowHint}>
-            Current turns can finish before restarting. Review the confirmation before continuing.
+            Restarts this daemon now. Review running work in the confirmation before continuing.
           </Text>
         </View>
         <Button

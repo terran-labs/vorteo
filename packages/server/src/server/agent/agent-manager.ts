@@ -3140,11 +3140,14 @@ export class AgentManager {
         config: structuredClone(config),
         env: { ...options.env },
       });
-      // Hooks may supply defaults, but cannot rewrite the admitted Vorton launch.
+      // Hooks may rewrite the launch, as upstream intends, but not the fields Vorteo admitted:
+      // the provider, tool access, the profile and its account, skills and the quota reserve.
+      // A profile launch also keeps its model, reasoning, features and instructions.
       config = {
-        ...request.config,
         ...config,
+        ...request.config,
         internal: config.internal,
+        provider: config.provider,
         toolAccess: config.toolAccess,
         profileId: config.profileId,
         profileLaunch: config.profileLaunch,

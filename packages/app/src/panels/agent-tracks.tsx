@@ -25,6 +25,7 @@ import {
 } from "@/subagents";
 
 import { SubagentsTrack } from "@/subagents/track";
+import { ParentAgentPill, useParentAgentId } from "@/subagents/parent";
 import type { TodoEntry } from "@/types/stream";
 
 import { navigateToAgent } from "@/utils/navigate-to-agent";
@@ -35,6 +36,7 @@ export const AgentTracks = memo(function AgentTracks({
   serverId,
   workspaceId,
   agentId,
+  parentAgentId,
   subagentRows,
   tasks,
   archiveFinishedStatus,
@@ -103,6 +105,13 @@ export const AgentTracks = memo(function AgentTracks({
 
   return (
     <>
+      {parentAgentId ? (
+        <CardColumnAccessory>
+          <View style={styles.pills}>
+            <ParentAgentPill serverId={serverId} parentAgentId={parentAgentId} />
+          </View>
+        </CardColumnAccessory>
+      ) : null}
       <OpenQuestionsCard key={`questions:${agentId}`} serverId={serverId} agentId={agentId} />
       <ChecklistCard
         key={`checklist:${agentId}`}
@@ -154,7 +163,7 @@ export function hasAgentTracks({
   hasPluginComposerPills?: boolean;
 }): boolean {
   return (
-    parentAgentId !== null ||
+    Boolean(parentAgentId) ||
     subagentRows.length > 0 ||
     Boolean(tasks?.length) ||
     archiveFinishedStatus.kind !== "idle" ||
@@ -181,6 +190,9 @@ export function AgentHistoryTracks({
     // COMPAT (2026-10): older daemons expose checklists only through loaded timeline events.
     return session?.agentTasks.get(agentId);
   });
+  // With a composer the parent is a pill that leads the cards; a sheet shows its callout instead.
+  const showsComposer = usePaneContext().host !== "sheet";
+  const parentAgentId = useParentAgentId(serverId, agentId);
   const managedRows = useMemo(
     () => subagentRows.filter((row) => row.kind === "paseo"),
     [subagentRows],
@@ -196,6 +208,7 @@ export function AgentHistoryTracks({
       serverId={serverId}
       workspaceId={workspaceId}
       agentId={agentId}
+      parentAgentId={showsComposer ? parentAgentId : null}
       subagentRows={subagentRows}
       tasks={tasks}
       archiveFinishedStatus={archive.status}

@@ -10,6 +10,8 @@ export interface CoordinatorSettingRow {
   key: string;
   before: string;
   after: string;
+  /** The coordinator hashed the file the new value names and it matched. */
+  verified?: boolean;
 }
 
 /**
@@ -25,13 +27,25 @@ export type CoordinatorSettingsView =
       follow: CoordinatorFollowJob | string | null;
     };
 
-/** Before and after per key. Keys that are not display-safe show only that they changed. */
+/**
+ * Before and after per key, or per changed field of a structured setting such as the preview
+ * broker's. Keys that are not display-safe show only that they changed.
+ */
 export function coordinatorSettingRows(job: CoordinatorSettingsJob): CoordinatorSettingRow[] {
-  return job.changes.map((change) =>
-    change.displaySafe && change.before !== undefined && change.after !== undefined
-      ? { key: change.key, before: change.before ?? "not set", after: change.after ?? "removed" }
-      : { key: change.key, before: "hidden", after: "changed" },
-  );
+  return job.changes.flatMap((change): CoordinatorSettingRow[] => {
+    if (change.displaySafe && change.fields)
+      return change.fields.map((field) => ({
+        key: `${change.key}.${field.field}`,
+        before: field.before ?? "not set",
+        after: field.after ?? "removed",
+        ...(field.verified ? { verified: true } : {}),
+      }));
+    return [
+      change.displaySafe && change.before !== undefined && change.after !== undefined
+        ? { key: change.key, before: change.before ?? "not set", after: change.after ?? "removed" }
+        : { key: change.key, before: "hidden", after: "changed" },
+    ];
+  });
 }
 
 export function coordinatorSettingsView(

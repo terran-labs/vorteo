@@ -24,6 +24,7 @@ import { useTranslation } from "react-i18next";
 import { BrushCleaning, Archive, Unlink, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useProviderIcon } from "@/components/provider-icons";
+import { useHosts } from "@/runtime/host-runtime";
 import {
   COMPOSER_TRACK_ROW_HOVER_GROUP,
   ComposerTrackPill,
@@ -407,7 +408,12 @@ export function SubagentsTrackRow({
   const isCompact = useIsCompactFormFactor();
   const touchDetails = useTooltipTouchInteraction();
   const rowServerId = row.kind === "paseo" ? row.address.serverId : serverId;
-
+  // A subagent on another host names that host, so a row never passes for a local one.
+  const hosts = useHosts();
+  const remoteHostLabel =
+    rowServerId === serverId
+      ? null
+      : (hosts.find((host) => host.serverId === rowServerId)?.label ?? rowServerId);
   const presentation = useRowPresentation(row, rowServerId);
   const displayLabel =
     presentation.titleState === "loading" ? t("common.states.loading") : presentation.label;
@@ -499,6 +505,15 @@ export function SubagentsTrackRow({
                 >
                   {displayLabel}
                 </Text>
+                {remoteHostLabel ? (
+                  <Text
+                    style={styles.rowTrailing}
+                    numberOfLines={1}
+                    testID={`subagents-track-host-${row.id}`}
+                  >
+                    {remoteHostLabel}
+                  </Text>
+                ) : null}
               </View>
             </TooltipTrigger>
             <TooltipContent maxWidth={440} testID={`subagents-track-tooltip-${row.id}`}>
@@ -532,6 +547,7 @@ export function SubagentsTrackRow({
       canArchive,
       canDetach,
       presentation,
+      remoteHostLabel,
       row.id,
       row.kind,
       isCompact,

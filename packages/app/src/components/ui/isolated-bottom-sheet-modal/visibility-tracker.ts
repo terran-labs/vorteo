@@ -80,6 +80,10 @@ export function createBottomSheetVisibilityTracker(opts: {
 
   function dismiss(): void {
     if (!controller || phase === "closed" || phase === "dismissing") return;
+    // Gorhom presents on a later frame, and a dismiss that lands before or during that opening
+    // can be dropped, leaving the sheet on screen with no further callbacks. Wait until the sheet
+    // reports itself on screen; handleSheetIndexChange then issues the close.
+    if (phase === "presenting") return;
     setPhase("dismissing");
     controller.dismiss();
   }
@@ -117,9 +121,12 @@ export function createBottomSheetVisibilityTracker(opts: {
     },
     handleSheetIndexChange(index) {
       if (index !== -1) {
-        if (phase === "presenting" || phase === "dismissing") {
+        const wasPresenting = phase === "presenting";
+        if (wasPresenting || phase === "dismissing") {
           setPhase("presented");
         }
+        // A close requested while the sheet was opening waited for it to arrive; issue it now.
+        if (wasPresenting && !visible && isEnabled !== false) dismiss();
         return;
       }
       if (phase === "presenting" || phase === "presented") {

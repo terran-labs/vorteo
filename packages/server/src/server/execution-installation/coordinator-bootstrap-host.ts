@@ -1,5 +1,9 @@
-import { PreviewBrokerDeploymentConfigurationSchema } from "@getpaseo/protocol/preview-broker-deployment";
-import { PreviewBrokerConfigurationSchema } from "@getpaseo/protocol/preview-broker-maintenance";
+import {
+  verifyBrokerBinding,
+  verifyBrokerExecutorInputs,
+  type BrokerBindingPins,
+  type BrokerSetting,
+} from "./preview-broker-configuration-checks.js";
 import { maintenanceDelegationActivation } from "./owner-delegation.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { readPrivateBootstrapConfiguration } from "./coordinator-bootstrap-private-configuration.js";
@@ -208,36 +212,19 @@ export async function createBootstrapReviewService(
   );
 }
 
-function verifyDeploymentBootstrapBinding(
+/** Broker settings in the plan must bind the Host setup's Docker identity and the plan's
+ * recovery release, by the check the reviewed coordinator settings writer shares. */
+function brokerBindingPins(
   plan: CoordinatorBootstrapPlan,
   host: BootstrapAdmissionHost,
-): void {
-  const changes = planConfigurationChanges(plan);
-  if (!changes.ok) throw new BootstrapRequestConflict(changes.reason);
-  const deploymentChange = changes.changes.find(
-    (item) => item.setting === "previewBrokerDeployment",
-  );
-  if (deploymentChange?.value != null) {
-    const deployment = PreviewBrokerDeploymentConfigurationSchema.parse(deploymentChange.value);
-    const recovery = bootstrapRecoveryRelease(plan);
-    const directory = path.join(
-      recovery.directory,
-      "packages/server/dist/server/server/execution-installation",
-    );
-    if (
-      deployment.docker !== host.docker ||
-      deployment.socket !== host.socket ||
-      deployment.containerId !== host.containerId ||
-      deployment.recovery.node.path !== recovery.node.path ||
-      deployment.recovery.node.sha256 !== recovery.node.sha256 ||
-      deployment.recovery.journal.path !== path.join(directory, "lifecycle-journal.js") ||
-      deployment.recovery.queue.path !== path.join(directory, "restarts.js") ||
-      deployment.recovery.configModule.path !== path.join(directory, "config.js")
-    )
-      throw new BootstrapRequestConflict(
-        "Consumer deployment must bind exact container and recovery readers",
-      );
-  }
+): BrokerBindingPins {
+  const recovery = bootstrapRecoveryRelease(plan);
+  return {
+    docker: host.docker,
+    socket: host.socket,
+    containerId: host.containerId,
+    recovery: { directory: recovery.directory, node: recovery.node },
+  };
 }
 
 function verifyMonitorBootstrapBinding(
@@ -246,28 +233,10 @@ function verifyMonitorBootstrapBinding(
 ): void {
   const changes = planConfigurationChanges(plan);
   if (!changes.ok) throw new BootstrapRequestConflict(changes.reason);
-  const change = changes.changes.find((item) => item.setting === "previewBroker");
-  verifyDeploymentBootstrapBinding(plan, host);
-  if (change?.value != null) {
-    const broker = PreviewBrokerConfigurationSchema.parse(change.value);
-    const recovery = bootstrapRecoveryRelease(plan);
-    const directory = path.join(
-      recovery.directory,
-      "packages/server/dist/server/server/execution-installation",
-    );
-    if (
-      broker.docker !== host.docker ||
-      broker.socket !== host.socket ||
-      broker.containerId !== host.containerId ||
-      broker.recovery.node.path !== recovery.node.path ||
-      broker.recovery.node.sha256 !== recovery.node.sha256 ||
-      broker.recovery.journal.path !== path.join(directory, "lifecycle-journal.js") ||
-      broker.recovery.queue.path !== path.join(directory, "restarts.js") ||
-      broker.recovery.configModule.path !== path.join(directory, "config.js")
-    )
-      throw new BootstrapRequestConflict(
-        "Broker configuration must bind exact paired container and retained recovery readers",
-      );
+  for (const setting of ["previewBrokerDeployment", "previewBroker"] as const) {
+    const change = changes.changes.find((item) => item.setting === setting);
+    if (change?.value != null)
+      verifyBrokerBinding(setting, change.value, brokerBindingPins(plan, host));
   }
   if (
     plan.previewMonitorConfiguration &&
@@ -294,45 +263,28 @@ function verifyMonitorBootstrapBinding(
     );
 }
 
-/** An attached broker section must already pass its executor's own protected-file,
- * hash-pin, scope and recovery reader checks, read from the candidate configuration.
- * The executors repeat them before every broker effect. */
+/** An attached broker section must already pass its executor's checks, read from the
+ * candidate configuration. */
 async function verifyBrokerConfigurationInputs(
   plan: CoordinatorBootstrapPlan,
   host: BootstrapAdmissionHost,
 ): Promise<void> {
-  const attached = reviewedConfigurationChanges(plan).filter(
-    (change) =>
-      (change.setting === "previewBrokerDeployment" || change.setting === "previewBroker") &&
-      change.value !== null,
-  );
-  if (attached.length === 0) return;
-  const config = InstallationConfigSchema.parse(
-    readPrivateBootstrapConfiguration(plan.candidate.configuration.path, process.getuid!()),
-  );
-  const writableMountRoots = () => inspectBootstrapWritableMountRoots(host);
-  for (const change of attached) {
-    if (change.setting === "previewBrokerDeployment") {
-      const { createPreviewBrokerDeploymentExecutor } =
-        await import("./preview-broker-deployment-executor.js");
-      const executor = createPreviewBrokerDeploymentExecutor({
-        config,
-        configurationFile: plan.candidate.configuration,
-        assertActive() {},
-        writableMountRoots,
-      });
-      if (!(await executor.brokerDeploymentCompatible()))
-        throw new BootstrapRequestConflict(
-          "Consumer deployment configuration fails its protected input or recovery reader checks",
-        );
-    } else {
-      const { createPreviewBrokerExecutor } = await import("./preview-broker-executor.js");
-      if (!(await createPreviewBrokerExecutor({ config, writableMountRoots }).brokerCompatible()))
-        throw new BootstrapRequestConflict(
-          "Broker configuration fails its protected input or recovery reader checks",
-        );
-    }
-  }
+  const settings = reviewedConfigurationChanges(plan)
+    .filter((change) => change.value !== null)
+    .map((change) => change.setting)
+    .filter(
+      (setting): setting is BrokerSetting =>
+        setting === "previewBrokerDeployment" || setting === "previewBroker",
+    );
+  if (settings.length === 0) return;
+  await verifyBrokerExecutorInputs({
+    settings,
+    config: InstallationConfigSchema.parse(
+      readPrivateBootstrapConfiguration(plan.candidate.configuration.path, process.getuid!()),
+    ),
+    configurationFile: plan.candidate.configuration,
+    writableMountRoots: () => inspectBootstrapWritableMountRoots(host),
+  });
 }
 
 /** Source update tooling a Host install runs: the preparer, the publisher and every
