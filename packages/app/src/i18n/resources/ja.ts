@@ -1189,6 +1189,7 @@ export const ja: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "{{label}} グループ",
     statusBucket: {
       needsInput: "入力待ち",
@@ -2630,6 +2631,7 @@ export const ja: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "テーマ",
         accessibilityLabel: "テーマ: {{value}}",

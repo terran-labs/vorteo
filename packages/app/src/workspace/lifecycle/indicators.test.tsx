@@ -32,17 +32,8 @@ const workspace = {
   workspaceId: "role",
   protected: true,
 } as SidebarWorkspaceEntry;
-it("removes the redundant Factory marker while keeping the protected affordance", () => {
+it("shows neither a Factory marker nor a lock for protected Factory members", () => {
   const { container } = render(<WorkspaceLifecycleIndicators workspace={workspace} hideFactory />);
   expect(container.querySelector('[data-testid="workspace-factory-role"]')).toBeNull();
-  expect(container.querySelector('[data-testid="workspace-shield-role"]')).not.toBeNull();
-});
-
-const managedWorkspace = { ...workspace, protected: false };
-it("keeps a lock for managed members even without a separate protected flag", () => {
-  const { container } = render(
-    <WorkspaceLifecycleIndicators workspace={managedWorkspace} hideFactory />,
-  );
-  expect(container.querySelector('[data-testid="workspace-factory-role"]')).toBeNull();
-  expect(container.querySelector('[data-testid="workspace-shield-role"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="workspace-shield-role"]')).toBeNull();
 });

@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { daemonWsRoutePattern, getE2EDaemonPort } from "../support/helpers/daemon-port";
+import { expectComposerVisible } from "../support/helpers/composer";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { openMobileAgentSidebar } from "../support/helpers/sidebar";
 import { installProviderUsageFixture } from "../support/helpers/provider-usage";
@@ -228,6 +229,8 @@ for (const [label, width, height] of [
       }
 
       await openAgentRoute(page, first);
+      // The route reveals its agent once the workspace loads, which closes a sidebar opened earlier.
+      await expectComposerVisible(page, { timeout: 30_000 });
       if (width < 768) await openMobileAgentSidebar(page);
       const card = page.getByTestId("global-open-questions-card");
       await expect(card).toBeVisible();
@@ -268,6 +271,7 @@ for (const [label, width, height] of [
       await page.getByTestId("global-open-questions-card-toggle").click();
       await expect(page.getByTestId(`global-open-question-${asks[0]!.id}`)).not.toBeAttached();
       await page.reload();
+      await expectComposerVisible(page, { timeout: 30_000 });
       if (width < 768) await openMobileAgentSidebar(page);
       await expect(page.getByTestId("global-open-questions-card")).toBeVisible();
       await expect(page.getByTestId(`global-open-question-${asks[0]!.id}`)).not.toBeAttached();

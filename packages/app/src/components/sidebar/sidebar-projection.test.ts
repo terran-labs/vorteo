@@ -196,7 +196,7 @@ it("keeps shortcuts in Standing section order and excludes collapsed standing wo
   ).toEqual(["first", "second"]);
 });
 
-it("keeps Factory shortcuts in rendered order and respects its collapsed section", () => {
+it("skips Factory members in shortcuts because they render as chips on the Factory card", () => {
   const input = twoProjectInput("project");
   const factory = makeWorkspace("factory");
   factory.entry.standing = true;
@@ -214,13 +214,6 @@ it("keeps Factory shortcuts in rendered order and respects its collapsed section
     input.workspaceEntriesByKey.set(item.entry.workspaceKey, item.entry);
     input.projects[0].workspaces.unshift(item.placement);
   }
-  expect(
-    buildSidebarProjection({
-      ...input,
-      factorySupportedHosts: new Map([["srv", true]]),
-    }).shortcutModel.shortcutTargets.map((w) => w.workspaceId),
-  ).toEqual(["first", "factory", "standing", "second"]);
-  input.collapsedWorkspaceGroupKeys.add("factory:project");
   expect(
     buildSidebarProjection({
       ...input,

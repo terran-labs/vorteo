@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { shortenPath } from "@/utils/shorten-path";
 
 export type AddProjectFlowPage =
   | "host"
@@ -131,7 +132,9 @@ export async function navigateAddProjectResults(
 
 export async function expectAddProjectResultVisible(page: Page, text: string): Promise<void> {
   const results = page.getByTestId("add-project-flow-results");
-  const row = results.getByRole("button").filter({ has: page.getByText(text, { exact: true }) });
+  // Folder rows show home-relative paths without the full path beneath (40b33e0ad).
+  const label = shortenPath(text);
+  const row = results.getByRole("button").filter({ has: page.getByText(label, { exact: true }) });
   await expect
     .poll(async () => {
       const viewport = await results.boundingBox();

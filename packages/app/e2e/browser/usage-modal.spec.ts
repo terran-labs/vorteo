@@ -7,7 +7,7 @@ import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
 import { addConnectedHostAndReload } from "../support/helpers/hosts";
 import { startIsolatedHostDaemon } from "../support/helpers/isolated-host-daemon";
-import { openSettingsSection } from "../support/helpers/settings";
+import { chooseSettingsLanguage } from "../support/helpers/settings";
 import { getServerId } from "../support/helpers/server-id";
 import {
   installUsageReportsFixture,
@@ -656,9 +656,7 @@ async function expectRetainedLoginUsage(page: Page, message: string) {
 
 async function switchToJapanese(page: Page) {
   await openSettings(page);
-  await openSettingsSection(page, "general");
-  await page.getByRole("button", { name: "System", exact: true }).click();
-  await page.getByRole("menuitem", { name: "日本語 - Japanese", exact: true }).click();
+  await chooseSettingsLanguage(page, "日本語 - Japanese");
   await page.getByRole("button", { name: "戻る", exact: true }).click();
 }
 

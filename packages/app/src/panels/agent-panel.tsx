@@ -1312,6 +1312,8 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   const dock = (
     <ChatSurface disabled={isArchivingCurrentAgent} fullscreen={isComposerFullscreen}>
       {dockContent}
+      {/* The composer renders in the stream columns beside the conversation. */}
+      {null}
       {dockOverlay}
     </ChatSurface>
   );
@@ -1374,7 +1376,7 @@ function ChatSurface({
   disabled,
   fullscreen,
 }: {
-  children: [ReactNode, ReactNode];
+  children: [ReactNode, ReactNode, ReactNode];
   disabled: boolean;
   fullscreen: boolean;
 }) {

@@ -207,7 +207,9 @@ export function deriveEnvironmentWorkspaceAgentVisibility(
       sessionAgents: session?.agents,
       agentDetails: session?.agentDetails,
       workspaceId: member.workspaceId,
-      workspaces: session?.workspaces,
+      // Before workspaces hydrate every parent looks unavailable, which would make each child
+      // its own root and open it as a tab for good. Follow the parent chain until then.
+      workspaces: session?.hasHydratedWorkspaces ? session.workspaces : undefined,
     });
     for (const agentId of visibility.foreignAgentIds ?? []) foreignAgentIds.add(agentId);
     for (const agentId of visibility.activeAgentIds) combined.activeAgentIds.add(agentId);

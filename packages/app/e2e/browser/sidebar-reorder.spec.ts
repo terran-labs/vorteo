@@ -13,8 +13,10 @@ import {
   waitForSidebarHydration,
 } from "../support/helpers/workspace-ui";
 import {
+  closeSidebarDisplayPreferences,
   openSidebarDisplayPreferences,
   selectSidebarStatusGrouping,
+  workspaceRowInGroup,
 } from "../support/helpers/sidebar";
 
 async function rowTestIds(rows: Locator) {
@@ -274,27 +276,16 @@ test("projects, workspaces, pinned chats and expansion synchronize between devic
     await firstProject.client.setWorkspacePinned(firstProject.workspaceId, true);
     await secondProject.client.setWorkspacePinned(secondProject.workspaceId, true);
     const secondProjectWorkspaceTestId = `sidebar-workspace-row-${getServerId()}:${secondProject.workspaceId}`;
-    await quickDragFirstRowAfterSecond(
-      page.locator(
-        `[data-testid="${firstWorkspaceTestId}"], [data-testid="${secondProjectWorkspaceTestId}"]`,
-      ),
-      pressWorkspaceRow,
-    );
-    await expect
-      .poll(() =>
-        rowTestIds(
-          peer.locator(
-            `[data-testid="${firstWorkspaceTestId}"], [data-testid="${secondProjectWorkspaceTestId}"]`,
-          ),
-        ),
-      )
-      .toEqual(
-        await rowTestIds(
-          page.locator(
-            `[data-testid="${firstWorkspaceTestId}"], [data-testid="${secondProjectWorkspaceTestId}"]`,
-          ),
-        ),
+    // Pinned rows also stay in their projects since 8c1575df3; reorder their Pinned copies.
+    const pinnedRows = (target: Page) =>
+      target.locator(
+        `[data-testid="sidebar-pinned-section"] [data-testid="${firstWorkspaceTestId}"], ` +
+          `[data-testid="sidebar-pinned-section"] [data-testid="${secondProjectWorkspaceTestId}"]`,
       );
+    await quickDragFirstRowAfterSecond(pinnedRows(page), pressWorkspaceRow);
+    await expect
+      .poll(() => rowTestIds(pinnedRows(peer)))
+      .toEqual(await rowTestIds(pinnedRows(page)));
     await peer.screenshot({ path: "test-results/sidebar-state-synced.png" });
     await peer.mouse.move(900, 500);
     await peer.setViewportSize({ width: 390, height: 844 });
@@ -338,7 +329,7 @@ test("cancelling a workspace move preserves its project and chats", async ({ pag
     await destination.client.archiveWorkspace(destination.workspaceId);
     await gotoAppShell(page);
     await waitForSidebarHydration(page);
-    const row = page.getByTestId(`sidebar-workspace-row-${getServerId()}:${source.workspaceId}`);
+    const row = workspaceRowInGroup(page, source.workspaceId);
     const target = page.getByTestId(
       `sidebar-project-row-${projectEquivalenceViewKey(destination.projectKey)}`,
     );
@@ -440,7 +431,7 @@ test("a failed move stays open with a visible error", async ({ page }) => {
   try {
     await gotoAppShell(page);
     await waitForSidebarHydration(page);
-    const row = page.getByTestId(`sidebar-workspace-row-${getServerId()}:${source.workspaceId}`);
+    const row = workspaceRowInGroup(page, source.workspaceId);
     const target = page.getByTestId(
       `sidebar-project-row-${projectEquivalenceViewKey(destination.projectKey)}`,
     );
@@ -473,7 +464,7 @@ test("protected workspace drop explains the block", async ({ page }) => {
     await page.setViewportSize({ width: 1400, height: 900 });
     await gotoAppShell(page);
     await waitForSidebarHydration(page);
-    const row = page.getByTestId(`sidebar-workspace-row-${getServerId()}:${source.workspaceId}`);
+    const row = workspaceRowInGroup(page, source.workspaceId);
     const target = page.getByTestId(
       `sidebar-project-row-${projectEquivalenceViewKey(destination.projectKey)}`,
     );
@@ -518,6 +509,10 @@ async function selectWorkspaceSort(page: Page, name: "Manual" | "Created" | "Las
   await openSidebarDisplayPreferences(page);
   await page.getByRole("menuitem", { name: /^Sort/ }).click();
   await page.getByRole("menuitem", { name, exact: true }).click();
+  // Manual and Created keep the main menu open since 469492c4e; Last prompt still closes it.
+  if (await page.locator('[data-testid="sidebar-display-grouping"]:visible').count()) {
+    await closeSidebarDisplayPreferences(page);
+  }
 }
 
 async function reconnectSidebar(page: Page): Promise<void> {

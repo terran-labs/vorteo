@@ -1183,6 +1183,7 @@ export const ko: TranslationResources = {
     },
   },
   sidebar: {
+    factoryCard: en.sidebar.factoryCard,
     statusGroupAccessibility: "{{label}} 그룹",
     statusBucket: {
       needsInput: "입력 필요",
@@ -2621,6 +2622,7 @@ export const ko: TranslationResources = {
       },
     },
     appearance: {
+      statusLine: en.settings.appearance.statusLine,
       theme: {
         title: "테마",
         accessibilityLabel: "테마: {{value}}",

@@ -1,6 +1,5 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { getServerId } from "./server-id";
-import { projectEquivalenceViewKey } from "./project-view-key";
 
 interface ContextMenuAnchor {
   x: number;
@@ -35,6 +34,39 @@ async function expectContextMenuAtPointer(
   if (!bounds) throw new Error(`Could not measure ${menuTestID}`);
   expect(Math.abs(bounds.x - anchor.x)).toBeLessThanOrEqual(2);
   expect(Math.abs(bounds.y - (anchor.y + 4))).toBeLessThanOrEqual(2);
+}
+
+/**
+ * An element by test id, outside the Pinned section. Since 8c1575df3 a pinned workspace keeps its
+ * row in its project or status group and repeats it under Pinned, so its row and kebab test ids
+ * match twice. This addresses the copy in its group.
+ */
+export function outsidePinnedSection(page: Page, testID: string): Locator {
+  return page.locator(
+    `xpath=//*[@data-testid="${testID}"][not(ancestor::*[@data-testid="sidebar-pinned-section"])]`,
+  );
+}
+
+/** A workspace row in its project or status group, never its copy under Pinned. */
+export function workspaceRowInGroup(page: Page, workspaceId: string): Locator {
+  return outsidePinnedSection(page, `sidebar-workspace-row-${getServerId()}:${workspaceId}`);
+}
+
+/** A workspace row's copy under Pinned. */
+export function pinnedWorkspaceRow(page: Page, workspaceId: string): Locator {
+  return page
+    .getByTestId("sidebar-pinned-section")
+    .getByTestId(`sidebar-workspace-row-${getServerId()}:${workspaceId}`);
+}
+
+/**
+ * Whether the user can see `locator`. Row actions stay mounted at zero opacity until the row is
+ * hovered or focused (bcd8dda7a), which Playwright's visibility check counts as visible.
+ */
+export async function isShownToUser(locator: Locator): Promise<boolean> {
+  return locator.evaluate((element) =>
+    element.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+  );
 }
 
 export async function openWorkspaceContextMenu(page: Page, workspaceId: string): Promise<void> {
@@ -99,7 +131,9 @@ export async function expectWorkspaceRowHoverCleared(
   workspaceId: string,
 ): Promise<void> {
   const workspaceKey = `${getServerId()}:${workspaceId}`;
-  await expect(page.getByTestId(`sidebar-workspace-kebab-${workspaceKey}`)).toBeHidden();
+  await expect
+    .poll(() => isShownToUser(page.getByTestId(`sidebar-workspace-kebab-${workspaceKey}`)))
+    .toBe(false);
   await expect(page.getByTestId("workspace-hover-card")).toHaveCount(0);
 }
 
@@ -143,15 +177,19 @@ export async function selectWorkspaceInSidebar(page: Page, workspaceId: string):
   await row.click();
 }
 
-async function openWorkspaceSidebarKebab(page: Page, workspaceId: string) {
+/**
+ * Opens a workspace row's menu from its kebab, or from its context menu on layouts without one.
+ * Pinned rows are addressed in their group.
+ */
+export async function openWorkspaceSidebarKebab(page: Page, workspaceId: string) {
   const serverId = getServerId();
-  const row = page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceId}`);
+  const row = workspaceRowInGroup(page, workspaceId);
   await expect(row).toBeVisible({ timeout: 30_000 });
   await row.hover();
 
   // Compact and touch rows have no overflow button (2415534c8); their context menu carries the
   // same items, so open that when no kebab appears on hover.
-  const kebab = page.getByTestId(`sidebar-workspace-kebab-${serverId}:${workspaceId}`);
+  const kebab = outsidePinnedSection(page, `sidebar-workspace-kebab-${serverId}:${workspaceId}`);
   const shown = await kebab
     .waitFor({ state: "visible", timeout: 3_000 })
     .then(() => true)
@@ -320,13 +358,4 @@ export async function expectMobileExplorerHidden(page: Page): Promise<void> {
   await expect(page.getByTestId("explorer-content-area")).not.toBeInViewport({
     timeout: 5_000,
   });
-}
-
-export async function revealSidebarProjectWorkspaces(
-  page: Page,
-  projectKey: string,
-): Promise<void> {
-  await page
-    .getByTestId(`sidebar-project-show-more-${projectEquivalenceViewKey(projectKey)}`)
-    .click();
 }

@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "playwright/test";
+import { websiteTestServerEnv } from "./src/website-test-vars";
 
 const baseURL = process.env.WEBSITE_TEST_URL ?? "http://127.0.0.1:8187";
 
@@ -22,10 +23,12 @@ export default defineConfig({
           // Probe the server without running the homepage loader's live GitHub requests.
           url: new URL("/logo.svg", baseURL).href,
           stdout: "pipe",
-          env: {
-            CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
+          // Only allowlisted bindings reach the Worker (src/website-test-vars.ts). The same
+          // fixture server answers registry, GitHub release and star lookups.
+          env: websiteTestServerEnv({
             PLUGINS_REGISTRY_URL: "http://127.0.0.1:8188",
-          },
+            GITHUB_API_URL: "http://127.0.0.1:8188",
+          }),
         },
       ],
 });
