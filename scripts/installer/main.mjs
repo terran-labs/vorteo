@@ -17,6 +17,9 @@
 //                                    compares with <commit>, its settings, and {plan, summary}
 //                                    to upgrade it in place or change only its settings.
 //   upgrade --plan <file>            Applies that plan like apply, resuming an unfinished one.
+//   coordinator-follow [--check]     Restarts the coordinator on the release the Host runs,
+//                                    returning it to its previous release if it fails.
+//                                    --check only reports whether it can.
 //   adopt [--source <dir>] [--outcome <file>]
 //                                    Plans and applies that in-place upgrade, resuming a
 //                                    started one; the coordinator runs it detached.
@@ -29,12 +32,12 @@ import { createContext } from "./context.mjs";
 import { detect } from "./detect.mjs";
 import { adoptHost, createHostAdoptionPlan } from "./host-adoption.mjs";
 import { createPlan } from "./plan.mjs";
-import { applyUpgrade, createUpgradePlan } from "./upgrade.mjs";
+import { applyUpgrade, createUpgradePlan, deferHangup, followHostRelease } from "./upgrade.mjs";
 import { isMainModule } from "../is-main-module.mjs";
 import { stopRunning } from "./primitives.mjs";
 
 const USAGE =
-  "Usage: main.mjs detect|plan --answers <file>|plan --adopt [--source <dir>]|plan --upgrade --source <dir> --revision <commit> [--release <tag>] [--settings <file>] [--settings-only]|apply --plan <file>|upgrade --plan <file>|status|uninstall [--keep-data]|repair|adopt [--source <dir>] [--outcome <file>]|host-release --revision <commit> --outcome <file> [--build-only] [--json] [--root <folder>]";
+  "Usage: main.mjs detect|plan --answers <file>|plan --adopt [--source <dir>]|plan --upgrade --source <dir> --revision <commit> [--release <tag>] [--settings <file>] [--settings-only]|apply --plan <file>|upgrade --plan <file>|status|uninstall [--keep-data]|repair|adopt [--source <dir>] [--outcome <file>]|host-release --revision <commit> --outcome <file> [--build-only] [--json] [--root <folder>]|coordinator-follow [--check] [--root <folder>]";
 
 function readJsonFile(file, label) {
   if (!file) throw Object.assign(new Error(`Pass --${label} <file>.`), { usage: true });
@@ -88,6 +91,8 @@ const COMMANDS = {
         line,
       ),
     ),
+  "coordinator-follow": async ({ context, values, line }) =>
+    exit(await followHostRelease(context, line, { checkOnly: values.check === true })),
   "host-release": async ({ context, values }) =>
     exit(
       await hostRelease(context, {
@@ -122,6 +127,7 @@ export async function main(
       outcome: { type: "string" },
       "build-only": { type: "boolean" },
       adopt: { type: "boolean" },
+      check: { type: "boolean" },
       upgrade: { type: "boolean" },
       release: { type: "string" },
       settings: { type: "string" },
@@ -146,7 +152,10 @@ export async function main(
     return await run({ context, values, write, line, pretty });
   } catch (error) {
     const failure = { error: { message: error.message, ...(error.fix ? { fix: error.fix } : {}) } };
-    if (values.json || ["apply", "uninstall", "repair", "adopt", "upgrade"].includes(command))
+    if (
+      values.json ||
+      ["apply", "uninstall", "repair", "adopt", "upgrade", "coordinator-follow"].includes(command)
+    )
       line(failure);
     else write(`${error.message}${error.fix ? `\n${error.fix}` : ""}\n`);
     return error.usage ? 2 : 1;
@@ -158,6 +167,12 @@ if (isMainModule(import.meta.url)) {
   const codes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
   for (const [signal, code] of Object.entries(codes))
     process.on(signal, () => {
+      // A closed terminal waits for a service switch to finish its check or rollback.
+      if (signal === "SIGHUP" && deferHangup()) {
+        process.stdout.on("error", () => {});
+        process.stderr.on("error", () => {});
+        return;
+      }
       stopRunning(signal);
       process.exit(code);
     });

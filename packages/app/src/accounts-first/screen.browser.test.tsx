@@ -34,6 +34,7 @@ vi.mock("@/execution-installation/installation-name", () => ({
 vi.mock("@/components/icons/paseo-logo", () => ({ VorteoLogo: () => null }));
 vi.mock("expo-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 // Only the gate's hook reads these; the screen receives connections as props.
+vi.mock("@/execution-installation/settings", () => ({ useInstallationSettings: vi.fn() }));
 vi.mock("@/provider-usage/use-provider-usage", () => ({ useProviderUsage: vi.fn() }));
 vi.mock("@/provider-usage/use-provider-login", () => ({ useInstallationConnectOnce: vi.fn() }));
 

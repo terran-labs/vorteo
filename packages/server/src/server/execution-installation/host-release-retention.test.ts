@@ -172,10 +172,17 @@ test("retention keeps the release that holds the live update tooling", async () 
   const tooling = path.join(f.release(0), "scripts");
   mkdirSync(tooling);
   mkdirSync(path.join(f.release(1), "scripts"));
+  // An installer-layout coordinator runs release 2 through its own link.
+  const coordinatorLink = path.join(f.root, "..", "coordinator-current");
+  symlinkSync(f.release(2), coordinatorLink);
   const config = {
     sourceUpdates: { currentReleaseLink: f.current, toolingDirectory: tooling },
     containerSourceUpdates: { toolingDirectory: path.join(f.release(1), "scripts") },
-  } as unknown as Pick<InstallationConfig, "sourceUpdates" | "containerSourceUpdates">;
+    deployment: { coordinator: { releaseLink: coordinatorLink } },
+  } as unknown as Pick<
+    InstallationConfig,
+    "sourceUpdates" | "containerSourceUpdates" | "deployment"
+  >;
   const removed = await pruneHostReleases({
     releaseRoot: f.root,
     referenced: hostRetentionReferences({
@@ -186,7 +193,8 @@ test("retention keeps the release that holds the live update tooling", async () 
     }),
     keepNewest: 1,
   });
-  expect(removed.sort()).toEqual([id(2), id(3)]);
+  expect(removed.sort()).toEqual([id(3)]);
+  expect(existsSync(f.release(2))).toBe(true);
   expect(existsSync(tooling)).toBe(true);
   expect(existsSync(f.release(1))).toBe(true);
 });

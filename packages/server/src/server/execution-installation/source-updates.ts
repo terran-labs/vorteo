@@ -183,7 +183,7 @@ async function verifyPublishedInterruption(input: PublishedInterruption) {
  * release would break every later install at its first step.
  */
 export function hostRetentionReferences(input: {
-  config: Pick<InstallationConfig, "sourceUpdates" | "containerSourceUpdates">;
+  config: Pick<InstallationConfig, "sourceUpdates" | "containerSourceUpdates" | "deployment">;
   previous: string;
   plans: readonly CoordinatorBootstrapPlan[];
   unfinished: readonly string[];
@@ -194,6 +194,11 @@ export function hostRetentionReferences(input: {
       ? [config.sourceUpdates.currentReleaseLink, config.sourceUpdates.toolingDirectory]
       : []),
     ...(config.containerSourceUpdates ? [config.containerSourceUpdates.toolingDirectory] : []),
+    // In the installer layout the coordinator runs a release inside this root through its own
+    // link; pruning it would leave the next coordinator start nothing to run or roll back to.
+    ...(config.deployment?.coordinator?.releaseLink
+      ? [config.deployment.coordinator.releaseLink]
+      : []),
     input.previous,
     ...input.plans.flatMap((plan) =>
       [plan.previous, plan.candidate, plan.compatibleRecovery]

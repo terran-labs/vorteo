@@ -23,6 +23,7 @@ import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { factoryProjectQueue } from "@getpaseo/server/factory-project";
+import { daemonFactoryAccounts, type FactoryAccounts } from "./account-choice.js";
 import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
@@ -41,6 +42,7 @@ let fingerprints: Map<string, string | null>;
 let clock: Date;
 let services: ProjectFactoryService[];
 let github: FakeGitHub;
+let accounts: FactoryAccounts;
 
 const MAIN = "m".repeat(40);
 
@@ -248,6 +250,7 @@ function service(
     paseoHome: installation.paseoHome ?? home,
     serverId: installation.serverId ?? "srv_test",
     github,
+    accounts,
     projects,
     workspaces,
     agentStorage: agents.storage,
@@ -376,6 +379,13 @@ beforeEach(async () => {
   clock = new Date(T0);
   services = [];
   github = new FakeGitHub();
+  accounts = {
+    readyProviders: async () => [],
+    providerType: () => null,
+    profileAccount: () => null,
+    readUsage: async () => [],
+    defaultProvider: async () => null,
+  };
   await addProject();
 });
 
@@ -1774,5 +1784,110 @@ describe("several installations on one repository", () => {
         repository: "Acme/App",
       }),
     ).rejects.toThrow(`Project ${PROJECT} already runs Factory for Acme/App`);
+  });
+});
+
+describe("account choice for new Factory agents", () => {
+  test("picks the fresh account with the most remaining quota and records it", async () => {
+    const factory = service();
+    await enable(factory);
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      workerProfileId: "shared-profile/codex/primary-direct",
+    });
+    const fresh = T0;
+    const reading = (providerId: string, remaining: (number | null)[], fetchedAt = fresh) => ({
+      providerId,
+      status: "available" as const,
+      fetchedAt,
+      windows: remaining.map((remainingPct, index) => ({
+        id: `w${index}`,
+        label: `w${index}`,
+        remainingPct,
+      })),
+    });
+    let ready = ["codex-a", "codex-b", "codex-stale", "codex-out", "codex-unknown", "claude-x"];
+    accounts = {
+      readyProviders: async () => ready,
+      providerType: ({ provider, profileId }) =>
+        (profileId ?? provider ?? "").includes("claude") ? "claude" : "codex",
+      profileAccount: (profileId) => (profileId === "local-codex" ? "codex-a" : null),
+      readUsage: async () =>
+        [
+          reading("codex-a", [80, 40]),
+          reading("codex-b", [70, 90]),
+          reading("codex-stale", [99], "2026-11-03T11:50:00.000Z"),
+          reading("codex-out", [0, 50]),
+          reading("codex-unknown", [null]),
+          reading("claude-x", [100]),
+        ] as never,
+      defaultProvider: async () => "codex-a",
+    };
+    const pick = (avoid?: string) =>
+      service().invoke("factory.project.pick_account", {
+        projectId: PROJECT,
+        stage: "worker",
+        issue: 7,
+        ...(avoid ? { avoid } : {}),
+      }) as Promise<{ provider: string | null; considered: { verdict: string }[] }>;
+
+    const best = await pick();
+    expect(best).toMatchObject({ provider: "codex-b", remainingPct: 70 });
+    // Only accounts of the profile's provider type are considered.
+    expect(best.considered.map((item) => item.verdict)).toEqual([
+      "qualifies",
+      "qualifies",
+      "stale",
+      "exhausted",
+      "unknown",
+    ]);
+    // A reviewer leaves the worker's account out.
+    expect((await pick("codex-b")).provider).toBe("codex-a");
+    // With nothing qualifying, the Foreman falls back to the configured default.
+    ready = ["codex-stale", "codex-out"];
+    expect((await pick()).provider).toBeNull();
+    // So it does when usage cannot be read at all.
+    ready = ["codex-a", "codex-b"];
+    const readUsage = accounts.readUsage;
+    accounts.readUsage = async () => {
+      throw new Error("usage service down");
+    };
+    expect((await pick()).provider).toBeNull();
+    accounts.readUsage = readUsage;
+    // A profile bound to one account launches there, unranked: another account would not match it.
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      workerProfileId: "local-codex",
+    });
+    expect(await pick()).toMatchObject({ provider: "codex-a", bound: true, considered: [] });
+    // A bound reviewer cannot leave the worker's account, so nothing qualifies.
+    expect(await pick("codex-a")).toMatchObject({ provider: null, bound: true });
+
+    // Turning Factory off and on again keeps the history.
+    await factory.invoke("factory.project.disable", { projectId: PROJECT });
+    await enable(factory);
+    const state = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(
+      state.projects[PROJECT].accountPicks.map(
+        (item: { provider: string | null }) => item.provider,
+      ),
+    ).toEqual(["codex-b", "codex-a", null, null, "codex-a", null]);
+  });
+
+  test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
+    accounts = daemonFactoryAccounts({
+      providers: {
+        listProviders: async () => [{ provider: "codex", enabled: true, status: "ready" }] as never,
+      },
+      readUsage: async () => {
+        throw new Error("usage service down");
+      },
+      getSettings: () => ({}) as never,
+    });
+    const factory = service();
+    await enable(factory);
+    expect(
+      await factory.invoke("factory.project.pick_account", { projectId: PROJECT, stage: "worker" }),
+    ).toMatchObject({ provider: null, profileId: null });
   });
 });
