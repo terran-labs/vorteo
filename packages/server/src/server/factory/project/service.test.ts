@@ -11,6 +11,7 @@ import type {
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
 import type { CreateAgentCommandInput } from "../../agent/create-agent/create.js";
+import type { ProviderUsage } from "@getpaseo/protocol/messages";
 import type { StoredSchedule } from "@getpaseo/protocol/schedule/types";
 import { SYSTEM_PROJECT_KIND } from "../../system-project/manifest.js";
 import {
@@ -23,7 +24,12 @@ import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { factoryProjectQueue } from "@getpaseo/server/factory-project";
-import { daemonFactoryAccounts, type FactoryAccounts } from "./account-choice.js";
+import {
+  daemonFactoryAccounts,
+  readDestinationAccounts,
+  type DestinationHosts,
+  type FactoryAccounts,
+} from "./account-choice.js";
 import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
@@ -385,6 +391,8 @@ beforeEach(async () => {
     profileAccount: () => null,
     readUsage: async () => ({ fetchedAt: T0, providers: [] }),
     defaultProvider: async () => null,
+    installationAccount: () => null,
+    destinationAccounts: async () => new Map(),
   };
   await addProject();
 });
@@ -1824,6 +1832,8 @@ describe("account choice for new Factory agents", () => {
         ] as never,
       }),
       defaultProvider: async () => "codex-a",
+      installationAccount: () => null,
+      destinationAccounts: async () => new Map(),
     };
     const pick = (avoid?: string) =>
       service().invoke("factory.project.pick_account", {
@@ -1892,12 +1902,128 @@ describe("account choice for new Factory agents", () => {
         ] as never,
       }),
       getSettings: () => ({}) as never,
+      hosts: () => ({
+        use: async () => {
+          throw new Error("no connected hosts");
+        },
+      }),
     });
     const factory = service();
     await enable(factory);
     expect(
       await factory.invoke("factory.project.pick_account", { projectId: PROJECT, stage: "worker" }),
     ).toMatchObject({ provider: "codex", remainingPct: 48 });
+  });
+
+  test("an agent bound for another host starts on that host's id for the same account", async () => {
+    // Host accounts and the installation account each links to; a2 is a second alias of a.
+    const host: Record<string, { shared: string; remainingPct: number }> = {
+      "codex-host-a": { shared: "acct-a", remainingPct: 40 },
+      "codex-host-a2": { shared: "acct-a", remainingPct: 95 },
+      "codex-host-b": { shared: "acct-b", remainingPct: 90 },
+      "codex-host-c": { shared: "acct-c", remainingPct: 60 },
+    };
+    const usage = (providerId: string, remainingPct: number): ProviderUsage => ({
+      providerId,
+      displayName: providerId,
+      status: "available",
+      planLabel: null,
+      windows: [{ id: "weekly", label: "Weekly", remainingPct }],
+    });
+    let reachable = true;
+    const dev: DestinationHosts = {
+      async use(serverId, action) {
+        if (serverId !== "srv_dev" || !reachable) throw new Error(`${serverId} is offline`);
+        return action({
+          getDaemonConfig: async () => ({
+            config: {
+              providers: {
+                "codex-primary": { extends: "codex", installationAccountId: "acct-a" },
+                "codex-dev-b": { extends: "codex", installationAccountId: "acct-b" },
+                "codex-dev-c": { extends: "codex", installationAccountId: "acct-c" },
+              },
+            },
+          }),
+          getProvidersSnapshot: async () => ({
+            entries: [
+              { provider: "codex-primary", enabled: true, status: "ready" },
+              // Excluded on Dev: projected there as disabled.
+              { provider: "codex-dev-b", enabled: false, status: "ready" },
+              { provider: "codex-dev-c", enabled: true, status: "ready" },
+            ],
+          }),
+        });
+      },
+    };
+    accounts = {
+      readyProviders: async () => Object.keys(host),
+      providerType: () => "codex",
+      profileAccount: (profileId) => (profileId === "local-codex" ? "codex-host-a" : null),
+      readUsage: async () => ({
+        fetchedAt: T0,
+        providers: Object.entries(host).map(([id, item]) => usage(id, item.remainingPct)),
+      }),
+      defaultProvider: async () => "codex-host-a",
+      installationAccount: (provider) => host[provider]?.shared ?? null,
+      destinationAccounts: (serverId) => readDestinationAccounts(() => dev, serverId),
+    };
+    const factory = service();
+    await enable(factory);
+    const pick = (input: { serverId?: string; avoid?: string }) =>
+      factory.invoke("factory.project.pick_account", {
+        projectId: PROJECT,
+        stage: "worker",
+        ...input,
+      });
+
+    for (const [input, expected] of [
+      // This daemon, named or not, ranks its own accounts as before.
+      [{}, { provider: "codex-host-a2", remainingPct: 95 }],
+      [{ serverId: "srv_test" }, { provider: "codex-host-a2", remainingPct: 95 }],
+      // Dev lacks b; a2 ranks best and is named by Dev's id for its account.
+      [
+        { serverId: "srv_dev" },
+        {
+          serverId: "srv_dev",
+          provider: "codex-primary",
+          remainingPct: 95,
+          considered: [
+            { provider: "codex-primary", localProvider: "codex-host-a", verdict: "qualifies" },
+            { provider: "codex-primary", localProvider: "codex-host-a2", verdict: "qualifies" },
+            { provider: "codex-dev-c", localProvider: "codex-host-c", verdict: "qualifies" },
+          ],
+        },
+      ],
+      // Avoiding the account by Dev's id or a local id avoids every local alias of it.
+      [{ serverId: "srv_dev", avoid: "codex-primary" }, { provider: "codex-dev-c" }],
+      [{ serverId: "srv_dev", avoid: "codex-host-a" }, { provider: "codex-dev-c" }],
+    ] as const)
+      expect(await pick(input)).toMatchObject(expected);
+    expect(await pick({})).not.toHaveProperty("serverId");
+
+    // An unreadable or unknown host fails rather than falling back to this daemon's accounts.
+    reachable = false;
+    await expect(pick({ serverId: "srv_dev" })).rejects.toThrow(
+      "Cannot read the accounts of host srv_dev",
+    );
+    await expect(pick({ serverId: "srv_gone" })).rejects.toThrow(
+      "Cannot read the accounts of host srv_gone",
+    );
+    // A profile bound to one account cannot launch on another host.
+    reachable = true;
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      workerProfileId: "local-codex",
+    });
+    await expect(pick({ serverId: "srv_dev" })).rejects.toThrow(
+      "Profile local-codex is bound to one account and cannot launch on host srv_dev",
+    );
+    const state = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(
+      state.projects[PROJECT].accountPicks.map(
+        (item: { serverId?: string }) => item.serverId ?? null,
+      ),
+    ).toEqual([null, null, "srv_dev", "srv_dev", "srv_dev", null]);
   });
 
   test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
@@ -1909,6 +2035,11 @@ describe("account choice for new Factory agents", () => {
         throw new Error("usage service down");
       },
       getSettings: () => ({}) as never,
+      hosts: () => ({
+        use: async () => {
+          throw new Error("no connected hosts");
+        },
+      }),
     });
     const factory = service();
     await enable(factory);
