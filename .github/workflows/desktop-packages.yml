@@ -1,10 +1,8 @@
 name: Desktop Packages
 
-# Vorteo: packaging smokes run after merge and on demand, not on pull requests,
-# where they held runners from the required checks. No release script reads them.
+# Vorteo: desktop apps are out of scope while PWA releases are the only channel, so
+# packaging smokes run only on demand. No release script reads them.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:

@@ -1,3 +1,4 @@
+import { ClaudeOAuthRecoveryRequestSchema } from "./accounts/claude-oauth-recovery.js";
 import { InstallationManagement } from "./management.js";
 import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js";
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
@@ -1471,6 +1472,43 @@ export function createInstallationServer(
       running: jobs.filter((job) => job.status === "running").length,
     });
   });
+
+  app
+    .route("/api/installation/claude/oauth/recovery")
+    .all((req, res, next) => {
+      res.setHeader("Cache-Control", "no-store");
+      const token = extractHttpBearerToken(req.header("authorization"));
+      if (matchesToken(token, config.hostAgentTokenHash)) res.locals.recoveryEnvironment = "host";
+      else if (matchesContainerAgent(token)) res.locals.recoveryEnvironment = "container";
+      else {
+        res.sendStatus(401);
+        return;
+      }
+      next();
+    })
+    .get((_req, res) => {
+      res.json({ available: claudeOAuth !== undefined });
+    })
+    .post((req, res) => {
+      const input = ClaudeOAuthRecoveryRequestSchema.safeParse(req.body);
+      if (!input.success) {
+        res.sendStatus(400);
+        return;
+      }
+      if (!claudeOAuth) {
+        res.sendStatus(503);
+        return;
+      }
+      const kind = z.enum(["host", "container"]).parse(res.locals.recoveryEnvironment);
+      void claudeOAuth.recover(kind, input.data).then(
+        () => {
+          return res.json({ completed: true });
+        },
+        () => {
+          res.status(409).json({ error: "Account recovery is unavailable." });
+        },
+      );
+    });
 
   app.get("/api/installation/profiles/admission", (req, res) => {
     const token = extractHttpBearerToken(req.header("authorization"));

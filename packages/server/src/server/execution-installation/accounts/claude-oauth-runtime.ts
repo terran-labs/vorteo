@@ -1,4 +1,5 @@
 import pino from "pino";
+import type { ClaudeOAuthRecoveryRequest } from "./claude-oauth-recovery.js";
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { z } from "zod";
@@ -71,6 +72,7 @@ export function createClaudeOAuthRuntime(
   const assertReady = createInstallationRegistrationAdmission(config, assertRegistrationReadiness);
   const configuration = structuredClone(config);
   const file = join(config.stateDir, "claude-oauth", "state.json");
+  const diagnosticsFile = join(config.stateDir, "claude-oauth", "diagnostics.json");
   const cli = overrides.cli ?? createClaudeHostCli();
   const readGrant = overrides.readGrant ?? readClaudeOAuthGrant;
   const request = overrides.fetch ?? fetch;
@@ -121,6 +123,10 @@ export function createClaudeOAuthRuntime(
     return {
       revision: snapshot.revision,
       removed,
+      hostEnabled:
+        !removed &&
+        selected.policy.enabled !== false &&
+        !snapshot.settings?.resourceExclusions[host!.serverId]?.providerIds?.includes(selected.id),
       targets: config.public.environments
         .filter((environment) => environment.kind === "container")
         .filter((environment) => Object.hasOwn(selected.bindings, environment.serverId))
@@ -172,7 +178,11 @@ export function createClaudeOAuthRuntime(
         policyRevision: snapshot.revision,
       }),
     );
-    if (binding.providerId !== providerId) throw new ClaudeOAuthDeliveryError();
+    if (
+      binding.providerId !== providerId ||
+      fullDefinition(definitionId).snapshot.revision !== snapshot.revision
+    )
+      throw new ClaudeOAuthDeliveryError();
     directories.set(definitionId, { revision: snapshot.revision, configDir: binding.configDir });
     return binding.configDir;
   }
@@ -181,9 +191,18 @@ export function createClaudeOAuthRuntime(
     installationId: config.public.installationId,
     read: () => readClaudeSetupFile(file) ?? [],
     persist: (state) => writeClaudeSetupFile(file, state),
+    diagnostics: {
+      read: () => readClaudeSetupFile(diagnosticsFile) ?? [],
+      persist: (diagnostics) => writeClaudeSetupFile(diagnosticsFile, diagnostics),
+    },
     policy,
     grant: async (definitionId) => readGrant(await hostConfigDir(definitionId)),
-    refresh: async (definitionId) => cli.refresh(await hostConfigDir(definitionId)),
+    refresh: async (definitionId) => {
+      const revision = policy(definitionId).revision;
+      const configDir = await hostConfigDir(definitionId);
+      if (policy(definitionId).revision !== revision) throw new ClaudeOAuthDeliveryError();
+      await cli.refresh(configDir);
+    },
     deliver: async (delivery: ClaudeOAuthProjectionDelivery) => {
       const environment = config.public.environments.find(
         (item) => item.serverId === delivery.serverId,
@@ -197,6 +216,47 @@ export function createClaudeOAuthRuntime(
     },
     now,
   });
+
+  async function recover(
+    kind: "host" | "container",
+    input: ClaudeOAuthRecoveryRequest,
+  ): Promise<void> {
+    const environment = config.public.environments.find((item) => item.kind === kind);
+    if (!environment) throw new ClaudeOAuthDeliveryError();
+    const snapshot = settings.snapshot();
+    const candidates = snapshot.settings?.providerDefinitions?.filter(
+      (item) => item.bindings[environment.serverId] === input.providerId,
+    );
+    if (candidates?.length !== 1) throw new ClaudeOAuthDeliveryError();
+    const selected = candidates[0]!;
+    const current = policy(selected.id);
+    const allowed =
+      kind === "host"
+        ? current.hostEnabled
+        : current.targets.some(
+            (target) => target.serverId === environment.serverId && !target.excluded,
+          );
+    if (!allowed || current.removed || !refresher.status(selected.id).signedIn)
+      throw new ClaudeOAuthDeliveryError();
+    assertReady(kind === "host" ? "host" : "container-daemon");
+    const binding = ClaudeOAuthBindingResponseSchema.parse(
+      await post(kind, "/api/installation/claude/oauth/binding", {
+        installationId: config.public.installationId,
+        serverId: environment.serverId,
+        definitionId: selected.id,
+        providerId: input.providerId,
+        policyRevision: current.revision,
+      }),
+    );
+    if (
+      binding.providerId !== input.providerId ||
+      binding.configDir !== input.configDir ||
+      policy(selected.id).revision !== current.revision
+    )
+      throw new ClaudeOAuthDeliveryError();
+    await refresher.recover(selected.id, current.revision);
+    if (policy(selected.id).revision !== current.revision) throw new ClaudeOAuthDeliveryError();
+  }
 
   const upgrades = new Map<string, PendingUpgrade>();
   /** The attempt that started each upgrade, so upgrade status never reports an ordinary sign-in. */
@@ -424,6 +484,7 @@ export function createClaudeOAuthRuntime(
   }
 
   return {
+    recover,
     read: (definitionId: string) => {
       definition(definitionId);
       return { login: login.read(definitionId), connection: refresher.status(definitionId) };

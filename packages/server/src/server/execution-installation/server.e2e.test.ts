@@ -1,3 +1,5 @@
+import { recoverClaudeOAuthGrant } from "./accounts/claude-oauth-recovery.js";
+import type { ClaudeOAuthRuntime } from "./accounts/claude-oauth-runtime.js";
 import { retainEnrollmentNativeIdentity } from "./maintenance/native-registration.js";
 import type { WorkerLaunchLookup } from "./maintenance/worker-launch-lookup.js";
 import { InstallationRestarts } from "./restarts.js";
@@ -341,6 +343,70 @@ test("service maintenance status and cancellation require owner access", async (
   expect(f.calls).toEqual([]);
 });
 
+test("authenticated account recovery reaches the runtime and propagates rejection to its client", async () => {
+  function unused(): never {
+    throw new Error("Unexpected account operation");
+  }
+  const recover = vi.fn(async () => {});
+  const runtime: ClaudeOAuthRuntime = {
+    recover,
+    read: unused,
+    start: unused,
+    submit: unused,
+    cancel: unused,
+    upgradeRead: unused,
+    upgradeStart: unused,
+    upgrading: unused,
+    signOut: unused,
+    reconcile: unused,
+    dispose: unused,
+  };
+  const f = await fixture(
+    undefined,
+    undefined,
+    undefined,
+    false,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    runtime,
+  );
+  const route = "/api/installation/claude/oauth/recovery";
+  const input = { providerId: "fake-account", configDir: "/fake/fake-account" };
+  const hostResponse = await f.request(route, "host-agent-test-token", input);
+  expect(hostResponse.status).toBe(200);
+  expect(await hostResponse.json()).toEqual({ completed: true });
+  expect(recover).toHaveBeenCalledExactlyOnceWith("host", input);
+  const statuses: number[] = [];
+  const request: typeof fetch = async (url, options) => {
+    const response = await requestWithHost(String(url), {
+      method: options?.method ?? "GET",
+      headers: {
+        Host: "owner.example.test",
+        ...Object.fromEntries(new Headers(options?.headers).entries()),
+      },
+      ...(typeof options?.body === "string" ? { body: options.body } : {}),
+    });
+    statuses.push(response.status);
+    return response;
+  };
+  const client = {
+    config: { origin: f.url, token: "guest-agent-test-token", kind: "container-agent" as const },
+    request,
+  };
+  await expect(recoverClaudeOAuthGrant(input.configDir, client)).resolves.toBeUndefined();
+  expect(recover).toHaveBeenLastCalledWith("container", input);
+  recover.mockRejectedValueOnce(new Error("private runtime detail"));
+  await expect(recoverClaudeOAuthGrant(input.configDir, client)).rejects.toThrow(
+    "Account recovery is unavailable.",
+  );
+  expect(recover).toHaveBeenCalledTimes(3);
+  expect(statuses).toEqual([200, 200, 200, 409]);
+});
+
 test("enrollment status is owner-only and reading it cannot approve or dispatch maintenance", async () => {
   const f = await fixture();
   const route = "/api/installation/owner/enrollment/query";
@@ -352,6 +418,20 @@ test("enrollment status is owner-only and reading it cannot approve or dispatch 
       expect(
         (await f.request(`/api/installation/owner/claude/oauth/${upgrade}`, credential, {})).status,
       ).toBe(401);
+  const recovery = "/api/installation/claude/oauth/recovery";
+  expect((await f.request(recovery, undefined, {})).status).toBe(401);
+  expect((await f.request(recovery, "owner-test-password", {})).status).toBe(401);
+  expect(await (await f.request(recovery, "host-agent-test-token")).json()).toEqual({
+    available: false,
+  });
+  expect(
+    (
+      await f.request(recovery, "guest-agent-test-token", {
+        providerId: "fake",
+        configDir: "/fake",
+      })
+    ).status,
+  ).toBe(503);
   const response = await f.request(route, "owner-test-password", {});
   expect(response.status).toBe(200);
   const status = InstallationEnrollmentStatusSchema.parse(await response.json());
@@ -887,6 +967,7 @@ async function fixture(
   >,
   initialize?: (config: InstallationConfig) => void,
   coordinatorRequests?: BootstrapReconciliationLedger,
+  claudeOAuth?: ClaudeOAuthRuntime,
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "vorteo-installation-test-")));
   writeFileSync(
@@ -1011,6 +1092,7 @@ async function fixture(
     claudeSetup,
     startupFence,
     coordinatorRequests,
+    claudeOAuth,
   );
   const server: Server = await new Promise((resolve) => {
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));

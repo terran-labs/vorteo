@@ -1,6 +1,6 @@
 {
   "name": "paseo",
-  "version": "26.11.504",
+  "version": "26.11.600",
   "private": true,
   "description": "Vorteo: voice-controlled development environment for local AI coding agents",
   "keywords": [
@@ -122,7 +122,7 @@
     "release:patch": "npm run release:check && npm run version:all:patch && npm run release:publish && npm run release:push",
     "release:minor": "npm run release:check && npm run version:all:minor && npm run release:publish && npm run release:push",
     "release:major": "npm run release:check && npm run version:all:major && npm run release:publish && npm run release:push",
-    "security:secrets": "gitleaks git . --config .gitleaks.toml --log-opts=\"--all --full-history\" --redact --ignore-gitleaks-allow --gitleaks-ignore-path .git/no-gitleaks-ignore --max-archive-depth 3 --no-banner",
+    "security:secrets": "gitleaks git . --config .gitleaks.toml --log-opts=\"${SECRET_SCAN_LOG_OPTS:---all --full-history}\" --redact --ignore-gitleaks-allow --gitleaks-ignore-path .git/no-gitleaks-ignore --max-archive-depth 3 --no-banner",
     "version:vorton": "node scripts/vorton-version.mjs",
     "version:vorton:check": "node scripts/vorton-version.mjs --check",
     "build:nova-bridge": "npm run build:client && npm run build --workspace=@getpaseo/nova-bridge && npm run bundle --workspace=@getpaseo/nova-bridge",
