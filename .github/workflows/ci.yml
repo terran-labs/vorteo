@@ -3,7 +3,8 @@ name: CI
 # Vorteo: pull requests and main pushes run the required checks and cheap Ubuntu
 # unit suites. The heavy suites (Playwright, Windows and macOS, desktop, installer
 # and CLI E2E) run on merge groups, manual runs, a nightly schedule and release
-# tags; `changes.outputs.heavy` selects them. A merge group's commit is the one
+# tags; `changes.outputs.heavy` selects them. Merge groups run a Playwright smoke of
+# core flows; the full eight-shard suite needs `changes.outputs.e2e`. A merge group's commit is the one
 # that becomes main, so main pushes do not repeat them.
 on:
   push:
@@ -41,6 +42,10 @@ jobs:
       # Heavy suites stay off pull requests and main pushes. A job reads it as
       # `heavy != 'false'`, so missing routing outputs fail open to more coverage.
       heavy: ${{ contains(fromJSON('["merge_group","workflow_dispatch","schedule"]'), github.event_name) || startsWith(github.ref, 'refs/tags/release-') }}
+      # The full eight-shard Playwright suite runs nightly, on manual runs and on release
+      # tags. Merge groups run the core-flow smoke instead, so a merge waits minutes, not
+      # an hour or more. Read as `e2e != 'false'`, so missing outputs fail open to the full suite.
+      e2e: ${{ contains(fromJSON('["workflow_dispatch","schedule"]'), github.event_name) || startsWith(github.ref, 'refs/tags/release-') }}
       format: ${{ steps.filter.outputs.format }}
       quality: ${{ steps.filter.outputs.quality }}
       hub: ${{ steps.filter.outputs.hub }}
@@ -523,7 +528,7 @@ jobs:
   playwright-1:
     name: playwright (shard 1/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     # A hung browser or daemon must fail the shard instead of holding a runner for hours.
     timeout-minutes: 90
@@ -584,7 +589,7 @@ jobs:
   playwright-2:
     name: playwright (shard 2/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -595,7 +600,7 @@ jobs:
   playwright-3:
     name: playwright (shard 3/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -606,7 +611,7 @@ jobs:
   playwright-4:
     name: playwright (shard 4/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -617,7 +622,7 @@ jobs:
   playwright-5:
     name: playwright (shard 5/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
       PLAYWRIGHT_SHARD: "5/8"
@@ -627,7 +632,7 @@ jobs:
   playwright-6:
     name: playwright (shard 6/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
       PLAYWRIGHT_SHARD: "6/8"
@@ -637,7 +642,7 @@ jobs:
   playwright-7:
     name: playwright (shard 7/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
       PLAYWRIGHT_SHARD: "7/8"
@@ -647,12 +652,61 @@ jobs:
   playwright-8:
     name: playwright (shard 8/8)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
       PLAYWRIGHT_SHARD: "8/8"
       PLAYWRIGHT_ARTIFACT: "8"
     steps: *playwright_test_steps
+
+  # Merge groups only: core flows (startup, a new workspace, sending a message, daemon
+  # restart and reconnect, settings). The full suite runs nightly and on release tags.
+  playwright-smoke:
+    name: playwright (smoke)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies with retry
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Install Playwright browsers
+        timeout-minutes: 10
+        run: npx playwright install chromium
+
+      - name: Build server stack
+        run: npm run build:server
+
+      - name: Build native app dependency
+        run: npm run build --workspace=@getpaseo/expo-two-way-audio
+
+      - name: Install agent CLIs for provider tests
+        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
+
+      - name: Run Playwright smoke
+        run: npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/new-tab-startup.spec.ts e2e/browser/new-workspace.spec.ts e2e/browser/agent-message-submission.spec.ts e2e/browser/daemon-lifecycle.spec.ts e2e/browser/background-reconnect.spec.ts e2e/browser/settings-navigation.spec.ts
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          E2E_WORKERS: "2"
+          E2E_METRO_WARMUP_TIMEOUT_MS: "300000"
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ failure() || cancelled() }}
+        with:
+          name: playwright-results-smoke
+          path: |
+            packages/app/test-results/
+            packages/app/playwright-report/
+          retention-days: 7
 
   # On heavy runs the CLI source tests run in cli-tests (shard 3/3) instead.
   cli-unit:

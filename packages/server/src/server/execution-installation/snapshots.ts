@@ -39,7 +39,8 @@ export const SNAPSHOT_RETENTION = 5;
 export const SNAPSHOT_EXCLUDED_NAMES: readonly string[] = [".npm", ".cache", ".pnpm-store"];
 
 /** Top-level entries of Dev's deployment directory that belong to other parts or none. */
-const DEPLOYMENT_EXCLUDED_ENTRIES = new Set(["data", "workspace", "logs"]);
+// Dev releases are rebuilt from source; a restore keeps the ones in place.
+const DEPLOYMENT_EXCLUDED_ENTRIES = new Set(["data", "workspace", "logs", "dev-releases"]);
 
 export const SnapshotSourceSchema = z.discriminatedUnion("type", [
   z.strictObject({
