@@ -37,6 +37,7 @@ import {
   getPluginSurfaceContributionServerIds,
   resolvePluginScreenTitle,
   resolvePluginSurfaceContribution,
+  PLUGIN_SURFACE_MESSAGES,
   resolvePluginSurfacePlaceholder,
   type PluginSurfaceContributionIdentity,
   type PluginSurfacePlaceholderStatus,
@@ -50,12 +51,6 @@ const pluginThemeMapping = (theme: Theme) => ({
 });
 const ThemedX = withUnistyles(X);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
-const SURFACE_ERRORS = {
-  offline: "Plugin host is offline.",
-  error: "Could not load plugins. Reconnect to try again.",
-  unavailable: "This plugin surface is unavailable.",
-} as const;
-
 function PluginSurfacePlaceholder({ status }: { status: PluginSurfacePlaceholderStatus }) {
   if (status === "loading") {
     return (
@@ -69,7 +64,7 @@ function PluginSurfacePlaceholder({ status }: { status: PluginSurfacePlaceholder
       </View>
     );
   }
-  return <Text style={styles.errorText}>{SURFACE_ERRORS[status]}</Text>;
+  return <Text style={styles.errorText}>{PLUGIN_SURFACE_MESSAGES[status]}</Text>;
 }
 
 function routeParam(value: string | string[] | undefined): string {

@@ -8,7 +8,8 @@ interface CatalogSyncInput {
   client: DaemonClient;
   audio: Pick<AudioEngine, "play"> | null;
   connected: boolean;
-  supported: boolean;
+  /** Whether the host advertises plugins; null until its server info first arrives. */
+  supported: boolean | null;
   registry: Pick<
     PluginRegistry,
     "installCatalog" | "getSnapshot" | "removeHost" | "setCatalogStatus"
@@ -23,6 +24,9 @@ export function syncPluginCatalog({
   supported,
   registry,
 }: CatalogSyncInput): () => void {
+  // Until the host first reports its features the catalog is still loading, not empty: a cold
+  // start against an unreachable host would otherwise read as "Factory unavailable" (#637).
+  if (supported === null) return () => {};
   if (!supported || !audio) {
     registry.removeHost(serverId);
     registry.setCatalogStatus(serverId, "ready");

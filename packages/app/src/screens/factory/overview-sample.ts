@@ -356,74 +356,7 @@ export const SAMPLE_ACCOUNT_SPEND: Record<string, number> = {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Several Factories, for the All Factories scope.
-
-const SITE = "https://github.com/example/website-sample";
-const SAMPLE_SITE_ISSUES: Issue[] = [
-  {
-    number: 58,
-    title: "Add the pricing comparison table",
-    url: `${SITE}/issues/58`,
-    label: "running",
-    stage: "building",
-    pr: null,
-    agents: [
-      { role: "lead", agentId: "sample-site-lead-58", status: "idle" },
-      { role: "worker", agentId: "sample-site-worker-58", status: "running" },
-    ],
-  },
-  {
-    number: 55,
-    title: "Fix the dark mode logo on the docs header",
-    url: `${SITE}/issues/55`,
-    label: "running",
-    stage: "review",
-    pr: {
-      number: 61,
-      url: `${SITE}/pull/61`,
-      headSha: "sample61",
-      checks: "failing",
-      reviewDecision: null,
-    },
-    agents: [{ role: "reviewer", agentId: "sample-site-reviewer-55", status: "idle" }],
-  },
-  {
-    number: 52,
-    title: "Compress hero images",
-    url: `${SITE}/issues/52`,
-    label: "running",
-    stage: "merging",
-    pr: {
-      number: 60,
-      url: `${SITE}/pull/60`,
-      headSha: "sample60",
-      checks: "passing",
-      reviewDecision: "APPROVED",
-    },
-    agents: [{ role: "worker", agentId: "sample-site-worker-52", status: "completed" }],
-  },
-  {
-    number: 63,
-    title: "Write the changelog page",
-    url: `${SITE}/issues/63`,
-    label: "ready",
-    stage: "queued",
-    pr: null,
-    agents: [],
-  },
-];
-const DOCS = "https://github.com/example/handbook-sample";
-const SAMPLE_DOCS_ISSUES: Issue[] = [
-  {
-    number: 14,
-    title: "Explain the restart approval flow",
-    url: `${DOCS}/issues/14`,
-    label: "ready",
-    stage: "queued",
-    pr: null,
-    agents: [],
-  },
-];
+// The Sample Factory
 
 const SAMPLE_ROLES = [
   ["factory-triage", "Triage", "Labelled 2 new issues"],
@@ -433,18 +366,18 @@ const SAMPLE_ROLES = [
   ["factory-mechanic", "Mechanic", "Proposed new Builds instructions"],
 ] as const;
 
-/** A sample Factory state. Only used while Sample factory is on, and never sent to a daemon. */
+/** A sample Factory state. Only shown on the Sample Factory, and never sent to a daemon. */
 export function sampleFactoryState(
   serverId: string,
   projectId: string,
-  options: { paused?: boolean; proposal?: boolean; now: number },
+  options: { proposal?: boolean; now: number },
 ): ProjectFactoryState {
   const updatedAt = new Date(options.now - 20 * 60_000).toISOString();
   return {
     schemaVersion: 1,
     serverId,
     projectId,
-    state: options.paused ? "paused" : "on",
+    state: "on",
     repository: null,
     reason: null,
     workers: { workerProfileId: null, reviewerProfileId: null, planning: true },
@@ -465,30 +398,28 @@ export function sampleFactoryState(
   };
 }
 
-/** Three sample Factories: two running, one paused. */
-export function sampleFactoryEntries(serverId: string, now: number): FactoryScopeEntry[] {
-  const entry = (
-    projectId: string,
-    name: string,
-    issues: Issue[],
-    options: { paused?: boolean; proposal?: boolean },
-  ): FactoryScopeEntry => {
-    const state = sampleFactoryState(serverId, projectId, { ...options, now });
-    return {
+/** The Sample Factory: a running Factory with a proposal waiting for review. */
+export function sampleFactory(
+  serverId: string,
+  now: number,
+): {
+  entry: FactoryScopeEntry;
+  state: ProjectFactoryState;
+} {
+  const projectId = "sample-vorteo";
+  const state = sampleFactoryState(serverId, projectId, { proposal: true, now });
+  return {
+    state,
+    entry: {
       key: factoryScopeKey(serverId, projectId),
       serverId,
       projectId,
-      name,
+      name: "Vorteo",
       hostLabel: null,
       state,
       status: state.state,
       drain: null,
-      issues,
-    };
+      issues: SAMPLE_ISSUES,
+    },
   };
-  return [
-    entry("sample-vorteo", "Vorteo", SAMPLE_ISSUES, { proposal: true }),
-    entry("sample-website", "Website", SAMPLE_SITE_ISSUES, {}),
-    entry("sample-handbook", "Handbook", SAMPLE_DOCS_ISSUES, { paused: true }),
-  ];
 }

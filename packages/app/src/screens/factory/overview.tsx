@@ -1,4 +1,5 @@
 import { router } from "expo-router";
+import { Settings } from "lucide-react-native";
 import { useIsFocused } from "expo-router/react-navigation";
 import { useDirectoryDemand } from "@/hooks/use-directory-demand";
 import { useCallback, useMemo, useState } from "react";
@@ -8,14 +9,13 @@ import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { PageLayout } from "@/components/page-layout";
 import { Button } from "@/components/ui/button";
-import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { Tooltip, TooltipContent, TooltipText, TooltipTrigger } from "@/components/ui/tooltip";
 import { useProjectFactory } from "@/components/sidebar/factory-instructions";
 import {
   ProjectFactoryStateSchema,
   type ProjectFactoryState,
 } from "@/components/sidebar/factory-state";
-import { useIsCompactFormFactor } from "@/constants/layout";
-import { useInstalledPlugins, usePluginCatalogStatus } from "@/plugins/registry";
+import { PLUGIN_SURFACE_MESSAGES } from "@/plugins/surface-contribution";
 import { useFetchQuery } from "@/data/query";
 import { quotaAccounts } from "@/provider-usage/global-quota";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
@@ -27,7 +27,7 @@ import {
   scopedIssues,
   type FactoryScopeEntry,
 } from "./all-factories-model";
-import { FactoryScopeSelector } from "./scope-selector";
+import { FactoryScopeSelector, type FactoryScope } from "./scope-selector";
 import type { FactoryControls } from "./overview-controls";
 import type { FactoryOverviewData } from "./overview-data";
 import { FloorOverview } from "./overview-floor";
@@ -45,13 +45,13 @@ import {
   SAMPLE_HISTORY,
   SAMPLE_ROLE_USAGE,
   sampleAgentLookup,
-  sampleFactoryEntries,
+  sampleFactory,
   sampleQuotaAccounts,
 } from "./overview-sample";
 import { useAllFactories, useFactoryHosts, useProjectNames, useStopAll } from "./overview-sources";
 import { factoryListQueryKey } from "./factory-reads";
-import { projectFactoryOverviewRoute } from "./routes";
-import { useFactoryOverviewStore } from "./overview-store";
+import { projectFactoryOverviewRoute, projectFactorySettingsRoute } from "./routes";
+import { useFactoryPlugin, type FactoryAvailability } from "./availability";
 import {
   factoryQueueRefreshInterval,
   loadFactoryQueue,
@@ -79,32 +79,42 @@ export function FactoryOverview({
   );
 }
 
+const ALL_SCOPE: FactoryScope = { kind: "all" };
+const SAMPLE_SCOPE: FactoryScope = { kind: "sample" };
+
+/** Why a Factory page has nothing to show yet, in the words other plugin pages use. */
+function FactoryPlaceholder({ availability }: { availability: FactoryAvailability }) {
+  const { t } = useTranslation();
+  if (availability === "ready" || availability === "loading") return null;
+  return (
+    <Text style={styles.text}>
+      {availability === "offline"
+        ? PLUGIN_SURFACE_MESSAGES.offline
+        : t("projectFactory.states.unavailable")}
+    </Text>
+  );
+}
+
 function AllOverview({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
   const focused = useIsFocused();
-  const compact = useIsCompactFormFactor();
   useDirectoryDemand(focused ? serverId : null);
-  const catalogStatus = usePluginCatalogStatus(serverId);
+  const { availability } = useFactoryPlugin(serverId);
   const hosts = useFactoryHosts();
-  const bar = useMemo(() => <DesignBar />, []);
   const titleContent = useMemo(
-    () => <FactoryScopeSelector serverId={serverId} projectId={null} />,
+    () => <FactoryScopeSelector serverId={serverId} scope={ALL_SCOPE} />,
     [serverId],
   );
   return (
     <PageLayout
       title={t("projectFactory.scope.allTitle")}
       testID="factory-overview"
-      actions={compact ? undefined : bar}
       wide
       headerTitle
       fullWidth
       titleContent={titleContent}
     >
-      {compact ? bar : null}
-      {hosts.length === 0 && catalogStatus !== "loading" ? (
-        <Text style={styles.text}>{t("projectFactory.states.unavailable")}</Text>
-      ) : null}
+      {hosts.length === 0 ? <FactoryPlaceholder availability={availability} /> : null}
       {focused ? <AllContent serverId={serverId} active={focused} /> : null}
     </PageLayout>
   );
@@ -113,23 +123,24 @@ function AllOverview({ serverId }: { serverId: string }) {
 function ProjectOverview({ serverId, projectId }: Target) {
   const { t } = useTranslation();
   const focused = useIsFocused();
-  const compact = useIsCompactFormFactor();
   useDirectoryDemand(focused ? serverId : null);
-  const catalogStatus = usePluginCatalogStatus(serverId);
   const factory = useProjectFactory(serverId, projectId, focused);
   const reload = useCallback(() => {
     void factory.refetch();
   }, [factory]);
-  const plugin = useInstalledPlugins().find(
-    (entry) => entry.id === "factory" && entry.serverId === serverId,
-  );
+  const { plugin, availability } = useFactoryPlugin(serverId);
+  const scope = useMemo(() => ({ kind: "project" as const, projectId }), [projectId]);
   const name = useProjectNames()(serverId, projectId);
-  const unavailable = !plugin && catalogStatus !== "loading";
-  const loading = !factory.data && !factory.error && !unavailable;
-  const bar = useMemo(() => <DesignBar />, []);
+  const loading = !factory.data && !factory.error;
+  const showsUnavailable = availability === "unavailable" || availability === "offline";
+  const live = factory.data && factory.data.state !== "off" && plugin;
+  const actions = useMemo(
+    () => (live ? <FactorySettingsButton serverId={serverId} projectId={projectId} /> : undefined),
+    [live, serverId, projectId],
+  );
   const titleContent = useMemo(
-    () => <FactoryScopeSelector serverId={serverId} projectId={projectId} />,
-    [serverId, projectId],
+    () => <FactoryScopeSelector serverId={serverId} scope={scope} />,
+    [serverId, scope],
   );
   return (
     <PageLayout
@@ -137,13 +148,12 @@ function ProjectOverview({ serverId, projectId }: Target) {
         name ? t("projectFactory.projectHeading", { project: name }) : t("projectFactory.overview")
       }
       testID="factory-overview"
-      actions={compact ? undefined : bar}
+      actions={actions}
       wide
       headerTitle
       fullWidth
       titleContent={titleContent}
     >
-      {compact ? bar : null}
       {factory.error ? (
         <View>
           <Text style={styles.text} accessibilityRole="alert">
@@ -154,10 +164,10 @@ function ProjectOverview({ serverId, projectId }: Target) {
           </Button>
         </View>
       ) : null}
-      {loading ? <Text style={styles.text}>{t("projectFactory.loading")}</Text> : null}
-      {unavailable ? (
-        <Text style={styles.text}>{t("projectFactory.states.unavailable")}</Text>
+      {loading && !showsUnavailable ? (
+        <Text style={styles.text}>{t("projectFactory.loading")}</Text>
       ) : null}
+      <FactoryPlaceholder availability={availability} />
       {factory.data?.state === "off" ? (
         <View testID="factory-overview-off">
           <Text style={styles.text}>{t("projectFactory.states.off")}</Text>
@@ -178,31 +188,52 @@ function ProjectOverview({ serverId, projectId }: Target) {
   );
 }
 
-/** Keep the explicit sample-data switch separate from Factory scope. */
-function DesignBar() {
+/** Opens one live Factory's settings. All Factories and the Sample Factory have none. */
+function FactorySettingsButton({ serverId, projectId }: Target) {
   const { t } = useTranslation();
-  const sample = useFactoryOverviewStore((store) => store.sample);
-  const setSample = useFactoryOverviewStore((store) => store.setSample);
-  const sources = useMemo<SegmentedControlOption<"live" | "sample">[]>(
-    () => [
-      { value: "live", label: t("projectFactory.design.live"), testID: "factory-data-live" },
-      { value: "sample", label: t("projectFactory.design.sample"), testID: "factory-data-sample" },
-    ],
-    [t],
+  const open = useCallback(
+    () => router.navigate(projectFactorySettingsRoute(serverId, projectId)),
+    [serverId, projectId],
   );
-  const setSource = useCallback(
-    (value: "live" | "sample") => setSample(value === "sample"),
-    [setSample],
+  const label = t("projectFactory.settings.open");
+  return (
+    <Tooltip enabledOnMobile={false}>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          leftIcon={Settings}
+          onPress={open}
+          accessibilityLabel={label}
+          testID="factory-settings-open"
+        />
+      </TooltipTrigger>
+      <TooltipContent>
+        <TooltipText label={label} />
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Sample data to preview the overview. Nothing on it reaches a real Factory. */
+export function SampleFactoryOverview({ serverId }: { serverId: string }) {
+  const { t } = useTranslation();
+  const focused = useIsFocused();
+  const titleContent = useMemo(
+    () => <FactoryScopeSelector serverId={serverId} scope={SAMPLE_SCOPE} />,
+    [serverId],
   );
   return (
-    <View style={styles.bar} testID="factory-design-bar">
-      <SegmentedControl
-        options={sources}
-        value={sample ? "sample" : "live"}
-        onValueChange={setSource}
-        size="sm"
-      />
-    </View>
+    <PageLayout
+      title={t("projectFactory.scope.sample")}
+      testID="factory-overview"
+      wide
+      headerTitle
+      fullWidth
+      titleContent={titleContent}
+    >
+      {focused ? <SampleContent serverId={serverId} active={focused} /> : null}
+    </PageLayout>
   );
 }
 
@@ -217,25 +248,25 @@ interface LiveQueue {
 
 /**
  * Assembles the board, reports and operating controls for the selected Factory scope.
- * Sample mode swaps in the sample Factories.
+ * The Sample Factory passes its sample entry and marks the data as sample.
  */
 function useOverviewData(input: {
   scope: "project" | "all";
+  sample?: boolean;
   serverId: string;
   focus: FactoryOverviewData["focus"];
   entries: FactoryScopeEntry[];
   queue: LiveQueue;
   active: boolean;
 }): FactoryOverviewData {
-  const { scope, serverId, focus, entries: liveEntries, queue, active } = input;
-  const sample = useFactoryOverviewStore((store) => store.sample);
+  const { scope, serverId, focus, entries, queue, active, sample = false } = input;
   const sessions = useSessionStore((store) => store.sessions);
   const usage = useProviderUsage(serverId, { pollUsage: true, enabled: active });
   const factoryHosts = useFactoryHosts();
   // Global stop and resume act on whole hosts, so only All Factories, which sees every project
   // on each host, offers them.
   const stopHosts = useMemo(() => (scope === "all" ? factoryHosts : []), [scope, factoryHosts]);
-  const stopAll = useStopAll(stopHosts, liveEntries);
+  const stopAll = useStopAll(stopHosts, entries);
   const openAgent = useCallback(
     (agentId: string, host?: string) => navigateToAgent({ serverId: host ?? serverId, agentId }),
     [serverId],
@@ -249,7 +280,6 @@ function useOverviewData(input: {
   const [openedAt] = useState(() => Date.now());
   const now = queue.updatedAt || openedAt;
   return useMemo<FactoryOverviewData>(() => {
-    const entries = sample ? sampleScope(scope, serverId, now) : liveEntries;
     const issues = scope === "all" ? scopedIssues(entries) : (entries[0]?.issues ?? []);
     const lookup: FactoryAgentLookup = sample
       ? sampleAgentLookup(now)
@@ -307,7 +337,7 @@ function useOverviewData(input: {
     scope,
     serverId,
     now,
-    liveEntries,
+    entries,
     sessions,
     usage.view,
     queue,
@@ -316,11 +346,6 @@ function useOverviewData(input: {
     zoomIn,
     openAgent,
   ]);
-}
-
-function sampleScope(scope: "project" | "all", serverId: string, now: number) {
-  const entries = sampleFactoryEntries(serverId, now);
-  return scope === "all" ? entries : entries.slice(0, 1);
 }
 
 function ProjectContent({
@@ -422,6 +447,47 @@ function ProjectContent({
   return <DesignFrame data={data} />;
 }
 
+// Every Sample Factory control is off, so nothing on it reaches a real Factory.
+const SAMPLE_CONTROLS: FactoryControls = {
+  pause: () => undefined,
+  resume: () => undefined,
+  setPlanning: () => undefined,
+  pending: false,
+  disabled: true,
+  error: null,
+};
+
+function SampleContent({ serverId, active }: { serverId: string; active: boolean }) {
+  const [openedAt] = useState(() => Date.now());
+  const sample = useMemo(() => sampleFactory(serverId, openedAt), [serverId, openedAt]);
+  const focus = useMemo(
+    () => ({ projectId: sample.entry.projectId, state: sample.state, controls: SAMPLE_CONTROLS }),
+    [sample],
+  );
+  const entries = useMemo(() => [sample.entry], [sample]);
+  const queue = useMemo<LiveQueue>(
+    () => ({
+      data: null,
+      loading: false,
+      fetching: false,
+      error: null,
+      reload: () => undefined,
+      updatedAt: openedAt,
+    }),
+    [openedAt],
+  );
+  const data = useOverviewData({
+    scope: "project",
+    sample: true,
+    serverId,
+    focus,
+    entries,
+    queue,
+    active,
+  });
+  return <DesignFrame data={data} />;
+}
+
 /** Every Factory on every Factory host of the installation. */
 function AllContent({ serverId, active }: { serverId: string; active: boolean }) {
   const client = useQueryClient();
@@ -464,11 +530,7 @@ function DesignFrame({ data }: { data: FactoryOverviewData }) {
     <View style={styles.content}>
       {data.sample ? (
         <Text style={styles.notice} testID="factory-sample-notice">
-          {t(
-            data.scope === "all"
-              ? "projectFactory.design.sampleNoticeAll"
-              : "projectFactory.design.sampleNotice",
-          )}
+          {t("projectFactory.design.sampleNotice")}
         </Text>
       ) : null}
       <FloorOverview data={data} />
@@ -495,12 +557,5 @@ function withSampleRoles(summary: FactoryUsageSummary): FactoryUsageSummary {
 const styles = StyleSheet.create((theme) => ({
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
   notice: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
-  bar: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    marginBottom: theme.spacing[2],
-  },
   content: { gap: theme.spacing[3] },
 }));

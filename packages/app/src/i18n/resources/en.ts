@@ -129,15 +129,13 @@ export const en = {
       floor: "Floor",
       mission: "Mission",
       ledger: "Ledger",
-      live: "Live",
-      sample: "Sample factory",
-      sampleNotice: "Showing a sample queue. Controls still change this project's real Factory.",
-      sampleNoticeAll:
-        "Showing three sample Factories. Stop and resume stay off while sample data shows.",
+      sampleNotice:
+        "Sample data to preview the Factory overview. Its controls are off and change nothing.",
     },
     scope: {
       all: "All Factories",
       allTitle: "All Factories",
+      sample: "Sample Factory",
       pipelineSummary: "{{queued}} queued · {{active}} active · {{review}} review",
       snapshotAt: "Queue snapshot: {{time}} ({{minutes}} min ago)",
       queueRetry: "Queue unavailable. Retry",
@@ -200,8 +198,12 @@ export const en = {
       heldDetail:
         "{{reason}} · {{age}}. Held by another process, for example Builds before a restart or update, which resumes them when it finishes.",
     },
+    settings: {
+      open: "Factory settings",
+      title: "{{project}} settings",
+      titleFallback: "Factory settings",
+    },
     controls: {
-      modelsAndRoles: "Models & roles",
       stageSummary: "Plan · Build · Review",
       noStatus: "No recent status",
       thread: "Thread",

@@ -10,6 +10,13 @@ import type { HostRuntimeConnectionStatus } from "@/runtime/host-runtime";
 
 export type PluginSurfacePlaceholderStatus = "loading" | "offline" | "error" | "unavailable";
 
+/** What a plugin page says in place of its content. Built-in plugin pages reuse these words. */
+export const PLUGIN_SURFACE_MESSAGES = {
+  offline: "Plugin host is offline.",
+  error: "Could not load plugins. Reconnect to try again.",
+  unavailable: "This plugin surface is unavailable.",
+} as const;
+
 interface PluginSurfacePlaceholderInput {
   connectionStatus: HostRuntimeConnectionStatus;
   catalogStatus: PluginCatalogStatus;
