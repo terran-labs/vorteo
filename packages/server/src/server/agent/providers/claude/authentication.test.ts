@@ -191,9 +191,10 @@ it.each([true, false])(
         env: { CLAUDE_CONFIG_DIR: "/fake-account", VORTEO_CLAUDE_SIGN_IN: "full" },
       },
       now: () => 100,
+      // An access-only copy: a grant with its refresh token starts the CLI without recovery.
       readGrant: async () => ({
         accessToken: "synthetic",
-        hasRefreshToken: true,
+        hasRefreshToken: false,
         expiresAt,
         scopes: [],
       }),
@@ -247,4 +248,23 @@ it("recovers a missing local grant once and rereads it before accepting authenti
   });
   expect(recoverGrant).toHaveBeenCalledExactlyOnceWith("/fake-account");
   expect(readGrant).toHaveBeenCalledTimes(2);
+});
+
+it("lets an expired grant that keeps its refresh token start the CLI, but not an access-only copy", async () => {
+  const input = {
+    executable: "/not-executed",
+    args: [],
+    runtimeSettings: { env: { CLAUDE_CONFIG_DIR: "/fake-account", VORTEO_CLAUDE_SIGN_IN: "full" } },
+    now: () => 1_000,
+  };
+  const expired = (hasRefreshToken: boolean) =>
+    vi.fn(async () => ({ accessToken: "synthetic", hasRefreshToken, expiresAt: 500, scopes: [] }));
+  // The CLI refreshes a renewable grant itself; asking the coordinator first deadlocked it.
+  const recoverGrant = vi.fn(async () => {});
+  await requireClaudeAuthentication({ ...input, readGrant: expired(true), recoverGrant });
+  expect(recoverGrant).not.toHaveBeenCalled();
+  await expect(
+    requireClaudeAuthentication({ ...input, readGrant: expired(false), recoverGrant }),
+  ).rejects.toMatchObject({ code: "SIGN_IN_REQUIRED" });
+  expect(recoverGrant).toHaveBeenCalledExactlyOnceWith("/fake-account");
 });

@@ -1786,6 +1786,15 @@ export class Session {
     return metadata;
   }
 
+  /** Sidebar subscriptions do not imply that their workspaces are open or focused. */
+  public isWorkspaceGitActive(cwd: string): boolean {
+    return [...this.clientSources.values()].some(({ activity }) => {
+      if (!activity?.appVisible || !activity.focusedAgentId) return false;
+      const agent = this.agentManager.getAgent(activity.focusedAgentId);
+      return Boolean(agent && resolve(agent.cwd) === resolve(cwd));
+    });
+  }
+
   public getClientActivity(source = this.delivery.currentSource): ClientActivity | null {
     return source ? (this.clientSources.get(source)?.activity ?? null) : null;
   }
