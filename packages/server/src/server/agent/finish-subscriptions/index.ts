@@ -1,3 +1,4 @@
+import { isRestartHoldError } from "../restart-hold.js";
 import { setTimeout as pause } from "node:timers/promises";
 import { HostObservationError } from "../host-operations/index.js";
 import { randomUUID } from "node:crypto";
@@ -40,6 +41,8 @@ interface Dependencies extends FinishObservation {
   serverId: string;
   logger: Logger;
   retryDelayMs?: number;
+  /** Resolves when a restart hold ends; a held delivery waits for it instead of retrying. */
+  waitForRestartHoldRelease?(signal: AbortSignal): Promise<void>;
 }
 export interface FinishRegistration {
   /** The prompt was accepted. Replaces preceding registrations for this pair. */
@@ -287,6 +290,13 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
           warned = false;
         } catch (error) {
           if (signal.aborted) return;
+          if (isRestartHoldError(error) && deps.waitForRestartHoldRelease) {
+            // The caller is idle and a restart holds new turns. Retrying cannot succeed until the
+            // hold ends, so wait for it once instead of retrying every few seconds. The durable
+            // intent survives the restart itself.
+            await deps.waitForRestartHoldRelease(signal);
+            continue;
+          }
           // Delivery and storage failures retain the captured outcome and durable intent.
           // They do not spend the remote-observation budget or change the child's outcome.
           if (!warned) {
