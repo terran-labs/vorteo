@@ -613,6 +613,7 @@ export type ResolvedDaemonSettings = Pick<
   | "relayRequireProtectedSecurity"
   | "appBaseUrl"
   | "idleRuntimeCleanup"
+  | "blockedWorkReview"
   | "resumeOnStartup"
   | "resumePrompt"
   | "providerCatalogRefreshTimeoutMs"
@@ -712,6 +713,8 @@ export function resolveReloadableConfig(
     relayEnabled: relay.enabled,
     relayRequireProtectedSecurity: relay.requireProtectedSecurity,
     idleRuntimeCleanup: persisted.agents?.idleRuntimeCleanup ?? true,
+    // Off by default: each review resumes a whole provider session and can cost a lot of usage.
+    blockedWorkReview: persisted.agents?.blockedWorkReview ?? false,
     ...resolveRestartRecoveryConfig(persisted.agents),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     metadataGeneration: persisted.agents?.metadataGeneration,

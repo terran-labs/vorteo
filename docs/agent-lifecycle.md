@@ -150,7 +150,11 @@ hold may resume a goal after its condition clears; an intervening manual pause o
 edit invalidates that ownership. Failed or uncertain state changes require reconciliation.
 
 External prerequisites belong in blocked checklist items with concrete conditions to
-recheck. The existing blocked-task review service scans once a minute and admits a review
+recheck. Hourly blocked-work review is off by default and enabled by the host setting
+`agents.blockedWorkReview: true` (Settings, System, **Review blocked work hourly**). The setting
+applies on the next scan without a restart. Each review resumes the thread's whole provider
+session, so a handful of blocked threads can consume a large share of a weekly plan.
+When enabled, the blocked-task review service scans once a minute and admits a review
 after an hour without activity or another review. It uses the same retained thread and
 does not create a worker. The agent checks current evidence before resuming authorized
 work. Manual goal pauses, usage limits, queue and restart holds prevent these reviews.

@@ -28,6 +28,7 @@ import { UpstreamUpdatesSection } from "@/vorton-updates/upstream-section";
 import { VORTON_BUILD_COMMIT } from "@/vorton-updates/use-update";
 import { SystemView } from "./system-view";
 import { RestartBehaviorSection } from "./restart-behavior-section";
+import { BlockedWorkReviewCard } from "../blocked-work-review-card";
 import { SystemUpdatesRow } from "./system-updates-row";
 import { HostRestartControls } from "./host-restart-controls";
 import { useSystemAdapter } from "./use-system-adapter";
@@ -337,6 +338,7 @@ export function SystemPane({
         {restartRecovery ??
           (adapter.hostId ? <RestartBehaviorSection serverId={adapter.hostId} /> : null)}
       </View>
+      {adapter.hostId ? <BlockedWorkReviewCard serverId={adapter.hostId} /> : null}
       <Button
         variant="ghost"
         onPress={toggleAdvanced}

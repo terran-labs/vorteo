@@ -14,12 +14,25 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## Unreleased - 2026-11-09
 
 ### Fixes
 
 - The Queue card no longer appears expanded and empty while the queue loads or while a send now, pause, delete, reorder or edit is still syncing for a message that has already left the queue. It shows only when it has a message, an error or a change to recover.
 - On New workspace, Import session now fades away with the launch controls when the first message is submitting, and returns if creation fails.
+- A queue pause refused because the queue changed no longer strands later messages on this device. The app checks the current queue, drops a pause it already satisfies and resends it against current state. A refused resume stays for review without holding later messages, and Retry now applies it to the current queue. Rejected pause, delete and similar commands offer Dismiss instead of keeping a local copy.
+
+## Unreleased - 2026-11-09
+
+### Improvements
+
+- The working indicator beside a running turn is now a 3x3 dot grid whose dots twinkle independently, flicking on and fading smoothly back down.
 
 ## 26.11.901 - 2026-11-09
 
