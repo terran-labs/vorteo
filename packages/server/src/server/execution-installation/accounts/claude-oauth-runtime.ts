@@ -10,7 +10,11 @@ import {
   ProviderLoginRefusal,
   ProviderLoginService,
 } from "../../../services/provider-login/service.js";
-import { requireEnvironmentDaemon, type InstallationConfig } from "../config.js";
+import {
+  claudeCoordinatorRefreshEnabled,
+  requireEnvironmentDaemon,
+  type InstallationConfig,
+} from "../config.js";
 import { connectInstallationDaemon, createInstallationRegistrationAdmission } from "../daemon.js";
 import type { InstallationSettingsService } from "../settings/service.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
@@ -215,8 +219,13 @@ export function createClaudeOAuthRuntime(
       () => true,
       () => false,
     );
-  /** Opt-in per account; the global kill switch wins. See claude-oauth-authority.ts. */
+  /**
+   * Opt-in per account; the global kill switch wins. See claude-oauth-authority.ts. Custody also
+   * needs coordinator refresh: the authority holds the only refresh token, so without it nothing
+   * would renew the account, and its grant returns to the account directory instead.
+   */
   async function custodyEnabled(definitionId: string): Promise<boolean> {
+    if (!claudeCoordinatorRefreshEnabled(config)) return false;
     if (await present(claudeAuthorityDisabledFile(config.stateDir))) return false;
     return present(claudeAuthorityEnabledFile(config.stateDir, definitionId));
   }
@@ -317,42 +326,47 @@ export function createClaudeOAuthRuntime(
   }
 
   function logRefresh(event: HostRefreshEvent) {
-    if (event.kind === "expiring")
+    if (event.kind === "signInLost")
+      logger.warn(event, "Claude sign-in is gone from its account directory; sign in again");
+    else if (event.kind === "expiring")
       logger.warn(event, "Claude access token is expiring without a successful refresh");
     else if (event.outcome === "refreshed") logger.info(event, "Claude sign-in refreshed");
     else logger.warn(event, "Claude sign-in refresh did not renew the token");
   }
 
-  const refresher = new ClaudeOAuthRefresher({
-    installationId: config.public.installationId,
-    read: () => readClaudeSetupFile(file) ?? [],
-    persist: (state) => writeClaudeSetupFile(file, state),
-    diagnostics: {
-      read: () => readClaudeSetupFile(diagnosticsFile) ?? [],
-      persist: (diagnostics) => writeClaudeSetupFile(diagnosticsFile, diagnostics),
+  const refresher = new ClaudeOAuthRefresher(
+    {
+      installationId: config.public.installationId,
+      read: () => readClaudeSetupFile(file) ?? [],
+      persist: (state) => writeClaudeSetupFile(file, state),
+      diagnostics: {
+        read: () => readClaudeSetupFile(diagnosticsFile) ?? [],
+        persist: (diagnostics) => writeClaudeSetupFile(diagnosticsFile, diagnostics),
+      },
+      policy,
+      grant: hostGrant,
+      log: logRefresh,
+      refresh: async (definitionId) => {
+        const revision = policy(definitionId).revision;
+        const configDir = await refreshDir(definitionId);
+        if (policy(definitionId).revision !== revision) throw new ClaudeOAuthDeliveryError();
+        await cli.refresh(configDir);
+      },
+      deliver: async (delivery: ClaudeOAuthProjectionDelivery) => {
+        const environment = config.public.environments.find(
+          (item) => item.serverId === delivery.serverId,
+        );
+        if (environment?.kind !== "container") throw new ClaudeOAuthDeliveryError();
+        // Withdrawal remains available while ordinary Dev work is fenced.
+        if (delivery.access !== null) assertReady("container-daemon");
+        return ClaudeOAuthProjectionReceiptSchema.parse(
+          await post("container", "/api/installation/claude/oauth/projection", delivery),
+        );
+      },
+      now,
     },
-    policy,
-    grant: hostGrant,
-    log: logRefresh,
-    refresh: async (definitionId) => {
-      const revision = policy(definitionId).revision;
-      const configDir = await refreshDir(definitionId);
-      if (policy(definitionId).revision !== revision) throw new ClaudeOAuthDeliveryError();
-      await cli.refresh(configDir);
-    },
-    deliver: async (delivery: ClaudeOAuthProjectionDelivery) => {
-      const environment = config.public.environments.find(
-        (item) => item.serverId === delivery.serverId,
-      );
-      if (environment?.kind !== "container") throw new ClaudeOAuthDeliveryError();
-      // Withdrawal remains available while ordinary Dev work is fenced.
-      if (delivery.access !== null) assertReady("container-daemon");
-      return ClaudeOAuthProjectionReceiptSchema.parse(
-        await post("container", "/api/installation/claude/oauth/projection", delivery),
-      );
-    },
-    now,
-  });
+    { cliRefresh: claudeCoordinatorRefreshEnabled(config) },
+  );
 
   async function recover(
     kind: "host" | "container",
