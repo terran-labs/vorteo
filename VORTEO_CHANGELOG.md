@@ -14,6 +14,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## Unreleased - 2026-11-13
 
 ### Maintenance
