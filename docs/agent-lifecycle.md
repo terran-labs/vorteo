@@ -150,12 +150,17 @@ hold may resume a goal after its condition clears; an intervening manual pause o
 edit invalidates that ownership. Failed or uncertain state changes require reconciliation.
 
 External prerequisites belong in blocked checklist items with concrete conditions to
-recheck. Hourly blocked-work review is off by default and enabled by the host setting
-`agents.blockedWorkReview: true` (Settings, System, **Review blocked work hourly**). The setting
-applies on the next scan without a restart. Each review resumes the thread's whole provider
-session, so a handful of blocked threads can consume a large share of a weekly plan.
-When enabled, the blocked-task review service scans once a minute and admits a review
-after an hour without activity or another review. It uses the same retained thread and
+recheck. Blocked-work review is off by default and enabled by the host setting
+`agents.blockedWorkReview: true` (Settings, System, **Review blocked work**). The setting
+applies on the next scan without a restart. When enabled, the blocked-task review service
+scans once a minute. A thread gets up to three reviews per blocked stretch: about 5, 15
+and 30 minutes after its last activity or previous review. Every gap stays inside the
+one-hour prompt cache and idle runtime cleanup, so a review rereads a warm cache instead of
+rebuilding the conversation; the former hourly review landed just after the cache expired.
+The last review asks the agent to leave blocker descriptions the owner can act on. After
+that, reviews stop until a real prompt, such as an owner message or a notification, starts a
+new stretch; a review's own prompt does not. Blocked items listed in an open question's
+`blocks` are skipped because the answer arrives as a message. Each review uses the same retained thread and
 does not create a worker. The agent checks current evidence before resuming authorized
 work. Manual goal pauses, usage limits, queue and restart holds prevent these reviews.
 Confirmed blocked goals also enter this review path without a checklist item. A durable
