@@ -3,7 +3,9 @@ import {
   createWorktree as createWorktreePrimitive,
   deriveWorktreeProjectHash,
   deletePaseoWorktree,
+  forgetMissingWorktreeEntry,
   isPaseoOwnedWorktreeCwd,
+  worktreeAdminDir,
   mapWorkspaceCwdToWorktree,
   rewriteWorktreeLinksToLogicalPaths,
   runWorktreeTeardownCommands,
@@ -20,10 +22,11 @@ import {
   existsSync,
   readFileSync,
   realpathSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "fs";
-import { join } from "path";
+import { dirname, join, relative as relativePath } from "path";
 import { createServer, type AddressInfo, type Socket } from "net";
 import { tmpdir } from "os";
 import { createRealpathAwarePathMatcher } from "./path";
@@ -649,5 +652,121 @@ describe("slugify", () => {
       const slug = slugify(input);
       expect(slugify(slug)).toBe(slug);
     }
+  });
+});
+
+// #295: Host and Dev share one repository but each sees only some worktree folders. Hiding a
+// folder by renaming it stands in for the environment that cannot see it.
+describe("worktrees seen from an environment that cannot see their folders", () => {
+  let tempDir: string;
+  let repoDir: string;
+
+  beforeEach(() => {
+    tempDir = realpathSync(mkdtempSync(join(tmpdir(), "worktree-visibility-test-")));
+    repoDir = join(tempDir, "repo");
+    mkdirSync(repoDir);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repoDir, stdio: "pipe" });
+    git("init", "-b", "main");
+    git("config", "user.email", "test@test.com");
+    git("config", "user.name", "Test");
+    writeFileSync(join(repoDir, "file.txt"), "hello\n");
+    git("add", ".");
+    git("-c", "commit.gpgsign=false", "commit", "-m", "initial");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  });
+
+  it("keeps another environment's worktrees through prunes, deletes and reused names", async () => {
+    const worktreesRoot = join(tempDir, "worktrees");
+    const paseoHome = join(tempDir, "paseo-home");
+    const create = (slug: string) =>
+      createWorktreePrimitive({
+        cwd: repoDir,
+        worktreeSlug: slug,
+        source: { kind: "branch-off", baseBranch: "main", branchName: slug },
+        paseoHome,
+        worktreesRoot,
+      });
+    const listing = () =>
+      execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
+    const isRegistered = (path: string) => listing().split("\n").includes(`worktree ${path}`);
+    const host = await create("host-task");
+    const own = await create("own-task");
+    // An unlocked worktree someone added by hand, also visible only on the other side.
+    const manual = join(tempDir, "manual");
+    execFileSync("git", ["worktree", "add", "-q", manual, "-b", "manual"], { cwd: repoDir });
+    expect(listing()).toContain("locked Vorteo worktree");
+
+    const hide = (path: string) => renameSync(path, `${path}.elsewhere`);
+    hide(host.worktreePath);
+    hide(manual);
+
+    // A repository-wide prune from the blind side keeps the locked Vorteo worktree.
+    execFileSync("git", ["worktree", "prune"], { cwd: repoDir });
+    expect(isRegistered(host.worktreePath)).toBe(true);
+
+    // Deleting this side's own worktree touches no other registration.
+    execFileSync(
+      "git",
+      ["worktree", "add", "-q", manual.replace("manual", "manual2"), "-b", "m2"],
+      {
+        cwd: repoDir,
+      },
+    );
+    hide(manual.replace("manual", "manual2"));
+    await deletePaseoWorktree({
+      cwd: repoDir,
+      worktreePath: own.worktreePath,
+      paseoHome,
+      worktreesBaseRoot: worktreesRoot,
+    });
+    expect(isRegistered(own.worktreePath)).toBe(false);
+    expect(isRegistered(manual.replace("manual", "manual2"))).toBe(true);
+
+    // The blind side never reuses a name the other side registered.
+    const again = await create("host-task");
+    expect(again.worktreePath).not.toBe(host.worktreePath);
+    expect(isRegistered(host.worktreePath)).toBe(true);
+
+    // A locked registration is forgotten only when it still checks out the expected branch.
+    await expect(
+      forgetMissingWorktreeEntry(repoDir, host.worktreePath, { lockedBranch: "other" }),
+    ).resolves.toBe(false);
+    expect(isRegistered(host.worktreePath)).toBe(true);
+    await expect(
+      forgetMissingWorktreeEntry(repoDir, host.worktreePath, { lockedBranch: "host-task" }),
+    ).resolves.toBe(true);
+    expect(isRegistered(host.worktreePath)).toBe(false);
+
+    // A link that walks out of the worktrees folder is never taken for an admin entry, and a
+    // relative admin link still names its worktree.
+    const escaping = join(tempDir, "escaping");
+    mkdirSync(escaping);
+    writeFileSync(join(escaping, ".git"), `gitdir: ${join(repoDir, ".git", "worktrees")}/../\n`);
+    await expect(worktreeAdminDir(escaping)).resolves.toBeNull();
+    await expect(worktreeAdminDir(again.worktreePath)).resolves.toMatch(/\/worktrees\/[^/]+$/);
+    const relative = await create("relative-link");
+    const relativeAdmin = (await worktreeAdminDir(relative.worktreePath))!;
+    writeFileSync(
+      join(relativeAdmin, "gitdir"),
+      `${relativePath(relativeAdmin, join(relative.worktreePath, ".git"))}\n`,
+    );
+    hide(relative.worktreePath);
+    await expect(
+      forgetMissingWorktreeEntry(repoDir, relative.worktreePath, { lockedBranch: "relative-link" }),
+    ).resolves.toBe(true);
+
+    // Archive without a repository root still drops exactly its own locked registration, so
+    // its branch can be checked out again.
+    await deletePaseoWorktree({
+      worktreePath: again.worktreePath,
+      worktreesRoot: dirname(again.worktreePath),
+      paseoHome,
+      worktreesBaseRoot: worktreesRoot,
+    });
+    expect(isRegistered(again.worktreePath)).toBe(false);
+    expect(isRegistered(manual.replace("manual", "manual2"))).toBe(true);
   });
 });
