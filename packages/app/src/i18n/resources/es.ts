@@ -267,6 +267,7 @@ export const es: TranslationResources = {
       implement: "Implementar",
       question: "¿Cómo le gustaría proceder?",
       proposedPlan: "Plan propuesto",
+      mode: "Este hilo está en modo {{mode}}.",
     },
   },
   agentPanel: {

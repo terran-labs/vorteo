@@ -266,6 +266,7 @@ export const ja: TranslationResources = {
       implement: "実装",
       question: "どのように続けますか？",
       proposedPlan: "提案されたプラン",
+      mode: "このスレッドは{{mode}}モードです。",
     },
   },
   agentPanel: {

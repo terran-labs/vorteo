@@ -22,6 +22,8 @@ import {
   CodexSignInProjectionDeliverySchema,
   CodexSignInProjectionReceiptSchema,
   CodexSignInProjectionService,
+  CODEX_BUSY_TITLE_MAX,
+  type CodexLegacyBusy,
   type CodexLegacyTarget,
   type CodexSignInBindingRequest,
 } from "./codex-signin-delivery.js";
@@ -33,6 +35,7 @@ import type { CodexRefreshLeases } from "./codex-signin-lease.js";
 import {
   forgetLegacyCodexSignIn,
   inspectLegacyCodexHome,
+  legacyOtherSession,
   pinCodexHome,
   restoreLegacyCodexSignIn,
   sharesCodexHome,
@@ -49,9 +52,26 @@ interface ConsumerOptions {
   codexRefreshLeases?: CodexRefreshLeases;
   /** Whether an agent session, or one being started, uses this provider ID. */
   providerInUse?(providerId: string): boolean;
+  /** `busy` while a session on this provider starts or runs a turn, `loaded` while one is idle. */
+  providerSessionActivity?(providerId: string): "busy" | "loaded" | "none";
+  /** Raw titles of the sessions on this provider that start or run a turn. */
+  providerBusyTitles?(providerId: string): string[];
   /** The daemon's environment, for the CODEX_HOME a provider without its own inherits. Tests. */
   daemonEnv?: NodeJS.ProcessEnv;
   logger?: Logger;
+}
+
+/** Shown for a busy thread without a title, such as one still starting. */
+export const UNTITLED_THREAD = "Untitled thread";
+
+/** A thread title as plain text on one line, at most CODEX_BUSY_TITLE_MAX characters. */
+function plainTitle(raw: string): string {
+  const flat = raw
+    .replace(/[\p{Cc}\u2028\u2029]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const capped = Array.from(flat).slice(0, CODEX_BUSY_TITLE_MAX).join("").trim();
+  return capped || UNTITLED_THREAD;
 }
 
 const MANAGED_PROVIDER_ID =
@@ -304,6 +324,44 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
     );
   }
 
+  /** The binding and every other Codex provider whose launch home is the same directory. */
+  function homeProviders(providerId: string, target: PinnedCodexHome): string[] {
+    const others = codexLaunchHomes().filter(
+      (item) => item.providerId !== providerId && sharesCodexHome(target, [item.home]),
+    );
+    return [providerId, ...others.map((item) => item.providerId)];
+  }
+
+  /**
+   * Whether a session on the home starts or runs a turn, and those threads' titles as plain
+   * text: control characters and line breaks removed, each at most 80 characters, at most three
+   * with how many more. Loaded idle sessions do not count. No IDs.
+   */
+  function busyOnHome(providerId: string, target: PinnedCodexHome): CodexLegacyBusy {
+    const activity = options.providerSessionActivity;
+    const titlesOf = options.providerBusyTitles;
+    if (!activity || !titlesOf) throw new CodexSignInDeliveryError();
+    const busy = homeProviders(providerId, target).filter((id) => activity(id) === "busy");
+    const titles = busy.flatMap((id) => titlesOf(id)).map(plainTitle);
+    // A session starting anywhere counts as busy before it names its provider, without a title.
+    if (busy.length > 0 && titles.length === 0) titles.push(UNTITLED_THREAD);
+    return {
+      active: busy.length > 0,
+      titles: titles.slice(0, 3),
+      more: Math.max(0, titles.length - 3),
+    };
+  }
+
+  /**
+   * Leases every provider sharing the home, all or none, so no session on it starts while the
+   * lease is held, and returns their release. Refuses while any of them starts or runs a turn.
+   */
+  function holdHome(providerId: string, target: PinnedCodexHome): () => void {
+    const release = options.codexRefreshLeases?.acquireAll(homeProviders(providerId, target));
+    if (!release) throw new CodexSignInDeliveryError();
+    return release;
+  }
+
   /** The adopted home, only while it is still the directory the owner adopted and unshared. */
   function pinnedHome(providerId: string, home: string, target: CodexLegacyTarget): string {
     let current: PinnedCodexHome;
@@ -371,6 +429,8 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
           definitionId: delivery.definitionId,
           journalDefinition: previousDefinition,
           keepLocalSignIn: delivery.adoption?.keepLocalSignIn === true,
+          hold: () => holdHome(delivery.providerId, pinCodexHome(home)),
+          sessionCheck: delivery.adoption?.sessionCheck,
         }),
     });
     consumers.set(key, consumer);
@@ -466,6 +526,18 @@ export function mountCodexSignInConsumer(app: Express, options: ConsumerOptions)
             journalDefinition: journalDefinition(target.realpath),
           });
           res.json({ target, signIn });
+          return;
+        }
+        // The checks a pin makes, so the answer never describes a home that could not be adopted.
+        if (request.operation === "session-check") {
+          if (excluded) throw new CodexSignInDeliveryError();
+          const target = pinCodexHome(home);
+          if (sharesCodexHome(target, otherHomes(request.providerId)))
+            throw new CodexSignInDeliveryError();
+          res.json({
+            different: legacyOtherSession(target.realpath, request.sessionCheck),
+            ...busyOnHome(request.providerId, target),
+          });
           return;
         }
         if (request.operation === "sessions") {

@@ -98,10 +98,33 @@ export type CodexLegacyTarget = z.infer<typeof CodexLegacyTargetSchema>;
 /** SHA-256 of a sign-in's ChatGPT workspace and person; see codexSignInKeyDigest. */
 const PersonDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
+const Hmac = z.string().regex(/^[a-f0-9]{64}$/);
+/**
+ * The Host sign-in's login session under a single-use nonce: HMAC-SHA256 of the person with the
+ * session ID, and with the authentication time, each present only when the ID token names it.
+ * Never a token or a claim. See codexOtherSession for the rule.
+ */
+export const CodexSessionCheckSchema = z.strictObject({
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  sid: Hmac.optional(),
+  authTime: Hmac.optional(),
+});
+
+export type CodexSessionCheck = z.infer<typeof CodexSessionCheckSchema>;
+
 export const CodexSignInLegacyRequestSchema = z.discriminatedUnion("operation", [
   ProjectionBindingRequestSchema.extend({ operation: z.literal("pin") }),
   /** Whether a Codex session runs, or is being started, on this provider ID. */
   ProjectionBindingRequestSchema.extend({ operation: z.literal("sessions") }),
+  /**
+   * Requires `codexLegacySessionHold`, for an early refusal the owner can act on: whether the
+   * home's refresh sign-in is certainly another login session than the Host's, and the threads
+   * on the home that start or run a turn. The write decides again by itself.
+   */
+  ProjectionBindingRequestSchema.extend({
+    operation: z.literal("session-check"),
+    sessionCheck: CodexSessionCheckSchema.optional(),
+  }),
   /** Puts the saved local sign-in back as `auth.json`, after the projection is withdrawn. */
   ProjectionBindingRequestSchema.extend({
     operation: z.literal("restore"),
@@ -135,6 +158,26 @@ export const CodexLegacyInspectResponseSchema = z.strictObject({
 });
 export type CodexLegacyInspection = z.infer<typeof CodexLegacyInspectResponseSchema>;
 export const CodexLegacySessionsResponseSchema = z.strictObject({ active: z.boolean() });
+/** Busy threads' titles, plain text: at most three, with how many more are busy. Never IDs. */
+export const CODEX_BUSY_TITLE_MAX = 80;
+export const CodexLegacyBusyResponseSchema = z.strictObject({
+  active: z.boolean(),
+  titles: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(CODEX_BUSY_TITLE_MAX)
+        .regex(/^[^\p{Cc}\u2028\u2029]+$/u),
+    )
+    .max(3),
+  more: z.number().int().nonnegative(),
+});
+export type CodexLegacyBusy = z.infer<typeof CodexLegacyBusyResponseSchema>;
+/** `different`: Dev holds no sign-in that could renew the Host's grant. */
+export const CodexLegacySessionCheckResponseSchema = CodexLegacyBusyResponseSchema.extend({
+  different: z.boolean(),
+});
 export const CodexLegacyRestoreResponseSchema = z.discriminatedUnion("restored", [
   z.strictObject({ restored: z.literal(false) }),
   z.strictObject({ restored: z.literal(true), copyAgeMs: z.number().int().nonnegative() }),
@@ -154,6 +197,12 @@ export const CodexSignInProjectionDeliverySchema = projectionDeliverySchema(
       target: CodexLegacyTargetSchema,
       /** Save the local sign-in this projection replaces, so un-adopt can restore it. */
       keepLocalSignIn: z.boolean(),
+      /**
+       * Requires `codexLegacySessionHold`: the Host sign-in's login session, with a nonce new
+       * for this delivery. Dev replaces a refresh sign-in without holding its sessions only when
+       * this shows it is another login session; absent means hold. Older daemons refuse it.
+       */
+      sessionCheck: CodexSessionCheckSchema.optional(),
     })
     .optional(),
 });

@@ -37,7 +37,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import { useSessionStore } from "@/stores/session-store";
 import { useRefreshAfterSignIn } from "./refresh-after-sign-in";
-import { CodexAdoptionSection } from "./codex-adoption";
+import { CodexAdoptionSection, useCodexSwitchOffered } from "./codex-adoption";
 import { OptionalSectionBoundary } from "./optional-section-boundary";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { confirmDialog } from "@/utils/confirm-dialog";
@@ -117,7 +117,26 @@ function LoginPanelContent(props: LoginPanelProps) {
       </Text>
     );
   if (provider !== "codex" || props.withoutAdoption) return <AccountLoginContent {...props} />;
-  // A legacy Codex account can adopt the Host's sign-in; the section hides itself otherwise.
+  return <CodexLoginContent {...props} />;
+}
+
+/**
+ * A legacy Codex account can adopt the Host's sign-in; the section hides itself otherwise. While
+ * it can switch, switching comes first as the one primary action and Dev's own sign-in follows
+ * as a quiet alternative, opened on request.
+ */
+function CodexLoginContent(props: LoginPanelProps) {
+  const { serverId, providerId } = props;
+  const switchOffered = useCodexSwitchOffered(serverId, providerId);
+  if (switchOffered)
+    return (
+      <View style={styles.body}>
+        <OptionalSectionBoundary name="CodexAdoption">
+          <CodexAdoptionSection serverId={serverId} providerId={providerId} />
+        </OptionalSectionBoundary>
+        <DevOnlySignIn {...props} />
+      </View>
+    );
   return (
     <View style={styles.body}>
       <AccountLoginContent {...props} />
@@ -125,6 +144,22 @@ function LoginPanelContent(props: LoginPanelProps) {
       <OptionalSectionBoundary name="CodexAdoption">
         <CodexAdoptionSection serverId={serverId} providerId={providerId} />
       </OptionalSectionBoundary>
+    </View>
+  );
+}
+
+/** Dev's own sign-in for a switchable account: a quiet offer that opens the usual panel. */
+function DevOnlySignIn(props: LoginPanelProps) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const openSignIn = useCallback(() => setOpen(true), []);
+  if (open) return <AccountLoginContent {...props} startOnOpen />;
+  return (
+    <View style={styles.devOnly}>
+      <Text style={styles.muted}>{t("codexAdoption.devOnly.text")}</Text>
+      <Button variant="secondary" size="sm" onPress={openSignIn} testID="codex-dev-only-sign-in">
+        {t("codexAdoption.devOnly.action")}
+      </Button>
     </View>
   );
 }
@@ -933,6 +968,7 @@ function StartButton({
 
 const styles = StyleSheet.create((theme) => ({
   body: { gap: theme.spacing[4] },
+  devOnly: { gap: theme.spacing[2], alignItems: "flex-start" },
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
   warning: { color: theme.colors.destructive },

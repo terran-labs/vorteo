@@ -14,9 +14,14 @@ import { z } from "zod";
 import { isTrustedCredentialsFile, replaceAtomically } from "./claude-oauth-credentials-file.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { CODEX_SIGNIN_STATE_DIRECTORY } from "./codex-signin-auth-file.js";
-import { codexSignInKeyDigest, sameCodexSignIn } from "./codex-signin-identity.js";
+import {
+  codexOtherSession,
+  codexSignInKeyDigest,
+  sameCodexSignIn,
+} from "./codex-signin-identity.js";
 import {
   CodexSignInDeliveryError,
+  type CodexSessionCheck,
   type CodexAccessProjection,
   type CodexLegacyTarget,
 } from "./codex-signin-delivery.js";
@@ -246,6 +251,53 @@ function projectionContents(access: CodexAccessProjection): string {
   );
 }
 
+/** Removes this writer's own projection. */
+function withdrawProjection(home: string, file: string): void {
+  try {
+    unlinkSync(file);
+  } catch (error) {
+    if (code(error) !== "ENOENT") throw new CodexSignInDeliveryError();
+  }
+  writeClaudeSetupFile(stateFile(home, WRITTEN), { digests: [] });
+}
+
+/**
+ * Prepares to replace a sign-in this writer did not write: only a refresh sign-in of the same
+ * person, which it saves for un-adopt. It may be a copy of the Host's grant, so the hold keeps
+ * every session on the home from starting or running a turn, and so from renewing it, until the
+ * returned release.
+ */
+function takeOverLocalSignIn(
+  home: string,
+  current: string,
+  access: CodexAccessProjection,
+  options: {
+    keepLocalSignIn: boolean;
+    hold: () => () => void;
+    sessionCheck: CodexSessionCheck | undefined;
+  },
+): (() => void) | null {
+  const local = localSignIn(current);
+  if (!local || !sameCodexSignIn(local, access))
+    throw new HostProjectionRefusal("existing_sign_in");
+  // Decided here, in the write, from the file being replaced: only a sign-in shown to be from
+  // another login session than the Host's is replaced without the hold.
+  const release = codexOtherSession(local.idToken, options.sessionCheck) ? null : options.hold();
+  try {
+    // Each adoption keeps the latest sign-in Dev made, which un-adopt restores.
+    if (options.keepLocalSignIn) {
+      writeClaudeSetupFile(stateFile(home, LOCAL_SIGN_IN_COPY), local.value);
+      writeClaudeSetupFile(stateFile(home, LOCAL_SIGN_IN_PERSON), {
+        person: personOf(local.value),
+      });
+    }
+  } catch (error) {
+    release?.();
+    throw error;
+  }
+  return release;
+}
+
 /**
  * Writes or withdraws the projection in an adopted legacy home. It replaces only a refresh
  * sign-in of the same person in the Host's ChatGPT workspace, or a projection it wrote itself
@@ -257,7 +309,16 @@ function projectionContents(access: CodexAccessProjection): string {
 export function writeLegacyCodexProjection(
   home: string,
   access: CodexAccessProjection | null,
-  options: LegacyHomeOwner & { keepLocalSignIn: boolean },
+  options: LegacyHomeOwner & {
+    keepLocalSignIn: boolean;
+    /**
+     * Holds every provider sharing the home while a refresh sign-in that may be a copy of the
+     * Host's grant is replaced, and returns its release. Throws while any of them is busy.
+     */
+    hold: () => () => void;
+    /** The Host's login-session fingerprints; absent means hold. */
+    sessionCheck: CodexSessionCheck | undefined;
+  },
 ): HostProjectionStoreResult {
   stateDirectory(home);
   const file = join(home, AUTH_FILE);
@@ -265,47 +326,47 @@ export function writeLegacyCodexProjection(
   const written = attributedDigests(home, options);
   const ours = current !== null && written.includes(digestOf(current));
   if (!access) {
-    if (ours) {
-      try {
-        unlinkSync(file);
-      } catch (error) {
-        if (code(error) !== "ENOENT") throw new CodexSignInDeliveryError();
-      }
-      writeClaudeSetupFile(stateFile(home, WRITTEN), { digests: [] });
-    }
+    if (ours) withdrawProjection(home, file);
     return { replacedLocally: false };
   }
   let replacedLocally = false;
-  if (current !== null && !ours) {
-    const local = localSignIn(current);
-    if (!local || !sameCodexSignIn(local, access))
-      throw new HostProjectionRefusal("existing_sign_in");
-    // Each adoption keeps the latest sign-in Dev made, which un-adopt restores.
-    if (options.keepLocalSignIn) {
-      writeClaudeSetupFile(stateFile(home, LOCAL_SIGN_IN_COPY), local.value);
-      writeClaudeSetupFile(stateFile(home, LOCAL_SIGN_IN_PERSON), {
-        person: personOf(local.value),
-      });
+  let release: (() => void) | null = null;
+  try {
+    if (current !== null && !ours) {
+      release = takeOverLocalSignIn(home, current, access, options);
+      replacedLocally = written.length > 0;
+    } else if (current !== null && digestOf(current) !== written.at(-1)) {
+      replacedLocally = true;
     }
-    replacedLocally = written.length > 0;
-  } else if (current !== null && digestOf(current) !== written.at(-1)) {
-    replacedLocally = true;
+    const contents = projectionContents(access);
+    const digest = digestOf(contents);
+    const key = definitionKey(options.definitionId);
+    const recorded = readDefinition(home) === key;
+    // A repeated delivery of the current projection leaves the file alone.
+    if (recorded && current !== null && digestOf(current) === digest && written.at(-1) === digest)
+      return { replacedLocally: false };
+    // The definition first, then the digests, then the file: whatever a crash leaves behind is
+    // still recognised as this definition's.
+    if (!recorded) writeClaudeSetupFile(stateFile(home, DEFINITION), { definition: key });
+    const latest = written.at(-1);
+    const digests = latest && latest !== digest ? [latest, digest] : [digest];
+    writeClaudeSetupFile(stateFile(home, WRITTEN), { digests });
+    replaceAtomically(home, file, contents);
+    return { replacedLocally };
+  } finally {
+    release?.();
   }
-  const contents = projectionContents(access);
-  const digest = digestOf(contents);
-  const key = definitionKey(options.definitionId);
-  const recorded = readDefinition(home) === key;
-  // A repeated delivery of the current projection leaves the file alone.
-  if (recorded && current !== null && digestOf(current) === digest && written.at(-1) === digest)
-    return { replacedLocally: false };
-  // The definition first, then the digests, then the file: whatever a crash leaves behind is
-  // still recognised as this definition's.
-  if (!recorded) writeClaudeSetupFile(stateFile(home, DEFINITION), { definition: key });
-  const latest = written.at(-1);
-  const digests = latest && latest !== digest ? [latest, digest] : [digest];
-  writeClaudeSetupFile(stateFile(home, WRITTEN), { digests });
-  replaceAtomically(home, file, contents);
-  return { replacedLocally };
+}
+
+/**
+ * Whether the home holds nothing that can renew the Host's grant: no refresh sign-in (no file,
+ * an API key, or a projection, whose refresh token is empty), or one from another login session
+ * by the coordinator's check. Nothing is kept.
+ */
+export function legacyOtherSession(home: string, check: CodexSessionCheck | undefined): boolean {
+  const current = readCurrent(join(home, AUTH_FILE));
+  const local = current === null ? null : localSignIn(current);
+  return local === null || codexOtherSession(local.idToken, check);
 }
 
 /** What a legacy home's `auth.json` holds, for resuming a paused adoption. */

@@ -3373,6 +3373,14 @@ export class AgentManager {
     return sessions.length > 0 ? "loaded" : "none";
   }
 
+  /** Titles of the sessions on this provider that start or run a turn; empty when untitled. */
+  providerBusyTitles(provider: AgentProvider): string[] {
+    return Array.from(this.agents.values())
+      .filter((agent) => agent.provider === provider)
+      .filter((agent) => isAgentBusy(agent.lifecycle) || this.runs.hasRun(agent.id))
+      .map((agent) => this.registry?.getLoadedRecord(agent.id)?.title ?? agent.config.title ?? "");
+  }
+
   isProviderInUse(provider: AgentProvider): boolean {
     // A registering session can already own credentials before entering agents.
     // Its final provider is not indexed yet, so defer deletion until registration settles.

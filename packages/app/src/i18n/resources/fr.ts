@@ -266,6 +266,7 @@ export const fr: TranslationResources = {
       implement: "Implémenter",
       question: "Comment souhaitez-vous procéder ?",
       proposedPlan: "Plan proposé",
+      mode: "Ce fil est en mode {{mode}}.",
     },
   },
   agentPanel: {

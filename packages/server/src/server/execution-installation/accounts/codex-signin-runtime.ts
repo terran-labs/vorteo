@@ -29,6 +29,7 @@ import {
   type CodexSignInProjectionDelivery,
 } from "./codex-signin-delivery.js";
 import { createCodexHostCli, readCodexHostGrant, type CodexHostCli } from "./codex-signin-host.js";
+import { codexSessionCheck } from "./codex-signin-identity.js";
 import { CodexSignInRefresher } from "./codex-signin-refresher.js";
 import { HostRefreshSkipped, type HostRefreshPolicy } from "./host-owned-refresher.js";
 
@@ -55,6 +56,7 @@ interface DaemonFeatures {
   codexInstallationSignIn?: boolean;
   codexAccountAdoption?: boolean;
   codexLegacyPinByPath?: boolean;
+  codexLegacySessionHold?: boolean;
 }
 
 interface RuntimeOverrides {
@@ -134,6 +136,19 @@ export function createCodexSignInRuntime(
         await client.close();
       }
     });
+
+  /**
+   * Dev's features, read at most once a minute: every adopted delivery asks, and a connection
+   * per delivery would be wasteful. A Dev rolled back within that minute refuses the new
+   * delivery field, which leaves the delivery pending until the next read.
+   */
+  let devFeatureRead: { at: number; features: DaemonFeatures | undefined } | null = null;
+  async function devFeatures(): Promise<DaemonFeatures | undefined> {
+    if (devFeatureRead && now() - devFeatureRead.at < 60_000) return devFeatureRead.features;
+    const features = await daemonFeatures("container");
+    devFeatureRead = { at: now(), features };
+    return features;
+  }
 
   /** Every daemon must know the binding and projection routes before the Host signs in. */
   async function assertSupported() {
@@ -424,6 +439,14 @@ export function createCodexSignInRuntime(
         !adoption.admitsHostIdentity(delivery.definitionId, delivery.access)
       )
         throw new CodexSignInDeliveryError();
+      // Withdrawals replace nothing. A Dev that can hold its sessions gets the Host sign-in's
+      // login session under a nonce new for this delivery; without it, Dev always holds.
+      const sessionCheck =
+        adopted &&
+        delivery.access !== null &&
+        (await devFeatures())?.codexLegacySessionHold === true
+          ? codexSessionCheck(delivery.access.idToken)
+          : null;
       const body = adopted
         ? {
             ...delivery,
@@ -432,6 +455,7 @@ export function createCodexSignInRuntime(
               keepLocalSignIn:
                 adopted.copyForgottenAt === null &&
                 codexAdoptionRetention(config, delivery.definitionId).mode !== "none",
+              ...(sessionCheck ? { sessionCheck } : {}),
             },
           }
         : delivery;
@@ -470,6 +494,7 @@ export function createCodexSignInRuntime(
       return true;
     },
     pinByPath: async () => (await daemonFeatures("container"))?.codexLegacyPinByPath === true,
+    sessionHold: async () => (await devFeatures())?.codexLegacySessionHold === true,
     hostHome: (definitionId, hostProviderId, revision) =>
       bindingHome({
         installationId: config.public.installationId,

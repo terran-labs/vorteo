@@ -13,6 +13,9 @@ import * as executableUtils from "../../../../executable-resolution/executable-r
 import { buildAgentAttentionNotificationPayload } from "@getpaseo/protocol/agent-attention-notification";
 import {
   ClaudeAgentClient,
+  CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION,
+  describeClaudePermissionReason,
+  flattenPromptText,
   readClaudeCompactionSummaries,
   convertClaudeHistoryEntry,
   normalizeClaudeAskUserQuestionRequestInput,
@@ -737,6 +740,136 @@ describe("ClaudeAgentSession features", () => {
     });
     return { queryFactory, queryMock, launches };
   }
+
+  // #659 review: agent-controlled reason, path and title text is flattened and capped on the card.
+  // #659: each family of Claude Code's dangerous-removal reason (claude.exe 2.1.321). A check
+  // that could not tell the target gets the "could not rule out" sentence; a known dangerous
+  // target is never softened and keeps Claude Code's own words and path.
+  const UNRESOLVED =
+    "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check.";
+  const KNOWN =
+    "Claude Code's safety check stopped this command because it would remove a dangerous target. Bypass mode does not skip this check.";
+  test.each([
+    [
+      "Dangerous rm operation on statically-unresolvable target: /tmp/x/*",
+      `${UNRESOLVED} Path: /tmp/x/*`,
+    ],
+    [
+      "Dangerous rmdir operation on statically-unresolvable target: command substitution output",
+      `${UNRESOLVED} Path: command substitution output`,
+    ],
+    [
+      "Dangerous rm operation not ruled out \u2014 the shell may read this command differently than it was parsed",
+      UNRESOLVED,
+    ],
+    [
+      "Dangerous rm operation not ruled out \u2014 too many command substitutions to analyze (12)",
+      UNRESOLVED,
+    ],
+    ["This shell -c script runs rm and could not be checked", UNRESOLVED],
+    [
+      "Dangerous rm operation on critical path: /etc",
+      `${KNOWN} Dangerous rm operation on critical path: /etc`,
+    ],
+    [
+      "Dangerous rm operation on working directory or its ancestor: /Users/vtn",
+      `${KNOWN} Dangerous rm operation on working directory or its ancestor: /Users/vtn`,
+    ],
+    [
+      "Dangerous rmdir operation on possibly-empty variable path: $DIR/build (use a literal path: when the expansion is empty this removes /build)",
+      `${KNOWN} Dangerous rmdir operation on possibly-empty variable path: $DIR/build (use a literal path: when the expansion is empty this removes /build)`,
+    ],
+    [
+      "Dangerous rm operation on drive root: \\",
+      `${KNOWN} Dangerous rm operation on drive root: \\`,
+    ],
+    [
+      "Dangerous rm operation on mounted drive path: /Volumes/Backup",
+      `${KNOWN} Dangerous rm operation on mounted drive path: /Volumes/Backup`,
+    ],
+    [
+      "Dangerous rm operation on a Windows path this check cannot place: C:x",
+      `${KNOWN} Dangerous rm operation on a Windows path this check cannot place: C:x`,
+    ],
+  ])("words the removal reason %s", (decisionReason, expected) => {
+    expect(describeClaudePermissionReason({ decisionReason })).toBe(expected);
+  });
+
+  test("flattens and caps the worded permission reason", () => {
+    const longPath = `/tmp/${"a".repeat(400)}`;
+    const removal = describeClaudePermissionReason({
+      decisionReason: `Dangerous rm operation on statically-unresolvable target: ${longPath}\n/etc`,
+    });
+    expect(removal).toMatch(
+      /^Claude Code's safety check stopped this command .* Path: \/tmp\/a+…$/,
+    );
+    expect(removal).not.toContain("\n");
+    expect(removal!.length).toBeLessThan(CLAUDE_DANGEROUS_REMOVAL_DESCRIPTION.length + 220);
+    const other = describeClaudePermissionReason({
+      decisionReason: `Line one\n\n  line two ${"b".repeat(400)}`,
+    });
+    expect(other).toMatch(/^Line one line two b+…$/);
+    expect(other!.length).toBe(300);
+    expect(
+      describeClaudePermissionReason({
+        decisionReason: "A permission rule denies a command in this shell -c script",
+      }),
+    ).toBe("One of your permission rules denies a command inside this script.");
+    expect(flattenPromptText(`Claude wants to\nrun ${"c".repeat(400)}`, 300)).toMatch(
+      /^Claude wants to run c+…$/,
+    );
+  });
+
+  // #659: the SDK's options for Claude Code's dangerous-removal prompt, as measured with
+  // claude.exe 2.1.321 in Bypass mode. The card must say why it asks, not only the command.
+  test("words the reason a dangerous-removal prompt appeared", async () => {
+    const { queryFactory } = createQueryMock();
+    const session = await new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "bypassPermissions" });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+    let permission: Promise<unknown> = Promise.resolve();
+
+    try {
+      await session.startTurn("run the tool");
+      const canUseTool = queryFactory.mock.calls[0]?.[0].options.canUseTool;
+      if (!canUseTool) throw new Error("Expected canUseTool callback");
+      const decisionReason =
+        "Dangerous rm operation on statically-unresolvable target: /private/tmp/probe/x/*";
+      // Closing the session rejects the unanswered request; the test only reads the event.
+      permission = canUseTool(
+        "Bash",
+        { command: "mkdir -p /tmp/probe/x && cd /tmp/probe/x && rm -rf *" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-dangerous-removal",
+          requestId: "request-dangerous-removal",
+          decisionReason,
+          displayName: "Bash",
+          description: "Create probe directory and clear its contents",
+          suggestions: [],
+        },
+      ).catch(() => undefined);
+
+      const requested = events.find(
+        (event): event is Extract<AgentStreamEvent, { type: "permission_requested" }> =>
+          event.type === "permission_requested",
+      );
+      expect(requested?.request).toMatchObject({
+        kind: "tool",
+        description:
+          "Claude Code's safety check stopped this command because it could not rule out that it deletes files. Bypass mode does not skip this check. Path: /private/tmp/probe/x/*",
+        metadata: { decisionReason },
+      });
+    } finally {
+      unsubscribe();
+      await session.close();
+      await permission;
+    }
+  });
 
   test("publishes a resolution when the SDK aborts a permission callback", async () => {
     const { queryFactory } = createQueryMock();

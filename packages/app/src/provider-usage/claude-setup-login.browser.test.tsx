@@ -30,6 +30,7 @@ vi.mock("./refresh-after-sign-in", () => ({ useRefreshAfterSignIn: () => undefin
 vi.mock("./codex-adoption", () => ({
   CodexAdoptionSection: vi.fn(() => null),
   useCodexAdoptionOffered: () => false,
+  useCodexSwitchOffered: () => false,
 }));
 vi.mock("./use-provider-login", () => ({
   useProviderLogin: vi.fn(),

@@ -263,6 +263,7 @@ export const ko: TranslationResources = {
       implement: "구현",
       question: "어떻게 진행할까요?",
       proposedPlan: "제안된 계획",
+      mode: "이 스레드는 {{mode}} 모드입니다.",
     },
   },
   agentPanel: {
