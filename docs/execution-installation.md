@@ -717,11 +717,37 @@ endpoint, grant or native observation keeps the request waiting; the timer canno
 authorize an interruption by itself.
 
 Ask mode logs the deadline and shows **Your decision needed** to clients that
-request the reply-only `holdDeadlineExceeded`. The owner can choose **Force restart
-now** or cancel. Automatic mode does not set that attention signal. Both modes
+request the reply-only `holdDeadlineExceeded`. The visible request detail offers
+keep waiting, an explicit reviewed interruption through **Force restart now**, or
+cancel. Leaving the prompt unanswered keeps the hold waiting and cancellable;
+there is no renewal button and silence never authorizes interruption. Automatic
+mode does not set that attention signal. Its request detail shows bounded
+interruption preparation, unverified preparation awaiting observation, or the
+unavailable capability that keeps work held. If the matching hold or idle inspection
+cannot be verified, the current holder or inspection reason remains visible. Both modes
 preserve approval revisions, cancellation, Factory holds and restart recovery;
 neither invents a manual approval. See [restart hold deadline](protocol-compatibility.md#restart-hold-deadline)
 for rollback.
+
+Active request cards and history show the live receipt detail alongside the
+request summary. A failed or timed-out hold release persists `holdReleased: false`
+and a fixed failure category, while retaining the restart outcome. Release errors
+never contribute free text to the receipt or lifecycle journal. The four categories
+are timeout, connection refused or unreachable, daemon RPC error, and unclassified
+failure with a pointer to the coordinator log. Classification inspects at most
+4,096 message characters and exact allowlisted codes; arbitrary error fields are
+not displayed. Raw first-line diagnostics remain only in the existing coordinator
+progress log at its previous disclosure scope.
+
+Receipt reads project older free-text failure history to fixed categories without
+writing the journal or changing admission snapshots. Retries persist that safe
+history, retain the first category and append each distinct category at most once.
+Only an acknowledged release sets `holdReleased: true` and appends confirmation.
+Repeated reads and retries cannot grow duplicate text. A successful restart remains
+distinguishable from an unconfirmed hold release; releasing a cancelled request's
+hold never reports a completed restart. Release retries never restart the daemon
+again. A timeout alone does not prove daemon replacement or release, and this
+receipt does not attempt replacement reconciliation.
 
 The existing idle check includes provider subagents and registrations already in
 flight. Before dispatch, the daemon drains persistence and saves agent snapshots.

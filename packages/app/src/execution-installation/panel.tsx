@@ -1144,6 +1144,7 @@ export function RestartRequest({
   showActions?: boolean;
 }) {
   const status = restartStatus(job, historical);
+  const summary = restartRepairGuidance(job) ?? restartRequestSummary(job);
   const source = Boolean(job.update || job.sourceBatch);
   useEffect(() => {
     if (!linked || !isWeb) return;
@@ -1164,7 +1165,7 @@ export function RestartRequest({
           <StatusBadge {...status} />
         </View>
         <Text style={styles.text} testID={`restart-summary-${job.id}`}>
-          {restartRepairGuidance(job) ?? restartRequestSummary(job)}
+          {summary}
           {source && job.status === "pending" && !restartBlockingReason(job)
             ? ` Approval lets the submitted code and build scripts run on ${job.target === "host" ? "Host" : "Dev"} and may interrupt its tasks and terminals.`
             : null}
@@ -1172,6 +1173,11 @@ export function RestartRequest({
             ? " The approved update is being built and installed."
             : null}
         </Text>
+        {job.detail && job.detail !== summary ? (
+          <Text selectable style={job.status === "failed" ? styles.error : styles.text}>
+            {job.detail}
+          </Text>
+        ) : null}
         <RestartDetails job={job} />
         {showActions ? (
           <RestartActions job={job} model={model} busy={busy} historical={historical} />
@@ -2265,7 +2271,6 @@ function RestartDetails({ job }: { job: RestartJob }) {
               Recovery verified by request {job.factoryRuntimeRecoveredBy}.
             </Text>
           ) : null}
-          {job.status === "failed" ? <Text style={styles.error}>{job.detail}</Text> : null}
         </SettingsExpansion>
       ) : null}
     </View>
@@ -2305,7 +2310,6 @@ function SourceUpdateDetails({ job }: { job: RestartJob }) {
     <View style={styles.historyItem}>
       {job.sourceBatch ? (
         <>
-          <Text style={styles.text}>{job.detail}</Text>
           {current.map((item) => (
             <SourceContribution key={item.id} item={item} />
           ))}

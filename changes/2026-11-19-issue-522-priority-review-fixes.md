@@ -1,0 +1,7 @@
+### Fixes
+
+- Heavy-job priority: only a low waiter ages, into normal after 20 minutes at its original arrival time, so normal work from old and new copies of the script stays first come, first served. A high waiter no longer goes ahead of a caller on the oldest queue protocol that may be about to start. `--priority=<value>` is accepted; a repeated or malformed `--priority` exits 2. `status` marks a priority the script could not have written as unverified.
+
+## Maintenance review
+
+Review fixes for the heavy-job priority slice (#522). Ageing to high let new waiters pass normal waiters from older copies of the script, which cannot age; ageing is now low to normal only and high is reached only by declaration. A sustained stream of declared high jobs still delays normal work, which the guide now states. A caller on the 3 November protocol holds no slot claim, so a high waiter that arrived after a live, unstarted ticket of that kind waits under its normal name, and a low waiter does not age past one; the reviewer's forced schedule is now a test and runs serially. Tests no longer inherit `VORTEO_HEAVY_PRIORITY`, and they cover a gate marker that appears during the memory sample, ageing inside the real wait loop and cleanup under the renamed ticket; each fails when its wiring is removed. The guide documents that an invalid ambient `VORTEO_HEAVY_PRIORITY` fails queued installs. `VORTEO_HEAVY_AGE_MS` shortens the ageing interval for tests. README overview and onboarding are unchanged. Source only; not installed.
