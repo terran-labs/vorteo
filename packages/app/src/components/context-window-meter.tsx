@@ -11,6 +11,15 @@ import { ContextWindowDetails } from "./context-window-details";
 import { ContextWindowSheet } from "./context-window-sheet";
 import { getUsagePercentage, resolveSessionCost } from "./context-window-meter.utils";
 import { useVortonTouch } from "@/vorton-touch";
+import { isWeb } from "@/constants/platform";
+
+// react-native-svg forwards unknown props to the DOM on web, where only aria-hidden is valid.
+const decorativeSvgProps = isWeb
+  ? { "aria-hidden": true as const }
+  : {
+      accessibilityElementsHidden: true,
+      importantForAccessibility: "no-hide-descendants" as const,
+    };
 
 interface ContextWindowMeterProps {
   serverId: string;
@@ -109,8 +118,7 @@ export function ContextWindowMeter({
           width={geometry.svgSize}
           height={geometry.svgSize}
           viewBox={`0 0 ${geometry.svgSize} ${geometry.svgSize}`}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
+          {...decorativeSvgProps}
         >
           <Circle
             cx={geometry.center}
@@ -138,8 +146,7 @@ export function ContextWindowMeter({
       width={svgSize}
       height={svgSize}
       viewBox={`0 0 ${svgSize} ${svgSize}`}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
+      {...decorativeSvgProps}
     >
       <Circle
         cx={center}

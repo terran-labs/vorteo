@@ -5,14 +5,14 @@ import { openCommandCenter } from "./command-center";
 import type { TestInfo, BrowserContext } from "@playwright/test";
 import { expect, type Page } from "../fixtures";
 import { gotoAppShell, openSettings } from "./app";
+import { chooseSettingsLanguage } from "./settings";
 import { connectNewWorkspaceDaemonClient } from "./new-workspace";
 import { copyPluginExample } from "./plugin-fixture";
 import { ensureExplorerSidebar } from "./workspace-tabs";
 
 async function chooseChinese(page: Page) {
   await openSettings(page);
-  await page.getByRole("button", { name: "System", exact: true }).click();
-  await page.getByRole("menuitem", { name: "简体中文 - Simplified Chinese", exact: true }).click();
+  await chooseSettingsLanguage(page, "简体中文 - Simplified Chinese");
   await page.goBack();
 }
 

@@ -1,7 +1,11 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { gotoAppShell } from "./app";
 import { addConnectedHostsAndReload, waitForConnectedHost } from "./hosts";
-import { selectNewWorkspaceHost, submitNewWorkspaceEmpty } from "./new-workspace";
+import {
+  expectNewWorkspaceHost,
+  selectNewWorkspaceHost,
+  submitNewWorkspaceEmpty,
+} from "./new-workspace";
 import { openProjectSettings } from "./project-settings";
 import { openSettingsHostSection } from "./settings";
 import { waitForSidebarHydration } from "./workspace-ui";
@@ -141,13 +145,15 @@ export async function openGroupedProjectWorkspace(
   projectName: string,
   workspaceName: string,
 ): Promise<void> {
+  // A reorderable row's drag handle is also a button holding the row, so match the row itself.
   await projectGroup(page, projectName)
-    .getByRole("button")
+    .locator('[data-testid^="sidebar-workspace-row-"]')
     .filter({ hasText: workspaceName })
     .click();
   await expect(page).toHaveURL(/\/workspace\//);
 }
 
+/** The new workspace form picks its host from the Environment tiles, not a Host button. */
 export async function expectWorkspaceHost(page: Page, hostName: string): Promise<void> {
-  await expect(page.getByRole("button", { name: "Host", exact: true })).toContainText(hostName);
+  await expectNewWorkspaceHost(page, hostName);
 }

@@ -1,6 +1,15 @@
-import { expect, test } from "../support/fixtures";
+import { expect, test, type Page } from "../support/fixtures";
 const API = "https://api.github.com/repos/terran-labs/vorteo";
 const latestCommit = "b".repeat(40);
+
+/** System > Updates keeps the Vorteo update check behind its Details disclosure (90ea0adb4). */
+async function openUpdateDetails(page: Page): Promise<void> {
+  const details = page
+    .getByTestId("system-updates-row")
+    .getByRole("button", { name: "Details", exact: true });
+  if ((await details.getAttribute("aria-expanded")) !== "true") await details.click();
+  await expect(page.getByTestId("vorton-updates-section")).toBeVisible();
+}
 
 test("Vorteo checks the latest release and requires a connected installation host before preparing an update", async ({
   page,
@@ -36,14 +45,21 @@ test("Vorteo checks the latest release and requires a connected installation hos
       }),
     );
   });
-  await page.goto("/settings/about");
-  await expect(page.getByText("This device", { exact: true })).toBeVisible();
+  // About sits in System now, so start in another section for the version footer to move to.
+  await page.goto("/settings/general");
+  await expect(
+    page
+      .getByTestId("settings-pane-general.about")
+      .getByText("This device", { exact: true })
+      .first(),
+  ).toBeVisible();
   // A saved legacy false value no longer disables the Vorteo interface.
-  await expect(page.getByTestId("vorton-updates-section")).toHaveCount(1);
+  await expect(page.getByTestId("system-updates-row")).toHaveCount(1);
   await expect(page.getByTestId("settings-vorton-mode")).toHaveCount(0);
   await expect(page.getByTestId("settings-sidebar-version")).toHaveCount(1);
   await page.getByTestId("settings-sidebar-version").click();
-  await expect(page).toHaveURL(/\/settings\/maintenance$/);
+  await expect(page).toHaveURL(/\/settings\/system$/);
+  await openUpdateDetails(page);
   await expect(page.getByTestId("vorton-update-status")).toHaveText(
     "release-26.10.3002 is available with 3 new commits.",
   );
@@ -51,17 +67,18 @@ test("Vorteo checks the latest release and requires a connected installation hos
   // Without a connected Host, the add-a-Host card replaces the update task button.
   await expect(page.getByTestId("vorton-legacy-installation")).toBeVisible();
   await expect(page.getByTestId("vorton-help-update")).toHaveCount(0);
-  await expect(page).toHaveURL(/\/settings\/maintenance$/);
+  await expect(page).toHaveURL(/\/settings\/system$/);
   const oldDraft = await page.evaluate(
     () =>
       JSON.parse(localStorage.getItem("paseo-drafts") ?? "{}").state.drafts["new-workspace"].input
         .text,
   );
   expect(oldDraft).toBe("Keep my existing draft");
-  // A deliberate scroll still hands section tracking back to the reader.
+  // A deliberate scroll still hands section tracking back to the reader once the System
+  // heading has left the view.
   await page.getByTestId("settings-scroll-page").hover();
-  await page.mouse.wheel(0, -400);
-  await expect(page).not.toHaveURL(/\/settings\/maintenance$/);
+  await page.mouse.wheel(0, -1200);
+  await expect(page).not.toHaveURL(/\/settings\/system$/);
 });
 
 test("a failed update check exposes a retry and recovers", async ({ page }) => {
@@ -90,6 +107,7 @@ test("a failed update check exposes a retry and recovers", async ({ page }) => {
     });
   });
   await page.goto("/settings/about");
+  await openUpdateDetails(page);
   await expect(page.getByTestId("vorton-update-status")).toContainText(
     "GitHub limited update checks",
   );
@@ -124,6 +142,7 @@ test("manual checks show lasting feedback and the version footer starts a fresh 
     });
   });
   await page.goto("/settings/about");
+  await openUpdateDetails(page);
   await expect(page.getByTestId("vorton-update-status")).toHaveText(
     "This interface is up to date with main.",
   );
@@ -138,7 +157,7 @@ test("manual checks show lasting feedback and the version footer starts a fresh 
   await page.getByTestId("settings-sidebar").getByText("General", { exact: true }).click();
   const before = requests;
   await page.getByTestId("settings-sidebar-version").click();
-  await expect(page).toHaveURL(/\/settings\/maintenance$/);
+  await expect(page).toHaveURL(/\/settings\/system$/);
   await expect.poll(() => requests).toBeGreaterThan(before);
   await expect(page.getByTestId("vorton-check-success")).toHaveText("You're up to date");
 });

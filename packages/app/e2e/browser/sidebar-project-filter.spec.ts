@@ -7,10 +7,12 @@ import {
   closeSidebarDisplayPreferences,
   openSidebarDisplayPreferences,
   openSidebarProjectFilter,
+  pinnedWorkspaceRow,
   pinWorkspaceFromSidebar,
   selectAllProjectsFilter,
   selectSidebarStatusGrouping,
   toggleProjectFilter,
+  workspaceRowInGroup,
 } from "../support/helpers/sidebar";
 
 test.describe("Sidebar project filter", () => {
@@ -78,10 +80,10 @@ test.describe("Sidebar project filter", () => {
   test("keeps the display menu reachable when the pinned section swallows the filtered project", async ({
     page,
   }) => {
-    // Pinning hoists a chat out of its project, and a project whose chats are ALL hoisted is
-    // dropped from the project list entirely. Filter to that project and the list body has no
-    // project rows left — so the header, which carries the only route back to the filter page,
-    // has to survive on the strength of the filter alone.
+    // Pinning used to hoist a chat out of its project and drop a project whose chats were all
+    // hoisted, leaving a filtered list with no project rows. Since 8c1575df3 a pinned row also
+    // stays in its project, so both copies show under the filter, and the header, which carries
+    // the only route back to the filter page, stays reachable.
     const alpha = await seedWorkspace({
       repoPrefix: "project-filter-pinned-",
       title: "Pinned work",
@@ -99,7 +101,8 @@ test.describe("Sidebar project filter", () => {
       await closeSidebarDisplayPreferences(page);
 
       await pinWorkspaceFromSidebar(page, alpha.workspaceId);
-      await expect(alphaRow).toBeVisible();
+      await expect(pinnedWorkspaceRow(page, alpha.workspaceId)).toBeVisible();
+      await expect(workspaceRowInGroup(page, alpha.workspaceId)).toBeVisible();
 
       // The way out of the filter is still on screen.
       await expect(

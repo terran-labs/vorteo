@@ -195,10 +195,10 @@ test.describe("Compact sidebar inspection", () => {
   }
 
   async function expectSidebarPreserved(page: import("@playwright/test").Page) {
-    await expect(page.getByRole("button", { name: "Close menu", exact: true })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
+    // Vorteo renders the header menu button and the sidebar collapse control with this name.
+    await expect(
+      page.getByRole("button", { name: "Close menu", exact: true }).first(),
+    ).toHaveAttribute("aria-expanded", "true");
     await expect(page.getByTestId("sidebar-search")).toBeVisible();
   }
 

@@ -1,6 +1,7 @@
 import { test, expect } from "../support/fixtures";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { daemonWsRoutePattern } from "../support/helpers/daemon-port";
+import { continueToNextQuestion } from "../support/helpers/questions";
 
 // This spec handles the "Set up worktree scripts" notice itself.
 test.use({ dismissWorktreeSetupCallout: false });
@@ -61,8 +62,11 @@ for (const width of [390, 1600]) {
       await lastOption.scrollIntoViewIfNeeded();
       await expect(lastOption).toBeInViewport();
       await lastOption.getByText("Desktop", { exact: true }).click();
+      // Single-select choices stay open until explicit navigation (70cb34927).
+      await continueToNextQuestion(page);
       await expect(card).toContainText("Which rollout should we use?");
       await card.getByRole("radio", { name: "Behind feature flag", exact: true }).click();
+      await continueToNextQuestion(page);
       await expect(card).toContainText("What success criteria should we use?");
       await card.getByRole("textbox").fill("Answers remain reachable without nested scrolling.");
       await card.getByTestId("question-form-primary-action").click();
