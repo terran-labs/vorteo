@@ -1,9 +1,11 @@
+import { FactoryQueueSnapshots } from "./queue-cache.js";
 import os from "node:os";
 import path from "node:path";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type {
+  ProjectFactoryQueue,
   ProjectFactoryInstructions,
   ProjectFactoryRoleId,
 } from "@getpaseo/server/factory-project";
@@ -1341,6 +1343,195 @@ describe("list, pause_all and resume_all", () => {
 });
 
 describe("issue queue and planning compatibility", () => {
+  test("serves a saved queue while one refresh runs and keeps it through failures and pauses", async () => {
+    const directory = path.join(home, "factory", "queues");
+    mkdirSync(directory, { recursive: true });
+    const saved: ProjectFactoryQueue = {
+      fetchedAt: T0,
+      error: null,
+      issues: [
+        {
+          number: 1,
+          title: "Issue",
+          url: "https://example.test/1",
+          label: "running",
+          stage: "building",
+          pr: null,
+          agents: [],
+        },
+      ],
+    };
+    writeFileSync(
+      path.join(directory, `${PROJECT}.json`),
+      JSON.stringify({ repository: REPO, queue: saved }),
+    );
+    const snapshots = new FactoryQueueSnapshots(directory, logger);
+    let calls = 0;
+    let complete: ((snapshot: ProjectFactoryQueue) => void) | undefined;
+    const pending = new Promise<ProjectFactoryQueue>((resolve) => {
+      complete = resolve;
+    });
+    const input = {
+      projectId: PROJECT,
+      repository: REPO,
+      enabled: true,
+      paused: true,
+      now: clock,
+      refresh: () => {
+        calls += 1;
+        return pending;
+      },
+    };
+    expect(await snapshots.read(input)).toEqual({ ...saved, refreshing: false });
+    expect(calls).toBe(0);
+    input.paused = false;
+    expect(await snapshots.read(input)).toEqual({ ...saved, refreshing: true });
+    expect(await snapshots.read(input)).toEqual({ ...saved, refreshing: true });
+    expect(calls).toBe(1);
+    const updated = { ...saved, fetchedAt: new Date(clock.getTime() + 1_000).toISOString() };
+    if (!complete) throw new Error("Refresh was not prepared");
+    complete(updated);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(input)).refreshing).toBe(false);
+    });
+    const restarted = new FactoryQueueSnapshots(directory, logger);
+    expect(await restarted.read({ ...input, paused: true })).toEqual({
+      ...updated,
+      refreshing: false,
+    });
+    expect(calls).toBe(1);
+    const failed = {
+      ...input,
+      now: new Date(clock.getTime() + 30_000),
+      refresh: async () => {
+        throw new Error("GitHub timed out");
+      },
+    };
+    expect(await snapshots.read(failed)).toEqual({ ...updated, refreshing: true });
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(failed)).refreshing).toBe(false);
+    });
+    expect(await snapshots.read({ ...failed, paused: true })).toEqual({
+      ...updated,
+      error: "GitHub timed out",
+      issueAgentHost: null,
+      refreshing: false,
+    });
+    const degraded = {
+      ...input,
+      now: new Date(clock.getTime() + 60_000),
+      refresh: async () => ({
+        ...updated,
+        fetchedAt: new Date(clock.getTime() + 60_000).toISOString(),
+        error: "Host agent list timed out.",
+        partial: true,
+        issues: [],
+      }),
+    };
+    expect((await snapshots.read(degraded)).refreshing).toBe(true);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(degraded)).refreshing).toBe(false);
+    });
+    expect(await snapshots.read(degraded)).toMatchObject({
+      ...updated,
+      error: "Host agent list timed out.",
+      partial: true,
+      refreshing: false,
+    });
+    const afterPartial = new FactoryQueueSnapshots(directory, logger);
+    expect(await afterPartial.read({ ...input, paused: true })).toEqual({
+      ...updated,
+      refreshing: false,
+    });
+    const devUnavailable: ProjectFactoryQueue = {
+      ...updated,
+      fetchedAt: new Date(clock.getTime() + 90_000).toISOString(),
+      issues: [{ ...saved.issues[0]!, title: "Fresh GitHub title" }],
+      partial: false,
+      degraded: "Dev agent data unavailable: offline",
+      issueAgentHost: { serverId: "dev", unavailable: "offline" },
+    };
+    const devInput = {
+      ...input,
+      now: new Date(clock.getTime() + 90_000),
+      refresh: async () => devUnavailable,
+    };
+    await snapshots.read(devInput);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(devInput)).refreshing).toBe(false);
+    });
+    expect(await snapshots.read(devInput)).toEqual({ ...devUnavailable, refreshing: false });
+    const afterDevLoss = new FactoryQueueSnapshots(directory, logger);
+    expect(await afterDevLoss.read({ ...input, paused: true })).toEqual({
+      ...devUnavailable,
+      refreshing: false,
+    });
+  });
+
+  test("a cold paused queue takes one non-error snapshot read while a disabled Factory takes none", async () => {
+    const snapshots = new FactoryQueueSnapshots(path.join(home, "factory", "cold-queues"), logger);
+    let calls = 0;
+    let complete: ((snapshot: ProjectFactoryQueue) => void) | undefined;
+    const pending = new Promise<ProjectFactoryQueue>((resolve) => {
+      complete = resolve;
+    });
+    const input = {
+      projectId: PROJECT,
+      repository: REPO,
+      paused: true,
+      enabled: false,
+      now: clock,
+      refresh: () => {
+        calls += 1;
+        return pending;
+      },
+    };
+    expect(await snapshots.read(input)).toEqual({
+      fetchedAt: T0,
+      error: null,
+      issues: [],
+      refreshing: false,
+    });
+    expect(calls).toBe(0);
+    input.enabled = true;
+    expect(await snapshots.read(input)).toEqual({
+      fetchedAt: T0,
+      error: null,
+      issues: [],
+      refreshing: true,
+    });
+    expect((await snapshots.read(input)).refreshing).toBe(true);
+    expect(calls).toBe(1);
+    if (!complete) throw new Error("Cold refresh was not prepared");
+    complete({ fetchedAt: T0, error: null, issues: [] });
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(input)).refreshing).toBe(false);
+    });
+    expect(calls).toBe(1);
+    let retries = 0;
+    const failedCold = {
+      ...input,
+      projectId: "failed-cold",
+      refresh: async () => {
+        retries += 1;
+        if (retries === 1) throw new Error("Temporary GitHub failure");
+        return { fetchedAt: T0, error: null, issues: [] };
+      },
+    };
+    await snapshots.read(failedCold);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(failedCold)).refreshing).toBe(false);
+    });
+    await snapshots.read({ ...failedCold, now: new Date(clock.getTime() + 30_000) });
+    expect(retries).toBe(1);
+    const retry = { ...failedCold, now: new Date(clock.getTime() + 5 * 60_000) };
+    await snapshots.read(retry);
+    await vi.waitFor(async () => {
+      expect((await snapshots.read(retry)).refreshing).toBe(false);
+    });
+    expect(retries).toBe(2);
+  });
+
   test("a project with Factory never enabled has an empty queue without querying GitHub", async () => {
     const graphql = vi.fn();
     const factory = service({ graphql });
@@ -1405,7 +1596,7 @@ describe("issue queue and planning compatibility", () => {
     expect(restarted).not.toHaveProperty("issueAgentHost");
   });
 
-  test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
+  test("derives stages from paged GitHub evidence and project agents, retains stale snapshots on read errors for 30 seconds", async () => {
     const pageInfo = { hasNextPage: false, endCursor: null };
     const head = "a".repeat(40);
     let labelOverflow = false;
@@ -1622,8 +1813,19 @@ describe("issue queue and planning compatibility", () => {
       unavailable: "the Dev host is turned off",
     });
     devEnabled = true;
-    await factory.invoke("factory.project.disable", { projectId: PROJECT });
-    const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
+    factory.stop();
+    const read = async () => {
+      let response = factoryProjectQueue.output.parse(
+        await factory.invoke("factory.project.queue", { projectId: PROJECT }),
+      );
+      await vi.waitFor(async () => {
+        response = factoryProjectQueue.output.parse(
+          await factory.invoke("factory.project.queue", { projectId: PROJECT }),
+        );
+        expect(response.refreshing).not.toBe(true);
+      });
+      return response;
+    };
     const result = factoryProjectQueue.output.parse(await read());
     expect(result).toMatchObject({
       error: null,
@@ -1663,9 +1865,9 @@ describe("issue queue and planning compatibility", () => {
     fail = true;
     const failure = await read();
     expect(failure).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "GitHub unavailable",
-      issues: [],
     });
     expect(await read()).toEqual(failure);
     expect(graphql).toHaveBeenCalledTimes(4);
@@ -1673,26 +1875,26 @@ describe("issue queue and planning compatibility", () => {
     fail = false;
     apiFailure = true;
     expect(await read()).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "Repository access denied",
-      issues: [],
     });
     expect(graphql).toHaveBeenCalledTimes(5);
     clock = new Date(clock.getTime() + 30_000);
     apiFailure = false;
     execFailure = true;
     expect(await read()).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "Authentication required",
-      issues: [],
     });
     clock = new Date(clock.getTime() + 30_000);
     execFailure = false;
     labelOverflow = true;
     expect(await read()).toEqual({
-      fetchedAt: clock.toISOString(),
+      ...result,
+      issueAgentHost: null,
       error: "Issue labels are incomplete.",
-      issues: [],
     });
     // After a switch to host mode, the Dev lead still running keeps its issue's stage.
     clock = new Date(clock.getTime() + 30_000);

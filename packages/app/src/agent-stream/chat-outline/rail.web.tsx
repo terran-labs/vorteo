@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Pressable,
   Text,
@@ -8,8 +16,10 @@ import {
 } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useReducedMotion } from "react-native-reanimated";
-import { useContainerWidthBelow } from "@/hooks/use-container-width";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { StreamContentLeftContext } from "@/agent-stream/columns/column-width";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { SPACING } from "@/styles/theme";
 import { createChatOutlineHoverIntent } from "./hover-intent";
 import {
   findOutlineGroupIndex,
@@ -21,11 +31,12 @@ import type { ChatOutlineRailProps } from "./rail";
 
 // Hover tracking lives on the rail and the slots, never on the Pressable inside them:
 // magnifying a slot must not move the box the pointer is resting on. See docs/hover.md.
+const RAIL_LEFT = SPACING[2];
 const RAIL_WIDTH = 36;
+const RAIL_CLEARANCE = SPACING[2];
 const SLOT_HEIGHT = 8;
 // Below this a mark is too thin to aim at, so longer conversations share marks instead.
 const MIN_SLOT_HEIGHT = 6;
-const MIN_PANEL_WIDTH = 918;
 const RESTING_PILL_HEIGHT = 2;
 const MAGNIFIED_PILL_HEIGHT = 4;
 const RESTING_PILL_WIDTH = 10;
@@ -44,7 +55,14 @@ export const ChatOutlineRail = memo(function ChatOutlineRail({
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const activeSeq = useSyncExternalStore(activePrompt.subscribe, activePrompt.getActiveSeq);
   const prefersReducedMotion = useReducedMotion();
-  const { onLayout, isBelow: isPanelNarrow } = useContainerWidthBelow(MIN_PANEL_WIDTH);
+  const contentLeft = useContext(StreamContentLeftContext);
+  const isCompact = useIsCompactFormFactor();
+  // The rail lives in the transcript's left margin, so it shows wherever that margin can hold
+  // it and hides when a narrow panel or a widened text column would put it over content.
+  // RAIL_CLEARANCE keeps the click column off the text when a classic always-visible
+  // scrollbar or rounding eats into the measured margin. Phone layouts never show it.
+  const isHidden =
+    isCompact || contentLeft === undefined || contentLeft < RAIL_LEFT + RAIL_WIDTH + RAIL_CLEARANCE;
   const [railHeight, setRailHeight] = useState<number | null>(null);
   const handleRailLayout = useCallback((event: LayoutChangeEvent) => {
     setRailHeight(event.nativeEvent.layout.height);
@@ -91,8 +109,8 @@ export const ChatOutlineRail = memo(function ChatOutlineRail({
   const handlePointerLeaveRail = useCallback(() => hoverIntent.leave(), [hoverIntent]);
   useEffect(() => () => hoverIntent.dispose(), [hoverIntent]);
   useEffect(() => {
-    if (isPanelNarrow) hoverIntent.leave();
-  }, [hoverIntent, isPanelNarrow]);
+    if (isHidden) hoverIntent.leave();
+  }, [hoverIntent, isHidden]);
   const handleFocusChange = useCallback((index: number, focused: boolean) => {
     setFocusedIndex((current) => {
       if (focused) return index;
@@ -107,8 +125,8 @@ export const ChatOutlineRail = memo(function ChatOutlineRail({
   if (prompts.length < 2) return null;
 
   return (
-    <View style={styles.panelMeasure} pointerEvents="box-none" onLayout={onLayout}>
-      {isPanelNarrow ? null : (
+    <View style={styles.overlay} pointerEvents="box-none">
+      {isHidden ? null : (
         <View
           style={styles.rail}
           role="tablist"
@@ -260,13 +278,13 @@ function describeGroup(group: ChatOutlineGroup, total: number): string {
 }
 
 const styles = StyleSheet.create((theme) => ({
-  panelMeasure: {
+  overlay: {
     position: "absolute",
     inset: 0,
   },
   rail: {
     position: "absolute",
-    left: theme.spacing[2],
+    left: RAIL_LEFT,
     top: "10%",
     bottom: "10%",
     width: RAIL_WIDTH,

@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../utils/provider-probe-cwd.js";
 import type { Logger } from "pino";
 import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
 
@@ -450,6 +451,11 @@ function mergeModelAdditions(
   );
 }
 
+/** Kept out of wrapSessionProvider, which is at its complexity limit. */
+function forwardProviderSettling(inner: AgentSession): AgentSession["isProviderSettling"] {
+  return inner.isProviderSettling?.bind(inner);
+}
+
 // Every session member must cross this boundary, including optional capabilities.
 type ForwardedAgentSession = { [K in keyof Required<AgentSession>]: AgentSession[K] };
 
@@ -502,6 +508,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     detach: inner.detach?.bind(inner),
     historyApplied: inner.historyApplied?.bind(inner),
     canStopRuntime: inner.canStopRuntime?.bind(inner),
+    isProviderSettling: forwardProviderSettling(inner),
     listCommands: inner.listCommands?.bind(inner),
     listBuiltinSkills: inner.listBuiltinSkills?.bind(inner),
     setModel: inner.setModel?.bind(inner),
@@ -740,7 +747,7 @@ function createRegistryEntry(
               await catalogClient.resolveDefaultModeId?.({
                 config: {
                   provider,
-                  cwd: options.scope === "workspace" ? options.cwd : process.cwd(),
+                  cwd: options.scope === "workspace" ? options.cwd : await getProviderProbeCwd(),
                 },
                 signal: context?.signal,
               }),

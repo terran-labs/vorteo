@@ -52,7 +52,12 @@ import { useAllFactories, useFactoryHosts, useProjectNames, useStopAll } from ".
 import { factoryListQueryKey } from "./factory-reads";
 import { projectFactoryOverviewRoute } from "./routes";
 import { useFactoryOverviewStore } from "./overview-store";
-import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
+import {
+  factoryQueueRefreshInterval,
+  loadFactoryQueue,
+  type FactoryInvoke,
+  type FactoryQueue,
+} from "./queue";
 
 interface Target {
   serverId: string;
@@ -355,7 +360,13 @@ function ProjectContent({
     queryKey: ["factoryQueue", serverId, projectId],
     staleTimeMs: 30_000,
     enabled: active,
-    refetchInterval: (query) => (active && query.state.data !== null ? 30_000 : false),
+    refetchInterval: (query) =>
+      factoryQueueRefreshInterval({
+        queue: query.state.data,
+        enabled: active,
+        polling: true,
+        steadyMs: 30_000,
+      }),
     queryFn: () => loadFactoryQueue(invoke, projectId),
   });
   const { refetch } = queue;

@@ -117,3 +117,65 @@ it("preserves uncapped worker inheritance while moving delegation out of default
   expect(changed.defaults.uncappedWorkers).toBe(false);
   expect(replaceProviderDefaults(changed, changed.defaults)).toEqual(changed);
 });
+
+it("round-trips workflow reasoning and keeps workflows without it on the model default", () => {
+  const catalog = [
+    {
+      provider: "claude",
+      label: "Claude",
+      status: "ready" as const,
+      enabled: true,
+      modes: [],
+      models: [
+        {
+          provider: "claude",
+          id: "claude-fable-5-2",
+          label: "Fable 5.2",
+          isDefault: true,
+          defaultThinkingOptionId: "medium",
+          thinkingOptions: [
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "ultracode", label: "Ultra Code" },
+          ],
+        },
+      ],
+    },
+  ];
+  const group: ProviderPreferences = {
+    defaults: { model: "claude-fable-5-2" },
+    workflows: [{ id: "fable", name: "Fable", provider: "claude" }],
+    preferredModels: [],
+    preferredThinkingOptions: [],
+    defaultWorkflowId: "fable",
+  };
+  const open = (profile: ProviderPreferences["workflows"][number]) => {
+    const model = openAgentProfileForm({
+      mode: "edit",
+      inheritThinking: true,
+      profile: { ...group.defaults, ...profile },
+    });
+    model.applyProviderCatalog(catalog);
+    return model;
+  };
+  // A workflow saved before reasoning was editable stays on the model default.
+  const legacy = open(group.workflows[0]);
+  expect(legacy.getState().thinkingOptionId).toBe("");
+  expect(legacy.getState().thinkingDisplay?.label).toBe("Model default (Medium)");
+  expect(
+    editSharedProfile(group, "fable", "claude", legacy.getState().submitValue!),
+  ).not.toHaveProperty("thinkingOptionId");
+
+  legacy.setThinking("ultracode", { label: "Ultra Code" });
+  const ultra = editSharedProfile(group, "fable", "claude", legacy.getState().submitValue!);
+  expect(ultra.thinkingOptionId).toBe("ultracode");
+  const reopened = open(ultra);
+  expect(reopened.getState().thinkingOptionId).toBe("ultracode");
+
+  // Model default overrides a provider default level with an explicit empty choice.
+  reopened.setThinking("", null);
+  const withLevel = { ...group, defaults: { ...group.defaults, thinkingOptionId: "medium" } };
+  expect(
+    editSharedProfile(withLevel, "fable", "claude", reopened.getState().submitValue!)
+      .thinkingOptionId,
+  ).toBe("");
+});

@@ -32,7 +32,11 @@ export interface DevAgentsClient {
 /** This daemon's connected hosts, narrowed to what Factory reads. */
 export interface IssueAgentHosts {
   directory(): Promise<HostDirectory>;
-  use<T>(serverId: string, action: (client: DevAgentsClient) => Promise<T>): Promise<T>;
+  use<T>(
+    serverId: string,
+    action: (client: DevAgentsClient) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T>;
 }
 
 /**
@@ -77,18 +81,24 @@ export async function readDevAgents(input: {
   hosts: IssueAgentHosts;
   serverId: string;
   installation: string;
+  signal?: AbortSignal;
 }): Promise<DevAgent[]> {
-  return input.hosts.use(input.serverId, async (client) => {
-    const agents: DevAgent[] = [];
-    let cursor: string | undefined;
-    do {
-      const { entries, pageInfo } = await client.fetchAgents({
-        filter: { labels: { "factory.installation": input.installation } },
-        page: { limit: 200, ...(cursor ? { cursor } : {}) },
-      });
-      agents.push(...entries.map((entry) => entry.agent));
-      cursor = pageInfo.hasMore && pageInfo.nextCursor ? pageInfo.nextCursor : undefined;
-    } while (cursor);
-    return agents;
-  });
+  return input.hosts.use(
+    input.serverId,
+    async (client) => {
+      const agents: DevAgent[] = [];
+      let cursor: string | undefined;
+      do {
+        input.signal?.throwIfAborted();
+        const { entries, pageInfo } = await client.fetchAgents({
+          filter: { labels: { "factory.installation": input.installation } },
+          page: { limit: 200, ...(cursor ? { cursor } : {}) },
+        });
+        agents.push(...entries.map((entry) => entry.agent));
+        cursor = pageInfo.hasMore && pageInfo.nextCursor ? pageInfo.nextCursor : undefined;
+      } while (cursor);
+      return agents;
+    },
+    input.signal,
+  );
 }

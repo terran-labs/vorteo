@@ -2,7 +2,7 @@ import { isProviderSelectable, areProvidersDetecting } from "./provider-availabi
 import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { useAppSettings } from "@/hooks/use-settings";
 import { installationProviderReference } from "@getpaseo/protocol/installation-settings";
-import { sharedChoiceState } from "./shared-choices";
+import { profileLaunchSummary, sharedChoiceState } from "./shared-choices";
 import { defaultProfile } from "./internal/default-profile";
 import {
   isSharedWorkflowProfile,
@@ -129,7 +129,7 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
             provider: profile.provider,
             modelId: profile.model ?? "",
             name: profile.name,
-            summary: model?.label ?? profile.model ?? "",
+            summary: profileLaunchSummary({ entry, profile }),
             icon: profile.icon ?? "",
             color: profile.color ?? "",
             unavailable: entry?.status !== "ready" || !entry.enabled,

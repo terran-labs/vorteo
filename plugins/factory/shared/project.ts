@@ -158,6 +158,12 @@ export const factoryProjectGet = defineRpc({
 });
 
 export const ProjectFactoryQueueSchema = z.object({
+  /** GitHub is current but optional agent evidence is unavailable. */
+  degraded: z.string().optional(),
+  /** A display refresh is running; the returned snapshot remains usable. */
+  refreshing: z.boolean().optional(),
+  /** GitHub evidence is present but an agent dependency could not be read. */
+  partial: z.boolean().optional(),
   fetchedAt: z.string(),
   error: z.string().nullable(),
   /**

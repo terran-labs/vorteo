@@ -959,6 +959,32 @@ test("conditional idle close refuses an in-flight turn start before its first ev
   expect(session.counts.closed).toBe(1);
 });
 
+// A Claude CLI killed while refreshing its sign-in can lose the account's rotated token
+// (11-11 incident: three CLIs released 42 s after spawn for a host upgrade).
+test("conditional idle close waits for a settling provider process", async () => {
+  const session = controllableSession();
+  let settling = true;
+  const port: HostedSessionPort = {
+    ...session.port,
+    snapshot: () => ({
+      id: "young-cli",
+      persistence: null,
+      features: [],
+      activeTurnId: null,
+      pendingPermissions: [],
+    }),
+    settling: () => settling,
+  };
+  const { socketPath } = await hostWith(session, { openSession: async () => port });
+  const client = await worker(socketPath);
+  const channel = await client.open({ sessionId: "young-cli", provider: "claude", config: {} });
+  await expect(channel.call({ method: "closeIfIdle" })).rejects.toThrow("busy");
+  expect(session.counts.closed).toBe(0);
+  settling = false;
+  await channel.call({ method: "closeIfIdle" });
+  expect(session.counts.closed).toBe(1);
+});
+
 test("conditional idle close marks closing before another turn can enter", async () => {
   const session = controllableSession();
   let entered: () => void = () => {};

@@ -63,6 +63,28 @@ export function resolveTextOffset(containerWidth: number, widths: ColumnWidths):
   return Math.max(COLUMN_MARGIN, Math.min(centered, besideCards));
 }
 
+export interface TranscriptContentGeometry {
+  /** The text column's left edge, measured from the transcript region's left edge. */
+  columnLeft: number;
+  columnWidth: number;
+  /** Rows cap their width here and centre inside the column. */
+  rowMaxWidth: number;
+  /** The stream list's horizontal padding inside the column. */
+  listInset: number;
+  /** Each row's own horizontal padding, inside its capped width. */
+  rowInset: number;
+}
+
+/**
+ * Where message content starts, measured from the transcript region's left edge. Anything
+ * drawn in the transcript's left margin fits beside the content only when it ends here.
+ */
+export function resolveTranscriptContentLeft(geometry: TranscriptContentGeometry): number {
+  const inner = Math.max(0, geometry.columnWidth - geometry.listInset * 2);
+  const row = Math.min(geometry.rowMaxWidth, inner);
+  return geometry.columnLeft + geometry.listInset + (inner - row) / 2 + geometry.rowInset;
+}
+
 /** Small cards keep their natural height; larger cards share the remaining space equally. */
 export function allocateCardHeights(available: number, demands: readonly number[]): number[] {
   let remaining = Math.max(0, available - Math.max(0, demands.length - 1) * CARD_GAP);

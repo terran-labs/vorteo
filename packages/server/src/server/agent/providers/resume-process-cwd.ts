@@ -6,11 +6,12 @@ import type { AgentResumePurpose } from "../agent-sdk-types.js";
 export async function resolveResumeProcessCwd(
   cwd: string,
   purpose: AgentResumePurpose | undefined,
+  fallbackCwd: () => string | Promise<string> = homedir,
 ): Promise<string> {
   if (purpose !== "history" || (await isDirectory(cwd))) {
     return cwd;
   }
-  return homedir();
+  return fallbackCwd();
 }
 
 async function isDirectory(target: string): Promise<boolean> {

@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -54,6 +55,7 @@ export async function probeResetRedemption(
       [...launch.args, "app-server", "generate-json-schema", "--out", directory],
       {
         ...createProviderEnvSpec({ runtimeSettings }),
+        cwd: await getProviderProbeCwd(),
         timeout: 15_000,
         maxBuffer: 1024 * 1024,
       },

@@ -51,9 +51,8 @@ import {
   type LongTimelineAgent,
 } from "../support/helpers/timeline-pagination";
 
-// Wide enough that the timeline panel clears the rail's MIN_PANEL_WIDTH with room
-// to spare. The workspace card column now sits beside the conversation, so at 1440
-// the panel measures about 760 and the rail hides.
+// Wide enough that the transcript margin beside the message column holds the rail with
+// room to spare even though the workspace card column sits beside the conversation.
 const WIDE_VIEWPORT = { width: 2400, height: 900 };
 const LOADED_TURNS = 16;
 
@@ -98,10 +97,8 @@ test.describe("desktop chat outline", () => {
         await expectChatOutlinePrompts(page, 16);
         // Inside a workspace the task cards sit in the workspace's card column (60f4899a6).
         await expect(page.getByTestId("workspace-supporting-cards").first()).toBeVisible();
-        const textColumn = await page.getByTestId("thread-text-column").boundingBox();
-        const textRegion = await page.getByTestId("thread-text-region").boundingBox();
-        expect(textColumn!.width).toBeLessThan(918);
-        expect(textRegion!.width).toBeGreaterThan(918);
+        // The geometry unit test covers when the margin fits the rail; this layout only needs
+        // the rail to stay visible beside the card column.
         const rail = chatOutlineRail(page);
         const agentTick = rail.getByRole("tab").nth(1);
         await expect(agentTick).toHaveAttribute("aria-label", /Agent message:/);
@@ -394,8 +391,8 @@ test.describe("desktop chat outline", () => {
   test("hides the rail when a split makes its panel narrow", async ({ page }) => {
     const agent = await seedLongMockAgentTimeline({ turns: 2 });
     try {
-      // At 2400px each split pane is about 1030px, still above the rail's 918px minimum, so use a
-      // width where one panel fits the rail and half of it does not.
+      // The rail needs a margin beside the 820px message column. At 2400px each split pane still
+      // has one, so use a width where one panel leaves room and half of it does not.
       await page.setViewportSize({ width: 1900, height: 900 });
       await openAgentTimeline(page, agent);
       await expectChatOutlinePrompts(page, 2);

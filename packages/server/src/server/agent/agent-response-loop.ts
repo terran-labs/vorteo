@@ -1,3 +1,4 @@
+import { getProviderProbeCwd } from "../../utils/provider-probe-cwd.js";
 import { z } from "zod";
 import Ajv, { type ErrorObject, type Options as AjvOptions } from "ajv";
 import type { AgentProvider, AgentSessionConfig } from "./agent-sdk-types.js";
@@ -82,7 +83,6 @@ export interface StructuredAgentGenerationOptions<T> {
 
 export interface StructuredAgentGenerationWithFallbackOptions<T> {
   manager: AgentManager;
-  cwd: string;
   prompt: string;
   schema: z.ZodType<T> | JsonSchema;
   providers: readonly StructuredGenerationProvider[];
@@ -356,10 +356,14 @@ export async function generateStructuredAgentResponse<T>(
 ): Promise<T> {
   const { manager, agentConfig, agentId, persistSession, prompt, schema, maxRetries, schemaName } =
     options;
-  const agent = await manager.createAgent(agentConfig, agentId, {
-    persistSession,
-    workspaceId: undefined,
-  });
+  const agent = await manager.createAgent(
+    { ...agentConfig, cwd: await getProviderProbeCwd() },
+    agentId,
+    {
+      persistSession,
+      workspaceId: undefined,
+    },
+  );
   try {
     const caller: AgentCaller = async (nextPrompt) => {
       const result = await manager.runAgent(agent.id, nextPrompt);
@@ -400,7 +404,6 @@ export async function generateStructuredAgentResponseWithFallback<T>(
 ): Promise<T> {
   const {
     manager,
-    cwd,
     prompt,
     schema,
     providers,
@@ -449,7 +452,7 @@ export async function generateStructuredAgentResponseWithFallback<T>(
         agentConfig: {
           ...agentConfigOverrides,
           provider: candidate.provider,
-          cwd,
+          cwd: await getProviderProbeCwd(),
           ...(candidate.model ? { model: candidate.model } : {}),
           ...(candidate.thinkingOptionId ? { thinkingOptionId: candidate.thinkingOptionId } : {}),
         },
