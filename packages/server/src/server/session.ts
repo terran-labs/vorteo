@@ -6701,7 +6701,14 @@ export class Session {
       if (msg.type === "previews.list.request") {
         this.emit({
           type: "previews.list.response",
-          payload: { requestId: msg.requestId, gallery: await previews.gallery(), error: null },
+          payload: {
+            requestId: msg.requestId,
+            // Previews belong to a workspace. A request that names no thread sees none.
+            gallery: msg.agentId
+              ? await previews.galleryFor(msg.agentId)
+              : { revision: 0, versions: [], variantSets: [] },
+            error: null,
+          },
         });
         return;
       }
@@ -6709,7 +6716,8 @@ export class Session {
       // share the daemon credential but never speak for the owner.
       if (this.clientType !== "mobile" && this.clientType !== "browser")
         throw new Error("Rate and review previews from the Vorteo app.");
-      const { gallery, ticket } = await previews.act(msg.action);
+      if (!msg.agentId) throw new Error("Reload Vorteo to use Previews.");
+      const { gallery, ticket } = await previews.act(msg.action, msg.agentId);
       this.emit({
         type: "previews.action.response",
         payload: { requestId: msg.requestId, gallery, ...(ticket ? { ticket } : {}), error: null },

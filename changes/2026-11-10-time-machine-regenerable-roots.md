@@ -1,0 +1,7 @@
+### Improvements
+
+- Time Machine skips dependency installs, build output and Host releases without crawling the disk: new task worktrees exclude their `node_modules`, `dist` and `build` folders when dependencies install, the installer excludes each release revision it builds, and an upkeep command re-applies exclusions to named folders in seconds. Installation safety snapshots are excluded too, at the owner's request, because they copy state Time Machine already backs up. Source and project files stay backed up.
+
+## Maintenance review
+
+Added `scripts/lib/time-machine-exclusions.mjs`, which marks a checkout folder only when Git ignores it, tracks nothing inside it and holds no untracked file Git does not ignore, and skips nested repositories,, its use in the dependency installer and the installer's release step, and `scripts/maintenance/time-machine-exclusions.mjs` for hourly upkeep. It uses Time Machine's sticky per-item exclusion, so it needs no administrator rights; it only adds exclusions and never deletes files. On one Host it checked 324 checkouts in about 10 seconds, replacing a crawl that took up to 22 minutes. A first version excluded tracked folders such as `packages/desktop/build` and the releases folder; review caught it before installation and the marks were removed. The existing dependency cache test suite covers the Git rule against a real repository. README overview and onboarding are unchanged.
