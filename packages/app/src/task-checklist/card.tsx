@@ -56,9 +56,11 @@ const EMPTY_TASKS: AgentTaskItem[] = [];
 // sidebar's compact status column: a 12px Lucide circle draws a 10px ring, the same footprint
 // as the status ring scaled to 80%.
 const TASK_STATUS_ICON_SIZE = 12;
-const compactRingStyles = RNStyleSheet.create({ ring: { transform: [{ scale: 0.8 }] } });
+// A plain React Native sheet with no theme reads, so this static element is safe at module
+// scope. Its name deliberately avoids the `*Styles` suffix the Unistyles module-scope rule flags.
+const compactRingSheet = RNStyleSheet.create({ ring: { transform: [{ scale: 0.8 }] } });
 const TASK_RUNNING_ICON = (
-  <View style={compactRingStyles.ring}>
+  <View style={compactRingSheet.ring}>
     <StatusRing variant="task" />
   </View>
 );

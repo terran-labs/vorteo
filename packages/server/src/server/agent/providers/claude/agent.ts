@@ -1712,6 +1712,8 @@ export function readEventIdentifiers(message: SDKMessage): EventIdentifiers {
 }
 
 export class ClaudeAgentClient implements AgentClient {
+  private readonly availabilityShutdown = new AbortController();
+  private readonly availabilityProbes = new Set<Promise<boolean>>();
   private readonly discoverModels: typeof discoverClaudeModels;
   readonly provider = "claude" as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
@@ -2014,11 +2016,32 @@ export class ClaudeAgentClient implements AgentClient {
   }
 
   async isAvailable(signal?: AbortSignal): Promise<boolean> {
+    const lifetime = this.availabilityShutdown.signal;
+    const probeSignal = signal ? AbortSignal.any([signal, lifetime]) : lifetime;
+    probeSignal.throwIfAborted();
+    const probe = this.checkAvailability(probeSignal);
+    this.availabilityProbes.add(probe);
+    try {
+      return await probe;
+    } finally {
+      this.availabilityProbes.delete(probe);
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    this.availabilityShutdown.abort();
+    await Promise.allSettled(this.availabilityProbes);
+  }
+
+  private async checkAvailability(signal: AbortSignal): Promise<boolean> {
     const launch = await resolveProviderLaunch({
       commandConfig: this.runtimeSettings?.command,
       defaultBinary: "claude",
     });
+    signal.throwIfAborted();
     const availability = await checkProviderLaunchAvailable(launch);
+    // Executable resolution can still be running when shutdown starts.
+    signal.throwIfAborted();
     if (!availability.available) return false;
     await requireClaudeAuthentication({
       executable: availability.resolvedPath ?? launch.command,

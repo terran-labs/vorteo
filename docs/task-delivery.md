@@ -10,7 +10,7 @@ Use these scripts for the checks and operations described below. The ownership a
 node scripts/task-worktree.mjs <slug> [--branch fix/<slug>] [--base origin/main]
 ```
 
-The script fetches with pruning, then creates `../<repo>-<slug>` on a new `feat/<slug>` branch from the fetched base, with its own dependency install. Set `PASEO_TASK_WORKTREE_ROOT` or pass `--root` to choose another parent directory. Branch names start with `feat/`, `fix/`, `chore/`, `docs/`, `refactor/`, `perf/` or `test/`.
+The script fetches with pruning, then creates `../<repo>-<slug>` on a new `feat/<slug>` branch from the fetched base, with its own dependency install. Set `PASEO_TASK_WORKTREE_ROOT` or pass `--root` to choose another parent directory. Branch names start with `feat/`, `fix/`, `chore/`, `docs/`, `refactor/`, `perf/` or `test/`, or `factory/` for a Factory issue claim; pass `--base origin/factory/issue-<n>` so the worktree tracks the claimed branch.
 
 Use a dedicated task checkout for edits and reuse it for sequential work. Create separate filesystem worktrees when concurrent edits need isolation; read-only review needs none. Keep child agents in the builder's workspace. A worktree is filesystem isolation, not a new outcome or workspace.
 

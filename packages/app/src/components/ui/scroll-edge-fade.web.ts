@@ -73,24 +73,33 @@ export function attachScrollEdgeFade(
     node.style.maskImage = mask;
     node.style.setProperty("-webkit-mask-image", mask);
   };
-  const resize = new ResizeObserver(update);
-  resize.observe(node);
+  // ResizeObserver and MutationObserver are missing in some older browsers and test DOMs.
+  // Without them the fade still tracks scrolling and window resizes; it just misses
+  // content growth that happens without either.
+  const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+  resize?.observe(node);
   // Content growth changes the overflow without a scroll or a scroller resize.
   const observeChildren = () => {
+    if (!resize) return;
     for (const child of Array.from(node.children)) resize.observe(child);
   };
   observeChildren();
   // A list can replace its content container, so watch for new direct children too.
-  const children = new MutationObserver(() => {
-    observeChildren();
-    update();
-  });
-  children.observe(node, { childList: true });
+  const children =
+    typeof MutationObserver === "undefined"
+      ? null
+      : new MutationObserver(() => {
+          observeChildren();
+          update();
+        });
+  children?.observe(node, { childList: true });
+  if (!resize && typeof window !== "undefined") window.addEventListener("resize", update);
   node.addEventListener("scroll", update, { passive: true });
   update();
   return () => {
-    resize.disconnect();
-    children.disconnect();
+    resize?.disconnect();
+    children?.disconnect();
+    if (!resize && typeof window !== "undefined") window.removeEventListener("resize", update);
     node.removeEventListener("scroll", update);
     node.style.maskImage = "";
     node.style.removeProperty("-webkit-mask-image");

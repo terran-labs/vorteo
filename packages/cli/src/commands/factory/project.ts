@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { Command, Option } from "commander";
 import {
+  factoryProjectClaim,
+  factoryProjectClaimRelease,
   factoryProjectConfigure,
   factoryProjectDisable,
   factoryProjectEnable,
@@ -18,6 +20,9 @@ import {
   factoryProjectResume,
   factoryProjectStatusSet,
   ProjectFactoryRoleIdSchema,
+  type ProjectFactoryAssignment,
+  type ProjectFactoryClaim,
+  type ProjectFactoryClaimRelease,
   type ProjectFactoryInstructions,
   type ProjectFactoryList,
   type ProjectFactoryRoleId,
@@ -62,6 +67,8 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Project: ${state.projectId}`,
       `Factory: ${state.state}${state.reason ? ` (${state.reason})` : ""}`,
       `Repository: ${state.repository ?? "none"}`,
+      ...(state.installation ? [`Installation: ${state.installation}`] : []),
+      ...(state.assignment ? [`Role assignment: ${describeAssignment(state.assignment)}`] : []),
       ...(state.workers.plannerProfileId !== undefined
         ? [`Planner profile: ${state.workers.plannerProfileId ?? "default"}`]
         : []),
@@ -79,6 +86,12 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
     ].join("\n");
   },
 };
+
+function describeAssignment(assignment: ProjectFactoryAssignment): string {
+  if (assignment.source === "none") return "no .github/factory.json";
+  if (assignment.source !== "file") return `off (${assignment.detail ?? assignment.source})`;
+  return `triage ${assignment.triage ?? "none"}, releases ${assignment.releases ?? "none"}`;
+}
 
 type ListedProject = ProjectFactoryList["projects"][number];
 
@@ -347,8 +360,104 @@ export function createFactoryProjectCommand(): Command {
     ),
   );
   project.addCommand(status);
+  project.addCommand(createClaimCommand());
   project.addCommand(createInstructionsCommand());
   return project;
+}
+
+const claimSchema: OutputSchema<ProjectFactoryClaim> = {
+  idField: "branch",
+  columns: [],
+  renderHuman: (result) => {
+    const value = result.data as ProjectFactoryClaim;
+    return [
+      `Issue: #${value.issue}`,
+      `Branch: ${value.branch}`,
+      `Outcome: ${value.outcome}`,
+      `Installation: ${value.installation}`,
+      `Head: ${value.headSha ?? "none"}`,
+      ...(value.marker ? ["", "Marker for the plan comment and PR body:", value.marker] : []),
+    ].join("\n");
+  },
+};
+
+const releaseSchema: OutputSchema<ProjectFactoryClaimRelease> = {
+  idField: "branch",
+  columns: [],
+  renderHuman: (result) => {
+    const value = result.data as ProjectFactoryClaimRelease;
+    return [
+      `Issue: #${value.issue}`,
+      `Branch: ${value.branch}`,
+      `Outcome: ${value.outcome}`,
+      ...(value.archivedAs ? [`Commits kept at: ${value.archivedAs}`] : []),
+    ].join("\n");
+  },
+};
+
+function parseIssue(value: string): number {
+  const issue = Number(value);
+  if (!Number.isInteger(issue) || issue <= 0)
+    throw { code: "INVALID_ISSUE", message: `Use a GitHub issue number, not ${value}.` };
+  return issue;
+}
+
+function claimArguments(name: string, description: string): Command {
+  return addJsonAndDaemonHostOptions(
+    new Command(name)
+      .description(description)
+      .argument("<project-id>", "Exact native project identity")
+      .argument("<issue>", "GitHub issue number")
+      .allowExcessArguments(false),
+  );
+}
+
+function createClaimCommand(): Command {
+  const claim = new Command("claim").description(
+    "Claim issues so exactly one installation works on each",
+  );
+  claim.addCommand(
+    claimArguments(
+      "issue",
+      "Claim an issue by creating factory/issue-<n> on GitHub, or report who owns it",
+    )
+      .option("--keep", "After the owner chose this installation in a conflict, keep the claim")
+      .action(
+        withOutput(
+          async (projectId: string, issue: string, options: CommandOptions, _command: Command) =>
+            withClient(options, async (client) =>
+              single(
+                await call(client, factoryProjectClaim, {
+                  projectId,
+                  issue: parseIssue(issue),
+                  ...(options.keep === true ? { keep: true } : {}),
+                }),
+                claimSchema,
+              ),
+            ),
+        ),
+      ),
+  );
+  claim.addCommand(
+    claimArguments(
+      "release",
+      "After the owner agrees, archive a stale foreign claim or drop a conflicting own one",
+    ).action(
+      withOutput(
+        async (projectId: string, issue: string, options: CommandOptions, _command: Command) =>
+          withClient(options, async (client) =>
+            single(
+              await call(client, factoryProjectClaimRelease, {
+                projectId,
+                issue: parseIssue(issue),
+              }),
+              releaseSchema,
+            ),
+          ),
+      ),
+    ),
+  );
+  return claim;
 }
 
 function instructionsCommand(
