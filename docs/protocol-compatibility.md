@@ -383,3 +383,9 @@ Coordinators with live dev mode add the owner routes `POST /api/installation/own
 ## Boot page recovery link
 
 On the canonical origin, coordinators with a `recoveryOrigin` write it to the served page as `window.__VORTEO_RECOVERY_ORIGIN__`, next to the installation descriptor. It is a separate global because interfaces validate the descriptor strictly, so a new descriptor field would fail older interfaces at startup. The boot page shows Open recovery only when the global is an HTTPS origin other than the current one. Older coordinators omit it and the link stays hidden; older interfaces ignore it. `COMPAT(recoveryOriginGlobal)` marks the injection.
+
+## Account quota policy
+
+The optional `accountQuotaPolicy` key on the mutable daemon config and its patch, and the optional `accountQuotaPolicy` feature, mean the daemon stores the policy. They do not mean it enforces floors or pool membership. The wire and persisted shape checks only that the policy is an object with a numeric `version`, so a later version or a non-number entry still loads and stays readable to clients. A missing or non-number `version`, or an array or null as the policy, stops a daemon from starting, as any other invalid config entry does. A daemon reads a later version, or a version 1 policy that fails the strict version 1 shape, as unusable, and refuses a patch in any shape other than the strict, bounded version 1. Older clients ignore the key and the feature. `COMPAT(accountQuotaPolicy)` marks both.
+
+The persisted `daemon` config schema is strict, so a daemon older than this change refuses to start while the key is stored: clear it, by patching `accountQuotaPolicy: null` or removing it from `config.json`, before rolling back to an earlier daemon. A daemon with no stored policy needs no preparation.
