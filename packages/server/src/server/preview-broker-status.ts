@@ -163,6 +163,21 @@ function previewState(input: PreviewProjectionInput): string {
   return "not_responding";
 }
 
+/**
+ * Why a running preview is not "ready", when the broker says its link is the cause rather than
+ * the server: "unverified" while the broker keeps a link whose full checks time out but whose
+ * listener still answers, "withdrawn" once it pulled the link after its checks kept timing
+ * out. The state stays "not_responding", so an older app reads it as before. A daemon health
+ * probe that says unhealthy outranks "unverified": then the server really is not answering.
+ */
+function linkCheck(input: PreviewProjectionInput, state: string): Partial<WorkspaceScriptPreview> {
+  if (state !== "not_responding") return {};
+  const { status } = input.broker;
+  if (status === "unverified" && input.health !== "unhealthy") return { linkCheck: status };
+  if (status === "withdrawn") return { linkCheck: status };
+  return {};
+}
+
 /** The recorded cause and times of a stop the broker made; none for any other state. */
 function stopDetails(broker: PreviewBrokerService): Partial<WorkspaceScriptPreview> {
   const reason =
@@ -204,6 +219,7 @@ export function projectWorkspaceScriptPreview(
   return {
     state,
     ...(state === "stopped" && !wantsRunning ? stopDetails(broker) : {}),
+    ...linkCheck(input, state),
     checkedAt: iso(broker.checkedAt),
     // checkedAt marks the entry's last visit, not a successful check.
     stale: input.stale,

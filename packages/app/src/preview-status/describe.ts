@@ -90,7 +90,21 @@ type TimedKey =
   | "stale.starting"
   | "stale.notResponding"
   | "stale.stopped"
-  | "stale.linkWithdrawn";
+  | "stale.linkWithdrawn"
+  | "stale.checksDelayed"
+  | "stale.checksWithdrawn";
+
+/**
+ * The broker's reason a running preview is not ready, when it is the link rather than the
+ * server (#616): "delayed" keeps a reachable link whose checks time out, "withdrawn" pulled it
+ * until a check passes. Null for a plain "not responding" and for a value this app does not know.
+ */
+export function previewLinkCheck(preview: WorkspaceScriptPreview): "delayed" | "withdrawn" | null {
+  if (preview.state !== "not_responding") return null;
+  if (preview.linkCheck === "unverified") return "delayed";
+  if (preview.linkCheck === "withdrawn") return "withdrawn";
+  return null;
+}
 
 function timed(t: TFunction, key: TimedKey, at: PreviewTime): string {
   return t(`previewStatus.${key}.${at.form}`, { time: at.time, day: at.day, date: at.date });
@@ -227,6 +241,9 @@ function staleLine(
   if (!checked) return t("previewStatus.stale.unchecked");
   if (preview.state === "ready") return timed(t, "stale.running", checked);
   if (preview.state === "starting") return timed(t, "stale.starting", checked);
+  const linkCheck = previewLinkCheck(preview);
+  if (linkCheck === "delayed") return timed(t, "stale.checksDelayed", checked);
+  if (linkCheck === "withdrawn") return timed(t, "stale.checksWithdrawn", checked);
   return timed(t, "stale.notResponding", checked);
 }
 
@@ -249,6 +266,14 @@ function describeState(
     case "starting":
       return { line: t("previewStatus.line.starting"), action: null, confirm: false };
     case "not_responding":
+      // Reachable: offering Restart would invite stopping a working server.
+      if (previewLinkCheck(preview) === "delayed") {
+        return { line: t("previewStatus.line.checksDelayed"), action: null, confirm: false };
+      }
+      // Comes back by itself; Restart is what the owner can do if it does not.
+      if (previewLinkCheck(preview) === "withdrawn") {
+        return { line: t("previewStatus.line.checksWithdrawn"), action: "restart", confirm: true };
+      }
       return {
         line: checked
           ? timed(t, "line.notResponding", checked)
@@ -338,8 +363,12 @@ function stateBadge(
       return null;
     case "starting":
       return "starting";
-    case "not_responding":
+    case "not_responding": {
+      const linkCheck = previewLinkCheck(preview);
+      if (linkCheck === "delayed") return "unconfirmed";
+      if (linkCheck === "withdrawn") return "linkWithdrawn";
       return "notResponding";
+    }
     case "stopped":
       if (lifecycle === "running") return "linkWithdrawn";
       return preview.stopReason === "workspace_unavailable" ? "unavailable" : "stopped";

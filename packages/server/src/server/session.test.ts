@@ -1,3 +1,4 @@
+import { FactoryRefusal } from "./factory/project/owner-writes.js";
 import {
   createWorkspaceRuntimeStore,
   type WorkspaceRuntimeStore,
@@ -6884,4 +6885,73 @@ test("a CLI or other non-app client cannot write daemon-only labels (#360)", asy
       payload: expect.objectContaining({ requestId: "labels" }),
     }),
   );
+});
+
+// Every owner-only Factory field, refused from the CLI and accepted from the app, plus the calls
+// role threads still make through the CLI.
+const FACTORY_OWNER_ONLY_WRITES = [
+  ["factory.project.enable", { adopt: { "factory-intake": "agent-1" } }],
+  ["factory.project.configure", { role: "factory-intake", provider: "claude" }],
+  ["factory.project.configure", { role: "factory-intake", profileId: "strong" }],
+  ["factory.project.configure", { plannerProfileId: "strong" }],
+  ["factory.project.configure", { workerProfileId: "strong" }],
+  ["factory.project.configure", { reviewerProfileId: "strong" }],
+  ["factory.project.configure", { issueAgents: "host" }],
+] as const;
+test.each([
+  ...FACTORY_OWNER_ONLY_WRITES.map(([method, fields]) => ["cli", method, fields, false] as const),
+  ...FACTORY_OWNER_ONLY_WRITES.map(
+    ([method, fields]) => ["browser", method, fields, true] as const,
+  ),
+  ["mobile", "factory.project.enable", { adopt: { "factory-intake": "agent-1" } }, true],
+  ["cli", "factory.project.enable", { repository: "acme/app" }, true],
+  ["cli", "factory.project.configure", { planning: false }, true],
+  ["cli", "factory.project.status.set", { role: "factory-intake", line: "Idle" }, true],
+] as const)(
+  "a %s client calling %s with %j reaches the Factory: %s (#360)",
+  async (clientType, method, fields, allowed) => {
+    const messages: SessionOutboundMessage[] = [];
+    const invokePluginRpc = vi.fn(async () => ({ ok: true }));
+    const pluginRuntime = { invokePluginRpc } as unknown as NonNullable<
+      SessionOptions["pluginRuntime"]
+    >;
+    const session = createSessionForTest({ clientType, messages, pluginRuntime });
+    await session.handleMessage({
+      type: "plugin.rpc.invoke.request",
+      requestId: "factory",
+      pluginId: "factory",
+      method,
+      input: { projectId: "prj_app", ...fields },
+    });
+    expect(invokePluginRpc).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    const errors = messages.filter((message) => message.type === "rpc_error");
+    if (allowed) {
+      expect(errors).toEqual([]);
+      return;
+    }
+    // A typed refusal the caller can act on, not a generic handler failure or an error activity.
+    expect(errors.map((message) => message.payload.code)).toEqual(["factory_owner_only"]);
+    expect(messages.some((message) => message.type === "activity_log")).toBe(false);
+  },
+);
+
+test("a coded Factory refusal reaches the app as its code, not a failure (#360)", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const invokePluginRpc = vi.fn(async () => {
+    throw new FactoryRefusal("Adopt the labelled Foreman", "factory_foreman_unadopted");
+  });
+  const pluginRuntime = { invokePluginRpc } as unknown as NonNullable<
+    SessionOptions["pluginRuntime"]
+  >;
+  const session = createSessionForTest({ clientType: "browser", messages, pluginRuntime });
+  await session.handleMessage({
+    type: "plugin.rpc.invoke.request",
+    requestId: "factory",
+    pluginId: "factory",
+    method: "factory.project.enable",
+    input: { projectId: "prj_app", repository: "acme/app" },
+  });
+  const errors = messages.filter((message) => message.type === "rpc_error");
+  expect(errors.map((message) => message.payload.code)).toEqual(["factory_foreman_unadopted"]);
+  expect(messages.some((message) => message.type === "activity_log")).toBe(false);
 });

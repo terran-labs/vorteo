@@ -397,4 +397,15 @@ it("offers Send to Factory only when a running Factory provides a handler", () =
   expect(entry?.kind).toBe("item");
   if (entry?.kind === "item") entry.onSelect();
   expect(send).toHaveBeenCalledOnce();
+
+  // Make this thread the Foreman appears only when the hook offers it (#360).
+  const makeForeman = vi.fn();
+  expect(buildWorkspaceTabMenuEntries(input).some((item) => item.key === "make-foreman")).toBe(
+    false,
+  );
+  const adopt = buildWorkspaceTabMenuEntries({ ...input, onMakeForeman: makeForeman }).find(
+    (candidate) => candidate.key === "make-foreman",
+  );
+  if (adopt?.kind === "item") adopt.onSelect();
+  expect(makeForeman).toHaveBeenCalledOnce();
 });

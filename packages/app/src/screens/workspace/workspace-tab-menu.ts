@@ -78,6 +78,8 @@ interface BuildWorkspaceTabMenuEntriesInput {
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
   onSendToFactory?: () => Promise<void> | void;
+  /** Offered only where the daemon would adopt this thread as the Foreman (#360). */
+  onMakeForeman?: () => void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
   onRenameTab: (tab: WorkspaceTabDescriptor) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
@@ -96,6 +98,8 @@ interface BuildWorkspaceDesktopTabActionsInput {
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
   onSendToFactory?: () => Promise<void> | void;
+  /** Offered only where the daemon would adopt this thread as the Foreman (#360). */
+  onMakeForeman?: () => void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
   onRenameTab: (tab: WorkspaceTabDescriptor) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
@@ -207,6 +211,14 @@ export function buildWorkspaceTabMenuEntries(
         onSelect: () => {
           void input.onSendToFactory?.();
         },
+      });
+    if (input.onMakeForeman)
+      entries.push({
+        kind: "item",
+        key: "make-foreman",
+        label: i18n.t("projectFactory.makeForeman"),
+        testID: `${menuTestIDBase}-make-foreman`,
+        onSelect: () => input.onMakeForeman?.(),
       });
     entries.push({
       kind: "item",
@@ -323,6 +335,14 @@ export function buildWorkspaceTabMenuEntries(
           void input.onSendToFactory?.();
         },
       });
+    if (input.onMakeForeman)
+      entries.push({
+        kind: "item",
+        key: "make-foreman",
+        label: i18n.t("projectFactory.makeForeman"),
+        testID: `${menuTestIDBase}-make-foreman`,
+        onSelect: () => input.onMakeForeman?.(),
+      });
     entries.push({
       kind: "item",
       key: "reload-agent",
@@ -367,6 +387,7 @@ export function buildWorkspaceDesktopTabActions(
       onCopyFilePath: input.onCopyFilePath,
       onReloadAgent: input.onReloadAgent,
       onSendToFactory: input.onSendToFactory,
+      onMakeForeman: input.onMakeForeman,
       onRenameTab: input.onRenameTab,
       onCloseTab: input.onCloseTab,
       onCloseTabsBefore: input.onCloseTabsToLeft,

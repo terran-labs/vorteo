@@ -56,6 +56,15 @@ Replace `preview` with the configured script name. Repeating `start` adopts the 
 ## 3. Verify, then share
 
 - Only a `ready` result from `start`, `restart` or a named `status SCRIPT --workspace ID` carries a verified URL. A bare `status` is a fast summary of every reservation as of each entry's `checkedAt`, with no URL; never share a link from it. `pending` means wait and run the named `status` again. A timeout is not permission to kill listeners, restart the daemon or try another directory.
+- After a daemon restart or install, check before you act, because whether a preview survives depends on what the installation runs. Run the named `status`:
+  - `ready`: it survived at the same address.
+  - `stopped`: it is not running. Start it again. The named result carries no cause. When the broker recorded one, it is the entry's `stopReason`, such as `daemon_restart`, in a bare `status` (which reads the broker's status file); the app's scripts menu shows it as well.
+  - A Host install's activation receipt records `terminals` as `kept`, `replaced` or `not-attempted`. Only `kept` means its previews were meant to survive. An installation whose coordinator predates that field closes them.
+- The broker's state for a reservation, in a bare `status` or the status file, can read `unverified` or `withdrawn`. Both are about the broker's checks, not about the service, so neither one is a reason to restart a healthy service.
+  - `unverified`: the link is still up while the broker's checks are delayed. A message such as "Checks are delayed" or, on brokers that have it, "Daemon is restarting" says why. Wait for `ready`.
+  - `withdrawn`: the checks kept timing out or the daemon stayed unreachable, so the link is down. The preview is still wanted, and the broker republishes it by itself with the first check that succeeds.
+  - Restart only if the service itself is down: a named `status` that stays failed, or the server not answering on its port.
+- An owner's stop, an uninstall and a reboot always close previews; start them again.
 - Open the returned `https://` URL and confirm the app actually rendered: a browser snapshot or screenshot showing real content, not just an HTTP 200. Check that HMR or the WebSocket connects when the app needs it.
 - Share exactly the `https://…ts.net:PORT/` origin the broker returned, plus any app path.
 

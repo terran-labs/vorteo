@@ -1,4 +1,5 @@
 import { useSendToFactory } from "@/components/sidebar/use-send-to-factory";
+import { useMakeFactoryForeman } from "@/components/sidebar/use-make-factory-foreman";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { Keyboard, Pressable, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -190,6 +191,13 @@ function MobileWorkspaceTabOption({
     normalizedWorkspaceId,
     tab.target.kind === "agent" ? tab.target.agentId : null,
   );
+  const makeForeman = useMakeFactoryForeman(
+    tab.target.kind === "agent"
+      ? (tab.target.environment?.serverId ?? normalizedServerId)
+      : normalizedServerId,
+    normalizedWorkspaceId,
+    tab.target.kind === "agent" ? tab.target.agentId : null,
+  );
   const { t } = useTranslation();
   const tabMenuLabels = useMemo<WorkspaceTabMenuLabels>(
     () => ({
@@ -213,6 +221,7 @@ function MobileWorkspaceTabOption({
   const menuEntries = buildWorkspaceTabMenuEntries({
     surface: "mobile",
     onSendToFactory: sendToFactory,
+    onMakeForeman: makeForeman,
     tab,
     index: tabIndex,
     tabCount,

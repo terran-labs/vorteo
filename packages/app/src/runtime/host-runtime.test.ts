@@ -13,7 +13,10 @@ import type {
   FetchAgentsEntry,
   FetchAgentsOptions,
 } from "@getpaseo/client/internal/daemon-client";
-import { DaemonAuthenticationError } from "@getpaseo/client/internal/daemon-client";
+import {
+  DaemonAuthenticationError,
+  DaemonClient as RealDaemonClient,
+} from "@getpaseo/client/internal/daemon-client";
 import type { HostDirectory } from "@getpaseo/protocol/hosts";
 import type { ConnectionOffer } from "@getpaseo/protocol/connection-offer";
 import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
@@ -25,6 +28,7 @@ import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { isAgentArchiving, setAgentArchiving } from "@/hooks/use-archive-agent";
 import { queryClient } from "@/data/query-client";
 import {
+  __private__ as hostRuntimePrivate,
   HostRuntimeController,
   HostRuntimeStore,
   readInitialDaemonConnectionHint,
@@ -36,6 +40,39 @@ import type { ReplicaRow, ReplicaRowStore } from "./replica-cache/row-store";
 import { subscriptionFixture } from "./subscription-fixture";
 import { readDesktopManagedLocalCredential } from "@/desktop/daemon/local-credential";
 import type { HostConfirmationRequest } from "./host-confirmation";
+
+it("declares the app on ordinary connections and when probing through another host (#360)", async () => {
+  // A probe can become the active connection, and the daemon admits owner-only writes (Factory
+  // roles and presets, the preset fence setting) only from clients that declare the app.
+  const declared: unknown[] = [];
+  const connect = vi
+    .spyOn(RealDaemonClient.prototype, "connect")
+    .mockImplementation(async function (this: RealDaemonClient) {
+      declared.push((this as unknown as { config: { clientType?: string } }).config.clientType);
+    });
+  try {
+    const origin = { isConnected: true } as unknown as RealDaemonClient;
+    const deps = hostRuntimePrivate.createDefaultDeps(() => origin);
+    const probed = await deps.connectToDaemon({
+      host: { serverId: "srv_routed" } as HostProfile,
+      connection: { id: "routed", type: "routed", originServerId: "srv_origin" } as HostConnection,
+      timeoutMs: 1_000,
+    });
+    await probed.client.close();
+    // Every ordinary connection spreads one shared base; pin it through a direct connection.
+    const direct = deps.createClient({
+      host: { serverId: "srv_direct" } as HostProfile,
+      connection: { id: "direct", type: "directTcp", endpoint: "127.0.0.1:6767" } as HostConnection,
+      clientId: "client-direct",
+      runtimeGeneration: 1,
+    });
+    declared.push((direct as unknown as { config: { clientType?: string } }).config.clientType);
+    await direct.close();
+    expect(declared).toEqual(["mobile", "mobile"]);
+  } finally {
+    connect.mockRestore();
+  }
+});
 
 it("requests the managed connection credential through desktop main without a web hint", async () => {
   const requests: string[] = [];

@@ -76,6 +76,20 @@ export const en = {
     reviewerModel: "Reviewer model",
     defaultModel: "Default",
     nextTurn: "Model changes apply on the next turn.",
+    issueAgents: "Issue agents run on",
+    issueAgentsDev: "Dev",
+    issueAgentsHost: "This host",
+    issueAgentsDevUnavailable:
+      "Dev is unavailable: {{reason}}. The Foreman starts no new issues until Dev is back.",
+    issueAgentsHostConfirmTitle: "Run issue agents on this host?",
+    issueAgentsHostConfirmMessage:
+      "New leads, workers and reviewers will run this project's code on this host, with this host's files, accounts and access, instead of in the Dev container. Agents already running on Dev finish there.",
+    issueAgentsHostConfirm: "Run on this host",
+    makeForeman: "Make this thread the Foreman",
+    makeForemanTitle: "Make this thread the Foreman?",
+    makeForemanMessage:
+      "Factory has no Foreman on record for this project, and this thread is labelled as its Foreman. It becomes the Foreman: Factory sends it the Foreman's charter and starts its heartbeat. The other roles keep their threads.",
+    makeForemanConfirm: "Make Foreman",
     send: "Send to Factory",
     sent: "Sent to Triage. It will open an issue.",
     instructions: "Instructions",

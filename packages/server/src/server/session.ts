@@ -198,6 +198,11 @@ import {
   type PresetFenceRequest,
 } from "./agent/lead-launch/fence.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
+import {
+  FACTORY_OWNER_ONLY_CODE,
+  FactoryRefusal,
+  factoryOwnerOnlyFields,
+} from "./factory/project/owner-writes.js";
 import { normalizeClientMessageId } from "./client-message-id.js";
 import { createAgentForMessage, AgentCreationRequestError } from "./agent/create-agent/requests.js";
 import { resolveCreateAgentIntent, type CreateAgentIntent } from "./agent/create-agent/intent.js";
@@ -3187,12 +3192,64 @@ export class Session {
   private dispatchPluginRpcMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (msg.type === "plugin.rpc.invoke.request") {
       if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
-      return this.pluginRuntime
-        .invokePluginRpc(msg.pluginId, msg.method, msg.input)
-        .then((output) => this.replyPluginRpc(msg, output));
+      if (this.refuseFactoryOwnerWrite(msg)) return Promise.resolve();
+      return this.pluginRuntime.invokePluginRpc(msg.pluginId, msg.method, msg.input).then(
+        (output) => this.replyPluginRpc(msg, output),
+        (error: unknown) => {
+          // A coded Factory refusal is an answer, not a failure: the service logged it once.
+          if (msg.pluginId !== "factory" || !(error instanceof FactoryRefusal)) throw error;
+          this.emit({
+            type: "rpc_error",
+            payload: {
+              requestId: msg.requestId,
+              requestType: msg.type,
+              error: error.message,
+              code: error.code,
+            },
+          });
+        },
+      );
     }
     if (msg.type === "plugin.rpc.subscribe.request") return this.subscribePluginRpc(msg);
     return undefined;
+  }
+
+  /**
+   * Factory role holders and launch presets are the owner's (#360). A non-app client that tries
+   * to write them is refused before the service runs. The refusal is logged once, at warn, with
+   * the writer and the field names, and answered as an `rpc_error` with the code
+   * `factory_owner_only` so the caller can tell it from a failure (the optional `code` field
+   * already carries free-form codes, so older clients are unaffected). The client type is
+   * self-declared (#525); see factoryOwnerOnlyFields. Returns whether the request was refused.
+   */
+  private refuseFactoryOwnerWrite(
+    msg: Extract<SessionInboundMessage, { type: "plugin.rpc.invoke.request" }>,
+  ): boolean {
+    if (msg.pluginId !== "factory") return false;
+    const fields = factoryOwnerOnlyFields(msg.method, msg.input);
+    if (fields.length === 0 || isOwnerAppClient(this.clientType)) return false;
+    const request = (msg.input ?? {}) as { projectId?: unknown; role?: unknown };
+    this.sessionLogger.warn(
+      {
+        code: FACTORY_OWNER_ONLY_CODE,
+        writer: `${this.clientType ?? "unknown"}:${this.clientId}`,
+        method: msg.method,
+        fields,
+        projectId: typeof request.projectId === "string" ? request.projectId : null,
+        role: typeof request.role === "string" ? request.role : null,
+      },
+      "Factory setting change refused: owner app only",
+    );
+    this.emit({
+      type: "rpc_error",
+      payload: {
+        requestId: msg.requestId,
+        requestType: msg.type,
+        error: `Only the owner's app can change Factory role holders and launch presets (${fields.join(", ")}).`,
+        code: FACTORY_OWNER_ONLY_CODE,
+      },
+    });
+    return true;
   }
 
   private dispatchPluginPinnedMessage(msg: SessionInboundMessage): Promise<void> | undefined {

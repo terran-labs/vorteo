@@ -24,6 +24,8 @@ interface Request {
   invoke: (method: string, input: unknown) => Promise<unknown>;
   projectId: string;
   onResult: (state: ProjectFactoryState) => void;
+  /** Turn on Factory with this thread adopted as the Foreman (#360). Enable only. */
+  adoptForeman?: string;
 }
 const dialog = create<{ request: Request | null }>(() => ({ request: null }));
 export async function openFactoryDialog(
@@ -69,6 +71,9 @@ function FactoryDialog({ request }: { request: Request }) {
       const state = await request.invoke(`factory.project.${request.action}`, {
         projectId: request.projectId,
         ...(request.action === "enable" ? { repository } : {}),
+        ...(request.action === "enable" && request.adoptForeman
+          ? { adopt: { "factory-intake": request.adoptForeman } }
+          : {}),
       });
       request.onResult(state as ProjectFactoryState);
       dialog.setState({ request: null });
@@ -78,9 +83,14 @@ function FactoryDialog({ request }: { request: Request }) {
     }
   }, [pending, request, repository, t]);
   const onSubmit = useCallback(() => void submit(), [submit]);
+  const adopting = request.action === "enable" && !!request.adoptForeman;
   const header = useMemo(
-    () => ({ title: t(`projectFactory.${request.action}`) }),
-    [t, request.action],
+    () => ({
+      title: adopting
+        ? t("projectFactory.makeForemanTitle")
+        : t(`projectFactory.${request.action}`),
+    }),
+    [t, request.action, adopting],
   );
   const footer = useMemo(
     () => (
@@ -92,14 +102,19 @@ function FactoryDialog({ request }: { request: Request }) {
           onPress={onSubmit}
           disabled={pending || (request.action === "enable" && !validFactoryRepository(repository))}
         >
-          {t(`projectFactory.${request.action}`)}
+          {adopting
+            ? t("projectFactory.makeForemanConfirm")
+            : t(`projectFactory.${request.action}`)}
         </Button>
       </ActionFooter>
     ),
-    [close, pending, t, onSubmit, request.action, repository],
+    [close, pending, t, onSubmit, request.action, repository, adopting],
   );
   return (
     <AdaptiveModalSheet visible onClose={close} header={header} footer={footer}>
+      {adopting ? (
+        <Text style={textStyles.text}>{t("projectFactory.makeForemanMessage")}</Text>
+      ) : null}
       {request.action === "enable" ? (
         <>
           <Text style={textStyles.text}>{t("projectFactory.repository")}</Text>

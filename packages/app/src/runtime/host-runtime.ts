@@ -681,6 +681,9 @@ function createDefaultDeps(
         const client = new DaemonClient({
           url: "ws://routed-host/ws",
           clientId: crypto.randomUUID(),
+          // A probe can become the active connection, so it declares the app like `base` does;
+          // the daemon admits owner-only writes from app clients only (#360, #589).
+          clientType: "mobile",
           transportFactory: createHostChannelTransport(
             origin,
             host.serverId,
@@ -3066,3 +3069,6 @@ export function useHostMutations(): HostMutations {
     [store],
   );
 }
+
+/** Tests only: the real connection factories, to pin what each connection declares. */
+export const __private__ = { createDefaultDeps };

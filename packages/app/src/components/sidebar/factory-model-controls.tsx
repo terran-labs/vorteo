@@ -1,6 +1,10 @@
 import { ProjectFactoryStateSchema } from "./factory-state";
 import { StyleSheet } from "react-native-unistyles";
-import { factoryModelConfiguration } from "./project-factory-model";
+import {
+  chooseFactoryIssueAgents,
+  factoryModelConfiguration,
+  type FactoryIssueAgents,
+} from "./project-factory-model";
 import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -8,6 +12,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAgentProfiles, type AgentProfilePicker } from "@/agent-profiles";
 import { PresetControls } from "@/agent-profiles/preset-controls";
 import { Button } from "@/components/ui/button";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { useProjectFactory } from "./factory-instructions";
 import type { RoleId } from "./factory-instructions-model";
@@ -53,6 +59,90 @@ export function FactoryModelControls(target: Target) {
         field="reviewerProfileId"
         label={t(target.stages ? "projectFactory.review" : "projectFactory.reviewerModel")}
       />
+      {target.stages && state.data.workers.issueAgents ? (
+        <IssueAgentsPicker target={target} state={state.data} />
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Where the Foreman starts issue agents. Only the owner's app may change it (#360), and moving
+ * them to this host runs the project's code here, so that choice is confirmed first. Hidden on
+ * daemons that do not report the setting.
+ */
+function IssueAgentsPicker({ target, state }: { target: Target; state: ProjectFactoryState }) {
+  const { t } = useTranslation();
+  const client = useQueryClient();
+  const plugin = useInstalledPlugins().find(
+    (p) => p.id === "factory" && p.serverId === target.serverId,
+  );
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const current = state.workers.issueAgents ?? "dev";
+  const options = useMemo(
+    () => [
+      { value: "dev" as const, label: t("projectFactory.issueAgentsDev") },
+      { value: "host" as const, label: t("projectFactory.issueAgentsHost") },
+    ],
+    [t],
+  );
+  const choose = useCallback(
+    async (next: FactoryIssueAgents) => {
+      if (!plugin || pending) return;
+      setPending(true);
+      setError(null);
+      try {
+        const updated = await chooseFactoryIssueAgents({
+          projectId: target.projectId,
+          current,
+          next,
+          invoke: plugin.invoke,
+          confirmHost: () =>
+            confirmDialog({
+              title: t("projectFactory.issueAgentsHostConfirmTitle"),
+              message: t("projectFactory.issueAgentsHostConfirmMessage"),
+              confirmLabel: t("projectFactory.issueAgentsHostConfirm"),
+              cancelLabel: t("common.actions.cancel"),
+              destructive: true,
+            }),
+        });
+        if (updated)
+          client.setQueryData(
+            ["projectFactory", target.serverId, target.projectId],
+            ProjectFactoryStateSchema.parse(updated),
+          );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : t("projectFactory.failed"));
+      } finally {
+        setPending(false);
+      }
+    },
+    [plugin, pending, current, t, target, client],
+  );
+  const onValueChange = useCallback((next: FactoryIssueAgents) => void choose(next), [choose]);
+  const unavailable = current === "dev" ? state.issueAgentHost?.unavailable : null;
+  return (
+    <View style={textStyles.pickers}>
+      <Text style={textStyles.text}>{t("projectFactory.issueAgents")}</Text>
+      <SegmentedControl
+        options={options}
+        value={current}
+        onValueChange={onValueChange}
+        accessibilityLabel={t("projectFactory.issueAgents")}
+        testID="factory-issue-agents"
+      />
+      {unavailable ? (
+        <Text style={textStyles.text}>
+          {t("projectFactory.issueAgentsDevUnavailable", { reason: unavailable })}
+        </Text>
+      ) : null}
+      {pending ? <Text style={textStyles.text}>{t("projectFactory.saving")}</Text> : null}
+      {error ? (
+        <Text style={textStyles.text} accessibilityRole="alert">
+          {error}
+        </Text>
+      ) : null}
     </View>
   );
 }

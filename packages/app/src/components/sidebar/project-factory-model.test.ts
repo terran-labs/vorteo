@@ -8,6 +8,8 @@ import {
 } from "./project-factory-model";
 import { describe, expect, it, vi } from "vitest";
 import {
+  canMakeFactoryForeman,
+  chooseFactoryIssueAgents,
   factoryActions,
   factoryRepositoryFromRemote,
   validFactoryRepository,
@@ -148,6 +150,47 @@ describe("Factory model, status and thread routing", () => {
     invoke.mockRejectedValue(new Error("Factory is off"));
     await expect(sendThreadToFactory(invoke, "p", "a")).rejects.toThrow("Factory is off");
   });
+  it("moves issue agents to this host only after the owner confirms (#360)", async () => {
+    const invoke = vi.fn().mockResolvedValue({ moved: true });
+    const choose = (next: "dev" | "host", confirmed: boolean) =>
+      chooseFactoryIssueAgents({
+        projectId: "p",
+        current: next === "host" ? "dev" : "host",
+        next,
+        invoke,
+        confirmHost: async () => confirmed,
+      });
+    expect(await choose("host", false)).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(await choose("host", true)).toEqual({ moved: true });
+    expect(await choose("dev", false)).toEqual({ moved: true });
+    expect(invoke.mock.calls).toEqual([
+      ["factory.project.configure", { projectId: "p", issueAgents: "host" }],
+      ["factory.project.configure", { projectId: "p", issueAgents: "dev" }],
+    ]);
+  });
+  const foremanRoles = (agentId: string | null) => [{ role: "factory-intake", agentId }];
+  it.each([
+    ["no Foreman recorded and Factory off", "p:factory-intake", false, "off", null, true],
+    ["no Foreman recorded and Factory on", "p:factory-intake", false, "on", null, true],
+    ["a Foreman already recorded", "p:factory-intake", false, "on", "other", false],
+    ["another role's label", "p:factory-builds", false, "off", null, false],
+    ["another project's Foreman label", "q:factory-intake", false, "off", null, false],
+    ["an archived thread", "p:factory-intake", true, "off", null, false],
+    ["an unreadable Factory", "p:factory-intake", false, "unavailable", null, false],
+  ] as const)(
+    "offers Make this thread the Foreman with %s (#360)",
+    (_name, label, archived, state, recorded, offered) => {
+      expect(
+        canMakeFactoryForeman({
+          projectId: "p",
+          labels: { "vorteo.factory-role": label },
+          archived,
+          factory: { state, roles: foremanRoles(recorded) } as never,
+        }),
+      ).toBe(offered);
+    },
+  );
 });
 
 it("uses the existing LCS diff and collapses unchanged charter runs", () => {

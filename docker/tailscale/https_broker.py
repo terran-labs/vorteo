@@ -614,6 +614,10 @@ process.stdout.write(found[0].value);
         # never attributed to a restart. The owner sees the stop time with no cause.
         return None
 
+    def daemon_worker_alive(self, identity):
+        """Whether the recorded daemon worker still runs; True when it cannot be told."""
+        return True
+
     def lifecycle(self, operation, entry):
         return self.cli(['script', operation, entry['service'], '--workspace', entry['workspaceId']])
 
@@ -800,6 +804,16 @@ class NativeRuntime(Runtime):
         except ConnectionRefusedError:
             return True
         except OSError:
+            return False
+
+    def daemon_worker_alive(self, identity):
+        """Whether the recorded daemon worker still runs, in process: same pid and birth."""
+        pid, _, birth = str(identity).partition(':')
+        if not pid.isdigit():
+            return True  # Cannot tell: keep the recorded worker.
+        try:
+            return self.process_identity(int(pid))['birth'] == birth
+        except ValueError:
             return False
 
     def daemon_worker(self):
@@ -998,6 +1012,8 @@ def runtime_for(config):
 class Broker:
     def __init__(self, config, runtime=None, reload_config=None):
         self.c = config
+        # Per-run memo for serving_worker(); None outside reconcile().
+        self.serving_cache = None
         self.root = Path(config['deployment'])
         self.runtime = runtime or runtime_for(config)
         self.reload_config = reload_config
@@ -1063,6 +1079,13 @@ class Broker:
 
     def activate(self, entry):
         daemon = self.runtime.daemon_identity() if self.c.get('restoreAfterRestart') else None
+        # A preview that survived a daemon restart (#607) now runs under the new worker.
+        # Read it before this check, so a restart during the check is never taken for
+        # the worker the service ran under; it is recorded only if this check succeeds.
+        recorded = entry.get('daemonWorker')
+        serving = None
+        if recorded and not self.runtime.daemon_worker_alive(recorded.get('identity')):
+            serving = self.serving_worker()
         current = self.runtime.current(entry['workspaceId'], entry['service'])
         if current['cwd'] != entry['cwd'] or current['fingerprint'] != entry['fingerprint']:
             raise ConfigChanged('Service configuration identity changed')
@@ -1075,6 +1098,10 @@ class Broker:
             raise ValueError('Backend allocation conflicts with control plane or frontend')
         if entry.get('terminal') and (entry['terminal'] != current['terminalId'] or entry.get('backend') != port):
             raise ProcessChanged('Service process identity changed; explicit start required')
+        if entry.get('terminal'):
+            # The daemon still reports the recorded service running: evidence for
+            # service_gone_cause even if this check then fails.
+            entry['aliveAt'] = time.time()
         entry.update(backend=port, terminal=current['terminalId'])
         self.save()
         self.runtime.backend_ready(port)
@@ -1105,7 +1132,11 @@ class Broker:
         url = f'https://{address}/'
         self.runtime.verify(url)
         again = self.runtime.current(entry['workspaceId'], entry['service'])
-        if (again['fingerprint'], again.get('terminalId'), again.get('port'), again.get('lifecycle')) != (entry['fingerprint'], entry['terminal'], port, 'running'):
+        if again.get('lifecycle') != 'running':
+            # Stopped mid-check, as when a daemon restart closes its terminal: a stop whose
+            # cause service_gone_cause decides, not a changed process.
+            raise ServiceGone('Managed service stopped; explicit start required')
+        if (again['fingerprint'], again.get('terminalId'), again.get('port')) != (entry['fingerprint'], entry['terminal'], port):
             raise ProcessChanged('Service changed during verification')
         if daemon is not None:
             if self.runtime.daemon_identity() != daemon:
@@ -1115,14 +1146,17 @@ class Broker:
         for stale in ('error', 'misses', 'removalPending', 'needsReview', 'stopReason', 'restartedAt', 'daemonGapSince'):
             entry.pop(stale, None)
         if 'daemonWorker' not in entry:
-            # Recorded once per start: any later daemon change makes the next check
-            # fail with ServiceGone, so this is the daemon the preview last ran under.
+            # Recorded at start, and again after a restart the preview survived: the
+            # daemon it last ran under, so a later stop reads exited or daemon_restart.
             worker = self.observed_daemon_worker()
             if worker:
                 entry['daemonWorker'] = worker
+        elif serving:
+            entry['daemonWorker'] = serving
         # Only a full verification opens a timeout grace window. A remembered
         # "ready" from an earlier run never does once this time is too old.
-        entry.update(status='ready', url=url, verifiedAt=time.time(), inProcessCheckAgreed=agreed)
+        now = time.time()
+        entry.update(status='ready', url=url, verifiedAt=now, aliveAt=now, inProcessCheckAgreed=agreed)
         self.save()
         return {'status': 'ready', 'url': url, 'frontendPort': entry['frontend'], 'backendPort': port}
 
@@ -1211,7 +1245,7 @@ class Broker:
             # stopPending stays until the daemon has stopped the process; reconcile()
             # repeats it if this request cannot reach the daemon.
             entry.update(desired='stopped', status='stopped', stoppedAt=now, stopReason='stopped', stopPending=True)
-            for stale in ('url', 'misses', 'error', 'restartedAt', 'daemonWorker'):
+            for stale in ('url', 'misses', 'error', 'restartedAt', 'daemonWorker', 'aliveAt'):
                 entry.pop(stale, None)
             self.save()
             if entry.get('backend'):
@@ -1244,7 +1278,7 @@ class Broker:
             self.runtime.lifecycle('stop', current)
             current = self.runtime.current(r['workspaceId'], r['service'])
         entry.update(desired='running', status='pending', fingerprint=current['fingerprint'])
-        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker', 'stopPending'):
+        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker', 'stopPending', 'aliveAt'):
             entry.pop(stale, None)
         self.save()
         # This is startup configuration, not a verified browser link.
@@ -1264,6 +1298,21 @@ class Broker:
             entry.update(status='pending')
             self.save()
             return {'status': 'pending', 'message': 'Backend or HTTPS is not ready; inspect status', 'frontendPort': entry['frontend']}
+
+    def serving_worker(self):
+        """The serving daemon worker, read at most once per reconcile run.
+
+        After a restart every surviving entry needs it, and each read runs lsof; under
+        load one read per entry could use up the run's budget. A restart later in the
+        run leaves this value stale, never wrong in the dangerous direction: an entry
+        records it only after its own check succeeds, so a service the later restart
+        killed keeps its previous worker and still reads daemon_restart."""
+        cache = self.serving_cache
+        if cache is None:
+            return self.observed_daemon_worker()
+        if 'worker' not in cache:
+            cache['worker'] = self.observed_daemon_worker()
+        return cache['worker']
 
     def observed_daemon_worker(self):
         try:
@@ -1288,6 +1337,11 @@ class Broker:
         verified = entry.get('verifiedAt')
         if not before or type(verified) not in (int, float):
             return None
+        # The last time the broker saw this service alive: a full verification, the daemon
+        # reporting it running in its recorded terminal, or a passing direct probe.
+        alive = entry.get('aliveAt')
+        if type(alive) in (int, float) and alive > verified:
+            verified = alive
         now = self.observed_daemon_worker()
         if not now:
             return None
@@ -1434,6 +1488,8 @@ class Broker:
             return False
         if not self.runtime.listener_unchanged(entry) or self.runtime.backend_accepts(entry['backend']) is not True:
             return False
+        # The probe just proved the recorded listener alive.
+        entry['aliveAt'] = time.time()
         if gap:
             entry.update(status='unverified', misses=entry.get('misses', 0) + 1,
                          daemonGapSince=since, error=DAEMON_GAP_MESSAGE)
@@ -1445,6 +1501,13 @@ class Broker:
         return True
 
     def reconcile(self):
+        self.serving_cache = {}
+        try:
+            self.reconcile_entries()
+        finally:
+            self.serving_cache = None
+
+    def reconcile_entries(self):
         deadline = time.monotonic() + RECONCILE_SECONDS
         entries = list(self.ledger['entries'].values())[:32]
         if not entries:

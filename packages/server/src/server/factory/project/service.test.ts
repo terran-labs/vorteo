@@ -165,6 +165,8 @@ interface SentPrompt {
 }
 
 class FakeAgents {
+  /** Thread IDs start with this, so two simulated daemons never share one. */
+  constructor(private readonly prefix = "agent") {}
   readonly records = new Map<string, StoredAgentRecord>();
   readonly prompts: SentPrompt[] = [];
   readonly switches: { agentId: string; provider: string; profileId?: string }[] = [];
@@ -204,7 +206,7 @@ class FakeAgents {
   createAgent = async (input: CreateAgentCommandInput) => {
     if (input.kind !== "mcp") throw new Error("unexpected create kind");
     this.created += 1;
-    const id = `agent-${this.created}-${input.title}`;
+    const id = `${this.prefix}-${this.created}-${input.title}`;
     const record = this.add({
       id,
       workspaceId: input.workspaceId!,
@@ -278,8 +280,11 @@ function service(
     serverId?: string;
     home?: FactoryHomePort;
     github?: FactoryGitHub;
+    /** Another installation keeps its own threads. */
+    agents?: FakeAgents;
   } = {},
 ): ProjectFactoryService {
+  const threads = installation.agents ?? agents;
   const instance = new ProjectFactoryService({
     paseoHome: installation.paseoHome ?? home,
     serverId: installation.serverId ?? "srv_test",
@@ -289,8 +294,8 @@ function service(
     hosts: () => issueHosts,
     projects,
     workspaces,
-    agentStorage: agents.storage,
-    createAgent: agents.createAgent,
+    agentStorage: threads.storage,
+    createAgent: threads.createAgent,
     createWorkspace: async (input) => {
       const record = createPersistedWorkspaceRecord({
         workspaceId: input.workspaceId,
@@ -305,7 +310,7 @@ function service(
       await workspaces.upsert(record);
       return record;
     },
-    agents: agents.ops,
+    agents: threads.ops,
     defaultLaunch: async () => ({ provider: "claude", profileId: "default-profile" }),
     profileProvider: (profileId) => (profileId === "local-fast" ? "opencode" : null),
     schedules,
@@ -492,14 +497,33 @@ describe("enable", () => {
     expect(restarted.hasTimer(PROJECT, "factory-mechanic")).toBe(true);
   });
 
-  test("a lost state file reuses the labelled agents and their workspaces", async () => {
+  test("a lost state file refuses a second Foreman until the owner adopts the labelled one (#360)", async () => {
     const first = await enable();
     rmSync(projectFactoryStatePath(home));
-    const recovered = await enable(service());
+    const foreman = first.roles.find((role) => role.role === "factory-intake")?.agentId;
 
+    // The live labelled Foreman is neither adopted by its label nor duplicated.
+    await expect(enable(service())).rejects.toMatchObject({ code: "factory_foreman_unadopted" });
+    expect(agents.created).toBe(5);
+
+    // The owner adopts it, and every role is the thread that held it before.
+    const recovered = await enable(service(), { "factory-intake": foreman! });
     expect(agents.created).toBe(5);
     expect(recovered.roles.map((role) => [role.agentId, role.workspaceId])).toEqual(
       first.roles.map((role) => [role.agentId, role.workspaceId]),
+    );
+  });
+
+  test("an archived thread wearing the Foreman label does not block a new Foreman (#360)", async () => {
+    const first = await enable();
+    rmSync(projectFactoryStatePath(home));
+    const foreman = first.roles.find((role) => role.role === "factory-intake")?.agentId;
+    agents.records.get(foreman!)!.archivedAt = T0;
+
+    const recovered = await enable(service());
+    expect(agents.created).toBe(6);
+    expect(recovered.roles.find((role) => role.role === "factory-intake")?.agentId).not.toBe(
+      foreman,
     );
   });
 
@@ -2021,7 +2045,11 @@ describe("several installations on one repository", () => {
     target.invoke("factory.project.claim.release", { projectId: PROJECT, issue });
   async function rival(serverId = "srv_rival") {
     const rivalHome = mkdtempSync(path.join(os.tmpdir(), `vorteo-project-factory-${serverId}-`));
-    const other = service(undefined, { paseoHome: rivalHome, serverId });
+    const other = service(undefined, {
+      paseoHome: rivalHome,
+      serverId,
+      agents: new FakeAgents("rival-agent"),
+    });
     await enable(other);
     return other;
   }
@@ -2443,17 +2471,20 @@ describe("one Factory home per installation", () => {
       ask: (request) => authority.decide(environment, request),
     });
     const devHome = mkdtempSync(path.join(os.tmpdir(), "vorteo-project-factory-dev-"));
+    // Dev keeps its own threads, as a separate daemon does.
+    const devAgents = new FakeAgents("dev-agent");
     const start = (environment: "host" | "container", withHome = true) =>
       (daemons[environment] = service(undefined, {
         paseoHome: environment === "host" ? home : devHome,
         serverId: environment === "host" ? "srv_host" : "srv_dev",
         home: withHome ? port(environment) : undefined,
+        ...(environment === "host" ? {} : { agents: devAgents }),
       }));
-    return { start, reachable };
+    return { start, reachable, devAgents };
   }
 
   test("Dev refuses a repository the Host runs, names the Host and keeps nothing", async () => {
-    const { start, reachable } = installation();
+    const { start, reachable, devAgents } = installation();
     const host = start("host");
     const dev = start("container");
     const enabled = await enable(host);
@@ -2463,6 +2494,7 @@ describe("one Factory home per installation", () => {
     await expect(enable(dev)).rejects.toThrow("runs in the Host environment");
     expect((await dev.list()).projects).toEqual([]);
     expect(agents.created).toBe(created);
+    expect(devAgents.created).toBe(0);
 
     // Neither environment claims a home it cannot confirm with the other.
     await host.invoke("factory.project.disable", { projectId: PROJECT });
@@ -2481,7 +2513,7 @@ describe("one Factory home per installation", () => {
   });
 
   test("an existing Host Factory keeps running; a Dev Factory from an earlier release stands down", async () => {
-    const { start, reachable } = installation();
+    const { start, reachable, devAgents } = installation();
     // Both were turned on before the home lock existed; Dev's clone is its own project.
     const foreman = roleAgent(await enable(start("host", false)), "factory-intake");
     await addProject("prj_dev");
@@ -2507,7 +2539,7 @@ describe("one Factory home per installation", () => {
     await host.tick(PROJECT, "factory-intake");
     await dev.tick("prj_dev", "factory-intake");
     expect(agents.prompts.filter((prompt) => prompt.agentId === foreman)).toHaveLength(1);
-    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
+    expect(devAgents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
     const state = await dev.get("prj_dev");
     expect(state.home).toEqual({ environment: "host", projectId: PROJECT, here: false });
     expect(state.roles.find((role) => role.role === "factory-intake")?.status?.line).toBe(
@@ -2518,7 +2550,7 @@ describe("one Factory home per installation", () => {
     reachable.host = false;
     await dev.tick("prj_dev", "factory-intake");
     await start("container").tick("prj_dev", "factory-intake");
-    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
+    expect(devAgents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
   });
 });
 
