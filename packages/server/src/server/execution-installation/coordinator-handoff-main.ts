@@ -5,12 +5,18 @@ import {
   HandoffPlanSchema,
   pointLink,
   readCurrentLink,
+  restoreFileAtomically,
+  runCoordinatorConfigChange,
   runCoordinatorSwap,
   runRestore,
   type HandoffPorts,
 } from "./coordinator-handoff.js";
 import { createServiceControl } from "./service-control.js";
-import { createInstallationSnapshots, dockerSnapshotPorts } from "./snapshots.js";
+import {
+  createInstallationSnapshots,
+  dockerSnapshotPorts,
+  mountedHomeRestore,
+} from "./snapshots.js";
 
 // Detached helper started by the coordinator: node coordinator-handoff-main.js <plan.json>.
 const planFile = process.argv[2];
@@ -34,6 +40,13 @@ if (plan.kind === "coordinator-swap") {
   });
   writePrivateFileAtomicSync(plan.outcomeFile, JSON.stringify(outcome, null, 2));
   console.log(`Coordinator handoff ${outcome.status}: ${outcome.detail}`);
+} else if (plan.kind === "coordinator-config") {
+  const outcome = await runCoordinatorConfigChange(plan, {
+    ...ports,
+    restoreFile: restoreFileAtomically,
+  });
+  writePrivateFileAtomicSync(plan.outcomeFile, JSON.stringify(outcome, null, 2));
+  console.log(`Coordinator configuration handoff ${outcome.status}: ${outcome.detail}`);
 } else {
   const snapshots = createInstallationSnapshots({
     root: plan.snapshotRoot,
@@ -44,6 +57,7 @@ if (plan.kind === "coordinator-swap") {
     ...ports,
     snapshots,
     importDocker: dockerSnapshotPorts.importDocker,
+    mountedHome: mountedHomeRestore,
     writeStatus: (next) =>
       writePrivateFileAtomicSync(plan.statusFile, JSON.stringify(next, null, 2)),
   });

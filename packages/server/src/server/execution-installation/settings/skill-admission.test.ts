@@ -1,7 +1,12 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { expect, test } from "vitest";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
 import type { SkillPreview } from "@getpaseo/protocol/skill-library";
 import {
+  createInstallationSettingsReader,
+  InstallationSettingsAdmissionError,
   readInstallationSettingsForLaunch,
   type InstallationSettingsAdmission,
 } from "./admission.js";
@@ -99,4 +104,31 @@ test("new task settings reject another environment and incomplete skill migratio
   await expect(
     readInstallationSettingsForLaunch(settings, { read: async () => admission }),
   ).resolves.toEqual(admission);
+});
+
+test("a timed-out admission read names the unreachable origin and keeps the cause", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "settings-admission-"));
+  const configFile = path.join(dir, "client.json");
+  const origin = "https://coordinator.example:8443";
+  writeFileSync(configFile, JSON.stringify({ origin, token: "secret-token", kind: "host-agent" }));
+  const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  const fetchAdmission: typeof fetch = async () => {
+    throw timeout;
+  };
+  try {
+    const error = await createInstallationSettingsReader(configFile, fetchAdmission)
+      .read({
+        installationId: "4c07b582-7d41-4be4-9725-36f975708983",
+        serverId: "host",
+        environment: "host",
+        revision: 1,
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(InstallationSettingsAdmissionError);
+    expect((error as Error).message).toContain(origin);
+    expect((error as Error).message).not.toContain("secret-token");
+    expect((error as Error).cause).toBe(timeout);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

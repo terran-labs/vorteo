@@ -1,4 +1,8 @@
 import {
+  CustomDomainStatusSchema,
+  type CustomDomainStatus,
+} from "@getpaseo/protocol/custom-domain";
+import {
   LiveDevStatusSchema,
   type LiveDevMode,
   type LiveDevStatus,
@@ -668,6 +672,31 @@ export class InstallationClient {
       throw new InstallationRouteUnavailable("Live dev mode is unavailable");
     return LiveDevStatusSchema.parse(
       await this.request("live-dev/change", { expectedRevision: status.revision, mode }),
+    );
+  }
+
+  private customDomainSupported = false;
+
+  /** Null on coordinators without the custom domain route. */
+  async customDomain(): Promise<CustomDomainStatus | null> {
+    try {
+      const status = CustomDomainStatusSchema.parse(await this.request("custom-domain/query", {}));
+      this.customDomainSupported = true;
+      return status;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable && !this.customDomainSupported) return null;
+      throw error;
+    }
+  }
+
+  async changeCustomDomain(
+    status: CustomDomainStatus,
+    origin: string | null,
+  ): Promise<CustomDomainStatus> {
+    if (!this.customDomainSupported)
+      throw new InstallationRouteUnavailable("Custom domain is unavailable");
+    return CustomDomainStatusSchema.parse(
+      await this.request("custom-domain/change", { expectedRevision: status.revision, origin }),
     );
   }
 

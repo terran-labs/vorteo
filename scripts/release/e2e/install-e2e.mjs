@@ -3,6 +3,10 @@
 // throwaway CI runner against a real installation made by install.sh.
 //
 //   install <full|host-only|wrap>   run install.sh as `curl | bash` would, record new services
+//   install-release <tag> <scenario>
+//                                   install a published release with its own install.sh asset
+//   upgrade                         rerun this checkout's install.sh --yes over that installation
+//   assert-upgraded                 it runs this checkout, kept its data and offers in-app updates
 //   wait-ready <scenario>           poll `status --json` until the expected environments are ready
 //   assert-access <scenario>        welcome page, owner-access metadata and owner sign-in on localhost
 //   assert-gate                     Dev isolation and gate audit log (Linux, Dev container scenarios)
@@ -157,6 +161,109 @@ function install(scenario) {
     step(`registered services: ${added.join(", ")}`);
   }
   saveState("services.json", added);
+}
+
+// Upgrade -------------------------------------------------------------------
+
+const INSTALL_ASSET = (tag) =>
+  `https://github.com/terran-labs/vorteo/releases/download/${tag}/install.sh`;
+
+/** Installs `tag` exactly as a user did at the time: its own install.sh, pinned to itself. */
+function installRelease(tag, scenario) {
+  const args = CONTRACT.installArgs[scenario] ?? fail(`Unknown scenario ${scenario}`);
+  mkdirSync(CONTRACT.projectsFolder, { recursive: true });
+  // A checkout of the tag installs through that release's own install.sh and engine without
+  // GitHub's API, whose unauthenticated limit shared CI runners exhaust.
+  const checkout = process.env.VORTEO_E2E_OLD_SOURCE;
+  const script = checkout
+    ? readFileSync(path.join(checkout, "install.sh"), "utf8")
+    : run("curl", ["-fsSL", "--retry", "3", INSTALL_ASSET(tag)]).stdout;
+  const env = {
+    ...process.env,
+    VORTEO_VERSION: tag,
+    ...(checkout ? { VORTEO_INSTALL_SOURCE: checkout } : {}),
+    ...(process.env.VORTEO_E2E_OLD_DEV_IMAGE
+      ? { VORTEO_DEV_IMAGE: process.env.VORTEO_E2E_OLD_DEV_IMAGE }
+      : {}),
+    ...(process.env.VORTEO_E2E_SERVICE_FALLBACK === "1"
+      ? { VORTEO_SERVICE_MANAGER: "process" }
+      : {}),
+  };
+  if (!checkout) delete env.VORTEO_INSTALL_SOURCE;
+  step(`install.sh from ${tag} ${args.join(" ")}`);
+  run("bash", ["-s", "--", ...args], { input: script, env, stdio: ["pipe", "inherit", "inherit"] });
+  saveState("old-release.json", { tag, journal: readFileSync(installJournal(), "utf8") });
+}
+
+const installJournal = () => path.join(CONTRACT.home, "state", "install.json");
+
+/** Reruns this checkout's installer with --yes, which upgrades in place. */
+function upgrade() {
+  const env = {
+    ...process.env,
+    VORTEO_INSTALL_SOURCE: repoRoot,
+    ...(process.env.VORTEO_E2E_SERVICE_FALLBACK === "1"
+      ? { VORTEO_SERVICE_MANAGER: "process" }
+      : {}),
+  };
+  step("install.sh --yes over the existing installation");
+  const result = run("bash", ["-s", "--", "--yes", "--no-open"], {
+    input: readFileSync(path.join(repoRoot, "install.sh")),
+    env,
+    check: false,
+  });
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  if (result.status !== 0) fail(`The upgrade exited ${result.status}.`);
+  const upgraded = /^VORTEO_STATUS upgraded (\S+) (\S+)$/m.exec(result.stdout);
+  if (!upgraded) fail("The installer did not report an upgrade.");
+  step(`upgraded from ${upgraded[1]} to ${upgraded[2]}`);
+  saveState("upgrade.json", { from: upgraded[1], to: upgraded[2] });
+}
+
+async function assertUpgraded() {
+  const old = loadState("old-release.json");
+  const before = JSON.parse(old.journal);
+  const after = JSON.parse(readFileSync(installJournal(), "utf8"));
+  if (after.installationId !== before.installationId)
+    fail(`The installation ID changed from ${before.installationId} to ${after.installationId}.`);
+  if (!existsSync(before.plan.paths.release))
+    fail(`The previous release ${before.plan.paths.release} was removed.`);
+  const head = run("git", ["-C", repoRoot, "rev-parse", "HEAD"]).stdout.trim();
+  const plan = JSON.parse(
+    run(process.execPath, [
+      path.join(repoRoot, "scripts/installer/main.mjs"),
+      "plan",
+      "--upgrade",
+      "--root",
+      CONTRACT.home,
+      "--source",
+      repoRoot,
+      "--revision",
+      head,
+      "--json",
+    ]).stdout,
+  );
+  if (plan.comparison !== "same") fail(`After the upgrade the comparison is ${plan.comparison}.`);
+  step(
+    `installation ${after.installationId} kept; it runs ${plan.installed.version} (${head.slice(0, 12)})`,
+  );
+  const snapshots = path.join(CONTRACT.home, "state", "snapshots");
+  if (!existsSync(snapshots) || readdirSync(snapshots).length === 0) fail("No snapshot was taken.");
+  if (process.env.VORTEO_E2E_SERVICE_FALLBACK === "1") {
+    step("process-managed services: in-app updates are unavailable by design, not asserted");
+    return;
+  }
+  const client = JSON.parse(
+    readFileSync(path.join(before.plan.paths.host, "host-agent.json"), "utf8"),
+  );
+  const response = await httpRequest(
+    `http://127.0.0.1:${before.plan.ports.coordinator}/api/installation/update-status`,
+    { headers: { authorization: `Bearer ${client.token}` } },
+  );
+  if (response.status !== 200 || !JSON.parse(response.body).policy)
+    fail(`update-status answered ${response.status}: ${response.body.slice(0, 300)}`);
+  step("the coordinator offers in-app updates");
 }
 
 // Status --------------------------------------------------------------------
@@ -619,6 +726,9 @@ function diagnose() {
 
 const COMMANDS = {
   install,
+  "install-release": installRelease,
+  upgrade,
+  "assert-upgraded": assertUpgraded,
   "wait-ready": waitReady,
   "assert-access": assertAccess,
   "assert-gate": assertGate,

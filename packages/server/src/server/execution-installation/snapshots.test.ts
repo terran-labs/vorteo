@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,8 +19,14 @@ import {
   planRestore,
   snapshotPartKinds,
   snapshotSources,
+  devHomeThroughContainer,
+  mountedHomeScript,
+  RestoreRollbackError,
+  type MountedHomeRestore,
   type SnapshotSource,
+  type StoredPart,
 } from "./snapshots.js";
+import { execFileSync } from "node:child_process";
 import { InstallationConfigSchema } from "./config.js";
 
 // Host snapshots and upgrades run only on macOS and Linux Hosts; Windows Hosts are #35.
@@ -245,13 +252,227 @@ posixTest(
       }),
     ).rejects.toThrow("host did not start");
     expect(readFileSync(path.join(host, "config.json"), "utf8")).toBe('{"changed":true}');
+    // The failed start may have launched the Host, so it stops before files go back.
     expect(calls).toEqual([
       "stop coordinator",
       "stop host",
       "start host",
+      "stop host",
       "start host",
       "start coordinator",
     ]);
+  },
+);
+
+posixTest(
+  "a bind-mounted Dev home is replaced, then kept or put back with the restore",
+  async () => {
+    const source = {
+      type: "docker" as const,
+      kind: "dev-home" as const,
+      docker: "/usr/bin/docker",
+      container: "paseo-x-paseo-1",
+      path: "/home/paseo",
+      mounted: true as const,
+    };
+    const part = {
+      part: { kind: "dev-home", source: "docker:paseo-x-paseo-1:/home/paseo" },
+      source,
+      stored: "/snapshot/dev-home.tar",
+    } as unknown as StoredPart;
+    const run = async (failStart?: ManagedService) => {
+      const calls: string[] = [];
+      const mounted: MountedHomeRestore = {
+        replace: async (_source, file) => void calls.push(`replace ${file}`),
+        revert: async () => void calls.push("revert"),
+        discard: async () => void calls.push("discard"),
+      };
+      await executeRestore({
+        restoreId: "r1",
+        parts: [part],
+        steps: planRestore([part], true),
+        ports: {
+          services: recordingServices([], failStart),
+          snapshot: { importDocker: async () => void calls.push("overlay"), mounted },
+          verifyCoordinator: async () => undefined,
+          progress: () => undefined,
+        },
+      }).catch(() => calls.push("failed"));
+      return calls;
+    };
+    expect(await run()).toEqual(["replace /snapshot/dev-home.tar", "discard"]);
+    expect(await run("host")).toEqual(["replace /snapshot/dev-home.tar", "revert", "failed"]);
+  },
+);
+
+posixTest("a late restore failure stops started services before putting files back", async () => {
+  const source = {
+    type: "docker" as const,
+    kind: "dev-home" as const,
+    docker: "/usr/bin/docker",
+    container: "c",
+    path: "/home/paseo",
+    mounted: true as const,
+  };
+  const part = {
+    part: { kind: "dev-home", source: "dev" },
+    source,
+    stored: "/s.tar",
+  } as unknown as StoredPart;
+  const calls: string[] = [];
+  const error = await executeRestore({
+    restoreId: "r2",
+    parts: [part],
+    steps: planRestore([part], true),
+    ports: {
+      services: recordingServices(calls),
+      snapshot: {
+        importDocker: async () => undefined,
+        mounted: {
+          replace: async () => undefined,
+          revert: async () => {
+            calls.push("revert");
+            throw new Error("mv failed");
+          },
+          discard: async () => undefined,
+        },
+      },
+      verifyCoordinator: async () => {
+        throw new Error("coordinator did not answer");
+      },
+      progress: () => undefined,
+    },
+  }).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(RestoreRollbackError);
+  expect(String(error)).toMatch(/coordinator did not answer.*mv failed/);
+  // Dev, the Host and the coordinator were running again; all stop before the revert.
+  const revertAt = calls.indexOf("revert");
+  expect(calls.slice(revertAt - 3, revertAt)).toEqual([
+    "stop coordinator",
+    "stop host",
+    "stop dev",
+  ]);
+  // Nothing starts on partially recovered data.
+  expect(calls.slice(revertAt + 1)).toEqual([]);
+});
+
+posixTest(
+  "a Dev that fails its start is stopped, and a stop that fails leaves files alone",
+  async () => {
+    const source = {
+      type: "docker" as const,
+      kind: "dev-home" as const,
+      docker: "/usr/bin/docker",
+      container: "c",
+      path: "/home/paseo",
+      mounted: true as const,
+    };
+    const part = {
+      part: { kind: "dev-home", source: "dev" },
+      source,
+      stored: "/s.tar",
+    } as unknown as StoredPart;
+    const attempt = async (stopFails: boolean) => {
+      const calls: string[] = [];
+      const services = recordingServices(calls, "dev");
+      const error = await executeRestore({
+        restoreId: "r4",
+        parts: [part],
+        steps: planRestore([part], true),
+        ports: {
+          services: {
+            ...services,
+            stop: async (service) => {
+              calls.push(`stop ${service}`);
+              if (stopFails && calls.includes("start dev")) throw new Error("still running");
+            },
+          },
+          snapshot: {
+            importDocker: async () => undefined,
+            mounted: {
+              replace: async () => undefined,
+              revert: async () => void calls.push("revert"),
+              discard: async () => undefined,
+            },
+          },
+          verifyCoordinator: async () => undefined,
+          progress: () => undefined,
+        },
+      }).catch((caught: unknown) => caught);
+      return { calls, error };
+    };
+    const ok = await attempt(false);
+    expect(ok.calls.slice(ok.calls.indexOf("start dev") + 1)).toEqual([
+      "stop dev",
+      "revert",
+      "start dev",
+      "start host",
+      "start coordinator",
+    ]);
+    const stuck = await attempt(true);
+    expect(stuck.error).toBeInstanceOf(RestoreRollbackError);
+    expect(stuck.calls).not.toContain("revert");
+  },
+);
+
+posixTest("the mounted home export script archives the home without excluded entries", () => {
+  const home = path.join(root, "home");
+  write(path.join(home, ".config/settings"), "settings");
+  write(path.join(home, ".cache/blob"), "cache");
+  write(path.join(home, ".before-restore-r0/old.txt"), "aside");
+  const archive = execFileSync("/bin/sh", [
+    "-c",
+    mountedHomeScript("export"),
+    "restore",
+    home,
+    "--exclude=./.before-restore-*",
+    "--exclude=.cache",
+  ]);
+  const listing = execFileSync("tar", ["-tf", "-"], { input: archive }).toString();
+  expect(listing).toContain(".config/settings");
+  expect(listing).not.toContain(".cache");
+  expect(listing).not.toContain(".before-restore-");
+});
+
+posixTest("the mounted home scripts replace, put back and discard the contents", () => {
+  const home = path.join(root, "home");
+  write(path.join(home, "old.txt"), "old");
+  write(path.join(home, ".config/settings"), "old settings");
+  const snapshot = path.join(root, "snapshot");
+  write(path.join(snapshot, "kept.txt"), "from snapshot");
+  const archive = path.join(root, "home.tar");
+  execFileSync("tar", ["-C", snapshot, "-cf", archive, "."]);
+  const sh = (action: "replace" | "revert" | "discard", input?: Buffer) =>
+    execFileSync("/bin/sh", ["-c", mountedHomeScript(action), "restore", home, "r1"], { input });
+  sh("replace", readFileSync(archive));
+  const entries = () => readdirSync(home).filter((name) => !name.startsWith(".before-restore-"));
+  expect(entries()).toEqual(["kept.txt"]);
+  sh("revert");
+  expect(readdirSync(home).sort()).toEqual([".config", "old.txt"]);
+  expect(readFileSync(path.join(home, ".config/settings"), "utf8")).toBe("old settings");
+  sh("replace", readFileSync(archive));
+  sh("discard");
+  expect(readdirSync(home)).toEqual(["kept.txt"]);
+});
+
+posixTest.skipIf(process.getuid?.() === 0)(
+  "a move that fails midway leaves untouched originals in place for the revert",
+  () => {
+    const home = path.join(root, "home");
+    for (const name of ["a", "b", "c"]) write(path.join(home, name, "file"), name);
+    // Moving a directory needs write access to it, for its parent link.
+    chmodSync(path.join(home, "b"), 0o555);
+    const sh = (action: "replace" | "revert", input?: Buffer) =>
+      execFileSync("/bin/sh", ["-c", mountedHomeScript(action), "restore", home, "r3"], {
+        input,
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+    expect(() => sh("replace", Buffer.from(""))).toThrow();
+    sh("revert");
+    chmodSync(path.join(home, "b"), 0o755);
+    expect(readdirSync(home).sort()).toEqual(["a", "b", "c"]);
+    for (const name of ["a", "b", "c"])
+      expect(readFileSync(path.join(home, name, "file"), "utf8")).toBe(name);
   },
 );
 
@@ -298,6 +519,23 @@ posixTest("snapshot sources follow the installation layout", () => {
       excludeTopLevel: ["data", "workspace", "logs"],
     },
   ]);
+  // Linux keeps Dev's home private to the container's user: it goes through the container.
+  const linux = devHomeThroughContainer(snapshotSources(config, "/fixture/coordinator.json"), {
+    platform: "linux",
+    docker: "/usr/bin/docker",
+    container: "paseo-x-paseo-1",
+  });
+  expect(linux.find((source) => source.kind === "dev-home")).toEqual({
+    type: "docker",
+    kind: "dev-home",
+    docker: "/usr/bin/docker",
+    container: "paseo-x-paseo-1",
+    path: "/home/paseo",
+    mounted: true,
+  });
+  expect(
+    devHomeThroughContainer(linux, { platform: "darwin", docker: "/d", container: "c" }),
+  ).toEqual(linux);
   const { container: _dev, deployment: _deployment, ...hostOnly } = config;
   const hostOnlySources = snapshotSources(
     { ...hostOnly, public: { ...config.public, environments: [config.public.environments[0]] } },
