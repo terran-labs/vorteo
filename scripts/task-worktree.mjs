@@ -60,7 +60,7 @@ export function createTaskWorktree(plan, { install = true } = {}) {
   if (install && existsSync(path.join(plan.location, "package-lock.json"))) {
     // Each worktree owns its dependencies; a shared install writes through to other checkouts.
     // A copy-on-write clone of a cached install gives the same isolation without the disk cost.
-    installDependencies({ root: plan.location, mode: "worktree" });
+    installDependencies({ root: plan.location, mode: "worktree", queue: true });
   }
   return plan;
 }

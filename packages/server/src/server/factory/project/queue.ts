@@ -1,10 +1,12 @@
 import { z } from "zod";
 import {
   projectFactoryClaimBranch,
+  type ProjectFactoryIssueAgentHost,
   type ProjectFactoryQueue,
 } from "@getpaseo/server/factory-project";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
 import { markerInstallations } from "./claims.js";
+import type { DevAgent } from "./issue-agent-host.js";
 import type { GhRunner } from "./tick-gate.js";
 
 type QueueIssue = ProjectFactoryQueue["issues"][number];
@@ -47,11 +49,25 @@ const prSchema = z.object({
   }),
 });
 type PullRequest = z.infer<typeof prSchema>;
+
+/** With issue agents in Dev: Dev's state and its agents, empty when Dev could not be read. */
+export interface DevQueueAgents {
+  host: ProjectFactoryIssueAgentHost;
+  /** This installation's name; only Dev agents labeled with it count. */
+  installation: string;
+  agents: DevAgent[];
+}
+
 interface QueueInput {
   repository: string;
   gh: GhRunner;
   agents: () => Promise<StoredAgentRecord[]>;
   workspaceIds: ReadonlySet<string>;
+  /**
+   * Never rejects: an unreadable Dev comes back with no agents and the reason. Undefined when
+   * there is no Dev to read.
+   */
+  devAgents?: () => Promise<DevQueueAgents | undefined>;
   /** Issues whose claim branch this installation created. */
   ownClaims: ReadonlySet<number>;
   now: Date;
@@ -115,7 +131,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       prs.push(...page.nodes);
       cursor = nextCursor(page.pageInfo, cursor);
     } while (cursor);
-    const records = await input.agents();
+    const [records, dev] = await Promise.all([input.agents(), input.devAgents?.()]);
     const queue: QueueIssue[] = [];
     for (const issue of issues) {
       if (issue.labels.pageInfo.hasNextPage)
@@ -125,7 +141,10 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
         names.has(`factory:${value}`),
       );
       if (!label) continue;
-      const agents = issueAgents(records, input.workspaceIds, issue.number);
+      const agents = [
+        ...issueAgents(records, input.workspaceIds, issue.number),
+        ...devIssueAgents(dev, issue.number),
+      ];
       const { pull, claim } = issuePull(prs, issue.number, input.ownClaims);
       const pr = pull ? describePr(pull, viewerLogin) : null;
       const item: QueueIssue = {
@@ -141,7 +160,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       item.stage = deriveStage(item, pull ? approvedHead(pull, viewerLogin) : false);
       queue.push(item);
     }
-    return { fetchedAt, error: null, issues: queue };
+    return { fetchedAt, error: null, ...(dev ? { issueAgentHost: dev.host } : {}), issues: queue };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const stderr =
@@ -213,12 +232,30 @@ function issueAgents(
 ): QueueIssue["agents"] {
   return records.flatMap((record) => {
     const belongs = record.workspaceId && workspaceIds.has(record.workspaceId);
-    if (!belongs || record.archivedAt || record.labels["factory.issue"] !== String(issueNumber))
-      return [];
-    const role = record.labels["factory.role"];
-    if (role !== "lead" && role !== "worker" && role !== "reviewer") return [];
-    return [{ role, agentId: record.id, status: record.lastStatus }];
+    const role = belongs && !record.archivedAt ? issueRole(record.labels, issueNumber) : null;
+    return role ? [{ role, agentId: record.id, status: record.lastStatus }] : [];
   });
+}
+/** Dev's workspace ids differ from this host's, so the installation label places them. */
+function devIssueAgents(
+  dev: DevQueueAgents | undefined,
+  issueNumber: number,
+): QueueIssue["agents"] {
+  const serverId = dev?.host.serverId;
+  if (!dev || !serverId) return [];
+  return dev.agents.flatMap((agent) => {
+    const ours = agent.labels["factory.installation"] === dev.installation && !agent.archivedAt;
+    const role = ours ? issueRole(agent.labels, issueNumber) : null;
+    return role ? [{ role, agentId: agent.id, status: agent.status, serverId }] : [];
+  });
+}
+function issueRole(
+  labels: Record<string, string>,
+  issueNumber: number,
+): QueueIssue["agents"][number]["role"] | null {
+  if (labels["factory.issue"] !== String(issueNumber)) return null;
+  const role = labels["factory.role"];
+  return role === "lead" || role === "worker" || role === "reviewer" ? role : null;
 }
 function describePr(pr: PullRequest, viewerLogin: string): NonNullable<QueueIssue["pr"]> {
   const state = pr.commits.nodes[0]!.commit.statusCheckRollup?.state;

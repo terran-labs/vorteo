@@ -11,6 +11,7 @@ import type {
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
 import type { CreateAgentCommandInput } from "../../agent/create-agent/create.js";
+import type { ProviderUsage } from "@getpaseo/protocol/messages";
 import type { StoredSchedule } from "@getpaseo/protocol/schedule/types";
 import { SYSTEM_PROJECT_KIND } from "../../system-project/manifest.js";
 import {
@@ -23,10 +24,22 @@ import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { factoryProjectQueue } from "@getpaseo/server/factory-project";
-import { daemonFactoryAccounts, type FactoryAccounts } from "./account-choice.js";
+import {
+  daemonFactoryAccounts,
+  readDestinationAccounts,
+  type DestinationHosts,
+  type FactoryAccounts,
+} from "./account-choice.js";
 import type { FactoryGitHub, GitHubResponse } from "./claims.js";
 import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
+import type { DevAgent, IssueAgentHosts } from "./issue-agent-host.js";
+import { DEV_HOST_SOURCE_KEY } from "../../execution-installation/dev-host-link.js";
+import type { HostSummary } from "@getpaseo/protocol/hosts";
+import {
+  createFactoryHomeAuthority,
+  type FactoryHomePort,
+} from "../../execution-installation/factory-home.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
 const PROJECT = "prj_app";
@@ -43,6 +56,7 @@ let clock: Date;
 let services: ProjectFactoryService[];
 let github: FakeGitHub;
 let accounts: FactoryAccounts;
+let issueHosts: IssueAgentHosts;
 
 const MAIN = "m".repeat(40);
 
@@ -244,13 +258,15 @@ class FakeSchedules {
 
 function service(
   gh?: GhRunner,
-  installation: { paseoHome?: string; serverId?: string } = {},
+  installation: { paseoHome?: string; serverId?: string; home?: FactoryHomePort } = {},
 ): ProjectFactoryService {
   const instance = new ProjectFactoryService({
     paseoHome: installation.paseoHome ?? home,
     serverId: installation.serverId ?? "srv_test",
+    home: installation.home,
     github,
     accounts,
+    hosts: () => issueHosts,
     projects,
     workspaces,
     agentStorage: agents.storage,
@@ -379,12 +395,20 @@ beforeEach(async () => {
   clock = new Date(T0);
   services = [];
   github = new FakeGitHub();
+  issueHosts = {
+    directory: async () => ({ self: { serverId: "srv_test", label: "Host" }, hosts: [] }),
+    use: async () => {
+      throw new Error("no connected hosts");
+    },
+  };
   accounts = {
     readyProviders: async () => [],
     providerType: () => null,
     profileAccount: () => null,
     readUsage: async () => ({ fetchedAt: T0, providers: [] }),
     defaultProvider: async () => null,
+    installationAccount: () => null,
+    destinationAccounts: async () => new Map(),
   };
   await addProject();
 });
@@ -810,6 +834,7 @@ describe("configure, status and send thread", () => {
       planning: true,
       workerProfileId: "worker-profile",
       reviewerProfileId: "reviewer-profile",
+      issueAgents: "dev",
     });
     expect(configured.roles[1]?.launch).toEqual({ provider: "codex", profileId: "fast" });
     expect(agents.switches).toEqual([]);
@@ -1345,7 +1370,7 @@ describe("issue queue and planning compatibility", () => {
     );
   });
 
-  test("old files load without rewriting and planning settings survive restart", async () => {
+  test("old files load without rewriting and planning and issue-agent settings survive restart", async () => {
     const factory = service();
     await addProject();
     await enable(factory);
@@ -1355,22 +1380,28 @@ describe("issue queue and planning compatibility", () => {
     delete legacy.projects[PROJECT].workers.planning;
     const original = JSON.stringify(legacy);
     writeFileSync(file, original);
+    // A Factory saved before the setting existed runs new issue agents in Dev.
     expect((await factory.get(PROJECT)).workers).toEqual({
       plannerProfileId: null,
       planning: true,
       workerProfileId: null,
       reviewerProfileId: null,
+      issueAgents: "dev",
     });
     expect(readFileSync(file, "utf8")).toBe(original);
     await factory.invoke("factory.project.configure", {
       projectId: PROJECT,
       plannerProfileId: "planner",
       planning: false,
+      issueAgents: "host",
     });
-    expect((await service().get(PROJECT)).workers).toMatchObject({
+    const restarted = await service().get(PROJECT);
+    expect(restarted.workers).toMatchObject({
       plannerProfileId: "planner",
       planning: false,
+      issueAgents: "host",
     });
+    expect(restarted).not.toHaveProperty("issueAgentHost");
   });
 
   test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
@@ -1529,14 +1560,81 @@ describe("issue queue and planning compatibility", () => {
       labels: { "factory.issue": "2", "factory.role": "worker" },
     });
     archived.archivedAt = T0;
+    // Issue agents run in Dev by default. Dev's workspace ids differ, so its agents count by
+    // this installation's label; another installation's agent on the same Dev does not.
+    const devAgent = (
+      id: string,
+      installation: string,
+      number: string,
+      role: string,
+    ): DevAgent => ({
+      id,
+      status: "idle",
+      labels: {
+        "factory.installation": installation,
+        "factory.issue": number,
+        "factory.role": role,
+      },
+    });
+    let devReadable = true;
+    let devEnabled = true;
+    const saved = (sourceId: string, serverId: string, enabled: boolean): HostSummary => ({
+      registrationId: `reg_${serverId}`,
+      serverId,
+      label: "Dev container",
+      source: { id: sourceId, key: DEV_HOST_SOURCE_KEY },
+      metadata: {},
+      enabled,
+      status: enabled ? "online" : "disabled",
+      targetDescription: serverId,
+      lastOnlineAt: T0,
+      nextRetryAt: null,
+      error: null,
+    });
+    issueHosts = {
+      // Another producer may save its own server under the Dev key; only the owner's counts.
+      directory: async () => ({
+        self: { serverId: "srv_test", label: "Host" },
+        hosts: [saved("plugin:rogue", "srv_rogue", true), saved("owner", "srv_dev", devEnabled)],
+      }),
+      async use(serverId, action) {
+        if (serverId !== "srv_dev" || !devReadable) throw new Error("Dev route closed");
+        return action({
+          fetchAgents: async () => ({
+            entries: [
+              devAgent("dev-lead", `srv_test/${PROJECT}`, "1", "lead"),
+              devAgent("rival-worker", `srv_rival/${PROJECT}`, "1", "worker"),
+            ].map((agent) => ({ agent })),
+            pageInfo: { nextCursor: null, hasMore: false },
+          }),
+        });
+      },
+    };
+    expect((await factory.get(PROJECT)).issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: null,
+    });
+    // The owner's opt-out holds even while the other producer's entry is online.
+    devEnabled = false;
+    expect((await factory.get(PROJECT)).issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: "the Dev host is turned off",
+    });
+    devEnabled = true;
     await factory.invoke("factory.project.disable", { projectId: PROJECT });
     const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
     const result = factoryProjectQueue.output.parse(await read());
     expect(result).toMatchObject({
       error: null,
       fetchedAt: T0,
+      issueAgentHost: { serverId: "srv_dev", unavailable: null },
       issues: [
-        { number: 1, stage: "queued", pr: null },
+        {
+          number: 1,
+          stage: "planning",
+          pr: null,
+          agents: [{ agentId: "dev-lead", role: "lead", serverId: "srv_dev" }],
+        },
         { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
         { number: 3, stage: "building" },
         { number: 4, stage: "repair" },
@@ -1595,6 +1693,28 @@ describe("issue queue and planning compatibility", () => {
       error: "Issue labels are incomplete.",
       issues: [],
     });
+    // After a switch to host mode, the Dev lead still running keeps its issue's stage.
+    clock = new Date(clock.getTime() + 30_000);
+    labelOverflow = false;
+    await factory.invoke("factory.project.configure", { projectId: PROJECT, issueAgents: "host" });
+    const switched = factoryProjectQueue.output.parse(await read());
+    expect(switched.issues[0]).toMatchObject({
+      number: 1,
+      stage: "planning",
+      agents: [{ agentId: "dev-lead", serverId: "srv_dev" }],
+    });
+    // An unreadable Dev still renders this host's agents and says why Dev's are missing.
+    clock = new Date(clock.getTime() + 30_000);
+    devReadable = false;
+    const local = factoryProjectQueue.output.parse(await read());
+    expect(local.issueAgentHost).toEqual({
+      serverId: "srv_dev",
+      unavailable: "Dev's agents could not be read: Dev route closed",
+    });
+    expect(local.issues.slice(0, 2)).toMatchObject([
+      { number: 1, stage: "queued", agents: [] },
+      { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
+    ]);
   });
 });
 
@@ -1787,6 +1907,103 @@ describe("several installations on one repository", () => {
   });
 });
 
+describe("one Factory home per installation", () => {
+  /** A Host and a Dev daemon with their own state, decided by the coordinator's authority. */
+  function installation() {
+    const daemons: Partial<Record<"host" | "container", ProjectFactoryService>> = {};
+    const reachable = { host: true, container: true };
+    const authority = createFactoryHomeAuthority({
+      environments: ["host", "container"],
+      read: async (kind) => {
+        const daemon = daemons[kind];
+        if (!daemon || !reachable[kind]) throw new Error(`${kind} is down`);
+        return daemon.list();
+      },
+    });
+    const port = (environment: "host" | "container"): FactoryHomePort => ({
+      environment,
+      ask: (request) => authority.decide(environment, request),
+    });
+    const devHome = mkdtempSync(path.join(os.tmpdir(), "vorteo-project-factory-dev-"));
+    const start = (environment: "host" | "container", withHome = true) =>
+      (daemons[environment] = service(undefined, {
+        paseoHome: environment === "host" ? home : devHome,
+        serverId: environment === "host" ? "srv_host" : "srv_dev",
+        home: withHome ? port(environment) : undefined,
+      }));
+    return { start, reachable };
+  }
+
+  test("Dev refuses a repository the Host runs, names the Host and keeps nothing", async () => {
+    const { start, reachable } = installation();
+    const host = start("host");
+    const dev = start("container");
+    const enabled = await enable(host);
+    expect(enabled.home).toEqual({ environment: "host", projectId: PROJECT, here: true });
+    const created = agents.created;
+
+    await expect(enable(dev)).rejects.toThrow("runs in the Host environment");
+    expect((await dev.list()).projects).toEqual([]);
+    expect(agents.created).toBe(created);
+
+    // Neither environment claims a home it cannot confirm with the other.
+    await host.invoke("factory.project.disable", { projectId: PROJECT });
+    reachable.host = false;
+    await expect(enable(dev)).rejects.toThrow("unconfirmed");
+    reachable.host = true;
+    await enable(dev);
+    reachable.container = false;
+    await expect(enable(host)).rejects.toThrow("unconfirmed");
+    expect((await host.list()).projects.find((p) => p.projectId === PROJECT)?.state).toBe("off");
+    // Two environments turning Factory on at once never both win.
+    reachable.container = true;
+    await dev.invoke("factory.project.disable", { projectId: PROJECT });
+    const results = await Promise.allSettled([enable(host), enable(dev)]);
+    expect(results.filter((result) => result.status === "fulfilled").length).toBeLessThan(2);
+  });
+
+  test("an existing Host Factory keeps running; a Dev Factory from an earlier release stands down", async () => {
+    const { start, reachable } = installation();
+    // Both were turned on before the home lock existed; Dev's clone is its own project.
+    const foreman = roleAgent(await enable(start("host", false)), "factory-intake");
+    await addProject("prj_dev");
+    const devForeman = roleAgent(
+      (await start("container", false).invoke("factory.project.enable", {
+        projectId: "prj_dev",
+        repository: REPO,
+      })) as Awaited<ReturnType<typeof enable>>,
+      "factory-intake",
+    );
+
+    const host = start("host");
+    const dev = start("container");
+    await host.start();
+    await dev.start();
+    expect(host.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect((await host.get(PROJECT)).home).toEqual({
+      environment: "host",
+      projectId: PROJECT,
+      here: true,
+    });
+
+    await host.tick(PROJECT, "factory-intake");
+    await dev.tick("prj_dev", "factory-intake");
+    expect(agents.prompts.filter((prompt) => prompt.agentId === foreman)).toHaveLength(1);
+    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
+    const state = await dev.get("prj_dev");
+    expect(state.home).toEqual({ environment: "host", projectId: PROJECT, here: false });
+    expect(state.roles.find((role) => role.role === "factory-intake")?.status?.line).toBe(
+      `Off here: Factory home is the Host environment, which runs ${REPO}.`,
+    );
+
+    // An unanswered check keeps the recorded decision, also after a restart.
+    reachable.host = false;
+    await dev.tick("prj_dev", "factory-intake");
+    await start("container").tick("prj_dev", "factory-intake");
+    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
+  });
+});
+
 describe("account choice for new Factory agents", () => {
   test("picks the fresh account with the most remaining quota and records it", async () => {
     const factory = service();
@@ -1824,6 +2041,8 @@ describe("account choice for new Factory agents", () => {
         ] as never,
       }),
       defaultProvider: async () => "codex-a",
+      installationAccount: () => null,
+      destinationAccounts: async () => new Map(),
     };
     const pick = (avoid?: string) =>
       service().invoke("factory.project.pick_account", {
@@ -1892,12 +2111,128 @@ describe("account choice for new Factory agents", () => {
         ] as never,
       }),
       getSettings: () => ({}) as never,
+      hosts: () => ({
+        use: async () => {
+          throw new Error("no connected hosts");
+        },
+      }),
     });
     const factory = service();
     await enable(factory);
     expect(
       await factory.invoke("factory.project.pick_account", { projectId: PROJECT, stage: "worker" }),
     ).toMatchObject({ provider: "codex", remainingPct: 48 });
+  });
+
+  test("an agent bound for another host starts on that host's id for the same account", async () => {
+    // Host accounts and the installation account each links to; a2 is a second alias of a.
+    const host: Record<string, { shared: string; remainingPct: number }> = {
+      "codex-host-a": { shared: "acct-a", remainingPct: 40 },
+      "codex-host-a2": { shared: "acct-a", remainingPct: 95 },
+      "codex-host-b": { shared: "acct-b", remainingPct: 90 },
+      "codex-host-c": { shared: "acct-c", remainingPct: 60 },
+    };
+    const usage = (providerId: string, remainingPct: number): ProviderUsage => ({
+      providerId,
+      displayName: providerId,
+      status: "available",
+      planLabel: null,
+      windows: [{ id: "weekly", label: "Weekly", remainingPct }],
+    });
+    let reachable = true;
+    const dev: DestinationHosts = {
+      async use(serverId, action) {
+        if (serverId !== "srv_dev" || !reachable) throw new Error(`${serverId} is offline`);
+        return action({
+          getDaemonConfig: async () => ({
+            config: {
+              providers: {
+                "codex-primary": { extends: "codex", installationAccountId: "acct-a" },
+                "codex-dev-b": { extends: "codex", installationAccountId: "acct-b" },
+                "codex-dev-c": { extends: "codex", installationAccountId: "acct-c" },
+              },
+            },
+          }),
+          getProvidersSnapshot: async () => ({
+            entries: [
+              { provider: "codex-primary", enabled: true, status: "ready" },
+              // Excluded on Dev: projected there as disabled.
+              { provider: "codex-dev-b", enabled: false, status: "ready" },
+              { provider: "codex-dev-c", enabled: true, status: "ready" },
+            ],
+          }),
+        });
+      },
+    };
+    accounts = {
+      readyProviders: async () => Object.keys(host),
+      providerType: () => "codex",
+      profileAccount: (profileId) => (profileId === "local-codex" ? "codex-host-a" : null),
+      readUsage: async () => ({
+        fetchedAt: T0,
+        providers: Object.entries(host).map(([id, item]) => usage(id, item.remainingPct)),
+      }),
+      defaultProvider: async () => "codex-host-a",
+      installationAccount: (provider) => host[provider]?.shared ?? null,
+      destinationAccounts: (serverId) => readDestinationAccounts(() => dev, serverId),
+    };
+    const factory = service();
+    await enable(factory);
+    const pick = (input: { serverId?: string; avoid?: string }) =>
+      factory.invoke("factory.project.pick_account", {
+        projectId: PROJECT,
+        stage: "worker",
+        ...input,
+      });
+
+    for (const [input, expected] of [
+      // This daemon, named or not, ranks its own accounts as before.
+      [{}, { provider: "codex-host-a2", remainingPct: 95 }],
+      [{ serverId: "srv_test" }, { provider: "codex-host-a2", remainingPct: 95 }],
+      // Dev lacks b; a2 ranks best and is named by Dev's id for its account.
+      [
+        { serverId: "srv_dev" },
+        {
+          serverId: "srv_dev",
+          provider: "codex-primary",
+          remainingPct: 95,
+          considered: [
+            { provider: "codex-primary", localProvider: "codex-host-a", verdict: "qualifies" },
+            { provider: "codex-primary", localProvider: "codex-host-a2", verdict: "qualifies" },
+            { provider: "codex-dev-c", localProvider: "codex-host-c", verdict: "qualifies" },
+          ],
+        },
+      ],
+      // Avoiding the account by Dev's id or a local id avoids every local alias of it.
+      [{ serverId: "srv_dev", avoid: "codex-primary" }, { provider: "codex-dev-c" }],
+      [{ serverId: "srv_dev", avoid: "codex-host-a" }, { provider: "codex-dev-c" }],
+    ] as const)
+      expect(await pick(input)).toMatchObject(expected);
+    expect(await pick({})).not.toHaveProperty("serverId");
+
+    // An unreadable or unknown host fails rather than falling back to this daemon's accounts.
+    reachable = false;
+    await expect(pick({ serverId: "srv_dev" })).rejects.toThrow(
+      "Cannot read the accounts of host srv_dev",
+    );
+    await expect(pick({ serverId: "srv_gone" })).rejects.toThrow(
+      "Cannot read the accounts of host srv_gone",
+    );
+    // A profile bound to one account cannot launch on another host.
+    reachable = true;
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      workerProfileId: "local-codex",
+    });
+    await expect(pick({ serverId: "srv_dev" })).rejects.toThrow(
+      "Profile local-codex is bound to one account and cannot launch on host srv_dev",
+    );
+    const state = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(
+      state.projects[PROJECT].accountPicks.map(
+        (item: { serverId?: string }) => item.serverId ?? null,
+      ),
+    ).toEqual([null, null, "srv_dev", "srv_dev", "srv_dev", null]);
   });
 
   test("the daemon's accounts fall back when usage cannot be read and no profile is set", async () => {
@@ -1909,6 +2244,11 @@ describe("account choice for new Factory agents", () => {
         throw new Error("usage service down");
       },
       getSettings: () => ({}) as never,
+      hosts: () => ({
+        use: async () => {
+          throw new Error("no connected hosts");
+        },
+      }),
     });
     const factory = service();
     await enable(factory);

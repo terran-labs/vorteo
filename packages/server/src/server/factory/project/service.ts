@@ -25,6 +25,8 @@ import {
   factoryProjectSendThread,
   factoryProjectStatusSet,
   type ProjectFactoryInstructions,
+  type ProjectFactoryIssueAgentHost,
+  type ProjectFactoryIssueAgents,
   type ProjectFactoryList,
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
@@ -99,13 +101,26 @@ import {
   type GhRunner,
 } from "./tick-gate.js";
 
-import { readIssueQueue } from "./queue.js";
+import {
+  devHostState,
+  NO_DEV_HOST,
+  readDevAgents,
+  type IssueAgentHosts,
+} from "./issue-agent-host.js";
+import { readIssueQueue, type DevQueueAgents } from "./queue.js";
+import {
+  FACTORY_HOME_LABELS,
+  type FactoryHomeAnswer,
+  type FactoryHomePort,
+} from "../../execution-installation/factory-home.js";
 
 /** How many account picks the state file keeps, newest last. */
 const ACCOUNT_PICKS_KEPT = 50;
 
 /** Opens every status line the service writes for a role `.github/factory.json` turns off. */
 const ASSIGNMENT_STATUS_PREFIX = "Off here: ";
+/** Opens the status line of a role standing down because another environment is the home. */
+const HOME_STATUS_PREFIX = `${ASSIGNMENT_STATUS_PREFIX}Factory home is the `;
 
 /** Sent to a paused project's Foreman by pause_all, and its counterpart from resume_all. */
 export function drainNotice(id: string): string {
@@ -171,12 +186,28 @@ export interface ProjectFactoryServiceInput {
   github?: FactoryGitHub;
   /** Accounts and their usage, for picking where new Factory agents start. */
   accounts?: FactoryAccounts;
+  /** Connected hosts, for finding Dev and its issue agents when issue agents run there. */
+  hosts?: () => IssueAgentHosts;
   /** Hash of the GitHub state a gated role reacts to; null wakes the agent. */
   fingerprint?: (role: GatedRole, repository: string) => Promise<string | null>;
+  /**
+   * The installation coordinator's Factory home decision, so one environment of an installation
+   * runs Factory per repository. Null or absent for a daemon outside an installation.
+   */
+  home?: FactoryHomePort | null;
   onWorkspacesChanged?: (workspaceIds: string[]) => void;
   logger: Logger;
   now?: () => Date;
   timeZone?: string;
+}
+
+/** Where a project's issue agents run; absent from older state means Dev. */
+function issueAgentsIn(project: Pick<ProjectState, "workers">): ProjectFactoryIssueAgents {
+  return project.workers.issueAgents ?? "dev";
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 class ProjectFactoryError extends Error {
@@ -321,6 +352,10 @@ export class ProjectFactoryService {
       gh: this.input.gh ?? defaultGhRunner,
       agents: () => this.input.agentStorage.list(),
       workspaceIds,
+      devAgents: async () => {
+        const host = await this.observedDev(project);
+        return host ? this.devQueueAgents(projectId, host) : undefined;
+      },
       now,
     });
     this.issueQueues.set(projectId, {
@@ -341,7 +376,56 @@ export class ProjectFactoryService {
       return this.describe(record, undefined, error.message);
     }
     if (record.archivedAt) return this.describe(record, project, "This project is archived.");
-    return this.describe(record, project, null);
+    const state = this.describe(record, project, null);
+    const host = project ? await this.observedDev(project) : null;
+    return host ? { ...state, issueAgentHost: host } : state;
+  }
+
+  /**
+   * The Dev to report and read agents from. Placement and observation differ: issue agents
+   * started on Dev before a switch to host mode still run there, so whenever the owner's Dev
+   * host exists it is observed. In dev mode a missing Dev is reported as unavailable.
+   */
+  private async observedDev(
+    project: Pick<ProjectState, "workers">,
+  ): Promise<ProjectFactoryIssueAgentHost | null> {
+    const host = await this.devHost();
+    return host ?? (issueAgentsIn(project) === "dev" ? NO_DEV_HOST : null);
+  }
+
+  /** Dev's availability from this daemon's saved hosts, or null with none saved. */
+  private async devHost(): Promise<ProjectFactoryIssueAgentHost | null> {
+    if (!this.input.hosts)
+      return { serverId: null, unavailable: "this daemon cannot reach connected hosts" };
+    try {
+      return devHostState(await this.input.hosts().directory());
+    } catch (error) {
+      return {
+        serverId: null,
+        unavailable: `connected hosts could not be read: ${errorText(error)}`,
+      };
+    }
+  }
+
+  /** Dev's issue agents for the queue; when Dev cannot be read, none, with the reason. */
+  private async devQueueAgents(
+    projectId: string,
+    host: ProjectFactoryIssueAgentHost,
+  ): Promise<DevQueueAgents> {
+    const installation = this.installation(projectId);
+    if (host.unavailable || !host.serverId || !this.input.hosts)
+      return { host, installation, agents: [] };
+    try {
+      const agents = await readDevAgents({
+        hosts: this.input.hosts(),
+        serverId: host.serverId,
+        installation,
+      });
+      return { host, installation, agents };
+    } catch (error) {
+      const unavailable = `Dev's agents could not be read: ${errorText(error)}`;
+      return { host: { serverId: host.serverId, unavailable }, installation, agents: [] };
+    }
   }
 
   async enable(request: {
@@ -355,6 +439,7 @@ export class ProjectFactoryService {
     return this.serialize(async () => {
       const record = await this.requireActiveProject(request.projectId);
       await this.validateAdoption(request.projectId, request.adopt ?? {});
+      let previous: ProjectState | undefined;
       await this.store.mutate((file) => {
         const other = Object.entries(file.projects).find(
           ([id, project]) =>
@@ -367,6 +452,7 @@ export class ProjectFactoryService {
             `Project ${other[0]} already runs Factory for ${repository.data} on this installation. Turn it off there first; one installation runs one Factory per repository.`,
           );
         const current = file.projects[request.projectId];
+        previous = current ? structuredClone(current) : undefined;
         file.projects[request.projectId] = {
           repository: repository.data,
           workers: current?.workers ?? {
@@ -393,6 +479,7 @@ export class ProjectFactoryService {
           paused: false,
         };
       });
+      await this.claimHome(request.projectId, repository.data, previous);
       const changed: string[] = [];
       for (const role of PROJECT_FACTORY_ROLES) {
         const workspaceId = await this.ensureRole(record, role, request.adopt?.[role.id]);
@@ -552,6 +639,7 @@ export class ProjectFactoryService {
     planning?: boolean;
     workerProfileId?: string | null;
     reviewerProfileId?: string | null;
+    issueAgents?: ProjectFactoryIssueAgents;
   }): Promise<ProjectFactoryState> {
     return this.serialize(async () => {
       const record = await this.requireActiveProject(request.projectId);
@@ -565,6 +653,7 @@ export class ProjectFactoryService {
           current.workers.workerProfileId = request.workerProfileId;
         if (request.reviewerProfileId !== undefined)
           current.workers.reviewerProfileId = request.reviewerProfileId;
+        if (request.issueAgents !== undefined) current.workers.issueAgents = request.issueAgents;
         if (!request.role) return;
         const role = (current.roles[request.role] ??= emptyRoleState());
         if (request.provider !== undefined) role.launch.provider = request.provider;
@@ -732,8 +821,8 @@ export class ProjectFactoryService {
       const roleState = project.roles[roleId];
       const agentId = roleState?.agentId;
       if (!roleState || !agentId) return;
-      const agent = await this.input.agentStorage.get(agentId);
-      if (!agent || agent.archivedAt) return;
+      const agent = await this.wakeableAgent(projectId, roleId, agentId, project);
+      if (!agent) return;
       const role = projectFactoryRole(roleId);
       const { effective, hash, undelivered, launchPending } = await this.prepareDelivery(
         record,
@@ -774,6 +863,101 @@ export class ProjectFactoryService {
         markNotified(next, stale, now);
       });
     });
+  }
+
+  /** The role's agent, unless it is archived or another environment is the Factory home. */
+  private async wakeableAgent(
+    projectId: string,
+    roleId: ProjectFactoryRoleId,
+    agentId: string,
+    project: ProjectState,
+  ): Promise<StoredAgentRecord | null> {
+    const agent = await this.input.agentStorage.get(agentId);
+    if (!agent || agent.archivedAt) return null;
+    return (await this.homeHere(projectId, roleId, project)) ? agent : null;
+  }
+
+  /**
+   * Asks the coordinator to make this environment the repository's Factory home. Enable has
+   * already recorded Factory as on, so a concurrent claim from the other environment sees it;
+   * a refusal puts the project back as it was and names the home.
+   */
+  private async claimHome(
+    projectId: string,
+    repository: string,
+    previous: ProjectState | undefined,
+  ): Promise<void> {
+    const home = this.input.home;
+    if (!home) return;
+    let answer: FactoryHomeAnswer;
+    try {
+      answer = await home.ask({ repository, mode: "claim" });
+    } catch (error) {
+      answer = {
+        outcome: "unconfirmed",
+        environment: null,
+        projectId: null,
+        reason: `The Factory home for ${repository} could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    if (answer.outcome === "home") {
+      await this.mutateProject(projectId, (project) => {
+        project.home = { environment: home.environment, projectId };
+      });
+      return;
+    }
+    await this.store.mutate((file) => {
+      if (previous) file.projects[projectId] = previous;
+      else delete file.projects[projectId];
+    });
+    throw new ProjectFactoryError(
+      answer.reason ??
+        `Factory for ${repository} runs in another environment of this installation.`,
+    );
+  }
+
+  /**
+   * Whether this environment may keep running the project's Factory. Only Dev asks: the Host
+   * is the default home. A role standing down says so in its status line. An unanswered check
+   * keeps the last recorded decision, which survives restarts: a coordinator restart neither
+   * stops a Dev home nor revives a Dev Factory that stood down. The Host never claims while Dev
+   * cannot be read, so keeping a Dev home through an outage cannot start a second Factory.
+   */
+  private async homeHere(
+    projectId: string,
+    roleId: ProjectFactoryRoleId,
+    project: ProjectState,
+  ): Promise<boolean> {
+    const home = this.input.home;
+    if (!home || home.environment === "host") return true;
+    const repository = project.repository;
+    const lastHere = (project.home?.environment ?? home.environment) === home.environment;
+    let answer: FactoryHomeAnswer;
+    try {
+      answer = await home.ask({ repository, mode: "check" });
+    } catch (error) {
+      this.logger.warn({ err: error, projectId }, "Factory home check failed");
+      return lastHere;
+    }
+    if (answer.outcome === "unconfirmed") return lastHere;
+    const elsewhere = answer.outcome === "elsewhere" && answer.environment !== null;
+    const line = elsewhere
+      ? `${HOME_STATUS_PREFIX}${FACTORY_HOME_LABELS[answer.environment!]} environment, which runs ${repository}.`.slice(
+          0,
+          PROJECT_FACTORY_STATUS_LINE_MAX,
+        )
+      : null;
+    await this.mutateProject(projectId, (next) => {
+      next.home = elsewhere
+        ? { environment: answer.environment!, projectId: answer.projectId }
+        : { environment: home.environment, projectId };
+      const state = next.roles[roleId];
+      if (!state) return;
+      if (line && state.status?.line !== line)
+        state.status = { line, updatedAt: this.now().toISOString() };
+      else if (!line && state.status?.line.startsWith(HOME_STATUS_PREFIX)) state.status = null;
+    });
+    return !elsewhere;
   }
 
   private installation(projectId: string): string {
@@ -906,6 +1090,7 @@ export class ProjectFactoryService {
     stage: ProjectFactoryAccountPick["stage"];
     issue?: number;
     avoid?: string;
+    serverId?: string;
   }): Promise<ProjectFactoryAccountPick> {
     return this.serialize(async () => {
       await this.requireActiveProject(request.projectId);
@@ -914,16 +1099,19 @@ export class ProjectFactoryService {
         throw new ProjectFactoryError("This daemon cannot read account usage.");
       const profileId = project.workers[`${request.stage}ProfileId`] ?? null;
       const now = this.now();
+      const destination = request.serverId === this.input.serverId ? undefined : request.serverId;
       const picked = await chooseAccount({
         accounts: this.input.accounts,
         profileId,
         avoid: request.avoid,
+        destination,
         nowMs: now.getTime(),
       });
       const pick: ProjectFactoryAccountPick = {
         stage: request.stage,
         profileId,
         ...picked,
+        ...(destination ? { serverId: destination } : {}),
         pickedAt: now.toISOString(),
       };
       await this.mutateProject(request.projectId, (next) => {
@@ -934,6 +1122,7 @@ export class ProjectFactoryService {
           provider: pick.provider,
           remainingPct: pick.remainingPct,
           bound: pick.bound,
+          ...(destination ? { serverId: destination } : {}),
           pickedAt: pick.pickedAt,
         };
         next.accountPicks = [...(next.accountPicks ?? []), record].slice(-ACCOUNT_PICKS_KEPT);
@@ -1472,15 +1661,19 @@ export class ProjectFactoryService {
       projectId: record.projectId,
       installation: this.installation(record.projectId),
       assignment: project?.assignment ?? null,
+      home: this.describeHome(record, project),
       state,
       repository: project?.repository || null,
       reason: unavailable,
-      workers: project?.workers ?? {
-        plannerProfileId: null,
-        planning: true,
-        workerProfileId: null,
-        reviewerProfileId: null,
-      },
+      workers: project
+        ? { ...project.workers, issueAgents: issueAgentsIn(project) }
+        : {
+            plannerProfileId: null,
+            planning: true,
+            workerProfileId: null,
+            reviewerProfileId: null,
+            issueAgents: "dev",
+          },
       drain: project?.drain
         ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
         : null,
@@ -1501,6 +1694,17 @@ export class ProjectFactoryService {
         };
       }),
     };
+  }
+
+  /** Before the first answer, an enabled project's home is where it was turned on: here. */
+  private describeHome(
+    record: PersistedProjectRecord,
+    project: ProjectState | undefined,
+  ): ProjectFactoryState["home"] {
+    const local = this.input.home?.environment;
+    if (!local || !project?.enabled) return null;
+    const home = project.home ?? { environment: local, projectId: record.projectId };
+    return { ...home, here: home.environment === local };
   }
 
   private describeInstructions(
@@ -1525,7 +1729,7 @@ export class ProjectFactoryService {
 
   private charterText(
     record: PersistedProjectRecord,
-    project: Pick<ProjectState, "repository">,
+    project: Pick<ProjectState, "repository" | "workers">,
     roleId: ProjectFactoryRoleId,
   ): string {
     const input: CharterInput = {
@@ -1535,6 +1739,7 @@ export class ProjectFactoryService {
       isSystemProject: isSystemProject(record),
       projectId: record.projectId,
       installation: this.installation(record.projectId),
+      issueAgents: issueAgentsIn(project),
     };
     return projectFactoryRole(roleId).charter(input);
   }

@@ -184,6 +184,7 @@ import { formatSystemNotificationPrompt } from "./agent/agent-messages/index.js"
 import { startAgentRun } from "./agent/agent-prompt.js";
 import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
 import { ProjectFactoryService } from "./factory/project/service.js";
+import { createFactoryHomeClient } from "./execution-installation/factory-home.js";
 import { daemonFactoryAccounts } from "./factory/project/account-choice.js";
 import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
@@ -1878,9 +1879,14 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  const factoryHosts = () => {
+    if (!wsServer) throw new Error("Daemon is not accepting host operations");
+    return wsServer.toolHosts();
+  };
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
+    home: createFactoryHomeClient(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG),
     projects: projectRegistry,
     workspaces: workspaceRegistry,
     agentStorage,
@@ -1929,7 +1935,9 @@ export async function createPaseoDaemon(
       providers: providerSnapshotManager,
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
+      hosts: factoryHosts,
     }),
+    hosts: factoryHosts,
     schedules: scheduleService,
     onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),
     logger,
