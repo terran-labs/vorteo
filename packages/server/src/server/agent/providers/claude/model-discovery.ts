@@ -23,7 +23,22 @@ export const CLAUDE_DISCOVERY_EXPIRY_GUARD_MS = 10 * 60_000;
 /** A fresh answer is reused, so repeated catalog refreshes do not each start a CLI. */
 export const CLAUDE_DISCOVERY_REUSE_MS = 10 * 60_000;
 
+/**
+ * Even a forced refresh reuses an answer younger than this, and a failed probe is not retried
+ * within it. Client reconnects force a catalog refresh, and on the lab Host they started a CLI
+ * per account every five seconds (2026-11-13). Refreshes that overlap, or that are canceled
+ * before they answer, still each start a CLI.
+ */
+export const CLAUDE_DISCOVERY_MIN_INTERVAL_MS = 60_000;
+
 const recentDiscoveries = new Map<string, { models: ModelInfo[]; at: number }>();
+const recentFailures = new Map<string, { error: unknown; at: number }>();
+
+/** Forgets every remembered answer and failure. For tests, which share this module. */
+export function forgetClaudeModelDiscoveries(): void {
+  recentDiscoveries.clear();
+  recentFailures.clear();
+}
 
 interface ClaudeModelDiscoveryOptions {
   resolveBinary: () => Promise<string>;
@@ -36,12 +51,19 @@ interface ClaudeModelDiscoveryOptions {
   now?: () => number;
 }
 
-/** Whether starting a CLI for this account now could begin a renewal. */
-async function renewalDue(options: ClaudeModelDiscoveryOptions, now: number): Promise<boolean> {
-  if (claudeSignInMode(options.env) !== "full") return false;
+/**
+ * Whether starting a Claude CLI for this account now could begin a sign-in renewal. Callers that
+ * start a CLI they will stop on a short limit must not start it while this holds.
+ */
+export async function claudeRenewalDue(
+  env: NodeJS.ProcessEnv,
+  options: { readGrant?: typeof readClaudeOAuthGrant; now?: number } = {},
+): Promise<boolean> {
+  const now = options.now ?? Date.now();
+  if (claudeSignInMode(env) !== "full") return false;
   let grant;
   try {
-    grant = await (options.readGrant ?? readClaudeOAuthGrant)(claudeConfigDir(options.env));
+    grant = await (options.readGrant ?? readClaudeOAuthGrant)(claudeConfigDir(env));
   } catch {
     // Unreadable storage keeps the earlier behavior; the guard needs a grant it can date.
     return false;
@@ -71,12 +93,15 @@ export async function discoverClaudeModels(
     options.runtimeSettings?.command ?? null,
   ]);
   const recent = recentDiscoveries.get(account);
-  if (!options.force && recent && now() - recent.at < CLAUDE_DISCOVERY_REUSE_MS) {
-    return recent.models;
-  }
+  const reuseMs = options.force ? CLAUDE_DISCOVERY_MIN_INTERVAL_MS : CLAUDE_DISCOVERY_REUSE_MS;
+  if (recent && now() - recent.at < reuseMs) return recent.models;
   // The last answer, however old, stands in until the grant has renewed. With none, as after a
   // daemon restart this close to expiry, the catalog omits discovery-gated models until then.
-  if (await renewalDue(options, now())) return recent?.models ?? [];
+  if (await claudeRenewalDue(options.env, { readGrant: options.readGrant, now: now() })) {
+    return recent?.models ?? [];
+  }
+  const failed = recentFailures.get(account);
+  if (failed && now() - failed.at < CLAUDE_DISCOVERY_MIN_INTERVAL_MS) throw failed.error;
   const controller = new AbortController();
   const signal = options.signal
     ? AbortSignal.any([options.signal, controller.signal])
@@ -131,7 +156,12 @@ export async function discoverClaudeModels(
     );
     const models = await raceProviderRefreshAbort(signal, query.supportedModels());
     recentDiscoveries.set(account, { models, at: now() });
+    recentFailures.delete(account);
     return models;
+  } catch (error) {
+    // A canceled refresh says nothing about the account; only a real failure is held back.
+    if (!options.signal?.aborted) recentFailures.set(account, { error, at: now() });
+    throw error;
   } finally {
     clearTimeout(timer);
     endInput();
