@@ -18,6 +18,7 @@ const KindSchema = z.enum([
   "session-host",
   "coordinator-follow",
   "coordinator-settings",
+  "installation-change",
 ]);
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const CancellationSchema = z.strictObject({
@@ -44,6 +45,11 @@ export interface CoordinatorRestartQueues {
     list(): ManagedJob[];
     decide(id: string, revision: string, decision: "cancel"): ManagedJob;
   };
+  /** Installation changes Host agents requested; null until the server has created them. */
+  installationChanges?: () => {
+    list(): ManagedJob[];
+    decide(id: string, revision: string, decision: "cancel"): ManagedJob;
+  } | null;
 }
 interface Queue {
   list(): ManagedJob[];
@@ -159,6 +165,14 @@ export class InstallationManagement {
           const follow = this.coordinatorRestarts?.follow();
           if (!follow) throw new RestartRequestError("Coordinator updates are unavailable");
           return follow.decide(input.id, input.revision, "cancel");
+        },
+      },
+      "installation-change": {
+        list: () => this.coordinatorRestarts?.installationChanges?.()?.list() ?? [],
+        cancel: (input) => {
+          const changes = this.coordinatorRestarts?.installationChanges?.();
+          if (!changes) throw new RestartRequestError("Installation changes are unavailable");
+          return changes.decide(input.id, input.revision, "cancel");
         },
       },
       "coordinator-settings": {

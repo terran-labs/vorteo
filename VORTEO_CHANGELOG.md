@@ -8,6 +8,49 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## 26.11.701 - 2026-11-07
+
+Beta that adds an All Factories view with a Needs you panel and a Stop all switch, delegates coordinator updates, settings and routine installation changes under the full maintenance grant, gives the Foreman stricter dispatch rules, and fixes Factory account picks.
+
+### Features
+
+- Builds can request an installation rename, a delivery mode or installation type change, ordinary settings changes and a custom domain change with `request-installation-change`. Each appears in **Requested installation changes** in Installation controls with what it disrupts, and the owner can apply or cancel it; under full maintenance delegation it starts after a thirty-second window.
+- A custom domain change checks the main address and the new domain's certificate first, and restores the previous domain automatically if either address stops answering afterwards.
+- Builds can take a safety snapshot, verify a failed helper's installed receipts and prepare a Dev repair under the full maintenance grant with `request-snapshot`, `request-helper-verification` and `request-dev-repair`. Each runs at once, and Installation controls history lists it under **Agent actions**.
+- A Dev repair prepared under the grant follows the delegated Dev restart queue, with its thirty-second window and Cancel, instead of always waiting for the owner.
+- The Factory Overview zooms out to every Factory in the installation at `/h/<host>/factory`, and back into one project. All Factories lists each Factory with its state, stage counts and what needs the owner, puts every issue on one board with a project tag, adds up the reports, and gives the Ledger rail a project filter. A project's overview links back to All Factories.
+- A Needs you panel gathers everything waiting on the owner: open questions from Factory threads, instruction proposals and reviews, a stop in effect, issues labelled for human review, failing checks outside repair, claims held by another installation, pull requests waiting for approval and blocked issues, most urgent first. Each row opens the thread, issue, pull request or instructions, or resumes. In All Factories it sits at the top of the page.
+- A Stop all Factories switch, apart from a project's Pause, asks for confirmation and then pauses every Factory on the shown hosts: running turns finish, and no new Factory work starts or merges until Resume all. While a stop holds Factories, a banner shows its reason, age and Resume all.
+- Sample factory mode covers All Factories with three sample Factories, one paused.
+- The sidebar adds an All Factories card above Pinned whenever a Factory is on or paused. It sums every project's Factory in the same form as a project card: a combined state, a Needs you count, a merged stage bar, one chip per Factory that opens its overview, and every runner tagged with its project. Click the card to open the All Factories overview. Collapse it from its icon; it is remembered on this device.
+- Full maintenance delegation now covers every installation operation by default, including any added later. One exclusion list names the exceptions: agent instruction and guardrail edits, because agents never edit their own guardrails, snapshot restore and source upgrade rollback, and accounts and credentials. A delegated approval is checked again at dispatch, so revoking the grant stops work that has not started, even after a coordinator restart.
+- Builds can request **Update the coordinator** with `request-coordinator-follow` and follow it with `coordinator-follow-status`. Under the full grant it starts after a thirty-second cancellation window; otherwise the owner approves it as before.
+- Under the full grant, coordinator settings changes (including the broker keys), preview broker consumer deployments and channel rebinds, and the Dev boot-entry switch approve themselves after the same window. The broker review, boot-entry pins and rollbacks still run at dispatch.
+- Installation management can cancel coordinator updates and coordinator settings changes.
+
+### Maintenance
+
+- The front-door test pins each queued installation change to the owner operation its route performs.
+- The front-door test accepts immediate agent requests only for a pinned, reviewed set of routes, each limited to its reviewed effects.
+- An agent snapshot never removes an existing snapshot, and each agent action's receipt is written before it runs and is never trimmed from history before its outcome is recorded; the outcome then moves to the top.
+- A front-door test fails when an owner route has no agent request command, exclusion or pinned entry. Existing owner operations without an agent door are a pinned gap list that may only shrink.
+
+### Changes
+
+- The Factory Foreman now gives each lead the go to start its worker, after checking the plan's files against all work in flight. Overlapping issues wait without holding a worker slot instead of colliding.
+- The Foreman picks every agent's account itself, including a planning lead's worker, so leads and workers no longer call the Factory service.
+- After each merge, the Foreman removes the merged issue's clean worktree and tells in-flight issues that touch the same files to merge the default branch right away, so conflicts appear before merge time. Issues are never combined into one branch or pull request.
+- Foreman dispatch: waiting plans never block each other (the oldest overlapping issue goes first), planning-off issues get the same overlap check from a Foreman-posted file list, a worker stops before touching a file outside its plan until the Foreman clears the wider plan, and only the Foreman checks for a pause before sending a go.
+
+### Fixes
+
+- Factory account picks now treat a usage reading without its own timestamp as read when its usage list was, so fresh accounts qualify instead of every pick falling back to the configured default.
+- Sidebar Factory cards read the issue queue only while expanded on a running Factory, every two minutes, instead of every 30 to 60 seconds. Each read is a GitHub read on the Foreman's account; collapsed and paused cards show the last queue they read.
+
+### Known limitations
+
+- Resume all re-reads each host just before acting and never resumes a host another process holds, but one request still separates that read from `resume_all`, and the daemon's `resume_all` releases every drain on the host. A hold that lands in that moment, for example Builds draining before a restart, would also be released. Closing the gap needs a daemon-side `resume_all` that releases only drains with a given reason.
+
 ## 26.11.700 - 2026-11-07
 
 Beta that lets Stable installations take one reviewed commit from main with the owner's approval, samples account usage every minute in the background, adds the sidebar Factory card, and fixes dozens of interface bugs found by the nightly browser run.

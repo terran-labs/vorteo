@@ -5,6 +5,7 @@ import type {
   CoordinatorSettingsDecision,
   CoordinatorSettingsJob,
   InstallationUpgrade,
+  QueuedAgentAction,
   UpdatePolicyChange,
   UpgradeDecision,
   UpgradeStatus,
@@ -17,6 +18,8 @@ import { coordinatorSettingsInProgress } from "./coordinator-settings-model";
 export const INSTALLATION_UPGRADES_KEY = ["installation-upgrades"] as const;
 export const INSTALLATION_SNAPSHOTS_KEY = ["installation-snapshots"] as const;
 export const COORDINATOR_FOLLOW_KEY = ["installation-coordinator-follow"] as const;
+export const AGENT_ACTIONS_KEY = ["installation-agent-actions"] as const;
+export const INSTALLATION_CHANGES_KEY = ["installation-changes"] as const;
 export const COORDINATOR_SETTINGS_KEY = ["installation-coordinator-settings"] as const;
 
 function requireClient(client: InstallationClient | null): InstallationClient {
@@ -89,6 +92,42 @@ export function useInstallationSnapshots(client: InstallationClient | null, rest
 }
 
 /** Coordinator update status; data is null when the coordinator predates it. */
+/** Receipts for actions Host agents ran at once under the full maintenance grant. */
+export function useAgentActionReceipts(client: InstallationClient | null) {
+  return useFetchQuery({
+    dataShape: "value",
+    queryKey: AGENT_ACTIONS_KEY,
+    queryFn: () => requireClient(client).agentActionReceipts(),
+    enabled: client !== null,
+    staleTimeMs: 0,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+}
+
+/** Installation changes Host agents requested; polled fast while one is waiting or running. */
+export function useInstallationChanges(client: InstallationClient | null) {
+  return useFetchQuery({
+    dataShape: "value",
+    queryKey: INSTALLATION_CHANGES_KEY,
+    queryFn: () => requireClient(client).installationChanges(),
+    enabled: client !== null,
+    staleTimeMs: 0,
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((job) => !job.finishedAt) ? 3000 : 60_000,
+    retry: false,
+  });
+}
+
+export function useInstallationChangeActions(client: InstallationClient | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ job, decision }: { job: QueuedAgentAction; decision: "approve" | "cancel" }) =>
+      requireClient(client).decideInstallationChange(job, decision),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: INSTALLATION_CHANGES_KEY }),
+  });
+}
+
 export function useCoordinatorFollowStatus(client: InstallationClient | null) {
   return useFetchQuery({
     dataShape: "value",
