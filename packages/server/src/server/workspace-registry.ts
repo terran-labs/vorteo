@@ -16,6 +16,7 @@ import {
 } from "@getpaseo/protocol/messages";
 
 import { writeJsonFileAtomic } from "./atomic-file.js";
+import { retainedProjectKey } from "./project-key.js";
 import { areEquivalentPaths } from "../utils/path.js";
 import {
   logicalProjectKey,
@@ -67,6 +68,12 @@ const PersistedProjectRecordSchema = z.object({
     .nullable()
     .optional()
     .transform((value) => logicalProjectKey(value ?? null)),
+  // Set when the installation assigned this key to synchronize the project across hosts.
+  // A pinned key is the project's identity: reconciliation never re-derives it from git.
+  projectKeyPinned: z.boolean().optional(),
+  // Keys this project held before synchronization changed it, newest last. Synchronization
+  // keeps pointing memberships and saved sidebar state still under them at the current key.
+  previousProjectKeys: z.array(z.string()).optional(),
   // User-set override layered over the derived displayName. Reconciliation
   // never touches this. Null means "use the derived name". Added for #987.
   customName: z
@@ -196,6 +203,12 @@ export interface ProjectRegistry {
   ): Promise<PersistedProjectRecord | null>;
   archive(projectId: string, archivedAt: string): Promise<void>;
   remove(projectId: string): Promise<void>;
+  /** Installation project synchronization only: assigns and pins the project's shared key. */
+  setSynchronizedKey?(
+    projectId: string,
+    projectKey: string,
+    updatedAt: string,
+  ): Promise<PersistedProjectRecord | null>;
   /** Startup seeding only: writes a record whose system marker ordinary requests cannot set. */
   writeSystemProject?(record: PersistedProjectRecord): Promise<void>;
   /** Central lifecycle seam for daemon-global project observers. */
@@ -499,13 +512,12 @@ export class FileBackedProjectRegistry
             left.projectId.localeCompare(right.projectId),
         )[0];
       if (active) {
-        // The system project keeps its own key so it never joins a same-remote group.
-        if (active.systemProject && active.kind === input.kind) return active;
-        if (active.kind === input.kind && active.projectKey === projectKey) return active;
+        const nextKey = retainedProjectKey(active, projectKey);
+        if (active.kind === input.kind && active.projectKey === nextKey) return active;
         const refreshed = {
           ...active,
           kind: input.kind,
-          projectKey,
+          projectKey: nextKey,
           updatedAt: input.timestamp,
         };
         await this.upsert(refreshed);
@@ -619,6 +631,45 @@ export class FileBackedProjectRegistry
       records.set(parsed.projectId, parsed);
     });
     await this.notifyMutation({ kind: "upsert", projectId: parsed.projectId, project: parsed });
+  }
+
+  /**
+   * Installation project synchronization only: assigns and pins the project's shared key.
+   * This is the one write that may change the System project's key; Factory projects keep
+   * theirs, because their bindings compare it.
+   */
+  async setSynchronizedKey(
+    projectId: string,
+    projectKey: string,
+    updatedAt: string,
+  ): Promise<PersistedProjectRecord | null> {
+    const key = logicalProjectKey(projectKey) ?? projectKey;
+    const project = await this.mutateCache((records) => {
+      const current = records.get(projectId);
+      if (!current) return null;
+      if (current.projectKey === key && current.projectKeyPinned) return structuredClone(current);
+      if (current.factoryInstallation && current.projectKey !== key)
+        throw new Error("Factory projects keep the key their binding compares.");
+      const previous = current.projectKey;
+      const previousProjectKeys =
+        previous && previous !== key
+          ? [
+              ...(current.previousProjectKeys ?? []).filter((k) => k !== previous && k !== key),
+              previous,
+            ].slice(-20)
+          : current.previousProjectKeys;
+      const next = PersistedProjectRecordSchema.parse({
+        ...current,
+        projectKey: key,
+        projectKeyPinned: true,
+        ...(previousProjectKeys ? { previousProjectKeys } : {}),
+        updatedAt,
+      });
+      records.set(projectId, next);
+      return structuredClone(next);
+    });
+    if (project) await this.notifyMutation({ kind: "upsert", projectId, project });
+    return project;
   }
 
   /** Startup-owned installer only; any retained checkpoint blocks a new attempt. */

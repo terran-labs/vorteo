@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight, Folder } from "lucide-react-native";
+import { ChevronDown, ChevronRight, Folder, Pin } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 
 export type SidebarDisclosure = "expand" | "collapse" | null;
@@ -11,6 +11,7 @@ export type SidebarDisclosure = "expand" | "collapse" | null;
 const LEADING_SLOT_HEIGHT = 20;
 
 const ThemedFolder = withUnistyles(Folder);
+const ThemedPin = withUnistyles(Pin);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 /**
@@ -49,6 +50,11 @@ function SidebarDisclosureChevron({ chevron }: { chevron: "expand" | "collapse" 
 /** The folder glyph for folders, Standing and Factory: the workspace kind icon's size. */
 export function SidebarFolderIcon() {
   return <ThemedFolder size={14} uniProps={mutedColorMapping} />;
+}
+
+/** The Pinned section's glyph, sized like the folder glyph so the section reads as a root folder. */
+export function SidebarPinIcon() {
+  return <ThemedPin size={14} uniProps={mutedColorMapping} />;
 }
 
 const styles = StyleSheet.create((theme) => ({

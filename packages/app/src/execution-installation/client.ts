@@ -59,6 +59,7 @@ import {
   type SnapshotList,
   type SnapshotPartKind,
   type SnapshotRestoreStatus,
+  type UpdatePolicyChange,
   type UpgradeDecision,
   type UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
@@ -800,6 +801,16 @@ export class InstallationClient {
     return result;
   }
 
+  /** Saves the update policy and re-checks. Call only when the status reports `policy`. */
+  async changeUpdatePolicy(change: UpdatePolicyChange): Promise<UpgradeStatus> {
+    return UPGRADE_STATUS_READER.parse(await this.request("update-policy", change));
+  }
+
+  /** Checks the installation's channel now. Call only when the status reports `policy`. */
+  async checkForUpdates(): Promise<UpgradeStatus> {
+    return UPGRADE_STATUS_READER.parse(await this.request("update-check", {}));
+  }
+
   private request(path: string, body: unknown): Promise<unknown> {
     if (this.password === null) throw new Error("Unlock installation controls first");
     const resource =
@@ -807,7 +818,7 @@ export class InstallationClient {
         ? `${path}?idleRestarts=1${this.installation.gracefulRestarts ? "&gracefulRestarts=1" : ""}`
         : path;
     const query = path.startsWith("restarts")
-      ? `${resource}${resource.includes("?") ? "&" : "?"}sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&delegatedRequests=1`
+      ? `${resource}${resource.includes("?") ? "&" : "?"}sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1`
       : resource;
     return this.ports.request(query, this.password, body);
   }

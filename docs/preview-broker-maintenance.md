@@ -137,3 +137,54 @@ replaying commands, replacing files or automatically restoring registrations.
 The client commands are `request-broker-consumer-deployment --request-file` and
 `broker-deployment-status ID`. Submission requires the configured capability;
 exact approval remains separate. Source validation is not installed availability.
+
+## Restore the broker on an installation with renewal evidence
+
+Once renewal evidence exists, every coordinator change runs through a runner
+renewal, and the legacy admission path is unavailable. A renewal may carry
+`previewBrokerDeployment` or `previewBroker`, but only as its single entry in
+`configurationChanges`. A renewal naming both, or one of them beside any other
+setting, is refused. Policy, native helper and monitor changes stay outside
+renewal. Do not edit the coordinator configuration by hand: renewals pin its
+exact bytes.
+
+Each renewal's candidate configuration must differ from the live one by exactly
+the attached section. Its compatible recovery reader keeps the live configuration,
+so a failed renewal rolls back to the coordinator without the new section.
+Admission checks the section's paired Docker identity and its recovery readers in
+the selected Host release, then runs the section's executor checks against the
+candidate: protected files and their SHA256 pins, consumer and participant scope,
+and the retained recovery reader probe. Preparation, approval and claim each
+repeat these checks.
+
+Full maintenance delegation may approve attaching either section, as the owner
+decided on 2026-11-03; without it the owner approves the renewal in installation
+controls. The consumer deployment and channel rebind in steps 2 and 4 stay
+owner-only. Builds submits each request below.
+
+1. Attach `previewBrokerDeployment` through a renewal. Prepare the protected
+   participant scope first. Its `validUntil` must cover the renewal, its approval
+   and the deployment execution, with more than three minutes left at each check.
+   Submit with `request-coordinator --request-file
+<preparation.json>` and follow it with `coordinator-status <id>` until the
+   renewal succeeds. `capabilities` then reports `previewBrokerDeployment`
+   available.
+2. Submit `request-broker-consumer-deployment --request-file <file>`. The owner
+   approves the exact request in installation controls. Follow it with
+   `broker-deployment-status <id>` until it reports `succeeded`.
+3. Attach `previewBroker` through a second renewal. Its `consumerFiles` pin the
+   eight deployed consumer files by their committed SHA256 values, four beside
+   each config path, and `channel_identity.py` matches `identityModule`. Submit
+   and follow it as in step 1. `capabilities` then reports `previewBroker`
+   available.
+4. Submit `request-broker-channel-rebind --request-file <file>`. The owner
+   approves the exact request through the broker rebind decision route in
+   installation controls. Follow it with `broker-rebind-status <id>` until it
+   reports `succeeded`.
+5. Read back both renewals with `coordinator-status`, both capabilities, the
+   succeeded deployment and rebind statuses. Then complete the acceptance
+   checks above: both broker readbacks, preserved queues and ledgers, process
+   ownership, a fresh availability receipt, HTTPS HTML and entry assets.
+
+A lost reply at any step is uncertain. Read the matching status before deciding
+whether anything needs to be resubmitted, and never retry an apply.

@@ -652,6 +652,7 @@ function ComposerKeyboardRegistration({
       "message-input.focus",
       "message-input.send",
       "message-input.dictation-toggle",
+      "message-input.dictation-insert-toggle",
       "message-input.dictation-cancel",
       "message-input.dictation-confirm",
       "message-input.voice-toggle",
@@ -680,6 +681,8 @@ function resolveMessageInputPassthroughAction(
       return "dictation-confirm";
     case "message-input.dictation-toggle":
       return "dictation-toggle";
+    case "message-input.dictation-insert-toggle":
+      return "dictation-insert-toggle";
     case "message-input.dictation-cancel":
       return "dictation-cancel";
     case "message-input.voice-toggle":

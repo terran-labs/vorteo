@@ -237,6 +237,9 @@ export interface RestartExecutor {
   recoverEngine?(job: RestartJob): Promise<string>;
   engineRestartPlan?(): string | undefined;
   restartEngine?(job: RestartJob): Promise<string>;
+  /** Digest of the configured Dev boot-entry switch plan, when it is executable. */
+  bootEntrySwitchPlan?(): string | undefined;
+  switchBootEntry?(job: RestartJob): Promise<string>;
   supportsUpdate?(target: RestartJob["target"]): boolean;
   sourceBase?(target: RestartJob["target"]): string;
   sourceWeb?(target: RestartJob["target"]): string;
@@ -305,9 +308,17 @@ function sessionHostFailureDetail(error: unknown): string {
 
 function validateSourceDecision(job: RestartJob, decision: RestartDecision, updateSha256?: string) {
   if ((job.update || job.sourceBatch) && decision !== "reject" && decision !== "cancel") {
-    if (decision !== "approve" || !job.update || updateSha256 !== job.update.sha256)
+    // A single reviewed update may finish current turns first, as automatic Host updates do:
+    // that path holds new work, builds the candidate, then restarts when idle. Release upgrades
+    // approved to install after current work use it. Combined batches stay immediate.
+    const finishUpdate = decision === "finish-current-turns" && !job.sourceBatch;
+    if (
+      (decision !== "approve" && !finishUpdate) ||
+      !job.update ||
+      updateSha256 !== job.update.sha256
+    )
       throw new RestartRequestError(
-        "Review and approve this exact source update. Idle updates are not supported.",
+        "Review and approve this exact source update. Only single updates can finish current turns first.",
       );
   }
 }
@@ -2104,6 +2115,7 @@ export class InstallationRestarts {
     engineRestartPlanSha256?: string,
     hostLauncherPlanSha256?: string,
     engineRecoveryPlanSha256?: string,
+    bootEntrySwitchPlanSha256?: string,
   ): RestartJob {
     this.requireActive();
     const job = this.jobs.find((candidate) => candidate.id === id);
@@ -2115,6 +2127,7 @@ export class InstallationRestarts {
       engineRestartPlanSha256,
       hostLauncherPlanSha256,
       engineRecoveryPlanSha256,
+      bootEntrySwitchPlanSha256,
     });
     this.validateDecision(job, decision, updateSha256);
     if (decision === "request-again") {

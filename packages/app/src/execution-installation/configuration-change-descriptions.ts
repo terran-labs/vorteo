@@ -15,6 +15,10 @@ type Descriptions = {
  * new setting cannot reach approval without a description here.
  */
 const DESCRIPTIONS: Descriptions = {
+  supervisorMaintenance: (config) =>
+    config === null
+      ? "Remove the tracked Dev supervisor maintenance plan."
+      : `Configure Dev supervisor maintenance plan ${config.sha256}. Replacing the supervisor still requires a separate tracked approval.`,
   operationalTelemetryEnabled: (config) =>
     config === null
       ? "Turn off future coordinator performance samples. Keep retained private logs."
@@ -71,6 +75,20 @@ const DESCRIPTIONS: Descriptions = {
     config === null
       ? "Remove the Host launcher update plan."
       : `Allow a one-time Host launcher update, which you approve separately: managed release selection, or release seals on or off. Candidate launcher ${config.sha256.slice(0, 12)}.`,
+  // The owner's only view of this plan: the switch approval later names just its digest.
+  bootEntrySwitch: (config) =>
+    config === null
+      ? "Remove the Dev boot-entry switch plan."
+      : [
+          config.expectBootForm === "plain"
+            ? "Allow a Dev boot-entry switch to a plain supervisor entry without Factory's launcher, which you approve separately."
+            : "Allow a Dev boot-entry rollback to Factory's launcher, which you approve separately.",
+          `Dev restarts once and then starts from ${config.target.path} (sha256 ${config.target.sha256}) instead of ${config.current.entry.path} (sha256 ${config.current.entry.sha256}).`,
+          config.target.source
+            ? `Root first copies the Host file ${config.target.source} into Dev at that path.`
+            : "That entry is already in Dev; nothing is copied.",
+          `Factory's check must then report the ${config.expectBootForm} boot form.`,
+        ].join(" "),
   releaseSeals: (config) =>
     config === null
       ? "Turn off release seals for the coordinator. Its launcher drops VORTEO_RELEASE_SEALS, so later Host builds are not sealed and installs check release bytes in full. Existing sealed releases keep their flags."

@@ -8,7 +8,8 @@ export type RestartPlanField =
   | "factoryRuntimePlanSha256"
   | "engineRestartPlanSha256"
   | "engineRecoveryPlanSha256"
-  | "hostLauncherPlanSha256";
+  | "hostLauncherPlanSha256"
+  | "bootEntrySwitchPlanSha256";
 
 /**
  * When the coordinator may approve the operation without an owner: "never", only under
@@ -28,6 +29,8 @@ export interface RestartOperationExecutor {
   restartEngine?(job: RestartJob): Promise<string>;
   hostLauncherPlan?(): string | undefined;
   updateHostLauncher?(job: RestartJob): Promise<string>;
+  bootEntrySwitchPlan?(): string | undefined;
+  switchBootEntry?(job: RestartJob): Promise<string>;
 }
 
 export interface ReviewedRestartOperation {
@@ -179,6 +182,28 @@ export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
     legacyReply: {
       reason: "Host launcher update. Reload Vorteo to review the exact operation.",
       detail: "Reload to review the Host launcher update. Cancellation remains available.",
+    },
+  },
+  {
+    field: "bootEntrySwitchPlanSha256",
+    target: "container-daemon",
+    label: "Dev boot-entry switch",
+    planLabel: "Dev boot-entry switch plan",
+    // It replaces Dev's boot path and restarts all of Dev, so only the owner approves it:
+    // never automatic and, unlike the other plans, not delegable under full delegation.
+    // That makes owner review implicit, so an explicit requireOwnerApproval is redundant.
+    automatic: "never",
+    refusesRedundantOwnerApproval: true,
+    reviewMessage: "Review this exact Dev boot-entry switch before approval",
+    idleMessage: "Use Finish turns and restart for the Dev boot-entry switch",
+    plan: (executor) => executor.bootEntrySwitchPlan?.(),
+    run: (executor) => executor.switchBootEntry?.bind(executor),
+    capability: "bootEntrySwitch",
+    // COMPAT(bootEntrySwitch): added 2026-11-04; remove after 2027-05-04 once all supported
+    // clients negotiate boot-entry review. Old clients see a Dev restart they can only cancel.
+    legacyReply: {
+      reason: "Dev boot-entry switch. Reload Vorteo to review the exact operation.",
+      detail: "Reload to review the Dev boot-entry switch. Cancellation remains available.",
     },
   },
 ];

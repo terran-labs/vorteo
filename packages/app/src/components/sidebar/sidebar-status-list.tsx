@@ -78,7 +78,7 @@ import {
   SidebarWorkspaceContextMenu,
   SidebarWorkspaceMenu,
 } from "@/components/sidebar/sidebar-workspace-menu";
-import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
+import { PinnedSectionRow } from "@/components/sidebar/pinned-section-row";
 import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle-row";
 import { useLimitedSidebarGroup } from "@/components/sidebar/use-limited-sidebar-group";
 import type { ToggleSidebarWorkspacePin } from "@/hooks/use-sidebar-workspace-pin";
@@ -156,7 +156,6 @@ export function SidebarStatusWorkspaceList({
   dragGestureHostActive,
 }: StatusWorkspaceListProps) {
   const onScroll = useScrollReporter(onScrolledChange);
-  const { t } = useTranslation();
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
   const collapsedWorkspaceGroupKeys = useSidebarCollapsedSectionsStore(
     (state) => state.collapsedWorkspaceGroupKeys,
@@ -233,11 +232,10 @@ export function SidebarStatusWorkspaceList({
       {listTopComponent}
       {pinnedWorkspaces.length > 0 ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
-          <SidebarSectionHeader
-            title={t("sidebar.pinned.title")}
+          <PinnedSectionRow
+            count={pinnedWorkspaces.length}
             collapsed={pinnedCollapsed}
             onToggle={togglePinnedCollapsed}
-            testID="sidebar-pinned-section-header"
           />
           {pinnedCollapsed ? null : (
             <>
@@ -573,8 +571,8 @@ const StatusWorkspaceRow = memo(function StatusWorkspaceRow({
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
   reserveIdleStatusIndicatorSpace?: boolean;
   /**
-   * Whether the row sits under a status header, which is what it indents from. Pinned rows
-   * are a flat list under their own header and sit flush.
+   * Whether the row sits under a status header rather than under Pinned. A pinned workspace
+   * marks itself only in its status group; its copy under Pinned needs no marker.
    */
   inStatusGroup?: boolean;
   onWorkspacePress?: () => void;
@@ -641,8 +639,8 @@ function StatusWorkspaceRowWithMenu({
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
   reserveIdleStatusIndicatorSpace?: boolean;
   /**
-   * Whether the row sits under a status header, which is what it indents from. Pinned rows
-   * are a flat list under their own header and sit flush.
+   * Whether the row sits under a status header rather than under Pinned. A pinned workspace
+   * marks itself only in its status group; its copy under Pinned needs no marker.
    */
   inStatusGroup?: boolean;
   onPress: () => void;
@@ -789,7 +787,7 @@ interface StatusWorkspaceRowInnerProps {
   isPinned?: boolean;
   onTogglePin?: () => void;
   reserveIdleStatusIndicatorSpace?: boolean;
-  /** Pinned rows are flat under their own header; status-group rows indent from theirs. */
+  /** False under Pinned; see `StatusWorkspaceRow`. */
   inStatusGroup?: boolean;
   drag?: () => void;
   isDragging?: boolean;
@@ -902,7 +900,6 @@ function StatusWorkspaceRowInnerContent({
           isPressed,
           selected,
           isHovered,
-          inStatusGroup,
           isDragging,
         });
         const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
@@ -966,6 +963,7 @@ function StatusWorkspaceRowInnerContent({
                     trailing={trailing}
                     trailingPresentation={trailingPresentation}
                     showKebab={showKebabInSlot}
+                    showPinMarker={Boolean(isPinned) && inStatusGroup}
                     isPinned={isPinned}
                     onTogglePin={onTogglePin}
                     onCopyPath={onCopyPath}
@@ -995,6 +993,7 @@ function StatusWorkspaceActionSlot({
   trailing,
   trailingPresentation,
   showKebab,
+  showPinMarker,
   isPinned,
   onTogglePin,
   onCopyPath,
@@ -1013,6 +1012,7 @@ function StatusWorkspaceActionSlot({
   trailing: SidebarWorkspaceTrailing;
   trailingPresentation: SidebarWorkspaceTrailingPresentation;
   showKebab: boolean;
+  showPinMarker: boolean;
   isPinned?: boolean;
   onTogglePin?: () => void;
   onCopyPath?: () => void;
@@ -1034,7 +1034,7 @@ function StatusWorkspaceActionSlot({
       <SidebarWorkspaceTrailingActionBase presentation={trailingPresentation}>
         <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
       </SidebarWorkspaceTrailingActionBase>
-      <SidebarWorkspaceTrailingDetails workspace={workspace} />
+      <SidebarWorkspaceTrailingDetails workspace={workspace} showPinMarker={showPinMarker} />
       <SidebarWorkspaceMenuReveal visible={kebab.showKebab} backdrop={backdrop}>
         {kebab.showKebab && onArchive ? (
           <SidebarWorkspaceMenu
@@ -1068,18 +1068,17 @@ function getStatusWorkspaceRowStyle({
   isPressed,
   selected,
   isHovered,
-  inStatusGroup,
   isDragging,
 }: {
   isPressed: boolean;
   selected: boolean;
   isHovered: boolean;
-  inStatusGroup: boolean;
   isDragging: boolean;
 }) {
   return [
     styles.workspaceRow,
-    inStatusGroup && sidebarWorkspaceRowStyles.rowIndented,
+    // Status groups and the Pinned section both indent their rows from their heading.
+    sidebarWorkspaceRowStyles.rowIndented,
     isHovered && styles.workspaceRowHovered,
     selected && styles.sidebarRowSelected,
     isDragging && styles.workspaceRowDragging,

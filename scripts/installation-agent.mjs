@@ -27,6 +27,7 @@ const PLAN_OPTIONS = [
   ["engine-restart-plan", "engineRestartPlanSha256"],
   ["engine-recovery-plan", "engineRecoveryPlanSha256"],
   ["host-launcher-plan", "hostLauncherPlanSha256"],
+  ["boot-entry-switch-plan", "bootEntrySwitchPlanSha256"],
 ];
 
 function planBindings(values) {
@@ -129,6 +130,7 @@ if (
       "engine-restart-plan": { type: "string" },
       "engine-recovery-plan": { type: "string" },
       "host-launcher-plan": { type: "string" },
+      "boot-entry-switch-plan": { type: "string" },
       "factory-runtime-recovery-of": { type: "string" },
       repository: { type: "string" },
       "contribution-id": { type: "string" },
@@ -281,6 +283,35 @@ if (
     if (!capability?.available || capability.sha256 !== values["engine-recovery-plan"])
       throw new Error(
         "Reviewed degraded Docker recovery plan is unavailable or changed. No request submitted.",
+      );
+  }
+  if (values["boot-entry-switch-plan"]) {
+    if (
+      config.kind !== "host-agent" ||
+      values.update ||
+      values["supervisor-plan"] ||
+      values["factory-runtime-plan"] ||
+      values["engine-restart-plan"] ||
+      values["engine-recovery-plan"] ||
+      values["host-launcher-plan"] ||
+      values["require-owner-approval"] ||
+      values.target !== "container-daemon" ||
+      positionals[0] !== "request-restart"
+    )
+      throw new Error("--boot-entry-switch-plan requires a separate trusted Host Dev request");
+    const response = await fetch(new URL("/api/installation/capabilities", base), {
+      headers: { Authorization: `Bearer ${config.token}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok)
+      throw new Error(
+        "Coordinator cannot advertise the Dev boot-entry switch. No request submitted.",
+      );
+    const capability = (await response.json()).bootEntrySwitch;
+    if (!capability?.available || capability.sha256 !== values["boot-entry-switch-plan"])
+      throw new Error(
+        "Reviewed Dev boot-entry switch plan is unavailable or changed. No request submitted.",
       );
   }
   if (values["supervisor-plan"]) {
@@ -554,6 +585,10 @@ if (
       // Batch details include each contribution's merge result, such as a conflict.
       resource = `/api/installation/restart-requests/${positionals[1]}?sourceBatches=1`;
       break;
+    case "update-status":
+      // Read-only: update policy, the last release check and the upgrade waiting or running.
+      resource = "/api/installation/update-status";
+      break;
     case "read-instructions":
       // Prints the shared agent instructions and the revision a change must be based on.
       resource = "/api/installation/settings/admission";
@@ -695,6 +730,7 @@ if (
     requestUrl.searchParams.set("engineRestart", "1");
     requestUrl.searchParams.set("engineRecovery", "1");
     requestUrl.searchParams.set("hostLauncherUpdate", "1");
+    requestUrl.searchParams.set("bootEntrySwitch", "1");
   }
   const requestOptions = {
     method: body ? "POST" : "GET",

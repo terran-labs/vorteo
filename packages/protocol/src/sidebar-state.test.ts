@@ -153,4 +153,30 @@ describe("sidebar folder state", () => {
     expect(next.itemFolder).toEqual({});
     expect(next.childOrder).toEqual({ root: ["x", "b", "a", "y"] });
   });
+
+  test("placeFirst puts only missing keys first, against the Host's current order", () => {
+    const state = stateWith([], {
+      projectOrder: ["b", "a"],
+      workspaceOrderByProject: { p: ["s:2", "s:1"] },
+      childOrder: { "project:p": ["s:1", "s:2"] },
+    });
+    // Two devices saw the same new rows; merging and replaying their patches is idempotent.
+    const fromDevice = { placeFirst: { projectOrder: ["c", "a"] } };
+    const merged = mergeSidebarStatePatch(fromDevice, {
+      placeFirst: {
+        projectOrder: ["c"],
+        workspaceOrderByProject: { p: ["s:3"], q: ["s:9"] },
+        childOrder: { "project:p": ["s:3"], "project:q": ["s:9"] },
+      },
+    });
+    const next = applySidebarStatePatch(applySidebarStatePatch(state, merged), fromDevice);
+    expect(next.projectOrder).toEqual(["c", "b", "a"]);
+    expect(next.workspaceOrderByProject).toEqual({ p: ["s:3", "s:2", "s:1"], q: ["s:9"] });
+    // Containers without a saved order follow the flat order, so none is invented for them.
+    expect(next.childOrder).toEqual({ "project:p": ["s:3", "s:1", "s:2"] });
+    expect(next).not.toHaveProperty("placeFirst");
+    // A later whole-list replacement in the same outbox wins; the placement cannot restore "c".
+    const replaced = mergeSidebarStatePatch(fromDevice, { projectOrder: ["a", "b"] });
+    expect(applySidebarStatePatch(state, replaced).projectOrder).toEqual(["a", "b"]);
+  });
 });

@@ -206,8 +206,8 @@ function DonutGraphic({
           strokeDasharray={`${segment.length} ${DONUT_CIRCUMFERENCE - segment.length}`}
           // Dash offsets run backwards; SVG strokes start at three o'clock.
           strokeDashoffset={-segment.offset}
-          rotation={-90}
-          origin={`${DONUT_CENTER}, ${DONUT_CENTER}`}
+          // A transform string, not rotation/origin, so web renders no transform-origin attribute.
+          transform={`rotate(-90 ${DONUT_CENTER} ${DONUT_CENTER})`}
         />
       ))}
     </Svg>

@@ -79,6 +79,30 @@ test("restart classes follow how the restart moves Factory's controller", () => 
   ]);
 });
 
+test("only the boot-entry switch may change Dev's boot form", () => {
+  const plain: FactoryFacts = { ...base, bootForm: "plain", epoch: 0, supervisorPid: 0 };
+  expect(factoryRestartClass({ bootEntrySwitchPlanSha256: "c" })).toBe("boot-switch");
+  // Before the switch lands, every other restart refuses a plain boot.
+  for (const restartClass of ["worker", "entry", "either"] as const)
+    expect(compareFactoryFacts(base, plain, restartClass).problems).toEqual([
+      "Dev's boot form changed (launcher to plain) outside the boot-entry switch",
+    ]);
+  expect(compareFactoryFacts(base, plain, "boot-switch").problems).toEqual([]);
+  // After it, plain boots skip the launcher's epoch rules but still guard custody.
+  const next = { ...plain, epoch: 0, supervisorPid: 77 };
+  expect(compareFactoryFacts(plain, next, "entry").problems).toEqual([]);
+  expect(compareFactoryFacts(plain, next, "worker").problems).toEqual([]);
+  expect(
+    compareFactoryFacts(plain, { ...next, custodyDigest: "7".repeat(64) }, "entry").problems,
+  ).toEqual(["Factory's custody records changed while paused"]);
+  // Rollback into the launcher follows the entry rules.
+  const back = { ...base, epoch: 41, supervisorPid: 31 };
+  expect(compareFactoryFacts(plain, back, "boot-switch").problems).toEqual([]);
+  expect(compareFactoryFacts(plain, base, "worker").problems).toEqual([
+    "Dev's boot form changed (plain to launcher) outside the boot-entry switch",
+  ]);
+});
+
 test("while paused nothing Factory owns may change", () => {
   const check = (after: Partial<FactoryFacts>) =>
     compareFactoryFacts(base, { ...base, ...after }, "worker").problems;

@@ -218,6 +218,15 @@ export function runMessageInputKeyboardAction(
     }
     return true;
   }
+  if (action === "dictation-insert-toggle") {
+    // The pointer gesture stops into the field so the owner can edit or send it.
+    if (actions.isDictationRecording()) {
+      void actions.confirmDictation();
+    } else {
+      void actions.startDictation();
+    }
+    return true;
+  }
   return false;
 }
 

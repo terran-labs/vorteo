@@ -20,6 +20,9 @@ const DOUBLE_PRESS_MS = 350;
  * A strip along a card's bottom edge that drags the card taller or shorter. The owner keeps the
  * height; this reports a preview while dragging and the final height on release. A double press
  * returns the card to automatic sizing.
+ *
+ * The `divider` placement covers a rule above a section instead, so dragging up grows the section
+ * below it. Touch layouts show a small grip there because they have no hover highlight.
  */
 export function CardHeightHandle({
   height,
@@ -28,7 +31,9 @@ export function CardHeightHandle({
   onCommit,
   onReset,
   testID,
+  placement = "bottom",
 }: {
+  placement?: "bottom" | "divider";
   /** The card's current rendered height, where a drag starts. */
   height: number;
   maxHeight: number;
@@ -42,15 +47,16 @@ export function CardHeightHandle({
   const [pressed, setPressed] = useState(false);
   const lastPress = useRef(0);
   const start = useRef(height);
+  const sign = placement === "divider" ? -1 : 1;
   const clamp = useCallback(
     (delta: number) =>
       Math.round(
         Math.min(
           Math.max(CARD_MIN_RESIZE_HEIGHT, maxHeight),
-          Math.max(CARD_MIN_RESIZE_HEIGHT, start.current + delta),
+          Math.max(CARD_MIN_RESIZE_HEIGHT, start.current + sign * delta),
         ),
       ),
-    [maxHeight],
+    [maxHeight, sign],
   );
   const begin = useCallback(() => {
     const now = Date.now();
@@ -95,6 +101,7 @@ export function CardHeightHandle({
   }, [clamp, height, onCommit, onPreview, onReset]);
   const enter = useCallback(() => setHovered(true), []);
   const leave = useCallback(() => setHovered(false), []);
+  const divider = placement === "divider";
   let opacity = hovered && finePointer ? 0.18 : 0;
   if (pressed) opacity = 0.34;
   const highlightStyle = useAnimatedStyle(
@@ -109,12 +116,21 @@ export function CardHeightHandle({
       accessibilityLabel="Resize card height"
       accessibilityHint="Drag to resize. Double press to size automatically."
       collapsable={false}
-      style={[styles.target, finePointer ? styles.pointerTarget : styles.touchTarget, webCursor]}
+      style={[
+        divider ? styles.dividerTarget : styles.target,
+        finePointer ? styles.pointerTarget : styles.touchTarget,
+        divider && !finePointer && styles.touchDividerTarget,
+        webCursor,
+      ]}
       onPointerDown={isWeb ? onPointerDown : undefined}
       onPointerEnter={enter}
       onPointerLeave={leave}
     >
-      <Animated.View pointerEvents="none" style={[styles.highlight, highlightStyle]} />
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.highlight, divider && styles.dividerHighlight, highlightStyle]}
+      />
+      {divider && !finePointer ? <View pointerEvents="none" style={styles.touchGrip} /> : null}
     </View>
   );
   return isWeb ? target : <GestureDetector gesture={gesture}>{target}</GestureDetector>;
@@ -132,8 +148,27 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "flex-end",
   },
+  // Centered on a rule drawn along its row's top edge, extending above and below the line.
+  dividerTarget: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: -4,
+    zIndex: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   pointerTarget: { height: 8 },
   touchTarget: { height: 20 },
+  touchDividerTarget: { top: -10 },
+  dividerHighlight: { marginBottom: 0 },
+  touchGrip: {
+    position: "absolute",
+    width: 28,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: theme.colors.foregroundExtraMuted,
+  },
   highlight: {
     width: "100%",
     height: 2,
@@ -179,11 +214,13 @@ export function DraggedCardHeightHandle({
   cardKey,
   height,
   maxHeight,
+  placement,
 }: {
   card: ReturnType<typeof useDraggedCardHeight>;
   cardKey: string | undefined;
   height: number;
   maxHeight: number;
+  placement?: "bottom" | "divider";
 }) {
   if (!card.active || cardKey === undefined) return null;
   return (
@@ -193,6 +230,7 @@ export function DraggedCardHeightHandle({
       onPreview={card.preview}
       onCommit={card.commit}
       onReset={card.reset}
+      placement={placement}
       testID={`${cardKey}-height-handle`}
     />
   );

@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { renderMarkSources, shadingOverlay } from "./vorteo-logo-shading.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const brand = path.join(root, "packages/app/assets/brand");
 const white = path.join(brand, "vorteo-white.png");
@@ -71,7 +72,35 @@ const pinnedMask = execFileSync(
 )
   .toString()
   .replace(/width="[^"]+" height="[^"]+"/, 'width="16" height="16"');
+// The traced silhouette carries each tint; the master's luminance at the
+// hidden turn becomes a small inline overlay, so no mark fetches the master.
+const markPath = [...pinnedMask.matchAll(/ d="([^"]+)"/g)]
+  .map((match) => match[1].replace(/\s+/g, " "))
+  .join(" ");
+const shading = shadingOverlay(magick(white, "-depth", "8", "rgba:-"), 640);
+const shadingPng = execFileSync(
+  "magick",
+  [
+    "-size",
+    `${shading.width}x${shading.height}`,
+    "-depth",
+    "8",
+    "rgba:-",
+    "-strip",
+    "-define",
+    "png:exclude-chunks=date,time",
+    "png:-",
+  ],
+  { cwd: root, input: shading.pixels },
+);
+const markSources = renderMarkSources({
+  path: markPath,
+  shading,
+  shadingUri: `data:image/png;base64,${shadingPng.toString("base64")}`,
+  size: 640,
+});
 const publicDir = "packages/app/public";
+// Interfaces still running an older bundle may request the hashed master.
 fs.copyFileSync(white, `${publicDir}/vorteo-logo-white-${hash}.png`);
 fs.writeFileSync(`${publicDir}/vorteo-pinned-tab-${hash}.svg`, pinnedMask);
 fs.writeFileSync("packages/website/public/safari-pinned-tab.svg", pinnedMask);
@@ -118,16 +147,14 @@ html = html.replace(
   /(<link rel="icon"[^>]*>)/,
   `$1\n    <link rel="mask-icon" href="/vorteo-pinned-tab-${hash}.svg" color="#3b82f6" />`,
 );
-html = html.replace(/\/vorteo-logo-white-[^"]+\.png/g, `/vorteo-logo-white-${hash}.png`);
+html = markSources.replaceBootMark(html);
 fs.writeFileSync(`${publicDir}/index.html`, html);
-// The app reuses the boot loader's copy of the master on web.
 const masterModule = "packages/app/src/components/icons/vorteo-master.ts";
-fs.writeFileSync(
-  masterModule,
-  fs
-    .readFileSync(masterModule, "utf8")
-    .replace(/\/vorteo-logo-white-[^"]+\.png/, `/vorteo-logo-white-${hash}.png`),
-);
+fs.writeFileSync(masterModule, markSources.module);
+execFileSync("npm", ["run", "format:files", "--", masterModule, `${publicDir}/index.html`], {
+  cwd: root,
+  stdio: "inherit",
+});
 const desktop = "packages/desktop/assets";
 const desktopTile = path.join(brand, "vorteo-desktop.png");
 magick(

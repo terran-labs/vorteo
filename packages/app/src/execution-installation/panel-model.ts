@@ -1049,6 +1049,20 @@ export function restartRepairGuidance(job: RestartJob): string | null {
   return "On a compatible coordinator, Prepare Dev repair captures the installed Host source and preserves queued contributions for a new installation review. Otherwise the requesting agent must correct the source. You can cancel the update; your running version is unchanged.";
 }
 
+/**
+ * A pending Dev supervisor repair whose target does not answer cannot finish
+ * turns: there is no worker to hold. The reviewer instead approves the exact
+ * plan immediately, which is the outage this repair exists to recover.
+ */
+export function supervisorRepairNeedsImmediateApproval(job: RestartJob): boolean {
+  return (
+    job.status === "pending" &&
+    job.target === "container-daemon" &&
+    Boolean(job.supervisorPlanSha256) &&
+    Boolean(job.impact?.error)
+  );
+}
+
 export function restartActionDisabledReason(
   job: RestartJob,
   action: "install" | "idle" | "finish",

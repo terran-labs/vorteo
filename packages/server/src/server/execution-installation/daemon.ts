@@ -5,7 +5,11 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
 import { filterArchivedRestartErrors } from "./restart-impact.js";
-import { runSupervisorMaintenance, supervisorPlanDigest } from "./supervisor-maintenance.js";
+import {
+  runSupervisorMaintenance,
+  runSupervisorReplacement,
+  supervisorPlanDigest,
+} from "./supervisor-maintenance.js";
 import { factoryRuntimePlanDigest, runFactoryRuntimePhase } from "./factory-runtime-adoption.js";
 import {
   hostLauncherPlanDigest,
@@ -25,10 +29,20 @@ import {
   restartDockerEngine,
   verifyFactoryAfterRestart,
 } from "./engine-restart.js";
+import {
+  bootEntrySwitchPinProblem,
+  bootEntrySwitchPlanDigest,
+  bootEntrySwitchPreflight,
+  applyBootEntrySwitch,
+  restartBootProgram,
+  awaitBootEntryReadiness,
+  verifyFactoryAfterBootSwitch,
+} from "./boot-entry-switch.js";
 import { WebSocket } from "ws";
 import type { Logger } from "pino";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type {
+  BootEntrySwitchConfiguration,
   RestartImpact,
   RestartJob,
   ExecutionEnvironmentKind,
@@ -284,6 +298,13 @@ export function createInstallationRestartExecutor(
     connectInstallationDaemon(config, kind),
 ): RestartExecutor {
   const assertReady = createInstallationRegistrationAdmission(config, assertRegistrationReadiness);
+  function bootEntrySwitchPins(plan: BootEntrySwitchConfiguration): string | null {
+    return bootEntrySwitchPinProblem(plan, {
+      factoryGate: config.container?.factoryGate?.verify.sha256,
+      engineRestart: config.container?.engineRestart?.factoryVerify?.sha256,
+      engineRecovery: config.container?.engineRecovery?.factoryVerify.sha256,
+    });
+  }
   function retainedHeldRestart(job: RestartJob) {
     const current = new FileBootstrapRequestJournal(config.stateDir)
       .readLifecycle()
@@ -593,6 +614,44 @@ export function createInstallationRestartExecutor(
         replacement,
       ].join(" ");
     },
+    // Withheld while a Factory gate pins another check, so the owner never approves a
+    // switch that would refuse at dispatch.
+    bootEntrySwitchPlan: () => {
+      const plan = config.container?.bootEntrySwitch;
+      if (config.container?.persistentRegistration || !plan || bootEntrySwitchPins(plan))
+        return undefined;
+      return bootEntrySwitchPlanDigest(plan);
+    },
+    async switchBootEntry(job) {
+      assertReady("container-daemon");
+      if (config.container?.persistentRegistration)
+        throw new Error("Dev boot-entry switch requires an independently bound Dev operation");
+      const plan = config.container?.bootEntrySwitch;
+      if (
+        !plan ||
+        job.target !== "container-daemon" ||
+        !job.bootEntrySwitchPlanSha256 ||
+        job.bootEntrySwitchPlanSha256 !== bootEntrySwitchPlanDigest(plan)
+      )
+        throw new Error("Dev boot-entry switch plan is unavailable or changed");
+      const pins = bootEntrySwitchPins(plan);
+      if (pins) throw new Error(`Dev boot-entry switch refused: ${pins}. Nothing was changed.`);
+      const previousPid = await probeDaemonPid("container");
+      const preflight = await bootEntrySwitchPreflight(plan, job.bootEntrySwitchPlanSha256);
+      assertReady("container-daemon");
+      // The job is durably running before this point, so a lost outcome is never replayed.
+      const backup = await applyBootEntrySwitch(plan, job.id);
+      await restartBootProgram(plan);
+      const checks = await awaitBootEntryReadiness(plan, preflight);
+      const replacement = await waitForReplacement("container-daemon", "container", previousPid);
+      const factory = await verifyFactoryAfterBootSwitch(plan, preflight);
+      return [
+        "Dev boot entry switched.",
+        `${[...checks, factory].filter(Boolean).join("; ")}.`,
+        replacement,
+        `The previous boot pointer is kept as ${backup}.`,
+      ].join(" ");
+    },
     supervisorPlan: () => supervisorPlanDigest(config.container?.supervisorMaintenance),
     async restartSupervisor(job) {
       assertReady("container-daemon");
@@ -601,30 +660,24 @@ export function createInstallationRestartExecutor(
       const plan = config.container?.supervisorMaintenance;
       if (!plan || job.target !== "container-daemon" || job.supervisorPlanSha256 !== plan.sha256)
         throw new Error("Supervisor maintenance plan is unavailable or changed");
-      const before = await connectInstallationDaemon(config, "container");
-      let previousPid: number;
-      try {
-        previousPid = (await before.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS })).pid;
-      } finally {
-        await before.close();
-      }
-      assertReady("container-daemon");
-      await runSupervisorMaintenance(plan, job);
-      const deadline = Date.now() + 120_000;
-      while (Date.now() < deadline) {
-        await delay(1000);
-        let client: DaemonClient | null = null;
-        try {
-          client = await connectInstallationDaemon(config, "container");
-          const status = await client.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS });
-          if (status.pid !== previousPid)
-            return `Dev supervisor maintenance completed; replacement worker ${status.pid} and environment identity verified`;
-        } catch {
-          /* The worker may still be starting; never dispatch again. */
-        } finally {
-          await client?.close();
-        }
-      }
+      const replacement = await runSupervisorReplacement({
+        async readPid() {
+          const client = await connectInstallationDaemon(config, "container");
+          try {
+            return (await client.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS })).pid;
+          } finally {
+            await client.close();
+          }
+        },
+        async run() {
+          assertReady("container-daemon");
+          await runSupervisorMaintenance(plan, job);
+        },
+      });
+      if (replacement)
+        return replacement.previousPid === null
+          ? `Dev supervisor maintenance completed; Dev was not answering before the repair; replacement worker ${replacement.pid} and environment identity verified`
+          : `Dev supervisor maintenance completed; replacement worker ${replacement.pid} and environment identity verified`;
       return reportRestartTimeout(config, "container-daemon");
     },
     async inspect(target): Promise<RestartImpact> {

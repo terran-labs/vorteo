@@ -6,6 +6,7 @@ import {
   SnapshotRestoreRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
+  UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
 import {
@@ -229,6 +230,7 @@ function restartReply(
   engineRestart?: boolean,
   hostLauncherUpdate?: boolean,
   engineRecovery?: boolean,
+  bootEntrySwitch?: boolean,
 ) {
   // Captures are retained in the protected journal, not sent to legacy strict clients.
   // COMPAT(workerLaunchReply): added in v674; remove after 2027-04-17 once requester floor >= v674.
@@ -257,6 +259,7 @@ function restartReply(
     engineRestart,
     hostLauncherUpdate,
     engineRecovery,
+    bootEntrySwitch,
   });
   if (!hostAutomaticRestarts) {
     const { automaticApproval: _approval, ...compatible } = job;
@@ -1268,6 +1271,7 @@ export function createInstallationServer(
             req.query.engineRestart === "1",
             req.query.hostLauncherUpdate === "1",
             req.query.engineRecovery === "1",
+            req.query.bootEntrySwitch === "1",
           ),
         });
         void drainRestarts();
@@ -1289,6 +1293,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
           );
     },
@@ -1316,6 +1321,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     });
   });
@@ -1825,6 +1831,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
       );
   });
@@ -1869,6 +1876,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     );
   });
@@ -2340,6 +2348,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
             job,
             delegation,
@@ -2393,6 +2402,7 @@ export function createInstallationServer(
       decision.engineRestartPlanSha256,
       decision.hostLauncherPlanSha256,
       decision.engineRecoveryPlanSha256,
+      decision.bootEntrySwitchPlanSha256,
     );
     res.json(
       withDelegation(
@@ -2410,6 +2420,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
         job,
         requestedDelegation(config.stateDir, req.query.delegatedRequests === "1"),
@@ -2451,6 +2462,34 @@ export function createInstallationServer(
     const decision = UpgradeDecisionSchema.parse(req.body);
     res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
     void drainRestarts();
+  });
+  const requireUpdates = () => {
+    const releaseUpdates = requireReleaseRuntime().updates;
+    if (!releaseUpdates)
+      throw new RestartRequestError(requireReleaseRuntime().upgradeStatus().detail);
+    return releaseUpdates;
+  };
+  // The status after a check; an upgrade the check approved advances at once.
+  const statusAfterCheck = async () => {
+    await requireUpdates().checkAgain();
+    void drainRestarts();
+    return requireReleaseRuntime().upgradeStatus();
+  };
+  // The owner's update policy. A changed policy runs a check at once, so switching channel
+  // or mode offers or approves the matching release without waiting for the hourly check.
+  app.post("/api/installation/owner/update-policy", (req, res, next) => {
+    const change = UpdatePolicyChangeSchema.parse(req.body);
+    void requireUpdates()
+      .changePolicy(change)
+      .then(statusAfterCheck)
+      .then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/update-check", (_req, res, next) => {
+    void statusAfterCheck().then((status) => res.json(status), next);
+  });
+  // Read-only for agents: the Mechanic reports stale offers and Builds plans drains from it.
+  app.get("/api/installation/update-status", authenticateUpdate, (_req, res) => {
+    res.json(requireUpdates().agentStatus());
   });
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
@@ -2541,6 +2580,12 @@ export function createInstallationServer(
   });
   return Object.assign(app, {
     drainRestarts,
+    /** Runs the release update check, then advances an upgrade it approved automatically. */
+    checkReleases: async () => {
+      if (!releaseRuntime?.updates) return;
+      await releaseRuntime.updates.check();
+      void drainRestarts();
+    },
     /** Fast Refresh socket for live dev mode; true when handled. */
     handleLiveDevUpgrade: liveDev.upgrade,
     stopLiveDev: liveDev.stop,

@@ -27,7 +27,7 @@ export function ProjectRailList({
 }) {
   const projects = useMemo(() => [project], [project]);
   const targets = useMemo(() => resolveSidebarProjectIconTargets(projects), [projects]);
-  const pinned = useMemo(() => ({ pinnedChats: [], unpinnedProjects: projects }), [projects]);
+  const pinned = useMemo(() => ({ pinnedChats: [], projects }), [projects]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const toggle = useCallback(
     (key: string) =>
