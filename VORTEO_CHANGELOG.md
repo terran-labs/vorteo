@@ -8,6 +8,22 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## 26.11.601 - 2026-11-06
+
+Beta that keeps Claude subscription accounts signed in overnight, with lighter CI while PWA releases are the only channel.
+
+### Tooling
+
+- The secret scan checks only the commits a pull request, merge group or main push adds, instead of the whole repository history every time. A nightly run still scans all reachable history, and branch pushes no longer run a separate scan because their pull request does.
+- Desktop app builds and tests stop running on every merge while PWA releases are the only channel: Desktop Packages, the Nix desktop builds (including the macOS job) and the desktop test suites now run only when started manually.
+- Container builds and smokes skip main pushes whose only change to their files is the per-commit version bump, as CI's path routing already does. Manual runs always build.
+
+### Fixes
+
+- Keep renewal diagnostics in an optional sidecar so older coordinators can still read account state. Recording missed expiry no longer delays renewal retries, and recovered storage reads clear transient failures while preserving genuine refresh backoff.
+- Load installation recovery dependencies only when authentication needs recovery, keeping history discovery within its existing memory budget.
+- Renew full sign-in subscription accounts when Host use is enabled or Dev delivery is pending, record bounded renewal failure reasons, and request account-bound Host recovery before rejecting expired authentication.
+
 ## 26.11.600 - 2026-11-06
 
 Beta for VortLab: Dev upgrades that restart only Dev's daemon and build everything before restarting, cached Dev image layers, shared Voice keys, Factory planning and drain controls, the Settings round 4 work, and the Live dev sidebar and upgrade work.

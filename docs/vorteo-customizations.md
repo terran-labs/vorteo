@@ -1,5 +1,17 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-06): Owner-approved CI optimization: scoped the Secret scan workflow by event, added a nightly full-history run, and let `security:secrets` take an optional `SECRET_SCAN_LOG_OPTS` range that defaults to full history, so the pre-push hook is unchanged. Updated publication hygiene and the CI workflow test. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Reviewed refresh-state rollback compatibility, retry accounting and authenticated recovery transport. Existing account state retains its original strict schema. Added focused regressions for the review findings; README overview and onboarding remain unchanged.
+
+Maintenance review (2026-11-06): Owner direction: desktop apps are out of scope. Routed the desktop workflows and CI jobs to manual runs and extended the CI workflow tests. No desktop tests were deleted, and required checks are unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Reviewed authentication recovery loading after the large-history CI regression. The default recovery invocation now loads its transport lazily; injected recovery, deduplication and error handling remain unchanged. Existing tests and heap limits are unchanged. README overview and onboarding are unaffected.
+
+Maintenance review (2026-11-06): Owner-approved CI optimization: added a routing job to the Container workflow that reuses the version-bump neutralizer and the existing path filter, and extended the CI workflow test. Required checks are unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Reviewed Host-owned account renewal and managed authentication. Recovery shares the existing writer, preserves exclusions and sign-out generations, and never transfers refresh grants to Dev. README overview and onboarding are unchanged. Live overnight acceptance remains unverified.
+
 Maintenance review (2026-11-06): System retains its single primary action while showing a disabled pending control. Regression coverage checks that the pending control cannot submit another request and that retry becomes available after failure. Focused browser confirmation remains pending. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-06): Settings round 4 System view: two scroll areas switched to the shared scroll view after merging current main. No behavior change beyond the edge fades. README overview and onboarding are unchanged.
@@ -2147,6 +2159,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+November 6, 2026: Prepared beta 26.11.601 and folded the Claude sign-in renewal fixes and CI scope changes into its changelog entry and these reviews. README overview and onboarding are unchanged.
 
 November 6, 2026: Prepared beta 26.11.600 and folded the day's change fragments into its changelog entry and these reviews. README overview and onboarding are unchanged.
 

@@ -18,7 +18,7 @@ import { readExecutionInstallation } from "@/execution-installation/policy";
 /** Names this installation so two open side by side, such as a lab and production, never blur. */
 export function InstallationNameSection() {
   const name = useInstallationName();
-  const preview = useMemo(() => <Text>{name}</Text>, [name]);
+  const preview = useMemo(() => <Text style={settingsStyles.rowHint}>{name}</Text>, [name]);
   if (!readExecutionInstallation()) return null;
   return (
     <OwnerSettingsGate title={`Installation name: ${name}`} preview={preview}>
