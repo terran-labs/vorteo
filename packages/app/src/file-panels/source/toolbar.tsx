@@ -38,7 +38,8 @@ export function TextFileToolbar({
   downloading,
 }: {
   size: number;
-  lineCount: number;
+  /** Omitted for files without lines, such as images. */
+  lineCount?: number;
   view?: TextFileView;
   onViewChange?(view: TextFileView): void;
   editorStatus?: FileEditorStatus;
@@ -81,13 +82,15 @@ export function TextFileToolbar({
             >
               {formatFileSize(size)}
             </Text>
-            <Text
-              style={styles.whisper}
-              numberOfLines={1}
-              accessibilityLabel={t("panels.file.editor.lines", { count: lineCount })}
-            >
-              {t("panels.file.editor.lines", { count: lineCount })}
-            </Text>
+            {lineCount !== undefined ? (
+              <Text
+                style={styles.whisper}
+                numberOfLines={1}
+                accessibilityLabel={t("panels.file.editor.lines", { count: lineCount })}
+              >
+                {t("panels.file.editor.lines", { count: lineCount })}
+              </Text>
+            ) : null}
           </View>
           <View
             style={styles.status}
