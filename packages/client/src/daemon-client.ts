@@ -4386,6 +4386,21 @@ export class DaemonClient {
     return result.tasks;
   }
 
+  private assertChecklistWakeConditionSupport(
+    mutation: import("@getpaseo/protocol/task-checklist").ChecklistMutation,
+  ): void {
+    // COMPAT(checklistWakeConditions): added 2026-11-18; retain until the daemon floor supports conditions.
+    const writesCondition = "wakeCondition" in mutation && mutation.wakeCondition !== undefined;
+    const expectsCondition =
+      "expectedTask" in mutation && mutation.expectedTask?.wakeCondition !== undefined;
+    if (
+      (writesCondition || expectsCondition) &&
+      this.lastServerInfoMessage?.features?.checklistWakeConditions !== true
+    ) {
+      throw new Error("Update the daemon before using checklist wake conditions.");
+    }
+  }
+
   async mutateAgentChecklist(
     agentId: string,
     mutation: import("@getpaseo/protocol/task-checklist").ChecklistMutation,
@@ -4405,6 +4420,7 @@ export class DaemonClient {
     ) {
       throw new Error("Update the daemon before using Review checklist status.");
     }
+    this.assertChecklistWakeConditionSupport(mutation);
     const result =
       await this.sendNamespacedCorrelatedSessionRequest<"agent.checklist.mutate.response">({
         message: { type: "agent.checklist.mutate.request", agentId, mutation },

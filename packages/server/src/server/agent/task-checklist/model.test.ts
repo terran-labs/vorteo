@@ -1,3 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentStorage } from "../agent-storage.js";
+import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { createChecklistTools } from "./tools.js";
 import { z } from "zod";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
@@ -169,6 +174,153 @@ describe("thread checklist mutations", () => {
       mutateChecklist(tasks, { operation: "create", id: "b", text: "Duplicate" }),
     ).toThrow("already exists");
   });
+});
+
+test("wake conditions round-trip optionally, clear explicitly and protect expected snapshots", async () => {
+  const legacy = { text: "Old task", completed: false };
+  expect(AgentTaskItemSchema.parse(legacy)).toEqual(legacy);
+  const condition = { kind: "deadline", at: "2026-11-18T20:00:00Z" } as const;
+  const created = mutateChecklist(
+    [],
+    ChecklistMutationSchema.parse({
+      operation: "create",
+      id: "wake",
+      text: "Wait",
+      wakeCondition: condition,
+    }),
+  );
+  expect(AgentTaskItemSchema.parse(JSON.parse(JSON.stringify(created[0])))).toEqual(created[0]);
+  expect(created[0].wakeCondition).toEqual(condition);
+  const { wakeCondition: _condition, ...oldSnapshot } = created[0];
+  expect(AgentTaskItemSchema.omit({ wakeCondition: true }).parse(created[0])).toEqual(oldSnapshot);
+  expect(
+    mutateChecklist(created, { operation: "update", id: "wake", text: "Renamed" })[0].wakeCondition,
+  ).toEqual(condition);
+  for (const operation of ["update", "delete"] as const) {
+    expect(() =>
+      mutateChecklist(created, {
+        operation,
+        id: "wake",
+        expectedTask: oldSnapshot,
+      }),
+    ).toThrow("changed while");
+  }
+  const cleared = mutateChecklist(
+    created,
+    ChecklistMutationSchema.parse({
+      operation: "update",
+      id: "wake",
+      expectedTask: created[0],
+      wakeCondition: null,
+    }),
+  );
+  expect(cleared[0]).toEqual(oldSnapshot);
+  expect(
+    mutateChecklist([], { operation: "create", text: "No condition", wakeCondition: null })[0],
+  ).not.toHaveProperty("wakeCondition");
+  expect(() =>
+    mutateChecklist([{ ...created[0], source: "provider" }], {
+      operation: "update",
+      id: "wake",
+      wakeCondition: null,
+    }),
+  ).toThrow("native provider task tool");
+  const targets = [
+    {
+      kind: "github_pull_request",
+      owner: "example",
+      repository: "repo",
+      number: 1,
+      state: "merged",
+    },
+    { kind: "github_workflow_run", owner: "example", repository: "repo", runId: 2, attempt: 1 },
+    {
+      kind: "github_required_checks",
+      owner: "example",
+      repository: "repo",
+      number: 1,
+      headSha: "a".repeat(40),
+      checks: ["build"],
+    },
+  ];
+  for (const wakeCondition of targets) {
+    const updated = mutateChecklist(
+      created,
+      ChecklistMutationSchema.parse({
+        operation: "update",
+        id: "wake",
+        wakeCondition,
+      }),
+    );
+    expect(AgentTaskItemSchema.parse(updated[0]).wakeCondition).toEqual(wakeCondition);
+  }
+  for (const wakeCondition of [
+    { ...condition, at: "2026-02-30T00:00:00Z" },
+    { ...targets[0], owner: "https://example.com" },
+    { ...targets[1], attempt: 0 },
+    { ...targets[2], headSha: "abc" },
+    { ...targets[2], checks: [] },
+  ]) {
+    const mutation = ChecklistMutationSchema.parse({
+      operation: "update",
+      id: "wake",
+      wakeCondition,
+    });
+    expect(() => mutateChecklist(created, mutation)).toThrow();
+  }
+  const directory = mkdtempSync(join(tmpdir(), "wake-wire-"));
+  const storage = new AgentStorage(directory, createTestLogger());
+  try {
+    await storage.upsert({
+      id: "thread",
+      provider: "codex",
+      cwd: directory,
+      createdAt: condition.at,
+      updatedAt: condition.at,
+      labels: {},
+      lastStatus: "idle",
+    });
+    await expect(
+      storage.mutateChecklist("thread", {
+        operation: "create",
+        id: "task",
+        text: "Wait",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("monitoring is unavailable");
+    await storage.mutateChecklist("thread", { operation: "create", id: "task", text: "Wait" });
+    await expect(
+      storage.mutateChecklist("thread", {
+        operation: "update",
+        id: "task",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("monitoring is unavailable");
+    // Readiness may disappear while a mutation awaits the store's serialized write.
+    let ready = true;
+    const pending = storage.mutateChecklist(
+      "thread",
+      {
+        operation: "update",
+        id: "task",
+        wakeCondition: condition,
+      },
+      () => ready,
+    );
+    ready = false;
+    await expect(pending).rejects.toThrow("monitoring is unavailable");
+    const ordinary = await storage.mutateChecklist("thread", {
+      operation: "update",
+      id: "task",
+      text: "Still editable",
+      wakeCondition: null,
+    });
+    expect(ordinary[0]).toMatchObject({ text: "Still editable" });
+    expect(ordinary[0]).not.toHaveProperty("wakeCondition");
+  } finally {
+    await storage.flush();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("blocked is discretionary, incomplete, and independent of prerequisite edges", () => {

@@ -5,6 +5,7 @@ import { ensureUnarchivedAgentLoaded } from "../agent-loading.js";
 import type { AgentUsage } from "../agent-sdk-types.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import {
+  type ChecklistWakeAvailability,
   blockedReviewDue,
   blockedReviewsUsed,
   factoryProjectOf,
@@ -36,6 +37,7 @@ interface ReviewServiceOptions {
    * all in progress is left to that wake. A failed read reviews as if there were none.
    */
   scheduledWakes?: () => Promise<ReadonlySet<string>>;
+  monitorAvailable?: ChecklistWakeAvailability;
   now?: () => number;
 }
 
@@ -104,7 +106,8 @@ export class BlockedTaskReviewService {
         if (this.notDue(record, now) || inPausedFactory(record, paused)) continue;
         // A heartbeat already wakes this thread; blocked items are still reviewed, because a
         // blocker can clear long before the next scheduled run.
-        if (scheduled.has(record.id) && onlyInProgressWork(record)) continue;
+        if (scheduled.has(record.id) && onlyInProgressWork(record, this.options.monitorAvailable))
+          continue;
         if (this.capReached(record.id, now)) {
           // Recheck after the usual retry gap instead of logging the skip every scan.
           this.attempts.set(record.id, now);
@@ -136,7 +139,7 @@ export class BlockedTaskReviewService {
     const attempted = this.attempts.get(record.id);
     const recentlyAttempted =
       attempted !== undefined && now - attempted < BLOCKED_REVIEW_DELAYS_MS[0]!;
-    return recentlyAttempted || !blockedReviewDue(record, now);
+    return recentlyAttempted || !blockedReviewDue(record, now, this.options.monitorAvailable);
   }
 
   /** Null when the read failed: every Factory role thread is then skipped for this scan. */
@@ -200,7 +203,9 @@ export class BlockedTaskReviewService {
         ? await this.options.agentManager.backgroundWork(agentId)
         : "none";
       // In-progress work with a live watcher or a running subagent wakes itself.
-      const selfWaking = onlyInProgressWork(record) && (awaitingChild || workBefore === "live");
+      const selfWaking =
+        onlyInProgressWork(record, this.options.monitorAvailable) &&
+        (awaitingChild || workBefore === "live");
       const before = selfWaking ? null : await this.options.agentStorage.get(agentId);
       const stream = before
         ? await this.options.agentManager.startBlockedTaskReview(agentId, () => !this.stopped)

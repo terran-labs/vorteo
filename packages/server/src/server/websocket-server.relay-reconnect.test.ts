@@ -279,6 +279,7 @@ function createServer(options?: {
     "srv_test",
     createStub<AgentManager>({
       supportsRestartContinuation: vi.fn(() => false),
+      supportsChecklistWakeConditions: vi.fn(() => false),
       subscribe: vi.fn(() => () => {}),
       setAgentAttentionCallback: vi.fn(),
       getAgent: vi.fn(() => null),

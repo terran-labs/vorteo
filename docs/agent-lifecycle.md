@@ -214,6 +214,55 @@ native goal and rejects paused, completed, limited or uncertain state. The flag 
 without changing activity timestamps or the review cooldown. Older records acquire it
 when their native goal is next observed.
 
+### Condition wakes and Phase 1 limitation
+
+Condition monitoring handles deadlines and explicit GitHub PR states, workflow attempts
+and named terminal checks on a pinned PR head. A PR `closed` condition accepts either
+closure or merge; `merged` requires a merge. A PR closed without merge makes a
+`merged` condition unavailable, restoring existing opt-in review eligibility. Readiness and capability advertisement
+follow the live monitor lifecycle. Only blocked items with an exact current unspent generation and live monitoring
+availability are excluded from timed reviews. The service uses shared admission without
+spending review slots. Monitoring itself uses no model; an admitted
+wake resumes the existing full thread. Local Factory authority is captured only after queued
+operations settle. Another queued operation, service stop or parent-chain change invalidates
+that authority before wake reservation; refused claims remain unspent.
+
+Healthy GitHub monitoring stays available through the next aligned poll and its two
+30-second command budgets. Routine refresh invalidates satisfaction, not monitoring
+availability; failed or missed polls still expire. Source checks refresh before
+expiry even when wake admission is backed off.
+
+Attach conditions to managed blocked items for external prerequisites. Use finish
+subscriptions when waiting for another agent and Review for owner decisions. A condition
+that is already satisfied can wake the thread on its first observation. Replacing or
+explicitly attaching a condition rearms it; leaving blocked status or deleting the item
+cancels it. Refused admission leaves the condition unspent.
+
+Required checks must all be present and terminal on the pinned current PR head; failure
+counts as terminal. Missing checks, a changed head, unknown state and API errors remain
+unresolved. A valid unsatisfied observation still counts as available monitoring; a subscription
+alone does not. If the workspace has no GitHub adapter, the CLI or authentication is missing,
+or a pinned target no longer matches or observations fail or expire, the condition stays armed and unspent but loses its review
+exemption. A separate daemon-owned receipt records the first concrete unavailable reason
+once per generation and logs it; later recovery restores monitoring without erasing that
+history. Fallback only restores eligibility under the existing opt-in review setting and
+ladder. It does not turn reviews on, reset a ladder or promise another review after its slots
+are exhausted. Condition wakes do not spend timed-review rungs or update review timestamps.
+Phase 1 includes no model pre-check; that work is tracked in
+[issue #479](https://github.com/terran-labs/vorteo/issues/479).
+
+Phase 1 cannot resolve Factory pause or drain authority through a parent on another
+server. Factory work with remote, missing, cyclic or unreadable local authority stays armed and unspent
+but does not wake. A daemon-owned suppression receipt records the first reason and authority
+identity once per condition generation, survives reload and produces a structured log
+when first recorded. The receipt never authorizes a wake or consumes its firing claim.
+Ordinary threads and Factory children with resolved local authority remain eligible.
+A cross-server child without local Factory labels is treated as ordinary: it may wake
+while its remote Factory parent is paused because the local daemon cannot identify that
+remote authority.
+Cross-host authority lookup is tracked separately in
+[issue #483](https://github.com/terran-labs/vorteo/issues/483).
+
 ## Relationships
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.

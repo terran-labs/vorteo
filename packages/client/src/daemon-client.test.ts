@@ -10388,6 +10388,79 @@ test("blocked checklist writes never reach an older daemon", async () => {
     }),
   ).rejects.toThrow("Update the daemon before using blocked");
   expect(mock.sent).toEqual([]);
+  const wakeCondition = { kind: "deadline", at: "2026-11-18T20:00:00Z" } as const;
+  for (const condition of [wakeCondition, null]) {
+    await expect(
+      client.mutateAgentChecklist("agent", {
+        operation: "create",
+        text: "Wait",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("Update the daemon before using checklist wake conditions");
+    await expect(
+      client.mutateAgentChecklist("agent", {
+        operation: "update",
+        id: "task",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("Update the daemon before using checklist wake conditions");
+  }
+  for (const operation of ["update", "delete"] as const) {
+    await expect(
+      client.mutateAgentChecklist("agent", {
+        operation,
+        id: "task",
+        expectedTask: { text: "Wait", completed: false, wakeCondition },
+      }),
+    ).rejects.toThrow("Update the daemon before using checklist wake conditions");
+  }
+  expect(mock.sent).toEqual([]);
+  const ordinary = client.mutateAgentChecklist("agent", {
+    operation: "update",
+    id: "task",
+    text: "Rename",
+  });
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "agent.checklist.mutate.request",
+    mutation: {
+      operation: "update",
+      id: "task",
+      text: "Rename",
+    },
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.checklist.mutate.response",
+      payload: {
+        requestId: request.requestId,
+        agentId: "agent",
+        tasks: [],
+        error: null,
+      },
+    }),
+  );
+  await expect(ordinary).resolves.toEqual([]);
+  mock.triggerOpen({ features: { agentChecklistMutations: true, checklistWakeConditions: true } });
+  const supported = client.mutateAgentChecklist("agent", {
+    operation: "update",
+    id: "task",
+    wakeCondition,
+  });
+  const supportedRequest = parseSentFrame(mock.sent[0]);
+  expect(supportedRequest).toMatchObject({ mutation: { wakeCondition } });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.checklist.mutate.response",
+      payload: {
+        requestId: supportedRequest.requestId,
+        agentId: "agent",
+        tasks: [],
+        error: null,
+      },
+    }),
+  );
+  await expect(supported).resolves.toEqual([]);
 });
 
 test("guarded workspace recovery sends nothing without capability or matching host", async () => {

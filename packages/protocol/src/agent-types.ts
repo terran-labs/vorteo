@@ -397,6 +397,7 @@ export interface PluginTimelineItem {
 }
 
 export interface AgentTaskItem {
+  wakeCondition?: import("./task-checklist.js").ChecklistWakeCondition;
   text: string;
   completed: boolean;
   id?: string;

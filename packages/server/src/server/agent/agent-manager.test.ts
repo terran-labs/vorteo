@@ -1,3 +1,9 @@
+import { PARENT_SERVER_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import { PROJECT_FACTORY_ROLE_LABEL } from "../factory/project/roles.js";
+import {
+  ChecklistWakeService,
+  type ChecklistGithubObservationPort,
+} from "./task-checklist/wake-service.js";
 import type { AgentGoals } from "./agent-sdk-types.js";
 import { createIdleRuntimeCleanup } from "./idle-runtime-cleanup/index.js";
 
@@ -3160,6 +3166,58 @@ test("blocked-work reviews follow a three-step ladder that only a real prompt re
     questions: [{ id: "q", status: "open", blocks: ["t"] }],
   } as unknown as StoredAgentRecord;
   expect(blockedReviewDue(asked, at(60).getTime())).toBe(false);
+  const condition = { kind: "deadline", at: at(5).toISOString() } as const;
+  const generation = {
+    taskId: "t",
+    generation: randomUUID(),
+    condition,
+    armedAt: at(0).toISOString(),
+  };
+  const conditioned: StoredAgentRecord = {
+    ...base,
+    blockedGoalReviewNeeded: true,
+    tasks: [{ ...base.tasks![0]!, source: "vorteo", wakeCondition: condition }],
+    checklistWakeGenerations: [generation],
+  };
+  const available = () => true;
+  expect(blockedReviewDue(conditioned, at(5).getTime())).toBe(true);
+  expect(blockedReviewDue(conditioned, at(5).getTime(), () => false)).toBe(true);
+  expect(blockedReviewDue(conditioned, at(5).getTime(), available)).toBe(false);
+  const stale = {
+    ...conditioned,
+    tasks: [{ ...conditioned.tasks![0]!, status: "in_progress" as const }],
+    checklistWakeGenerations: [
+      { ...generation, claim: { id: randomUUID(), at: at(1).toISOString() } },
+    ],
+  };
+  expect(blockedReviewDue(stale, at(5).getTime(), available)).toBe(true);
+  expect(blockedReviewDue({ ...stale, tasks: conditioned.tasks }, at(5).getTime(), available)).toBe(
+    true,
+  );
+  expect(
+    blockedReviewDue(
+      { ...stale, checklistWakeGenerations: [generation] },
+      at(5).getTime(),
+      available,
+    ),
+  ).toBe(true);
+  expect(
+    blockedReviewDue({ ...conditioned, checklistWakeGenerations: [] }, at(5).getTime(), available),
+  ).toBe(true);
+  expect(
+    blockedReviewDue(
+      {
+        ...conditioned,
+        tasks: [
+          ...conditioned.tasks!,
+          { id: "ordinary", text: "Waiting", completed: false, status: "blocked" },
+        ],
+      },
+      at(5).getTime(),
+      available,
+    ),
+  ).toBe(true);
+  expect(blockedReviewDue({ ...conditioned, tasks: [] }, at(5).getTime(), available)).toBe(true);
 });
 
 test("a usage limit holds a standalone thread for its reset without pausing it", async () => {
@@ -16040,6 +16098,11 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const client = new SessionRecordingAgentClient();
   const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const queue = new MessageQueueService(
+    new MessageQueueStore(workdir),
+    new QueueAttachmentStore(workdir),
+  );
+  manager.setMessageQueueControl(queue);
   const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
     workspaceId: undefined,
   });
@@ -16084,7 +16147,387 @@ test("Vorteo checklist mutations survive provider updates, history refresh, and 
     await manager.closeAgent(agent.id);
     await ensureAgentLoaded(agent.id, { agentManager: manager, agentStorage: storage, logger });
     expect(manager.readChecklist(agent.id)).toEqual(managed);
+
+    const condition = { kind: "deadline", at: "2026-11-18T20:00:00Z" } as const;
+    expect(manager.supportsChecklistWakeConditions()).toBe(false);
+    await expect(
+      manager.mutateChecklist(agent.id, {
+        operation: "update",
+        id: "ui",
+        wakeCondition: condition,
+      }),
+    ).rejects.toThrow("monitoring is unavailable");
+    manager.setChecklistWakeConditionsReadiness(() => true);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: condition,
+      metadata: { generation: "caller-forgery", claimedAt: condition.at },
+    });
+    const armed = structuredClone((await storage.get(agent.id))!);
+    const observed = armed.checklistWakeGenerations!;
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ taskId: "ui", condition });
+    expect(observed[0].generation).not.toBe("caller-forgery");
+    expect(observed[0].claim).toBeUndefined();
+    await manager.flush();
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(observed);
+    // A refusal spends nothing; concurrent repeated observations claim only once.
+    let now = Date.parse(condition.at);
+    expect(
+      await storage.claimChecklistWakeGenerations(agent.id, observed, now, () => false),
+    ).toEqual([]);
+    const claims = await Promise.all([
+      storage.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+      storage.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+    ]);
+    expect(claims).toEqual([
+      [{ ...observed[0], claim: { id: expect.any(String), at: new Date(now).toISOString() } }],
+      [],
+    ]);
+    await storage.upsert(armed);
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(claims[0]);
+    const reloaded = new AgentStorage(join(workdir, "agents"), logger);
+    expect((await reloaded.get(agent.id))?.checklistWakeGenerations).toEqual(claims[0]);
+    expect(
+      await reloaded.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+    ).toEqual([]);
+    // A hold discovered after claim persistence can return the exact claim without rearming an edited task.
+    await storage.releaseChecklistWakeClaims(agent.id, claims[0]);
+    expect(storage.currentChecklistWakeGenerations(agent.id, observed)).toEqual(observed);
+    const reclaimed = await storage.claimChecklistWakeGenerations(
+      agent.id,
+      observed,
+      now,
+      () => true,
+    );
+    expect(reclaimed[0].claim!.id).not.toBe(claims[0][0].claim!.id);
+    await storage.releaseChecklistWakeClaims(agent.id, claims[0]);
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(reclaimed);
+    await storage.releaseChecklistWakeClaims(agent.id, reclaimed);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: { ...condition, at: "2026-11-19T20:00:00Z" },
+    });
+    const replacement = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    expect(replacement[0].generation).not.toBe(observed[0].generation);
+    expect(
+      await storage.claimChecklistWakeGenerations(agent.id, observed, now, () => true),
+    ).toEqual([]);
+    await storage.releaseChecklistWakeClaims(agent.id, claims[0]);
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toEqual(replacement);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: replacement[0].condition,
+    });
+    const rearmed = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    expect(rearmed[0].generation).not.toBe(replacement[0].generation);
+    await manager.mutateChecklist(agent.id, { operation: "update", id: "ui", status: "pending" });
+    expect((await storage.get(agent.id))?.checklistWakeGenerations).toBeUndefined();
+    expect(storage.currentChecklistWakeGenerations(agent.id, rearmed)).toEqual([]);
+    await manager.mutateChecklist(agent.id, { operation: "update", id: "ui", status: "blocked" });
+    const nextStretch = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    expect(nextStretch[0].generation).not.toBe(rearmed[0].generation);
+    await manager.mutateChecklist(agent.id, { operation: "update", id: "ui", wakeCondition: null });
+    expect(storage.currentChecklistWakeGenerations(agent.id, nextStretch)).toEqual([]);
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "ui",
+      wakeCondition: condition,
+    });
+    const goal: AgentGoal = {
+      threadId: "retained",
+      objective: "Finish accepted work",
+      status: "blocked",
+      tokenBudget: 1000,
+      tokensUsed: 400,
+      timeUsedSeconds: 5,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    let nativeReads = 0;
+    let relocate = false;
+    let duringAdmission: (() => Promise<void>) | undefined;
+    const goals = new CodexGoals({
+      request: async () => {
+        if (++nativeReads === 2 && relocate) {
+          relocate = false;
+          await storage.upsert({
+            ...storage.getLoadedRecord(agent.id)!,
+            cwd: join(workdir, "relocated"),
+          });
+        }
+        if (nativeReads === 2 && duringAdmission) await duringAdmission();
+        return { goal };
+      },
+      onChange() {},
+    });
+    goals.bind("retained");
+    Object.defineProperty(manager.getAgent(agent.id)!.session!, "goals", { value: goals });
+    // Explicitly armed children are eligible even when timed reviews exclude them.
+    await manager.setLabels(agent.id, { [PARENT_AGENT_ID_LABEL]: "parent" });
+    await manager.flush();
+    const ready = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
+    let githubReady = false;
+    let githubAvailable = true;
+    let sourceCurrent = true;
+    let sourceChecks = 0;
+    let retained = 0;
+    let releases = 0;
+    const github: ChecklistGithubObservationPort = {
+      async subscribe() {
+        retained++;
+        return {
+          read: () => (githubAvailable && githubReady ? "satisfied" : "unresolved"),
+          isCurrentSource: async () => {
+            sourceChecks++;
+            return sourceCurrent;
+          },
+          availability: () =>
+            githubAvailable
+              ? { available: true }
+              : { available: false, reason: "GitHub authentication is unavailable" },
+          release: () => {
+            retained--;
+            releases++;
+          },
+        };
+      },
+    };
+    let pauseReadFails = true;
+    const pausedProjects = new Set(["factory"]);
+    await storage.upsert({
+      ...storage.getLoadedRecord(agent.id)!,
+      id: "parent",
+      tasks: [],
+      labels: { [PROJECT_FACTORY_ROLE_LABEL]: "factory:foreman" },
+    });
+    const serviceOptions = {
+      serverId: "local",
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      github,
+      ready: () => true,
+      now: () => now,
+      captureFactoryAuthority: async () => {
+        if (pauseReadFails) throw new Error("Factory state unavailable");
+        return {
+          read: (project: string) =>
+            pausedProjects.has(project) ? ("paused" as const) : ("running" as const),
+        };
+      },
+    };
+    const service = new ChecklistWakeService(serviceOptions);
+    await manager.mutateChecklist(agent.id, {
+      operation: "create",
+      id: "checks",
+      text: "External prerequisite",
+    });
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "checks",
+      status: "blocked",
+      wakeCondition: {
+        kind: "github_pull_request",
+        owner: "terran-labs",
+        repository: "vorteo",
+        number: 328,
+        state: "merged",
+      },
+    });
+    // A held thread retains readiness without spending either claim or review slots.
+    await queue.pause(agent.id);
+    await service.tick();
+    expect(retained).toBe(0);
+    const suppressed = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
+    expect(
+      suppressed.every(
+        (entry) =>
+          !entry.claim && entry.suppression?.reason === "Local Factory pause authority unavailable",
+      ),
+    ).toBe(true);
+    await service.tick();
+    expect(storage.getLoadedRecord(agent.id)!.checklistWakeGenerations).toEqual(suppressed);
+    pauseReadFails = false;
+    await service.tick();
+    expect(retained).toBe(0);
+    pausedProjects.clear();
+    await manager.setLabels(agent.id, {
+      "factory.role": "worker",
+      [PARENT_SERVER_ID_LABEL]: "remote",
+    });
+    await service.tick();
+    expect(retained).toBe(0); // A local record with the same parent ID is not remote authority.
+    expect(storage.getLoadedRecord(agent.id)!.checklistWakeGenerations).toEqual(suppressed);
+    const suppressionRecovery = new AgentStorage(join(workdir, "agents"), logger);
+    expect((await suppressionRecovery.get(agent.id))?.checklistWakeGenerations).toEqual(suppressed);
+    const suppressedService = new ChecklistWakeService(serviceOptions);
+    await suppressedService.tick();
+    suppressedService.stop();
+    expect(storage.getLoadedRecord(agent.id)!.checklistWakeGenerations).toEqual(suppressed);
+    expect(
+      await storage.recordChecklistWakeSuppression(agent.id, suppressed, {
+        reason: "Repeated observation",
+        at: new Date(now + 1).toISOString(),
+        serverId: "remote",
+        agentId: "parent",
+      }),
+    ).toEqual([]);
+    await manager.setLabels(agent.id, {
+      "factory.role": "",
+      [PARENT_SERVER_ID_LABEL]: "local",
+      [PARENT_AGENT_ID_LABEL]: "missing",
+    });
+    await service.tick();
+    expect(retained).toBe(1); // Ordinary orphaned work is not given a Factory hold.
+    const monitored = storage.getLoadedRecord(agent.id)!;
+    const checksGeneration = monitored.checklistWakeGenerations!.find(
+      (entry) => entry.taskId === "checks",
+    )!;
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(true); // A valid unsatisfied result is observable.
+    // Sample the real service before and after fifteen-second scans, including refused wakes.
+    githubReady = true;
+    await service.tick(); // Queue pause refuses admission, leaving the generation armed.
+    const measurementStart = now;
+    let availableSamples = 0;
+    let unavailableSamples = 0;
+    for (let second = 1; second <= 1_200; second++) {
+      now = measurementStart + second * 1_000;
+      if (service.isMonitoring(monitored, checksGeneration)) availableSamples++;
+      else unavailableSamples++;
+      if (second % 15 === 0) await service.tick();
+      expect(service.isMonitoring(monitored, checksGeneration)).toBe(true);
+    }
+    expect({ availableSamples, unavailableSamples }).toEqual({
+      availableSamples: 1_200,
+      unavailableSamples: 0,
+    });
+    expect(sourceChecks).toBeGreaterThanOrEqual(12);
+    expect(storage.currentChecklistWakeGenerations(agent.id, [checksGeneration])).toHaveLength(1);
+    githubReady = false;
+    sourceCurrent = false;
+    now += 90_000;
+    await service.tick();
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(false);
+    sourceCurrent = true;
+    now += 120_000;
+    await service.tick();
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(true);
+    githubAvailable = false;
+    await service.tick();
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(false);
+    const unavailable = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
+    expect(unavailable.find((entry) => entry.taskId === "checks")).toMatchObject({
+      unavailable: { reason: "GitHub observer unavailable for this workspace" },
+    });
+    expect(unavailable.every((entry) => !entry.claim)).toBe(true);
+    await service.tick();
+    expect(storage.getLoadedRecord(agent.id)!.checklistWakeGenerations).toEqual(unavailable);
+    const unavailableRecovery = new AgentStorage(join(workdir, "agents"), logger);
+    expect((await unavailableRecovery.get(agent.id))!.checklistWakeGenerations).toEqual(
+      unavailable,
+    );
+    githubAvailable = true;
+    expect(service.isMonitoring(monitored, checksGeneration)).toBe(true);
+
+    await manager.setLabels(agent.id, {
+      "factory.role": "worker",
+      [PARENT_AGENT_ID_LABEL]: "parent",
+    });
+    await Promise.all([service.tick(), service.tick()]);
+    expect(retained).toBe(1);
+    expect(
+      storage.currentChecklistWakeGenerations(agent.id, ready).map((entry) => entry.generation),
+    ).toEqual(ready.map((entry) => entry.generation));
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "checks",
+      wakeCondition: {
+        kind: "github_pull_request",
+        owner: "terran-labs",
+        repository: "vorteo",
+        number: 329,
+        state: "merged",
+      },
+    });
+    await service.tick();
+    expect(retained).toBe(1);
+    expect(releases).toBe(2);
+    service.stop();
+    expect(retained).toBe(0);
+    const recreated = new ChecklistWakeService(serviceOptions);
+    githubReady = true;
+    await queue.mutate(agent.id, {
+      kind: "pause",
+      paused: false,
+      operationId: randomUUID(),
+      expectedRevision: (await queue.read(agent.id)).revision,
+    });
+    let starts = 0;
+    const unsubscribe = manager.getAgent(agent.id)!.session!.subscribe((event) => {
+      if (event.type === "turn_started") starts++;
+    });
+    nativeReads = 0;
+    relocate = true;
+    await Promise.all([recreated.tick(), recreated.tick()]);
+    expect(starts).toBe(0);
+    expect(
+      storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!.every((entry) => !entry.claim),
+    ).toBe(true);
+    expect(retained).toBe(0);
+    await storage.upsert({ ...storage.getLoadedRecord(agent.id)!, cwd: workdir });
+    const refusedReads = nativeReads;
+    now += 15_000;
+    await recreated.tick();
+    expect(nativeReads).toBe(refusedReads); // A refused generation does not prepare again every scan.
+    now += 105_000;
+    for (const change of ["pause", "parent"] as const) {
+      nativeReads = 0;
+      duringAdmission = async () => {
+        if (change === "pause") pausedProjects.add("factory");
+        else await manager.setLabels(agent.id, { [PARENT_SERVER_ID_LABEL]: "remote" });
+      };
+      await recreated.tick();
+      expect(starts).toBe(0);
+      expect(
+        storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!.every((entry) => !entry.claim),
+      ).toBe(true);
+      pausedProjects.clear();
+      await manager.setLabels(agent.id, { [PARENT_SERVER_ID_LABEL]: "local" });
+      now += 120_000;
+    }
+    duringAdmission = undefined;
+    await recreated.tick();
+    await vi.waitFor(() => {
+      expect(starts).toBe(1);
+      expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");
+    });
+    expect(goals.state).toMatchObject({ status: "ready", goal });
+    const admitted = storage.getLoadedRecord(agent.id)!.checklistWakeGenerations!;
+    expect(admitted).toHaveLength(2);
+    expect(admitted.every((entry) => !!entry.claim)).toBe(true);
+    expect(retained).toBe(0);
+    await recreated.tick();
+    recreated.stop();
+    const afterReload = new ChecklistWakeService(serviceOptions);
+    await afterReload.tick();
+    afterReload.stop();
+    expect(starts).toBe(1);
+    unsubscribe();
+    expect(await manager.startChecklistConditionWake(agent.id, ready, () => true)).toBeNull();
+    await manager.flush();
+    const recovered = new AgentStorage(join(workdir, "agents"), logger);
+    expect((await recovered.get(agent.id))?.checklistWakeGenerations).toEqual(admitted);
+    const deleted = (await storage.get(agent.id))!.checklistWakeGenerations!;
+    await manager.mutateChecklist(agent.id, { operation: "delete", id: "ui" });
+    expect(storage.currentChecklistWakeGenerations(agent.id, deleted)).toEqual([]);
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    expect((await storage.get(agent.id))?.blockedReviewCount).toBeUndefined();
   } finally {
+    queue.close();
     await manager.closeAgent(agent.id);
     await manager.flush();
     rmSync(workdir, { recursive: true, force: true });
@@ -16177,96 +16620,182 @@ test.each([true, false])(
   },
 );
 
-test.each(["active", "usageLimited", "spent", "restart", "queue", "stopped"] as const)(
-  "periodic blocked review respects %s admission with a blocked checklist",
-  async (condition) => {
-    const workdir = mkdtempSync(join(tmpdir(), "blocked-review-manager-"));
-    const storage = new AgentStorage(join(workdir, "agents"), logger);
-    const client = new SessionRecordingAgentClient();
-    let now = Date.now();
-    const manager = new AgentManager({
-      clients: { codex: client },
-      registry: storage,
-      logger,
-      now: () => now,
+test.each([
+  ...(["active", "usageLimited", "spent", "restart", "queue", "stopped"] as const).map(
+    (condition) => ({ trigger: "review" as const, condition }),
+  ),
+  ...(
+    [
+      "paused",
+      "complete",
+      "spent",
+      "restart",
+      "queue",
+      "stopped",
+      "archived",
+      "registration",
+      "quota",
+      "usageHold",
+      "accountHold",
+      "queueGoal",
+      "readiness",
+      "uncertain",
+      "restartContinuation",
+      "claimStop",
+      "claimEdit",
+      "claimGoal",
+      "claimAccount",
+    ] as const
+  ).map((condition) => ({ trigger: "condition" as const, condition })),
+])("blocked work respects $condition admission for $trigger", async ({ trigger, condition }) => {
+  const workdir = mkdtempSync(join(tmpdir(), "blocked-review-manager-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new SessionRecordingAgentClient();
+  let now = Date.now();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    now: () => now,
+  });
+  const queue = new MessageQueueService(
+    new MessageQueueStore(workdir),
+    new QueueAttachmentStore(workdir),
+  );
+  manager.setMessageQueueControl(queue);
+  const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const goal: AgentGoal = {
+    threadId: "retained",
+    objective: "Finish accepted work",
+    status: "blocked",
+    tokenBudget: 1000,
+    tokensUsed: 400,
+    timeUsedSeconds: 5,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const holdAccount = async () => {
+    const record = storage.getLoadedRecord(agent.id)!;
+    await storage.upsert({
+      ...record,
+      id: randomUUID(),
+      config: {
+        ...record.config,
+        usageLimitHold: { stoppedAt: new Date(now).toISOString(), attempts: 0 },
+      },
     });
-    const queue = new MessageQueueService(
-      new MessageQueueStore(workdir),
-      new QueueAttachmentStore(workdir),
-    );
-    manager.setMessageQueueControl(queue);
-    let agentId: string | undefined;
-    try {
-      const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
-        workspaceId: undefined,
-      });
-      agentId = agent.id;
-      const goal: AgentGoal = {
-        threadId: "retained",
-        objective: "Finish accepted work",
-        status: "blocked",
-        tokenBudget: 1000,
-        tokensUsed: 400,
-        timeUsedSeconds: 5,
-        createdAt: 1,
-        updatedAt: 2,
-      };
-      const goals = new CodexGoals({
-        request: async () => ({ goal }),
-        onChange() {},
-      });
-      goals.bind("retained");
-      Object.defineProperty(client.sessions[0], "goals", { value: goals });
-      await manager.mutateChecklist(agent.id, {
-        operation: "create",
-        id: "blocked",
-        text: "Check prerequisite",
-      });
-      await manager.mutateChecklist(agent.id, {
-        operation: "update",
-        id: "blocked",
-        status: "blocked",
-        description: "Waiting for the accepted dependency",
-      });
-      // Change native state after discovery to prove a stale hint cannot admit work.
-      if (
-        condition !== "spent" &&
-        condition !== "restart" &&
-        condition !== "queue" &&
-        condition !== "stopped"
-      )
-        goal.status = condition;
-      if (condition === "spent") goal.tokensUsed = 1000;
-      await manager.flush();
-      const reviewRecord = storage.getLoadedRecord(agent.id)!;
-      now =
-        Math.max(
-          Date.parse(reviewRecord.createdAt),
-          Date.parse(reviewRecord.lastActivityAt ?? reviewRecord.createdAt),
-        ) + 300_001;
-      expect(storage.getLoadedRecord(agent.id)).toMatchObject({
-        persistence: { sessionId: client.sessions[0]!.id },
-      });
-      expect(manager.getAgent(agent.id)).toMatchObject({
-        lifecycle: "idle",
-        activeTurnId: null,
-      });
-      expect(blockedReviewDue(storage.getLoadedRecord(agent.id)!, now)).toBe(true);
+  };
+  let reads = 0;
+  const goals = new CodexGoals({
+    request: async () => {
+      if (condition === "uncertain") throw new Error("Native goal unavailable");
+      if (++reads === 2) {
+        if (condition === "claimGoal") goal.status = "paused";
+        if (condition === "claimAccount") await holdAccount();
+        if (condition === "claimEdit")
+          await manager.mutateChecklist(agent.id, {
+            operation: "update",
+            id: "blocked",
+            wakeCondition: { kind: "deadline", at: new Date(now + 1).toISOString() },
+          });
+      }
+      return { goal };
+    },
+    onChange() {},
+  });
+  goals.bind("retained");
+  Object.defineProperty(client.sessions[0], "goals", { value: goals });
+  try {
+    manager.setChecklistWakeConditionsReadiness(() => true);
+    await manager.mutateChecklist(agent.id, {
+      operation: "create",
+      id: "blocked",
+      text: "Check prerequisite",
+    });
+    await manager.mutateChecklist(agent.id, {
+      operation: "update",
+      id: "blocked",
+      status: "blocked",
+      description: "Waiting for the accepted dependency",
+      ...(trigger === "condition"
+        ? { wakeCondition: { kind: "deadline" as const, at: new Date(now).toISOString() } }
+        : {}),
+    });
+    if (
+      condition === "active" ||
+      condition === "usageLimited" ||
+      condition === "paused" ||
+      condition === "complete"
+    )
+      goal.status = condition;
+    if (condition === "spent") goal.tokensUsed = 1000;
+    await manager.flush();
+    const record = storage.getLoadedRecord(agent.id)!;
+    const observed = record.checklistWakeGenerations ?? [];
+    now =
+      Math.max(
+        Date.parse(record.createdAt),
+        Date.parse(record.lastActivityAt ?? record.createdAt),
+      ) + 300_001;
+    expect(blockedReviewDue(record, now, () => true)).toBe(trigger === "review");
+    const applyHold = async () => {
       if (condition === "restart") manager.beginRestartDrain(randomUUID());
       if (condition === "queue") await queue.pause(agent.id);
+      if (condition === "archived") await manager.archiveAgent(agent.id);
+      if (condition === "registration") manager.prepareForShutdown();
+      if (condition === "quota")
+        await storage.upsert({
+          ...record,
+          config: { ...record.config, quotaPausedAt: new Date(now).toISOString() },
+        });
+      if (condition === "usageHold")
+        await manager.updateUsageLimitHold(agent.id, () => ({
+          stoppedAt: new Date(now).toISOString(),
+          attempts: 0,
+        }));
+      if (condition === "accountHold") await holdAccount();
+      if (condition === "queueGoal")
+        await storage.upsert({ ...record, queueGoalHold: { phase: "held", goal } });
+      if (condition === "readiness") manager.setChecklistWakeConditionsReadiness(() => false);
+      if (condition === "restartContinuation")
+        await queue.captureRestartContinuation(agent.id, randomUUID());
+    };
+    await applyHold();
+    const canContinue = () =>
+      condition !== "stopped" &&
+      !(
+        condition === "claimStop" &&
+        storage.getLoadedRecord(agent.id)?.checklistWakeGenerations?.some((entry) => entry.claim)
+      );
+    if (trigger === "condition" && condition === "quota") {
+      const storedOnlyId = randomUUID();
+      await storage.upsert({ ...storage.getLoadedRecord(agent.id)!, id: storedOnlyId });
+      expect(manager.getAgent(storedOnlyId)).toBeNull();
       expect(
-        await manager.startBlockedTaskReview(agent.id, () => condition !== "stopped"),
-      ).toBeNull();
-      expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
-      expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");
-    } finally {
-      queue.close();
-      if (agentId) await manager.closeAgent(agentId);
-      await manager.flush();
-      rmSync(workdir, { recursive: true, force: true });
+        await manager.canPrepareChecklistConditionWake(storedOnlyId, observed, canContinue),
+      ).toBe(false);
+      expect(manager.getAgent(storedOnlyId)).toBeNull();
     }
-  },
-);
+    expect(
+      await (trigger === "review"
+        ? manager.startBlockedTaskReview(agent.id, canContinue)
+        : manager.startChecklistConditionWake(agent.id, observed, canContinue)),
+    ).toBeNull();
+    expect(
+      storage.getLoadedRecord(agent.id)?.checklistWakeGenerations?.every((entry) => !entry.claim) ??
+        true,
+    ).toBe(true);
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    expect((await storage.get(agent.id))?.blockedReviewCount).toBeUndefined();
+  } finally {
+    queue.close();
+    await manager.closeAgent(agent.id);
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
 
 test("periodic review scan honors the hourly cooldown and stops without creating another session", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "blocked-review-manager-"));

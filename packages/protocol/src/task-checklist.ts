@@ -10,6 +10,34 @@ export const AgentTaskCheckSchema = z.object({
   done: z.boolean(),
 });
 
+/** Targets are structural on the wire; mutation normalization validates their semantics. */
+export const ChecklistWakeConditionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("deadline"), at: z.string() }),
+  z.object({
+    kind: z.literal("github_pull_request"),
+    owner: z.string(),
+    repository: z.string(),
+    number: z.number(),
+    state: z.enum(["merged", "closed"]),
+  }),
+  z.object({
+    kind: z.literal("github_workflow_run"),
+    owner: z.string(),
+    repository: z.string(),
+    runId: z.number(),
+    attempt: z.number(),
+  }),
+  z.object({
+    kind: z.literal("github_required_checks"),
+    owner: z.string(),
+    repository: z.string(),
+    number: z.number(),
+    headSha: z.string(),
+    checks: z.array(z.string()),
+  }),
+]);
+export type ChecklistWakeCondition = z.infer<typeof ChecklistWakeConditionSchema>;
+
 export const AgentTaskItemSchema = z.object({
   text: z.string(),
   completed: z.boolean(),
@@ -21,12 +49,14 @@ export const AgentTaskItemSchema = z.object({
   blockedBy: z.array(z.string()).optional(),
   metadata: z.record(z.string(), JsonWireValueSchema).optional(),
   source: z.enum(["vorteo", "provider"]).optional(),
+  wakeCondition: ChecklistWakeConditionSchema.optional(),
   // COMPAT(checklistProgress): added October 2026; older apps ignore both fields.
   progress: z.number().optional(),
   checks: z.array(AgentTaskCheckSchema).optional(),
 });
 
 const TaskFields = {
+  wakeCondition: ChecklistWakeConditionSchema.nullable().optional(),
   text: z.string().min(1).max(1000),
   description: z.string().max(20000).optional(),
   activeForm: z.string().max(1000).optional(),

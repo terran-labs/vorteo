@@ -578,6 +578,39 @@ export class ProjectFactoryService {
   }
 
   /**
+   * Read-only admission snapshot. Settle work already queued before reading; any later
+   * queued operation invalidates the snapshot synchronously, even before its write starts.
+   * Status-only writes bypass the queue but cannot change pause, drain or enabled state.
+   */
+  async captureWakeAuthority(): Promise<{
+    read(projectId: string): "running" | "paused" | "draining" | "unavailable";
+  }> {
+    const queue = this.queue;
+    const current = () => !this.stopped && this.queue === queue;
+    const unavailable = { read: () => "unavailable" as const };
+    await queue;
+    if (!current()) return unavailable;
+    try {
+      const snapshot = await this.list();
+      if (!current()) return unavailable;
+      const projects = new Map(snapshot.projects.map((project) => [project.projectId, project]));
+      return {
+        read: (projectId) => {
+          if (!current()) return "unavailable";
+          const project = projects.get(projectId);
+          if (!project || project.state === "unavailable" || project.state === "off")
+            return "unavailable";
+          if (project.drain) return "draining";
+          if (project.paused) return "paused";
+          return project.state === "on" ? "running" : "unavailable";
+        },
+      };
+    } catch {
+      return unavailable;
+    }
+  }
+
+  /**
    * Pauses every project whose Factory is on, before a restart or upgrade, and records which
    * ones it paused. Projects already paused, off or unavailable are left alone, so a rerun
    * records nothing new. Stopping heartbeats does not reach a Foreman already mid-turn, so each

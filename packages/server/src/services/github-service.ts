@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ChecklistWakeCondition } from "@getpaseo/protocol/task-checklist";
 import {
   isGitHubHost,
   parseGitHubRemoteUrl,
@@ -996,7 +997,130 @@ export interface SearchGitHubRepositoriesOptions {
 
 export interface GitHubService extends ForgeService {
   searchRepositories(options: SearchGitHubRepositoriesOptions): Promise<GitHubRepositorySummary[]>;
+  subscribeChecklistWake(input: {
+    cwd: string;
+    condition: GitHubWakeCondition;
+  }): Promise<GitHubWakeSubscription>;
 }
+
+export type GitHubWakeCondition = Exclude<ChecklistWakeCondition, { kind: "deadline" }>;
+export interface GitHubWakeSubscription {
+  availability(): { available: boolean; reason?: string };
+  read(): "satisfied" | "unresolved";
+  release(): void;
+}
+
+/** GitHub capability stays on the adapter, not the generic forge/RPC contract. */
+export function supportsGitHubChecklistWake(
+  service: ForgeService,
+): service is ForgeService & Pick<GitHubService, "subscribeChecklistWake"> {
+  return (
+    "subscribeChecklistWake" in service && typeof service.subscribeChecklistWake === "function"
+  );
+}
+
+interface WakeSubscriber {
+  cwd: string;
+  condition: GitHubWakeCondition;
+  target: WakeTarget | null;
+  released: boolean;
+  revision: number;
+  bindAt: number;
+  readAfter: number;
+  armedOrder: number;
+  unavailableReason?: string;
+}
+interface WakeTarget {
+  key: string;
+  host: string;
+  condition: GitHubWakeCondition;
+  subscribers: Set<WakeSubscriber>;
+  due: number;
+  running: boolean;
+  revision: number;
+  errors: number;
+  satisfiedUntil: number;
+  observedPollStartedAt: number | null;
+  observedPollOrder: number;
+  observedUntil: number;
+  unavailableReason?: string;
+}
+
+class WakeTargetUnavailableError extends Error {}
+
+class WakeHostChangedError extends Error {
+  constructor(cause?: unknown) {
+    super("GitHub wake source host changed", { cause });
+  }
+}
+
+const WakeRateResourceSchema = z.object({
+  limit: z.number().positive(),
+  remaining: z.number().nonnegative(),
+  reset: z.number().positive(),
+});
+const WakeBudgetSchema = z.object({
+  resources: z.object({ graphql: WakeRateResourceSchema, core: WakeRateResourceSchema }),
+});
+const WakeChecksSchema = z.object({
+  pageInfo: z.object({ hasNextPage: z.boolean() }),
+  nodes: z.array(
+    z.discriminatedUnion("__typename", [
+      z.object({
+        __typename: z.literal("CheckRun"),
+        name: z.string(),
+        status: z.string(),
+        conclusion: z.string().nullable(),
+      }),
+      z.object({ __typename: z.literal("StatusContext"), context: z.string(), state: z.string() }),
+    ]),
+  ),
+});
+const WakePrSchema = z.object({
+  number: z.number(),
+  state: z.enum(["OPEN", "CLOSED", "MERGED"]),
+  headRefOid: z.string(),
+  commits: z
+    .object({
+      nodes: z.array(
+        z.object({
+          commit: z.object({
+            oid: z.string(),
+            statusCheckRollup: z.object({ contexts: WakeChecksSchema }).nullable(),
+          }),
+        }),
+      ),
+    })
+    .optional(),
+});
+const WakeGraphqlSchema = z.object({
+  errors: z.array(z.unknown()).optional(),
+  data: z.object({
+    rateLimit: GitHubGraphqlRateLimitSchema.extend({
+      limit: z.number().positive(),
+      remaining: z.number().nonnegative(),
+      resetAt: z.iso.datetime({ offset: true }),
+    }),
+    repository: z.object({ pullRequest: WakePrSchema.nullable() }).nullable(),
+  }),
+});
+const WakeRunSchema = z.object({
+  id: z.number(),
+  run_attempt: z.number(),
+  status: z.string(),
+  conclusion: z.string().nullable(),
+});
+const TERMINAL_CHECK_CONCLUSIONS = new Set([
+  "SUCCESS",
+  "FAILURE",
+  "NEUTRAL",
+  "CANCELLED",
+  "SKIPPED",
+  "TIMED_OUT",
+  "ACTION_REQUIRED",
+  "STALE",
+  "STARTUP_FAILURE",
+]);
 
 export class GitHubCliMissingError extends ForgeCliMissingError {
   constructor() {
@@ -1041,6 +1165,78 @@ export class GitHubEnterpriseHostProbeError extends Error {
     this.host = params.host;
     this.cause = params.cause;
   }
+}
+
+function validateWakeChecks(
+  condition: Extract<GitHubWakeCondition, { kind: "github_required_checks" }>,
+  pr: z.infer<typeof WakePrSchema>,
+): void {
+  if (pr.headRefOid.toLowerCase() !== condition.headSha.toLowerCase())
+    throw new WakeTargetUnavailableError("Pinned GitHub pull request head changed");
+  const commit = pr.commits?.nodes.length === 1 ? pr.commits.nodes[0]?.commit : undefined;
+  if (!commit || commit.oid.toLowerCase() !== pr.headRefOid.toLowerCase())
+    throw new WakeTargetUnavailableError(
+      "GitHub current pull request commit could not be verified",
+    );
+  const contexts = commit.statusCheckRollup?.contexts;
+  if (contexts?.pageInfo.hasNextPage)
+    throw new WakeTargetUnavailableError("GitHub required checks response is truncated");
+  for (const node of contexts?.nodes ?? []) {
+    const name = node.__typename === "CheckRun" ? node.name : node.context;
+    if (!condition.checks.includes(name)) continue;
+    const known =
+      node.__typename === "CheckRun"
+        ? ["QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "REQUESTED", "COMPLETED"].includes(
+            node.status,
+          ) &&
+          (node.status !== "COMPLETED" ||
+            (!!node.conclusion && TERMINAL_CHECK_CONCLUSIONS.has(node.conclusion)))
+        : ["PENDING", "SUCCESS", "FAILURE", "ERROR"].includes(node.state);
+    if (!known) throw new WakeTargetUnavailableError("GitHub required check state is unknown");
+  }
+}
+
+function wakePullRequestSatisfied(
+  condition: Exclude<GitHubWakeCondition, { kind: "github_workflow_run" }>,
+  pr: z.infer<typeof WakePrSchema> | null,
+): boolean {
+  if (!pr || pr.number !== condition.number) return false;
+  if (
+    condition.kind === "github_pull_request" &&
+    condition.state === "merged" &&
+    pr.state === "CLOSED"
+  )
+    throw new WakeTargetUnavailableError("pull request closed without merge");
+  if (condition.kind === "github_pull_request")
+    return pr.state === "MERGED" || (condition.state === "closed" && pr.state === "CLOSED");
+  const commit = pr.commits?.nodes.length === 1 ? pr.commits.nodes[0]?.commit : undefined;
+  const contexts = commit?.statusCheckRollup?.contexts;
+  // A truncated page cannot establish that every matching check is terminal.
+  if (
+    pr.headRefOid.toLowerCase() !== condition.headSha.toLowerCase() ||
+    commit?.oid !== pr.headRefOid ||
+    !contexts ||
+    contexts.pageInfo.hasNextPage
+  )
+    return false;
+  return (
+    condition.checks.length > 0 &&
+    condition.checks.every((name) => {
+      const matches = contexts.nodes.filter(
+        (node) => (node.__typename === "CheckRun" ? node.name : node.context) === name,
+      );
+      return (
+        matches.length > 0 &&
+        matches.every((node) =>
+          node.__typename === "CheckRun"
+            ? node.status === "COMPLETED" &&
+              node.conclusion !== null &&
+              TERMINAL_CHECK_CONCLUSIONS.has(node.conclusion)
+            : ["SUCCESS", "FAILURE", "ERROR"].includes(node.state),
+        )
+      );
+    })
+  );
 }
 
 interface CreateGitHubServiceOptions {
@@ -1173,6 +1369,293 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
   const rateLimitResetLoads = new Map<string, Promise<number | null>>();
   let githubPollTimer: NodeJS.Timeout | null = null;
   let api!: GitHubService;
+  const wakeTargets = new Map<string, WakeTarget>();
+  const wakeSubscribers = new Set<WakeSubscriber>();
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  let wakeReads = 0;
+  let wakeEventOrder = 0;
+  let disposed = false;
+
+  function detachWake(subscriber: WakeSubscriber): void {
+    const target = subscriber.target;
+    subscriber.target = null;
+    if (!target) return;
+    target.subscribers.delete(subscriber);
+    if (!target.subscribers.size) {
+      target.revision++;
+      wakeTargets.delete(target.key);
+    }
+  }
+
+  function armWakeTimer(): void {
+    if (wakeTimer) clearTimeout(wakeTimer);
+    wakeTimer = null;
+    if (disposed || wakeReads >= 2) return;
+    let earliest = Infinity;
+    for (const subscriber of wakeSubscribers) {
+      if (!subscriber.target) earliest = Math.min(earliest, subscriber.bindAt);
+    }
+    for (const target of wakeTargets.values()) {
+      if (!target.running)
+        earliest = Math.min(
+          earliest,
+          Math.max(target.due, pollPausedUntilByHost.get(target.host) ?? 0),
+        );
+    }
+    if (!Number.isFinite(earliest)) return;
+    wakeTimer = setTimeout(flushWakePolls, Math.max(0, earliest - deps.now()));
+    wakeTimer.unref();
+  }
+
+  function flushWakePolls(): void {
+    wakeTimer = null;
+    if (disposed) return;
+    for (const subscriber of wakeSubscribers) {
+      if (wakeReads >= 2) break;
+      if (subscriber.target || subscriber.bindAt > deps.now()) continue;
+      subscriber.bindAt = Infinity;
+      wakeReads++;
+      void bindWake(subscriber).finally(() => {
+        wakeReads--;
+        armWakeTimer();
+      });
+    }
+    for (const target of wakeTargets.values()) {
+      if (wakeReads >= 2) break;
+      if (
+        target.running ||
+        Math.max(target.due, pollPausedUntilByHost.get(target.host) ?? 0) > deps.now()
+      )
+        continue;
+      target.running = true;
+      target.satisfiedUntil = 0;
+      // Monitoring remains available during a bounded routine refresh; satisfaction does not.
+      wakeReads++;
+      void pollWake(target).finally(() => {
+        target.running = false;
+        wakeReads--;
+        armWakeTimer();
+      });
+    }
+    armWakeTimer();
+  }
+
+  async function bindWake(subscriber: WakeSubscriber): Promise<void> {
+    const revision = subscriber.revision;
+    try {
+      const host = (await resolveRepoHostCached(subscriber.cwd)) ?? "";
+      if (disposed || subscriber.released || subscriber.revision !== revision) return;
+      const condition = subscriber.condition;
+      let identity: unknown[];
+      if (condition.kind === "github_workflow_run") identity = [condition.runId, condition.attempt];
+      else if (condition.kind === "github_required_checks")
+        identity = [condition.number, condition.headSha.toLowerCase(), condition.checks];
+      else identity = [condition.number, condition.state];
+      const key = JSON.stringify([
+        host,
+        condition.kind,
+        condition.owner.toLowerCase(),
+        condition.repository.toLowerCase(),
+        identity,
+      ]);
+      let target = wakeTargets.get(key);
+      if (!target) {
+        target = {
+          key,
+          host,
+          condition: subscriber.condition,
+          subscribers: new Set(),
+          due: subscriber.readAfter,
+          running: false,
+          revision: 0,
+          errors: 0,
+          satisfiedUntil: 0,
+          observedPollStartedAt: null,
+          observedPollOrder: 0,
+          observedUntil: 0,
+        };
+        wakeTargets.set(key, target);
+      }
+      target.subscribers.add(subscriber);
+      subscriber.target = target;
+      delete subscriber.unavailableReason;
+    } catch {
+      // Missing auth/CLI/host resolution stays unresolved without prompting or scan-rate retries.
+      if (!subscriber.released && subscriber.revision === revision) {
+        subscriber.unavailableReason = "GitHub source host could not be resolved";
+        subscriber.bindAt = deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS;
+      }
+    }
+  }
+
+  async function pollWake(target: WakeTarget): Promise<void> {
+    const pollStartedAt = deps.now();
+    const pollOrder = ++wakeEventOrder;
+    const revision = target.revision;
+    const subscriber = target.subscribers.values().next().value;
+    if (!subscriber) return;
+    const cwd = subscriber.cwd;
+    const valid = () =>
+      !disposed &&
+      wakeTargets.get(target.key) === target &&
+      target.revision === revision &&
+      target.subscribers.size > 0;
+    try {
+      if (((await resolveRepoHostCached(cwd)) ?? "") !== target.host)
+        throw new WakeHostChangedError();
+      if (!valid()) return;
+      const runOptions = { cwd, envOverlay: { GH_PROMPT_DISABLED: "1" } };
+      // Cold wake reads must reserve both APIs before querying a target. Both pauses feed
+      // the existing host owner, so Actions REST cannot bypass a GraphQL reserve pause.
+      const budget = WakeBudgetSchema.parse(
+        JSON.parse(await run(["api", "rate_limit"], runOptions, target.host)),
+      );
+      if (!valid()) return;
+      for (const resource of [budget.resources.graphql, budget.resources.core]) {
+        const reserved = pauseGitHubPollsAtReserve(target.host, {
+          ...resource,
+          resetAt: new Date(resource.reset * 1000).toISOString(),
+        });
+        if (reserved) return;
+      }
+      if (!valid() || (pollPausedUntilByHost.get(target.host) ?? 0) > deps.now()) return;
+      const satisfied = await readWakeTarget(target, cwd);
+      if (valid() && (pollPausedUntilByHost.get(target.host) ?? 0) <= deps.now()) {
+        target.errors = 0;
+        delete target.unavailableReason;
+        // Cover the next aligned poll and its sequential budget and target commands.
+        // A missed or stalled poll still expires without extending this deadline.
+        target.observedUntil =
+          alignGitHubPollTime(deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS) +
+          2 * GITHUB_COMMAND_TIMEOUT_MS;
+        target.observedPollStartedAt = pollStartedAt;
+        target.observedPollOrder = pollOrder;
+        target.satisfiedUntil = satisfied ? deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS : 0;
+      }
+    } catch (error) {
+      if (valid()) failWake(target, cwd, error);
+    } finally {
+      target.due = alignGitHubPollTime(
+        deps.now() +
+          Math.min(
+            GITHUB_POLL_ERROR_BACKOFF_CAP_MS,
+            GITHUB_POLL_SLOW_INTERVAL_MS * 2 ** Math.min(target.errors, 2),
+          ),
+      );
+    }
+  }
+
+  function failWake(target: WakeTarget, cwd: string, error: unknown): void {
+    target.errors++;
+    target.observedUntil = 0;
+    if (error instanceof WakeTargetUnavailableError) target.unavailableReason = error.message;
+    else if (error instanceof GitHubCliMissingError)
+      target.unavailableReason = "GitHub CLI is unavailable";
+    else if (isGitHubAuthenticationError(error))
+      target.unavailableReason = "GitHub authentication is unavailable";
+    else target.unavailableReason = "GitHub target observation failed or was incomplete";
+    if (error instanceof WakeHostChangedError) {
+      rebindWakeSource(cwd);
+      return;
+    }
+    if (error instanceof GitHubCommandError && error.stdout) {
+      const rate = parseGraphqlBatchRateLimit(error.stdout);
+      if (rate) pauseGitHubPollsAtReserve(target.host, rate);
+      // gh preserves response headers on failed --include reads, including rate-limit resets.
+      try {
+        readWakeRestResponse(target.host, error.stdout);
+      } catch {
+        /* Remains unresolved. */
+      }
+    }
+    if (isGitHubRateLimitError(error))
+      pauseGitHubPollHostUntil(target.host, deps.now() + GITHUB_POLL_ERROR_BACKOFF_CAP_MS);
+  }
+
+  function rebindWakeSource(cwd: string): void {
+    for (const subscriber of wakeSubscribers) {
+      if (subscriber.cwd !== cwd) continue;
+      if (subscriber.target) {
+        subscriber.target.revision++;
+        subscriber.target.satisfiedUntil = 0;
+        subscriber.target.observedUntil = 0;
+      }
+      detachWake(subscriber);
+      subscriber.revision++;
+      subscriber.bindAt = deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS;
+      subscriber.readAfter = subscriber.bindAt;
+      subscriber.armedOrder = ++wakeEventOrder;
+      subscriber.unavailableReason = "GitHub source changed; awaiting a fresh observation";
+    }
+    armWakeTimer();
+  }
+
+  async function readWakeTarget(target: WakeTarget, cwd: string): Promise<boolean> {
+    const condition = target.condition;
+    const runOptions = { cwd, envOverlay: { GH_PROMPT_DISABLED: "1" } };
+    let satisfied = false;
+    if (condition.kind === "github_workflow_run") {
+      const endpoint = `repos/${encodeURIComponent(condition.owner)}/${encodeURIComponent(condition.repository)}/actions/runs/${condition.runId}/attempts/${condition.attempt}`;
+      const output = await run(["api", "--include", endpoint], runOptions, target.host);
+      const body = readWakeRestResponse(target.host, output);
+      const result = WakeRunSchema.parse(JSON.parse(body));
+      if (result.id !== condition.runId || result.run_attempt !== condition.attempt)
+        throw new WakeTargetUnavailableError(
+          "GitHub workflow target did not match the pinned run attempt",
+        );
+      if (
+        !["queued", "in_progress", "waiting", "pending", "requested", "completed"].includes(
+          result.status,
+        ) ||
+        (result.status === "completed" &&
+          (!result.conclusion || !TERMINAL_CHECK_CONCLUSIONS.has(result.conclusion.toUpperCase())))
+      )
+        throw new WakeTargetUnavailableError("GitHub workflow state is unknown");
+      satisfied =
+        result.status === "completed" &&
+        result.conclusion !== null &&
+        TERMINAL_CHECK_CONCLUSIONS.has(result.conclusion.toUpperCase());
+    } else {
+      const checks =
+        condition.kind === "github_required_checks"
+          ? `commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}`
+          : "";
+      const query = `query{rateLimit{limit remaining resetAt} repository(owner:${JSON.stringify(condition.owner)},name:${JSON.stringify(condition.repository)}){pullRequest(number:${condition.number}){number state headRefOid ${checks}}}}`;
+      const response = WakeGraphqlSchema.parse(
+        JSON.parse(await run(["api", "graphql", "-f", `query=${query}`], runOptions, target.host)),
+      );
+      if (pauseGitHubPollsAtReserve(target.host, response.data.rateLimit)) return false;
+      if (response.errors?.length) throw new Error("Incomplete GitHub wake observation");
+      const pr = response.data.repository?.pullRequest;
+      if (!pr || pr.number !== condition.number)
+        throw new Error("GitHub pull request target unavailable");
+      if (condition.kind === "github_required_checks") validateWakeChecks(condition, pr);
+      return wakePullRequestSatisfied(condition, pr);
+    }
+    return satisfied;
+  }
+
+  function readWakeRestResponse(host: string, output: string): string {
+    const split = output.search(/\r?\n\r?\n/);
+    if (split < 0) throw new Error("GitHub wake response omitted headers");
+    const headers = output.slice(0, split);
+    const header = (name: string) =>
+      headers.match(new RegExp(`^${name}:\\s*(.+)$`, "im"))?.[1]?.trim();
+    const limit = Number(header("x-ratelimit-limit"));
+    const remaining = Number(header("x-ratelimit-remaining"));
+    const reset = Number(header("x-ratelimit-reset"));
+    const rate = WakeRateResourceSchema.parse({ limit, remaining, reset });
+    const reserved = pauseGitHubPollsAtReserve(host, {
+      ...rate,
+      resetAt: new Date(reset * 1000).toISOString(),
+    });
+    const retry = Number(header("retry-after"));
+    if (Number.isFinite(retry) && retry > 0)
+      pauseGitHubPollHostUntil(host, deps.now() + retry * 1000);
+    if (reserved) throw new Error("GitHub wake REST reserve exhausted");
+    if (!/^HTTP\/\S+ 2\d\d\b/.test(headers)) throw new Error("GitHub wake REST read failed");
+    return output.slice(split).trim();
+  }
 
   async function cached<T>(params: {
     cwd: string;
@@ -1318,7 +1801,11 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
       : { settled: false, value: null };
   }
 
-  async function run(args: string[], runOptions: GitHubCommandRunnerOptions): Promise<string> {
+  async function run(
+    args: string[],
+    runOptions: GitHubCommandRunnerOptions,
+    expectedHost?: string,
+  ): Promise<string> {
     const ghPath = await deps.resolveGhPath();
     if (!ghPath) {
       throw new GitHubCliMissingError();
@@ -1328,13 +1815,27 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
     // which silently queries the wrong server on GitHub Enterprise. GH_HOST is
     // safe even for auto-routing subcommands because it matches the repo's host.
     const host = await resolveRepoHostCached(runOptions.cwd);
-    const effectiveOptions: GitHubCommandRunnerOptions = host
-      ? { ...runOptions, envOverlay: { ...runOptions.envOverlay, GH_HOST: host } }
+    if (expectedHost !== undefined && (host ?? "") !== expectedHost)
+      throw new WakeHostChangedError();
+    const routedHost = expectedHost !== undefined ? expectedHost || "github.com" : host;
+    const effectiveOptions: GitHubCommandRunnerOptions = routedHost
+      ? { ...runOptions, envOverlay: { ...runOptions.envOverlay, GH_HOST: routedHost } }
       : runOptions;
     try {
       const result = await deps.runner(args, effectiveOptions);
+      if (
+        expectedHost !== undefined &&
+        ((await resolveRepoHostCached(runOptions.cwd)) ?? "") !== expectedHost
+      )
+        throw new WakeHostChangedError();
       return result.stdout.trim();
     } catch (error) {
+      if (error instanceof WakeHostChangedError) throw error;
+      if (
+        expectedHost !== undefined &&
+        ((await resolveRepoHostCached(runOptions.cwd)) ?? "") !== expectedHost
+      )
+        throw new WakeHostChangedError(error);
       throw githubCliRunner.normalizeError(error, {
         args,
         cwd: runOptions.cwd,
@@ -2566,6 +3067,64 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
       });
     },
 
+    async subscribeChecklistWake(input) {
+      if (disposed) throw new Error("GitHub service is disposed");
+      const condition = structuredClone(input.condition);
+      if (condition.kind === "github_required_checks") condition.checks.sort();
+      const subscriber: WakeSubscriber = {
+        cwd: input.cwd,
+        condition,
+        target: null,
+        released: false,
+        revision: 0,
+        bindAt: deps.now(),
+        readAfter: deps.now(),
+        armedOrder: ++wakeEventOrder,
+      };
+      wakeSubscribers.add(subscriber);
+      armWakeTimer();
+      return {
+        availability: () => {
+          const target = subscriber.target;
+          if (subscriber.released || disposed)
+            return { available: false, reason: "GitHub monitoring stopped" };
+          if (!target) return { available: false, reason: subscriber.unavailableReason };
+          if ((pollPausedUntilByHost.get(target.host) ?? 0) > deps.now())
+            return { available: false, reason: "GitHub host polling is paused at its rate budget" };
+          const fresh =
+            target.observedPollStartedAt !== null &&
+            target.observedPollStartedAt >= subscriber.readAfter &&
+            target.observedPollOrder > subscriber.armedOrder;
+          if (fresh && target.observedUntil > deps.now()) return { available: true };
+          return {
+            available: false,
+            reason: target.unavailableReason ?? (fresh ? "GitHub observation expired" : undefined),
+          };
+        },
+        read: () => {
+          const target = subscriber.target;
+          return !subscriber.released &&
+            !disposed &&
+            target &&
+            target.observedPollStartedAt !== null &&
+            target.observedPollStartedAt >= subscriber.readAfter &&
+            target.observedPollOrder > subscriber.armedOrder &&
+            target.satisfiedUntil > deps.now() &&
+            (pollPausedUntilByHost.get(target.host) ?? 0) <= deps.now()
+            ? "satisfied"
+            : "unresolved";
+        },
+        release: () => {
+          if (subscriber.released) return;
+          subscriber.released = true;
+          subscriber.revision++;
+          detachWake(subscriber);
+          wakeSubscribers.delete(subscriber);
+          armWakeTimer();
+        },
+      };
+    },
+
     retainCurrentPullRequestStatusPoll(input) {
       const key = getPollTargetKey(input);
       let target = pollTargets.get(key);
@@ -2645,9 +3204,28 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
       // and the batch-poll repository identity instead of reusing stale ones.
       repoHostByCwd.delete(input.cwd);
       repoSlugByCwd.delete(input.cwd);
+      for (const subscriber of wakeSubscribers) {
+        if (subscriber.cwd !== input.cwd) continue;
+        if (subscriber.target) {
+          subscriber.target.revision++;
+          subscriber.target.satisfiedUntil = 0;
+          subscriber.target.observedUntil = 0;
+        }
+        detachWake(subscriber);
+        subscriber.revision++;
+        subscriber.bindAt = deps.now();
+        subscriber.readAfter = deps.now() + GITHUB_POLL_SLOW_INTERVAL_MS;
+      }
+      armWakeTimer();
     },
 
     dispose() {
+      disposed = true;
+      if (wakeTimer) clearTimeout(wakeTimer);
+      wakeTimer = null;
+      for (const subscriber of wakeSubscribers) subscriber.released = true;
+      wakeSubscribers.clear();
+      wakeTargets.clear();
       if (githubPollTimer) {
         clearTimeout(githubPollTimer);
         githubPollTimer = null;

@@ -1,5 +1,6 @@
 import { loadPersistedConfig } from "./persisted-config.js";
 import { BlockedTaskReviewService } from "./agent/task-checklist/review-service.js";
+import { ChecklistWakeService } from "./agent/task-checklist/wake-service.js";
 import {
   readingFromProviderUsage,
   UsageLimitResumeService,
@@ -147,7 +148,7 @@ export async function fanOutReconciledWorkspaceUpdates(input: {
 import { VoiceAssistantWebSocketServer } from "./websocket-server.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { createWorkspaceLabelService } from "./workspace-labels/index.js";
-import { createGitHubService } from "../services/github-service.js";
+import { createGitHubService, supportsGitHubChecklistWake } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
@@ -1793,7 +1794,40 @@ export async function createPaseoDaemon(
     createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
+  let checklistMonitoring = false;
+  const checklistReady = () => checklistMonitoring && !agentManager.isRestartDraining();
+  const checklistWakes = new ChecklistWakeService({
+    agentManager,
+    agentStorage,
+    logger,
+    serverId,
+    ready: () => agentManager.supportsChecklistWakeConditions(),
+    github: {
+      async subscribe(input) {
+        const forge = await workspaceGitService.resolveForge(input.cwd);
+        if (forge?.forge !== "github" || !supportsGitHubChecklistWake(forge.service)) {
+          throw new Error("GitHub wake observation is unavailable for this workspace");
+        }
+        const subscription = await forge.service.subscribeChecklistWake(input);
+        return {
+          ...subscription,
+          async isCurrentSource() {
+            const current = await workspaceGitService.resolveForge(input.cwd);
+            return current?.forge === "github" && current.service === forge.service;
+          },
+        };
+      },
+    },
+    captureFactoryAuthority: async () => {
+      if (!projectFactoryService) throw new Error("Factory pause authority is unavailable");
+      return projectFactoryService.captureWakeAuthority();
+    },
+  });
+  agentManager.setChecklistWakeConditionsReadiness(checklistReady);
+  const monitorAvailable = checklistWakes.isMonitoring.bind(checklistWakes);
+  agentManager.setChecklistWakeMonitorAvailability(monitorAvailable);
   const blockedTaskReviews = new BlockedTaskReviewService({
+    monitorAvailable,
     agentManager,
     agentStorage,
     logger,
@@ -2412,6 +2446,8 @@ export async function createPaseoDaemon(
             providerSnapshotManager.settlePluginProviders();
             restartRecovery.resumePending();
             await finishSubscriptions.start();
+            checklistMonitoring = true;
+            checklistWakes.start();
             wsServer.beginAcceptingConnections();
             const relaySecurityLogger = logger.child({ module: "relay-security" });
             relayRuntime = createRelayRuntime({
@@ -2503,6 +2539,8 @@ export async function createPaseoDaemon(
       // After listening, so the first Optimizer agent never delays startup.
       void systemSeeded.then(activateOptimizerAgent);
     } catch (error) {
+      checklistMonitoring = false;
+      checklistWakes.stop();
       blockedTaskReviews.stop();
       usageLimitResumes.stop();
       idleSessionRelease.stop();
@@ -2555,6 +2593,8 @@ export async function createPaseoDaemon(
     projectFactoryService?.stop();
     // A stopped daemon never starts it later, even if seeding settles now.
     optimizerAgent = { stop: () => {} };
+    checklistMonitoring = false;
+    checklistWakes.stop();
     blockedTaskReviews.stop();
     usageLimitResumes.stop();
     quotaPreflight.stop();

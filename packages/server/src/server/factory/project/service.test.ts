@@ -913,6 +913,9 @@ describe("review fixes", () => {
     try {
       const factory = service();
       const releases = roleAgent(await enable(factory), "factory-releases");
+      const running = await factory.captureWakeAuthority();
+      expect(running.read(PROJECT)).toBe("running");
+      expect(running.read("missing-project")).toBe("unavailable");
       let release = () => {};
       agents.hold = {
         agents: new Set([releases]),
@@ -923,15 +926,28 @@ describe("review fixes", () => {
       // Occupy the queue, queue the pause, then let the hourly and faster timers fire behind it.
       const blocker = factory.tick(PROJECT, "factory-releases");
       const paused = factory.invoke("factory.project.pause", { projectId: PROJECT });
+      expect(running.read(PROJECT)).toBe("unavailable");
+      // A capture made after the pause was queued must wait for its persisted state.
+      let captured = false;
+      const queuedAuthority = factory.captureWakeAuthority().then((authority) => {
+        captured = true;
+        return authority;
+      });
       await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(captured).toBe(false);
       release();
       await blocker;
       await paused;
+      expect((await queuedAuthority).read(PROJECT)).toBe("unavailable");
+      expect((await factory.captureWakeAuthority()).read(PROJECT)).toBe("paused");
       await factory.tick(PROJECT, "factory-triage");
       await vi.advanceTimersByTimeAsync(0);
 
       for (const role of PROJECT_FACTORY_ROLES)
         expect(factory.hasTimer(PROJECT, role.id)).toBe(false);
+      const beforeStop = await factory.captureWakeAuthority();
+      factory.stop();
+      expect(beforeStop.read(PROJECT)).toBe("unavailable");
     } finally {
       vi.useRealTimers();
     }

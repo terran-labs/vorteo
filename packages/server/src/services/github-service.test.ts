@@ -4740,6 +4740,318 @@ describe("ForgeService", () => {
     // GH_HOST is injected on every gh call (the slug lookup and the POST alike).
     expect(runner.calls[0]?.envOverlay).toMatchObject({ GH_HOST: "github.acme.internal" });
     expect(runner.calls[1]?.envOverlay).toMatchObject({ GH_HOST: "github.acme.internal" });
+    service.dispose();
+
+    // Explicit wake targets share this authenticated route and the ordinary poller's host pause.
+    vi.setSystemTime(0);
+    let host: string | null = "github.acme.internal";
+    let changeHostDuringPath = false;
+    let frozenWakeTime: number | undefined;
+    let commandDelayMs = 0;
+    let remaining = 80;
+    let restRemaining = 80;
+    let authMissing = false;
+    let head = "a".repeat(40);
+    let partial = true;
+    let checkStatus = "IN_PROGRESS";
+    let attempt = 2;
+    let closedState = "CLOSED";
+    let active = 0;
+    let peak = 0;
+    const delayed = { enabled: false, started: false, release: () => {} };
+    const reply = new Promise<void>((resolve) => {
+      delayed.release = resolve;
+    });
+    const calls: RunnerCall[] = [];
+    const wakeRunner: GitHubCommandRunner = async (args, options) => {
+      calls.push({ args, ...options });
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        if (commandDelayMs) await new Promise((resolve) => setTimeout(resolve, commandDelayMs));
+        else await Promise.resolve();
+        if (authMissing) throw new GitHubAuthenticationError({ stderr: "not logged in" });
+        const reset = Math.floor(Date.now() / 1000) + 600;
+        const resource = { limit: 100, remaining, reset };
+        if (args[1] === "rate_limit")
+          return {
+            stdout: JSON.stringify({ resources: { core: resource, graphql: resource } }),
+            stderr: "",
+          };
+        if (args.includes("--include"))
+          return {
+            stdout: `HTTP/2.0 200 OK\r\nx-ratelimit-limit: 100\r\nx-ratelimit-remaining: ${restRemaining}\r\nx-ratelimit-reset: ${reset}\r\n\r\n${JSON.stringify({ id: 9, run_attempt: attempt, status: "completed", conclusion: "failure" })}`,
+            stderr: "",
+          };
+        const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+        if (delayed.enabled) {
+          delayed.started = true;
+          await reply;
+        }
+        let number = 1;
+        if (query.includes("number:3")) number = 3;
+        else if (query.includes("number:2")) number = 2;
+        return {
+          stdout: JSON.stringify({
+            data: {
+              rateLimit: { limit: 100, remaining, resetAt: new Date(reset * 1000).toISOString() },
+              repository: {
+                pullRequest: {
+                  number,
+                  state: number === 2 ? closedState : "MERGED",
+                  headRefOid: head,
+                  commits: {
+                    nodes: [
+                      {
+                        commit: {
+                          oid: head,
+                          statusCheckRollup: {
+                            contexts: {
+                              pageInfo: { hasNextPage: partial },
+                              nodes: [
+                                {
+                                  __typename: "CheckRun",
+                                  name: "required",
+                                  status: checkStatus,
+                                  conclusion: "FAILURE",
+                                },
+                              ],
+                            },
+                          },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          }),
+          stderr: "",
+        };
+      } finally {
+        active--;
+      }
+    };
+    const wakeService = createGitHubService({
+      runner: wakeRunner,
+      resolveGhPath: async () => {
+        if (changeHostDuringPath) {
+          changeHostDuringPath = false;
+          host = "shifted.acme.internal";
+          vi.setSystemTime(Date.now() + 61_000);
+        }
+        return "/test/gh";
+      },
+      resolveRepoHost: async () => host,
+      resolveRepoSlug: async () => "acme/repo",
+      now: () => frozenWakeTime ?? Date.now(),
+    });
+    const pr = {
+      kind: "github_pull_request" as const,
+      owner: "acme",
+      repository: "repo",
+      number: 1,
+      state: "merged" as const,
+    };
+    const merged = await wakeService.subscribeChecklistWake({ cwd: "/repo", condition: pr });
+    const duplicate = await wakeService.subscribeChecklistWake({ cwd: "/other", condition: pr });
+    const closed = await wakeService.subscribeChecklistWake({
+      cwd: "/repo",
+      condition: { ...pr, number: 2, state: "closed" },
+    });
+    const workflow = await wakeService.subscribeChecklistWake({
+      cwd: "/repo",
+      condition: {
+        kind: "github_workflow_run",
+        owner: "acme",
+        repository: "repo",
+        runId: 9,
+        attempt: 1,
+      },
+    });
+    const checks = await wakeService.subscribeChecklistWake({
+      cwd: "/repo",
+      condition: {
+        kind: "github_required_checks",
+        owner: "acme",
+        repository: "repo",
+        number: 3,
+        headSha: head,
+        checks: ["required"],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(merged.read()).toBe("satisfied");
+    expect(duplicate.read()).toBe("satisfied");
+    expect(closed.read()).toBe("satisfied");
+    expect(workflow.read()).toBe("unresolved");
+    expect(checks.read()).toBe("unresolved");
+    expect(checks.availability().available).toBe(false);
+    expect(merged.availability().available).toBe(true);
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(calls.filter((call) => call.args[1] === "rate_limit")).toHaveLength(4);
+    expect(
+      calls.every(
+        (call) => call.envOverlay?.GH_HOST === host && call.envOverlay?.GH_PROMPT_DISABLED === "1",
+      ),
+    ).toBe(true);
+    const firstReads = calls.length;
+    const newlyArmed = await wakeService.subscribeChecklistWake({ cwd: "/repo", condition: pr });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(newlyArmed.availability().available).toBe(false);
+    expect(newlyArmed.read()).toBe("unresolved"); // Older shared results cannot satisfy a new arm.
+    await vi.advanceTimersByTimeAsync(118_990);
+    expect(calls).toHaveLength(firstReads);
+    partial = false;
+    attempt = 1;
+    closedState = "MERGED";
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(newlyArmed.read()).toBe("satisfied");
+    expect(closed.read()).toBe("satisfied"); // Closed means finished, including a merge.
+    await vi.advanceTimersByTimeAsync(125_000); // Incomplete observations use the error backoff.
+    expect(checks.read()).toBe("unresolved");
+    expect(checks.availability().available).toBe(true); // Current running checks are observable.
+    checkStatus = "COMPLETED";
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(checks.read()).toBe("satisfied"); // Terminal failure clears the prerequisite too.
+    expect(workflow.read()).toBe("satisfied");
+    expect(checks.availability().available).toBe(true);
+    head = "b".repeat(40);
+    wakeService.invalidate({ cwd: "/repo" });
+    expect(checks.read()).toBe("unresolved");
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(checks.read()).toBe("unresolved");
+    expect(checks.availability()).toEqual({
+      available: false,
+      reason: "Pinned GitHub pull request head changed",
+    });
+    authMissing = true;
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(merged.read()).toBe("unresolved");
+    expect(merged.availability()).toEqual({
+      available: false,
+      reason: "GitHub authentication is unavailable",
+    });
+    const failedReads = calls.length;
+    await vi.advanceTimersByTimeAsync(119_000);
+    expect(calls).toHaveLength(failedReads + 1); // The head-drift target reaches its separate backoff slot.
+    authMissing = false;
+    remaining = 40;
+    await vi.advanceTimersByTimeAsync(185_000);
+    expect(merged.read()).toBe("unresolved");
+    const pausedReads = calls.length;
+    const ordinary = wakeService.retainCurrentPullRequestStatusPoll({
+      cwd: "/repo",
+      headRef: "branch",
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(calls).toHaveLength(pausedReads); // The explicit target's reserve pauses ordinary PR reads.
+    ordinary.unsubscribe();
+    remaining = 80;
+    host = "new.acme.internal";
+    wakeService.invalidate({ cwd: "/repo" });
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(calls.some((call) => call.envOverlay?.GH_HOST === host)).toBe(true);
+    restRemaining = 40;
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(workflow.read()).toBe("unresolved");
+    expect(merged.read()).toBe("unresolved");
+    const restPausedReads = calls.length;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(calls).toHaveLength(restPausedReads);
+    for (const subscription of [merged, duplicate, newlyArmed, closed, workflow, checks])
+      subscription.release();
+    const releasedReads = calls.length;
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(calls).toHaveLength(releasedReads);
+    expect(merged.read()).toBe("unresolved");
+    host = "late.acme.internal";
+    delayed.enabled = true;
+    frozenWakeTime = Date.now();
+    const late = await wakeService.subscribeChecklistWake({ cwd: "/late", condition: pr });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(delayed.started).toBe(true);
+    const armedDuringRead = await wakeService.subscribeChecklistWake({
+      cwd: "/late",
+      condition: pr,
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    late.release();
+    delayed.release();
+    await flushMicrotasks();
+    expect(late.read()).toBe("unresolved");
+    expect(armedDuringRead.availability().available).toBe(false);
+    expect(armedDuringRead.read()).toBe("unresolved"); // Poll and arm have the same injected timestamp.
+    frozenWakeTime = undefined;
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(armedDuringRead.read()).toBe("satisfied");
+    armedDuringRead.release();
+    const lateReads = calls.length;
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(calls).toHaveLength(lateReads);
+    host = null;
+    changeHostDuringPath = true;
+    const transitioning = await wakeService.subscribeChecklistWake({
+      cwd: "/transition",
+      condition: pr,
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(transitioning.read()).toBe("unresolved");
+    expect(calls).toHaveLength(lateReads); // Host changes during path resolution must precede any command.
+    await vi.advanceTimersByTimeAsync(119_000);
+    expect(calls).toHaveLength(lateReads);
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(transitioning.read()).toBe("satisfied");
+    expect(
+      calls.slice(lateReads).every((call) => call.envOverlay?.GH_HOST === "shifted.acme.internal"),
+    ).toBe(true);
+    transitioning.release();
+
+    // Twenty minutes of actual polling: availability spans refreshes, satisfaction does not.
+    commandDelayMs = 1_500;
+    const continuous = await wakeService.subscribeChecklistWake({
+      cwd: "/continuous",
+      condition: pr,
+    });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(continuous.availability().available).toBe(true);
+    let availableSeconds = 0;
+    let unavailableSeconds = 0;
+    for (let second = 0; second < 1_200; second++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      if (continuous.availability().available) availableSeconds++;
+      else unavailableSeconds++;
+      if (active) expect(continuous.read()).toBe("unresolved");
+    }
+    expect({ availableSeconds, unavailableSeconds }).toEqual({
+      availableSeconds: 1_200,
+      unavailableSeconds: 0,
+    });
+    authMissing = true;
+    await vi.advanceTimersByTimeAsync(130_000);
+    expect(continuous.availability().available).toBe(false);
+    expect(continuous.read()).toBe("unresolved");
+    authMissing = false;
+    await vi.advanceTimersByTimeAsync(310_000);
+    expect(continuous.availability().available).toBe(true);
+    // Advancing the clock without executing timers simulates a missed scheduling window.
+    vi.setSystemTime(Date.now() + 190_000);
+    expect(continuous.availability().available).toBe(false);
+    expect(continuous.read()).toBe("unresolved");
+    continuous.release();
+    closedState = "CLOSED";
+    const closedWithoutMerge = await wakeService.subscribeChecklistWake({
+      cwd: "/closed-without-merge",
+      condition: { ...pr, number: 2 },
+    });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(closedWithoutMerge.availability()).toEqual({
+      available: false,
+      reason: "pull request closed without merge",
+    });
+    expect(closedWithoutMerge.read()).toBe("unresolved");
+    closedWithoutMerge.release();
+    wakeService.dispose();
   });
 
   it.skipIf(isPlatform("win32"))(
