@@ -387,6 +387,33 @@ test("browser and desktop tests have exclusive, directory-owned suites", () => {
   ]);
 });
 
+/** Desktop and Windows server suites run only on manual runs; see the heavy-suites test. */
+function assertManualOnlyRouting(jobs, contextFor, selected, all) {
+  // Desktop suites (PWA is the only release channel) and Windows server suites (no Windows
+  // Host yet) run only on manual runs.
+  const manualOnly = [
+    ["desktop_apps", ["desktop-tests-ubuntu", "desktop-tests-windows"]],
+    ["windows_host", ["server-tests-windows", "server-integration-windows"]],
+  ];
+  for (const [output, jobIds] of manualOnly) {
+    const expression = new RegExp(`^      ${output}: \\$\\{\\{ (.+) \\}\\}$`, "m").exec(
+      jobs.get("changes").join("\n"),
+    )[1];
+    for (const [event, ref, expected] of [
+      ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+      ["schedule", "refs/heads/main", false],
+      ["push", "refs/tags/release-26.11.500-beta", false],
+      ["workflow_dispatch", "refs/heads/main", true],
+    ]) {
+      const value = String(runInNewContext(expression, contextFor(event, ref)));
+      const outputs = { ...all, heavy: "true", [output]: value };
+      for (const jobId of jobIds) {
+        assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
+      }
+    }
+  }
+}
+
 test("heavy suites run only on merge groups, manual and nightly runs and release tags", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const trigger = source.split("jobs:", 1)[0];
@@ -441,15 +468,19 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     if (jobId === "changes") continue;
     const job = lines.join("\n");
     const isHeavy = heavyCiJobs.has(jobId);
+    // Consumers of the shared server-stack build also wait for `build`, which itself
+    // needs only `changes` so it never queues behind the required checks.
     assert.match(
       job,
-      isHeavy ? /^    needs: \[changes, format, lint, typecheck\]$/m : /^    needs: changes$/m,
+      isHeavy
+        ? /^    needs: \[changes, format, lint, typecheck(?:, build)?\]$/m
+        : /^    needs: (?:changes|\[changes, build\])$/m,
       jobId,
     );
     // The smoke replaces the full Playwright suite only when routing says so.
     const smoke = jobId === "playwright-smoke";
     assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit" && !smoke, jobId);
-    assert.equal(selected(job, { ...all, heavy: "false" }), !isHeavy, jobId);
+    assert.equal(selected(job, { ...all, heavy: "false" }), !isHeavy && jobId !== "build", jobId);
     // Missing routing outputs fail open to the heavy suites.
     assert.equal(selected(job, all), jobId !== "cli-unit" && !smoke, jobId);
   }
@@ -514,6 +545,7 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     format: "success",
     lint: "success",
     typecheck: "success",
+    build: "success",
   };
   for (const [event, ref] of [
     ["pull_request", "refs/pull/1/merge"],
@@ -555,6 +587,8 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
         { ...completed, lint: "failure" },
         { ...completed, typecheck: "skipped" },
         { ...completed, lint: "failure", typecheck: "skipped" },
+        { ...completed, build: "failure" },
+        { ...completed, build: "skipped" },
       ]) {
         const after = JSON.stringify(
           entries
@@ -589,35 +623,60 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       );
     }
   }
-  // Desktop suites (PWA is the only release channel) and Windows server suites (no Windows
-  // Host yet) run only on manual runs.
-  const manualOnly = [
-    ["desktop_apps", ["desktop-tests-ubuntu", "desktop-tests-windows"]],
-    ["windows_host", ["server-tests-windows", "server-integration-windows"]],
-  ];
-  for (const [output, jobIds] of manualOnly) {
-    const expression = new RegExp(`^      ${output}: \\$\\{\\{ (.+) \\}\\}$`, "m").exec(
-      jobs.get("changes").join("\n"),
-    )[1];
-    for (const [event, ref, expected] of [
-      ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
-      ["schedule", "refs/heads/main", false],
-      ["push", "refs/tags/release-26.11.500-beta", false],
-      ["workflow_dispatch", "refs/heads/main", true],
-    ]) {
-      const value = String(runInNewContext(expression, contextFor(event, ref)));
-      const outputs = { ...all, heavy: "true", [output]: value };
-      for (const jobId of jobIds) {
-        assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
-      }
-    }
-  }
+  assertManualOnlyRouting(jobs, contextFor, selected, all);
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
   assert.match(
     server,
     /- name: Run server unit tests\n\s+if: .*heavy == 'false'.*\n\s+run: npm run test:unit --workspace=@getpaseo\/server/,
   );
+});
+
+test("heavy suites reuse one server-stack build and build locally without it", () => {
+  const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
+  const build = jobs.get("build").join("\n");
+  assert.match(build, /run: npm run build:server$/m);
+  assert.match(
+    build,
+    /uses: actions\/upload-artifact@v4\n\s+with:\n\s+name: server-stack-dist\n[\s\S]*retention-days: 1$/m,
+  );
+  // Windows builds natively; typecheck keeps its own build; cheap-only cli-unit never
+  // overlaps the heavy-only build job.
+  const consumers = [...jobs]
+    .filter(([, lines]) => /^    needs: \[.*\bbuild\]$/m.test(lines.join("\n")))
+    .map(([id]) => id);
+  assert.deepEqual(consumers, [
+    "server-tests-ubuntu",
+    "server-tests-macos",
+    "app-tests",
+    ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
+    "playwright-smoke",
+    ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
+  ]);
+  const unpack = /&dist_unpack\n[\s\S]*?run: (.+)$/m.exec(
+    jobs.get("server-tests-ubuntu").join("\n"),
+  );
+  assert.match(
+    unpack[1],
+    /^tar -xzf .+ && echo "PASEO_PREBUILT_SERVER_STACK=1" >> "\$GITHUB_ENV"$/,
+  );
+  // A consumer builds only when the unpack did not succeed, so a missing artifact fails open.
+  for (const id of consumers) {
+    const lines = jobs.get(id);
+    const job = lines.join("\n");
+    if (/^    steps: \*(playwright|cli)_test_steps$/m.test(job)) continue;
+    assert.match(job, /- [*&]dist_unpack$/m, id);
+    lines.forEach((line, index) => {
+      if (!/^\s+run: npm run build\b/.test(line)) return;
+      assert.equal(
+        lines[index - 1].trim(),
+        "if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}",
+        `${id}: ${line.trim()}`,
+      );
+    });
+  }
+  const runner = readFileSync(new URL("packages/cli/tests/run-all.ts", repoRoot), "utf8");
+  assert.match(runner, /if \(process\.env\.PASEO_PREBUILT_SERVER_STACK === "1"\) \{/);
 });
 
 test("Nix packaging runs on main without allocating pull-request runners", () => {
@@ -716,8 +775,10 @@ test("stable iOS releases upload once and distribute to external testers before 
 test("eight Playwright shards share two-worker coverage", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 26);
+  assert.equal(jobs.size, 27);
   assert.ok(jobs.has("installer-tests"));
+  // The shared server-stack build is a fan-out producer, not a result gate.
+  assert.ok(jobs.has("build"));
   for (let shard = 1; shard <= 8; shard++) {
     const job = jobs.get(`playwright-${shard}`).join("\n");
     assert.match(job, new RegExp(`PLAYWRIGHT_SHARD: "${shard}/8"`));
