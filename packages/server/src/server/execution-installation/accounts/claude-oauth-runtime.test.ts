@@ -42,6 +42,8 @@ interface HarnessOptions {
   setupSigningIn?: boolean;
   /** Other definitions in the installation, such as an account already on full sign-in. */
   others?: InstallationProvider[];
+  /** `false` omits `claudeCoordinatorRefresh` from the config, as installations do by default. */
+  coordinatorRefresh?: boolean;
   /** Real plaintext CLI storage in throwaway directories, read with the real grant reader. */
   custody?: boolean;
   /** Opt the account into coordinator custody with its enable marker. */
@@ -67,6 +69,8 @@ function harness(
   const installationId = randomUUID();
   const config = {
     stateDir,
+    // Most cases cover the opt-in path where the coordinator runs the refresh CLI.
+    ...(options.coordinatorRefresh === false ? {} : { claudeCoordinatorRefresh: true }),
     public: {
       installationId,
       environments: [
@@ -583,6 +587,39 @@ it("recovers only the current enabled binding in the authenticated environment",
   );
   await h.runtime.signOut("one");
   await expect(h.runtime.recover("host", input)).rejects.toThrow();
+});
+
+it("never runs the refresh CLI on recovery unless the installation enables coordinator refresh", async () => {
+  for (const coordinatorRefresh of [false, true]) {
+    const h = harness(
+      (creationId) => ({ provider: "claude", creationId, signIn: "full" }),
+      SUPPORTED,
+      {
+        everywhere: true,
+        coordinatorRefresh,
+        state: (definitionId) => [
+          {
+            definitionId,
+            generation: 1,
+            rotation: 0,
+            signedIn: true,
+            hostGrant: null,
+            policyRevision: 1,
+            digest: null,
+            expiresAt: null,
+            identity: null,
+            checkedAt: null,
+            refresh: null,
+            targets: [],
+          },
+        ],
+      },
+    );
+    // Inside the lead window, where the opt-in path does refresh.
+    h.advance(58 * 60_000);
+    await h.runtime.recover("host", { providerId: h.providerId, configDir: h.configDir });
+    expect(h.cli.refresh).toHaveBeenCalledTimes(coordinatorRefresh ? 1 : 0);
+  }
 });
 
 async function signedInAt(options: HarnessOptions) {
