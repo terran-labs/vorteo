@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { Command } from "commander";
 import { connectToDaemon, getDaemonHost } from "../../utils/client.js";
 import type { CommandError, OutputSchema, SingleResult } from "../../output/index.js";
@@ -42,7 +43,7 @@ export function resolveWorkspaceTitle(input: { title?: string; reset?: boolean }
     throw {
       code: "MISSING_TITLE",
       message: "Title cannot be empty",
-      details: "Usage: paseo workspace rename <workspace-id> <title> | --reset",
+      details: `Usage: ${cliCommand()} workspace rename <workspace-id> <title> | --reset`,
     } satisfies CommandError;
   }
   return title;
@@ -62,7 +63,7 @@ export async function runRenameCommand(
     throw {
       code: "DAEMON_NOT_RUNNING",
       message: `Cannot connect to daemon at ${host}: ${message}`,
-      details: "Start the daemon with: paseo daemon start",
+      details: `Start the daemon with: ${cliCommand()} daemon start`,
     } satisfies CommandError;
   });
   try {

@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import { createHostCommand } from "./commands/host/index.js";
 import { pairCommand } from "./commands/daemon/pair.js";
 import { Command, Option } from "commander";
@@ -51,7 +52,7 @@ export function createCli(): Command {
   const program = new Command();
 
   program
-    .name("paseo")
+    .name(cliCommand())
     .description("Vorteo CLI - control your AI coding agents from the command line")
     .version(VERSION, "-v, --version", "output the version number")
     // Global output options

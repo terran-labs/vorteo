@@ -187,9 +187,7 @@ test("daemon starts with an ignored proxy and writes one redacted warning to dae
       worker.kill("SIGTERM");
       await exited;
     }
-    // The daemon can still be flushing daemon.log or other state as it exits, which makes a
-    // single recursive rmdir race into ENOTEMPTY. Retry briefly instead of failing the test.
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(home, { recursive: true, force: true });
   }
 }, 60_000);
 

@@ -598,25 +598,159 @@ where the overrides apply; workspace scripts still find the binary through the r
 
 ## Dependency signature audit
 
-The `quality` CI job runs `npm audit signatures`. It verifies every lockfile package's registry
-signature and, for packages published with provenance, fetches
-`/-/npm/v1/attestations/<name>@<version>` from the registry. Cloudflare caches that document
-for a year. An edge that cached it in the seconds before the registry attached the publish
-attestation keeps serving a document with only the provenance bundle, and npm fails with:
+The required `lint` job runs `npx --yes npm@11.19.1 audit signatures`. The install still
+uses the npm bundled with Node 22. The audit uses an exact client version because npm
+10.9.9's bundled pacote 19.0.2 rejects valid keyless provenance before cryptographic
+verification. npm 11.19.1's pacote 21.5.1 corrects that guard while retaining registry
+signature, attestation subject, certificate and transparency-log verification.
 
-```
+### Diagnosis of issue 210
+
+**Supported conclusion: a deterministic npm client defect for provenance-only responses.**
+The captured `pkijs@3.4.3` response reproduces the reported error in npm 10.9.9 even with
+the current registry keys. This establishes the client defect; it does not establish the
+exact response seen by every historical runner. The historical variation is consistent
+with different cached attestation responses, but the retained logs cannot prove that
+cause or exclude other service variation. See [issue 210](https://github.com/terran-labs/vorteo/issues/210).
+
+All 14 inspected lint attempts report Node 22.23.4 and npm 10.9.9 in `setup-node` output.
+Times below are the first signature error or successful verification summary, in UTC.
+“Success” means the lint job succeeded, not the entire workflow.
+
+| Run and attempt                                                                                           | Head           | Audit result time            | Node / npm       | Lint result | Runner region  |
+| --------------------------------------------------------------------------------------------------------- | -------------- | ---------------------------- | ---------------- | ----------- | -------------- |
+| [41945083208, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/41945083208/job/126980370136) | `821f751b89d2` | 2026-11-05T01:21:30.2289566Z | 22.23.4 / 10.9.9 | failure     | westus2        |
+| [41945083208, attempt 2](https://github.com/terran-labs/vorteo/actions/runs/41945083208/job/127039312533) | `821f751b89d2` | 2026-11-05T04:00:07.3995903Z | 22.23.4 / 10.9.9 | success     | eastus         |
+| [41979447220, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/41979447220/job/127087523508) | `90a2b7d1173f` | 2026-11-05T07:11:53.1882192Z | 22.23.4 / 10.9.9 | failure     | westus2        |
+| [41979447220, attempt 2](https://github.com/terran-labs/vorteo/actions/runs/41979447220/job/127105813485) | `90a2b7d1173f` | 2026-11-05T07:15:17.1310741Z | 22.23.4 / 10.9.9 | success     | us-west-2      |
+| [42336228120, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/42336228120/job/128297608811) | `8832f8ff7944` | 2026-11-07T04:22:47.1274326Z | 22.23.4 / 10.9.9 | failure     | westus2        |
+| [42336228120, attempt 2](https://github.com/terran-labs/vorteo/actions/runs/42336228120/job/128307060876) | `8832f8ff7944` | 2026-11-07T05:08:08.7603033Z | 22.23.4 / 10.9.9 | success     | centralus      |
+| [42337510337, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/42337510337/job/128299238034) | `9135fde072ff` | 2026-11-07T04:55:36.3428598Z | 22.23.4 / 10.9.9 | failure     | westus2        |
+| [42337510337, attempt 2](https://github.com/terran-labs/vorteo/actions/runs/42337510337/job/128309099628) | `9135fde072ff` | 2026-11-07T05:09:17.1108403Z | 22.23.4 / 10.9.9 | success     | eastus         |
+| [42337675645, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/42337675645/job/128305208039) | `b062806404f4` | 2026-11-07T04:57:07.0898918Z | 22.23.4 / 10.9.9 | failure     | westus2        |
+| [42337675645, attempt 2](https://github.com/terran-labs/vorteo/actions/runs/42337675645/job/128310753304) | `b062806404f4` | 2026-11-07T05:24:57.1626804Z | 22.23.4 / 10.9.9 | success     | westus3        |
+| [42352579393, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/42352579393/job/128343814211) | `26dd6477ee62` | 2026-11-07T07:48:12.1163823Z | 22.23.4 / 10.9.9 | success     | centralus      |
+| [42353229541, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/42353229541/job/128345746054) | `26dd6477ee62` | 2026-11-07T07:58:00.4558156Z | 22.23.4 / 10.9.9 | failure     | westus2        |
+| [42357832190, attempt 1](https://github.com/terran-labs/vorteo/actions/runs/42357832190/job/128359849821) | `f18f5185646d` | 2026-11-07T09:03:26.3719631Z | 22.23.4 / 10.9.9 | failure     | westus2        |
+| [42357832190, attempt 2](https://github.com/terran-labs/vorteo/actions/runs/42357832190/job/128365080990) | `f18f5185646d` | 2026-11-07T09:27:42.2807664Z | 22.23.4 / 10.9.9 | success     | southcentralus |
+
+Each failing attempt prints these first two error lines and exits before oxlint:
+
+```text
 npm error code EMISSINGSIGNATUREKEY
-npm error <name>@<version> has attestations but no corresponding public key(s) can be found
+npm error pkijs@3.4.3 has attestations but no corresponding public key(s) can be found
 ```
 
-The same package's registry signature verified a moment earlier with the same keys, so the
-key list is intact. The failure names one package, repeats only for that package, and depends
-on the Azure region the runner landed in, because each region maps to one Cloudflare colo. A
-rerun passes only by landing elsewhere.
+Each passing attempt reports 2,682 verified registry signatures and 378 verified
+attestations. Six runs passed on attempt 2 at the same head. The merge-group reference
+42352579393 passed at the same head as failing run 42353229541. All seven failures ran in
+`westus2`; none of the seven passes did. That correlation does not identify a particular
+CDN response. No CI rerun was requested for this investigation.
 
-To confirm, fetch the URL from several runners and compare `content-length`, the `cf-ray` colo
-suffix, and the number of `attestations` entries (#7730 has the probe). To fix, remove or
-replace that version in the lockfile and report the URL to npm so they purge it.
+### Registry response and trust sources
+
+On 2026-11-07 at 10:04:49Z, the public endpoints returned:
+
+- [Package metadata](https://registry.npmjs.org/pkijs/3.4.3): two registry signatures,
+  both using `SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U`, with integrity
+  `sha512-V9kOzaItwDgqlryhXysQsAXUEKi5O7kqWUaP3dXI7MLvkPqWWMb4wVb1QAtmEDCKI+XIAINsZoNKMFF7sZb1eg==`.
+- [Attestations](https://registry.npmjs.org/-/npm/v1/attestations/pkijs@3.4.3): one
+  `https://slsa.dev/provenance/v1` bundle, DSSE signature `keyid: ""`, with an embedded
+  certificate and transparency-log material. There was no keyed publish attestation.
+  The response had `CF-Cache-Status: HIT`, `Age: 1458641`, `Content-Length: 10871`,
+  `Cache-Control: public, max-age=31557600` and a `cf-ray` suffix of `SEA`.
+- [Registry keys](https://registry.npmjs.org/-/npm/v1/keys):
+  `SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA`, expired 2025-01-29, and
+  `SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U`, with no expiry. The latter
+  matches both package signatures. The keyless bundle references neither registry key.
+
+The [npm 10.9.9 verifier](https://github.com/npm/cli/blob/v10.9.9/lib/utils/verify-signatures.js)
+first requests `registry.npmjs.org/keys.json` from Sigstore TUF. Only a missing TUF target
+falls back to `/-/npm/v1/keys`. Therefore the registry key endpoint alone does not prove
+which keys CI used. For keyed publish attestations, pacote finds the matching registry
+key and checks its validity at the transparency-log integration time. For keyless
+provenance, `sigstore.verify` uses the bundle's certificate and Sigstore trust material,
+without a registry-key selector.
+
+In [pacote 19.0.2](https://github.com/npm/pacote/blob/v19.0.2/lib/registry.js), the pre-loop
+guard filters out empty key IDs, then throws whenever `attestationRegistryKeys` is empty.
+A provenance-only bundle therefore fails before certificate verification, even when all
+registry signing keys are present. In [pacote 21.5.1](https://github.com/npm/pacote/blob/v21.5.1/lib/registry.js),
+the guard throws only when `attestationKeyIds.length > 0 && !attestationRegistryKeys.length`.
+The loop still rejects unknown keyed signatures, expired keys, mismatched package
+subjects or integrity, and failed Sigstore verification. npm 10.9.10 still has the old guard.
+
+No retained lint log includes attestation or key response bodies, HTTP cache headers,
+or the selected TUF target. The inspected runs have no lint diagnostic artifact; the
+passing merge-group run has only browser results and built server files. Current responses
+cannot reconstruct the historical ones. In particular, we cannot claim every failing run
+received the captured provenance-only response, or that every passing run received a
+keyed publish attestation. The earlier explanation that retries pass only by changing CDN
+edges was stronger than the available evidence supports.
+
+### Configuration and cache
+
+[CI configuration](../.github/workflows/ci.yml) supplies Node `22` and `cache: npm` to
+`actions/setup-node@v4`, resolved in these logs to commit
+`49933ea5288caeca8642d1e84afbd3f7d6820020`. Its
+[cache implementation](https://github.com/actions/setup-node/blob/49933ea5288caeca8642d1e84afbd3f7d6820020/src/cache-utils.ts)
+asks `npm config get cache`; every retained lint log resolves that to the runner's
+`~/.npm`. The restored key includes OS, architecture, package manager and lockfile hash.
+All attempts restored a cache hit, and each failed/passing pair used the same key:
+
+| Runs                                  | Cache key suffix after `node-cache-Linux-x64-npm-`                 |
+| ------------------------------------- | ------------------------------------------------------------------ |
+| 41945083208, 41979447220              | `5d84585e237e642f57851535dc3665b53077fe369de06d284895c8da19ddb52f` |
+| 42336228120, 42337510337, 42337675645 | `4edfd42ea30ff60f19cc2ed973d9af23087018b6f536a87e14654d5f7566f07d` |
+| 42352579393, 42353229541, 42357832190 | `c6ab1a61539edf0b6488003ec7cb1796d4097d8bc871c6a167ca97846f76058f` |
+
+There is no tracked `.npmrc`. The workflow does not set a registry URL or npm config
+environment variables. [setup-node](https://github.com/actions/setup-node/blob/49933ea5288caeca8642d1e84afbd3f7d6820020/src/main.ts)
+only writes registry authentication configuration when `registry-url` is supplied, which
+this job does not do. Runner user/global config contents were not logged, so their exact
+contents cannot be recovered. [npm-retry](../scripts/npm-retry.mjs) inherits the environment
+and invokes `npm ci`; it does not change config, clear caches or wrap the audit command.
+
+npm's cache contains HTTP data and its `_tuf` trust cache. npm-registry-fetch uses default
+HTTP cache semantics unless configured otherwise; pacote passes the same options to the
+attestation fetch. A restored cache can therefore affect response freshness, but an old
+registry-key response cannot repair or cause the empty-key-ID guard on this captured
+bundle: no registry key can match an empty list. Identical cache keys and client versions
+also do not explain the historical pass/fail difference by themselves. Fresh isolated
+cache tests reproduce the defect, so clearing CI caches is not a supported remedy.
+
+### Bounded remedy and verification
+
+The audit command pins npm 11.19.1, whose declared Node support is
+`^20.17.0 || >=22.9.0`, including CI's 22.23.4. Like the existing `npx lockfile-lint`
+invocation, it uses npm's package acquisition. The exact version removes tag drift;
+it does not add a repository-pinned acquisition hash. The inspected
+[npm 11.19.1 tarball](https://registry.npmjs.org/npm/-/npm-11.19.1.tgz) has registry integrity
+`sha512-ztsxKxt/kkIaAs+2i0GU6I+DRmUdrNasxTZKJe9TCdSjKxlhah/4r/hl5ygMD6XAg1qZ9c2TNomR4qgOydp10g==`.
+No custom trust source, package replacement, cache purge, retry loop or ignored failure
+is introduced. Registry and attestation verification remain enabled.
+
+Controlled tests use the captured package, attestation and key responses through a local
+registry fixture with an installed one-package tree and fresh per-case caches. On Node
+22.23.4, the actual npm CLI gives these exit statuses:
+
+| Input                                                     | npm 10.9.9                | npm 11.19.1                   |
+| --------------------------------------------------------- | ------------------------- | ----------------------------- |
+| Original keyless provenance and valid registry signatures | 1, `EMISSINGSIGNATUREKEY` | 0                             |
+| Damaged registry signature                                | 1                         | 1, invalid registry signature |
+| Damaged provenance signature                              | 1                         | 1, invalid attestation        |
+| Unknown nonempty attestation key ID                       | 1                         | 1, `EMISSINGSIGNATUREKEY`     |
+| Missing registry signature                                | 1                         | 1, missing registry signature |
+
+The fixture preserves the real cryptographic verifiers and Sigstore trust update. The
+new client verifies the captured keyless certificate chain and transparency-log evidence;
+negative cases establish CLI failure, not merely internal error collection.
+
+The exact `npx --yes npm@11.19.1 audit signatures` command also passed on the local
+installed dependency tree under Node 22.23.4, verifying 2,676 registry signatures and 373
+attestations. Those local counts differ from the historical Linux CI tree. Raw logs and
+fixture workspaces stay outside Git. This diagnosis does not claim that the package was
+compromised or that historical registry service behavior has been reconstructed.
 
 ## ACP provider catalog versions
 
