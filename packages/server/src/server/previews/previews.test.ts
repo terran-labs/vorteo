@@ -274,6 +274,47 @@ test("a live link is never rendered to a thumbnail", async () => {
   expect(rendered).toBe(0);
 });
 
+test("previews stay inside the workspace they were published in", async () => {
+  const workspaces: Record<string, string | undefined> = {
+    "agent-a1": "wks_a",
+    "agent-a2": "wks_a",
+    "agent-b": "wks_b",
+    "agent-loose": undefined,
+  };
+  const service = new PreviewsService({
+    store,
+    describeAgent: (agentId) => ({ workspaceId: workspaces[agentId] }),
+    onChanged: () => undefined,
+    loopbackBaseUrl: () => null,
+    warn: () => undefined,
+  });
+  const publish = (agentId: string) =>
+    service.publish({ title: "Site", kind: "url", lineage: "site", url: "https://h:1/" }, agentId);
+  const a1 = await publish("agent-a1");
+  const a2 = await publish("agent-a2");
+  const b = await publish("agent-b");
+  const loose = await publish("agent-loose");
+  // The same lineage key is a separate entry, numbered separately, in each workspace.
+  expect([a1.number, a2.number, b.number, loose.number]).toEqual([1, 2, 1, 1]);
+  const ids = async (agentId: string) =>
+    (await service.galleryFor(agentId)).versions.map((version) => version.id);
+  expect(await ids("agent-a2")).toEqual([a1.id, a2.id]);
+  expect(await ids("agent-b")).toEqual([b.id]);
+  // A thread without a workspace sees its own previews and nothing else.
+  expect(await ids("agent-loose")).toEqual([loose.id]);
+  expect(await ids("agent-unknown")).toEqual([]);
+  // Neither the owner's actions from one workspace's card nor an agent's feedback tool
+  // reach another workspace's preview.
+  await expect(
+    service.act({ kind: "rate", versionId: b.id, rating: 5 }, "agent-a1"),
+  ).rejects.toThrow(/not in this workspace/);
+  expect((await store.getVersion(b.id))?.rating).toBeNull();
+  const rated = await service.act({ kind: "rate", versionId: a1.id, rating: 4 }, "agent-a2");
+  expect(rated.gallery.versions.map((version) => version.id)).toEqual([a1.id, a2.id]);
+  const feedback = (await service.feedback({}, "agent-b")) as { versions: { versionId: string }[] };
+  expect(feedback.versions.map((version) => version.versionId)).toEqual([b.id]);
+});
+
 test("retention removes only old versions the owner never touched", () => {
   const version = (number: number, extra: Partial<PreviewVersion> = {}): PreviewVersion => ({
     id: `version-${String(number).padStart(12, "0")}`,

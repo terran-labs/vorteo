@@ -1,6 +1,6 @@
 import type { PreviewVersion } from "@getpaseo/protocol/previews";
 import { expect, test } from "vitest";
-import { buildPairUrl, defaultScope, groupByLineage, sortLineages } from "./model";
+import { buildPairUrl, groupByLineage, scopeVersions, sortLineages } from "./model";
 
 function version(id: string, overrides: Partial<PreviewVersion> = {}): PreviewVersion {
   return {
@@ -52,10 +52,10 @@ test("lineages sort by newest time, or by rating with unrated last and ties by t
   ]);
 });
 
-test("scope defaults to this thread only when the thread published something", () => {
+test("this thread narrows the workspace's previews to what the thread published", () => {
   const versions = [version("a", { agentId: "agent-a" })];
-  expect(defaultScope(versions, "agent-a")).toBe("thread");
-  expect(defaultScope(versions, "agent-b")).toBe("all");
+  expect(scopeVersions(versions, "thread", "agent-b")).toEqual([]);
+  expect(scopeVersions(versions, "all", "agent-b")).toHaveLength(versions.length);
 });
 
 test("pair URLs carry an encoded next that is only the review page or the live URL", () => {
