@@ -369,7 +369,15 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
     };
   }, []);
 
-  const stop = useCallback(async () => {
+  /**
+   * One stop at a time. stop() snapshots the capture, waits, then emits the last partial segment
+   * (or the whole recording in MediaRecorder mode), so overlapping calls each emitted it and
+   * duplicated audio. Unmount always overlaps two stops: the dictation hook's cleanup and this
+   * source's own. Concurrent callers share the in-flight stop.
+   */
+  const stopInFlightRef = useRef<Promise<void> | null>(null);
+
+  const stopCapture = useCallback(async () => {
     refs.current.started = false;
     setVolume(0);
 
@@ -420,6 +428,19 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
       },
     };
   }, [decodeAudioData, emitPcmSegments]);
+
+  const stop = useCallback((): Promise<void> => {
+    if (stopInFlightRef.current) {
+      return stopInFlightRef.current;
+    }
+    const run = stopCapture().finally(() => {
+      if (stopInFlightRef.current === run) {
+        stopInFlightRef.current = null;
+      }
+    });
+    stopInFlightRef.current = run;
+    return run;
+  }, [stopCapture]);
 
   useEffect(() => {
     return () => {

@@ -4,6 +4,15 @@ import { i18n } from "@/i18n/i18next";
 
 const MAX_CHUNKS_PER_FLUSH_TURN = 128;
 const DICTATION_DRAIN_IDLE_TIMEOUT_MS = 30_000;
+/**
+ * Chunks sent beyond the last server acknowledgement. This bounds how much of a long replay sits
+ * unacknowledged in the socket and the server's receive buffer. It does not throttle
+ * transcription: the server acknowledges a chunk when it hands it to speech-to-text, before the
+ * chunk is transcribed. Web segments are about one second each.
+ */
+const MAX_UNACKNOWLEDGED_CHUNKS = 32;
+/** Pause after cancelling stale server streams before a Retry opens a new one. */
+const CANCEL_SETTLE_MS = 500;
 
 const waitForNextFlushTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -59,8 +68,16 @@ export class DictationStreamSender {
   private segments: string[] = [];
   private streamReady = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True while flush() sends; an acknowledgement arriving mid-send must not re-enter it. */
+  private flushing = false;
   private drainWaiters: Array<() => void> = [];
   private clientCleanup: (() => void) | null = null;
+
+  /**
+   * Streams the server may still hold open, including ones whose finish timed out on the client
+   * while the server kept transcribing. Retry cancels all of them before replaying.
+   */
+  private readonly openStreams = new Set<string>();
 
   private startGeneration = 0;
   private startPromise: Promise<void> | null = null;
@@ -99,6 +116,11 @@ export class DictationStreamSender {
     return this.dictationId;
   }
 
+  /** A copy of the buffered segments, for keeping a thread's audio while another is shown. */
+  getSegments(): string[] {
+    return [...this.segments];
+  }
+
   getSegmentCount(): number {
     return this.segments.length;
   }
@@ -131,6 +153,12 @@ export class DictationStreamSender {
     this.resolveDrainWaiters();
   }
 
+  /** Restores segments recovered from device storage so they can be replayed from seq 0. */
+  loadSegments(segments: readonly string[]): void {
+    this.clearAll();
+    this.segments = [...segments];
+  }
+
   enqueueSegment(base64Pcm: string): void {
     this.segments.push(base64Pcm);
 
@@ -161,8 +189,24 @@ export class DictationStreamSender {
       return 0;
     }
 
+    if (this.flushing) {
+      return 0;
+    }
+    this.flushing = true;
+    try {
+      return this.sendAvailable(client, dictationId);
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  private sendAvailable(client: DictationStreamClient, dictationId: string): number {
     let sent = 0;
-    while (this.sendSeq < this.segments.length && sent < MAX_CHUNKS_PER_FLUSH_TURN) {
+    while (
+      this.sendSeq < this.segments.length &&
+      sent < MAX_CHUNKS_PER_FLUSH_TURN &&
+      this.sendSeq - this.acknowledgedSeq <= MAX_UNACKNOWLEDGED_CHUNKS
+    ) {
       const seq = this.sendSeq;
       const audio = this.segments[seq];
       try {
@@ -176,7 +220,10 @@ export class DictationStreamSender {
     }
 
     if (this.hasPendingSegments()) {
-      this.scheduleFlush();
+      // A full window resumes from handleAck; otherwise yield a turn before the next batch.
+      if (this.sendSeq - this.acknowledgedSeq <= MAX_UNACKNOWLEDGED_CHUNKS) {
+        this.scheduleFlush();
+      }
     } else {
       this.resolveDrainWaiters();
     }
@@ -194,6 +241,7 @@ export class DictationStreamSender {
 
     const dictationId = this.createDictationId();
     this.dictationId = dictationId;
+    this.openStreams.add(dictationId);
     this.sendSeq = 0;
     this.acknowledgedSeq = -1;
     this.streamReady = false;
@@ -210,6 +258,15 @@ export class DictationStreamSender {
       this.flush();
     })()
       .catch((error) => {
+        // A start that timed out may still open on the server later; close it so it does not linger.
+        try {
+          if (client.isConnected) {
+            client.cancelDictationStream(dictationId);
+            this.openStreams.delete(dictationId);
+          }
+        } catch {
+          // Best effort: the server also drops the stream when the socket closes.
+        }
         // If starting failed, keep the segments for retry but clear the stream so finish can error cleanly.
         if (this.startGeneration === generation && this.dictationId === dictationId) {
           this.dictationId = null;
@@ -254,7 +311,35 @@ export class DictationStreamSender {
 
     this.flush();
     await this.waitForFlushDrain(finalSeq);
-    return client.finishDictationStream(dictationId, finalSeq);
+    const result = await client.finishDictationStream(dictationId, finalSeq);
+    this.openStreams.delete(dictationId);
+    return result;
+  }
+
+  /**
+   * Cancels every stream the server may still be working on, then waits briefly so the server
+   * drops them before a replay starts. Without this, a Retry after a finish that timed out on the
+   * client could run a second transcription of the same audio beside the first. The protocol
+   * has no cancel acknowledgement, so the wait is a short fixed bound.
+   */
+  async cancelOpenStreams(settleMs = CANCEL_SETTLE_MS): Promise<void> {
+    const client = this.client;
+    const ids = [...this.openStreams];
+    this.resetStreamForReplay();
+    if (!client?.isConnected || ids.length === 0) {
+      return;
+    }
+    for (const id of ids) {
+      try {
+        client.cancelDictationStream(id);
+        this.openStreams.delete(id);
+      } catch {
+        // Still tracked; the next Retry sends the cancel again.
+      }
+    }
+    if (settleMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, settleMs));
+    }
   }
 
   cancel(): void {
@@ -262,6 +347,7 @@ export class DictationStreamSender {
     const dictationId = this.dictationId;
     if (client?.isConnected && dictationId) {
       client.cancelDictationStream(dictationId);
+      this.openStreams.delete(dictationId);
     }
     this.resetStreamForReplay();
   }
@@ -283,6 +369,9 @@ export class DictationStreamSender {
     }
     this.acknowledgedSeq = message.payload.ackSeq;
     this.resolveDrainWaiters();
+    if (this.hasPendingSegments()) {
+      this.flush();
+    }
   }
 
   private invalidateStream(): void {

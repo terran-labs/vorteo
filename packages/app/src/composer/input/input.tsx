@@ -581,6 +581,15 @@ function MessageInputAutoFocus({
   return null;
 }
 
+/**
+ * Stored dictation audio belongs to one thread or draft. Draft composers pass their draft tab id
+ * or new-workspace draft key as the agent id, and may switch Host or Dev before the agent exists,
+ * so the server is left out: a recording follows its draft across an environment change.
+ */
+function resolveDictationRecordingScope(agentId: string | undefined): string | undefined {
+  return agentId ? `dictation:${agentId}` : undefined;
+}
+
 function MessageInputOverlay({
   showDictationOverlay,
   showRealtimeOverlay,
@@ -1702,6 +1711,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       canStart: canStartDictation,
       canConfirm: canConfirmDictation,
       enableDuration: true,
+      // Keeps dictation audio on the device per thread until a transcript is confirmed.
+      recordingScope: resolveDictationRecordingScope(voiceAgentId),
+      recordingServerId: voiceServerId,
     });
 
     const isRealtimeVoiceForCurrentAgent = computeIsRealtimeVoiceForAgent(
@@ -1760,7 +1772,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const handleCancelRecording = useCallback(async () => {
       dictationIntentRef.current = "insert";
-      await cancelDictation();
+      await cancelDictation({ source: "button" });
     }, [cancelDictation]);
 
     const handleAcceptRecording = useCallback(async () => {
@@ -1835,7 +1847,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       resetComposerHeight?.();
     }, [resetComposerHeight]);
 
+    // While dictation is recording, uploading or holding unsent audio, the overlay hides the text
+    // field, but a still-focused field could take Enter. Sending then would leave the recording
+    // behind, so typed sends wait until the dictation is confirmed or discarded.
+    const isDictationPendingRef = useRef(showDictationOverlay);
+    isDictationPendingRef.current = showDictationOverlay;
+
     const handleSendMessage = useCallback(() => {
+      if (isDictationPendingRef.current) {
+        return;
+      }
       const liveValue = textInputRef.current?.getText() ?? valueRef.current;
       if (!preserveHeightOnSubmit) {
         updateLiveTextPresence("");
@@ -1865,19 +1886,20 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       exitFullscreen,
     ]);
 
-    const handleQueueMessage = useCallback(
-      () =>
-        queueMessageImpl({
-          value: textInputRef.current?.getText() ?? valueRef.current,
-          attachments,
-          cwd,
-          onQueue,
-          replaceText,
-          onMinimizeHeight: minimizeInputHeight,
-          exitFullscreen,
-        }),
-      [attachments, cwd, onQueue, replaceText, minimizeInputHeight, exitFullscreen],
-    );
+    const handleQueueMessage = useCallback(() => {
+      if (isDictationPendingRef.current) {
+        return;
+      }
+      queueMessageImpl({
+        value: textInputRef.current?.getText() ?? valueRef.current,
+        attachments,
+        cwd,
+        onQueue,
+        replaceText,
+        onMinimizeHeight: minimizeInputHeight,
+        exitFullscreen,
+      });
+    }, [attachments, cwd, onQueue, replaceText, minimizeInputHeight, exitFullscreen]);
 
     const handleDefaultSendAction = useCallback(() => {
       runDefaultSendAction({
