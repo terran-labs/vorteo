@@ -15,12 +15,13 @@ it("serves populated projects, workspaces, checklists and timelines through the 
   });
   try {
     await client.connect();
-    expect((await client.listProjects()).projects).toHaveLength(3);
+    // Three story projects and three quiet ones, so the settings project list collapses.
+    expect((await client.listProjects()).projects).toHaveLength(6);
     expect((await client.listTerminals("/demo/atlas/design")).terminals).toEqual([]);
     const terminals = client.observeTerminals({ cwd: "/demo/atlas/design" });
     expect((await terminals.ready).terminals).toEqual([]);
     await terminals.release();
-    expect((await client.fetchWorkspaces()).entries).toHaveLength(6);
+    expect((await client.fetchWorkspaces()).entries).toHaveLength(9);
     const agents = await client.fetchAgents();
     // Six demo threads plus two simulated workers under the first thread.
     expect(agents.entries).toHaveLength(8);
@@ -71,6 +72,8 @@ it("serves populated projects, workspaces, checklists and timelines through the 
       "available",
       "available",
       "available",
+      "error",
+      "unavailable",
     ]);
     const asking = agents.entries.filter(({ agent }) => agent.questions?.length);
     expect(new Set(asking.map(({ agent }) => agent.workspaceId)).size).toBe(2);

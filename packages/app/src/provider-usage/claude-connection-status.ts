@@ -1,40 +1,43 @@
 import type { z } from "zod";
 import type { ClaudeSetupConnectionSchema } from "./claude-setup-login";
 
-export function claudeConnectionStatus(
-  connection: z.infer<typeof ClaudeSetupConnectionSchema> | undefined,
-): string {
-  return installationConnectionStatus(connection, "Claude");
+/** How the connect dialog's single status line presents a state. "busy" shows a spinner. */
+export type ConnectionTone = "busy" | "success" | "error" | "neutral";
+export interface ConnectionStatus {
+  tone: ConnectionTone;
+  text: string;
 }
 
 /** Status of one installation-wide connection, for Claude or Codex. */
 export function installationConnectionStatus(
   connection: z.infer<typeof ClaudeSetupConnectionSchema> | undefined,
   provider: "Claude" | "Codex",
-): string {
-  if (!connection) return "Checking connection status…";
+): ConnectionStatus {
+  if (!connection) return { tone: "busy", text: "Checking connection..." };
   const status = sharedStatus(connection, provider);
-  return connection.accountLabel ? `${status} Signed in as ${connection.accountLabel}.` : status;
+  if (status.tone !== "success" || !connection.accountLabel) return status;
+  return { ...status, text: `${status.text} as ${connection.accountLabel}` };
 }
 
 function sharedStatus(
   connection: z.infer<typeof ClaudeSetupConnectionSchema>,
   provider: "Claude" | "Codex",
-): string {
+): ConnectionStatus {
   if (connection.needsSignIn)
-    return `${provider} sign-in expired on the Host. Sign in again to keep Host and Dev working.`;
+    return { tone: "error", text: `${provider} sign-in expired. Sign in again.` };
   const environments = connection.environments.filter((entry) => entry.status !== "excluded");
   if (environments.some((entry) => entry.status === "disconnecting"))
-    return "Disconnecting. Credential removal will finish automatically when connections return.";
-  if (!connection.connected) return "Not connected.";
+    return { tone: "busy", text: "Disconnecting. This finishes when every environment is online." };
+  if (!connection.connected) return { tone: "neutral", text: "Not connected" };
   if (environments.length === 0 && connection.environments.length > 0)
-    return "Connected. Current environment exclusions prevent use.";
+    return { tone: "neutral", text: "Connected, but excluded from every environment" };
   // Host-owned sign-in lists only Dev deliveries; the Host uses its own sign-in directly.
   const hostOnly = connection.needsSignIn !== undefined && connection.environments.length === 0;
   if (
     hostOnly ||
     (environments.length > 0 && environments.every((entry) => entry.status === "ready"))
   )
-    return "Connected and ready.";
-  return "Connected. Synchronization is pending and will retry automatically. You do not need to sign in again.";
+    return { tone: "success", text: "Connected" };
+  // Delivery retries on its own; the owner has nothing to do.
+  return { tone: "busy", text: "Connected. Syncing to your other environments..." };
 }

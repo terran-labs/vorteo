@@ -1,7 +1,13 @@
 import { expect, test, vi } from "vitest";
 import { InstallationSettingsSnapshotSchema } from "@getpaseo/protocol/installation-settings";
 import type { ResolvedPluginSource } from "@getpaseo/protocol/plugin-installation";
-import { openSharedPluginForm } from "./shared-plugin-form-model";
+import { OwnerAccessExpired } from "@/execution-installation/client";
+import {
+  closeSharedPluginForm,
+  openSharedPluginForm,
+  retainedSharedPluginForm,
+  startSharedPluginForm,
+} from "./shared-plugin-form-model";
 
 const resolved: ResolvedPluginSource = {
   kind: "git",
@@ -174,4 +180,41 @@ test("a lost connection is reported outside the form and leaves no inline error"
   expect(await model.submit()).toBe(false);
   expect(reportConnectionLost).toHaveBeenCalledWith(lost);
   expect(model.getState()).toMatchObject({ phase: "review", error: null });
+});
+
+test("a reviewed draft survives the owner gate and saves only through the next server request", async () => {
+  const denied = vi
+    .fn()
+    .mockRejectedValue(
+      new OwnerAccessExpired("Unlock Installation controls in General settings to continue."),
+    );
+  const form = startSharedPluginForm(null, {
+    resolve: async () => resolved,
+    save: denied,
+    reportConnectionLost: vi.fn(),
+  });
+  form.model.setSource("owner/example");
+  await form.model.prepare(snapshot());
+  expect(await form.model.submit()).toBe(false);
+  expect(denied).toHaveBeenCalledOnce();
+  // The gate unmounts the Plugins page while locked; a remount reopens the same draft.
+  const reopened = retainedSharedPluginForm();
+  expect(reopened).toBe(form);
+  expect(reopened?.model.getState()).toMatchObject({
+    source: "owner/example",
+    resolved,
+    phase: "review",
+    error: "Unlock Installation controls in General settings to continue.",
+  });
+  // After access returns, the remounted page supplies its live save, which the server authorizes.
+  const save = vi.fn().mockResolvedValue(undefined);
+  reopened?.updatePorts({ save });
+  expect(await reopened?.model.submit()).toBe(true);
+  expect(save).toHaveBeenCalledWith({
+    expectedRevision: 7,
+    settings: { plugins: [{ id: "example", enabled: true, source: resolved }] },
+  });
+  expect(denied).toHaveBeenCalledOnce();
+  closeSharedPluginForm(form);
+  expect(retainedSharedPluginForm()).toBeNull();
 });

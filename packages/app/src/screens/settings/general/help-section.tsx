@@ -108,6 +108,8 @@ function HelpRow({
       style={[settingsStyles.row, settingsStyles.rowBorder, styles.rowHover]}
       onPress={onPress}
       accessibilityRole={external ? "link" : "button"}
+      accessibilityLabel={label}
+      accessibilityHint={hint}
       testID={testID}
     >
       <View style={styles.title}>

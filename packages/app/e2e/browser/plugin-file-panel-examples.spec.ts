@@ -102,9 +102,9 @@ async function selectFileView(page: Page, view: "Preview" | "Source") {
   const option = page
     .getByTestId("file-preview-mode")
     .filter({ visible: true })
-    .getByRole("button", { name: view, exact: true });
+    .getByRole("radio", { name: view, exact: true });
   await option.click();
-  await expect(option).toHaveAttribute("aria-selected", "true");
+  await expect(option).toHaveAttribute("aria-checked", "true");
 }
 
 async function rememberMarkdownViewAcrossReload(page: Page, view: "Preview" | "Source") {
@@ -206,7 +206,9 @@ test("directory examples mount the PDF frame and write Markdown through the file
     await expect(
       page.getByRole("radio", { name: "Rich Markdown — markdown-panel", exact: true }),
     ).toBeVisible();
-    await expect(page.getByRole("radio")).toHaveCount(2);
+    await expect(
+      page.getByRole("dialog", { name: "Open .md files with", exact: true }).getByRole("radio"),
+    ).toHaveCount(2);
     await captureWideAndCompact(page, testInfo, "markdown-example-picker", async () => {
       // The previous layout's picker animates out (the sheet slides down, the dialog fades), so
       // both pickers are mounted for a moment after a resize.

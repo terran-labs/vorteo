@@ -89,10 +89,11 @@ test("shared choices survive account changes and protect an open editor", async 
     await page.getByTestId("preset-account-shared-one").click();
     await page.getByTestId("preset-manage-profiles").click();
     await expect(page.getByTestId("shared-provider-settings")).toBeVisible();
-    // Preferred choices use the defaults page and its explicit save bar.
+    // Preferred choices use the defaults page and its explicit save bar. The Model defaults row's
+    // text is passive; its Edit defaults button opens the page.
     await page
       .getByTestId("shared-provider-settings")
-      .getByText("Preferred models and reasoning", { exact: true })
+      .getByRole("button", { name: "Edit defaults", exact: true })
       .click();
     await expect(page.getByTestId("agent-profile-page")).toBeVisible();
     await page.getByRole("button", { name: /^Preferred reasoning/ }).click();

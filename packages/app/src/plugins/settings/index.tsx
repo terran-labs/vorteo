@@ -16,6 +16,7 @@ import { PluginInstallationProvider } from "../installation-provider";
 import { SurfaceErrorBoundary } from "../surface-error-boundary";
 import { toPluginTheme } from "../theme";
 import { buildPluginSettingsRoute } from "./routes";
+import { useCloseSettingsDialog } from "@/components/settings/list-summary";
 
 interface SettingsIdentity {
   serverId: string;
@@ -30,10 +31,12 @@ function PluginSettingsMenuItem({
   title,
   disabled,
 }: SettingsIdentity & { title: string; disabled?: boolean }) {
-  const open = useCallback(
-    () => router.push(buildPluginSettingsRoute(serverId, pluginId, screenId)),
-    [serverId, pluginId, screenId],
-  );
+  // The plugin's page replaces the list, so a surrounding Manage dialog closes first.
+  const closeDialog = useCloseSettingsDialog();
+  const open = useCallback(() => {
+    closeDialog();
+    router.push(buildPluginSettingsRoute(serverId, pluginId, screenId));
+  }, [closeDialog, serverId, pluginId, screenId]);
   return (
     <DropdownMenuItem onSelect={open} disabled={disabled}>
       {title}

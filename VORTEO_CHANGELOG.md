@@ -2,6 +2,12 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-14
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## Unreleased - 2026-11-13
 
 ### Maintenance

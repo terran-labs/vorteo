@@ -1,6 +1,14 @@
 import { OwnerLockBadge } from "@/components/settings/owner-lock";
 import { SettingsCloseGesture } from "./settings/close-gesture";
-import { SettingsPaneScope, SettingsCard, SettingsDetailRow } from "@/components/settings";
+import {
+  SettingsAdvancedGroup,
+  SettingsCard,
+  SettingsDetailRow,
+  SettingsGroup,
+  SettingsSectionTrailing,
+} from "@/components/settings";
+import { ResetGroupButton } from "@/screens/settings/appearance/reset-group-button";
+import type { SettingsResetGroup } from "@/hooks/use-settings";
 import { selectSettingsHost } from "@/navigation/settings-presentation";
 import { useHardwareKeyboardPresent } from "@/keyboard";
 import { useAddHost } from "@/hosts/add-host";
@@ -8,22 +16,24 @@ import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
 import { HelpSection } from "@/screens/settings/general/help-section";
-import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
 import { SystemPane } from "@/screens/settings/system/system-pane";
-import { InstallationRestartBanner, InstallationControls } from "@/execution-installation/panel";
+import {
+  InstallationRestartBanner,
+  InstallationControls,
+  InstallationSystemAdvanced,
+} from "@/execution-installation/panel";
+import { UpstreamUpdatesSection } from "@/vorton-updates/upstream-section";
 import { SystemProjectCard } from "@/execution-installation/system-project-card";
 import { WorkspaceDefaultsSection } from "@/screens/settings/general/workspace-defaults-section";
-import { AttentionSection } from "@/screens/settings/general/attention-section";
+import { SystemHealthSection } from "@/screens/settings/general/attention-section";
+import { registerSettingsJump, type SettingsJumpTarget } from "@/screens/settings/settings-jump";
 import { EnvironmentsPane } from "./settings/environments-page";
 import { SkillLibraryContent } from "@/agent-skills/library";
-import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout";
-import { usePanelStore } from "@/stores/panel-store";
 import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { ScrollView } from "@/components/ui/scroll-view";
-import { useWindowDimensions } from "@/appearance/interface-geometry";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -35,7 +45,6 @@ import {
   Palette,
   Server,
   Bot,
-  Bell,
   Plus,
   FolderGit2,
   Sparkles,
@@ -60,7 +69,6 @@ import { type HostProfile } from "@/types/host-connection";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { WindowChromeRegion, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { BackHeader } from "@/components/headers/back-header";
-import { MenuHeader } from "@/components/headers/menu-header";
 import { PageLayout } from "@/components/page-layout";
 import { KeyboardShortcutsSection } from "@/screens/settings/keyboard-shortcuts-section";
 import { EditorSection } from "@/screens/settings/editor-section";
@@ -85,7 +93,6 @@ import { hoverStyle } from "@/styles/hover";
 import {
   floatingPanelStyles,
   FLOATING_PANEL_INSET,
-  FLOATING_PANEL_RADIUS,
   FLOATING_PANEL_CONTROL_HEIGHT,
 } from "@/styles/floating-panel";
 import { THINKING_TONE_NATIVE_PCM_BASE64 } from "@/utils/thinking-tone.native-pcm";
@@ -115,7 +122,9 @@ import { InstallationSettingsContent } from "@/screens/settings/installation-sec
 import { readExecutionInstallation } from "@/execution-installation/policy";
 import {
   SETTINGS_ENTRIES,
+  SETTINGS_GROUP_LABEL_KEYS,
   SETTINGS_SECTIONS,
+  type SettingsGroupName,
   getPane,
   getSection,
   isAvailable,
@@ -124,6 +133,7 @@ import {
   type SettingsSectionId,
 } from "@/settings-catalog/catalog";
 import {
+  SIDEBAR_CONTROL_HEIGHT,
   SettingsScrollPage,
   SettingsSearchBox,
   type ResolvedSettingsEntry,
@@ -132,7 +142,6 @@ import {
 } from "@/screens/settings/settings-scroll-page";
 import { useSettingsNavigation } from "@/screens/settings/use-settings-navigation";
 import { useSettingsSearchShortcut } from "@/screens/settings/use-settings-search-shortcut";
-import { useOpenOnboarding, UPSTREAM_SETUP_ENABLED } from "@/onboarding";
 
 // ---------------------------------------------------------------------------
 // View model
@@ -146,12 +155,10 @@ type IconComponent = ComponentType<{
 
 const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   interface: Palette,
-  privacy: Bell,
   general: Settings,
   providers: Bot,
   agents: Sparkles,
   voice: Mic,
-  environments: Server,
   projects: FolderGit2,
   system: Wrench,
 };
@@ -233,7 +240,11 @@ function useSearchEntries(
       const label = entry.labelKey ? t(entry.labelKey, { defaultValue: entry.label }) : entry.label;
       return {
         id: entry.id,
-        pane: entry.pane,
+        // Rows that render in System's Advanced group jump to the pane that hosts it, so
+        // native jumps (which land on panes, not rows) reach them.
+        pane: (SYSTEM_ADVANCED_SETTINGS as readonly string[]).includes(entry.id)
+          ? systemAdvancedHost(context.hasInstallation)
+          : entry.pane,
         section: getPane(entry.pane)!.section,
         label,
         hint: entry.hintKey ? t(entry.hintKey, { defaultValue: entry.hint }) : entry.hint,
@@ -249,7 +260,7 @@ function useSearchEntries(
         entries.push({
           id: `environment:${host.serverId}`,
           pane: "environments.environments",
-          section: "environments",
+          section: "system",
           label: host.label,
           keywords: ["environment", "host", host.serverId],
           context: contextFor("environments.environments"),
@@ -354,31 +365,12 @@ function LanguageSection({ settings, handleLanguageChange }: LanguageSectionProp
             </DropdownMenuContent>
           </DropdownMenu>
         </View>
-        {UPSTREAM_SETUP_ENABLED && !isNative ? <ShowSetupAgainRow /> : null}
       </View>
     </SettingsSection>
   );
 }
 
-function ShowSetupAgainRow() {
-  const { t } = useTranslation();
-  const openOnboarding = useOpenOnboarding();
-  return (
-    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{t("settings.general.setup.label")}</Text>
-        <Text style={settingsStyles.rowHint}>{t("settings.general.setup.description")}</Text>
-      </View>
-      <Button variant="secondary" onPress={openOnboarding ?? undefined} disabled={!openOnboarding}>
-        {t("settings.general.setup.action")}
-      </Button>
-    </View>
-  );
-}
-
 interface DiagnosticsRowsProps {
-  useLegacyTerminalRenderer: boolean;
-  onUseLegacyTerminalRendererChange: (value: boolean) => void;
   voiceAudioEngine: ReturnType<typeof useVoiceAudioEngineOptional>;
   isPlaybackTestRunning: boolean;
   playbackTestResult: string | null;
@@ -437,7 +429,7 @@ function DiagnosticsRows({
 function LegacyTerminalRow({ context }: { context: PaneContext }) {
   const { t } = useTranslation();
   return (
-    <SettingsSection title="Advanced">
+    <SettingsSection title="Renderer">
       <View style={settingsStyles.card}>
         <View style={settingsStyles.row} testID="legacy-terminal-renderer-row">
           <View style={settingsStyles.rowContent}>
@@ -536,18 +528,15 @@ function normalizeVersion(version: string | null | undefined): string | null {
   return trimmed.replace(/^v/i, "");
 }
 
-/**
- * One card for everything about reaching environments from this device: each
- * host's daemon version, the installation connection check and app diagnostics.
- */
+/** Each host's daemon version, as this device sees it. */
 function ConnectedHostsSection({ context }: { context: PaneContext }) {
   const { t } = useTranslation();
   const hosts = useHosts();
-  const hasInstallation = readExecutionInstallation() !== null;
+  if (hosts.length === 0) return null;
   return (
     <SettingsSection
       title={t("settings.about.connectedHosts")}
-      info="Host versions for each environment and app diagnostics. The connection check lives in System."
+      info="Host versions for each environment. Diagnostics are under Advanced at the end of System."
     >
       <View style={settingsStyles.card}>
         {hosts.map((host, index) => (
@@ -558,17 +547,71 @@ function ConnectedHostsSection({ context }: { context: PaneContext }) {
             clientVersion={context.appVersion}
           />
         ))}
+      </View>
+    </SettingsSection>
+  );
+}
+
+/** This device's diagnostics, inside System's Advanced group. */
+function DiagnosticsSection({ context }: { context: PaneContext }) {
+  return (
+    <SettingsSection title="Diagnostics">
+      <View style={settingsStyles.card}>
         <DiagnosticsRows
-          useLegacyTerminalRenderer={context.settings.useLegacyTerminalRenderer}
-          onUseLegacyTerminalRendererChange={context.onUseLegacyTerminalRendererChange}
           voiceAudioEngine={context.voiceAudioEngine}
           isPlaybackTestRunning={context.isPlaybackTestRunning}
           playbackTestResult={context.playbackTestResult}
           handlePlaybackTest={context.onPlaybackTest}
-          showTopBorder={hosts.length > 0 || hasInstallation}
+          showTopBorder={false}
         />
       </View>
     </SettingsSection>
+  );
+}
+
+/**
+ * System's single Advanced group: device diagnostics, plus Installation controls when there is
+ * an installation. It renders at the end of whichever of the two panes comes last, and opens
+ * for jumps and search hits in either.
+ */
+const SYSTEM_ADVANCED_PANES = ["general.hosts", "maintenance.installation"] as const;
+// System overview rows that live in the group rather than in the overview itself.
+const SYSTEM_ADVANCED_SETTINGS = [
+  "system.overview.customDomain",
+  "system.overview.domain",
+  "maintenance.installation.deliveryMode",
+  "maintenance.upstream.merge",
+] as const;
+function SystemAdvancedGroup({
+  context,
+  installationControls,
+}: {
+  context: PaneContext;
+  installationControls: boolean;
+}) {
+  return (
+    <SettingsAdvancedGroup
+      panes={SYSTEM_ADVANCED_PANES}
+      settingIds={SYSTEM_ADVANCED_SETTINGS}
+      testID="settings-system-advanced"
+    >
+      {/* Domain, live development and upstream merges, formerly behind System's own toggle. */}
+      <InstallationSystemAdvanced />
+      <SettingsSection title="Installation overview">
+        <Text selectable style={settingsStyles.rowHint}>
+          Read-only projects, workspaces and agents across Host and Dev are available at
+          /api/installation/overview. Scripts need a dedicated observer credential issued by Host.
+        </Text>
+      </SettingsSection>
+      <UpstreamUpdatesSection />
+      {installationControls ? (
+        <>
+          <InstallationControls requestId={context.restartRequestId} />
+          <SystemProjectCard />
+        </>
+      ) : null}
+      <DiagnosticsSection context={context} />
+    </SettingsAdvancedGroup>
   );
 }
 
@@ -660,12 +703,19 @@ function SidebarSectionButton({
     onSelect(sectionId);
   }, [onSelect, sectionId]);
   const accessibilityState = useMemo(() => ({ selected: isSelected }), [isSelected]);
+  // React Native Web drops `accessibilityState.selected`; the current section is announced by
+  // `aria-current` instead.
+  const webCurrent = useMemo(
+    () => (isWeb && isSelected ? ({ "aria-current": "location" } as const) : null),
+    [isSelected],
+  );
   const labelStyle = useMemo(
     () => [sidebarStyles.label, isSelected && { color: theme.colors.foreground }],
     [isSelected, theme.colors.foreground],
   );
   return (
     <Pressable
+      {...webCurrent}
       accessibilityRole="button"
       accessibilityState={accessibilityState}
       onPress={handlePress}
@@ -717,20 +767,15 @@ function SettingsSidebar({
   const enableBuiltInDaemonOption = useEnableBuiltInDaemonOption();
   const insets = useSafeAreaInsets();
   const isDesktop = layout === "desktop";
-  const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
-  const { width: viewportWidth } = useWindowDimensions();
-  const visibleSidebarWidth = resolveDesktopSidebarWidth({
-    requestedWidth: sidebarWidth,
-    viewportWidth,
-  });
+  // Settings keeps its own narrow width instead of following the workspace sidebar's, which
+  // the owner sizes for long workspace names. The split layout reserves this width.
   const outerContainerStyle = useMemo(
     () => [
       isDesktop && floatingPanelStyles.surface,
       isDesktop && sidebarStyles.floatingContainer,
       isDesktop ? sidebarStyles.desktopContainer : sidebarStyles.mobileContainer,
-      isDesktop && { width: visibleSidebarWidth - FLOATING_PANEL_INSET * 2 },
     ],
-    [isDesktop, visibleSidebarWidth],
+    [isDesktop],
   );
   const innerContainerStyle = useMemo(
     () => [{ flex: 1 }, isDesktop ? { paddingTop: insets.top } : null],
@@ -739,28 +784,34 @@ function SettingsSidebar({
 
   const sidebarBody = (
     <View style={sidebarStyles.list}>
-      {!isDesktop ? (
-        <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
-          <OwnerLockBadge />
-        </View>
-      ) : null}
-      {(["This device", "Vorteo"] as const).map((group) => (
-        <View key={group}>
-          <Text style={sidebarStyles.groupLabel}>{group}</Text>
-          {sections
-            .filter((section) => getSection(section.id).group === group)
-            .map((section) => (
-              <SidebarSectionButton
-                key={section.id}
-                sectionId={section.id}
-                label={section.label}
-                icon={SECTION_ICONS[section.id]}
-                isSelected={selectedSection === section.id}
-                onSelect={onSelectSection}
-              />
-            ))}
-        </View>
-      ))}
+      {/* The owner lock sits first, above This device, centered across the sidebar. */}
+      <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
+        <OwnerLockBadge />
+      </View>
+      <View {...navigationProps(t("settings.title"))}>
+        {(["This device", "Vorteo"] as const).map((group) => (
+          <View key={group}>
+            <Text {...sidebarGroupHeading} style={sidebarStyles.groupLabel} numberOfLines={1}>
+              {t(SETTINGS_GROUP_LABEL_KEYS[group])}
+            </Text>
+            <View {...listProps}>
+              {sections
+                .filter((section) => getSection(section.id).group === group)
+                .map((section) => (
+                  <View key={section.id} {...listItemProps}>
+                    <SidebarSectionButton
+                      sectionId={section.id}
+                      label={section.label}
+                      icon={SECTION_ICONS[section.id]}
+                      isSelected={selectedSection === section.id}
+                      onSelect={onSelectSection}
+                    />
+                  </View>
+                ))}
+            </View>
+          </View>
+        ))}
+      </View>
       {hasHosts ? null : (
         <View>
           <Pressable
@@ -803,17 +854,13 @@ function SettingsSidebar({
   );
 
   return (
-    <View
-      accessibilityLabel={t("settings.title")}
-      role="navigation"
-      style={outerContainerStyle}
-      testID="settings-sidebar"
-    >
+    <View style={outerContainerStyle} testID="settings-sidebar">
       {isDesktop ? (
         <View style={innerContainerStyle}>
           <View style={sidebarStyles.sidebarDragArea}>
             <TitlebarDragRegion />
             <WindowChromeSafeArea placement="below" />
+            {/* Back and search share one height and sit the same distance from either edge. */}
             <View style={sidebarStyles.modeHeader} testID="settings-mode-header">
               <Button
                 variant="ghost"
@@ -824,10 +871,10 @@ function SettingsSidebar({
                 style={sidebarStyles.backButton}
                 accessibilityLabel={t("settings.backToWorkspace")}
               >
-                Back
+                {t("common.back")}
               </Button>
-              <View style={sidebarStyles.search}>
-                <SettingsSearchBox search={search} fitPlaceholder />
+              <View {...searchLandmarkProps} style={sidebarStyles.search}>
+                <SettingsSearchBox search={search} compact />
               </View>
             </View>
           </View>
@@ -838,9 +885,6 @@ function SettingsSidebar({
           >
             {sidebarBody}
           </ScrollView>
-          <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
-            <OwnerLockBadge />
-          </View>
           <InstallationRestartBanner placement="sidebar" />
           <SidebarIdentityFooter
             onOpenUpdates={openUpdates}
@@ -865,8 +909,6 @@ interface PaneContext {
   isDesktopApp: boolean;
   settings: AppSettings;
   restartRequestId: string | null;
-  focusedSettingId: string | null;
-  focusRequestNonce: number;
   voiceAudioEngine: ReturnType<typeof useVoiceAudioEngineOptional>;
   isPlaybackTestRunning: boolean;
   playbackTestResult: string | null;
@@ -876,7 +918,10 @@ interface PaneContext {
   onPlaybackTest: () => Promise<void>;
   onUseLegacyTerminalRendererChange: (value: boolean) => void;
   onOpenPane: (paneId: string) => void;
+  onJump: (target: SettingsJumpTarget) => void;
   onOpenShortcuts: () => void;
+  /** Whether Installation controls render, which decides where System's Advanced group goes. */
+  hasInstallation: boolean;
 }
 
 type InstallationPaneSection = Parameters<typeof InstallationSettingsContent>[0]["section"];
@@ -899,9 +944,56 @@ function installationPane(section: InstallationPaneSection) {
   );
 }
 
+const DESKTOP_ADVANCED_PANES = ["agents.browserData", "agents.permissions"] as const;
+
+/**
+ * The panes that host matching rows for a search: Browser data renders in Permissions, and
+ * System's Advanced group (diagnostics, installation controls, domain, live development and
+ * upstream rows) renders in Installation controls with an installation, otherwise in
+ * Connected hosts.
+ */
+/** The pane that renders System's Advanced group. */
+function systemAdvancedHost(hasInstallation: boolean): string {
+  return hasInstallation ? "maintenance.installation" : "general.hosts";
+}
+
+function advancedHostPanes(
+  panes: ReadonlySet<string>,
+  entryIds: ReadonlySet<string>,
+  hasInstallation: boolean,
+): Set<string> {
+  const hosts = new Set<string>();
+  if (panes.has("agents.browserData")) hosts.add("agents.permissions");
+  const systemHit =
+    panes.has("general.hosts") ||
+    panes.has("maintenance.installation") ||
+    SYSTEM_ADVANCED_SETTINGS.some((id) => entryIds.has(id));
+  if (systemHit) hosts.add(systemAdvancedHost(hasInstallation));
+  return hosts;
+}
+
+// One stable Reset per device group, so pane renders do not remount its button.
+const RESET_BUTTONS = Object.fromEntries(
+  (["chat", "sending", "openLocation", "editor", "files", "terminal"] as const).map((group) => [
+    group,
+    <ResetGroupButton key={group} group={group} />,
+  ]),
+) as Partial<Record<SettingsResetGroup, ReactNode>>;
+
+/**
+ * Puts a device group's Reset in the header of the pane's section. These pane components render
+ * one section each, which takes the button as its header action.
+ */
+function withReset(group: SettingsResetGroup, pane: ReactNode): ReactNode {
+  return (
+    <SettingsSectionTrailing.Provider value={RESET_BUTTONS[group]}>
+      {pane}
+    </SettingsSectionTrailing.Provider>
+  );
+}
+
 /** Each catalog pane's body. Panes reuse the existing settings components. */
 const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
-  "general.attention": (context) => <AttentionSection onOpenPane={context.onOpenPane} />,
   "general.notifications": () => <DesktopNotificationsSection />,
   "general.installation": () => <InstallationNameSection />,
   "general.about": (context) => (
@@ -910,22 +1002,39 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
       <HelpSection />
     </>
   ),
-  "general.hosts": (context) => <ConnectedHostsSection context={context} />,
-  "privacy.dataSaver": () => <DataSaverSection />,
+  "general.hosts": (context) => (
+    <>
+      <ConnectedHostsSection context={context} />
+      {context.hasInstallation ? null : (
+        <SystemAdvancedGroup context={context} installationControls={false} />
+      )}
+    </>
+  ),
   "accounts.providers": installationPane("providers"),
   "accounts.profiles": installationPane("profiles"),
   "accounts.usage": installationPane("usage"),
   "agents.tools": installationPane("agents"),
   "agents.skills": () => <SkillLibraryContent />,
   "voice.voice": () => <VoicePane />,
-  "agents.metadata": installationPane("metadata"),
-  "agents.browserData": () => <BrowserDataSection />,
-  "agents.permissions": () => <DesktopPermissionsSection />,
-  "chat.chat": () => <ChatSection />,
-  "chat.sending": () => <SendingSection />,
-  "chat.openLocation": () => <OpenLocationSection />,
-  "chat.editor": () => <EditorSection />,
-  "chat.files": () => <FilesSection />,
+  "agents.metadata": (context) => (
+    <SettingsAdvancedGroup testID="settings-agents-advanced">
+      {installationPane("metadata")(context)}
+    </SettingsAdvancedGroup>
+  ),
+  // Browser data and Permissions are desktop-only and rarely changed, so they share one
+  // Advanced group at the end of Interface, rendered from the later of the two panes.
+  "agents.browserData": () => null,
+  "agents.permissions": () => (
+    <SettingsAdvancedGroup panes={DESKTOP_ADVANCED_PANES} testID="settings-interface-advanced">
+      <BrowserDataSection />
+      <DesktopPermissionsSection />
+    </SettingsAdvancedGroup>
+  ),
+  "chat.chat": () => withReset("chat", <ChatSection />),
+  "chat.sending": () => withReset("sending", <SendingSection />),
+  "chat.openLocation": () => withReset("openLocation", <OpenLocationSection />),
+  "chat.editor": () => withReset("editor", <EditorSection />),
+  "chat.files": () => withReset("files", <FilesSection />),
   "chat.shortcuts": (context) => (
     <SettingsSection title="Keyboard">
       <SettingsCard>
@@ -940,8 +1049,12 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   ),
   "terminal.terminal": (context) => (
     <>
-      <TerminalSection />
-      {isNative ? <LegacyTerminalRow context={context} /> : null}
+      {withReset("terminal", <TerminalSection />)}
+      {isNative ? (
+        <SettingsAdvancedGroup testID="settings-terminal-advanced">
+          <LegacyTerminalRow context={context} />
+        </SettingsAdvancedGroup>
+      ) : null}
     </>
   ),
   "terminal.profiles": installationPane("terminals"),
@@ -951,28 +1064,31 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
     <LanguageSection settings={context.settings} handleLanguageChange={context.onLanguageChange} />
   ),
   "workspaces.newWorkspace": () => <WorkspaceDefaultsSection />,
-  "workspaces.projects": installationPane("projects"),
+  // The project list is a bare card; the heading gives it the same rhythm as every other pane.
+  "workspaces.projects": (context) => (
+    <SettingsSection title="Projects">{installationPane("projects")(context)}</SettingsSection>
+  ),
   "workspaces.workspaces": installationPane("workspaces"),
+  // A group inside System: its heading sits over the environment rows and the Connections
+  // pane right after them, spaced like sections so the two read as one group.
   "environments.environments": (context) => (
-    <EnvironmentsPane onHostRemoved={context.onHostRemoved} />
+    <SettingsGroup
+      title="Environments"
+      style={settingsStyles.section}
+      testID="settings-environments-group"
+    >
+      <EnvironmentsPane onHostRemoved={context.onHostRemoved} />
+    </SettingsGroup>
   ),
   "environments.connections": installationPane("connections"),
   "plugins.plugins": installationPane("plugins"),
   "plugins.integrations": () => <IntegrationsSection />,
   "maintenance.installation": (context) => (
-    <>
-      <InstallationControls requestId={context.restartRequestId} />
-      <SystemProjectCard />
-    </>
+    <SystemAdvancedGroup context={context} installationControls />
   ),
+  "system.health": (context) => <SystemHealthSection onFix={context.onJump} />,
   // One view of Host and Dev status, restarts, updates and their technical details.
-  "system.overview": (context) => (
-    <SystemPane
-      restartRequestId={context.restartRequestId}
-      focusedSettingId={context.focusedSettingId}
-      focusRequestNonce={context.focusRequestNonce}
-    />
-  ),
+  "system.overview": (context) => <SystemPane restartRequestId={context.restartRequestId} />,
 };
 
 // ---------------------------------------------------------------------------
@@ -1039,6 +1155,23 @@ export interface SettingsScreenProps {
 
 function showsSettingsPage(view: SettingsView, shortcutsOpen: boolean, searching: boolean) {
   return (view.kind === "section" && !shortcutsOpen) || searching;
+}
+
+/**
+ * While this page is in front and showing its sections, outside controls such as "System needs
+ * attention" jump here instead of pushing another settings page over it.
+ */
+function useSettingsJumpListener(
+  page: { view: SettingsView; shortcutsOpen: boolean; searching: boolean; loading: boolean },
+  jumpTo: (target: SettingsJumpTarget) => void,
+) {
+  const enabled =
+    !page.loading &&
+    page.view.kind === "section" &&
+    showsSettingsPage(page.view, page.shortcutsOpen, page.searching);
+  useFocusEffect(
+    useCallback(() => (enabled ? registerSettingsJump(jumpTo) : undefined), [enabled, jumpTo]),
+  );
 }
 
 export default function SettingsScreen({
@@ -1193,8 +1326,6 @@ export default function SettingsScreen({
       isDesktopApp,
       settings,
       restartRequestId,
-      focusedSettingId: request.entry?.id ?? null,
-      focusRequestNonce: request.nonce,
       voiceAudioEngine,
       isPlaybackTestRunning,
       playbackTestResult,
@@ -1204,7 +1335,9 @@ export default function SettingsScreen({
       onPlaybackTest: handlePlaybackTest,
       onUseLegacyTerminalRendererChange: handleUseLegacyTerminalRendererChange,
       onOpenPane: navigation.openPane,
+      onJump: navigation.jumpTo,
       onOpenShortcuts: openShortcuts,
+      hasInstallation: availability.hasInstallation,
     }),
     [
       appVersion,
@@ -1217,39 +1350,37 @@ export default function SettingsScreen({
       isDesktopApp,
       isPlaybackTestRunning,
       navigation.openPane,
+      navigation.jumpTo,
+      availability.hasInstallation,
       openShortcuts,
       playbackTestResult,
       restartRequestId,
-      request.entry,
-      request.nonce,
       settings,
       voiceAudioEngine,
     ],
   );
+  // The ruled This device and Vorteo headings say where a setting applies, so panes carry no
+  // per-header scope label, and Advanced panes render their own disclosure.
+  // Advanced groups that render rows indexed under another pane keep their host pane visible
+  // when those rows match a search.
+  const hasInstallation = availability.hasInstallation;
+  const searchHostPanes = useCallback(
+    (panes: ReadonlySet<string>, entryIds: ReadonlySet<string>) =>
+      advancedHostPanes(panes, entryIds, hasInstallation),
+    [hasInstallation],
+  );
+  const groupLabel = useCallback(
+    (group: SettingsGroupName) => t(SETTINGS_GROUP_LABEL_KEYS[group]),
+    [t],
+  );
   const renderPane = useCallback(
-    (paneId: string): ReactNode => {
-      const scopes = [
-        ...new Set(
-          SETTINGS_ENTRIES.filter((entry) => entry.pane === paneId).map((entry) => entry.scope),
-        ),
-      ];
-      const labels = scopes.map(
-        (scope) =>
-          ({
-            device: "This device",
-            installation: "All environments",
-            environment: "Per environment",
-          })[scope],
-      );
-      const pane = getPane(paneId);
-      return (
-        <SettingsPaneScope value={labels.join(" · ") || null}>
-          {pane?.group ? <Text style={settingsStyles.sectionHeaderTitle}>{pane.group}</Text> : null}
-          {PANE_RENDERERS[paneId]?.(paneContext) ?? null}
-        </SettingsPaneScope>
-      );
-    },
+    (paneId: string): ReactNode => PANE_RENDERERS[paneId]?.(paneContext) ?? null,
     [paneContext],
+  );
+
+  useSettingsJumpListener(
+    { view, shortcutsOpen, searching, loading: settingsLoading },
+    navigation.jumpTo,
   );
 
   const installedPlugins = useInstalledPlugins();
@@ -1281,6 +1412,8 @@ export default function SettingsScreen({
         selectedResult={navigation.selectedResult}
         onSelectResult={selectResult}
         bottomInset={insets.bottom}
+        groupLabel={groupLabel}
+        searchHostPanes={searchHostPanes}
       />
     </SettingsFocusContext.Provider>
   );
@@ -1296,7 +1429,13 @@ export default function SettingsScreen({
           rightContent={headerSearch}
         />
       ) : (
-        <MenuHeader borderless />
+        // The sidebar owns the top-left corner, so a desktop header would hold nothing but
+        // height. Reserve space only where window controls overlap the page, and keep the drag
+        // region over that space.
+        <View style={desktopStyles.chrome}>
+          <TitlebarDragRegion />
+          <WindowChromeSafeArea placement="below" />
+        </View>
       )}
       {scrollPage}
     </View>
@@ -1350,7 +1489,9 @@ export default function SettingsScreen({
   if (isCompactLayout) {
     return (
       <SettingsCloseGesture onClose={handleBackToWorkspace}>
-        <View style={styles.container}>{detailPage}</View>
+        <View {...mainLandmarkProps} style={styles.container}>
+          {detailPage}
+        </View>
       </SettingsCloseGesture>
     );
   }
@@ -1373,7 +1514,11 @@ export default function SettingsScreen({
           />
         </WindowChromeRegion>
         <WindowChromeRegion corners="top-right">
-          <View style={desktopStyles.contentPane} testID="settings-detail-pane">
+          <View
+            {...mainLandmarkProps}
+            style={desktopStyles.contentPane}
+            testID="settings-detail-pane"
+          >
             {detailPage}
           </View>
         </WindowChromeRegion>
@@ -1451,7 +1596,23 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
+// Landmarks: the section list is navigation, the search field a search region and the page main.
+// React Native Web renders `role`; native has no landmark equivalent.
+const mainLandmarkProps = isWeb ? ({ role: "main" } as const) : {};
+// React Native's Role type lacks "search"; react-native-web passes it through.
+const searchLandmarkProps: object = isWeb ? { role: "search" } : {};
+const listProps = isWeb ? ({ role: "list" } as const) : {};
+const listItemProps = isWeb ? ({ role: "listitem" } as const) : {};
+function navigationProps(label: string) {
+  return isWeb ? ({ role: "navigation", "aria-label": label } as const) : {};
+}
+// Sidebar group labels name the lists under them, one level below the page.
+const sidebarGroupHeading = isWeb
+  ? ({ accessibilityRole: "header", "aria-level": 2 } as const)
+  : ({ accessibilityRole: "header" } as const);
+
 const desktopStyles = StyleSheet.create({
+  chrome: { position: "relative" },
   row: {
     flex: 1,
     flexDirection: "row",
@@ -1467,21 +1628,21 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     overflow: "hidden",
   },
   desktopContainer: {
-    width: SETTINGS_DESKTOP_SIDEBAR_WIDTH,
+    width: SETTINGS_DESKTOP_SIDEBAR_WIDTH - FLOATING_PANEL_INSET * 2,
   },
   scrollBody: {
     flex: 1,
     // Font changes must preserve the sidebar offset, not anchor its group headings.
     ...(isWeb ? { overflowAnchor: "none" as const } : {}),
   },
+  // Fills what Back leaves, so the field is as wide as the row allows.
   search: {
     flex: 1,
     minWidth: 0,
     flexDirection: "row",
-    justifyContent: "flex-end",
     marginLeft: theme.spacing[2],
   },
-  ownerSlot: { minHeight: 84, paddingHorizontal: theme.spacing[2] },
+  ownerSlot: { paddingTop: theme.spacing[1] },
   modeHeader: {
     height: VORTON_HEADER_HEIGHT,
     flexDirection: "row",
@@ -1494,10 +1655,10 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     minWidth: 0,
     justifyContent: "flex-start",
-    borderRadius: FLOATING_PANEL_RADIUS,
-    height: FLOATING_PANEL_CONTROL_HEIGHT,
-    minHeight: FLOATING_PANEL_CONTROL_HEIGHT,
-    paddingHorizontal: theme.spacing[3],
+    borderRadius: SIDEBAR_CONTROL_HEIGHT / 2,
+    height: SIDEBAR_CONTROL_HEIGHT,
+    minHeight: SIDEBAR_CONTROL_HEIGHT,
+    paddingHorizontal: theme.spacing[2],
   },
   sidebarDragArea: {
     position: "relative",
@@ -1529,8 +1690,9 @@ const sidebarStyles = StyleSheet.create((theme) => ({
   },
   touchItem: { minHeight: 44 },
   itemHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  // Distinct from hover, so the current section reads as current, not as under the pointer.
   itemSelected: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
+    backgroundColor: theme.colors.surfaceSidebarSelected,
   },
   label: {
     fontSize: theme.fontSize.base,

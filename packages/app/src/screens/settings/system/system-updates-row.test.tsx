@@ -25,7 +25,8 @@ vi.mock("@/execution-installation/use-installation-upgrades", () => ({
     check: { isPending: false, mutateAsync: mocks.checkInstallation },
   }),
 }));
-vi.mock("react-native", () => ({
+vi.mock("react-native", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-native")>()),
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,

@@ -10,11 +10,11 @@ import type { SettingsPageSection } from "./settings-scroll-page";
 
 /**
  * The section the address names. Host overview addresses
- * (`/settings/hosts/<id>/host`) open Environments.
+ * (`/settings/hosts/<id>/host`) open Environments, which lives in System.
  */
 export function sectionForPath(pathname: string): SettingsSectionId {
   const slug = pathname.split("/")[2] ?? "";
-  return slug === "hosts" ? "environments" : resolveSettingsTarget(slug).section;
+  return slug === "hosts" ? "system" : resolveSettingsTarget(slug).section;
 }
 
 /** `/settings/<section>`, with `?setting=` to land on one row. */

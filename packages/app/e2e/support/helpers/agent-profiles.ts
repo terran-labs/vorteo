@@ -257,11 +257,15 @@ export async function expectAgentProfileOrder(page: Page, names: string[]): Prom
 }
 
 export async function moveAgentProfileUp(page: Page, name: string): Promise<void> {
-  await agentProfileRow(page, name).getByRole("button", { name: "Move up", exact: true }).click();
+  await agentProfileRow(page, name)
+    .getByRole("button", { name: `Move up: ${name}`, exact: true })
+    .click();
 }
 
 export async function moveAgentProfileDown(page: Page, name: string): Promise<void> {
-  await agentProfileRow(page, name).getByRole("button", { name: "Move down", exact: true }).click();
+  await agentProfileRow(page, name)
+    .getByRole("button", { name: `Move down: ${name}`, exact: true })
+    .click();
 }
 
 /**
@@ -275,7 +279,9 @@ export async function removeAgentProfile(page: Page, name: string): Promise<void
     await dialog.accept();
     return message;
   });
-  await agentProfileRow(page, name).getByRole("button", { name: "Remove", exact: true }).click();
+  await agentProfileRow(page, name)
+    .getByRole("button", { name: `Remove: ${name}`, exact: true })
+    .click();
   expect(await dialogMessage).toContain(`Remove "${name}"?`);
   await expect(agentProfileRow(page, name)).toHaveCount(0, { timeout: 30_000 });
 }
@@ -395,7 +401,7 @@ export async function editAgentProfile(
   changes: AgentProfileDraft,
 ): Promise<void> {
   await agentProfileRow(page, name)
-    .getByRole("button", { name: "Edit profile", exact: true })
+    .getByRole("button", { name: `Edit profile: ${name}`, exact: true })
     .click();
   await expect(editModal(page).first()).toBeVisible({ timeout: 30_000 });
   await fillAgentProfileForm(page, changes);
@@ -409,7 +415,7 @@ export async function expectAgentProfileForm(
   expected: { provider?: string; model?: string; mode?: string; notes?: string },
 ): Promise<void> {
   await agentProfileRow(page, name)
-    .getByRole("button", { name: "Edit profile", exact: true })
+    .getByRole("button", { name: `Edit profile: ${name}`, exact: true })
     .click();
   const modal = editModal(page);
   await expect(modal.first()).toBeVisible({ timeout: 30_000 });

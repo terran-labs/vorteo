@@ -82,12 +82,12 @@ async function expectPageHandlesFragment(
 }
 
 async function selectFileView(page: Page, view: "Preview" | "Source"): Promise<void> {
-  const option = page.getByTestId("file-panel-bar").getByRole("button", {
+  const option = page.getByTestId("file-panel-bar").getByRole("radio", {
     name: view,
     exact: true,
   });
   await option.click();
-  await expect(option).toHaveAttribute("aria-selected", "true");
+  await expect(option).toHaveAttribute("aria-checked", "true");
 }
 
 async function expectAbove(upper: Locator, lower: Locator): Promise<void> {
@@ -738,7 +738,7 @@ test.describe("CodeMirror workspace file editing", () => {
     const visibleFilePane = page.getByTestId("workspace-file-pane").filter({ visible: true });
     const toolbar = page.getByTestId("file-panel-bar").filter({ visible: true });
     await expect(visibleFilePane.getByText("First heading", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Preview", exact: true })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Preview", exact: true })).toBeVisible();
     await expect(toolbar.getByLabel(/^File size/)).toBeVisible();
     await expect(toolbar.getByLabel("2 lines")).toBeVisible();
     await writeFile(markdownPath, "# Updated heading\n", "utf8");

@@ -23,7 +23,10 @@ function enrollmentStatusModel(
   read: () => Promise<InstallationEnrollmentStatus | null>,
   restartSummary: () => Promise<null> = async () => null,
   services: Partial<
-    Pick<InstallationClient, "maintenanceServices" | "cancelMaintenanceService" | "recoveryAccess">
+    Pick<
+      InstallationClient,
+      "maintenanceServices" | "cancelMaintenanceService" | "recoveryAccess" | "restoreSession"
+    >
   > = {},
 ) {
   return new InstallationPanelModel({
@@ -117,6 +120,46 @@ test("enrollment status authentication expiry clears observations instead of ret
     enrollmentStatus: null,
     enrollmentRefreshing: false,
   });
+});
+
+test("owner access restored on another page unlocks only after the server confirms this session", async () => {
+  let authenticated = true;
+  let expired = false;
+  let check: Promise<boolean> | null = null;
+  const model = enrollmentStatusModel(
+    async () => {
+      if (expired) throw new OwnerAccessExpired("Owner session expired");
+      return enrollmentStatusFixture;
+    },
+    async () => null,
+    { restoreSession: () => check ?? Promise.resolve(authenticated) },
+  );
+  await model.initialize();
+  expired = true;
+  authenticated = false;
+  await model.refresh();
+  expect(model.getState()).toMatchObject({ unlocked: false, enrollmentStatus: null });
+  // The server still denies this cookie, so polling keeps the page locked.
+  await model.refresh();
+  expect(model.getState()).toMatchObject({ unlocked: false, enrollmentStatus: null });
+  // Another page unlocked the shared session; the server now confirms it.
+  expired = false;
+  authenticated = true;
+  await model.refresh();
+  expect(model.getState()).toMatchObject({
+    unlocked: true,
+    error: null,
+    enrollmentStatus: enrollmentStatusFixture,
+  });
+  // A local lock during a pending check wins over its stale answer.
+  await model.lock();
+  const pending = Promise.withResolvers<boolean>();
+  check = pending.promise;
+  const refreshing = model.refresh();
+  await model.lock();
+  pending.resolve(true);
+  await refreshing;
+  expect(model.getState()).toMatchObject({ unlocked: false, enrollmentStatus: null });
 });
 
 test("saved connections skip setup on reload without unlocking owner controls", async () => {
