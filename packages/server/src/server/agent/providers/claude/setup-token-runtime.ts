@@ -1,5 +1,9 @@
+import { mkdirSync } from "node:fs";
 import { mkdir, lstat } from "node:fs/promises";
-import { readClaudeSetupFile } from "../../../execution-installation/accounts/claude-setup-file.js";
+import {
+  readClaudeSetupFile,
+  writeClaudeSetupFile,
+} from "../../../execution-installation/accounts/claude-setup-file.js";
 import {
   ClaudeSetupDeliveryReceiptSchema,
   setupCredentialDigest,
@@ -12,6 +16,30 @@ import { claudeSignInMode } from "./sign-in-mode.js";
 
 export function claudeSetupTokenStore(configDirectory: string): ClaudeSetupTokenStore {
   return new ClaudeSetupTokenStore({ directory: join(configDirectory, ".vorteo-auth") });
+}
+
+const FULL_SIGN_IN_MARKER = "full-sign-in.json";
+
+/**
+ * Records that this account directory moved from a setup token to full sign-in. Sessions started
+ * before the upgrade still carry the setup-token environment; they read this to switch over.
+ * Not a credential.
+ */
+export function markClaudeAccountFullSignIn(configDirectory: string): void {
+  mkdirSync(configDirectory, { recursive: true, mode: 0o700 });
+  writeClaudeSetupFile(join(configDirectory, ".vorteo-auth", FULL_SIGN_IN_MARKER), {
+    version: 1,
+    signIn: "full",
+  });
+}
+
+export function claudeAccountUpgradedToFullSignIn(configDirectory: string): boolean {
+  try {
+    return readClaudeSetupFile(join(configDirectory, ".vorteo-auth", FULL_SIGN_IN_MARKER)) !== null;
+  } catch {
+    // An unsafe or unreadable marker never changes how a session authenticates.
+    return false;
+  }
 }
 
 export async function readClaudeSetupToken(

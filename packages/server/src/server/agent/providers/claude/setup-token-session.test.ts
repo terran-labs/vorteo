@@ -5,7 +5,7 @@ import pino from "pino";
 import { beforeEach, afterEach, expect, test, vi } from "vitest";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeAgentClient } from "./agent.js";
-import { claudeSetupTokenStore } from "./setup-token-runtime.js";
+import { claudeSetupTokenStore, markClaudeAccountFullSignIn } from "./setup-token-runtime.js";
 import type { ClaudeQueryInput } from "./query.js";
 
 beforeEach(() => vi.stubEnv("VORTEO_INSTALLATION_CLIENT_CONFIG", undefined));
@@ -49,6 +49,54 @@ test("renewal replaces the process credential and resumes the existing conversat
       resume: internal.claudeSessionId,
       env: { CLAUDE_CODE_OAUTH_TOKEN: renewed.accessToken },
     });
+  } finally {
+    await session.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a running session follows its account to full sign-in and resumes the same conversation", async () => {
+  const home = await mkdtemp(join(tmpdir(), "claude-session-upgrade-"));
+  const token = { version: 1, accessToken: `sk-ant-oat01-${"synthetic".repeat(8)}`, createdAt: 1 };
+  const closed = vi.fn();
+  const queryFactory = vi.fn(
+    (_input: ClaudeQueryInput) =>
+      ({ close: closed, return: async () => ({ done: true }) }) as unknown as Query,
+  );
+  const client = new ClaudeAgentClient({
+    logger: pino({ level: "silent" }),
+    queryFactory,
+    resolveBinary: async () => "/not-executed",
+    runtimeSettings: { env: { CLAUDE_CONFIG_DIR: home } },
+  });
+  const session = await client.createSession({ provider: "claude", cwd: home });
+  const internal = session as unknown as {
+    ensureQuery(): Promise<Query>;
+    claudeSessionId: string | null;
+  };
+  try {
+    await claudeSetupTokenStore(home).write(token);
+    await internal.ensureQuery();
+    expect(queryFactory.mock.calls[0]![0].options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe(
+      token.accessToken,
+    );
+    internal.claudeSessionId = "11111111-1111-4111-8111-111111111111";
+    // The daemon's upgrade marks the directory, then the setup token is withdrawn.
+    markClaudeAccountFullSignIn(home);
+    await claudeSetupTokenStore(home).remove();
+    await internal.ensureQuery();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(queryFactory).toHaveBeenCalledTimes(2);
+    const upgraded = queryFactory.mock.calls[1]![0].options;
+    expect(upgraded.resume).toBe(internal.claudeSessionId);
+    expect(upgraded.env).toMatchObject({
+      CLAUDE_CONFIG_DIR: home,
+      VORTEO_CLAUDE_SIGN_IN: "full",
+      CLAUDE_CODE_OAUTH_TOKEN: "",
+    });
+    expect(upgraded.env).not.toHaveProperty("CLAUDE_SECURESTORAGE_CONFIG_DIR");
+    await internal.ensureQuery();
+    expect(queryFactory).toHaveBeenCalledTimes(2);
   } finally {
     await session.close();
     await rm(home, { recursive: true, force: true });

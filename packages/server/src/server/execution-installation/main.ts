@@ -179,7 +179,11 @@ function activateSynchronization() {
   });
   synchronizing = true;
 }
-const claudeSetup = createClaudeSetupRuntime(config, settings, assertRegistrationReadiness);
+// Assigned below; the setup-token flow stays out of an account's full sign-in upgrade.
+let upgradingClaudeAccount: (definitionId: string) => boolean = () => false;
+const claudeSetup = createClaudeSetupRuntime(config, settings, assertRegistrationReadiness, {
+  signInBlocked: (definitionId) => upgradingClaudeAccount(definitionId),
+});
 const host = config.public.environments.find((environment) => environment.kind === "host");
 if (!host) throw new Error("Installation Host identity is missing");
 const coordinatorRequests = createHostReconciliationLedger(config, configFile, host.serverId);
@@ -248,8 +252,9 @@ const providerSecretsTimer = setInterval(() => {
 providerSecretsTimer.unref();
 // Opt-in: Host-owned refresh for full sign-in Claude accounts (`claudeHostRefresh: true`).
 const claudeOAuth = claudeHostRefreshEnabled(config)
-  ? createClaudeOAuthRuntime(config, settings, assertRegistrationReadiness)
+  ? createClaudeOAuthRuntime(config, settings, assertRegistrationReadiness, { setup: claudeSetup })
   : undefined;
+if (claudeOAuth) upgradingClaudeAccount = claudeOAuth.upgrading;
 const claudeOAuthTimer = claudeOAuth
   ? setInterval(() => {
       if (!synchronizing) return;

@@ -816,6 +816,7 @@ export async function requestInstallationOwner(
       "snapshots/query",
       "upgrades/query",
       "claude/oauth/read",
+      "claude/oauth/upgrade/read",
     ].includes(path) &&
     response.ok &&
     !response.headers.get("content-type")?.includes("application/json")

@@ -25,10 +25,16 @@ import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.j
 const logger = pino({ name: "vorteo-installation" });
 
 /** Owner-only coordinator service. It never exposes the canonical credential through an API. */
+interface SetupRuntimeOptions {
+  /** True while another flow, such as a full sign-in upgrade, owns this account's sign-in. */
+  signInBlocked?: (definitionId: string) => boolean;
+}
+
 export function createClaudeSetupRuntime(
   config: InstallationConfig,
   settings: InstallationSettingsService,
   assertRegistrationReadiness?: (target: "host" | "container-daemon") => void,
+  options: SetupRuntimeOptions = {},
 ) {
   const assertReady = createInstallationRegistrationAdmission(config, assertRegistrationReadiness);
   const configuration = structuredClone(config);
@@ -86,7 +92,8 @@ export function createClaudeSetupRuntime(
       const { snapshot, selected } = definition(definitionId);
       return {
         revision: snapshot.revision,
-        removed: selected.removed === true,
+        // An account upgraded to full sign-in keeps no setup token: reconcile withdraws it.
+        removed: selected.removed === true || selected.accountSetup?.signIn === "full",
         targets: Object.entries(selected.bindings).map(([serverId, providerId]) => ({
           serverId,
           providerId,
@@ -168,8 +175,14 @@ export function createClaudeSetupRuntime(
       };
     },
     start: async (id: string) => {
+      if (options.signInBlocked?.(id)) throw new ClaudeSetupDeliveryError();
       await prepare(id);
       return login.start(id);
+    },
+    /** Whether a setup-token sign-in for this account is still running. */
+    signingIn: (id: string) => {
+      const status = login.read(id).status;
+      return status === "starting" || status === "waiting" || status === "verifying";
     },
     submit: (id: string, attemptId: string, code: string) => login.submitCode(id, attemptId, code),
     cancel: (id: string, attemptId: string) => login.cancel(id, attemptId),

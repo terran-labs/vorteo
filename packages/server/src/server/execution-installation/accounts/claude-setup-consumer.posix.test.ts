@@ -20,6 +20,7 @@ import { createRequireBearerMiddleware, hashDaemonPassword } from "../../auth.js
 import { readInstallationSettings } from "../settings/projection.js";
 import type { InstallationSettingsAdmission } from "../settings/admission.js";
 import { mountClaudeSetupConsumer } from "./claude-setup-consumer.js";
+import { upgradeClaudeAccount } from "../../../services/provider-login/create-account.js";
 
 test("authenticated consumer writes only the policy-bound account and rejects excluded/stale deliveries", async () => {
   const home = await mkdtemp(join(tmpdir(), "claude-consumer-http-"));
@@ -146,6 +147,100 @@ test("authenticated consumer writes only the policy-bound account and rejects ex
         resolve();
       }),
     );
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("an account upgraded to full sign-in refuses setup tokens and deletes its old one", async () => {
+  const home = await mkdtemp(join(tmpdir(), "claude-consumer-upgrade-"));
+  const creationId = randomUUID();
+  const providerId = `claude-account-${creationId}`;
+  const binding = {
+    installationId: randomUUID(),
+    serverId: "dev",
+    environment: "container" as const,
+    revision: 1,
+  };
+  const initial = MutableDaemonConfigSchema.parse({
+    mcp: { injectIntoAgents: false },
+    sharedProviderPreferences: {
+      version: 1,
+      revision: 1,
+      providers: {},
+      legacyProfiles: {},
+      installation: binding,
+    },
+  });
+  const definition = {
+    id: "one",
+    providerType: "claude",
+    accountSetup: { provider: "claude" as const, creationId } as {
+      provider: "claude";
+      creationId: string;
+      signIn?: "full";
+    },
+    bindings: { dev: providerId },
+    policy: { enabled: true, label: "Claude 1" },
+  };
+  const authority: InstallationSettingsAdmission = {
+    ...binding,
+    installationInstructions: "",
+    settings: { ...readInstallationSettings(initial), providerDefinitions: [definition] },
+  };
+  const store = new DaemonConfigStore(home, initial, undefined, {
+    installationSettingsReader: { read: async () => authority },
+  });
+  const app = express();
+  app.use(express.json());
+  mountClaudeSetupConsumer(app, { paseoHome: home, store });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("listener unavailable");
+  const url = `http://127.0.0.1:${address.port}/api/installation/claude/setup-token`;
+  const credential = {
+    version: 1,
+    accessToken: `sk-ant-oat01-${"synthetic".repeat(8)}`,
+    createdAt: 1,
+  };
+  const delivery = {
+    installationId: binding.installationId,
+    serverId: "dev",
+    definitionId: "one",
+    providerId,
+    revision: 1,
+    policyRevision: 1,
+    credential,
+  };
+  const request = (body: unknown) =>
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    expect((await request(delivery)).status).toBe(200);
+    const accountHome = join(home, "claude-accounts", providerId);
+    const artifact = join(accountHome, ".vorteo-auth", "claude-setup-token.json");
+    await writeFile(join(accountHome, "history-preserved"), "history");
+    expect(JSON.parse(await readFile(artifact, "utf8"))).toEqual(credential);
+
+    authority.revision = 2;
+    definition.accountSetup.signIn = "full";
+    const upgraded = { ...delivery, revision: 2, policyRevision: 2 };
+    expect((await request(upgraded)).status).toBe(409);
+    expect(JSON.parse(await readFile(artifact, "utf8"))).toEqual(credential);
+    // Until this environment's own binding switches, the setup token is its only credential.
+    expect((await request({ ...upgraded, credential: null })).status).toBe(409);
+    expect(JSON.parse(await readFile(artifact, "utf8"))).toEqual(credential);
+    await upgradeClaudeAccount({ paseoHome: home, store, creationId, name: "Claude 1" });
+    const withdrawn = await request({ ...upgraded, credential: null });
+    expect(withdrawn.status).toBe(200);
+    expect(await withdrawn.json()).toMatchObject({ phase: "applied", active: false });
+    await expect(readFile(artifact)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(accountHome, "history-preserved"), "utf8")).toBe("history");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(home, { recursive: true, force: true });
   }
 });

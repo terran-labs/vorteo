@@ -77,12 +77,14 @@ import {
 import {
   CodexAccountCreateRequestSchema,
   ClaudeAccountCreateRequestSchema,
+  ClaudeAccountUpgradeRequestSchema,
   ProviderLoginReadRequestSchema,
   ProviderLoginStartRequestSchema,
   ProviderLoginCancelRequestSchema,
   ProviderLoginSubmitRequestSchema,
   CodexAccountCreateResponseSchema,
   ClaudeAccountCreateResponseSchema,
+  ClaudeAccountUpgradeResponseSchema,
   ProviderLoginReadResponseSchema,
   ProviderLoginStartResponseSchema,
   ProviderLoginCancelResponseSchema,
@@ -3640,6 +3642,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderResetConfirmRequestSchema,
   CodexAccountCreateRequestSchema,
   ClaudeAccountCreateRequestSchema,
+  ClaudeAccountUpgradeRequestSchema,
   ProviderPreviewRemovalRequestSchema,
   ProviderRemoveRequestSchema,
   ProviderLoginReadRequestSchema,
@@ -4112,6 +4115,8 @@ export const ServerInfoStatusPayloadSchema = z
         codexAccountCreation: z.boolean().optional(),
         claudeAccountCreation: z.boolean().optional(),
         claudeFullSignIn: z.boolean().optional(),
+        // COMPAT(claudeSignInUpgrade): added after v26.11.206, remove gate after 2027-05-02.
+        claudeSignInUpgrade: z.boolean().optional(),
         // COMPAT(codexInstallationSignIn): receives Host-owned Codex sign-in projections.
         codexInstallationSignIn: z.boolean().optional(),
         // COMPAT(providerSecretDelivery): receives coordinator-held provider API keys and tokens.
@@ -7667,6 +7672,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProviderQuotaObservationResponseMessageSchema,
   CodexAccountCreateResponseSchema,
   ClaudeAccountCreateResponseSchema,
+  ClaudeAccountUpgradeResponseSchema,
   ProviderPreviewRemovalResponseSchema,
   ProviderRemoveResponseSchema,
   ProviderLoginReadResponseSchema,

@@ -77,6 +77,22 @@ export const ClaudeAccountCreateResponseSchema = z.object({
   type: z.literal("provider.claude.create_account.response"),
   payload: z.object({ requestId: z.string(), providerId: z.string(), name: z.string() }),
 });
+/**
+ * Switches an existing managed Claude binding to full web sign-in in place, keeping its provider
+ * ID and CLAUDE_CONFIG_DIR. The daemon applies it only after the installation definition already
+ * records `signIn: "full"`, which the coordinator writes after a verified sign-in. A missing
+ * binding is created as a full sign-in account. Requires `features.claudeSignInUpgrade`.
+ */
+export const ClaudeAccountUpgradeRequestSchema = z.object({
+  type: z.literal("provider.claude.upgrade_account.request"),
+  requestId: z.string(),
+  creationId: z.string().uuid(),
+  name: z.string().min(1).max(100),
+});
+export const ClaudeAccountUpgradeResponseSchema = z.object({
+  type: z.literal("provider.claude.upgrade_account.response"),
+  payload: z.object({ requestId: z.string(), providerId: z.string(), name: z.string() }),
+});
 export const ProviderLoginSubmitRequestSchema = z.object({
   type: z.literal("provider.login.submit_code.request"),
   requestId: z.string(),

@@ -12,6 +12,33 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixed
+
+- The Claude sign-in upgrade keeps Dev working while it switches: Dev keeps its setup token until its own account has moved to full sign-in, instead of giving it up during the seconds before settings reach it, and a fenced Dev no longer risks being left with no credential.
+- A first upgrade refuses a Claude login that another connected Claude account already uses, so Claude 1 cannot be signed into Claude 2's subscription by mistake. The upgrade also checks again that every daemon supports it before switching, and cancelled or failed attempts clear their pending state.
+
+## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Upgrade a setup-token Claude account to full web sign-in in place from its connection panel. The account keeps its provider ID, directory, conversation history, profiles and Host and Dev bindings, and starts reporting usage. The app forces a usage refresh past the daemon cache as soon as the upgrade completes.
+- The coordinator signs the account in on the Host in its own directory and switches the shared definition only after the sign-in verifies. A sign-in to a different account than one already recorded is refused and signed out again.
+- Daemons advertise `claudeSignInUpgrade`, switch their binding through `provider.claude.upgrade_account` once the definition records full sign-in, accept the setup-token withdrawal that deletes the old token, and let running sessions adopt the full sign-in on their next turn with the same conversation.
+
+### Known limitations
+
+- The upgrade needs Host-owned refresh and every daemon advertising the capability. Unmanaged daemons have no upgrade. Live acceptance on the installation is pending.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
 ### Changed
 
 - Settings no longer jumps. Pop-in warning and saved cards are gone: transient results show as toasts, ongoing sync shows in a fixed two-line status line, and loading panes hold their space. The page relies on browser scroll anchoring, with a small fallback for browsers without it, and the three-second snap-back after a jump is gone.
