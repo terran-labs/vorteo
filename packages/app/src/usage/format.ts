@@ -130,8 +130,13 @@ export function formatResetTime(
   if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
   const time = formatTimeOfDay(at);
   const locale = i18n.resolvedLanguage;
-  if (diffMs < DAY_MS) return time;
-  if (diffMs < 7 * DAY_MS) {
+  // Vorteo #201: local calendar cutoffs preserve wall-clock boundaries across DST.
+  const dayCutoff = new Date(now);
+  dayCutoff.setDate(dayCutoff.getDate() + 1);
+  const weekCutoff = new Date(now);
+  weekCutoff.setDate(weekCutoff.getDate() + 7);
+  if (at < dayCutoff) return time;
+  if (at < weekCutoff) {
     const weekday = at.toLocaleDateString(locale, { weekday: "short" });
     return t("providerUsage.timing.resetsAtWeekday", { weekday, time });
   }

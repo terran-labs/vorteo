@@ -1712,8 +1712,9 @@ export function readEventIdentifiers(message: SDKMessage): EventIdentifiers {
 }
 
 export class ClaudeAgentClient implements AgentClient {
-  private readonly availabilityShutdown = new AbortController();
+  private readonly shutdownController = new AbortController();
   private readonly availabilityProbes = new Set<Promise<boolean>>();
+  private readonly catalogRefreshes = new Set<Promise<ProviderCatalog>>();
   private readonly discoverModels: typeof discoverClaudeModels;
   readonly provider = "claude" as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
@@ -1811,15 +1812,33 @@ export class ClaudeAgentClient implements AgentClient {
     _options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
+    const lifetime = this.shutdownController.signal;
+    const signal = context ? AbortSignal.any([context.signal, lifetime]) : lifetime;
+    signal.throwIfAborted();
+    const refresh = this.refreshCatalog(signal, context);
+    this.catalogRefreshes.add(refresh);
+    try {
+      return await refresh;
+    } finally {
+      this.catalogRefreshes.delete(refresh);
+    }
+  }
+
+  private async refreshCatalog(
+    signal: AbortSignal,
+    context?: ProviderRefreshContext,
+  ): Promise<ProviderCatalog> {
     // Claude exposes a global catalog here; cwd/force are intentionally irrelevant.
     let claudeCodeVersion: string | undefined;
     try {
       claudeCodeVersion = await runProviderRefreshActivity(context, "version", () =>
-        this.resolveVersion(context?.signal),
+        this.resolveVersion(signal),
       );
     } catch (error) {
+      signal.throwIfAborted();
       this.logger.warn({ err: error }, "Failed to resolve Claude Code version for model catalog");
     }
+    signal.throwIfAborted();
     const env = this.buildProviderEnv();
     let discoveredModelIds = new Set<string>();
     try {
@@ -1828,7 +1847,7 @@ export class ClaudeAgentClient implements AgentClient {
           resolveBinary: this.resolveBinary,
           runtimeSettings: this.runtimeSettings,
           env,
-          signal: context?.signal,
+          signal,
         }),
       );
       discoveredModelIds = new Set(
@@ -1837,12 +1856,13 @@ export class ClaudeAgentClient implements AgentClient {
           .filter((id): id is string => id !== null),
       );
     } catch (error) {
-      context?.signal.throwIfAborted();
+      signal.throwIfAborted();
       this.logger.warn(
         { err: error },
         "Claude model discovery failed; omitting discovery-required models",
       );
     }
+    signal.throwIfAborted();
     const models = await runProviderRefreshActivity(context, "settings", () =>
       getClaudeModelsWithSettings(
         this.logger,
@@ -1851,6 +1871,7 @@ export class ClaudeAgentClient implements AgentClient {
         discoveredModelIds,
       ),
     );
+    signal.throwIfAborted();
     const modeCatalog = claudeModeCatalog(env);
     return {
       models,
@@ -2016,7 +2037,7 @@ export class ClaudeAgentClient implements AgentClient {
   }
 
   async isAvailable(signal?: AbortSignal): Promise<boolean> {
-    const lifetime = this.availabilityShutdown.signal;
+    const lifetime = this.shutdownController.signal;
     const probeSignal = signal ? AbortSignal.any([signal, lifetime]) : lifetime;
     probeSignal.throwIfAborted();
     const probe = this.checkAvailability(probeSignal);
@@ -2029,8 +2050,8 @@ export class ClaudeAgentClient implements AgentClient {
   }
 
   async shutdown(): Promise<void> {
-    this.availabilityShutdown.abort();
-    await Promise.allSettled(this.availabilityProbes);
+    this.shutdownController.abort();
+    await Promise.allSettled([...this.availabilityProbes, ...this.catalogRefreshes]);
   }
 
   private async checkAvailability(signal: AbortSignal): Promise<boolean> {
@@ -2142,11 +2163,14 @@ export async function resolveClaudeCodeVersion(
   runtimeSettings?: ProviderRuntimeSettings,
   signal?: AbortSignal,
 ): Promise<string> {
+  signal?.throwIfAborted();
   const launch = await resolveProviderLaunch({
     commandConfig: runtimeSettings?.command,
     defaultBinary: "claude",
   });
+  signal?.throwIfAborted();
   const availability = await checkProviderLaunchAvailable(launch);
+  signal?.throwIfAborted();
   if (!availability.available) {
     throw new Error("Claude binary not found while resolving Claude Code version");
   }
