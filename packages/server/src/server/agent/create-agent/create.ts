@@ -28,7 +28,12 @@ import type {
   CreatePaseoWorktreeWorkflowResult,
 } from "../../worktree-session.js";
 import type { AgentAttachment, FirstAgentContext } from "../../messages.js";
-import type { AgentManager, CreateAgentOptions, ManagedAgent } from "../agent-manager.js";
+import {
+  ProfileSwitchError,
+  type AgentManager,
+  type CreateAgentOptions,
+  type ManagedAgent,
+} from "../agent-manager.js";
 import type {
   AgentPromptInput,
   AgentRunOptions,
@@ -199,6 +204,7 @@ export async function resolveProfileSwitchConfig(
   config: AgentSessionConfig,
   preservation?: {
     sourceProvider: AgentSessionConfig["provider"];
+    sourceModel?: string | null;
     settings: Pick<AgentSessionConfig, "modeId" | "thinkingOptionId" | "featureValues">;
   },
 ): Promise<AgentSessionConfig> {
@@ -214,6 +220,15 @@ export async function resolveProfileSwitchConfig(
   if (preservation) {
     if (resolved.provider !== config.provider)
       throw new Error("The selected profile belongs to a different target account.");
+    // Account moves continue the selected execution model, even when it was previously unset.
+    // Keep this precedence local: ordinary creation and app switches retain profile defaults.
+    resolved.model = config.model ?? resolved.model ?? preservation.sourceModel ?? undefined;
+    if (!resolved.model) {
+      throw new ProfileSwitchError(
+        "Cannot establish the source model. Load the source thread to record its runtime model, or select an explicit model or a profile with a model before switching accounts.",
+        "incompatible-target",
+      );
+    }
     Object.assign(resolved, structuredClone(preservation.settings));
     await dependencies.agentManager.validateProfileSwitchSettings(
       preservation.sourceProvider,

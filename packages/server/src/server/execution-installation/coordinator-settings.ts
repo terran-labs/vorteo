@@ -78,6 +78,7 @@ export const COORDINATOR_SETTINGS: readonly {
 }[] = [
   { key: "claudeHostRefresh", displaySafe: true },
   { key: "codexHostRefresh", displaySafe: true },
+  { key: "hostReleaseCleanup", displaySafe: true },
   { key: "previewBrokerDeployment", displaySafe: true, reviewed: "broker" },
   { key: "previewBroker", displaySafe: true, reviewed: "broker" },
 ];

@@ -1,3 +1,6 @@
+import { groupInstallationProviders } from "../../src/screens/settings/shared-providers-model";
+import { waitForSettingsConvergence } from "../support/helpers/settings-convergence";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import { openSettings } from "../support/helpers/app";
 import { completeInstallationSetupGuide } from "../support/helpers/installation-setup-guide";
 import {
@@ -3384,15 +3387,13 @@ test("shared provider policy projects through authenticated admission without mo
   });
   expect(response.ok()).toBe(true);
   const saved = InstallationSettingsSnapshotSchema.parse(await response.json());
-  await expect
-    .poll(
-      async () =>
-        Object.values((await read()).sources).every(
-          (status) => status.appliedRevision === saved.revision && status.pendingRevision === null,
-        ),
-      { timeout: 60_000 },
-    )
-    .toBe(true);
+  await waitForSettingsConvergence({
+    read,
+    poll: expect.poll,
+    minimumRevision: saved.revision,
+    providerDefinitions,
+    serverIds: config.public.environments.map((environment) => environment.serverId),
+  });
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
     try {
@@ -3422,53 +3423,68 @@ test("shared account setup preserves the catalog through retries and local remov
   page,
 }, testInfo) => {
   await page.goto(origin);
-  await openOwnerUnlock(page);
-  await page.getByTestId("installation-password").fill(ownerPassword);
-  await page.getByTestId("installation-unlock").click();
-  await expect(page.getByTestId("installation-password")).not.toBeVisible();
-  const read = async () =>
-    InstallationSettingsSnapshotSchema.parse(
+  const unlock = page.getByTestId("installation-welcome").filter({ visible: true });
+  await expect(unlock).toBeVisible();
+  const password = unlock.getByLabel("Owner password", { exact: true });
+  await password.fill(ownerPassword);
+  await unlock.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(password).not.toBeVisible();
+  const headers = {
+    Origin: origin,
+    "X-Vorteo-Provider-Removal": "1",
+    "X-Vorteo-Primary-Connection": "1",
+  };
+  async function read() {
+    const snapshot = InstallationSettingsSnapshotSchema.parse(
       await (
         await page.request.post(`${origin}/api/installation/owner/settings/read`, {
-          headers: { Origin: origin },
+          headers,
           data: {},
         })
       ).json(),
     );
+    const settings = snapshot.settings;
+    const catalog = settings?.providerDefinitions;
+    if (!settings || !catalog) throw new Error("Provider catalog is not initialized");
+    return { ...snapshot, settings: { ...settings, providerDefinitions: catalog } };
+  }
   const initial = await read();
   const creationId = randomUUID();
   const providerId = `codex-account-${creationId}`;
-  const definitions = initial.settings?.providerDefinitions;
-  if (!definitions) throw new Error("Provider catalog is not initialized");
-  const response = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-    headers: { Origin: origin },
+  const definitions = initial.settings.providerDefinitions;
+  const baselineCodex = groupInstallationProviders(definitions).find(
+    (family) => family.id === "codex",
+  );
+  if (!baselineCodex) throw new Error("Missing baseline Codex connections");
+  expect(baselineCodex.accounts.map((account) => account.id)).toContain("default/codex");
+  const providerDefinitions: InstallationProvider[] = [
+    ...definitions,
+    {
+      id: `managed/${creationId}`,
+      providerType: "codex",
+      accountSetup: { provider: "codex", creationId },
+      bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
+      policy: { label: "Shared empty account", enabled: true },
+    },
+  ];
+  const creation = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+    headers,
     data: {
       expectedRevision: initial.revision,
       settings: {
-        providerDefinitions: [
-          ...definitions,
-          {
-            id: `managed/${creationId}`,
-            providerType: "codex",
-            accountSetup: { provider: "codex", creationId },
-            bindings: Object.fromEntries(daemons.map((daemon) => [daemon.serverId, providerId])),
-            policy: { label: "Shared empty account", enabled: true },
-          },
-        ],
+        providerDefinitions,
       },
     },
   });
-  expect(response.ok()).toBe(true);
-  const saved = InstallationSettingsSnapshotSchema.parse(await response.json());
-  await expect
-    .poll(
-      async () =>
-        Object.values((await read()).sources).every(
-          (status) => status.appliedRevision === saved.revision && status.pendingRevision === null,
-        ),
-      { timeout: 60_000 },
-    )
-    .toBe(true);
+  expect(creation.ok()).toBe(true);
+  const saved = InstallationSettingsSnapshotSchema.parse(await creation.json());
+  await waitForSettingsConvergence({
+    read,
+    poll: expect.poll,
+    minimumRevision: saved.revision,
+    providerDefinitions,
+    serverIds: config.public.environments.map((environment) => environment.serverId),
+  });
   const homes: unknown[] = [];
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
@@ -3498,9 +3514,49 @@ test("shared account setup preserves the catalog through retries and local remov
   }
   expect(homes[0]).not.toEqual(homes[1]);
   expect(JSON.stringify(await read())).not.toContain("CODEX_HOME");
-  const host = await connectReadyInstallationDaemon("host");
-  const container = await connectReadyInstallationDaemon("container");
+  const afterRetries = await read();
+  expect(afterRetries.settings.providerDefinitions).toEqual(providerDefinitions);
+  expect(
+    afterRetries.settings.providerDefinitions.filter(
+      (entry) => entry.id === `managed/${creationId}`,
+    ),
+  ).toHaveLength(1);
+  const clients: Awaited<ReturnType<typeof connectReadyInstallationDaemon>>[] = [];
+  const originals: { client: (typeof clients)[number]; command: string[] }[] = [];
+  const failures: unknown[] = [];
+  const fixtureCommand = [
+    process.execPath,
+    path.resolve(__dirname, "../fixtures/catalog-codex.mjs"),
+  ];
   try {
+    const host = await connectReadyInstallationDaemon("host");
+    clients.push(host);
+    const container = await connectReadyInstallationDaemon("container");
+    clients.push(container);
+    for (const client of clients) {
+      const localConfig = (await client.getDaemonConfig()).config;
+      const binding = ProviderOverrideSchema.parse(localConfig.providers[providerId]);
+      const baseProvider = ProviderOverrideSchema.parse(localConfig.providers.codex ?? {});
+      const command = [...(binding.command ?? baseProvider.command ?? ["codex"])];
+      // Record before patching: even a rejected response can follow an applied write.
+      originals.push({ client, command });
+      await client.patchDaemonConfig({ providers: { [providerId]: { command: fixtureCommand } } });
+      await client.refreshProvidersSnapshot({ providers: [providerId] });
+      await expect
+        .poll(
+          async () =>
+            (await client.getProvidersSnapshot()).entries?.find(
+              (entry) => entry.provider === providerId,
+            ),
+          { timeout: 60_000 },
+        )
+        .toMatchObject({
+          provider: providerId,
+          source: "custom",
+          enabled: true,
+          status: "ready",
+        });
+    }
     await expect
       .poll(
         async () => {
@@ -3524,16 +3580,58 @@ test("shared account setup preserves the catalog through retries and local remov
     await writeFile(auth, "fixture credential", { mode: 0o600 });
     await expect(host.removeProvider(providerId, preview.plan.revision)).rejects.toThrow("Exclude");
     expect(await readFile(auth, "utf8")).toBe("fixture credential");
+    const containerConfig = (await container.getDaemonConfig()).config;
     const current = await read();
+    const primary = current.settings.primaryConnection;
+    expect(
+      current.settings.providerDefinitions?.find((entry) => entry.id === primary?.providerId)
+        ?.providerType,
+    ).toBe("mock");
     const hostServerId = config.public.environments.find(
       (entry) => entry.kind === "host",
     )!.serverId;
     await page.goto(`${origin}/settings/providers`);
-    await openProviderPage(page, "codex");
-    await openConnectionAction(page, `managed/${creationId}`, "access");
-    // Per-environment Remove and Restore sit under the sheet's Advanced group.
-    await page.getByTestId("provider-manage-advanced-toggle").click();
-    const remove = page.getByTestId(`shared-provider-remove-managed/${creationId}-${hostServerId}`);
+    const settings = page.getByTestId("settings-scroll-page").filter({ visible: true });
+    const family = settings.getByTestId("provider-family-codex").filter({ visible: true });
+    const codex = groupInstallationProviders(current.settings.providerDefinitions).find(
+      (entry) => entry.id === "codex",
+    );
+    if (!codex) throw new Error("Missing shared Codex connections");
+    expect(codex.accounts.map((account) => account.id)).toEqual([
+      ...baselineCodex.accounts.map((account) => account.id),
+      `managed/${creationId}`,
+    ]);
+    expect(codex.accounts).toHaveLength(baselineCodex.accounts.length + 1);
+    await family.getByRole("button", { name: /^Codex details, / }).click();
+    let connections = family;
+    if (codex.accounts.length > 5) {
+      await family
+        .getByRole("button", {
+          name: `Show all ${codex.accounts.length} Codex connections`,
+          exact: true,
+        })
+        .click();
+      connections = page.getByRole("dialog", { name: "Codex connections", exact: true });
+      await expect(connections).toBeVisible();
+    }
+    await connections
+      .getByRole("button", { name: "Shared empty account actions", exact: true })
+      .click();
+    await page
+      .getByRole("menuitem", { name: "Environment access", exact: true })
+      .filter({ visible: true })
+      .click();
+    const access = page.getByRole("dialog", {
+      name: "Shared empty account: environment access",
+      exact: true,
+    });
+    await expect(access).toBeVisible();
+    await access.getByRole("button", { name: "Advanced", exact: true }).click();
+    const repair = access.getByTestId(
+      `shared-provider-repair-managed/${creationId}-${hostServerId}`,
+    );
+    const remove = repair.getByRole("button", { name: "Remove from Host", exact: true });
+    const restore = repair.getByRole("button", { name: "Restore in Host", exact: true });
     await expect(remove).toBeEnabled({ timeout: 60_000 });
     let dialog = page.waitForEvent("dialog");
     let click = remove.click();
@@ -3542,34 +3640,68 @@ test("shared account setup preserves the catalog through retries and local remov
     expect(cancelled.message()).toContain("stays available in other environments");
     await cancelled.dismiss();
     await click;
-    expect((await read()).settings?.resourceExclusions).toEqual(
-      current.settings?.resourceExclusions,
-    );
+    expect((await read()).settings.resourceExclusions).toEqual(current.settings.resourceExclusions);
     expect(await readFile(auth, "utf8")).toBe("fixture credential");
     await expect(remove).toBeEnabled();
+    const removalReads: Awaited<ReturnType<Page["waitForResponse"]>>[] = [];
+    function recordRemovalRead(response: (typeof removalReads)[number]) {
+      if (
+        response.url() === `${origin}/api/installation/owner/settings/read` &&
+        response.request().method() === "POST" &&
+        response.ok()
+      )
+        removalReads.push(response);
+    }
+    page.on("response", recordRemovalRead);
     dialog = page.waitForEvent("dialog");
     click = remove.click();
-    const stale = await dialog;
+    const stale = await dialog.finally(() => page.off("response", recordRemovalRead));
+    // The normal settings poll may overlap the action, but every candidate must use one revision.
+    expect(removalReads.length).toBeGreaterThan(0);
+    const removalSnapshots = await Promise.all(
+      removalReads.map(async (response) =>
+        InstallationSettingsSnapshotSchema.parse(await response.json()),
+      ),
+    );
+    const removalRevisions = new Set(removalSnapshots.map((snapshot) => snapshot.revision));
+    expect(removalRevisions.size).toBe(1);
+    const [removalRevision] = removalRevisions;
+    const beforeCompetingWrite = await read();
+    expect(beforeCompetingWrite.revision).toBe(removalRevision);
     const concurrent = await page.request.patch(`${origin}/api/installation/owner/settings`, {
-      headers: { Origin: origin },
+      headers,
       data: {
-        expectedRevision: current.revision,
-        settings: { autoArchiveAfterMerge: !current.settings!.autoArchiveAfterMerge },
+        expectedRevision: removalRevision,
+        settings: { autoArchiveAfterMerge: !beforeCompetingWrite.settings!.autoArchiveAfterMerge },
       },
     });
     expect(concurrent.ok()).toBe(true);
+    const competingSnapshot = InstallationSettingsSnapshotSchema.parse(await concurrent.json());
+    expect(competingSnapshot.revision).toBe(removalRevision + 1);
+    const refusedPatch = page.waitForResponse(
+      (response) =>
+        response.url() === `${origin}/api/installation/owner/settings` &&
+        response.request().method() === "PATCH" &&
+        response.request().postDataJSON().settings.resourceExclusions !== undefined,
+    );
     await stale.accept();
     await click;
+    const refusal = await refusedPatch;
+    expect(refusal.request().postDataJSON().expectedRevision).toBe(removalRevision);
+    expect(refusal.status()).toBe(409);
+    expect((await read()).settings.resourceExclusions).toEqual(current.settings.resourceExclusions);
     await expect(
-      page.getByTestId(`shared-provider-remove-error-managed/${creationId}-${hostServerId}`),
+      repair.getByTestId(`shared-provider-remove-error-managed/${creationId}-${hostServerId}`),
     ).toContainText("Shared settings changed");
     expect(await readFile(auth, "utf8")).toBe("fixture credential");
-    await page
-      .getByTestId("provider-manage-sheet")
-      .screenshot({ path: testInfo.outputPath("removal-conflict.png") });
-    await expect
-      .poll(async () => (await read()).sources[hostServerId].pendingRevision, { timeout: 60_000 })
-      .toBeNull();
+    await access.screenshot({ path: testInfo.outputPath("removal-conflict.png") });
+    await waitForSettingsConvergence({
+      read,
+      poll: expect.poll,
+      minimumRevision: competingSnapshot.revision,
+      providerDefinitions,
+      serverIds: config.public.environments.map((environment) => environment.serverId),
+    });
     await expect
       .poll(
         async () => {
@@ -3590,56 +3722,150 @@ test("shared account setup preserves the catalog through retries and local remov
     click = remove.click();
     await (await dialog).accept();
     await click;
-    await expect(remove).not.toBeVisible({ timeout: 60_000 });
-    await page
-      .getByTestId("provider-manage-sheet")
-      .screenshot({ path: testInfo.outputPath("removal-complete.png") });
+    await expect(restore).toBeVisible({ timeout: 60_000 });
+    await access.screenshot({ path: testInfo.outputPath("removal-complete.png") });
+    await expect
+      .poll(async () => (await host.getDaemonConfig()).config.providers[providerId], {
+        timeout: 60_000,
+      })
+      .toMatchObject({
+        removed: true,
+        enabled: false,
+        env: hostConfig.providers[providerId].env,
+      });
+    await host.refreshProvidersSnapshot({ providers: [providerId] });
+    await expect
+      .poll(
+        async () =>
+          (await host.getProvidersSnapshot()).entries?.some(
+            (entry) => entry.provider === providerId,
+          ),
+        { timeout: 60_000 },
+      )
+      .toBe(false);
     await expect(readFile(auth, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    await read();
     expect((await host.getDaemonConfig()).config.providers[providerId]).toMatchObject({
       removed: true,
       enabled: false,
       env: hostConfig.providers[providerId].env,
     });
-    expect((await container.getDaemonConfig()).config.providers[providerId].enabled).toBe(true);
-    expect((await read()).settings?.providerDefinitions).toEqual(
+    await expect
+      .poll(async () => (await container.getDaemonConfig()).config.providers[providerId], {
+        timeout: 60_000,
+      })
+      .toEqual(containerConfig.providers[providerId]);
+    expect(containerConfig.providers[providerId]).toMatchObject({
+      extends: "codex",
+      enabled: true,
+      env: homes[1],
+    });
+    expect(containerConfig.providers[providerId].removed).not.toBe(true);
+    expect((await read()).settings.providerDefinitions).toEqual(
       saved.settings?.providerDefinitions,
     );
     await expect(host.createCodexAccount(creationId, "Shared empty account")).rejects.toThrow(
       "removed",
     );
-    const restore = page.getByTestId(
-      `shared-provider-restore-managed/${creationId}-${hostServerId}`,
-    );
     await expect(restore).toBeVisible();
     await restore.click();
-    await expect(restore).not.toBeVisible({ timeout: 60_000 });
     await expect(
-      page.getByText("Connection restored. Sign in if needed", { exact: false }),
-    ).toBeVisible();
-    const restored = (await host.getDaemonConfig()).config.providers[providerId];
-    expect(restored).toMatchObject({
-      removed: false,
-      enabled: false,
-      env: hostConfig.providers[providerId].env,
-    });
-    await expect(readFile(auth, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await read()).settings?.resourceExclusions[hostServerId].providerIds).toContain(
-      `managed/${creationId}`,
-    );
-    expect((await container.getDaemonConfig()).config.providers[providerId].enabled).toBe(true);
+      repair.getByTestId(`shared-provider-restore-managed/${creationId}-${hostServerId}`),
+    ).not.toBeVisible({ timeout: 60_000 });
     await expect(
       page
-        .getByTestId(`shared-provider-environment-managed/${creationId}-${hostServerId}`)
-        .getByTestId(`provider-connect-${providerId}`),
+        .getByRole("alert")
+        .filter({ visible: true })
+        .getByText("Connection restored", { exact: false }),
     ).toBeVisible();
-    await page
-      .getByTestId("provider-manage-sheet")
-      .screenshot({ path: testInfo.outputPath("restored-binding.png") });
+    await expect
+      .poll(async () => (await host.getDaemonConfig()).config.providers[providerId], {
+        timeout: 60_000,
+      })
+      .toMatchObject({
+        removed: false,
+        enabled: false,
+        extends: "codex",
+        env: hostConfig.providers[providerId].env,
+      });
+    await host.refreshProvidersSnapshot({ providers: [providerId] });
+    await expect
+      .poll(
+        async () =>
+          (await host.getProvidersSnapshot()).entries?.find(
+            (entry) => entry.provider === providerId,
+          ),
+        { timeout: 60_000 },
+      )
+      .toMatchObject({ provider: providerId, source: "custom", enabled: false });
+    const restored = (await host.getDaemonConfig()).config.providers[providerId];
+    expect(restored).toEqual({
+      ...hostConfig.providers[providerId],
+      removed: false,
+      enabled: false,
+    });
+    await expect(readFile(auth, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await read()).settings.resourceExclusions[hostServerId].providerIds).toContain(
+      `managed/${creationId}`,
+    );
+    await expect
+      .poll(async () => (await container.getDaemonConfig()).config.providers[providerId], {
+        timeout: 60_000,
+      })
+      .toEqual(containerConfig.providers[providerId]);
+    expect(containerConfig.providers[providerId]).toMatchObject({
+      extends: "codex",
+      enabled: true,
+      env: homes[1],
+    });
+    expect(containerConfig.providers[providerId].removed).not.toBe(true);
+    expect((await read()).settings.providerDefinitions).toEqual(providerDefinitions);
+    await expect(
+      access.getByRole("switch", { name: "Use Shared empty account in Host", exact: true }),
+    ).not.toBeChecked();
+    await expect(
+      access.getByRole("switch", {
+        name: "Use Shared empty account in Dev container",
+        exact: true,
+      }),
+    ).toBeChecked();
+    await access.screenshot({ path: testInfo.outputPath("restored-binding.png") });
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await host.close();
-    await container.close();
+    // Attempt every restore even if setup stopped midway or another restore fails.
+    const restorations = await Promise.allSettled(
+      originals.map(async ({ client, command }) => {
+        await client.patchDaemonConfig({ providers: { [providerId]: { command } } });
+        await client.refreshProvidersSnapshot({ providers: [providerId] });
+        const restored = (await client.getDaemonConfig()).config.providers[providerId];
+        expect(restored.command).toEqual(command);
+        expect(restored.command).not.toEqual(fixtureCommand);
+        // Enabled definitions start at loading; only terminal states prove discovery settled.
+        await expect
+          .poll(
+            async () => {
+              const snapshot = await client.getProvidersSnapshot();
+              if (!snapshot.entries) return false;
+              for (const entry of snapshot.entries) {
+                if (entry.provider !== providerId) continue;
+                if (restored.removed === true) return false;
+                return entry.status === "unavailable" || entry.status === "error";
+              }
+              return restored.removed === true;
+            },
+            { timeout: 60_000 },
+          )
+          .toBe(true);
+      }),
+    );
+    const closures = await Promise.allSettled(clients.map((client) => client.close()));
+    for (const result of [...restorations, ...closures]) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "Account case and runtime cleanup failures");
 });
 
 test("Add Account saves one shared definition and opens local sign-in", async ({

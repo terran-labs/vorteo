@@ -334,7 +334,11 @@ async function prepareCommand(
       dependencies,
       config,
       preservedSettings
-        ? { sourceProvider: sourceConfig.provider, settings: preservedSettings }
+        ? {
+            sourceProvider: sourceConfig.provider,
+            sourceModel: sourceSwitchModel(sourceConfig, expectedSource, record),
+            settings: preservedSettings,
+          }
         : undefined,
     ),
     reason: target.reason ?? ("manual" as const),
@@ -390,4 +394,13 @@ function effectiveSwitchSettings(
     thinkingOptionId: config.thinkingOptionId,
     featureValues,
   };
+}
+
+function sourceSwitchModel(
+  config: AgentSessionConfig,
+  source: AgentProfileSwitchInput["expectedSource"],
+  record: StoredAgentRecord,
+): string | null | undefined {
+  const runtime = source ? source.runtimeInfo : record.runtimeInfo;
+  return config.model ?? runtime?.model;
 }

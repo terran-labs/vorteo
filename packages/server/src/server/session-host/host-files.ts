@@ -76,12 +76,44 @@ async function retentionLock(socketPath: string) {
   return { pid, generation: value.generation };
 }
 
+/**
+ * The release this host loaded its code from is no longer at its path: Host release cleanup
+ * set it aside or removed it while the host was starting. The host must not serve from it.
+ */
+export class SessionHostReleaseRemovedError extends Error {
+  constructor(readonly releaseRoot: string) {
+    super(`The session host's release was removed while it started: ${releaseRoot}`);
+    this.name = "SessionHostReleaseRemovedError";
+  }
+}
+
+/**
+ * Only a missing path means removed. A path that exists but is not canonical, or cannot be
+ * read, is some other fault and never fails a host start.
+ */
+async function releaseRemoved(releaseRoot: string): Promise<boolean> {
+  try {
+    await realpath(releaseRoot);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+/**
+ * Publishes the release, then confirms it is still there. Cleanup sets a release aside first
+ * and reads this receipt second; the host writes first and looks second. Whichever order the
+ * two run in, either cleanup sees the receipt and puts the release back, or the host sees the
+ * release gone and throws SessionHostReleaseRemovedError before it serves anything.
+ */
 export async function writeSessionHostRelease(
   directory: string,
   releaseRoot: string,
 ): Promise<void> {
   const socketPath = path.join(directory, "host.sock");
   const lock = await retentionLock(socketPath);
+  if (path.isAbsolute(releaseRoot) && (await releaseRemoved(releaseRoot)))
+    throw new SessionHostReleaseRemovedError(releaseRoot);
   if (lock.pid !== process.pid || (await realpath(releaseRoot)) !== releaseRoot)
     throw new SessionHostFileError(
       directory,
@@ -107,6 +139,7 @@ export async function writeSessionHostRelease(
       if (error.code !== "ENOENT") throw error;
     });
   }
+  if (await releaseRemoved(releaseRoot)) throw new SessionHostReleaseRemovedError(releaseRoot);
 }
 
 async function retentionEvidenceAbsent(file: string): Promise<boolean> {

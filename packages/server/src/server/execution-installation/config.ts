@@ -162,6 +162,17 @@ export const InstallationConfigSchema = z.strictObject({
     .min(1)
     .max(24 * 60)
     .optional(),
+  /**
+   * Newest Host release job folders cleanup keeps beyond every referenced one. Default 3
+   * (KEEP_NEWEST). Each release takes several GiB, so raise it only with disk to spare.
+   */
+  hostReleaseKeepNewest: z.number().int().min(1).max(50).optional(),
+  /**
+   * Host release cleanup after each Host source update: `off` does nothing, `dry-run` (the
+   * default when absent) records what it would remove and why everything else stays in the
+   * job's retention.json and removes nothing, and `on` removes. Any other value is refused.
+   */
+  hostReleaseCleanup: z.enum(["off", "dry-run", "on"]).optional(),
   containerSourceUpdates: ContainerSourceUpdatesSchema.optional(),
   /** Off by default. Full sign-in Claude accounts with Host-owned refresh; `true` opts in. */
   claudeHostRefresh: z.boolean().optional(),

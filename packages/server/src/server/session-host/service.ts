@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import pino, { type Logger } from "pino";
 import { createProviderChildRegistry, type ProviderChildRegistry } from "./provider-children.js";
 import { resolveDaemonVersion } from "../daemon-version.js";
@@ -13,6 +13,7 @@ import {
   preparePrivateDirectory,
   rotateSessionHostToken,
   SESSION_HOST_ENTRYPOINT,
+  SessionHostReleaseRemovedError,
   sessionHostPaths,
   writeSessionHostRelease,
   type SessionHostAuditRecord,
@@ -105,16 +106,31 @@ function openPrivateLog(logPath: string): Logger {
 }
 
 /**
+ * The release directory a host module was loaded from, or null for a source checkout. Node
+ * loads modules by their real path, so this names the release whose code is in memory even
+ * after the release link the job was started through has moved on to a newer install.
+ */
+export function sessionHostReleaseRoot(moduleFile: string): string | null {
+  const dist = `${path.sep}${path.normalize("packages/server/dist")}${path.sep}`;
+  if (!`${path.sep}${path.normalize(SESSION_HOST_ENTRYPOINT)}`.startsWith(dist))
+    throw new Error("The session host entrypoint is not in the server's dist folder");
+  const at = moduleFile.lastIndexOf(dist);
+  return at > 0 ? moduleFile.slice(0, at) : null;
+}
+
+/**
  * Records the release this host runs from, so Host release cleanup keeps it until a tracked
  * restart replaces the host. A host run from a source checkout has no release to record.
+ * A release that cleanup removed while this host was starting fails the start: launchd starts
+ * the job again through the release link, which names a release cleanup always keeps.
  */
 async function recordRelease(directory: string, logger: Logger): Promise<void> {
   try {
-    const entrypoint = process.argv[1] ? await realpath(process.argv[1]) : "";
-    const suffix = `${path.sep}${path.normalize(SESSION_HOST_ENTRYPOINT)}`;
-    if (!entrypoint.endsWith(suffix)) return;
-    await writeSessionHostRelease(directory, entrypoint.slice(0, -suffix.length));
+    const releaseRoot = sessionHostReleaseRoot(fileURLToPath(import.meta.url));
+    if (!releaseRoot) return;
+    await writeSessionHostRelease(directory, releaseRoot);
   } catch (error) {
+    if (error instanceof SessionHostReleaseRemovedError) throw error;
     logger.warn({ err: error }, "Could not record the session host release for cleanup");
   }
 }

@@ -167,6 +167,35 @@ test.each([
     },
   },
   {
+    name: "accepts a Host release cleanup mode and refuses any other value",
+    run: async () => {
+      const state = installation();
+      const { settings } = settingsPorts(state);
+      // A value that is not a mode is never read as "on".
+      for (const value of ["enabled", "ON", true, 1])
+        await expect(
+          settings.request({
+            patch: { hostReleaseCleanup: value },
+            baseSha256: sha256(state.disk.config),
+          }),
+        ).rejects.toThrow("invalid value");
+      for (const value of ["off", "dry-run", "on"]) {
+        const job = await settings.request({
+          patch: { hostReleaseCleanup: value },
+          baseSha256: sha256(state.disk.config),
+        });
+        expect(job.changes).toEqual([
+          expect.objectContaining({
+            key: "hostReleaseCleanup",
+            displaySafe: true,
+            after: expect.stringContaining(value),
+          }),
+        ]);
+        settings.decide(job.id, job.revision, "reject");
+      }
+    },
+  },
+  {
     name: "refuses a stale base hash at request and at dispatch",
     run: async () => {
       const state = installation();
