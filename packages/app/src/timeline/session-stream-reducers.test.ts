@@ -10,12 +10,14 @@ import {
 import {
   createAgentStreamReducerQueue,
   deriveAgentStreamTurnLiveness,
+  EPOCH_RECOVERY_RETRY_MS,
   processTimelineResponse,
   processAgentStreamEvent,
   processAgentStreamEvents,
   type ProcessTimelineResponseInput,
   type ProcessAgentStreamEventInput,
   type AgentStreamReducerEvent,
+  type AgentStreamReducerSideEffect,
   type TimelineCursor,
 } from "./session-stream-reducers";
 
@@ -3957,7 +3959,10 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
-    expect(result.sideEffects).toEqual([]);
+    // Vorteo: a foreign epoch asks for a catch-up instead of freezing the thread (#558).
+    expect(result.sideEffects).toEqual([
+      { type: "catch_up", cursor: { epoch: "epoch-1", endSeq: 5 }, foreignEpoch: "epoch-2" },
+    ]);
   });
 
   it("resets visible timeline when a new epoch starts at seq 1", () => {
@@ -4538,6 +4543,57 @@ describe("createAgentStreamReducerQueue", () => {
       },
     ]);
     expect(scheduler.size).toBe(0);
+  });
+
+  it("recovers once from a burst of live events in a foreign epoch", () => {
+    const scheduler = createManualScheduler();
+    const catchUps: AgentStreamReducerSideEffect[] = [];
+    let cursor = { epoch: "saved-transcript-hash", startSeq: 371, endSeq: 410 };
+    let clock = 0;
+    const queue = createAgentStreamReducerQueue({
+      now: () => clock,
+      getSnapshot: () => ({
+        currentTail: [makeAssistantItem("saved row")],
+        currentHead: [],
+        currentCursor: cursor,
+        hasAuthoritativeBaseline: true,
+      }),
+      commit: () => {},
+      handleSideEffects: (_agentId, effects) => catchUps.push(...effects),
+      scheduleFlush: scheduler.schedule,
+      cancelFlush: scheduler.cancel,
+    });
+    const foreign = (epoch: string, seq: number) => ({
+      ...makeStreamReducerEvent(makeAssistantTimelineEvent(`live ${seq}`), seq),
+      epoch,
+    });
+
+    for (let seq = 411; seq < 441; seq += 1) queue.enqueue("agent-1", foreign("live-epoch", seq));
+    scheduler.flushOne();
+    // A daemon still answering with the old epoch must not turn each later event into a fetch.
+    for (let seq = 441; seq < 471; seq += 1) queue.enqueue("agent-1", foreign("live-epoch", seq));
+    scheduler.flushOne();
+
+    expect(catchUps).toEqual([
+      {
+        type: "catch_up",
+        cursor: { epoch: "saved-transcript-hash", endSeq: 410 },
+        foreignEpoch: "live-epoch",
+      },
+    ]);
+
+    // A catch-up that settled without adopting the epoch is retried after the interval.
+    clock = EPOCH_RECOVERY_RETRY_MS;
+    queue.enqueue("agent-1", foreign("live-epoch", 471));
+    scheduler.flushOne();
+    expect(catchUps).toHaveLength(2);
+
+    // Once the reset adopts the live epoch, a later replacement recovers again.
+    cursor = { epoch: "live-epoch", startSeq: 431, endSeq: 470 };
+    queue.enqueue("agent-1", foreign("replaced-epoch", 9));
+    scheduler.flushOne();
+    expect(catchUps).toHaveLength(3);
+    expect(catchUps[2]).toMatchObject({ foreignEpoch: "replaced-epoch" });
   });
 
   it("flushes queued events synchronously for one agent before canonical history is applied", () => {
