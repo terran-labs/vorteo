@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Vorteo preview</title>
+    <link rel="stylesheet" href="/api/previews/web/shared.css" />
+  </head>
+  <body class="viewer">
+    <header class="topbar">
+      <div class="head-text">
+        <span id="title" class="artifact-title">Preview</span>
+        <span id="version" class="muted small"></span>
+      </div>
+      <button id="fullscreen" type="button" hidden>Full screen</button>
+      <button id="comments" type="button" aria-pressed="false">Comments</button>
+    </header>
+    <main class="workspace">
+      <div id="stage" class="stage"></div>
+      <aside id="side" class="side" hidden></aside>
+    </main>
+    <p id="invalid" class="error" hidden>This preview link is not valid.</p>
+    <script src="/api/previews/web/viewer.js"></script>
+  </body>
+</html>

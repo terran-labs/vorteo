@@ -2,6 +2,144 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-13
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-13
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## 26.11.1200 - 2026-11-12
+
+### Highlights
+
+- Claude Fable 5.2 is available in the model selector, with fast mode and a 1M context window, on Claude Code 2.1.321.
+- Codex app-server processes start outside shared project folders, which cuts Dev file pressure, and provider probes run in isolated working directories.
+
+### Maintenance
+
+- Repair the System pane test fixture so desktop runtime detection and imported settings dependencies load without missing mock exports.
+- The daemon keeps ten rotated log files instead of three, and logs which agents a waiting restart is holding for.
+- Reconcile published incident source ancestry with the reviewed lifecycle and hold corrections for managed delivery.
+- Integrate the reviewed restart-liveness and history-read repairs with the published consolidation release history.
+- Preserve the installed Claude reconnect and coordinator refresh changes when publishing the immediate Factory sidebar card.
+- The "sign-in is gone" warning fires only when a sign-in that was present disappears, not on an account's first check, and recovery is covered by a test proving it never runs the Claude refresh unless the setting allows it.
+- When coordinator renewal is turned back on with `claudeCoordinatorRefresh`, a failed renewal logs a fixed category from the CLI's result, and the request no longer waits three seconds for input.
+- Open Factory in the Factory workspace menu uses the same destination as the Factory card.
+- The retired adoption fence clearing applies only to failed adoption requests, and the docs describe the clearing and the boot-entry switch preflight accurately.
+- Remove the retired Factory controller, observation interface, owner controls and the setup, install and status commands. Per-project Factory, the Factory Overview and managed workspace protections remain.
+- Open Factory in the project and Factory workspace menus opens the built-in Factory overview instead of the removed plugin screen.
+- Correct the version named by the recovery link's compatibility tags.
+- Brought the primary connection branch up to current main and moved a settings reader's description back onto its own method.
+- Remove the unused Factory membership service and binder while keeping per-project workspace protections, and update the Factory documentation.
+- The published daemon configuration schema lists the primary connection fields.
+- Lightweight server entry points stay off the protocol wire schemas: the daemon primary connection schema now lives beside the installation settings.
+- The config reload smoke test keeps a primary connection choice the daemon stored on its own before the test rewrites the file.
+- Shared settings conflict reviews name the primary connection.
+- Shared settings refuse a primary connection that is removed or turned off, or whose profile belongs to another provider, with "That connection is no longer available." The setup guide's save resolves its choice from the exact settings it writes and retries once after a concurrent change.
+- Requires the coordinator and daemons from the same release: with an older coordinator, installation daemons never receive the primary connection and system threads wait.
+- Installation daemons use the primary connection only once their coordinator supports it. Under an older coordinator, the Optimizer and Factory keep launching with the first usable provider instead of waiting, and Settings hides the primary connection controls.
+- The customizations inventory describes the primary connection for system threads.
+- Resolve the chosen account from the same Settings snapshot whose revision guards the primary write. The shared helper retries one concurrent edit; removed, disabled or unavailable choices and failed saves keep an error and Retry without advancing setup.
+- New guide text uses an English fallback in the other eight locales pending translation. Provider snapshots do not expose structured installed-but-signed-out state, so setup directs unverified providers to Settings rather than guessing.
+
+### Fixes
+
+- Hosted Claude agents now run the Claude Code bundled with the installed release instead of whatever `claude` is on the Host's PATH, so models such as Fable 5.2 no longer fail with an unsupported-version error after the session host starts.
+- Starting a Claude agent now refuses, before the CLI launches, a model that the Claude Code it would run is too old for, and names that executable, its version and how to update it.
+- Fable 5.2 requires Claude Code 2.1.290, the version Claude Code itself reports, instead of 2.1.321.
+- Managed Host source-update background release cleanup is suspended until startup and pruning share exclusive lifetime protection. Successful installs retain old releases and record the reason in their background cleanup receipt.
+- A waiting update that passes its deadline is marked "Your decision needed" in installation controls. Force restart appears for an update only while it is waiting for current work, and older open tabs keep working.
+- Updates that wait for current work no longer stall for hours. An agent waiting on another agent's reply now receives it inside its running turn, so it can finish, and held messages wait for the update instead of retrying every few seconds.
+- After 15 minutes of waiting, the update asks you to restart now or cancel, and it lists the agents it is waiting for. Restart now is available for source updates too.
+- Run one-shot provider checks and background title/summary generation from a private temporary directory instead of scanning shared homes or source checkouts.
+- Prevent Claude sign-in from launching after cancellation while its probe directory is being acquired.
+- Isolate model-discovery fixtures from persistent probe storage and preserve retained helper files.
+- Messages no longer cancel a running turn when a restart hold begins while steering or its fallback is waiting.
+- Keep Codex app-server processes in the isolated local directory while passing workspace directories through the thread protocol. This prevents startup scans of shared project trees.
+- Discard orphan Codex child terminal and progress notifications at root completion so a reused child route cannot inherit a false completion. Preserve genuine child starts and their later notifications across the root boundary.
+- Preserve the latest Codex child start and terminal observations when its bounded pre-route buffer fills. Root completion can no longer discard a genuine running child after progress evicts older frames.
+- Claude query starts using the same configuration-directory string share a startup slot within one daemon process. The next start waits for SDK initialization to settle, or for the 15-second limit even if initialization remains unresolved. Other directory keys do not wait.
+- Idle cleanup refuses a Claude CLI younger than 60 seconds. Host shutdown still waits at most 10 seconds before closing providers; this does not guarantee that refresh has finished or prevent interruption during token rotation.
+- Claude debug-file output is unavailable, including when an existing opt-in file requests it. Private path custody at the SDK write and exclusion of credential material from its output are not established.
+- Claude full sign-in accounts no longer lose their sign-in when the coordinator's renewal fails. The coordinator stops running the Claude CLI to renew a shared account by default, because a failed renewal erased the account's saved sign-in. Host agents keep renewing it as they work, and Dev receives their tokens.
+- An account whose sign-in is gone shows Reconnect on its row in Settings, and the coordinator logs one warning naming it.
+- Show the conversation navigation rail on tablets and small windows whenever the margin beside the messages can hold it, and hide it when a widened text column would put it over messages or tool rows. Phone layouts are unchanged.
+- Keep the floating Latest button on its resting background when hovered, so it is no more translucent on hover than at rest and conversation text no longer shows through it in the built-in appearances.
+- Read saved history without starting a provider when a thread has neither a native handle nor retained switch history. After a timeline load fails, polling retries after 30 seconds.
+- Preserve the timeline cursor when a provider closes during a history read. The Retry button can attempt a fresh history load during the polling cooldown.
+- The setup guide reopens at the step you left when you go to Providers settings or Add host, and no longer restarts from the first step on every reload.
+- Follow system shows when it is selected, and screen readers announce it as a toggle.
+- The provider step preselects your saved primary connection, and step and provider menus announce their current choice.
+- History errors name the provider, and the guide's error messages are translatable.
+- Workspaces that still carry a membership from the retired Factory controller can be archived, moved and adopted into Vorteo System again, and no longer block archiving other workspaces in the same folder.
+- A project with an old Factory checkpoint no longer keeps its key fixed during Host and Dev project synchronization, and Vorteo System can archive it when it is emptied.
+- Factory runtime adoption and a Dev boot switch back to the Factory launcher are refused with a clear error, because both started the removed controller runtime.
+- A Factory adoption recovery fence left from before the controller's retirement no longer blocks Dev restarts and broker dispatch; the coordinator clears it at startup and notes why on the failed request.
+- A workspace whose only Factory membership came from the retired controller is archived automatically when its folder disappears, like other ordinary workspaces.
+- Keep worker restarts waiting for provider children reported running by the attached session. Historical child descriptors remain visible in the conversation.
+- The primary connection waits instead of launching when its account has no credentials, and a setup-token connection that has never hit a limit still launches.
+- An upgrade asks the owner to choose a primary connection when another connection's sign-in cannot be confirmed, instead of waiting forever.
+- Installations on an older coordinator keep the earlier launch rule exactly.
+- Settings now warns when the primary connection cannot run on the Host, or where a Factory runs, even if it works in another environment, and offers Make primary only for connections ready on the Host.
+- An upgrade no longer picks a primary connection while another connection is still loading or briefly failing its usage check.
+- A temporary usage check error on the primary connection no longer stops the Optimizer and Factory from starting.
+- Factory's message when no connection can start its agents now names the actual causes.
+- Claude and Codex connections that sign in with an API key, token, gateway or cloud provider are no longer treated as having no credentials, so a primary connection of that kind still launches. Only a Claude full sign-in account with an empty credential store counts as having none.
+- Codex usage reads no longer fail on an API-key sign-in file.
+- An installation name containing `$'`, `$&` or similar no longer breaks the page's startup script or its title, because the served page inserts the name literally.
+- Old Factory installation checkpoints are treated as inert data, so they no longer block project archive, removal or system project adoption, or prevent older records from loading.
+- When a thread's history fails to load, the error notice and its Retry button now float over the conversation with the other sync notices, so the message field no longer moves.
+- Return persisted Factory queue snapshots while one background refresh runs. Bound GitHub and agent reads, retain stale evidence after failures, and avoid repeated GitHub calls for paused or draining Factories. Bootstrap their first snapshot once when none is saved, and skip disabled Factories.
+- Check cold refresh progress promptly in the overview and sidebar, then restore the normal slow interval.
+- Keep unversioned Codex collaboration snapshots from overriding an observed child turn. Providers that lack turn observations retain child-state snapshot handling.
+- Keep Codex child lifecycle notifications live while reading history. Child model updates no longer report lifecycle status.
+- Preserve the order of Codex child starts and completions when history discovers their route. A child can keep running after the parent turn finishes.
+- Preserve Codex child lifecycle observations when history reconstructs a stale launch card. Ordinary child progress cannot settle or reopen the child turn.
+- A participant scope restore that fails while staging its bytes now removes the partial staging file.
+- A broker settings change whose restart outcome cannot be read no longer restores the old participant scope when the coordinator already runs the new configuration, which pins the new scope. Restoring a scope now stages its bytes beside the scope file, so it also works when the scope is on another volume.
+- Read a paused Factory snapshot once even when an inactive panel already created its cache entry. Bound summary queue reads to three shared slots and give them bounded priority while continuing to serve waiting card reads. Retry only failed reads.
+- Show All Factories status immediately from the factory list, including paused and held factories, without waiting for GitHub queue reads. Keep cached pipeline snapshots visible with their timestamp and offer retry on failure.
+- Installation daemons re-check coordinator support for the primary connection on every successful settings read. After reconnecting to an older coordinator, the Optimizer and Factory return to launching with the first usable provider instead of waiting; a failed read keeps the last known answer.
+- System thread launches re-read the primary connection after their provider and usage reads, select again once if it changed, and otherwise wait, so they never start on a primary connection the owner just cleared or replaced.
+
+### Features
+
+- Shared profiles can save a reasoning level, including Claude Ultra Code, or follow the model default, which the editor names, such as Model default (Medium).
+- Profile picker rows show the model and effective reasoning, and the composer's profile button adds the reasoning level.
+- Choosing a profile without saved reasoning uses the model default instead of the composer's last remembered level.
+- Fable 5.2 now defaults to Medium reasoning, matching Claude Code.
+- The installation records one primary connection, stored once in shared settings and used in every environment. The Optimizer, Factory and other system threads launch with it, through its profile when one is set. Without one they wait instead of picking whichever provider is usable first.
+- Upgrades adopt the only usable connection as primary once. With several, Settings asks the owner to choose: General Status shows "Choose a primary connection for system threads", and Providers marks the primary connection and offers Make primary, with a confirmation, on other ready connections.
+- Standalone daemons show the same Primary badge and Make primary action on their providers page, saved in the daemon's own config.
+- When the primary connection is off, signed out or not ready anywhere, General Status says "Your primary connection is unavailable. Choose another for system threads." Turning off the primary connection first warns that system threads will wait. Nothing switches automatically.
+- Add a skippable Vorteo setup guide after owner sign-in. Progress belongs to the installation in this browser, Skip stays distinct from Finish, and **More > Show setup again** reopens it. The branded welcome and demo remain; the upstream walkthrough stays hidden.
+- Add Follow system alongside the Vorteo appearance presets. Setup also shows saved agent tools and skills, changing them only through explicit actions.
+- Setup offers one detected Host provider and highlights a verified sign-in. Existing installation controls own sign-in and supported sharing to Dev; additional providers stay in Settings. An explicit Use saves the primary connection on supported hosts. Older hosts keep the choice only in the guide and say it was not saved. Skip and account creation never choose a primary connection.
+- Show the Projects folder, retain manual Add project and offer capability-gated suggestions from agent history with retry. The System project does not count as a first user project.
+- Explain PWA access and supported direct or SSH Add host methods, with an installation-address QR code and CLI help. Phone pairing and app-store links stay retired.
+
+### Improvements
+
+- The startup error page offers Open recovery beside Reload and Copy diagnostics when the installation has a private recovery address, so the owner can reach the native interface while the main address cannot start.
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-11
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## Unreleased - 2026-11-11
 
 ### Maintenance
