@@ -8,8 +8,102 @@ import { usePanelStore } from "@/stores/panel-store";
 import { canBeginMobilePanelGesture, isMobilePanelGestureCurrent } from "./model";
 import { useMobilePanelsRuntime } from "./provider";
 import { resolveMobilePanelGestureIntent } from "./gesture-intent";
+import { usePathname } from "expo-router";
+import { Dimensions } from "react-native";
+import { hasActiveOverlay } from "@/keyboard";
+import { useEdgePanReservation } from "./edge-pan-reservation";
 
 const MOBILE_WEB_EDGE_SWIPE_WIDTH = 32;
+
+/** Phone Settings navigation must not preview or settle the retired Explorer drawer. */
+export function useOpenSettingsGesture({
+  enabled,
+  routeKey,
+  onOpen,
+}: {
+  enabled: boolean;
+  routeKey: string;
+  onOpen: () => void;
+}) {
+  const { motionState, position, openGesturesBlocked } = useMobilePanelsRuntime();
+  const current = useRef({ enabled, routeKey, onOpen });
+  current.current = { enabled, routeKey, onOpen };
+  const start = useRef({ x: 0, y: 0, revision: -1, routeKey: "", eligible: false });
+  const { ref: edgeRef, reset: resetEdge } = useEdgePanReservation(
+    "right",
+    () =>
+      current.current.enabled &&
+      !openGesturesBlocked.value &&
+      !hasActiveOverlay() &&
+      canBeginMobilePanelGesture(motionState.value, "agent", position.value),
+    () =>
+      current.current.enabled && !openGesturesBlocked.value && !hasActiveOverlay()
+        ? `${current.current.routeKey}:${usePanelStore.getState().mobilePanel.revision}`
+        : null,
+  );
+  const gesture = useMemo(() => {
+    const available = () =>
+      current.current.enabled &&
+      !openGesturesBlocked.value &&
+      !hasActiveOverlay() &&
+      canBeginMobilePanelGesture(motionState.value, "agent", position.value);
+    const stillCurrent = () =>
+      start.current.eligible &&
+      current.current.routeKey === start.current.routeKey &&
+      usePanelStore.getState().mobilePanel.revision === start.current.revision &&
+      available();
+    return Gesture.Pan()
+      .runOnJS(true)
+      .maxPointers(1)
+      .manualActivation(true)
+      .onTouchesDown((event, manager) => {
+        const touch = event.changedTouches[0];
+        const eligible = Boolean(
+          touch &&
+          touch.absoluteX >= Dimensions.get("window").width - MOBILE_WEB_EDGE_SWIPE_WIDTH &&
+          available(),
+        );
+        start.current = {
+          x: touch?.absoluteX ?? 0,
+          y: touch?.absoluteY ?? 0,
+          revision: usePanelStore.getState().mobilePanel.revision,
+          routeKey: current.current.routeKey,
+          eligible,
+        };
+        if (!eligible) manager.fail();
+      })
+      .onTouchesMove((event, manager) => {
+        const touch = event.changedTouches[0];
+        if (!touch || event.numberOfTouches !== 1 || !stillCurrent()) {
+          manager.fail();
+          return;
+        }
+        const intent = resolveMobilePanelGestureIntent({
+          deltaX: touch.absoluteX - start.current.x,
+          deltaY: touch.absoluteY - start.current.y,
+          direction: -1,
+          openGesturesBlocked: false,
+        });
+        if (intent === "fail") manager.fail();
+        else if (intent === "activate") manager.activate();
+      })
+      .onEnd((event, success) => {
+        if (
+          success &&
+          stillCurrent() &&
+          (event.translationX < -Dimensions.get("window").width / 3 || event.velocityX < -500)
+        ) {
+          start.current.eligible = false;
+          current.current.onOpen();
+        }
+      })
+      .onFinalize(() => {
+        start.current.eligible = false;
+        resetEdge();
+      });
+  }, [motionState, openGesturesBlocked, position, resetEdge]);
+  return { gesture, edgeRef };
+}
 
 function isCurrentSelection(startedRevision: number): boolean {
   return usePanelStore.getState().mobilePanel.revision === startedRevision;
@@ -143,6 +237,15 @@ export function useCloseAgentListGesture() {
   const { startedRevision, touchStartX, touchStartY } = useGestureState();
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
   const commit = useRevisionCommit(showMobileAgent);
+  const pathname = usePathname();
+  const { ref: edgeRef, reset: resetEdge } = useEdgePanReservation(
+    "right",
+    () =>
+      !hasActiveOverlay() &&
+      canBeginMobilePanelGesture(motionState.value, "agent-list", position.value),
+    () =>
+      !hasActiveOverlay() ? `${pathname}:${usePanelStore.getState().mobilePanel.revision}` : null,
+  );
 
   const gesture = useMemo(
     () =>
@@ -203,8 +306,12 @@ export function useCloseAgentListGesture() {
           if (result) {
             scheduleOnRN(commit, result.startedRevision);
           }
+        })
+        .onFinalize(() => {
+          scheduleOnRN(resetEdge);
         }),
     [
+      resetEdge,
       beginGesture,
       commit,
       finishGesture,
@@ -219,7 +326,7 @@ export function useCloseAgentListGesture() {
     ],
   );
 
-  return { gesture, gestureRef: leftCloseGestureRef };
+  return { gesture, gestureRef: leftCloseGestureRef, edgeRef };
 }
 
 interface OpenFileExplorerGestureOptions {

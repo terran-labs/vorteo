@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useId, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import Svg, { Circle } from "react-native-svg";
+import Svg, { Circle, Defs, G, LinearGradient, Mask, Stop } from "react-native-svg";
+import { CONTEXT_RING_SEGMENTS, CONTEXT_RING_FILL_RATIO } from "./ring";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
@@ -25,8 +26,7 @@ const DONUT_STROKE = 12;
 const DONUT_RADIUS = (DONUT_SIZE - DONUT_STROKE) / 2;
 const DONUT_CIRCUMFERENCE = 2 * Math.PI * DONUT_RADIUS;
 const DONUT_CENTER = DONUT_SIZE / 2;
-/** The 2px surface gap between adjacent fills. */
-const DONUT_GAP = 2;
+const DONUT_STEP = DONUT_CIRCUMFERENCE / CONTEXT_RING_SEGMENTS;
 
 /**
  * The context window's composition: a donut beside the headline numbers, then a legend with each
@@ -180,36 +180,61 @@ function DonutGraphic({
   free: string;
   scheme: Theme["colorScheme"];
 }) {
+  const maskId = `context-segments-${useId().replace(/:/g, "")}`;
+  const usedGradientId = `${maskId}-used`;
   const strokeFor = (segment: DonutSegment) => {
+    // Totals have no category meanings to encode; the color sweep is decorative.
+    if (segment.key === "used") return `url(#${usedGradientId})`;
     if (segment.slot !== null) return seriesColor(segment.slot, scheme);
     return segment.kind === "buffer" ? buffer : free;
   };
   return (
     <Svg width={DONUT_SIZE} height={DONUT_SIZE} viewBox={`0 0 ${DONUT_SIZE} ${DONUT_SIZE}`}>
-      <Circle
-        cx={DONUT_CENTER}
-        cy={DONUT_CENTER}
-        r={DONUT_RADIUS}
-        fill="none"
-        stroke={track}
-        strokeWidth={DONUT_STROKE}
-      />
-      {segments.map((segment) => (
+      <Defs>
+        <LinearGradient id={usedGradientId} x1="0%" y1="0%" x2="100%" y2="100%">
+          <Stop offset="0%" stopColor={seriesColor(0, scheme)} />
+          <Stop offset="50%" stopColor={seriesColor(6, scheme)} />
+          <Stop offset="100%" stopColor={seriesColor(2, scheme)} />
+        </LinearGradient>
+        <Mask id={maskId}>
+          <Circle
+            cx={DONUT_CENTER}
+            cy={DONUT_CENTER}
+            r={DONUT_RADIUS}
+            fill="none"
+            stroke="white"
+            strokeWidth={DONUT_STROKE}
+            strokeDasharray={`${DONUT_STEP * CONTEXT_RING_FILL_RATIO} ${DONUT_STEP * (1 - CONTEXT_RING_FILL_RATIO)}`}
+            transform={`rotate(-90 ${DONUT_CENTER} ${DONUT_CENTER})`}
+          />
+        </Mask>
+      </Defs>
+      <G mask={`url(#${maskId})`}>
         <Circle
-          key={segment.key}
           cx={DONUT_CENTER}
           cy={DONUT_CENTER}
           r={DONUT_RADIUS}
           fill="none"
-          stroke={strokeFor(segment)}
+          stroke={track}
           strokeWidth={DONUT_STROKE}
-          strokeDasharray={`${segment.length} ${DONUT_CIRCUMFERENCE - segment.length}`}
-          // Dash offsets run backwards; SVG strokes start at three o'clock.
-          strokeDashoffset={-segment.offset}
-          // A transform string, not rotation/origin, so web renders no transform-origin attribute.
-          transform={`rotate(-90 ${DONUT_CENTER} ${DONUT_CENTER})`}
         />
-      ))}
+        {segments.map((segment) => (
+          <Circle
+            key={segment.key}
+            cx={DONUT_CENTER}
+            cy={DONUT_CENTER}
+            r={DONUT_RADIUS}
+            fill="none"
+            stroke={strokeFor(segment)}
+            strokeWidth={DONUT_STROKE}
+            strokeDasharray={`${segment.length} ${DONUT_CIRCUMFERENCE - segment.length}`}
+            // Dash offsets run backwards; SVG strokes start at three o'clock.
+            strokeDashoffset={-segment.offset}
+            // A transform string, not rotation/origin, so web renders no transform-origin attribute.
+            transform={`rotate(-90 ${DONUT_CENTER} ${DONUT_CENTER})`}
+          />
+        ))}
+      </G>
     </Svg>
   );
 }
@@ -229,7 +254,7 @@ function Donut({ model, percentage }: { model: ContextBreakdownModel; percentage
       segments: model.segments,
       total: model.maxTokens,
       circumference: DONUT_CIRCUMFERENCE,
-      gap: DONUT_GAP,
+      gap: 0,
     }).flatMap((arc): DonutSegment[] => {
       const row = rows.get(arc.key);
       return row ? [{ ...arc, slot: row.slot, kind: row.kind }] : [];

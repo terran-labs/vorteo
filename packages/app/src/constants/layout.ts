@@ -11,9 +11,9 @@ export const NEW_WORKSPACE_CARD_HEIGHT = 240;
 // This ensures both headers have the same visual height
 export const HEADER_INNER_HEIGHT = 36;
 export const VORTON_HEADER_HEIGHT = 48;
-export const HEADER_INNER_HEIGHT_MOBILE = 56;
+export const HEADER_INNER_HEIGHT_MOBILE = 44;
 export const WORKSPACE_SECONDARY_HEADER_HEIGHT = 36;
-export const HEADER_TOP_PADDING_MOBILE = 8;
+export const HEADER_TOP_PADDING_MOBILE = 3;
 
 // Measured composer width; independent of the window's compact/wide breakpoint.
 export const COMPACT_CONTENT_WIDTH = 500;

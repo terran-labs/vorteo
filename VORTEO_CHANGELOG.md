@@ -2,6 +2,12 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-10
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.901 - 2026-11-09
 
 This candidate includes the reviewed shutdown registration repair alongside the interface and installer updates prepared in 26.11.900. Release validation and installed acceptance are required before promotion.

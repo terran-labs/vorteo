@@ -164,8 +164,8 @@ export function createLiveDev(options: LiveDevServiceOptions) {
       recordError = null;
     } catch (error) {
       record = null;
-      recordError = "The live dev mode record is unreadable.";
-      logger.error({ err: error }, "Live dev mode record is unreadable; serving static");
+      recordError = "The installation type record is unreadable.";
+      logger.error({ err: error }, "Installation type unreadable; serving static");
     }
     apply(record?.mode ?? "reliable");
   }
@@ -277,7 +277,40 @@ export function createLiveDev(options: LiveDevServiceOptions) {
     return true;
   }
 
+  /**
+   * The installation type, changed through its own owner route, decides the mode, so a change
+   * there reaches the dev server on the next poll.
+   */
+  let reloading = false;
+  async function followInstallationType(): Promise<void> {
+    if (reloading) return;
+    reloading = true;
+    try {
+      const previous = record?.mode ?? null;
+      const before = recordError;
+      try {
+        record = await readLiveDevMode(config.stateDir);
+        recordError = null;
+      } catch (error) {
+        record = null;
+        recordError = "The installation type record is unreadable.";
+        if (before === null)
+          logger.error({ err: error }, "Installation type unreadable; serving static");
+      }
+      const mode = record?.mode ?? "reliable";
+      if (mode !== (previous ?? "reliable")) {
+        if (mode === "live" && preparation.state === "failed") preparation.state = "idle";
+        apply(mode);
+      }
+    } finally {
+      reloading = false;
+    }
+  }
+
   const timer = setInterval(() => {
+    // In the owner change chain, so a poll can never cache a reading older than a change.
+    const poll = changes.then(followInstallationType);
+    changes = poll.catch(() => undefined);
     if (record?.mode === "live") void supervisor?.checkRestartRequest();
   }, RESTART_REQUEST_POLL_MS);
   timer.unref();

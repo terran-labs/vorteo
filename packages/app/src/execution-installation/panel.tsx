@@ -520,7 +520,7 @@ function InstallationSystemAdvancedBody({ model }: { model: InstallationPanelMod
     <>
       <DaemonAutomationControl model={model} state={state} />
       <CustomDomainCard model={model} state={state} />
-      <DeliveryModeCard model={model} state={state} />
+      <DeliveryModeCard state={state} />
     </>
   ) : null;
 }
@@ -1613,31 +1613,24 @@ function DeliveryModeSettingBody({ model }: { model: InstallationPanelModel }) {
     loaded.current = true;
     void model.refresh();
   }, [model, needsLoad]);
-  return <DeliveryModeCard model={model} state={state} />;
+  return <DeliveryModeCard state={state} />;
 }
 
-/** Reliable serves the published interface; Live dev serves the Host's live checkout. */
-function DeliveryModeCard({
-  model,
-  state,
-}: {
-  model: InstallationPanelModel;
-  state: ReturnType<InstallationPanelModel["getState"]>;
-}) {
+/**
+ * Live development status. Lab serves the Host's live checkout and Stable the published
+ * interface, so the installation type is the only switch; this card reports what is served.
+ */
+function DeliveryModeCard({ state }: { state: ReturnType<InstallationPanelModel["getState"]> }) {
   const status = state.liveDev;
   const live = status?.mode === "live";
-  const toggle = useCallback(
-    () => void model.changeLiveDev(live ? "reliable" : "live"),
-    [model, live],
-  );
   if (!status) return null;
   return (
     <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="delivery-mode-card">
-      <Text style={settingsStyles.rowTitle}>Delivery mode</Text>
+      <Text style={settingsStyles.rowTitle}>Live development</Text>
       <Text style={styles.text}>
         {live
-          ? "Live dev. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers and the recovery address keep the published interface."
-          : "Reliable. Every browser runs the published interface, and changes arrive through tracked updates."}
+          ? "On, because this is a Lab installation. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers keep the published interface."
+          : "Off. Every browser runs the published interface. Choose Lab as the installation type to turn on live development."}
       </Text>
       {live ? (
         <Text style={styles.text} testID="delivery-mode-server">
@@ -1647,18 +1640,10 @@ function DeliveryModeCard({
       {!status.available && status.reason ? <Text style={styles.text}>{status.reason}</Text> : null}
       {!live && status.available ? (
         <Text style={styles.text}>
-          Live dev runs uncommitted edits by Host agents in your signed-in browser without a
+          Live development runs uncommitted edits by Host agents in your signed-in browser without a
           publication step. Dev container agents cannot reach the live checkout.
         </Text>
       ) : null}
-      <Button
-        size="md"
-        disabled={state.busy || (!live && !status.available)}
-        onPress={toggle}
-        testID="delivery-mode-change"
-      >
-        {live ? "Switch to Reliable" : "Switch to Live dev"}
-      </Button>
       {live ? (
         <Text style={styles.text}>
           If a live edit breaks the interface, open the safe interface at /?interface=safe.
