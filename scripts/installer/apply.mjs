@@ -477,7 +477,12 @@ export async function repair(context, emit) {
  * verified its tag), point the Host link at it and restart the Host daemon. The
  * coordinator replaces itself afterwards through its own link. Writes `outcome` as JSON.
  */
-export async function hostRelease(context, { revision, outcome }) {
+/**
+ * Builds the Host release for `revision`, then selects it and restarts the Host. With
+ * `buildOnly` it stops after the build, so an upgrade can build Dev from it and restart
+ * everything at the end; a later call without it reuses the built release.
+ */
+export async function hostRelease(context, { revision, outcome, buildOnly = false }) {
   const report = (value) => writeFileSync(outcome, JSON.stringify(value) + "\n", { mode: 0o600 });
   try {
     if (!/^[0-9a-f]{40}$/.test(revision ?? ""))
@@ -509,6 +514,14 @@ export async function hostRelease(context, { revision, outcome }) {
         marker,
         JSON.stringify({ revision, builtAt: context.now().toISOString() }) + "\n",
       );
+    }
+    if (buildOnly) {
+      report({
+        status: "succeeded",
+        release,
+        detail: `Built the Host release ${revision.slice(0, 12)}.`,
+      });
+      return true;
     }
     pointLink(plan.paths.hostReleaseLink, release);
     await manager.restart(plan.services.host);

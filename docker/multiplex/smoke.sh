@@ -7,6 +7,8 @@ docker run --rm --network none -e PASEO_PASSWORD=ci-disposable-password --entryp
   pi --version
   gh --version
   test -s /etc/paseo-server-entry
+  # Without a mounted Dev release, Dev runs the daemon baked into the image.
+  test "$(node /usr/local/lib/paseo/server-entry.cjs | head -1)" = "$(cat /etc/paseo-server-entry)"
   test -x /usr/local/bin/paseo-preview
   /usr/bin/setpriv --reuid=paseo --regid=paseo --init-groups \
     --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
