@@ -6604,6 +6604,7 @@ test("reloadAgentSession terminalizes running provider children when preserving 
 test("hydrateTimelineFromProvider restores and broadcasts provider children from session history", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-provider-child-history-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
+  let session: TestAgentSession | undefined;
   class ProviderChildHistorySession extends TestAgentSession {
     override async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
       yield {
@@ -6613,14 +6614,15 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
           type: "upsert",
           id: "restored-child",
           title: "Restored child",
-          status: "completed",
+          status: "running",
         },
       };
     }
   }
   class ProviderChildHistoryClient extends TestAgentClient {
     override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
-      return new ProviderChildHistorySession(config);
+      session = new ProviderChildHistorySession(config);
+      return session;
     }
   }
   const manager = new AgentManager({
@@ -6638,6 +6640,9 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
     replayState: false,
   });
 
+  await storage.applySnapshot(manager.getAgent(snapshot.id)!);
+  const record = (await storage.get(snapshot.id))!;
+  await storage.upsert({ ...record, archivedAt: new Date().toISOString() });
   await manager.hydrateTimelineFromProvider(snapshot.id, { force: true, broadcast: true });
 
   expect(manager.listProviderSubagents(snapshot.id)).toEqual([
@@ -6645,7 +6650,7 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
       id: "restored-child",
       parentAgentId: snapshot.id,
       title: "Restored child",
-      status: "completed",
+      status: "running",
     }),
   ]);
   expect(manager.listProviderSubagentActivity()).toEqual([
@@ -6664,6 +6669,25 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
       }),
     },
   });
+  expect(manager.getRestartImpact().agents).toEqual([]);
+
+  const liveChild = (status: "running" | "completed") => {
+    session!.pushEvent({
+      type: "provider_subagent",
+      provider: "codex",
+      event: { type: "upsert", id: "restored-child", title: "Restored child", status },
+    });
+  };
+  liveChild("running");
+  expect(manager.getRestartImpact().agents).toEqual([
+    { id: `${snapshot.id}/restored-child`, title: "Restored child", status: "running" },
+  ]);
+  liveChild("completed");
+  expect(manager.getRestartImpact().agents).toEqual([]);
+  await manager.flush();
+  await manager.hydrateTimelineFromProvider(snapshot.id, { force: true });
+  expect(manager.getProviderSubagent(snapshot.id, "restored-child")?.status).toBe("completed");
+  await storage.flush();
 });
 
 test("force provider hydration removes children absent from current history", async () => {

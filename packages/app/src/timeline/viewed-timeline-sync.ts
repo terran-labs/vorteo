@@ -312,7 +312,7 @@ export interface ViewedTimelineSyncPorts {
   readCursor(agentId: string): { epoch: string; endSeq: number } | undefined;
   fetchPage(
     agentId: string,
-    request: ProjectedTimelineForwardFetchPlan,
+    request: ProjectedTimelineForwardFetchPlan & { retryHistory?: true },
   ): Promise<TimelinePageResult>;
   fetchLatestTail(agentId: string): Promise<TimelinePageResult>;
   /**
@@ -544,11 +544,15 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     generation: number,
     request: ProjectedTimelineForwardFetchPlan,
     fallbackToLatestTailOnOverflow: boolean,
+    retryHistory = false,
   ): Promise<void> => {
     if (!ownsCatchUp(agentId, generation)) return;
 
     try {
-      const page = await ports.fetchPage(agentId, request);
+      const page = await ports.fetchPage(
+        agentId,
+        retryHistory ? { ...request, retryHistory: true } : request,
+      );
       if (!ownsCatchUp(agentId, generation)) return;
       if (page.hasNewer && page.endCursor) {
         if (fallbackToLatestTailOnOverflow) {
@@ -619,9 +623,10 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     options: {
       request?: ProjectedTimelineForwardFetchPlan;
       supersede?: boolean;
+      retryHistory?: boolean;
     } = {},
   ) => {
-    const { request, supersede = false } = options;
+    const { request, supersede = false, retryHistory = false } = options;
     if (!canCatchUp(agentId)) {
       if (request) pendingCatchUps.set(agentId, request);
       return;
@@ -654,6 +659,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       generation,
       nextRequest,
       request === undefined && nextRequest.direction === "after",
+      retryHistory,
     );
   };
 
@@ -715,7 +721,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       return;
     }
     if (catchUp?.status === "error") {
-      startCatchUp(agentId, { request: catchUp.request, supersede: true });
+      startCatchUp(agentId, { request: catchUp.request, supersede: true, retryHistory: true });
     }
   };
 
