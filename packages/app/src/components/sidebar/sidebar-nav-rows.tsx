@@ -1,6 +1,6 @@
 import { useOpenNewWorkspace } from "@/hooks/use-open-new-workspace";
 import { router, usePathname } from "expo-router";
-import { CalendarClock, History, Plus, Search } from "lucide-react-native";
+import { CalendarClock, History, LayoutDashboard, Plus, Search } from "lucide-react-native";
 import { memo, useCallback, useMemo, useRef, type ComponentType, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { View, type StyleProp, type ViewStyle } from "react-native";
@@ -29,9 +29,7 @@ interface SidebarNavRowsProps extends SidebarNavRowProps {
 }
 
 /**
- * Top-level sidebar navigation, ordered and filtered by the user's
- * `sidebarNavItems` preference. Renders nothing — not even the bordered group
- * wrapper — when every item is hidden and there is no `firstRowTrailing`.
+ * Global dashboard navigation and the user's configured header items.
  */
 export function SidebarNavRows({ style, onBeforeNavigate, firstRowTrailing }: SidebarNavRowsProps) {
   const { items } = useSidebarNavItems("header");
@@ -42,9 +40,7 @@ export function SidebarNavRows({ style, onBeforeNavigate, firstRowTrailing }: Si
   );
   const groupRef = useRef<View | null>(null);
 
-  if (visibleItems.length === 0 && !firstRowTrailing) return null;
-
-  const [firstRow, ...restRows] = visibleItems.map((item) => {
+  const rows = visibleItems.map((item) => {
     if (item.kind === "plugin") {
       return (
         <PluginSidebarItem
@@ -59,6 +55,8 @@ export function SidebarNavRows({ style, onBeforeNavigate, firstRowTrailing }: Si
     const Row = BUILTIN_ROWS[item.id];
     return <Row key={item.key} onBeforeNavigate={onBeforeNavigate} />;
   });
+  rows.push(<DashboardSidebarRow key="dashboard" onBeforeNavigate={onBeforeNavigate} />);
+  const [firstRow, ...restRows] = rows;
 
   return (
     <View ref={groupRef} collapsable={false} style={style}>
@@ -72,6 +70,24 @@ export function SidebarNavRows({ style, onBeforeNavigate, firstRowTrailing }: Si
       )}
       {restRows}
     </View>
+  );
+}
+
+function DashboardSidebarRow({ onBeforeNavigate }: SidebarNavRowProps) {
+  const selected = usePathname() === "/dashboard";
+  const navigate = useCallback(() => {
+    onBeforeNavigate?.();
+    router.navigate("/dashboard");
+  }, [onBeforeNavigate]);
+  return (
+    <SidebarHeaderRow
+      icon={LayoutDashboard}
+      label="Dashboard"
+      onPress={navigate}
+      isActive={selected}
+      testID="sidebar-dashboard"
+      variant="compact"
+    />
   );
 }
 

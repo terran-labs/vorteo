@@ -139,6 +139,9 @@ it("only mounts details on disclosure and keeps them open through status polls",
   const { rerender } = render(<SystemPane restartRecovery={recovery} />);
   fireEvent.click(screen.getByRole("button", { name: "Host Details" }));
   expect(screen.getByText("Connection check")).toBeTruthy();
+  // Diagnostics fold away until asked for (#656).
+  expect(screen.queryByText("PID: 42")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Diagnostics" }));
   expect(screen.getByText("PID: 42")).toBeTruthy();
   mocks.status = "updating";
   mocks.services = "attention";

@@ -2459,6 +2459,7 @@ export class VoiceAssistantWebSocketServer {
         // is >= v0.2.0.
         forgeSearch: true,
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
+        dashboardMetrics: true,
         ...(this.advertiseDaemonStatusRpc ? { daemonStatusRpc: true } : {}),
         // COMPAT(daemonConfigReload): added in v0.4.0, remove gate after 2027-02-14.
         daemonConfigReload: true,

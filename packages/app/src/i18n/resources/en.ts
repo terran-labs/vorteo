@@ -558,6 +558,8 @@ export const en = {
       question: "How would you like to proceed?",
       mode: "This thread is in {{mode}} mode.",
       proposedPlan: "Proposed plan",
+      questionNotFound: "Couldn't find where this question was asked in the conversation.",
+      approvalNotFound: "Couldn't find where this approval was requested in the conversation.",
     },
   },
   agentPanel: {

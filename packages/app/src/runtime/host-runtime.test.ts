@@ -27,6 +27,7 @@ import { useSessionStore, type Agent } from "@/stores/session-store";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { isAgentArchiving, setAgentArchiving } from "@/hooks/use-archive-agent";
 import { queryClient } from "@/data/query-client";
+import { dashboardHistoryKey } from "@/screens/dashboard/cache";
 import {
   __private__ as hostRuntimePrivate,
   HostRuntimeController,
@@ -4278,6 +4279,19 @@ describe("HostRuntimeStore initial connection hint bootstrap", () => {
       ]),
     });
     await waitForHostOnline(store, host.serverId);
+    const authorized = store.getSnapshot(host.serverId)!;
+    const historyKey = [
+      ...dashboardHistoryKey(host.serverId),
+      authorized.authorizationGeneration,
+      authorized.connectionEpoch,
+    ];
+    const history = [
+      { at: "2026-11-25T12:00:00.000Z", values: { workspaces: 1 }, unavailable: [] },
+    ];
+    queryClient.setQueryData(historyKey, history);
+    client.setConnectionState({ status: "disconnected", reason: "Network lost" });
+    expect(queryClient.getQueryData(historyKey)).toEqual(history);
+
     client.authFailureReason = "incorrect_password";
     client.setConnectionState({ status: "disconnected", reason: "Incorrect password" });
     await onceHostSnapshotMatches(
@@ -4287,7 +4301,10 @@ describe("HostRuntimeStore initial connection hint bootstrap", () => {
     );
     expect(store.getSnapshot(host.serverId)?.lastError).toBe("Incorrect password");
     expect(client.reconnectEnabledChanges.at(-1)).toBe(false);
+    expect(queryClient.getQueryData(historyKey)).toBeUndefined();
+    queryClient.setQueryData(historyKey, history);
     store.syncHosts([]);
+    expect(queryClient.getQueryData(historyKey)).toBeUndefined();
   });
 
   it("tries another connection after the active connection rejects its password", async () => {

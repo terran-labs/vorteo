@@ -136,6 +136,19 @@ function assertUnclipped(card: HTMLElement, width: number) {
   }
 }
 
+/** Opens Host's In progress section when `open`; returns a reader for its content (#656). */
+async function openInProgressIf(container: HTMLElement, open: boolean) {
+  const content = () =>
+    container.querySelector<HTMLElement>('[data-testid="system-in-progress-host-content"]');
+  if (open && !content())
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="system-in-progress-host-toggle"]')!
+        .click();
+    });
+  return content;
+}
+
 test("production broker review preserves exact evidence and manual gates at desktop and 390px", async () => {
   vi.stubGlobal("React", React);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -185,6 +198,10 @@ test("production broker review preserves exact evidence and manual gates at desk
       ] as const) {
         current = { ...reviewJob, status, stage };
         await act(() => model.refresh());
+        // Approved and running requests no longer wait on the owner: they fold into In
+        // progress (#656), which is opened only for them. Pending and recovery stay open.
+        const folded = status === "approved" || status === "running";
+        const progressContent = await openInProgressIf(container, folded);
         const details = page.getByRole("button", {
           name: "Details",
           exact: true,
@@ -197,6 +214,8 @@ test("production broker review preserves exact evidence and manual gates at desk
         const card = container.querySelector<HTMLElement>(
           `[data-testid="broker-request-${current.id}"]`,
         )!;
+        // The card is inside In progress exactly when the request no longer waits on the owner.
+        expect(Boolean(progressContent()?.contains(card))).toBe(folded);
         expect(card.checkVisibility()).toBe(true);
         await expect.element(page.getByText(current.reason, { exact: true })).toBeVisible();
         for (const value of [
@@ -321,6 +340,10 @@ test("broker decision errors remain visible and confirmed results replace the ca
       return current;
     };
     await page.getByTestId(`broker-${current.id}-approve`).click();
+    // A succeeded request no longer waits on the owner; its result is in History (#656).
+    await act(async () => {
+      await page.getByTestId("restart-history-toggle").click();
+    });
     await expect
       .element(
         page.getByText(

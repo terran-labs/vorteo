@@ -1,3 +1,6 @@
+import { createDashboardCollector, summarizeDashboard } from "./dashboard-history.js";
+import { collectDashboardSources } from "./dashboard-sources.js";
+import { createDashboardIntervalUsage } from "./dashboard-usage.js";
 import { loadPersistedConfig } from "./persisted-config.js";
 import { BlockedTaskReviewService } from "./agent/task-checklist/review-service.js";
 import { ChecklistWakeService } from "./agent/task-checklist/wake-service.js";
@@ -600,6 +603,7 @@ export interface PaseoDaemon {
 }
 
 export interface PaseoDaemonDependencies {
+  collectDashboardSources?: typeof collectDashboardSources;
   createGovernedScheduleRuntime?: CreateGovernedScheduleRuntime;
   builtinPlugins?: BuiltinPluginLoader;
   hubRelationshipRemote?: HubRelationshipRemote;
@@ -2098,6 +2102,25 @@ export async function createPaseoDaemon(
     if (optimizerAgent === null) optimizerAgent = startOptimizerSeeding(environment);
   };
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
+  const measureInterval = createDashboardIntervalUsage();
+  const readDashboardSources = dependencies.collectDashboardSources ?? collectDashboardSources;
+  const dashboard = createDashboardCollector(
+    config.paseoHome,
+    async (_signal, at, lastRecordedAt) => {
+      const [projects, workspaces, agents] = await Promise.all([
+        projectRegistry.list(),
+        archiveWorkspaceRegistry.list(),
+        agentStorage.list(),
+      ]);
+      return {
+        ...summarizeDashboard(projects, workspaces, agents),
+        ...measureInterval(agents, at, lastRecordedAt),
+      };
+    },
+    logger,
+    async (home, now, values, signal) =>
+      readDashboardSources(home, now, values, signal, await projectRegistry.list()),
+  );
   const persistedRecords = await agentStorage.list();
   logger.info(
     { elapsed: elapsed() },
@@ -2365,7 +2388,9 @@ export async function createPaseoDaemon(
 
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
 
+  let dashboardStopRequested = false;
   const start = async () => {
+    dashboardStopRequested = false;
     let mainStarted = false;
     try {
       localCredential = await writeLocalCredential(config.paseoHome);
@@ -2622,11 +2647,13 @@ export async function createPaseoDaemon(
       // model loading doesn't block the server from accepting connections.
       speechService.start();
       scriptHealthMonitor.start();
+      if (!dashboardStopRequested) dashboard.start();
       blockedTaskReviews.start();
       usageLimitResumes.start();
       // After listening, so the first Optimizer agent never delays startup.
       void systemSeeded.then(activateOptimizerAgent);
     } catch (error) {
+      await dashboard.stop();
       checklistMonitoring = false;
       checklistWakes.stop();
       blockedTaskReviews.stop();
@@ -2676,6 +2703,9 @@ export async function createPaseoDaemon(
 
   /** onStep names each awaited stage, so a stalled shutdown reports where it stopped. */
   const stop = async (options?: { onStep?: (step: string) => void; keepTerminals?: boolean }) => {
+    // A pending start can finish after shutdown has begun.
+    dashboardStopRequested = true;
+    const dashboardStopped = dashboard.stop();
     const step = options?.onStep ?? (() => {});
     optimizerAgent?.stop();
     projectFactoryService?.stop();
@@ -2691,7 +2721,12 @@ export async function createPaseoDaemon(
     agentManager.prepareForShutdown();
     // Revoke remote execution authority before asynchronous fork teardown.
     step("hub relationships");
-    await hubRelationships.stop();
+    try {
+      await hubRelationships.stop();
+    } finally {
+      step("dashboard sampling");
+      await dashboardStopped;
+    }
     step("schedules");
     await scheduleService.stop().catch(() => undefined);
     const governedFailures: unknown[] = [];

@@ -11,6 +11,7 @@ import {
 } from "@/execution-installation/failure-review";
 import type { HealthDismissalQueue } from "@getpaseo/protocol/health-dismissals";
 import type { HealthCard, HealthCardHost } from "@/execution-installation/health-cards";
+import { restartOwnerState } from "@/execution-installation/owner-waiting";
 import { currentSystemRestarts, type InstallationSystemState } from "./system-adapter-model";
 
 /**
@@ -89,7 +90,12 @@ const QUEUES: readonly QueueDefinition[] = [
     id: "restarts",
     dismissalQueue: "restart",
     noun: "restart request",
-    jobs: currentSystemRestarts,
+    // A pending restart another agent handles, or recorded policy will approve, is not
+    // waiting on the owner: it counts nowhere, matching Details and the Host card (#656).
+    jobs: (state) =>
+      currentSystemRestarts(state).filter(
+        (job) => job.status !== "pending" || restartOwnerState(job) === "waiting",
+      ),
     targetKey: byTarget as TargetKey<ReviewableJob>,
     card: "restarts",
     pane: "system.overview",

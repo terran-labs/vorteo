@@ -270,7 +270,11 @@ test("the session host card requests, reviews and decides exact plans at 390px",
 
       await press(`session-host-${job.id}-approve`);
       expect(decisions).toEqual([{ job, decision: "approve" }]);
-      // Approved and waiting for dispatch: no second approval, cancellation still possible.
+      // Approved, it no longer waits on the owner and folds into In progress (#656). Open it:
+      // waiting for dispatch, there is no second approval and cancellation is still possible.
+      // The owner's own decision stays in view as one line, so the tap visibly did something.
+      expect(byTestId(`decided-${job.id}`)).not.toBeNull();
+      await press("system-in-progress-host-toggle");
       expect(disabled(`session-host-${job.id}-approve`)).toBe(true);
       expect(disabled(`session-host-${job.id}-cancel`)).toBe(false);
     }
@@ -589,6 +593,55 @@ test.each([
       (control) => control.getAttribute("aria-disabled") !== "true",
     );
     expect(controls.length).toBeGreaterThan(0);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    queues = noQueues();
+    overview = { jobs: [], status: sessionHostStatusFixture };
+  }
+});
+
+// #656: Host Details opens only what waits on the owner. Many finished records stay folded in
+// History until it is expanded, while an approval the owner must give is visible at once.
+test("finished records stay folded while a waiting approval is visible", async () => {
+  vi.stubGlobal("React", React);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const finished = Array.from({ length: 12 }, (_, index) => ({
+    ...brokerReviewFixture,
+    id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    revision: `00000000-0000-4000-9000-${String(index + 1).padStart(12, "0")}`,
+    status: "succeeded",
+    createdAt: new Date(Date.UTC(2026, 10, 1, index)).toISOString(),
+  }));
+  queues = { ...noQueues(), brokers: finished as never[] };
+  const waiting = {
+    ...sessionHostJobFixture,
+    status: "pending" as const,
+    stage: "prepared" as const,
+  };
+  overview = { jobs: [waiting], status: sessionHostStatusFixture };
+  sessionValid = true;
+  await page.viewport(1280, 900);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<InstallationSystemDetails target="host" />));
+    const model = await vi.waitFor(() => {
+      expect(capture.model).toBeDefined();
+      return capture.model!;
+    });
+    await act(() => model.initialize());
+    await act(() => model.refresh());
+    const shown = (prefix: string) =>
+      container.querySelectorAll(`[data-testid^="${prefix}"]`).length;
+    // The waiting session host request is open; no finished broker record is on the page.
+    await vi.waitFor(() => expect(shown(`session-host-request-${waiting.id}`)).toBe(1));
+    expect(shown("broker-request-")).toBe(0);
+    await act(async () => {
+      await page.getByTestId("restart-history-toggle").click();
+    });
+    await vi.waitFor(() => expect(shown("broker-request-")).toBe(finished.length));
   } finally {
     act(() => root.unmount());
     container.remove();

@@ -258,6 +258,16 @@ it.each([
     "healthy",
   ],
   [
+    "a pending restart another agent is handling",
+    {
+      jobs: [{ ...job("r2", "pending", "2026-11-14T00:00:00Z"), delegatedTo: "Builds" }],
+      pendingJobs: [{ ...job("r2", "pending", "2026-11-14T00:00:00Z"), delegatedTo: "Builds" }],
+    },
+    [],
+    [],
+    "healthy",
+  ],
+  [
     "latest failed restart",
     { jobs: [job("r1", "failed", "2026-11-14T00:00:00Z")] },
     [],

@@ -1,3 +1,4 @@
+import { readDashboardHistory } from "./dashboard-history.js";
 import { randomBytes } from "node:crypto";
 import { normalizeGitOptions } from "./worktree-session.js";
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
@@ -3017,6 +3018,8 @@ export class Session {
     msg: SessionInboundMessage,
     source?: object,
   ): Promise<void> | undefined {
+    if (msg.type === "dashboard.get_metrics.request")
+      return this.readDashboardMetrics(msg.requestId);
     return (
       this.dispatchTerminalMessage(msg, source) ??
       this.dispatchScheduleMessage(msg) ??
@@ -10097,6 +10100,21 @@ export class Session {
           success: false,
           error: message,
         },
+      });
+    }
+  }
+
+  private async readDashboardMetrics(requestId: string): Promise<void> {
+    try {
+      const samples = await readDashboardHistory(this.paseoHome);
+      this.emit({
+        type: "dashboard.get_metrics.response",
+        payload: { requestId, samples, error: null },
+      });
+    } catch {
+      this.emit({
+        type: "dashboard.get_metrics.response",
+        payload: { requestId, samples: [], error: "Dashboard history could not be read." },
       });
     }
   }

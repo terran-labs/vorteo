@@ -264,6 +264,9 @@ export const ptBR: TranslationResources = {
       implement: "Implementar",
       question: "Como você quer prosseguir?",
       proposedPlan: "Plano proposto",
+      questionNotFound: "Não foi possível encontrar onde esta pergunta foi feita na conversa.",
+      approvalNotFound:
+        "Não foi possível encontrar onde esta aprovação foi solicitada na conversa.",
       mode: "Esta conversa está no modo {{mode}}.",
     },
   },

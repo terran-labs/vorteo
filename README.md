@@ -21,6 +21,8 @@ After sign-in, the setup guide helps you choose an appearance, choose one detect
 
 ## Power Tools to Manage Your Fleet
 
+- **Open Dashboard above All Factories.** Review hourly workspace counts, reported token usage and API-equivalent spend on your phone. Each connected daemon keeps its observations while the app is closed.
+
 - **Use less data on slow connections.** Vorteo saves data automatically when your browser asks it to, using system fonts and keeping diagrams as readable source until requested. To force it on or off, use Enable data saver on the startup screen; Follow browser in Settings > Interface > Fonts returns to automatic. Remote work still requires a reachable Host. See [data saving](docs/vorteo-customizations.md#projects-devices-and-interface).
 
 - **Try a workspace before connecting.** Choose Demo on the browser welcome page to explore simulated projects, tasks, conversations, files and changes. Try Vorton's six themes from the sidebar menu, with Dark Star as the default. The adjacent zoom slider, also driven by Cmd or Ctrl with plus and minus, scales the whole browser interface and remembers your preferred size. Demo edits stay in the current browser tab and Reset restores the samples. See [appearance and demo behavior](docs/vorteo-customizations.md#projects-devices-and-interface).

@@ -585,7 +585,11 @@ export class AgentStorage {
     return structuredClone(committed);
   }
 
-  async mutateQuestions(agentId: string, mutation: QuestionMutation): Promise<AgentQuestion[]> {
+  async mutateQuestions(
+    agentId: string,
+    mutation: QuestionMutation,
+    position: { askedSeq?: number; askedEpoch?: string } = {},
+  ): Promise<AgentQuestion[]> {
     await this.load();
     let committed: AgentQuestion[] | null = null;
     await this.queueRecordMutation(
@@ -603,6 +607,7 @@ export class AgentStorage {
           askedBy: agentId,
           now: new Date().toISOString(),
           taskIds,
+          ...position,
         });
         if (committed === questions) return null;
         // Withdrawing a confirmation question cancels its launch in the same write.

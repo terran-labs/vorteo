@@ -15,6 +15,8 @@ import { useHosts } from "@/runtime/host-runtime";
 import { useShallow } from "zustand/shallow";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
+import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
+import { openConversationTarget } from "./conversation-target";
 import { OpenQuestion, useQuestionAnswer } from "./card";
 import {
   collectThreadQuestions,
@@ -107,45 +109,36 @@ function ThreadQuestionGroup({
     thread.agentId,
     false,
   );
-  const openThread = useCallback(() => {
+  const showTasks = useCallback(() => {
     onBeforeNavigate?.();
     navigateToAgent({ serverId: thread.serverId, agentId: thread.agentId });
   }, [onBeforeNavigate, thread.agentId, thread.serverId]);
-  const origin = [thread.projectLabel, thread.hostLabel].filter(Boolean).join(" · ");
-  const context = useMemo(
-    () => (
-      <View style={styles.origin}>
-        <View style={styles.originText}>
-          <Text style={styles.thread} numberOfLines={1}>
-            {thread.threadTitle}
-          </Text>
-          {origin ? (
-            <Text style={styles.project} numberOfLines={1}>
-              {origin}
-            </Text>
-          ) : null}
-        </View>
-        <Button
-          variant="ghost"
-          size="md"
-          leftIcon={ArrowUpRight}
-          onPress={openThread}
-          accessibilityLabel={`Open thread ${thread.threadTitle}`}
-          testID={`global-open-question-thread-${thread.agentId}`}
-        >
-          Open
-        </Button>
-      </View>
-    ),
-    [openThread, origin, thread.agentId, thread.threadTitle],
+  // Each question opens its thread where it was asked, not at the latest message (#660).
+  const openQuestion = useCallback(
+    (question: AgentQuestion) => {
+      onBeforeNavigate?.();
+      openConversationTarget(
+        {
+          serverId: thread.serverId,
+          agentId: thread.agentId,
+          kind: "question",
+          id: question.id,
+          seq: question.askedSeq ?? null,
+          epoch: question.askedEpoch ?? null,
+        },
+        navigateToAgent,
+      );
+    },
+    [onBeforeNavigate, thread.agentId, thread.serverId],
   );
+  const origin = [thread.projectLabel, thread.hostLabel].filter(Boolean).join(" · ");
   return (
     <View
       style={!first && [taskCardStyles.separator, sectionDividerBleedStyle(bleed)]}
       testID={`global-open-questions-thread-${thread.agentId}`}
     >
       {thread.questions.map((question, index) => (
-        <OpenQuestion
+        <GlobalQuestion
           key={question.id}
           question={question}
           tasks={thread.tasks}
@@ -153,11 +146,76 @@ function ThreadQuestionGroup({
           canAnswer={canAnswer}
           pending={pendingId === question.id}
           onAnswer={answer}
-          onShowTasks={openThread}
-          context={index === 0 ? context : undefined}
-          testIDPrefix="global-open-question"
+          onShowTasks={showTasks}
+          threadTitle={thread.threadTitle}
+          origin={index === 0 ? origin : ""}
+          onOpen={openQuestion}
         />
       ))}
+    </View>
+  );
+}
+
+/** One question in the global card, with its thread and its own "Open". */
+function GlobalQuestion({
+  threadTitle,
+  origin,
+  onOpen,
+  ...props
+}: Omit<Parameters<typeof OpenQuestion>[0], "context" | "testIDPrefix"> & {
+  threadTitle: string;
+  origin: string;
+  onOpen: (question: AgentQuestion) => void;
+}) {
+  const context = useMemo(
+    () => (
+      <QuestionContext
+        question={props.question}
+        threadTitle={threadTitle}
+        origin={origin}
+        onOpen={onOpen}
+      />
+    ),
+    [onOpen, origin, props.question, threadTitle],
+  );
+  return <OpenQuestion {...props} context={context} testIDPrefix="global-open-question" />;
+}
+
+/** The thread a question came from, and "Open", which lands on that question in the thread. */
+function QuestionContext({
+  question,
+  threadTitle,
+  origin,
+  onOpen,
+}: {
+  question: AgentQuestion;
+  threadTitle: string;
+  origin: string;
+  onOpen: (question: AgentQuestion) => void;
+}) {
+  const open = useCallback(() => onOpen(question), [onOpen, question]);
+  return (
+    <View style={styles.origin}>
+      <View style={styles.originText}>
+        <Text style={styles.thread} numberOfLines={1}>
+          {threadTitle}
+        </Text>
+        {origin ? (
+          <Text style={styles.project} numberOfLines={1}>
+            {origin}
+          </Text>
+        ) : null}
+      </View>
+      <Button
+        variant="ghost"
+        size="md"
+        leftIcon={ArrowUpRight}
+        onPress={open}
+        accessibilityLabel={`Open this question in ${threadTitle}`}
+        testID={`global-open-question-open-${question.id}`}
+      >
+        Open
+      </Button>
     </View>
   );
 }

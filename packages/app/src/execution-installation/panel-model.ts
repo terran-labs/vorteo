@@ -84,6 +84,11 @@ interface InstallationPanelState {
   instructionRequests: InstructionRequestQuery | null;
   /** The owner's dismissals of failed records; null where the coordinator has no Dismiss. */
   healthDismissals: HealthDismissals | null;
+  /**
+   * Requests the owner decided during this visit. They stay in view as one line until they
+   * finish, so a tap on Approve visibly did something (#656). Not persisted.
+   */
+  decidedIds: readonly string[];
   instructionError: string | null;
   pendingJobs: RestartJob[];
   profileSharing: ProfileSharingStatus | null;
@@ -131,6 +136,7 @@ export class InstallationPanelModel {
     instructionRequests: null,
     instructionError: null,
     healthDismissals: null,
+    decidedIds: [],
     pendingJobs: [],
     profileSharing: null,
     passwordFile: null,
@@ -241,6 +247,7 @@ export class InstallationPanelModel {
         instructionRequests: null,
         instructionError: null,
         healthDismissals: null,
+        decidedIds: [],
         pendingJobs: [],
         profileSharing: null,
         daemonAutomation: null,
@@ -454,6 +461,12 @@ export class InstallationPanelModel {
     } finally {
       this.refreshing = false;
     }
+  }
+
+  /** Records a decision the owner made in this visit, before its result arrives. */
+  private markDecided(id: string): void {
+    if (this.state.decidedIds.includes(id)) return;
+    this.publish({ decidedIds: [...this.state.decidedIds, id] });
   }
 
   /** A failed read keeps the last answer: Dismiss stays where it was offered. */
@@ -742,6 +755,7 @@ export class InstallationPanelModel {
   }
 
   async decideBroker(job: BrokerReviewJob, action: BrokerAction): Promise<void> {
+    this.markDecided(job.id);
     const current = this.state.brokerJobs.find((item) => item.id === job.id);
     if (!current || current.revision !== job.revision || current.planSha256 !== job.planSha256) {
       this.publish({
@@ -783,6 +797,7 @@ export class InstallationPanelModel {
     }
   }
   async decideMonitor(job: PreviewMonitorJob, action: MonitorAction): Promise<void> {
+    this.markDecided(job.id);
     const current = this.state.monitorJobs.find((item) => item.id === job.id);
     if (!current || current.revision !== job.revision || current.planSha256 !== job.planSha256) {
       this.publish({
@@ -852,6 +867,7 @@ export class InstallationPanelModel {
   }
 
   async decideSessionHost(job: SessionHostJob, action: SessionHostAction): Promise<void> {
+    this.markDecided(job.id);
     if (this.state.busy) return;
     const overview = this.state.sessionHost;
     const current = overview?.jobs.find((item) => item.id === job.id);
@@ -933,6 +949,7 @@ export class InstallationPanelModel {
   }
 
   async decideHelper(job: NativeHelperJob, action: HelperReviewAction): Promise<void> {
+    this.markDecided(job.id);
     if (this.state.busy) return;
     const current = this.state.helperJobs.find((item) => item.id === job.id);
     if (!current || current.revision !== job.revision || current.planSha256 !== job.planSha256) {
@@ -999,6 +1016,7 @@ export class InstallationPanelModel {
   }
 
   async decide(job: RestartJob, decision: RestartDecision): Promise<void> {
+    this.markDecided(job.id);
     if (this.state.busy) return;
     this.publish({ busy: true, error: null, notice: null });
     try {
@@ -1062,6 +1080,7 @@ export class InstallationPanelModel {
         instructionRequests: null,
         instructionError: null,
         healthDismissals: null,
+        decidedIds: [],
         pendingJobs: [],
         profileSharing: null,
         daemonAutomation: null,

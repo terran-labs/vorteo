@@ -255,6 +255,7 @@ export interface SteerActiveTurnOptions extends AgentSteerOptions {
 }
 
 export interface AgentUsage {
+  sessionTokens?: number;
   inputTokens?: number;
   cachedInputTokens?: number;
   outputTokens?: number;

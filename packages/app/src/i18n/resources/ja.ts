@@ -266,6 +266,8 @@ export const ja: TranslationResources = {
       implement: "実装",
       question: "どのように続けますか？",
       proposedPlan: "提案されたプラン",
+      questionNotFound: "この質問が会話のどこで尋ねられたか見つかりませんでした。",
+      approvalNotFound: "この承認が会話のどこで求められたか見つかりませんでした。",
       mode: "このスレッドは{{mode}}モードです。",
     },
   },

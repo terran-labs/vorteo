@@ -36,7 +36,12 @@ interface BootstrapPanelState<
   hasPassword: boolean;
   passwordEpoch: number;
   error: string | null;
+  /** Consecutive failed status refreshes; a passing blip is not an error worth red (#656). */
+  refreshFailures?: number;
 }
+
+/** A status refresh that failed; the panel retries on its own. */
+export const REFRESH_FAILED = "Could not refresh coordinator status. Reconnect Host and retry.";
 
 export class BootstrapPanelModel<
   Request extends BootstrapReviewRequest = CoordinatorBootstrapRequest,
@@ -124,17 +129,18 @@ export class BootstrapPanelModel<
         if (pending && recorded && recorded.revision !== pending.revision) {
           this.generation++;
           this.pendingDecision = null;
-          this.publish({ available: true, requests, busy: false, error: null });
+          this.publish({ available: true, requests, busy: false, error: null, refreshFailures: 0 });
         } else {
-          this.publish({ available: true, requests, error });
+          this.publish({ available: true, requests, error, refreshFailures: 0 });
         }
       }
     } catch {
       if (this.refreshToken === refreshToken && generation === this.generation) {
-        this.refreshError = "Could not refresh coordinator status. Reconnect Host and retry.";
+        this.refreshError = REFRESH_FAILED;
         this.publish({
           available: true,
           error: this.refreshError,
+          refreshFailures: (this.state.refreshFailures ?? 0) + 1,
         });
       }
     } finally {

@@ -28,6 +28,7 @@ import {
   preclaimDispatchDescription,
   recoveryTargetDescription,
   type BootstrapRecoveryRequest,
+  REFRESH_FAILED,
 } from "./bootstrap-model";
 import { describeConfigurationChanges } from "./configuration-change-descriptions";
 import type {
@@ -153,25 +154,83 @@ function useBootstrapRequests(model: BootstrapPanelModel) {
   return { state, current, history };
 }
 
+/** The coordinator's renewal could not start; its cause is not exposed to the interface. */
+export function isCoordinatorUnavailable(error: string | null | undefined): boolean {
+  return Boolean(error?.startsWith("Coordinator maintenance is unavailable"));
+}
+
+const NO_SUBSCRIBE = () => () => {};
+const NO_ERROR = () => null;
+
+/** Whether this installation's coordinator maintenance could not start. */
+export function useCoordinatorUnavailable(): boolean {
+  const model = getBootstrapPanel();
+  const error = useSyncExternalStore(
+    model?.subscribe ?? NO_SUBSCRIBE,
+    model ? () => model.getState().error : NO_ERROR,
+    model ? () => model.getState().error : NO_ERROR,
+  );
+  return isCoordinatorUnavailable(error);
+}
+
+/** Refreshes retry on their own; only a lasting failure reads as a problem (#656). */
+const REFRESH_FAILURES_BEFORE_ALERT = 3;
+
+/**
+ * A coordinator status problem in plain words. A refresh that failed once or twice is muted and
+ * retries by itself; one that keeps failing turns red and says nothing more can be done here.
+ */
+function CoordinatorStatusNotice({
+  error,
+  failures,
+  onRefresh,
+}: {
+  error: string | null;
+  failures: number;
+  onRefresh: () => void;
+}) {
+  if (!error) return null;
+  if (error === REFRESH_FAILED) {
+    const lasting = failures >= REFRESH_FAILURES_BEFORE_ALERT;
+    return (
+      <Text
+        accessibilityRole={lasting ? "alert" : undefined}
+        style={lasting ? styles.error : styles.text}
+      >
+        {lasting
+          ? "The Host is not answering. It retries by itself."
+          : "Status could not be refreshed. Retrying."}
+      </Text>
+    );
+  }
+  return (
+    <View>
+      <Text accessibilityRole="alert" style={styles.error}>
+        {error}
+      </Text>
+      <Button variant="ghost" onPress={onRefresh}>
+        Refresh status
+      </Button>
+    </View>
+  );
+}
+
 /** Coordinator updates that still need a decision or are running. */
 export function BootstrapReview({ model }: { model: BootstrapPanelModel }) {
   const refresh = useCallback(() => {
     void model.refresh();
   }, [model]);
   const { state, current } = useBootstrapRequests(model);
-  if (!state.available || (!current.length && !state.error)) return null;
+  // The unavailable state is told once, plainly, in the Maintenance section instead.
+  const error = isCoordinatorUnavailable(state.error) ? null : state.error;
+  if (!state.available || (!current.length && !error)) return null;
   return (
     <View testID="coordinator-bootstrap-review" style={settingsStyles.rowBorder}>
-      {state.error ? (
-        <View>
-          <Text accessibilityRole="alert" style={styles.error}>
-            {state.error}
-          </Text>
-          <Button variant="ghost" onPress={refresh}>
-            Refresh status
-          </Button>
-        </View>
-      ) : null}
+      <CoordinatorStatusNotice
+        error={error}
+        failures={state.refreshFailures ?? 0}
+        onRefresh={refresh}
+      />
       {current.map((request) => (
         <BootstrapRequestCard key={request.id} request={request} model={model} />
       ))}

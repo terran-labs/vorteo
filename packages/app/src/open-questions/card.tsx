@@ -1,7 +1,8 @@
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import { useMutation } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, ListTodo } from "lucide-react-native";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useConversationHighlight } from "./conversation-target";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useShallow } from "zustand/shallow";
@@ -72,6 +73,12 @@ function OpenQuestionsContent({
 }) {
   const [expanded, setExpanded] = useCardDisclosure("questions");
   const toggle = useCallback(() => setExpanded((value) => !value), [setExpanded]);
+  // "Open" in the global card lands here with its question expanded and highlighted (#660).
+  const target = useConversationHighlight(serverId, agentId);
+  const focusedId = target?.kind === "question" ? target.id : null;
+  useEffect(() => {
+    if (focusedId) setExpanded(true);
+  }, [focusedId, setExpanded]);
   const [showAnswered, setShowAnswered] = useState(false);
   const toggleAnswered = useCallback(() => setShowAnswered((value) => !value), []);
   const { canAnswer, pendingId, answer } = useQuestionAnswer(serverId, agentId, readOnly);
@@ -109,6 +116,7 @@ function OpenQuestionsContent({
               canAnswer={canAnswer}
               pending={pendingId === question.id}
               onAnswer={answer}
+              highlighted={question.id === focusedId}
             />
           ))}
           {open.length === 0 ? (
@@ -162,6 +170,7 @@ export function OpenQuestion({
   onAnswer,
   onShowTasks,
   context,
+  highlighted = false,
   testIDPrefix = "open-question",
 }: {
   question: AgentQuestion;
@@ -174,6 +183,8 @@ export function OpenQuestion({
   onShowTasks?: () => void;
   /** Shown above the question when it is listed outside its own thread. */
   context?: ReactNode;
+  /** Marks the question "Open" in the global card landed on. */
+  highlighted?: boolean;
   /** Keeps test IDs unique when the same question also shows in its thread's card. */
   testIDPrefix?: string;
 }) {
@@ -188,8 +199,14 @@ export function OpenQuestion({
     : null;
   return (
     <View
-      style={[styles.question, taskCardStyles.proseInset, !first && taskCardStyles.separator]}
+      style={[
+        styles.question,
+        taskCardStyles.proseInset,
+        !first && taskCardStyles.separator,
+        highlighted && styles.highlighted,
+      ]}
       testID={`${testIDPrefix}-${question.id}`}
+      accessibilityState={highlighted ? HIGHLIGHTED_STATE : undefined}
     >
       {context}
       <Text style={styles.title}>{question.question}</Text>
@@ -296,8 +313,11 @@ function answeredMeta(question: AgentQuestion): string {
   return question.answerDeliveredAt ? answered : `${answered}. Queued for the thread`;
 }
 
+const HIGHLIGHTED_STATE = { selected: true };
+
 const styles = StyleSheet.create((theme) => ({
   question: { gap: theme.spacing[1.5], paddingVertical: theme.spacing[2] },
+  highlighted: { backgroundColor: theme.colors.accentSubtle },
   title: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,

@@ -149,6 +149,12 @@ export class InMemoryAgentTimelineStore {
     return cloneRow(row);
   }
 
+  /** The newest committed timeline position, or null before the first item. */
+  getLatestSeq(agentId: string): number | null {
+    const latest = this.requireState(agentId).nextSeq - 1;
+    return latest > 0 ? latest : null;
+  }
+
   getLastItem(agentId: string): AgentTimelineItem | null {
     const state = this.requireState(agentId);
     return state.projection.getLastItem(state.nextSeq - 1);

@@ -83,6 +83,7 @@ import {
 } from "@/data/push-router";
 import { mountBrowserAutomationDaemonClientHandler } from "@/desktop/browser/automation/handler";
 import { schedulesQueryBaseKey } from "@/schedules/aggregated-schedules";
+import { dashboardHistoryKey } from "@/screens/dashboard/cache";
 
 import { DirectorySync, type RefreshAgentDirectoryResult } from "@/runtime/directory-sync";
 import { ReplicaCache } from "@/runtime/replica-cache";
@@ -157,6 +158,7 @@ export interface HostRuntimeSnapshot {
   probeByConnectionId: Map<string, ConnectionProbeState>;
   clientGeneration: number;
   connectionEpoch: number;
+  authorizationGeneration: number;
 }
 
 type HostRuntimeSnapshotPatch = Partial<Omit<HostRuntimeSnapshot, "serverId" | "clientGeneration">>;
@@ -785,6 +787,7 @@ export class HostRuntimeController {
       hasEverLoadedAgentDirectory: false,
       probeByConnectionId: new Map(),
       clientGeneration: 0,
+      authorizationGeneration: 0,
     };
   }
 
@@ -860,32 +863,38 @@ export class HostRuntimeController {
 
   async updateHost(host: HostProfile): Promise<void> {
     const passwordChanged = this.host.password !== host.password;
-    if (passwordChanged) {
-      this.probeRequestVersion += 1;
-      this.authRejectedConnectionIds.clear();
-      this.updateSnapshot({ authFailureReason: null });
-    }
+    if (passwordChanged) this.authRejectedConnectionIds.clear();
     const activeConnectionId = this.snapshot.activeConnectionId;
     const previousActiveConnection = findConnectionById(this.host, activeConnectionId);
+    const nextActiveConnection = findConnectionById(host, activeConnectionId);
+    const activeConnectionChanged =
+      previousActiveConnection &&
+      (!nextActiveConnection ||
+        connectionNeedsNewClient(
+          previousActiveConnection,
+          nextActiveConnection,
+          this.activeClient,
+        ));
+    if (passwordChanged || activeConnectionChanged) {
+      this.probeRequestVersion += 1;
+      this.updateSnapshot({
+        authFailureReason: null,
+        authorizationGeneration: this.snapshot.authorizationGeneration + 1,
+        client: null,
+      });
+    }
     this.host = host;
     this.trackConnectionFirstSeen();
-    const nextActiveConnection = findConnectionById(this.host, activeConnectionId);
     if (
       activeConnectionId &&
-      previousActiveConnection &&
       nextActiveConnection &&
-      (connectionNeedsNewClient(
-        previousActiveConnection,
-        nextActiveConnection,
-        this.activeClient,
-      ) ||
-        passwordChanged)
+      (activeConnectionChanged || passwordChanged)
     ) {
       this.connectionLastProbedAt.delete(activeConnectionId);
       await this.switchToConnection({ connectionId: activeConnectionId });
     }
     if (passwordChanged) this.connectionLastProbedAt.clear();
-    if (passwordChanged) await this.probeCycleInFlight;
+    if (passwordChanged || activeConnectionChanged) await this.probeCycleInFlight;
     await this.runProbeCycleNow();
   }
 
@@ -1068,6 +1077,7 @@ export class HostRuntimeController {
           this.updateSnapshot({
             ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
             authFailureReason: probeAuthFailure,
+            authorizationGeneration: this.snapshot.authorizationGeneration + 1,
           });
         }
         return;
@@ -1471,6 +1481,9 @@ export class HostRuntimeController {
         ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
         client: null,
         authFailureReason: authFailure,
+        ...(authFailure
+          ? { authorizationGeneration: this.snapshot.authorizationGeneration + 1 }
+          : {}),
       });
       if (authFailure) {
         const probes = new Map(this.snapshot.probeByConnectionId);
@@ -2493,10 +2506,19 @@ export class HostRuntimeStore {
         }),
       );
       const initialSnapshot = controller.getSnapshot();
+      let { authorizationGeneration, connectionEpoch } = initialSnapshot;
       this.lastConnectionStatusByServer.set(host.serverId, initialSnapshot.connectionStatus);
       this.connectionStatusStartedAtByServer.set(host.serverId, Date.now());
       controller.subscribe(() => {
         const snapshot = controller.getSnapshot();
+        if (
+          snapshot.authorizationGeneration !== authorizationGeneration ||
+          snapshot.connectionEpoch !== connectionEpoch
+        ) {
+          authorizationGeneration = snapshot.authorizationGeneration;
+          connectionEpoch = snapshot.connectionEpoch;
+          queryClient.removeQueries({ queryKey: dashboardHistoryKey(snapshot.serverId) });
+        }
         this.syncSessionReplica(snapshot.serverId, snapshot);
         this.syncDirectoryConnection(snapshot.serverId);
         this.syncHostDiscovery(snapshot.serverId);
@@ -2585,6 +2607,7 @@ export class HostRuntimeStore {
   }
 
   private clearHostReplica(serverId: string): void {
+    queryClient.removeQueries({ queryKey: dashboardHistoryKey(serverId) });
     useSessionStore.getState().clearSession(serverId);
     useWorkspaceSetupStore.getState().clearServer(serverId);
   }
