@@ -260,6 +260,21 @@ test("recovery bookmark discovery does not invent an address without native supp
   expect(f.calls).toEqual([]);
 });
 
+test("only the Host agent requests a coordinator update, and only the owner decides it", async () => {
+  const f = await fixture();
+  const request = "/api/installation/coordinator-follow";
+  const body = { next: "/releases/new" };
+  expect((await f.request(request, undefined, body)).status).toBe(401);
+  expect((await f.request(request, "guest-agent-test-token", body)).status).toBe(403);
+  // No agent credential reaches the owner decision, with or without the full grant.
+  const decision = `/api/installation/owner/coordinator-follow/${randomUUID()}/decision`;
+  for (const credential of ["host-agent-test-token", "guest-agent-test-token"])
+    expect(
+      (await f.request(decision, credential, { revision: randomUUID(), decision: "approve" }))
+        .status,
+    ).toBe(401);
+});
+
 test("service maintenance status and cancellation require owner access", async () => {
   const f = await fixture();
   const query = "/api/installation/owner/maintenance-services/query";

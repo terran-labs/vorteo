@@ -15,7 +15,9 @@ import {
   legacyOperationReplies,
   operationFor,
   RESTART_OPERATIONS,
+  type RestartPlanField,
 } from "./restart-operations.js";
+import { delegableUnderGrant, OWNER_ONLY_OPERATIONS } from "./delegated-admission.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -164,31 +166,36 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
-test("full owner delegation permits only explicitly delegable exact maintenance plans", () => {
+test("full owner delegation covers every plan by default except the named owner-only ones", () => {
   for (const operation of RESTART_OPERATIONS) {
     const job = { [operation.field]: "a".repeat(64) };
     expect(automaticPermitted(job, false, RESTART_OPERATIONS, true)).toBe(
-      operation.delegable === true,
+      !OWNER_ONLY_OPERATIONS.includes(`restart-plan:${operation.field}`),
     );
     if (operation.automatic !== "allowed") expect(automaticPermitted(job, false)).toBe(false);
-    expect(
-      automaticPermitted(
-        job,
-        false,
-        [{ ...operation, automatic: "never", delegable: false }],
-        true,
-      ),
-    ).toBe(false);
   }
+  // A newly registered operation needs no opt-in: the grant covers it, and only the
+  // exclusion list removes it.
+  const added = {
+    ...operationFor("engineRestartPlanSha256"),
+    field: "newPlanSha256" as RestartPlanField,
+    automatic: "never" as const,
+  };
+  const job = { newPlanSha256: "a".repeat(64) } as Parameters<typeof automaticPermitted>[0];
+  expect(automaticPermitted(job, false, [added], true)).toBe(true);
+  expect(automaticPermitted(job, false, [added], false)).toBe(false);
+  expect(delegableUnderGrant("restart-plan:newPlanSha256")).toBe(true);
+  expect(delegableUnderGrant("restart-plan:newPlanSha256", ["restart-plan:newPlanSha256"])).toBe(
+    false,
+  );
 });
 
-test("the Dev boot-entry switch is never automatic, even under a standing decision or full delegation", () => {
+test("the Dev boot-entry switch is never automatic, but full delegation approves it", () => {
   const job = { bootEntrySwitchPlanSha256: "a".repeat(64) };
   expect(operationFor("bootEntrySwitchPlanSha256").automatic).toBe("never");
   expect(automaticPermitted(job, true)).toBe(false);
-  // Full owner delegation, which is active on the owner's installation, does not cover it.
-  expect(automaticPermitted(job, true, RESTART_OPERATIONS, true)).toBe(false);
-  expect(operationFor("bootEntrySwitchPlanSha256").delegable).not.toBe(true);
+  // Owner decision 2026-11-07: the full grant covers it; dispatch still checks every pin.
+  expect(automaticPermitted(job, true, RESTART_OPERATIONS, true)).toBe(true);
 });
 
 test("the Dev boot-entry switch refuses another plan, registration-bound Dev and stale Factory pins", async () => {

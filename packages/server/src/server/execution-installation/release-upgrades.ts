@@ -24,6 +24,13 @@ import {
 import { writePrivateFileAtomicSync } from "../private-files.js";
 import type { HandoffOutcome } from "./coordinator-handoff.js";
 import { RestartRequestError } from "./restarts.js";
+import {
+  delegatedAdmissionStep,
+  delegatedApproval,
+  delegatedDispatchHolds,
+  delegatedPlanDigest,
+  type DelegationGrant,
+} from "./delegated-admission.js";
 
 /**
  * Owner-approved upgrades to one tested GitHub release or one reviewed commit on `main`. Steps
@@ -1219,7 +1226,16 @@ export interface CoordinatorFollowPorts extends Pick<
   /** Starts the detached swap helper; it restarts this process. */
   launchSwap(job: CoordinatorFollowJob, next: string, previous: string): void;
   swapOutcome(jobId: string): HandoffOutcome | null;
+  /** The active full maintenance grant, read fresh; null when none applies. */
+  delegationGrant?(): DelegationGrant | null;
+  /** The cancellation window before delegated work starts. */
+  cancellationDelayMs?: number;
 }
+
+/** The operation name full delegation checks against OWNER_ONLY_OPERATIONS. */
+const FOLLOW_OPERATION = "coordinator-follow";
+const followPlan = (job: CoordinatorFollowJob) =>
+  delegatedPlanDigest(FOLLOW_OPERATION, { next: job.next });
 
 export type AgentCoordinatorFollow = NonNullable<AgentUpdateStatus["coordinatorFollow"]>;
 
@@ -1252,6 +1268,11 @@ export class CoordinatorFollow {
     return this.jobs.find((job) => job.status === "approved" || job.status === "running") ?? null;
   }
 
+  /** Every retained job, for installation management. */
+  list(): CoordinatorFollowJob[] {
+    return structuredClone(this.jobs);
+  }
+
   job(id: string): CoordinatorFollowJob | null {
     return this.jobs.find((job) => job.id === id) ?? null;
   }
@@ -1261,11 +1282,14 @@ export class CoordinatorFollow {
   }
 
   agentStatus(): AgentCoordinatorFollow {
-    const { available, detail, job } = this.status();
-    return { available, detail, job };
+    const { available, detail, current, job } = this.status();
+    return { available, detail, current, job };
   }
 
-  request(next: string): CoordinatorFollowJob {
+  request(
+    next: string,
+    origin: { requestedBy: "owner" | "host-agent"; requester?: string } = { requestedBy: "owner" },
+  ): CoordinatorFollowJob {
     if (this.jobs.some(followIsActive))
       throw new RestartRequestError("A coordinator update is already waiting or running");
     const { available, detail, current } = this.availability();
@@ -1281,6 +1305,8 @@ export class CoordinatorFollow {
       status: "pending",
       detail: "Waiting for owner approval.",
       next,
+      requestedBy: origin.requestedBy,
+      ...(origin.requester ? { requester: origin.requester } : {}),
     });
     this.jobs = [...this.jobs, job];
     this.journal.write(this.jobs);
@@ -1305,6 +1331,7 @@ export class CoordinatorFollow {
       return this.save(job, {
         status: "approved",
         approvedAt: this.ports.now().toISOString(),
+        delegatedApproval: undefined,
         detail: "Approved. Starting.",
       });
     }
@@ -1319,12 +1346,68 @@ export class CoordinatorFollow {
 
   /** Starts an approved job or follows a running one. Safe to call repeatedly. */
   drain(): void {
+    this.admitDelegated();
     const job = this.dispatching();
     if (job?.status === "approved") this.dispatch(job);
     else if (job?.status === "running") this.follow(job);
   }
 
+  /**
+   * Full maintenance delegation approves a fresh Host-agent request for exactly its Host release,
+   * after the cancellation window. Until then it stays pending, so the owner can still cancel it
+   * and a rollback runtime that ignores the evidence waits for the owner.
+   */
+  private admitDelegated(): void {
+    const job = this.jobs.find((item) => item.status === "pending");
+    if (!job) return;
+    const now = this.ports.now().getTime();
+    const step = delegatedAdmissionStep(job, {
+      grant: this.ports.delegationGrant?.() ?? null,
+      operations: [FOLLOW_OPERATION],
+      planSha256: followPlan(job),
+      now,
+    });
+    if (step === "attach") {
+      const revision = randomUUID();
+      const approval = delegatedApproval(this.ports.delegationGrant!()!, {
+        requestRevision: revision,
+        planSha256: followPlan(job),
+        now,
+        cancellationDelayMs: this.ports.cancellationDelayMs ?? 30_000,
+      });
+      this.save(job, {
+        revision,
+        delegatedApproval: approval,
+        detail: `Approved under owner maintenance delegation. Starts after ${approval.dispatchAfter} unless cancelled.`,
+      });
+    } else if (step === "invalid") {
+      this.finish(job, "cancelled", "Delegated approval changed before dispatch. Nothing started.");
+    } else if (step === "ready") {
+      const refusal = this.refusal(job);
+      if (refusal) {
+        this.finish(job, "cancelled", refusal);
+        return;
+      }
+      this.save(job, {
+        status: "approved",
+        approvedAt: this.ports.now().toISOString(),
+        detail: "Approved under owner maintenance delegation. Starting.",
+      });
+    }
+  }
+
   private dispatch(job: CoordinatorFollowJob): void {
+    // A delegated approval holds only while its grant does, including one recovered from the
+    // journal after a restart between approval and dispatch.
+    if (
+      !delegatedDispatchHolds(job.delegatedApproval, this.ports.delegationGrant?.() ?? null, {
+        operations: [FOLLOW_OPERATION],
+        planSha256: followPlan(job),
+      })
+    ) {
+      this.finish(job, "cancelled", "Delegated approval changed before dispatch. Nothing started.");
+      return;
+    }
     const refusal = this.refusal(job);
     if (refusal) {
       this.finish(job, "failed", refusal);
@@ -1455,7 +1538,11 @@ export class CoordinatorFollow {
     job: CoordinatorFollowJob,
     changes: Partial<CoordinatorFollowJob>,
   ): CoordinatorFollowJob {
-    const next = CoordinatorFollowJobSchema.parse({ ...job, ...changes, revision: randomUUID() });
+    const next = CoordinatorFollowJobSchema.parse({
+      ...job,
+      ...changes,
+      revision: changes.revision ?? randomUUID(),
+    });
     this.jobs = this.jobs.map((item) => (item.id === job.id ? next : item));
     this.journal.write(this.jobs);
     return next;

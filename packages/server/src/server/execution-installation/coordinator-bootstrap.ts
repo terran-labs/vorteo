@@ -1,7 +1,5 @@
-import {
-  plansConfigurationChange,
-  plansOwnerReviewOnlyChange,
-} from "@getpaseo/protocol/coordinator-configuration-settings";
+import { plansConfigurationChange } from "@getpaseo/protocol/coordinator-configuration-settings";
+import { delegableUnderGrant } from "./delegated-admission.js";
 import {
   BootstrapRequestConflict,
   BootstrapAuthenticationRequired,
@@ -407,6 +405,13 @@ function automaticRecoverySuccessor(
   return true;
 }
 
+/** Whether a plan changes a setting that only the owner's own review may admit. */
+function plansOwnerOnlySetting(plan: CoordinatorBootstrapPlan): boolean {
+  return (plan.configurationChanges ?? []).some(
+    (change) => !delegableUnderGrant(`coordinator-plan-setting:${change.setting}`),
+  );
+}
+
 function assertAutomaticCoordinatorPlan(
   plan: CoordinatorBootstrapPlan,
   preFreezeRecovery = false,
@@ -424,8 +429,8 @@ function assertAutomaticCoordinatorPlan(
     plan.compatibleRecovery.configuration.sha256 !== plan.previous.configuration.sha256 ||
     (plan.recoveredFrom && !preFreezeRecovery) ||
     plan.supervisionRecovery ||
-    // Full delegation never admits a setting the owner approves later by digest alone.
-    plansOwnerReviewOnlyChange(plan) ||
+    // OWNER_ONLY_OPERATIONS names settings the owner approves later by digest alone.
+    plansOwnerOnlySetting(plan) ||
     (!delegatedMaintenance &&
       (plan.candidate.configuration.sha256 !== plan.previous.configuration.sha256 ||
         plan.sourceUpdateTooling ||

@@ -9,6 +9,7 @@ export const DelegatedMaintenanceApprovalSchema = z.strictObject({
   planSha256: z.string().regex(/^[a-f0-9]{64}$/),
   dispatchAfter: z.string().datetime(),
 });
+export type DelegatedMaintenanceApproval = z.infer<typeof DelegatedMaintenanceApprovalSchema>;
 
 export const MaintenanceDelegationStatusSchema = z.strictObject({
   available: z.boolean(),

@@ -361,15 +361,17 @@ test("only explicit maintenance delegation approves a release seal change automa
   }
 });
 
-test("maintenance delegation never approves a Dev boot-entry switch plan automatically", async () => {
-  // The switch itself is approved by digest, so the owner reviews its plan here.
-  const f = automaticCoordinatorFixture(true);
-  f.plan.configurationChanges = [{ setting: "bootEntrySwitch", value: null }];
-  f.plan.candidate.configuration.sha256 = "f".repeat(64);
-  const submitted = await f.submit();
-  await expect(
-    f.service().approveAutomatic(automaticCoordinatorIdentity(submitted)),
-  ).rejects.toThrow("require exact owner review");
+test("only maintenance delegation approves a Dev boot-entry switch plan automatically", async () => {
+  // Owner decision 2026-11-07: the full grant covers it; dispatch still checks every pin.
+  for (const delegated of [false, true]) {
+    const f = automaticCoordinatorFixture(delegated);
+    f.plan.configurationChanges = [{ setting: "bootEntrySwitch", value: null }];
+    f.plan.candidate.configuration.sha256 = "f".repeat(64);
+    const submitted = await f.submit();
+    const approval = f.service().approveAutomatic(automaticCoordinatorIdentity(submitted));
+    if (delegated) expect((await approval).status).toBe("approved");
+    else await expect(approval).rejects.toThrow("require exact owner review");
+  }
 });
 
 test("loaded coordinator PID parsing rejects nested, foreign and incomplete records", () => {
@@ -7224,8 +7226,7 @@ test("explicit maintenance delegation approves exact coordinator settings and st
 });
 
 test("maintenance delegation may approve attaching broker configuration", async () => {
-  // Owner decision 2026-11-03: attaching the broker sections is delegable. Consumer deployment
-  // and channel rebind, the trust decisions, stay owner-only in their own executors.
+  // Owner decision 2026-11-03: attaching the broker sections is delegable.
   for (const setting of ["previewBrokerDeployment", "previewBroker"]) {
     const f = automaticCoordinatorFixture(true);
     f.plan.configurationChanges = [{ setting, value: null }];
