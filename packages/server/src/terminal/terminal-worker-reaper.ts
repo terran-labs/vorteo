@@ -1,3 +1,4 @@
+import { cliCommand } from "../utils/vorteo-cli.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import treeKill from "tree-kill";
@@ -85,7 +86,7 @@ export class TerminalCleanupNotConfirmedError extends Error {
               ...unresolved.map(
                 (entry) => `  pid ${entry.pid} (${entry.role}): ${entry.reason} (${entry.detail})`,
               ),
-              "Their record is kept; the next `paseo daemon stop` retries the cleanup.",
+              `Their record is kept; the next \`${cliCommand()} daemon stop\` retries the cleanup.`,
             ]
           : []),
         ...(unreadableRecords.length > 0

@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import { Command } from "commander";
 import { connectToDaemon } from "../../utils/client.js";
 import { waitForStop } from "../../utils/wait-for-stop.js";
@@ -296,7 +297,7 @@ export async function runLogsCommand(
 ): Promise<AgentLogsResult> {
   if (!id) {
     console.error("Error: Agent ID required");
-    console.error("Usage: paseo agent logs <id>");
+    console.error(`Usage: ${cliCommand()} agent logs <id>`);
     process.exit(1);
   }
 
@@ -307,7 +308,7 @@ export async function runLogsCommand(
     const fetchResult = await client.fetchAgent({ agentId: id });
     if (!fetchResult) {
       console.error(`Error: No agent found matching: ${id}`);
-      console.error("Use `paseo ls` to list available agents");
+      console.error(`Use \`${cliCommand()} ls\` to list available agents`);
       await client.close();
       process.exit(1);
     }

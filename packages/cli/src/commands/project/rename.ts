@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { Command } from "commander";
 import type { CommandError, CommandOptions, SingleResult } from "../../output/index.js";
 import { buildDaemonConnectionCommandError, connectToDaemon } from "../../utils/client.js";
@@ -31,7 +32,7 @@ export function resolveProjectName(input: { name?: string; reset?: boolean }): s
     throw {
       code: "MISSING_NAME",
       message: "Project name cannot be empty",
-      details: "Usage: paseo project rename <project-id> <name> | --reset",
+      details: `Usage: ${cliCommand()} project rename <project-id> <name> | --reset`,
     } satisfies CommandError;
   }
   return name;

@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { Command } from "commander";
 import { renderError, toCommandError } from "../../output/render.js";
 import {
@@ -45,7 +46,7 @@ async function executeSendKeysCommand(
       throw {
         code: "TERMINAL_NOT_FOUND",
         message: `No terminal found matching: ${terminalId}`,
-        details: "Use `paseo terminal ls --all` to list available terminals.",
+        details: `Use \`${cliCommand()} terminal ls --all\` to list available terminals.`,
       };
     }
 
