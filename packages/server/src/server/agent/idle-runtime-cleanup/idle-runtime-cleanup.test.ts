@@ -1,5 +1,6 @@
 import { expect, onTestFinished, test } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
+import { StaleProviderSessionError } from "../stale-provider-session-error.js";
 import { createIdleRuntimeCleanup, type RuntimeCleanupCandidate } from "./index.js";
 
 function deferred<T>() {
@@ -291,4 +292,28 @@ test("disabling lets a started close finish but prevents the next closure in tha
   expect((await s.sweep(62)).collected).toEqual([
     { agentId: "sibling", provider: "test", sessionId: "sibling" },
   ]);
+});
+
+test("a runtime on a stale provider session backs off instead of failing every sweep", async () => {
+  const s = scenario();
+  let probes = 0;
+  let stale = true;
+  s.runtime.probe = async () => {
+    probes++;
+    if (stale) throw new StaleProviderSessionError("hosted");
+    return true;
+  };
+  expect((await s.sweep(60)).failures).toHaveLength(1);
+  // Not retried every sweep: the first wait is five minutes, then it doubles.
+  await s.sweep(61);
+  await s.sweep(64);
+  expect(probes).toBe(1);
+  expect((await s.sweep(65)).failures).toHaveLength(1);
+  await s.sweep(74);
+  expect(probes).toBe(2);
+  // Once the probe answers again, the backoff resets and the runtime is collected as usual.
+  stale = false;
+  await s.sweep(75);
+  expect(probes).toBe(3);
+  expect((await s.sweep(136)).collected).toHaveLength(1);
 });

@@ -3,8 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
 import { expect, it } from "vitest";
-import { MessageQueueStore } from "./store.js";
-import { QueueDeliveryWorker, type QueueDeliveryPort } from "./delivery.js";
+import pino from "pino";
+import type { AgentManager } from "../agent/agent-manager.js";
+import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
+import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
+import { createAgentQueueDelivery } from "./agent-delivery.js";
+import type { QueueAttachmentStore } from "./attachments.js";
+import { MessageQueueStore, UNCONFIRMED_DELIVERY_REASON } from "./store.js";
+import {
+  QueueDeliveryWorker,
+  UNCONFIRMED_DELIVERY_BOUND_MS,
+  type QueueDeliveryPort,
+} from "./delivery.js";
 
 it("holds a restarted claim until provider identity confirms acceptance, then advances without replay", async () => {
   const root = await mkdtemp(join(tmpdir(), "paseo-delivery-restart-"));
@@ -461,4 +471,106 @@ it("retains dependent messages after an authentication failure and recovers with
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("marks an uncertain message unconfirmed after the bound, only from a complete history read", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-delivery-unconfirmed-"));
+  try {
+    const original = new MessageQueueStore(root);
+    await original.mutate("agent", {
+      kind: "enqueue",
+      operationId: "lost",
+      messageId: "lost",
+      text: "Canceled before its turn started",
+      attachments: [],
+    });
+    await original.claim("agent");
+    const store = new MessageQueueStore(root);
+    await store.recover("agent");
+    const [item] = (await store.read("agent")).items;
+    if (item?.delivery.status !== "uncertain") throw new Error("Expected an uncertain item");
+    let now = Date.parse(item.delivery.startedAt) + UNCONFIRMED_DELIVERY_BOUND_MS + 1;
+    let reads = 0;
+    let available = false;
+    const worker = new QueueDeliveryWorker(
+      store,
+      {
+        history: async () => {
+          reads += 1;
+          return available ? [] : null;
+        },
+        prepare: async () => true,
+        load: async (entry) => entry.text,
+        start: () => {
+          throw new Error("An unconfirmed message must not be sent");
+        },
+        changed: () => {},
+        failed: (error) => {
+          throw error;
+        },
+      },
+      () => now,
+    );
+    // No complete history: the item stays uncertain however old it is.
+    await worker.wake("agent");
+    expect((await store.read("agent")).items[0]?.delivery.status).toBe("uncertain");
+    available = true;
+    now = Date.parse(item.delivery.startedAt) + 60_000;
+    await worker.wake("agent");
+    expect((await store.read("agent")).items[0]?.delivery.status).toBe("uncertain");
+    now += UNCONFIRMED_DELIVERY_BOUND_MS;
+    await worker.wake("agent");
+    expect((await store.read("agent")).items[0]?.delivery).toEqual({
+      status: "failed",
+      attemptId: item.delivery.attemptId,
+      reason: UNCONFIRMED_DELIVERY_REASON,
+    });
+    // Neither delivered nor dropped, and no further history reads.
+    const settledReads = reads;
+    await worker.wake("agent");
+    expect(reads).toBe(settledReads);
+    worker.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("reads a closed thread's saved history for an uncertain message without loading it", async () => {
+  const record = {
+    id: "agent",
+    provider: "claude",
+    cwd: "/work",
+    archivedAt: null,
+    persistence: { provider: "claude", sessionId: "native" },
+  } as unknown as StoredAgentRecord;
+  const saved: AgentStreamEvent = {
+    type: "timeline",
+    provider: "claude",
+    item: { type: "assistant_message", text: "Saved answer" },
+  };
+  const agentManager = new Proxy(
+    { getAgent: () => null },
+    {
+      get(target, property) {
+        if (property in target) return target[property as keyof typeof target];
+        throw new Error(`Settling must not touch the agent manager's ${String(property)}`);
+      },
+    },
+  ) as unknown as AgentManager;
+  const delivery = createAgentQueueDelivery({
+    attachments: {} as QueueAttachmentStore,
+    agentManager,
+    agentStorage: { get: async () => record } as unknown as AgentStorage,
+    logger: pino({ level: "silent" }),
+    providerSnapshotManager: {
+      getAgentManagerProviderState: () =>
+        ({ providerDefinitions: {} }) as ReturnType<
+          ProviderSnapshotManager["getAgentManagerProviderState"]
+        >,
+      readSessionHistory: async function* () {
+        yield saved;
+      },
+    },
+  });
+  expect(await delivery.history?.("agent")).toEqual([saved]);
 });

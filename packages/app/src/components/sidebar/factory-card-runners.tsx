@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { memo, useCallback } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -70,7 +70,7 @@ export function FactoryRunners({
   );
 }
 
-function RunnerRow({
+const RunnerRow = memo(function RunnerRow({
   serverId,
   issue,
   level,
@@ -149,7 +149,7 @@ function RunnerRow({
       </Tooltip>
     </PressHighlight>
   );
-}
+});
 
 function RunnerTooltip({ issue }: { issue: RunnerIssue }) {
   const { t } = useTranslation();

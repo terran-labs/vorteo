@@ -1,0 +1,8 @@
+### Fixes
+
+- A queued message that a restart left unconfirmed no longer reopens its closed thread every minute. Vorteo now checks it against the thread's saved history without starting the agent. If the message still cannot be confirmed after 15 minutes, it shows in the thread's queue as "delivery could not be confirmed", with Retry and Discard, because it may already have arrived. Nothing is sent or deleted automatically.
+- The Host stops closing and reopening the same idle thread every minute while a session-host update waits, and stops retrying cleanup of a thread whose provider session went stale every minute. Each now waits 5 minutes, doubling to an hour, until the thread is used again.
+
+## Maintenance review
+
+Queue history reads for uncertain messages read a closed Claude or Codex thread's saved transcript instead of resuming it, and an uncertain message unconfirmed by a complete history read 15 minutes after its attempt started becomes `failed` with an honest reason (no wire change: the status already exists). Idle release and idle runtime cleanup back off per agent for agents that reopen without activity and for stale provider sessions. When no ID matches, acceptance evidence also takes identical text in the next timestamped user turn within 15 minutes of the attempt, only for text-only messages, for Claude transcripts without client IDs, and an ambiguous identity match gets its own review reason; idle-release backoffs reset when an upgrade ends (review of #577). Recorded under "Unconfirmed queued messages and quiet idle releases" in the inventory. Upstream idle cleanup behavior for other probe errors is unchanged. README overview and onboarding are unchanged.

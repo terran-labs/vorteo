@@ -1,4 +1,5 @@
 import { getProviderProbeCwd } from "../../../../utils/provider-probe-cwd.js";
+import { EventEmitter } from "node:events";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,6 +19,7 @@ import {
   claudeRenewalDue,
   discoverClaudeModels,
   forgetClaudeModelDiscoveries,
+  settleClaudeIdleRenewals,
 } from "./model-discovery.js";
 import type { ModelInfo, Query } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -1258,5 +1260,107 @@ describe("Claude model discovery process", () => {
     // Even an explicit refresh must not start a CLI that could begin the renewal.
     expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
     expect(probes).toBe(2);
+  });
+
+  it("renews a sign-in that expired with nothing using it, once, apart from the refresh", async () => {
+    const advertised = [
+      { value: "fable", resolvedModel: "claude-fable-5-2", displayName: "Fable", description: "" },
+    ];
+    let now = 0;
+    let probes = 0;
+    let expiresAt = 60 * 60_000;
+    const outcomes: string[] = [];
+    // Claude Code renews an expired grant as it starts.
+    const open = () => {
+      probes += 1;
+      expiresAt = now + 8 * 60 * 60_000;
+      return { supportedModels: async () => advertised, close: () => {} };
+    };
+    const refresh = new AbortController();
+    const options = {
+      resolveBinary: async () => "/claude",
+      env: { CLAUDE_CONFIG_DIR: "/idle-account", VORTEO_CLAUDE_SIGN_IN: "full" },
+      now: () => now,
+      signal: refresh.signal,
+      onIdleRenewal: (outcome: string) => void outcomes.push(outcome),
+      readGrant: async () => ({
+        accessToken: "synthetic",
+        hasRefreshToken: true,
+        expiresAt,
+        scopes: [],
+      }),
+    };
+    // Just past expiry a session may still be renewing, so nothing starts.
+    now = 60 * 60_000 + 30_000;
+    expect(await discoverClaudeModels(options, open)).toEqual([]);
+    expect(probes).toBe(0);
+    // A minute past expiry nothing renewed it. The refresh answers at once and is then canceled;
+    // the renewal goes on without it.
+    now = 60 * 60_000 + 2 * 60_000;
+    expect(await discoverClaudeModels(options, open)).toEqual([]);
+    // A second refresh before the first renewal has started its CLI does not start another.
+    expect(await discoverClaudeModels(options, open)).toEqual([]);
+    refresh.abort(new Error("client left"));
+    await settleClaudeIdleRenewals();
+    expect(probes).toBe(1);
+    expect(outcomes).toEqual(["renewed"]);
+    // Its CLI's answer serves the next refresh, and the renewed grant needs no second renewal.
+    expect(await discoverClaudeModels({ ...options, signal: undefined }, open)).toEqual(advertised);
+    expect(probes).toBe(1);
+  });
+
+  it("leaves the renewing CLI alone while it holds the renewal lock, then lets it exit by itself", async () => {
+    const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-idle-renewal-"));
+    const lock = path.join(configDir, ".oauth_refresh.lock");
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      signalCode: null,
+      kill: vi.fn(() => true),
+    });
+    let expiresAt = 0;
+    let inputEnded = false;
+    const closed = vi.fn();
+    const outcomes: string[] = [];
+    try {
+      await fs.mkdir(lock);
+      const open = ((
+        input: { prompt: AsyncIterable<unknown> },
+        context: { onChildProcess?: (process: unknown) => void },
+      ) => {
+        context.onChildProcess?.(child);
+        // The CLI exits by itself once its input ends.
+        void (async () => {
+          for await (const message of input.prompt) void message;
+          inputEnded = true;
+          child.exitCode = 0;
+          child.emit("exit", 0, null);
+        })();
+        // The token is spent and the new sign-in saved while the lock is still held.
+        expiresAt = Date.now() + 8 * 60 * 60_000;
+        return { supportedModels: async () => [], close: closed };
+      }) as unknown as Parameters<typeof discoverClaudeModels>[1];
+      const options = {
+        resolveBinary: async () => "/claude",
+        env: { CLAUDE_CONFIG_DIR: configDir, VORTEO_CLAUDE_SIGN_IN: "full" },
+        onIdleRenewal: (outcome: string) => void outcomes.push(outcome),
+        readGrant: async () => ({
+          accessToken: "synthetic",
+          hasRefreshToken: true,
+          expiresAt,
+          scopes: [],
+        }),
+      };
+      expect(await discoverClaudeModels(options, open)).toEqual([]);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(inputEnded).toBe(false);
+      expect(closed).not.toHaveBeenCalled();
+      await fs.rm(lock, { recursive: true });
+      await settleClaudeIdleRenewals();
+      expect(inputEnded).toBe(true);
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(outcomes).toEqual(["renewed"]);
+    } finally {
+      await fs.rm(configDir, { recursive: true, force: true });
+    }
   });
 });

@@ -2473,6 +2473,10 @@ function ComposerContentImpl({
               {/* MessageInput handles everything: text, dictation, attachments, all buttons */}
               <RenderProfile id="MessageInput">
                 <StableMessageInput
+                  // One input per thread or draft: a switch remounts it, so dictation state
+                  // (unsent audio, Save audio, notices) never crosses threads. The draft text
+                  // lives in the parent and survives.
+                  key={agentId}
                   ref={messageInputRef}
                   editingSession={editingSession}
                   submissionError={sendErrorNode}

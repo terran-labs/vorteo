@@ -1,6 +1,7 @@
 import pino from "pino";
 import { expect, test } from "vitest";
 import {
+  RELEASE_BACKOFF_MIN_MS,
   selectIdleHostedAgents,
   startHostedIdleRelease,
   type ReleasableAgent,
@@ -93,5 +94,47 @@ test("a connector without the flag never releases anything", async () => {
     logger,
   });
   expect(await release.runOnce()).toEqual([]);
+  release.stop();
+});
+
+test("an agent that reopens without new activity backs off until new activity resets it", async () => {
+  let now = NOW;
+  let pending = true;
+  let returning = agent({ id: "returning" });
+  const closed: string[] = [];
+  const release = startHostedIdleRelease({
+    manager: {
+      // The agent is listed again after each close: something reopened it without a prompt.
+      listAgents: () => [returning],
+      closeAgent: async (id) => {
+        closed.push(id);
+      },
+    },
+    connector: { upgradePending: async () => pending },
+    logger,
+    now: () => now,
+  });
+  expect(await release.runOnce()).toEqual(["returning"]);
+  now += 60_000;
+  expect(await release.runOnce()).toEqual([]);
+  now += RELEASE_BACKOFF_MIN_MS - 60_000;
+  expect(await release.runOnce()).toEqual([]);
+  now += 60_000;
+  expect(await release.runOnce()).toEqual(["returning"]);
+  // Reopened again with no activity: the wait doubles.
+  now += 60_000;
+  expect(await release.runOnce()).toEqual([]);
+  now += RELEASE_BACKOFF_MIN_MS;
+  expect(await release.runOnce()).toEqual([]);
+  // Real activity ends the backoff; the agent is released once it is quiet again.
+  returning = agent({ id: "returning", updatedAt: new Date(now - 10 * 60_000 + 1) });
+  expect(await release.runOnce()).toEqual(["returning"]);
+  expect(closed).toEqual(["returning", "returning", "returning"]);
+  // A later upgrade starts without the previous upgrade's backoff.
+  pending = false;
+  expect(await release.runOnce()).toEqual([]);
+  now += 3 * 24 * 60 * 60_000;
+  pending = true;
+  expect(await release.runOnce()).toEqual(["returning"]);
   release.stop();
 });

@@ -9883,7 +9883,14 @@ export class Session {
             },
             retryHistory,
           ),
-        { useRetainedTimeline: !persistence && !saved.profileSwitches?.length },
+        {
+          // A thread closed in this process (idle release, upgrade drain) still holds its complete
+          // timeline. Serving it keeps the epoch clients follow and the one the thread resumes
+          // with; a transcript read would answer in a row-hash epoch and reset every client.
+          useRetainedTimeline:
+            (!persistence && !saved.profileSwitches?.length) ||
+            this.agentManager.hasCompleteRetainedTimeline(agentId),
+        },
       );
       return { agentPayload, fetchedControlTimeline };
     };

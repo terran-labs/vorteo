@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
@@ -19,7 +19,7 @@ export type StageBarIssue = FactoryQueueIssue & { tag?: string };
  * Queue counts by stage as a thin segmented bar on a Factory section row. Each segment explains its
  * issues on hover; pressing it acts like pressing the row.
  */
-export function FactoryStageBar({
+export const FactoryStageBar = memo(function FactoryStageBar({
   issues,
   onPress,
   fullWidth = false,
@@ -69,7 +69,7 @@ export function FactoryStageBar({
       ))}
     </View>
   );
-}
+});
 
 function StageIssues({ count, limit }: { count: FactoryStageCount<StageBarIssue>; limit: number }) {
   const { t } = useTranslation();

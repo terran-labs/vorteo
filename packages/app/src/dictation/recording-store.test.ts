@@ -185,4 +185,42 @@ describe("DictationRecordingStore", () => {
     expect(events.filter((event) => event.kind === "unavailable")).toHaveLength(1);
     expect(store.persistence(next, 1)).toBe("stored");
   });
+
+  it("bounds audio held in memory, says so when it drops some, and clears a removed Host's", async () => {
+    const store = new DictationRecordingStore(null, { maxBytes: 10 });
+    const events: DictationRecordingStoreEvent[] = [];
+    store.subscribe((event) => events.push(event));
+    const retained = (serverId: string, segment: string) => ({
+      segments: [segment],
+      createdAt: 1,
+      format: FORMAT,
+      storedId: null,
+      serverId,
+    });
+
+    store.retainInMemory("old", retained("host-1", "a".repeat(6)));
+    store.retainInMemory("new", retained("host-2", "b".repeat(6)));
+    // Over the budget: the oldest is dropped and the owner is told.
+    expect(events.filter((event) => event.kind === "evicted")).toHaveLength(1);
+
+    store.retainInMemory("third", retained("host-1", "c".repeat(2)));
+    await store.deleteForServer("host-1");
+    expect(await store.findPending("third")).toBeNull();
+    expect((await store.findPending("new"))?.segments).toEqual(["b".repeat(6)]);
+    expect(await store.findPending("old")).toBeNull();
+  });
+
+  it("never drops the recording being retained, even when it alone exceeds the budget", async () => {
+    const store = new DictationRecordingStore(null, { maxBytes: 100 });
+    const events: DictationRecordingStoreEvent[] = [];
+    store.subscribe((event) => events.push(event));
+    store.retainInMemory("long", {
+      segments: ["x".repeat(120)],
+      createdAt: 1,
+      format: FORMAT,
+      storedId: null,
+    });
+    expect(events).toEqual([]);
+    expect((await store.findPending("long"))?.segments).toEqual(["x".repeat(120)]);
+  });
 });

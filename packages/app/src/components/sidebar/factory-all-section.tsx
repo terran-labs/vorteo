@@ -20,6 +20,7 @@ import {
   loadFactoryQueue,
   type FactoryQueue,
 } from "@/screens/factory/queue";
+import { useShallow } from "zustand/shallow";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import type { ProjectFactoryList } from "../../../../../plugins/factory/shared/project";
@@ -124,17 +125,23 @@ function useAllFactories(collapsed: boolean) {
       retry: false,
     })),
   );
-  const sessions = useSessionStore((store) => store.sessions);
+  // Only the names it shows: a whole-sessions subscription re-ran this on every stream event.
+  const projectNames = useSessionStore(
+    useShallow((store) =>
+      listed.map(({ project, plugin }) =>
+        factoryProjectName(store.sessions[plugin.serverId], project.projectId),
+      ),
+    ),
+  );
   const hosts = useHosts();
   const factories = useMemo((): FactorySummaryInput[] => {
     const multiHost = new Set(listed.map(({ plugin }) => plugin.serverId)).size > 1;
     return listed.map(({ project, plugin }, index) => {
       const serverId = plugin.serverId;
-      const session = sessions[serverId];
       return {
         serverId,
         projectId: project.projectId,
-        projectName: factoryProjectName(session, project.projectId),
+        projectName: projectNames[index] ?? project.projectId,
         hostLabel: multiHost
           ? (hosts.find((host) => host.serverId === serverId)?.label ?? serverId)
           : null,
@@ -142,7 +149,7 @@ function useAllFactories(collapsed: boolean) {
         issues: queues[index]?.data?.issues ?? null,
       };
     });
-  }, [listed, queues, sessions, hosts]);
+  }, [listed, queues, projectNames, hosts]);
   const errors = useMemo(
     () => [
       ...lists.filter((list) => list.isError),

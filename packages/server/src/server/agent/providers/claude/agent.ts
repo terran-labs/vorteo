@@ -113,7 +113,11 @@ import {
   type ClaudeProviderOptions,
 } from "./options.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
-import { claudeRenewalDue, discoverClaudeModels } from "./model-discovery.js";
+import {
+  claudeRenewalDue,
+  discoverClaudeModels,
+  settleClaudeIdleRenewals,
+} from "./model-discovery.js";
 import { claudeQuery, type ClaudeOptions, type ClaudeQueryFactory } from "./query.js";
 import {
   findSteeredMessageParent,
@@ -1877,6 +1881,12 @@ export class ClaudeAgentClient implements AgentClient {
           env,
           signal,
           force,
+          lifetime: this.shutdownController.signal,
+          onIdleRenewal: (outcome, error) => {
+            // The account had expired with nothing using it; see renewIdleClaudeAccount.
+            const log = outcome === "renewed" ? "info" : "warn";
+            this.logger[log]({ outcome, err: error }, "Idle Claude sign-in renewal finished");
+          },
         }),
       );
       discoveredModelIds = new Set(
@@ -2082,6 +2092,8 @@ export class ClaudeAgentClient implements AgentClient {
   async shutdown(): Promise<void> {
     this.shutdownController.abort();
     await Promise.allSettled([...this.availabilityProbes, ...this.catalogRefreshes]);
+    // An idle renewal ends its CLI itself once the lifetime ends; leave only after it has.
+    await settleClaudeIdleRenewals();
   }
 
   private async checkAvailability(signal: AbortSignal): Promise<boolean> {
