@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { HandoffOutcome } from "./coordinator-handoff.js";
+import { memoryDelegationEvidence } from "./delegated-admission.js";
 import {
   CoordinatorFollow,
   createCoordinatorFollowJournal,
@@ -598,6 +599,61 @@ test("a Host change after approval fails the source upgrade before anything rest
   expect(sources.list()[0]).toMatchObject({ status: "failed" });
   expect(sources.list()[0].detail).toContain("Host changed after");
 });
+
+test.each(["delegated", "revoked", "owner"] as const)(
+  "a Host agent's source upgrade under the full grant: %s",
+  async (outcome) => {
+    let time = Date.parse("2026-11-08T12:00:00Z");
+    let grant: { policyActivatedAt: string; authoritySha256: string } | null = {
+      policyActivatedAt: "2026-11-01T00:00:00.000Z",
+      authoritySha256: "a".repeat(64),
+    };
+    const evidence = memoryDelegationEvidence();
+    const fake = fakeSourcePorts(
+      {},
+      {
+        now: () => new Date(time),
+        delegationGrant: () => grant,
+        delegationEvidence: evidence,
+        cancellationDelayMs: 30_000,
+      },
+    );
+    const written: string[] = [];
+    const write = journal.write.bind(journal);
+    journal.write = (records) => {
+      write(records);
+      written.push(...records.map((record) => record.status));
+    };
+    const sources = new SourceUpgrades(journal, fake.ports);
+    const pending = await sources.request({ ...SOURCE_REQUEST, hostAgent: true });
+    expect(evidence.get(pending.id)).toBeDefined();
+    // The owner sees that it starts on its own unless cancelled; the stored record is unchanged.
+    expect(pending.detail).toContain("Starts after");
+    expect(sources.list()[0]?.detail).toContain("Starts after");
+    expect(sources.list()[0]?.revision).toBe(pending.revision);
+    expect(JSON.stringify(createUpgradeJournal(directory).read())).not.toContain("Starts after");
+    time += 29_000;
+    await sources.drain();
+    expect(sources.list()[0]).toMatchObject({ status: "pending" });
+    if (outcome === "revoked") {
+      grant = null;
+      // Revoked: the owner-approval wording returns at once, before any drain.
+      expect(sources.list()[0]?.detail).not.toContain("delegation");
+    }
+    if (outcome === "owner") await sources.decide(pending.id, pending.revision, "cancel");
+    time += 1_000;
+    await sources.drain();
+    if (outcome === "delegated") {
+      // Claimed straight from pending to running: no approved record an older coordinator replays.
+      expect(written).not.toContain("approved");
+      expect(fake.calls[0]).toBe("snapshot");
+    } else {
+      expect(fake.calls).toEqual([]);
+      expect(sources.list()[0]?.status).toBe(outcome === "revoked" ? "pending" : "cancelled");
+    }
+    expect(evidence.get(pending.id)).toBeUndefined();
+  },
+);
 
 test("an approved source upgrade resumes from its journal and fetches the reviewed commit", async () => {
   const first = fakeSourcePorts();

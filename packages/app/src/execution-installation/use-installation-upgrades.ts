@@ -6,13 +6,20 @@ import type {
   CoordinatorSettingsJob,
   InstallationUpgrade,
   QueuedAgentAction,
+  SourceUpgrade,
+  SourceUpgradeDecision,
   UpdatePolicyChange,
   UpgradeDecision,
   UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
 import { useFetchQuery } from "@/data/query";
 import type { InstallationClient } from "./client";
-import { activeUpgrade, coordinatorFollowInProgress } from "./installation-upgrades-model";
+import {
+  activeUpgrade,
+  coordinatorFollowInProgress,
+  installationChangesPollMs,
+  sourceUpgradesPollMs,
+} from "./installation-upgrades-model";
 import { coordinatorSettingsInProgress } from "./coordinator-settings-model";
 
 export const INSTALLATION_UPGRADES_KEY = ["installation-upgrades"] as const;
@@ -20,6 +27,8 @@ export const INSTALLATION_SNAPSHOTS_KEY = ["installation-snapshots"] as const;
 export const COORDINATOR_FOLLOW_KEY = ["installation-coordinator-follow"] as const;
 export const AGENT_ACTIONS_KEY = ["installation-agent-actions"] as const;
 export const INSTALLATION_CHANGES_KEY = ["installation-changes"] as const;
+export const SOURCE_UPGRADES_KEY = ["installation-source-upgrades"] as const;
+
 export const COORDINATOR_SETTINGS_KEY = ["installation-coordinator-settings"] as const;
 
 function requireClient(client: InstallationClient | null): InstallationClient {
@@ -105,6 +114,33 @@ export function useAgentActionReceipts(client: InstallationClient | null) {
   });
 }
 
+/** Stable source upgrades; polled fast while one is waiting or running. */
+export function useSourceUpgrades(client: InstallationClient | null) {
+  return useFetchQuery({
+    dataShape: "value",
+    queryKey: SOURCE_UPGRADES_KEY,
+    queryFn: () => requireClient(client).sourceUpgradeStatus(),
+    enabled: client !== null,
+    staleTimeMs: 0,
+    refetchInterval: (query) => sourceUpgradesPollMs(query.state.data),
+    retry: false,
+  });
+}
+
+export function useSourceUpgradeActions(client: InstallationClient | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      upgrade,
+      decision,
+    }: {
+      upgrade: SourceUpgrade;
+      decision: SourceUpgradeDecision["decision"];
+    }) => requireClient(client).decideSourceUpgrade(upgrade, decision),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: SOURCE_UPGRADES_KEY }),
+  });
+}
+
 /** Installation changes Host agents requested; polled fast while one is waiting or running. */
 export function useInstallationChanges(client: InstallationClient | null) {
   return useFetchQuery({
@@ -113,8 +149,7 @@ export function useInstallationChanges(client: InstallationClient | null) {
     queryFn: () => requireClient(client).installationChanges(),
     enabled: client !== null,
     staleTimeMs: 0,
-    refetchInterval: (query) =>
-      (query.state.data ?? []).some((job) => !job.finishedAt) ? 3000 : 60_000,
+    refetchInterval: (query) => installationChangesPollMs(query.state.data),
     retry: false,
   });
 }

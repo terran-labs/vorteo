@@ -25,10 +25,13 @@ import { writePrivateFileAtomicSync } from "../private-files.js";
 import type { HandoffOutcome } from "./coordinator-handoff.js";
 import { RestartRequestError } from "./restarts.js";
 import {
+  delegableUnderGrant,
   delegatedAdmissionStep,
   delegatedApproval,
+  delegatedApprovalHolds,
   delegatedDispatchHolds,
   delegatedPlanDigest,
+  type DelegationEvidence,
   type DelegationGrant,
 } from "./delegated-admission.js";
 
@@ -985,7 +988,24 @@ export interface SourceUpgradePorts extends UpgradePorts {
   rollbackBlocker(commit: string): string | null;
   /** Why a source upgrade must stop now, such as the installation having become Lab, or null. */
   installationBlocker(): Promise<string | null>;
+  /** The active full maintenance grant, read fresh; null when none applies. */
+  delegationGrant?(): DelegationGrant | null;
+  /**
+   * Delegated approvals, kept beside the strict upgrade journal that older coordinators read:
+   * their records stay pending, so a rolled-back coordinator waits for the owner.
+   */
+  delegationEvidence?: DelegationEvidence;
+  /** The cancellation window before delegated work starts. */
+  cancellationDelayMs?: number;
 }
+
+/** The operation name full delegation checks against OWNER_ONLY_OPERATIONS. */
+const SOURCE_UPGRADE_OPERATION = "source-upgrade";
+const sourcePlan = (record: { sourceCommit: string; previousCommit?: string | null }) =>
+  delegatedPlanDigest(SOURCE_UPGRADE_OPERATION, {
+    sourceCommit: record.sourceCommit,
+    previousCommit: record.previousCommit ?? null,
+  });
 
 /** How long after a source upgrade finished the owner can roll the Host back to its predecessor. */
 export const SOURCE_ROLLBACK_WINDOW_MS = 24 * 60 * 60_000;
@@ -1013,8 +1033,37 @@ function admissionRefusal(commit: string, installed: string, facts: SourceFacts)
  * release it replaced for 24 hours, as another source upgrade with its own approval.
  */
 export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
+  /**
+   * A delegated request is shown with its start time, projected from the side evidence: the
+   * stored record and the revision its approval binds stay unchanged.
+   */
   list(): SourceUpgrade[] {
-    return this.jobs().filter(isSourceUpgrade);
+    return this.jobs()
+      .filter(isSourceUpgrade)
+      .map((job) => this.projectDelegated(job));
+  }
+
+  /**
+   * The detail a pending request shows while a valid delegated approval covers it: when it
+   * starts, that current work finishes first, and, after the window, what it is waiting for. A
+   * revoked or changed grant shows the record's own owner-approval detail again.
+   */
+  private projectDelegated(job: SourceUpgrade): SourceUpgrade {
+    if (job.status !== "pending") return job;
+    const approval = this.ports.delegationEvidence?.get(job.id);
+    if (
+      !approval ||
+      !delegatedApprovalHolds(approval, this.ports.delegationGrant?.() ?? null, {
+        revision: job.revision,
+        planSha256: sourcePlan(job),
+      })
+    )
+      return job;
+    const detail =
+      this.ports.now().getTime() < Date.parse(approval.dispatchAfter)
+        ? `Approved under owner maintenance delegation. Starts after ${approval.dispatchAfter} unless cancelled; current work finishes before the Host restarts.`
+        : "Approved under owner maintenance delegation. Starts once admission passes again and no other upgrade runs; current work finishes before the Host restarts. Cancel to stop it.";
+    return Object.assign(structuredClone(job), { detail });
   }
 
   active(): SourceUpgrade | null {
@@ -1030,6 +1079,8 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
     commit: string;
     reason: string;
     requestedBy: string;
+    /** A Host agent's request, which the full maintenance grant may approve after its window. */
+    hostAgent?: boolean;
   }): Promise<SourceUpgrade> {
     this.refuseActive();
     this.refuseConflict();
@@ -1046,13 +1097,122 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
     // Admission fetched and called GitHub; another request may have won meanwhile.
     this.refuseActive();
     this.refuseConflict();
-    return this.create({
+    const created = this.create({
       sourceCommit: input.commit,
       previousCommit: installed,
       reason: input.reason,
       requestedBy: input.requestedBy,
       lastRelease: facts.lastRelease,
     });
+    // Only the Host-agent route writes evidence, so its presence proves the request's origin.
+    const grant = this.ports.delegationGrant?.() ?? null;
+    if (input.hostAgent && grant && delegableUnderGrant(SOURCE_UPGRADE_OPERATION))
+      this.ports.delegationEvidence?.set(
+        created.id,
+        delegatedApproval(grant, {
+          requestRevision: created.revision,
+          planSha256: sourcePlan(created),
+          now: this.ports.now().getTime(),
+          cancellationDelayMs: this.ports.cancellationDelayMs ?? 30_000,
+        }),
+      );
+    return this.projectDelegated(created);
+  }
+
+  /**
+   * Starts a delegated source upgrade once its window ends. Admission runs again while the record
+   * is still pending; then one journal write takes it from pending straight to running, so no
+   * approved record exists that an older coordinator would replay. A lapsed grant leaves the
+   * request pending for the owner.
+   */
+  private readonly delegatedCheckedAt = new Map<string, number>();
+
+  /** Whether another upgrade is active; this request's own pending record does not count. */
+  private busyWith(id: string): boolean {
+    const active = this.activeRecord();
+    return active !== undefined && active.id !== id;
+  }
+
+  override async drain(): Promise<void> {
+    await this.claimDelegated();
+    return super.drain();
+  }
+
+  private async claimDelegated(): Promise<void> {
+    const evidence = this.ports.delegationEvidence;
+    if (!evidence) return;
+    for (const record of this.records.filter(isSourceUpgrade)) {
+      const approval = evidence.get(record.id);
+      if (!approval) continue;
+      // Rollbacks stay with the owner (OWNER_ONLY_OPERATIONS: source-upgrade-rollback).
+      if (
+        record.status !== "pending" ||
+        ("rollbackOf" in record && record.rollbackOf) ||
+        !record.previousCommit
+      ) {
+        evidence.delete(record.id);
+        continue;
+      }
+      const ready = () => {
+        const current = this.records.find((item) => item.id === record.id);
+        if (!current || current.status !== "pending" || current.revision !== record.revision)
+          return "gone";
+        return delegatedAdmissionStep(
+          { ...current, requestedBy: "host-agent", delegatedApproval: approval },
+          {
+            grant: this.ports.delegationGrant?.() ?? null,
+            operations: [SOURCE_UPGRADE_OPERATION],
+            planSha256: sourcePlan(current),
+            now: this.ports.now().getTime(),
+          },
+        );
+      };
+      const step = ready();
+      if (step === "invalid" || step === "gone") {
+        // Revoked, renewed or changed: the owner decides it, as for any request.
+        evidence.delete(record.id);
+        continue;
+      }
+      if (step !== "ready" || this.busyWith(record.id)) continue;
+      // Admission fetches main and asks GitHub: at most once a minute while checks are pending.
+      const time = this.ports.now().getTime();
+      if (time - (this.delegatedCheckedAt.get(record.id) ?? 0) < 60_000) continue;
+      this.delegatedCheckedAt.set(record.id, time);
+      const facts = await this.ports.inspectSource(record.sourceCommit, record.previousCommit);
+      const refusal = admissionRefusal(record.sourceCommit, record.previousCommit, facts);
+      if (refusal) continue; // Stays pending; it starts once checks pass, or the owner decides.
+      this.claim(record.id, ready, evidence);
+    }
+  }
+
+  /** Checked last, after the asynchronous admission: then one write, pending to running. */
+  private claim(id: string, ready: () => string, evidence: DelegationEvidence): void {
+    const latest = ready();
+    if (latest === "invalid" || latest === "gone") {
+      evidence.delete(id);
+      return;
+    }
+    if (latest !== "ready" || this.busyWith(id)) return;
+    try {
+      this.refuseConflict();
+    } catch {
+      return;
+    }
+    const current = this.records.find((item) => item.id === id)!;
+    const blocked = this.approvalRefusal(current);
+    if (blocked) {
+      this.save(current, { status: "cancelled", detail: blocked });
+      evidence.delete(id);
+      return;
+    }
+    this.save(current, {
+      status: "running",
+      approvedAt: this.ports.now().toISOString(),
+      // Current turns finish before the Host restarts, as for an owner's "after work".
+      restart: "after-work",
+      detail: "Approved under owner maintenance delegation. Upgrade running.",
+    });
+    evidence.delete(id);
   }
 
   /** Creates a pending rollback of the source upgrade the rollback offer names. */
@@ -1102,6 +1262,8 @@ export class SourceUpgrades extends UpgradePipeline<SourceUpgradePorts> {
     const job = this.decideJob(id, revision, decision);
     if (!isSourceUpgrade(job))
       throw new Error("The source upgrade journal holds a release upgrade");
+    // The owner's decision replaces a delegated approval.
+    this.ports.delegationEvidence?.delete(id);
     return job;
   }
 
