@@ -1,3 +1,5 @@
+import { useOwnerAccess } from "@/execution-installation/owner-access";
+import { OwnerLockBadge } from "@/components/settings/owner-lock";
 import {
   useCallback,
   useContext,
@@ -59,6 +61,8 @@ export function AgentProfilePage({
   sharedScope,
   mode = "edit",
 }: AgentProfilePageProps) {
+  const ownerAccess = useOwnerAccess();
+  const ownerLocked = ownerAccess.status === "checking" || ownerAccess.status === "locked";
   const rawModel = useAgentProfileFormModel({
     mode,
     profile,
@@ -174,29 +178,32 @@ export function AgentProfilePage({
         <Button
           testID="agent-profile-save-button"
           onPress={save}
-          disabled={!dirty || !state.canSubmit}
+          disabled={ownerLocked || !dirty || !state.canSubmit}
         >
           Save
         </Button>
       </View>
     ),
-    [close, save, dirty, state.isSubmitting, state.canSubmit],
+    [close, save, dirty, state.isSubmitting, state.canSubmit, ownerLocked],
   );
   const deleteControl =
     onDelete && sharedScope?.kind !== "defaults" ? (
-      <Button variant="ghost" onPress={remove} disabled={state.isSubmitting}>
+      <Button variant="ghost" onPress={remove} disabled={ownerLocked || state.isSubmitting}>
         Delete profile
       </Button>
     ) : null;
   const form = (
-    <AgentProfileForm
-      serverId={serverId}
-      profileId={profile.id}
-      model={model}
-      state={state}
-      sharedScope={sharedScope}
-      modelDetails={modelDetails}
-    />
+    <>
+      {ownerLocked ? <OwnerLockBadge /> : null}
+      <AgentProfileForm
+        serverId={serverId}
+        profileId={profile.id}
+        model={model}
+        state={state}
+        sharedScope={sharedScope}
+        modelDetails={modelDetails}
+      />
+    </>
   );
   if (centered)
     return (

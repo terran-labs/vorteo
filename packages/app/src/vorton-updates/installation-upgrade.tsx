@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import type {
   UpdateChannel,
   UpdateMode,
@@ -67,7 +68,7 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
       {offer ? (
         <>
           <Text style={styles.hint}>
-            {`The installation coordinator can upgrade to ${offer} after you review it. ${upgradeApprovalText(status.data.container, policy, status.data.upgrades)}`}
+            {`System services can update to ${offer} after you review it. ${upgradeApprovalText(status.data.container, policy, status.data.upgrades)}`}
           </Text>
           <View style={styles.actions}>
             <Button
@@ -77,7 +78,7 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
               disabled={create.isPending}
               testID="installation-upgrade-start"
             >
-              {`Upgrade to ${offer}`}
+              {`Update to ${offer}`}
             </Button>
           </View>
         </>
@@ -85,11 +86,7 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
       {shown ? (
         <InstallationUpgradeDetails client={client} upgrade={shown} status={status.data} />
       ) : null}
-      {create.error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {toErrorMessage(create.error)}
-        </Text>
-      ) : null}
+      <SettingsStatusLine message={create.error ? toErrorMessage(create.error) : null} />
     </View>
   );
 }
@@ -159,11 +156,7 @@ function UpdatePolicyControls({
           Check now
         </Button>
       </View>
-      {error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {toErrorMessage(error)}
-        </Text>
-      ) : null}
+      <SettingsStatusLine message={error ? toErrorMessage(error) : null} />
     </View>
   );
 }
@@ -193,5 +186,4 @@ const styles = StyleSheet.create((theme) => ({
   controlText: { flexGrow: 1, flexShrink: 1, flexBasis: 200, minWidth: 0 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   hint: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
-  error: { color: theme.colors.destructive, fontSize: theme.fontSize.base },
 }));

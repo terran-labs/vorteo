@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import { hostReleaseRetentionIdle } from "./host-release-retention.js";
 import { digestBootstrapArtifact } from "./coordinator-bootstrap-artifact.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1430,7 +1431,7 @@ test("interruption outcome requires the exact installed candidate and published 
 
 // 2026-10-21: an idle Host restart replaced only the worker, which reloaded the
 // old supervisor's build (vorteo.726) while the install reported 729 installed.
-test("a Host install fails when the restarted daemon still runs the previous build", async () => {
+test("Host publication uses the verified candidate migration rules after replacement readiness", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "source-version-")));
   try {
     const previous = path.join(root, "previous");
@@ -1456,6 +1457,16 @@ test("a Host install fails when the restarted daemon still runs the previous bui
       toolingDirectory: root,
       integrationRef: "refs/heads/main",
     };
+    const migration = await readFile(
+      path.resolve(import.meta.dirname, "../../../../../scripts/web-icon-migration.mjs"),
+      "utf8",
+    );
+    const publisher = `import fs from 'node:fs/promises'; import path from 'node:path';
+      import { isReviewedFallback } from './web-icon-migration.mjs';
+      isReviewedFallback('apple-touch-icon.png',
+        '0567fc90453dc9ee254dd11927a3bb22a64f68d3c8b0d187d926a4273ffbf8b8',
+        'c9c2d0d9877c5f6c66664b1c09e51679fba52aaaf2a527755f2c278fd4da9e9b');
+      await fs.writeFile(path.join(process.argv[3], 'published'), 'yes');`;
     await writeFile(
       path.join(root, "prepare-installation-update.mjs"),
       `import fs from 'node:fs/promises'; import path from 'node:path';
@@ -1466,11 +1477,14 @@ test("a Host install fails when the restarted daemon still runs the previous bui
       await fs.writeFile(path.join(scripts, 'supervisor-entrypoint.js'), 'process.exit(0)');
       await fs.writeFile(path.join(release, 'packages/server/package.json'), JSON.stringify({version: '1.0.1'}));
       await fs.writeFile(path.join(release, '.installation-source.json'), JSON.stringify({sourceCommit: input.update.sourceCommit}));
+      await fs.mkdir(path.join(release, 'scripts'), {recursive:true});
+      await fs.writeFile(path.join(release, 'scripts/publish-instance-web.mjs'), ${JSON.stringify(publisher)});
+      await fs.writeFile(path.join(release, 'scripts/web-icon-migration.mjs'), ${JSON.stringify(migration)});
       await fs.writeFile(input.resultFile, JSON.stringify({release,exported}));`,
     );
     await writeFile(
       path.join(root, "publish-instance-web.mjs"),
-      `import fs from 'node:fs/promises'; import path from 'node:path'; await fs.writeFile(path.join(process.argv[3], 'published'), 'yes');`,
+      `throw new Error('Unreviewed fallback icon migration: apple-touch-icon.png');`,
     );
     const updates = new InstallationSourceUpdates(config);
     const bundle = Buffer.from("approved inert source");
@@ -1510,11 +1524,39 @@ test("a Host install fails when the restarted daemon still runs the previous bui
 
     await rm(link);
     await symlink(previous, link);
+    const changed = job();
+    await expect(
+      updates.install(changed, async () => {
+        const release = await realpath(link);
+        await writeFile(
+          path.join(release, "scripts/web-icon-migration.mjs"),
+          "export function isReviewedFallback() {}",
+        );
+        return "ready";
+      }),
+    ).rejects.toThrow("interface publication failed");
+    await expect(readFile(path.join(root, "published"))).rejects.toThrow();
+    expect(
+      JSON.parse(await readFile(path.join(root, changed.id, "activation.json"), "utf8")),
+    ).toMatchObject({ status: "interface-failed" });
+
+    await rm(link);
+    await symlink(previous, link);
+    const legacy = { ...job(), updatePreparation: "prepared" as const };
+    await updates.prepareInstallation(legacy);
+    const admissionFile = path.join(root, legacy.id, "admission.json");
+    const admission = JSON.parse(await readFile(admissionFile, "utf8"));
+    delete admission.candidateArtifactSha256;
+    await writeFile(admissionFile, JSON.stringify(admission));
+    await expect(updates.install(legacy, restart)).rejects.toThrow("requires artifact evidence");
+    expect(await realpath(link)).toBe(previous);
+    expect(restart).toHaveBeenCalledTimes(1);
     await expect(
       updates.install(job(), restart, undefined, async () => "1.0.1"),
     ).resolves.toContain("Installed source");
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
   } finally {
+    await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -1586,6 +1628,8 @@ test("source builds fail before activation, uncertain dispatch retains selection
       await fs.mkdir(scripts, {recursive:true}); await fs.mkdir(exported);
       await fs.writeFile(path.join(scripts, 'supervisor-entrypoint.js'), 'process.exit(0)');
       await fs.writeFile(path.join(release, '.installation-source.json'), JSON.stringify({sourceCommit: input.update.sourceCommit}));
+      await fs.mkdir(path.join(release, 'scripts'), {recursive:true});
+      await fs.copyFile(path.join(input.toolingDirectory, 'publish-instance-web.mjs'), path.join(release, 'scripts/publish-instance-web.mjs'));
       await fs.writeFile(input.resultFile, JSON.stringify({release,exported}));`,
     );
     await writeFile(
@@ -1763,6 +1807,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
     await queue.drain();
     expect(restart).toHaveBeenCalledTimes(5);
   } finally {
+    await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -5277,6 +5322,8 @@ test("source updates refuse a release without the session host while its job is 
       if (await fs.stat(path.join(input.toolingDirectory, 'with-session-host')).then(() => true, () => false))
         await fs.writeFile(path.join(scripts, 'session-host-entrypoint.js'), '');
       await fs.writeFile(path.join(release, '.installation-source.json'), JSON.stringify({sourceCommit: input.update.sourceCommit}));
+      await fs.mkdir(path.join(release, 'scripts'), {recursive:true});
+      await fs.copyFile(path.join(input.toolingDirectory, 'publish-instance-web.mjs'), path.join(release, 'scripts/publish-instance-web.mjs'));
       await fs.writeFile(input.resultFile, JSON.stringify({release,exported}));`,
     );
     await writeFile(
@@ -5324,6 +5371,7 @@ test("source updates refuse a release without the session host while its job is 
     expect(await realpath(link)).toBe(path.join(root, supported.id, "release"));
   } finally {
     setReleaseSelectionGuard(null);
+    await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
   }
 });

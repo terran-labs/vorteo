@@ -156,6 +156,7 @@ function fakeGh({
   viewer = "owner",
   author = "owner",
   queue = 0,
+  queueOutcome = "merged",
   refuseAutoMerge = false,
 }) {
   const calls = [];
@@ -180,10 +181,6 @@ function fakeGh({
     pr.mergeCommit = { oid: run(merger, "rev-parse", "HEAD").trim() };
   };
   const find = (number) => prs.find((entry) => String(entry.number) === String(number));
-  const enqueue = (pr) => {
-    pr.inQueue = true;
-    pr.queuePolls = queue;
-  };
   const merge = (args) => {
     const pr = find(args[2]);
     if (refuseAutoMerge) {
@@ -193,25 +190,18 @@ function fakeGh({
     }
     assert.equal(args[args.indexOf("--match-head-commit") + 1], pr.headRefOid);
     assert.ok(args.includes("--merge"));
-    if (!queue) return land(pr);
-    enqueue(pr);
+    assert.equal(queue, 0, "queued branches must use enqueuePullRequest");
+    return land(pr);
   };
   // The publisher's GraphQL merge-state query; a queued entry lands after its polls.
   const mergeState = (args) => {
-    const id = args.find((arg) => arg.startsWith("id="));
-    if (id) {
-      const pr = find(id.slice("id=PR_".length));
-      assert.equal(
-        args.find((arg) => arg.startsWith("head=")).slice("head=".length),
-        pr.headRefOid,
-      );
-      enqueue(pr);
-      return "";
-    }
     const pr = find(args.find((arg) => arg.startsWith("number=")).slice("number=".length));
-    if (pr.inQueue && (pr.queuePolls -= 1) < 0) land(pr);
+    if (pr.inQueue && (pr.queuePolls -= 1) < 0) {
+      if (queueOutcome === "removed") pr.inQueue = false;
+      else land(pr);
+    }
     return JSON.stringify({
-      id: `PR_${pr.number}`,
+      id: pr.id,
       state: pr.state,
       headRefOid: pr.headRefOid,
       mergeCommit: pr.mergeCommit ?? null,
@@ -225,6 +215,7 @@ function fakeGh({
       const branch = args[args.indexOf("--head") + 1];
       const head = run(root, "--git-dir", origin, "rev-parse", `refs/heads/${branch}`).trim();
       prs.push({
+        id: `PR_${prs.length + 1}`,
         number: prs.length + 1,
         state: "OPEN",
         baseRefName: "main",
@@ -251,7 +242,23 @@ function fakeGh({
     if (group === "api" && verb.endsWith("/permission")) return "admin";
     if (group === "api" && verb === `repos/${REPO}`) return "owner";
     if (group === "pr" && verb in prCommands) return prCommands[verb](args);
-    if (group === "api" && verb === "graphql") return mergeState(args);
+    if (group === "api" && verb === "graphql") {
+      if (!args.some((arg) => arg.includes("enqueuePullRequest("))) return mergeState(args);
+      const id = args
+        .find((arg) => arg.startsWith("pullRequestId="))
+        .slice("pullRequestId=".length);
+      const head = args
+        .find((arg) => arg.startsWith("expectedHeadOid="))
+        .slice("expectedHeadOid=".length);
+      const pr = prs.find((entry) => entry.id === id);
+      if (head !== pr.headRefOid)
+        throw new Error("expectedHeadOid does not match pull request head");
+      pr.inQueue = true;
+      pr.queuePolls = queue;
+      return JSON.stringify({
+        data: { enqueuePullRequest: { mergeQueueEntry: { id: "queue-entry" } } },
+      });
+    }
     if (group === "api" && args.at(-3).includes("/check-runs")) {
       return checks.map((check) => JSON.stringify({ app: ACTIONS, ...check })).join("\n");
     }
@@ -263,8 +270,17 @@ function fakeGh({
   return { gh, calls, prs };
 }
 
-function branchFixture() {
+function branchFixture({ queue = false } = {}) {
   const setup = fixture();
+  mkdirSync(path.join(setup.clone, ".github", "rulesets"), { recursive: true });
+  commit(
+    setup.clone,
+    ".github/rulesets/main.json",
+    JSON.stringify({
+      rules: queue ? [{ type: "merge_queue" }] : [],
+    }),
+    "Set test ruleset",
+  );
   run(setup.clone, "checkout", "--quiet", "-b", "feat/a");
   return setup;
 }
@@ -325,7 +341,7 @@ function advanceMain(root, origin) {
 }
 
 test("a conflicting pull request is refused; one behind main waits in the merge queue until merged", async () => {
-  const { clone, root, origin } = branchFixture();
+  const { clone, root, origin } = branchFixture({ queue: true });
   const env = fakeGitleaks(root);
   const head = commit(clone, "a.txt", "a\n", "Add a");
   const { gh, calls, prs } = fakeGh({ root, origin, checks: passing, queue: 2 });
@@ -349,6 +365,13 @@ test("a conflicting pull request is refused; one behind main waits in the merge 
   });
   assert.deepEqual(progress, ["In the merge queue at position 1: awaiting checks."]);
   assert.equal(prs[0].state, "MERGED");
+  const enqueue = calls.filter((call) =>
+    call.args.some((arg) => arg.includes("enqueuePullRequest(")),
+  );
+  assert.equal(enqueue.length, 1);
+  assert.ok(enqueue[0].args.includes(`expectedHeadOid=${head}`));
+  assert.ok(enqueue[0].args.includes(`pullRequestId=${pr.id}`));
+  assert.equal(calls.filter((call) => call.args[1] === "merge").length, 0);
   assert.equal(run(clone, "ls-remote", "origin", "refs/heads/main").split(/\s+/)[0], result.main);
   for (const commitId of [head, behind, result.mergeCommit]) {
     assert.equal(run(clone, "merge-base", "--is-ancestor", commitId, result.main), "");
@@ -363,7 +386,7 @@ test("when gh falls back to the disallowed auto-merge, the pull request is enque
   const plan = planFor(clone, env, gh);
   const pr = await openPullRequest(plan, { env, gh, pollMs: 0 });
   const result = await mergePullRequest(plan, pr, { gh, wait: { pollMs: 0 } });
-  assert.ok(calls.some((call) => call.args.some((arg) => arg.startsWith("id="))));
+  assert.ok(calls.some((call) => call.args.some((arg) => arg === `pullRequestId=${pr.id}`)));
   assert.equal(run(clone, "merge-base", "--is-ancestor", head, result.main), "");
 });
 
@@ -392,6 +415,14 @@ test("publishing opens a pull request, waits for required checks and merges with
   });
   assert.equal(polls, 1);
   const result = await mergePullRequest(plan, pr, { gh, wait: { pollMs: 0 } });
+  assert.deepEqual(
+    calls.filter((call) => call.args[1] === "merge").map((call) => call.args),
+    [["pr", "merge", String(pr.number), "-R", REPO, "--merge", "--match-head-commit", head]],
+  );
+  assert.equal(
+    calls.some((call) => call.args.some((arg) => arg.includes("enqueuePullRequest("))),
+    false,
+  );
   const parents = run(clone, "rev-list", "--parents", "-n", "1", result.mergeCommit)
     .trim()
     .split(" ");
@@ -406,6 +437,42 @@ test("publishing opens a pull request, waits for required checks and merges with
   assert.equal(deleteMergedBranch(plan, env), true);
   assert.equal(run(clone, "ls-remote", "origin", "refs/heads/feat/a"), "");
 });
+
+test("publishing refuses outside Builds before accessing the repository", () => {
+  const { root } = fixture();
+  const env = { ...process.env };
+  delete env.VORTEO_BUILDS;
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, [path.resolve("scripts/publish-main.mjs")], {
+        cwd: root,
+        env,
+        stdio: "pipe",
+      }),
+    (error) =>
+      error.status === 1 && /reserved for the Vorteo :: Builds thread/.test(String(error.stderr)),
+  );
+});
+
+for (const outcome of ["removed", "head mismatch"]) {
+  test(`queue publication refuses ${outcome}`, async () => {
+    const { clone, root, origin } = branchFixture({ queue: true });
+    const env = fakeGitleaks(root);
+    commit(clone, "a.txt", "a\n", "Add a");
+    const { gh, prs, calls } = fakeGh({ root, origin, queue: 1, queueOutcome: "removed" });
+    const plan = planFor(clone, env, gh);
+    const pr = await openPullRequest(plan, { env, gh, pollMs: 0 });
+    if (outcome === "head mismatch") prs[0].headRefOid = "0".repeat(40);
+    await assert.rejects(
+      mergePullRequest(plan, pr, { gh, wait: { pollMs: 0, absentPolls: 0 } }),
+      outcome === "removed"
+        ? /left the merge queue without merging/
+        : /expectedHeadOid does not match/,
+    );
+    assert.equal(prs[0].state, "OPEN");
+    assert.equal(calls.filter((call) => call.args[1] === "merge").length, 0);
+  });
+}
 
 test("required checks refuse failures, neutral results and other apps' runs", async () => {
   const { clone, root, origin } = branchFixture();

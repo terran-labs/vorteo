@@ -55,7 +55,7 @@ function installationWidePane(section: InstallationSettingsSection) {
   switch (section) {
     case "providers":
       return (
-        <InstallationSettingsStatus>
+        <InstallationSettingsStatus title="Providers">
           {/* Always rendered, so account sync news never pushes the provider list. */}
           <InstallationSettingsSyncStatus />
           <SharedProvidersPage />
@@ -63,7 +63,7 @@ function installationWidePane(section: InstallationSettingsSection) {
       );
     case "plugins":
       return (
-        <InstallationSettingsStatus>
+        <InstallationSettingsStatus title="Plugins">
           <SharedPluginsPage />
         </InstallationSettingsStatus>
       );
@@ -109,25 +109,25 @@ export function InstallationSettingsContent({
       return <ProjectsScreen />;
     case "agents":
       return (
-        <InstallationSettingsStatus>
+        <InstallationSettingsStatus title="Agent tools">
           <HostAgentsPage serverId={serverId} />
         </InstallationSettingsStatus>
       );
     case "metadata":
       return (
-        <InstallationSettingsStatus>
+        <InstallationSettingsStatus title="Metadata">
           <MetadataGenerationPage serverId={serverId} />
         </InstallationSettingsStatus>
       );
     case "workspaces":
       return (
-        <InstallationSettingsStatus>
+        <InstallationSettingsStatus title="Workspaces">
           <HostWorkspacesPage serverId={serverId} />
         </InstallationSettingsStatus>
       );
     case "terminals":
       return (
-        <InstallationSettingsStatus>
+        <InstallationSettingsStatus title="Terminal profiles">
           <HostTerminalsPage serverId={serverId} />
         </InstallationSettingsStatus>
       );

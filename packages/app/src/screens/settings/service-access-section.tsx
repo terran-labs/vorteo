@@ -5,7 +5,7 @@ import * as Clipboard from "expo-clipboard";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DaemonPermission, ServicePrincipal } from "@getpaseo/protocol/messages";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
-import { Alert as InlineAlert } from "@/components/ui/alert";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -166,9 +166,7 @@ function ServiceAccessContent({ serverId }: { serverId: string }) {
           Read-only: can read projects, workspaces and agents. It cannot read files, run git or
           terminal commands, or change anything.
         </Text>
-        {create.error ? (
-          <InlineAlert variant="error" description={toErrorMessage(create.error)} />
-        ) : null}
+        <SettingsStatusLine message={create.error ? toErrorMessage(create.error) : null} />
         <View style={styles.actions}>
           <Button
             onPress={handleCreate}
@@ -180,12 +178,8 @@ function ServiceAccessContent({ serverId }: { serverId: string }) {
         </View>
       </View>
 
-      {query.error ? (
-        <InlineAlert variant="error" description={toErrorMessage(query.error)} />
-      ) : null}
-      {revoke.error ? (
-        <InlineAlert variant="error" description={toErrorMessage(revoke.error)} />
-      ) : null}
+      <SettingsStatusLine message={query.error ? toErrorMessage(query.error) : null} />
+      <SettingsStatusLine message={revoke.error ? toErrorMessage(revoke.error) : null} />
       {principals.length > 0 ? (
         <View style={settingsStyles.card} testID="service-access-list">
           {principals.map((principal, index) => (

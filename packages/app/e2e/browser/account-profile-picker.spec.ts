@@ -385,6 +385,9 @@ test("failed catalog discovery offers retry and restores selectable profiles", a
     await expect(page.getByTestId("preset-catalog-error")).toHaveText("Catalog discovery failed");
     await expect(page.getByTestId("preset-row-shared-profile/mock/account-medium")).toHaveCount(0);
     await expect(page.getByTestId("preset-use-profile")).toHaveCount(0);
+    await expect(page.getByTestId("preset-provider-settings")).toHaveAccessibleName(
+      "Provider settings",
+    );
     failCatalog = false;
     await page.getByTestId("preset-retry-profiles").click();
     await expect(page.getByTestId("preset-row-shared-profile/mock/account-medium")).toBeVisible();

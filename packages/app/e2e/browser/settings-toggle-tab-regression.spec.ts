@@ -1,3 +1,4 @@
+import { revealSettingsLocation } from "../support/helpers/settings";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { buildHostAgentDetailRoute, buildHostWorkspaceRoute } from "@/utils/host-routes";
 import { expect, test } from "../support/fixtures";
@@ -8,7 +9,16 @@ import { getServerId } from "../support/helpers/server-id";
 
 async function pressSettingsToggleShortcut(page: import("@playwright/test").Page) {
   const modifier = process.platform === "darwin" ? "Meta" : "Control";
+  const before = page.url();
   await page.keyboard.press(`${modifier}+Comma`);
+  if (
+    (page.viewportSize()?.width ?? 1280) < 600 &&
+    new URL(before).pathname.startsWith("/settings")
+  ) {
+    await expect(page).not.toHaveURL(before);
+    if (new URL(page.url()).pathname.startsWith("/settings"))
+      await page.keyboard.press(`${modifier}+Comma`);
+  }
 }
 
 async function openComposerTab(page: import("@playwright/test").Page, agentId: string) {
@@ -75,9 +85,9 @@ async function stopComposerFrameCapture(
   });
 }
 
-async function expectSendBehavior(
+async function expectSendShortcut(
   page: import("@playwright/test").Page,
-  expected: "interrupt" | "queue" | "steer",
+  expected: "enter" | "mod-enter",
 ) {
   await expect
     .poll(async () => {
@@ -85,7 +95,7 @@ async function expectSendBehavior(
       if (!raw) {
         return null;
       }
-      return (JSON.parse(raw) as { sendBehavior?: string }).sendBehavior ?? null;
+      return (JSON.parse(raw) as { sendShortcut?: string }).sendShortcut ?? null;
     })
     .toBe(expected);
 }
@@ -133,31 +143,30 @@ test.describe("Settings toggle tab regression", () => {
       await expectAgentTabActive(page, secondAgent.id);
 
       await pressSettingsToggleShortcut(page);
-      await expect(page).toHaveURL(/\/settings\/general$/);
+      await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
 
-      const defaultSendTrigger = page.getByRole("button", {
-        name: "Default send: Steer",
-        exact: true,
-      });
-      await expect(defaultSendTrigger).toBeVisible();
-      await expect(page.getByRole("menuitem", { name: "Queue", exact: true })).toHaveCount(0);
-
-      await defaultSendTrigger.click();
-      await expect(page.getByRole("menuitem", { name: "Steer", exact: true })).toHaveAttribute(
+      await revealSettingsLocation(page, "chat.sending");
+      const modifierLabel = process.platform === "darwin" ? "⌘" : "Ctrl";
+      const enterTrigger = page.getByRole("button", { name: "Send shortcut: Enter", exact: true });
+      await expect(enterTrigger).toBeVisible();
+      await expect(
+        page.getByRole("menuitem", { name: `${modifierLabel}+Enter`, exact: true }),
+      ).toHaveCount(0);
+      await enterTrigger.click();
+      await expect(page.getByRole("menuitem", { name: "Enter", exact: true })).toHaveAttribute(
         "aria-checked",
         "true",
       );
-      await page.getByRole("menuitem", { name: "Queue", exact: true }).click();
-      await expectSendBehavior(page, "queue");
-      const queuedDefaultSendTrigger = page.getByRole("button", {
-        name: "Default send: Queue",
+      await page.getByRole("menuitem", { name: `${modifierLabel}+Enter`, exact: true }).click();
+      await expectSendShortcut(page, "mod-enter");
+      const modifierTrigger = page.getByRole("button", {
+        name: `Send shortcut: ${modifierLabel}+Enter`,
         exact: true,
       });
-      await expect(queuedDefaultSendTrigger).toBeVisible();
-
-      await queuedDefaultSendTrigger.click();
-      await page.getByRole("menuitem", { name: "Interrupt", exact: true }).click();
-      await expectSendBehavior(page, "interrupt");
+      await expect(modifierTrigger).toBeVisible();
+      await modifierTrigger.click();
+      await page.getByRole("menuitem", { name: "Enter", exact: true }).click();
+      await expectSendShortcut(page, "enter");
 
       await pressSettingsToggleShortcut(page);
       await expect(page).toHaveURL(buildHostWorkspaceRoute(serverId, workspace.workspaceId));
@@ -201,7 +210,7 @@ test.describe("Settings toggle tab regression", () => {
 
       await startComposerFrameCapture(page);
       await pressSettingsToggleShortcut(page);
-      await expect(page).toHaveURL(/\/settings\/general$/);
+      await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
       await pressSettingsToggleShortcut(page);
       await expect(page).not.toHaveURL(/\/settings(\/|$)/);
       await expect(input).toHaveValue("Keep this short draft in the composer");
@@ -324,6 +333,7 @@ test("send shortcut selection persists and controls the composer", async ({ page
     });
     await test.step("choose the explicit modifier shortcut and retain it after reload", async () => {
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await expect(
         page.getByRole("button", { name: "Send shortcut: Enter", exact: true }),
       ).toBeVisible();
@@ -351,6 +361,7 @@ test("send shortcut selection persists and controls the composer", async ({ page
     });
     await test.step("switch back to Enter without changing the default send behavior", async () => {
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await selectSendingOption(page, "Send shortcut", "Enter");
       await pressSettingsToggleShortcut(page);
       await composer.fill("Shift still edits");
@@ -363,35 +374,60 @@ test("send shortcut selection persists and controls the composer", async ({ page
   }
 });
 
-for (const behavior of ["Steer", "Interrupt", "Queue"] as const) {
-  test(`modifier send shortcut follows ${behavior} while an agent runs`, async ({ page }) => {
+test("modifier send shortcut queues while an agent runs", async ({ page }) => {
+  const agent = await seedMockAgentWorkspace({
+    repoPrefix: "running-send-shortcut-",
+    title: "Running send shortcut",
+    model: "one-minute-stream",
+  });
+  const modifierLabel = process.platform === "darwin" ? "⌘" : "Ctrl";
+  try {
+    await openAgentRoute(page, agent);
+    await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
+    await pressSettingsToggleShortcut(page);
+    await revealSettingsLocation(page, "chat.sending");
+    await selectSendingOption(page, "Send shortcut", `${modifierLabel}+Enter`);
+    await pressSettingsToggleShortcut(page);
+    await sendDraftWithShortcut(page, "Stay running while I write a follow-up", "Control+Enter");
+    await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toBeVisible();
+    const composer = page.getByRole("textbox", { name: "Message agent..." });
+    await composer.fill("Follow-up");
+    await composer.press("Enter");
+    await expect(composer).toHaveValue("Follow-up\n");
+    await composer.press("Control+Enter");
+    await expect(composer).toHaveValue("");
+    await expect(page.getByText("Follow-up", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Send queued message" })).toHaveCount(1);
+  } finally {
+    await agent.cleanup();
+  }
+});
+
+test.describe("Phone Settings toggle", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("returns to the same conversation and draft after changing a setting", async ({ page }) => {
     const agent = await seedMockAgentWorkspace({
-      repoPrefix: "running-send-shortcut-",
-      title: "Running send shortcut",
-      model: "one-minute-stream",
+      repoPrefix: "phone-settings-toggle-",
+      title: "Phone Settings return",
     });
-    const modifierLabel = process.platform === "darwin" ? "⌘" : "Ctrl";
     try {
       await openAgentRoute(page, agent);
-      await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
-      await pressSettingsToggleShortcut(page);
-      await selectSendingOption(page, "Send shortcut", `${modifierLabel}+Enter`);
-      await selectSendingOption(page, "Default send", behavior);
-      await pressSettingsToggleShortcut(page);
-      await sendDraftWithShortcut(page, "Stay running while I write a follow-up", "Control+Enter");
-      await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toBeVisible();
       const composer = page.getByRole("textbox", { name: "Message agent..." });
-      await composer.fill("Follow-up");
-      await composer.press("Enter");
-      await expect(composer).toHaveValue("Follow-up\n");
-      await composer.press("Control+Enter");
-      await expect(composer).toHaveValue("");
-      await expect(page.getByText("Follow-up", { exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Send queued message" })).toHaveCount(
-        behavior === "Queue" ? 1 : 0,
-      );
+      await composer.fill("Keep this phone draft");
+      await pressSettingsToggleShortcut(page);
+      await expect(page).toHaveURL(/\/settings$/);
+      await revealSettingsLocation(page, "chat.sending");
+      const modifierLabel = process.platform === "darwin" ? "⌘" : "Ctrl";
+      await selectSendingOption(page, "Send shortcut", `${modifierLabel}+Enter`);
+      await pressSettingsToggleShortcut(page);
+      await expect(page).toHaveURL(buildHostWorkspaceRoute(getServerId(), agent.workspaceId));
+      await expect(composer).toHaveValue("Keep this phone draft");
+      await expect(
+        page.getByTestId("workspace-tab-switcher-trigger").filter({ visible: true }),
+      ).toBeVisible();
     } finally {
       await agent.cleanup();
     }
   });
-}
+});

@@ -10,6 +10,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { holdDaemonUpdateRequest } from "../support/helpers/daemon-update";
 import { getE2EDaemonPort } from "../support/helpers/daemon-port";
 import { TEST_HOST_LABEL } from "../support/helpers/daemon-registry";
 import { startIsolatedHostDaemon } from "../support/helpers/isolated-host-daemon";
@@ -18,12 +19,12 @@ import {
   expectSettingsHeader,
   openSettingsHost,
   openHostSection,
+  revealSettingsLocation,
   expectHostLabelDisplayed,
   clickEditHostLabel,
   expectHostLabelEditMode,
   expectHostConnectionsCard,
   expectHostInjectMcpCard,
-  expectHostActionCards,
   expectHostProvidersCard,
   expectHostNoDaemonLifecycleRow,
   expectRetiredSidebarSectionsAbsent,
@@ -35,6 +36,7 @@ import {
   addDirectHostFromSettings,
   expectHostOnlineWithoutError,
   expectIdleAgentRelease,
+  openHostRestartBehavior,
   editRestartRecoveryPrompt,
   expectRestartRecoveryEnabled,
   expectRestartRecoveryPrompt,
@@ -62,12 +64,26 @@ test.describe("Settings host page", () => {
       await expectHostProvidersCard(page, serverId);
       await expectSettingsHeader(page, "Providers");
     });
-    await test.step("host section shows the host label and restart/remove action cards", async () => {
+    await test.step("host section shows the host label and removal controls", async () => {
       await openHostSection(page, serverId, "host");
       // The host's details live in the Environments pane of the single settings page.
       await expectSettingsHeader(page, "Environments");
       await expectHostLabelDisplayed(page);
-      await expectHostActionCards(page, serverId);
+      await expect(page.getByTestId("host-page-remove-host-card")).toBeVisible();
+      await expect(page.getByTestId("host-page-remove-host-button")).toBeVisible();
+      await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
+    });
+    await test.step("System exposes restart controls in the Host overflow menu", async () => {
+      await selectSettingsHost(page, serverId);
+      await revealSettingsLocation(page, "system.overview");
+      const pane = page.getByTestId("system-pane").filter({ visible: true });
+      await pane.getByRole("button", { name: "Host actions", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Restart…", exact: true }).click();
+      const restart = page.getByTestId("system-restart-host");
+      await expect(restart.getByTestId("host-page-restart-card")).toBeVisible();
+      await expect(restart.getByTestId("host-page-restart-button")).toBeEnabled();
+      await page.keyboard.press("Escape");
+      await expect(restart).toHaveCount(0);
     });
     await test.step("clicking the label pencil reveals the inline editor", async () => {
       await openHostSection(page, serverId, "host");
@@ -87,28 +103,35 @@ test.describe("Settings host page", () => {
     });
   });
 
-  test("a failed remote daemon update remains visible in the host UI", async ({
+  test("a failed remote update in System reports its error and allows retry", async ({
     page,
     outdatedDaemon,
   }) => {
+    const update = await holdDaemonUpdateRequest(page, outdatedDaemon.endpoint);
     await seedSavedSettingsHosts(page, [outdatedDaemon]);
     await page.reload();
     await openSettings(page);
     await openSettingsHost(page, outdatedDaemon.serverId);
     await openHostSection(page, outdatedDaemon.serverId, "host");
-
+    // Host details keep removal and appearance, while System owns lifecycle actions.
+    const hostDetails = page.getByTestId(`settings-environment-${outdatedDaemon.serverId}`).first();
+    await expect(hostDetails.getByTestId("host-page-update-button")).toHaveCount(0);
+    await expect(hostDetails.getByTestId("host-page-update-error")).toHaveCount(0);
+    await expect(hostDetails.getByTestId("host-page-restart-card")).toHaveCount(0);
+    await selectSettingsHost(page, outdatedDaemon.serverId);
+    await revealSettingsLocation(page, "system.overview");
+    const pane = page.getByTestId("system-pane").filter({ visible: true });
+    const updateButton = pane.getByTestId("host-page-update-button");
     page.once("dialog", (dialog) => dialog.accept());
-    const updateButton = page.getByTestId("host-page-update-button");
     await updateButton.click();
-
-    await expect(
-      updateButton.filter({ hasText: /Preparing update|Downloading packages|Installing/ }),
-    ).toBeDisabled();
-
-    const updateFailure = page.getByTestId("host-page-update-error");
-    await expect(updateFailure).toBeVisible();
-    await expect(updateFailure).toContainText("Update failed");
-    await expect(updateFailure).toContainText("Failed to update the daemon:");
+    await update.waitUntilHeld();
+    await expect(updateButton).toBeDisabled();
+    await expect(pane.getByText("Updating", { exact: true })).toBeVisible();
+    update.release();
+    const error = page
+      .getByTestId("app-toast-message")
+      .filter({ hasText: "Could not update Host:" });
+    await expect(error).toBeVisible();
     await expect(updateButton).toBeEnabled();
   });
 
@@ -174,8 +197,7 @@ test.describe("Settings host page", () => {
       expect((await client.reloadDaemonConfig()).restartRequiredPaths).toEqual([]);
       expect((await client.getDaemonStatus()).pid).toBe(originalPid);
     };
-    // Vorteo's Agents pane uses the installation authority, or the first host in an
-    // unmanaged fixture. Environment tabs do not retarget installation-wide controls.
+    // System follows the selected standalone Host. Each Host retains its own restart settings.
     const hosts = [
       {
         serverId: daemon.serverId,
@@ -193,7 +215,7 @@ test.describe("Settings host page", () => {
       await page.reload();
       await openSettings(page);
       await selectSettingsHost(page, serverId);
-      await openHostSection(page, serverId, "agents");
+      await openHostRestartBehavior(page, serverId);
     };
     try {
       await test.step("idle agent release starts on and turns off", async () => {
@@ -214,8 +236,8 @@ test.describe("Settings host page", () => {
 
       await test.step("other hosts keep their own setting", async () => {
         await selectSettingsHost(page, primaryServerId);
-        await openHostSection(page, primaryServerId, "agents");
-        await expectIdleAgentRelease(page, false);
+        await openHostRestartBehavior(page, primaryServerId);
+        await expectIdleAgentRelease(page, true);
         expect((await otherClient.getDaemonConfig()).config.idleRuntimeCleanup).toBe(true);
         await expectLiveSavedSetting(false);
       });
@@ -235,7 +257,7 @@ test.describe("Settings host page", () => {
       ]);
       await page.reload();
       await openSettings(page);
-      await openHostSection(page, daemon.serverId, "agents");
+      await openHostRestartBehavior(page, daemon.serverId);
       await expectIdleAgentRelease(page, true);
       // A real filesystem failure, with the daemon and RPC path intact.
       await rename(configPath, `${configPath}.saved`);
@@ -267,16 +289,15 @@ test.describe("Settings host page", () => {
     await expectSettingsHeader(page, "Connections");
     await openHostSection(page, serverId, "host");
     await expectHostLabelDisplayed(page);
-    await expectHostActionCards(page, serverId);
+    await expect(page.getByTestId("host-page-remove-host-card")).toBeVisible();
+    await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
   });
 });
 
 test("restart recovery defaults off and persists opt-in and custom prompt", async ({ page }) => {
-  const serverId = getServerId();
-  await gotoAppShell(page);
-  await openSettings(page);
-  await openSettingsHost(page, serverId);
-  await openHostSection(page, serverId, "agents");
+  // Exercise the owning card directly; environment navigation has separate coverage.
+  await page.goto("/settings/system");
+  await expect(page.getByTestId("system-restart-behavior")).toBeVisible();
   await expectRestartRecoveryEnabled(page, false);
   await setRestartRecoveryEnabled(page, true);
   await page.reload();

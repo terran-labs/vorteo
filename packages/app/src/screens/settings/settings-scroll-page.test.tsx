@@ -192,11 +192,11 @@ it.each([true, false])(
     const { page, section } = render(input);
     const scrollTo = vi.fn();
     hooks.refs[0].current = { scrollTo, getScrollableNode: () => ({}) };
-    section.props.onSectionLayout("accounts", { y: 0, height: 100 });
+    section.props.onSectionLayout("providers", { y: 0, height: 100 });
     section.props.onSectionLayout("general", { y: 200, height: 300 });
     page.props.onScroll({ nativeEvent: { contentOffset: { y: 184 } } });
     scrollTo.mockClear();
-    section.props.onSectionLayout("accounts", { y: 0, height: 150 });
+    section.props.onSectionLayout("providers", { y: 0, height: 150 });
     expect(scrollTo).toHaveBeenCalledTimes(supported ? 0 : 1);
     if (!supported) expect(scrollTo).toHaveBeenLastCalledWith({ y: 234, animated: false });
     section.props.onSectionLayout("general", { y: 250, height: 350 });
@@ -257,10 +257,10 @@ it("excludes neighboring sections from browser anchoring after a jump", () => {
     querySelector: () => false,
   };
   vi.stubGlobal("document", {
-    getElementById: (id: string) => (id.endsWith("accounts") ? accounts : general),
+    getElementById: (id: string) => (id.endsWith("providers") ? accounts : general),
   });
   const input = props();
-  input.sections.push({ id: "accounts", label: "Accounts", panes: [] });
+  input.sections.push({ id: "providers", label: "Accounts", panes: [] });
   const { section } = render(input);
   hooks.refs[0].current = { scrollTo: vi.fn(), getScrollableNode: () => ({}) };
   section.props.onSectionLayout("general", { y: 200, height: 100 });

@@ -31,8 +31,20 @@ vi.mock("@/components/adaptive-modal-sheet", async (importOriginal) => ({
     </div>
   ),
 }));
+vi.mock("@/execution-installation/panel", () => ({ PasswordFileHint: () => null }));
 vi.mock("./login-panel", () => ({ ProviderLoginPanel: () => null }));
+vi.mock("@/execution-installation/owner-access", () => ({
+  useOwnerAccess: () => ({
+    status: "unlocked",
+    busy: false,
+    error: null,
+    unlock: vi.fn(),
+    lock: vi.fn(),
+  }),
+}));
 vi.mock("@/execution-installation/policy", () => ({
+  findInstallationEnvironment: (_installation: unknown, serverId: string) =>
+    ["host", "dev"].includes(serverId) ? { serverId } : null,
   readExecutionInstallation: () => ({
     installationId: "installation",
     environments: [

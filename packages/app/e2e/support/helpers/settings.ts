@@ -19,6 +19,9 @@ interface SavedSettingsHostInput {
 /** Old settings page names that specs open; the catalog maps each to its new place. */
 const OLD_SETTINGS_PAGES = [
   "general",
+  "interface",
+  "privacy",
+  "system",
   "chat",
   "appearance",
   "sidebar",
@@ -62,6 +65,12 @@ export async function openSettingsSection(page: Page, section: SettingsSection):
 /** Scrolls the settings page to the pane that an old settings page name now opens. */
 export async function revealSettingsLocation(page: Page, slug: string): Promise<void> {
   const target = resolveSettingsTarget(slug);
+  if (
+    (page.viewportSize()?.width ?? 1280) < 768 &&
+    !(await page.getByTestId("settings-sidebar").isVisible())
+  ) {
+    await page.getByRole("button", { name: "Back", exact: true }).first().click();
+  }
   // A drill-in can leave an earlier settings screen mounted but hidden, and a section can also
   // appear in the page body, so use the visible sidebar's entry and the visible anchor.
   const sidebar = page.getByTestId("settings-sidebar").filter({ visible: true }).first();
@@ -113,16 +122,10 @@ export async function expectSettingsSidebarScrollSettled(
 
 export async function selectSettingsHostSectionsRapidly(page: Page): Promise<void> {
   for (let selection = 0; selection < 5; selection += 1) {
-    await page
-      .getByRole("navigation", { name: "Settings" })
-      .getByRole("button", { name: "Providers", exact: true })
-      .click();
-    await page
-      .getByRole("navigation", { name: "Settings" })
-      .getByRole("button", { name: "Terminals", exact: true })
-      .click();
-    await expectSettingsHeader(page, "Terminals");
+    await page.getByTestId("settings-section-providers").dispatchEvent("click");
+    await page.getByTestId("settings-section-agents").dispatchEvent("click");
   }
+  await expect(page.getByTestId("settings-page-section-agents")).toBeVisible();
 }
 
 export async function scrollSettingsSidebarUp(page: Page, pixels: number): Promise<void> {
@@ -161,11 +164,17 @@ export async function scrollSettingsDetailDown(page: Page): Promise<number> {
   await expect
     .poll(() => scrollBody.evaluate((node) => node.scrollHeight - node.clientHeight))
     .toBeGreaterThan(0);
+  const before = await scrollBody.evaluate((node) => ({
+    top: node.scrollTop,
+    maximum: node.scrollHeight - node.clientHeight,
+  }));
+  const target = Math.min(before.top + 1000, before.maximum);
+  expect(target).toBeGreaterThan(before.top);
   await scrollBody.hover();
   await page.mouse.wheel(0, 1000);
-  await expect.poll(() => scrollBody.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
-  const offset = await scrollBody.evaluate((node) => node.scrollTop);
-  return offset;
+  // Continuous Settings already has a positive offset before the wheel event arrives.
+  await expect.poll(() => scrollBody.evaluate((node) => node.scrollTop)).toBe(target);
+  return target;
 }
 
 export async function expectSettingsDetailScrollOffset(page: Page, offset: number): Promise<void> {
@@ -222,7 +231,8 @@ export async function openAddHostFlow(page: Page): Promise<void> {
     await revealSettingsLocation(page, "connections");
   }
   await page.getByTestId("settings-add-host").click();
-  await expect(page.getByRole("dialog").filter({ hasText: "Add connection" })).toBeVisible();
+  // Phones present the same controls in a bottom sheet rather than a dialog.
+  await expect(page.getByRole("button", { name: "Direct connection", exact: true })).toBeVisible();
 }
 
 export async function selectHostConnectionType(
@@ -245,9 +255,7 @@ export async function addDirectHostFromSettings(
     await page.getByTestId("direct-password-input").fill(input.password);
   }
   await page.getByTestId("direct-host-submit").click();
-  await expect(page.getByRole("dialog").filter({ hasText: "Add connection" })).toHaveCount(0, {
-    timeout: 30_000,
-  });
+  await expect(page.getByTestId("direct-host-submit")).toBeHidden({ timeout: 30_000 });
 }
 
 export async function toggleHostAdvanced(page: Page): Promise<void> {
@@ -268,7 +276,9 @@ export async function seedSavedSettingsHosts(
   page: Page,
   hosts: SavedSettingsHostInput[],
 ): Promise<void> {
-  await page.goto("/");
+  // This visit only establishes storage and the fixture nonce; callers reload the real app next.
+  await page.goto("/", { waitUntil: "commit" });
+  await page.waitForFunction((key) => Boolean(localStorage.getItem(key)), SEED_NONCE_KEY);
   const nowIso = new Date().toISOString();
   const registry = hosts.map((host) =>
     buildSeededHost({
@@ -355,7 +365,13 @@ export async function expectSettingsBackButton(page: Page): Promise<void> {
 }
 
 export async function clickSettingsBackToWorkspace(page: Page): Promise<void> {
-  await page.getByTestId("settings-back-to-workspace").click();
+  const desktopBack = page.getByTestId("settings-back-to-workspace");
+  if (await desktopBack.isVisible()) {
+    await desktopBack.click();
+    return;
+  }
+  await goBackInSettings(page);
+  if (new URL(page.url()).pathname.startsWith("/settings")) await goBackInSettings(page);
 }
 
 /**
@@ -424,7 +440,9 @@ export async function expectDirectHostUriHidden(page: Page): Promise<void> {
 }
 
 export async function expectDiagnosticsContent(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "Run" })).toBeVisible();
+  await expect(
+    page.getByTestId("app-diagnostic-row").getByRole("button", { name: "Run", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Play test" })).toBeVisible();
 }
 
@@ -433,7 +451,7 @@ export async function expectAboutContent(page: Page): Promise<void> {
 }
 
 export async function expectGeneralContent(page: Page): Promise<void> {
-  await expect(page.getByTestId("settings-github")).toBeVisible();
+  await expect(page.getByTestId("settings-pane-general.attention")).toHaveCount(1);
   await expect(page.getByTestId("settings-pane-chat.sending")).toHaveCount(1);
   await expect(page.getByTestId("settings-pane-general.sending")).toHaveCount(0);
 }
@@ -473,6 +491,20 @@ export async function expectHostInjectMcpCard(page: Page): Promise<void> {
   const card = page.getByTestId("host-page-inject-mcp-card");
   await expect(card).toBeVisible();
   await expect(card.getByRole("switch", { name: "Inject Vorteo tools" })).toBeVisible();
+}
+
+/**
+ * Selects a host, then opens the System page's "When the Host restarts" section, which holds
+ * the resume-after-restart and idle-release switches for the selected host.
+ */
+export async function openHostRestartBehavior(page: Page, serverId: string): Promise<void> {
+  const selected = page
+    .getByTestId(`settings-environment-${serverId}`)
+    .filter({ visible: true })
+    .first();
+  if (!(await selected.isVisible())) await selectSettingsHost(page, serverId);
+  await revealSettingsLocation(page, "system.overview");
+  await expect(page.getByTestId("system-restart-behavior")).toBeVisible();
 }
 
 function idleAgentReleaseSwitch(page: Page) {
@@ -570,11 +602,27 @@ export async function expectRetiredSidebarSectionsAbsent(page: Page): Promise<vo
   await expect(sidebar).toBeVisible();
 
   // One entry per section; old pages are panes inside them.
-  for (const id of ["general", "accounts", "agents", "environments", "maintenance"]) {
+  for (const id of [
+    "interface",
+    "privacy",
+    "general",
+    "providers",
+    "agents",
+    "environments",
+    "projects",
+    "system",
+  ]) {
     await expect(sidebar.getByTestId(`settings-section-${id}`)).toBeVisible();
   }
   await expect(sidebar.getByRole("button", { name: "Daemon", exact: true })).toHaveCount(0);
-  for (const retired of ["connections", "projects", "providers", "usage", "diagnostics", "about"]) {
+  for (const retired of [
+    "connections",
+    "accounts",
+    "maintenance",
+    "usage",
+    "diagnostics",
+    "about",
+  ]) {
     await expect(sidebar.getByTestId(`settings-section-${retired}`)).toHaveCount(0);
   }
 

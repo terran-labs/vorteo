@@ -1,9 +1,14 @@
+import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 import { createSharedAccountDefinition } from "@/execution-installation/account-creation";
 import {
   requestInstallationSettings,
   useInstallationSettings,
 } from "@/execution-installation/settings";
-import { installationHasDev, readExecutionInstallation } from "@/execution-installation/policy";
+import {
+  installationHasDev,
+  readExecutionInstallation,
+  findInstallationEnvironment,
+} from "@/execution-installation/policy";
 import {
   useCallback,
   useEffect,
@@ -62,7 +67,18 @@ export function AddClaudeAccountButton(props: AccountButtonProps) {
   return <AddAccountButton {...props} provider="claude" />;
 }
 
-function AddAccountButton({
+function AddAccountButton(props: Parameters<typeof UnlockedAddAccountButton>[0]) {
+  return (
+    <OwnerSettingsGate
+      title="Add provider account"
+      required={findInstallationEnvironment(readExecutionInstallation(), props.serverId) !== null}
+    >
+      <UnlockedAddAccountButton {...props} />
+    </OwnerSettingsGate>
+  );
+}
+
+function UnlockedAddAccountButton({
   catalog = false,
   label,
   style,

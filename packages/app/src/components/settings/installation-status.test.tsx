@@ -1,8 +1,14 @@
+const owner = vi.hoisted(() => ({ status: "unlocked" }));
+vi.mock("@/execution-installation/owner-access", () => ({ useOwnerAccess: () => owner }));
+vi.mock("@/components/settings/owner-lock", () => ({
+  OwnerSettingsGate: ({ children }: { children: import("react").ReactNode }) =>
+    owner.status === "unlocked" ? children : "Locked",
+}));
 vi.mock("@/utils/error-messages", () => ({
   isConnectionError: () => false,
   toErrorMessage: String,
 }));
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 const state = vi.hoisted(() => ({
   installation: { environments: [] },
@@ -11,7 +17,9 @@ const state = vi.hoisted(() => ({
   isFetching: false,
   save: vi.fn(),
 }));
-vi.mock("@/execution-installation/settings", () => ({ useInstallationSettings: () => state }));
+vi.mock("@/execution-installation/settings", () => ({
+  useInstallationSettings: vi.fn(() => state),
+}));
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ error: vi.fn() }) }));
 vi.mock("@/hooks/use-action-error", () => ({ useReportActionError: () => vi.fn() }));
 vi.mock("react-native", () => ({
@@ -57,4 +65,20 @@ it.each([
     "Some environments haven&#x27;t applied the latest shared settings yet.",
   );
   state.data.sources = {};
+});
+
+import { useInstallationSettings } from "@/execution-installation/settings";
+afterEach(() => {
+  owner.status = "unlocked";
+  vi.clearAllMocks();
+});
+it.each(["locked", "checking"])("never starts settings hooks while %s", (status) => {
+  owner.status = status;
+  const markup = renderToStaticMarkup(
+    <InstallationSettingsStatus>
+      <div>Protected</div>
+    </InstallationSettingsStatus>,
+  );
+  expect(markup).toContain("Locked");
+  expect(useInstallationSettings).not.toHaveBeenCalled();
 });

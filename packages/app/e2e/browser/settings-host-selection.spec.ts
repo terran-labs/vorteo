@@ -38,6 +38,9 @@ test.describe("Settings host selection", () => {
       });
 
       await clickSettingsBackToWorkspace(page);
+      if ((page.viewportSize()?.width ?? 1280) < 600) {
+        await page.getByTestId("menu-button").filter({ visible: true }).first().click();
+      }
       await switchWorkspaceViaSidebar({
         page,
         serverId: remoteDaemon.serverId,
