@@ -20,6 +20,12 @@ MAX_BYTES = 4096
 ID = re.compile(r'^[a-f0-9-]{36}$')
 WS = re.compile(r'^wks_[a-zA-Z0-9_-]{1,80}$')
 SERVICE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
+# A check that times out proves nothing about the backend, so a verified route
+# survives a short run of them. The route is withdrawn on the third consecutive
+# timeout, or once this many seconds have passed since its last full
+# verification, whichever comes first. Every other failure withdraws at once.
+TIMEOUT_MISS_LIMIT = 3
+TIMEOUT_GRACE_SECONDS = 90
 
 
 def digest(value):
@@ -130,6 +136,141 @@ def validate(request, now):
 
 class RecoveryPending(RuntimeError):
     """Recovery can be retried without discarding the owner's running intent."""
+
+
+class ListenerLost(RuntimeError):
+    """The recorded listener exited, was replaced or closed its port.
+
+    The route is withdrawn at once, but the owner's running intent is kept, as
+    for any other definite check failure, so restore-after-restart and the next
+    clean check can still bring the preview back."""
+
+
+def _libproc_socket_types():
+    """ctypes mirrors of the <sys/proc_info.h> socket structures, built once.
+
+    Declared field by field from the macOS SDK header, never as raw offsets.
+    The layout is ABI-sensitive, so callers also check the size the kernel
+    reports, and the broker grants timeout grace only to a route whose
+    in-process check agreed with lsof at its last full verification."""
+    cached = getattr(_libproc_socket_types, 'cached', None)
+    if cached:
+        return cached
+    import ctypes
+    c = ctypes
+
+    class ProcFDInfo(c.Structure):
+        _fields_ = [('proc_fd', c.c_int32), ('proc_fdtype', c.c_uint32)]
+
+    class ProcFileInfo(c.Structure):
+        _fields_ = [('fi_openflags', c.c_uint32), ('fi_status', c.c_uint32), ('fi_offset', c.c_int64),
+                    ('fi_type', c.c_int32), ('fi_guardflags', c.c_uint32)]
+
+    class VInfoStat(c.Structure):
+        _fields_ = [('vst_dev', c.c_uint32), ('vst_mode', c.c_uint16), ('vst_nlink', c.c_uint16),
+                    ('vst_ino', c.c_uint64), ('vst_uid', c.c_uint32), ('vst_gid', c.c_uint32),
+                    ('vst_atime', c.c_int64), ('vst_atimensec', c.c_int64), ('vst_mtime', c.c_int64),
+                    ('vst_mtimensec', c.c_int64), ('vst_ctime', c.c_int64), ('vst_ctimensec', c.c_int64),
+                    ('vst_birthtime', c.c_int64), ('vst_birthtimensec', c.c_int64), ('vst_size', c.c_int64),
+                    ('vst_blocks', c.c_int64), ('vst_blksize', c.c_int32), ('vst_flags', c.c_uint32),
+                    ('vst_gen', c.c_uint32), ('vst_rdev', c.c_uint32), ('vst_qspare', c.c_int64 * 2)]
+
+    class SockbufInfo(c.Structure):
+        _fields_ = [('sbi_cc', c.c_uint32), ('sbi_hiwat', c.c_uint32), ('sbi_mbcnt', c.c_uint32),
+                    ('sbi_mbmax', c.c_uint32), ('sbi_lowat', c.c_uint32), ('sbi_flags', c.c_short),
+                    ('sbi_timeo', c.c_short)]
+
+    class In4In6Addr(c.Structure):
+        _fields_ = [('i46a_pad32', c.c_uint32 * 3), ('i46a_addr4', c.c_uint8 * 4)]
+
+    class In6Addr(c.Union):  # struct in6_addr: a union of 8-, 16- and 32-bit views
+        _fields_ = [('s6_addr', c.c_uint8 * 16), ('s6_addr32', c.c_uint32 * 4)]
+
+    class InAddr46(c.Union):
+        _fields_ = [('ina_46', In4In6Addr), ('ina_6', In6Addr)]
+
+    class InV4(c.Structure):
+        _fields_ = [('in4_tos', c.c_ubyte)]
+
+    class InV6(c.Structure):
+        _fields_ = [('in6_hlim', c.c_uint8), ('in6_cksum', c.c_int), ('in6_ifindex', c.c_ushort),
+                    ('in6_hops', c.c_short)]
+
+    class InSockInfo(c.Structure):
+        _fields_ = [('insi_fport', c.c_int), ('insi_lport', c.c_int), ('insi_gencnt', c.c_uint64),
+                    ('insi_flags', c.c_uint32), ('insi_flow', c.c_uint32), ('insi_vflag', c.c_uint8),
+                    ('insi_ip_ttl', c.c_uint8), ('rfu_1', c.c_uint32), ('insi_faddr', InAddr46),
+                    ('insi_laddr', InAddr46), ('insi_v4', InV4), ('insi_v6', InV6)]
+
+    class TcpSockInfo(c.Structure):
+        _fields_ = [('tcpsi_ini', InSockInfo), ('tcpsi_state', c.c_int), ('tcpsi_timer', c.c_int * 4),
+                    ('tcpsi_mss', c.c_int), ('tcpsi_flags', c.c_uint32), ('rfu_1', c.c_uint32),
+                    ('tcpsi_tp', c.c_uint64)]
+
+    sock_maxaddrlen = 255  # SOCK_MAXADDRLEN; larger than struct sockaddr_un (106)
+
+    class UnSockInfo(c.Structure):
+        _fields_ = [('unsi_conn_so', c.c_uint64), ('unsi_conn_pcb', c.c_uint64),
+                    ('unsi_addr', c.c_char * sock_maxaddrlen), ('unsi_caddr', c.c_char * sock_maxaddrlen)]
+
+    class NdrvInfo(c.Structure):
+        _fields_ = [('ndrvsi_if_family', c.c_uint32), ('ndrvsi_if_unit', c.c_uint32),
+                    ('ndrvsi_if_name', c.c_char * 16)]  # IF_NAMESIZE
+
+    class KernEventInfo(c.Structure):
+        _fields_ = [('kesi_vendor_code_filter', c.c_uint32), ('kesi_class_filter', c.c_uint32),
+                    ('kesi_subclass_filter', c.c_uint32)]
+
+    class KernCtlInfo(c.Structure):
+        _fields_ = [('kcsi_id', c.c_uint32), ('kcsi_reg_unit', c.c_uint32), ('kcsi_flags', c.c_uint32),
+                    ('kcsi_recvbufsize', c.c_uint32), ('kcsi_sendbufsize', c.c_uint32),
+                    ('kcsi_unit', c.c_uint32), ('kcsi_name', c.c_char * 96)]  # MAX_KCTL_NAME
+
+    class VsockInfo(c.Structure):
+        _fields_ = [('local_cid', c.c_uint32), ('local_port', c.c_uint32), ('remote_cid', c.c_uint32),
+                    ('remote_port', c.c_uint32)]
+
+    class SockProto(c.Union):
+        _fields_ = [('pri_in', InSockInfo), ('pri_tcp', TcpSockInfo), ('pri_un', UnSockInfo),
+                    ('pri_ndrv', NdrvInfo), ('pri_kern_event', KernEventInfo), ('pri_kern_ctl', KernCtlInfo),
+                    ('pri_vsock', VsockInfo)]
+
+    class SocketInfo(c.Structure):
+        _fields_ = [('soi_stat', VInfoStat), ('soi_so', c.c_uint64), ('soi_pcb', c.c_uint64),
+                    ('soi_type', c.c_int), ('soi_protocol', c.c_int), ('soi_family', c.c_int),
+                    ('soi_options', c.c_short), ('soi_linger', c.c_short), ('soi_state', c.c_short),
+                    ('soi_qlen', c.c_short), ('soi_incqlen', c.c_short), ('soi_qlimit', c.c_short),
+                    ('soi_timeo', c.c_short), ('soi_error', c.c_ushort), ('soi_oobmark', c.c_uint32),
+                    ('soi_rcv', SockbufInfo), ('soi_snd', SockbufInfo), ('soi_kind', c.c_int),
+                    ('rfu_1', c.c_uint32), ('soi_proto', SockProto)]
+
+    class SocketFDInfo(c.Structure):
+        _fields_ = [('pfi', ProcFileInfo), ('psi', SocketInfo)]
+
+    _libproc_socket_types.cached = (ProcFDInfo, SocketFDInfo)
+    return _libproc_socket_types.cached
+
+
+def loopback_listener_port(info, size):
+    """Decide one socket_fdinfo from proc_pidfdinfo, without touching the kernel.
+
+    Returns (port, set SO_REUSEPORT) for a TCP socket in the LISTEN state on
+    IPv4 127.0.0.1, and None for anything else, including an accepted or other
+    connected socket on the same port. Raises OSError when the kernel's
+    structure size differs from the declared layout."""
+    import ctypes
+    if size != ctypes.sizeof(info):
+        raise OSError('Unexpected socket_fdinfo layout')
+    socket_info = info.psi
+    if socket_info.soi_kind != 2:  # SOCKINFO_TCP
+        return None
+    tcp = socket_info.soi_proto.pri_tcp
+    address = tcp.tcpsi_ini
+    if (tcp.tcpsi_state != 1  # TSI_S_LISTEN
+            or not address.insi_vflag & 0x1  # INI_IPV4
+            or bytes(address.insi_laddr.ina_46.i46a_addr4) != bytes([127, 0, 0, 1])):
+        return None
+    return socket.ntohs(address.insi_lport & 0xffff), bool(socket_info.soi_options & 0x0200)  # SO_REUSEPORT
 
 
 class Runtime:
@@ -388,6 +529,18 @@ if(found.length!==1)throw Error('Expected exactly one managed loopback listener'
     def verify(self, url):
         self.command(['/usr/bin/curl', '--fail', '--silent', '--show-error', '--max-time', '8', '--output', '/dev/null', url])
 
+    def listener_unchanged(self, entry):
+        """Recheck the recorded listener without a subprocess, for timeout grace.
+
+        Every container identity check needs `docker exec`, the call that times
+        out under load, so the container runtime cannot vouch for the listener
+        and gives no grace: a timeout withdraws the route as before."""
+        return False
+
+    def in_process_check_agrees(self, port, listener):
+        """Whether the in-process port check confirms what the full check just proved."""
+        return False
+
 
 class NativeRuntime(Runtime):
     """Same broker contract for the logged-in macOS user's native daemon."""
@@ -495,6 +648,109 @@ class NativeRuntime(Runtime):
         if self.listener_pid(port) != pid or self.process_identity(pid) != before:
             raise ValueError('Listener changed during identity verification')
         return f"{pid}:{before['birth']}"
+
+    def listener_unchanged(self, entry):
+        """Recheck the recorded listener in process, without lsof or curl.
+
+        libproc and sysctl answer from the kernel without spawning anything, so
+        this still works when subprocess checks time out. It proves the process
+        that passed the last full check is alive, is the same process (microsecond
+        birth time defeats PID reuse) and still carries the managed terminal ID.
+        It cannot prove that process still holds the port; see the PR for #358."""
+        recorded = entry.get('listener')
+        if not isinstance(recorded, str) or not entry.get('terminal') or type(entry.get('backend')) is not int:
+            return False
+        pid, _, birth = recorded.partition(':')
+        if not pid.isdigit() or not birth:
+            return False
+        pid = int(pid)
+        try:
+            alive = self.process_identity(pid)
+        except ValueError:
+            # Exited, or the PID now belongs to someone else: the old process is gone.
+            raise ListenerLost('Backend listener process exited') from None
+        if alive['birth'] != birth:
+            raise ListenerLost('Backend listener process was replaced')
+        try:
+            terminal = self.terminal_environment(pid)
+        except ValueError:
+            raise ListenerLost('Backend listener environment unavailable') from None
+        if terminal != entry['terminal']:
+            # A live process now claims another terminal: an identity change.
+            raise ValueError('Listener is not owned by the managed terminal')
+        if not self.loopback_listener_held(pid, entry['backend']):
+            raise ListenerLost('Backend listener no longer holds its loopback port')
+        return True
+
+    def in_process_check_agrees(self, port, listener):
+        """Self-check run at every full verification, right after lsof proved the listener.
+
+        The in-process check must say yes for the proven port and no for a port
+        the process does not listen on, so a check that always says yes never
+        agrees. Any error, including an unevaluable probe, means no agreement."""
+        pid, _, _ = str(listener).partition(':')
+        try:
+            if not pid.isdigit():
+                return False
+            pid = int(pid)
+            listening = self.loopback_listening_ports(pid)
+            # Deterministic: the first port after the proven one that this process
+            # does not hold on loopback, wrapping round below it.
+            probe = next((candidate for candidate in (*range(port + 1, 65536), *range(1, port))
+                          if candidate not in listening), None)
+            if probe is None:
+                return False
+            return self.loopback_listener_held(pid, port) is True and self.loopback_listener_held(pid, probe) is False
+        except Exception:
+            return False  # An error or an unevaluable layout means no grace later.
+
+    def loopback_listener_held(self, pid, port):
+        """Whether pid holds a TCP socket listening on exactly 127.0.0.1:port.
+
+        Returns False when pid holds no such listener; a wildcard or IPv6 bind
+        on the port does not count, because the route proxies to 127.0.0.1.
+        Raises OSError when it cannot vouch: the kernel returned a structure of
+        another size, or the listener set SO_REUSEPORT, which would let another
+        process bind the same address and port beside it."""
+        listening = self.loopback_listening_ports(pid)
+        if listening.get(port):
+            raise OSError('Shared-port listener; cannot vouch for the port')
+        return port in listening
+
+    def loopback_listening_ports(self, pid):
+        """Map each port pid listens on at 127.0.0.1 to whether it set SO_REUSEPORT.
+
+        Reads the process's descriptors through libproc, with no subprocess."""
+        import ctypes
+        ProcFDInfo, SocketFDInfo = _libproc_socket_types()
+        libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        listing = libproc.proc_pidinfo
+        listing.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        listing.restype = ctypes.c_int
+        detail = libproc.proc_pidfdinfo
+        detail.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        detail.restype = ctypes.c_int
+        needed = listing(pid, 1, 0, None, 0)  # PROC_PIDLISTFDS
+        if needed <= 0:
+            raise OSError('Listener descriptors unavailable')
+        count = min(needed // ctypes.sizeof(ProcFDInfo) + 16, 65536)
+        fds = (ProcFDInfo * count)()
+        written = listing(pid, 1, 0, fds, ctypes.sizeof(fds))
+        if written <= 0 or written % ctypes.sizeof(ProcFDInfo):
+            raise OSError('Listener descriptors unavailable')
+        listening = {}
+        for fd in fds[:written // ctypes.sizeof(ProcFDInfo)]:
+            if fd.proc_fdtype != 2:  # PROX_FDTYPE_SOCKET
+                continue
+            info = SocketFDInfo()
+            size = detail(pid, fd.proc_fd, 3, ctypes.byref(info), ctypes.sizeof(info))  # PROC_PIDFDSOCKETINFO
+            if size <= 0:
+                continue  # Closed since the listing.
+            found = loopback_listener_port(info, size)
+            if found is not None:
+                port, shared = found
+                listening[port] = listening.get(port, False) or shared
+        return listening
 
     def terminal_environment(self, pid):
         # Read KERN_PROCARGS2 directly, separating argv from env. Parsing ps
@@ -654,6 +910,9 @@ class Broker:
             raise ValueError('Backend listener process changed; explicit start required')
         entry['listener'] = listener
         self.save()
+        # Self-check of the ABI-sensitive in-process check: it must confirm what
+        # lsof just proved, or this route gets no timeout grace later.
+        agreed = self.runtime.in_process_check_agrees(port, listener) is True
         before = self.runtime.publication()
         address = self.address(entry)
         web = before.get('Web', {}).get(address)
@@ -677,12 +936,14 @@ class Broker:
             raise ValueError('Service changed during verification')
         if daemon is not None:
             if self.runtime.daemon_identity() != daemon:
-                self.remove(entry)
-                raise RecoveryPending('Daemon changed during verification')
+                self.remove_then_raise(entry, RecoveryPending('Daemon changed during verification'))
             entry['daemon'] = daemon
             entry.pop('recovery', None)
-        entry.pop('error', None)
-        entry.update(status='ready', url=url)
+        for stale in ('error', 'misses', 'removalPending'):
+            entry.pop(stale, None)
+        # Only a full verification opens a timeout grace window. A remembered
+        # "ready" from an earlier run never does once this time is too old.
+        entry.update(status='ready', url=url, verifiedAt=time.time(), inProcessCheckAgreed=agreed)
         self.save()
         return {'status': 'ready', 'url': url, 'frontendPort': entry['frontend'], 'backendPort': port}
 
@@ -703,7 +964,12 @@ class Broker:
                 raise ValueError('Unrecognized service after daemon restart; explicit start required')
             return
         # Remove the stale route before allowing the daemon to allocate a new backend.
-        self.remove(entry)
+        try:
+            self.remove(entry)
+        except subprocess.SubprocessError:
+            entry['removalPending'] = True
+            self.save()
+            raise RecoveryPending('Removing the stale route after a daemon restart is pending') from None
         if recovery['attempts'] >= 3:
             raise RecoveryPending('Recovery failed three times; explicit start required')
         if time.time() < recovery['retryAt']:
@@ -740,10 +1006,17 @@ class Broker:
                 return {'status': 'stopped', 'frontendPort': entry.get('frontend')}
             try:
                 return self.activate(entry)
-            except Exception:
-                if entry.get('backend'):
-                    self.remove(entry)
-                raise
+            except Exception as error:
+                if not entry.get('backend'):
+                    raise
+                # Same rule as reconcile(), so the two paths cannot drift apart.
+                outcome = self.settle_failure(entry, error)
+                if outcome is None:
+                    # Kept but unverified: never report it as ready or hand out the URL.
+                    return {'status': 'pending', 'message': entry['error'], 'misses': entry['misses'], 'frontendPort': entry['frontend']}
+                if isinstance(outcome, subprocess.TimeoutExpired):
+                    return {'status': 'pending', 'message': entry['error'], 'frontendPort': entry['frontend']}
+                raise outcome
         if r['operation'] == 'stop':
             if not entry:
                 current = self.runtime.current(r['workspaceId'], r['service'])
@@ -751,7 +1024,8 @@ class Broker:
                 # A stop without a reservation still needs a durable replay barrier.
                 self.ledger['entries'][key] = entry
             entry.update(desired='stopped', status='stopped', stoppedAt=now)
-            entry.pop('url', None)
+            for stale in ('url', 'misses', 'error'):
+                entry.pop(stale, None)
             self.save()
             if entry.get('backend'):
                 self.remove(entry)
@@ -765,9 +1039,10 @@ class Broker:
             entry = None
         entry = self.reserve(r, current)
         if r['operation'] == 'start' and current['lifecycle'] == 'running' and entry['fingerprint'] != current['fingerprint']:
+            changed = ValueError('Running service configuration changed; use explicit restart')
             if entry.get('backend'):
-                self.remove(entry)
-            raise ValueError('Running service configuration changed; use explicit restart')
+                self.remove_then_raise(entry, changed)
+            raise changed
         if entry.get('backend') and (r['operation'] == 'restart' or entry.get('fingerprint') != current['fingerprint'] or entry.get('terminal') != current.get('terminalId')):
             self.remove(entry)
             entry.pop('terminal', None)
@@ -776,7 +1051,8 @@ class Broker:
             self.runtime.lifecycle('stop', current)
             current = self.runtime.current(r['workspaceId'], r['service'])
         entry.update(desired='running', status='pending', fingerprint=current['fingerprint'])
-        entry.pop('recovery', None)
+        for stale in ('recovery', 'misses'):
+            entry.pop(stale, None)
         self.save()
         # This is startup configuration, not a verified browser link.
         atomic(self.channel / 'origins' / (key + '.json'), {'origin': f'https://{self.address(entry)}', 'workspaceId': r['workspaceId'], 'service': r['service']}, mode=0o644)
@@ -788,10 +1064,86 @@ class Broker:
             return self.activate(entry)
         except subprocess.SubprocessError:
             if entry.get('mappingIntent'):
-                self.remove(entry)
+                try:
+                    self.remove(entry)
+                except subprocess.SubprocessError:
+                    entry['removalPending'] = True
             entry.update(status='pending')
             self.save()
             return {'status': 'pending', 'message': 'Backend or HTTPS is not ready; inspect status', 'frontendPort': entry['frontend']}
+
+    def settle_failure(self, entry, error):
+        """Apply one rule to a failed check of a route, for reconcile() and status.
+
+        Returns None while a timeout grace keeps the route, otherwise the error
+        that withdrew it. A timeout says nothing about who is listening, so a
+        verified route may survive a short run of them. Everything else, and any
+        change the in-process listener recheck finds, withdraws at once."""
+        try:
+            if self.hold_for_timeout(entry, error):
+                return None
+        except (ValueError, ListenerLost) as changed:
+            error = changed
+        except Exception:
+            pass  # A recheck that cannot answer grants no grace.
+        # A stopped entry only retries its removal; it has no route to recover.
+        timed_out = isinstance(error, subprocess.TimeoutExpired) and entry.get('desired') == 'running'
+        # Fail closed on process/config changes. Never revive a stopped service.
+        if isinstance(error, ValueError):
+            entry.update(desired='stopped', stoppedAt=time.time())
+        if timed_out:
+            message = 'Checks timed out; route withdrawn until a check succeeds'
+        elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)):
+            message = str(error)
+        else:
+            message = type(error).__name__
+        # Keep 'failed' after timeouts: the rebind refuses while any entry is 'pending'.
+        entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed', error=message)
+        for stale in ('url', 'misses'):
+            entry.pop(stale, None)
+        try:
+            self.remove(entry)
+            entry.pop('removalPending', None)
+        except ValueError:
+            entry['error'] = 'Mapping removal requires administrator review'
+            error = ValueError(entry['error'])
+        except Exception:
+            # Usually another timeout. The route may still be published; the
+            # next cycle retries the removal, so no administrator is needed.
+            entry['removalPending'] = True
+        self.save()
+        return error
+
+    def remove_then_raise(self, entry, definite):
+        """Withdraw after a definite failure without letting the removal mask it.
+
+        If the removal itself times out, the route may still be published: record
+        the pending removal for the next cycle and raise the definite error, never
+        the timeout, so no timeout grace can start from it."""
+        try:
+            self.remove(entry)
+        except subprocess.SubprocessError:
+            entry['removalPending'] = True
+            self.save()
+        raise definite
+
+    def hold_for_timeout(self, entry, error):
+        if not isinstance(error, subprocess.TimeoutExpired):
+            return False
+        if entry.get('desired') != 'running' or entry.get('status') not in ('ready', 'unverified'):
+            return False
+        misses = entry.get('misses', 0) + 1
+        verified = entry.get('verifiedAt')
+        if type(verified) not in (int, float) or not 0 <= time.time() - verified < TIMEOUT_GRACE_SECONDS:
+            return False
+        if entry.get('inProcessCheckAgreed') is not True:
+            return False
+        if misses >= TIMEOUT_MISS_LIMIT or not self.runtime.listener_unchanged(entry):
+            return False
+        entry.update(status='unverified', misses=misses,
+                     error=f'Checks timed out ({misses} of {TIMEOUT_MISS_LIMIT}); route kept but unverified')
+        self.save()
+        return True
 
     def reconcile(self):
         deadline = time.monotonic() + 20
@@ -799,6 +1151,9 @@ class Broker:
         if not entries:
             return
         cursor = self.ledger.get('reconcileCursor', 0) % len(entries)
+        # One serve status read per cycle covers every stopped entry; remove()
+        # reads again before it changes anything.
+        published = None
         for index in range(len(entries)):
             if time.monotonic() > deadline:
                 break
@@ -809,22 +1164,15 @@ class Broker:
                 continue
             try:
                 if entry['desired'] == 'stopped':
-                    self.remove(entry)
+                    if published is None:
+                        published = self.runtime.publication()
+                    if self.address(entry) in published.get('Web', {}) or str(entry['frontend']) in published.get('TCP', {}):
+                        self.remove(entry)
                     continue
                 self.restore_after_restart(entry)
                 self.activate(entry)
             except Exception as error:
-                # Fail closed on process/config changes. Never revive a stopped service.
-                if isinstance(error, ValueError):
-                    entry.update(desired='stopped', stoppedAt=time.time())
-                entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed',
-                             error=str(error) if isinstance(error, (ValueError, RecoveryPending)) else type(error).__name__)
-                entry.pop('url', None)
-                try:
-                    self.remove(entry)
-                except Exception:
-                    entry['error'] = 'Mapping removal requires administrator review'
-                self.save()
+                self.settle_failure(entry, error)
 
     def run(self):
         with broker_lock(self.root):
