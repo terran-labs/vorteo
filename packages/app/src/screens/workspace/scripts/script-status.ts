@@ -18,6 +18,9 @@ export interface ScriptsSummary {
 export function scriptStatus(script: WorkspaceScriptPayload): ScriptTone {
   if (script.lifecycle !== "running") return "idle";
   if (script.type !== "service") return "running";
+  // The broker withdrew a running preview's link: its server answers, but green would read as
+  // fine, so it shows as plain running beside its "Link withdrawn" line.
+  if (script.preview?.state === "stopped") return "running";
   if (script.health === "healthy") return "healthy";
   if (script.health === "unhealthy") return "unhealthy";
   return "running";

@@ -2296,6 +2296,18 @@ export const AgentGoalSetRequestSchema = AgentGoalSetRequestBaseSchema.extend({
   attachments: z.array(AgentAttachmentSchema).optional(),
 });
 
+/**
+ * Who governs a thread created through another daemon (#360 C2): the forwarding daemon's nearest
+ * supervisor with a worker preset, its server and that preset. Sent only by a daemon's remote
+ * create; the receiver admits it only from a host-link session and stores it once.
+ */
+export const ForwardedGovernanceSchema = z.object({
+  supervisorAgentId: z.string().max(256),
+  serverId: z.string().max(256),
+  workerProfileId: z.string().max(512),
+});
+export type ForwardedGovernance = z.infer<typeof ForwardedGovernanceSchema>;
+
 export const CreateAgentRequestMessageSchema = z.object({
   type: z.literal("create_agent_request"),
   // Legacy create_agent_request uses a separate initial-message receipt when keyed.
@@ -2308,6 +2320,9 @@ export const CreateAgentRequestMessageSchema = z.object({
   callerAgentId: z.string().optional(),
   // Attribution for delegation from an agent on another daemon.
   origin: z.literal("agent").optional(),
+  // COMPAT(forwardedGovernance): added 2026-11-23, retain until 2027-05-23. Older receivers strip
+  // it and the thread stays `parent-remote` in the preset fence log.
+  forwardedGovernance: ForwardedGovernanceSchema.optional(),
   worktreeName: z.string().optional(),
   initialPrompt: z.string().optional(),
   initialGoal: AgentGoalSetInputSchema.optional(),
@@ -4484,6 +4499,9 @@ export const ServerInfoStatusPayloadSchema = z
         // stores and returns `accountQuotaPolicy`; it does not enforce floors or pool membership.
         accountQuotaPolicy: z.boolean().optional(),
         presetFenceSetting: z.boolean().optional(),
+        // COMPAT(forwardedGovernance): added 2026-11-23, retain until 2027-05-23. This daemon
+        // stores governance forwarded on a host-link create (#360 C2).
+        forwardedGovernance: z.boolean().optional(),
         // COMPAT(restartRecovery): added in v0.14.0, remove gate after 2027-04-28.
         resumeOnStartupSetting: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
@@ -4749,6 +4767,11 @@ export const ServerInfoStatusPayloadSchema = z
         // workspace.script.restart_preview.request accepts mode "stop", and script payloads
         // carry `preview.origin`.
         previewStop: z.boolean().optional(),
+        // COMPAT(previewStopOutcome): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // Every `preview.restart` outcome names its `mode`, so a client can word a failed or
+        // unconfirmed stop as a stop. Clients send broker stops only with this capability:
+        // a daemon with `previewStop` alone reports a failed stop like a failed start.
+        previewStopOutcome: z.boolean().optional(),
       })
       .optional(),
   })

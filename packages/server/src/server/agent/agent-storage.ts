@@ -24,7 +24,11 @@ import {
   type OwnerAnswerInput,
 } from "./questions/model.js";
 import { ChecklistWakeConditionSchema } from "@getpaseo/protocol/task-checklist";
-import { AgentTaskItemSchema } from "@getpaseo/protocol/messages";
+import {
+  AgentTaskItemSchema,
+  ForwardedGovernanceSchema,
+  type ForwardedGovernance,
+} from "@getpaseo/protocol/messages";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import {
   mutateChecklist,
@@ -143,6 +147,9 @@ const STORED_AGENT_SCHEMA = z.object({
   questions: z.array(AgentQuestionSchema).optional(),
   // Daemon-owned launch records behind confirmation questions; written only with questions.
   leadLaunches: z.array(LeadLaunchRecordSchema).optional(),
+  // Daemon-owned and write-once (#360 C2): the governance a Host forwarded with this thread's
+  // creation. Only recordForwardedGovernance sets it; every other write keeps the stored value.
+  forwardedGovernance: ForwardedGovernanceSchema.optional(),
   tasks: z.array(AgentTaskItemSchema).optional(),
   checklistWakeGenerations: z.array(ChecklistWakeGenerationSchema).optional(),
   goalSubmissions: z.array(GoalSubmissionSchema).optional(),
@@ -635,6 +642,28 @@ export class AgentStorage {
     if (committed === null)
       throw new QuestionError("not_found", "The thread was deleted before the answer was saved.");
     return structuredClone(committed);
+  }
+
+  /**
+   * Records the governance a Host forwarded with this thread's creation (#360 C2). Write-once:
+   * returns false, changing nothing, when the thread is gone or already has a value.
+   */
+  async recordForwardedGovernance(
+    agentId: string,
+    governance: ForwardedGovernance,
+  ): Promise<boolean> {
+    await this.load();
+    let recorded = false;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || record.forwardedGovernance) return null;
+        recorded = true;
+        return { ...record, forwardedGovernance: { ...governance } };
+      },
+      { forwardedGovernanceWrite: true },
+    );
+    return recorded;
   }
 
   /** Stores a launch record and its daemon-owned question in one write. */
@@ -1443,6 +1472,7 @@ interface RecordMutationOptions {
   journalWrite?: boolean;
   questionsWrite?: boolean;
   blockedReviewWrite?: boolean;
+  forwardedGovernanceWrite?: boolean;
 }
 
 interface OwnedRecordFields {
@@ -1461,6 +1491,9 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
     record.leadLaunches = existing.leadLaunches;
   }
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
+  // Never set by a snapshot, an import or a full-record write, and never cleared or replaced.
+  if (!options.forwardedGovernanceWrite || existing?.forwardedGovernance)
+    record.forwardedGovernance = existing?.forwardedGovernance;
   if (!options.checklistWakeWrite)
     record.checklistWakeGenerations = existing?.checklistWakeGenerations;
   if (!options.blockedReviewWrite && existing) {

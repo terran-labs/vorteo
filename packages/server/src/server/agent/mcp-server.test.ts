@@ -51,7 +51,9 @@ import {
 } from "./mcp-server.js";
 
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
+import { createHostResolver } from "./host-operations/index.js";
 import {
+  admitForwardedGovernance,
   checkPresetFence,
   governingSupervisor,
   presetFenceReason,
@@ -6408,6 +6410,141 @@ describe("preset fence (#360)", () => {
       kind: "unknown",
       why: "parent-unresolved",
     });
+  });
+
+  it("uses governance the Host forwarded for a Dev thread, and logs a worker's off-preset launch as preset-required (C2)", async () => {
+    const forwarded = {
+      supervisorAgentId: "host-coordinator",
+      serverId: "srv_host",
+      workerProfileId: worker.id,
+    };
+    // Created by a forwarded create: its parent is on the Host, and the daemon stored governance.
+    const devLead = thread("dev-lead", {
+      "paseo.parent-agent-id": "host-worker",
+      "paseo.parent-server-id": "srv_host",
+    });
+    const devWorker = thread("dev-worker", { "paseo.parent-agent-id": "dev-lead" });
+    const stored: Record<string, unknown> = {
+      "dev-lead": { ...devLead, forwardedGovernance: forwarded },
+      "dev-worker": devWorker,
+    };
+    const loaded: Record<string, ManagedAgent> = { "dev-lead": devLead, "dev-worker": devWorker };
+    const warnings: Array<{ fields: unknown; message: unknown }> = [];
+    const logger = Object.assign(Object.create(createTestLogger()), {
+      warn: (fields: unknown, message: unknown) => warnings.push({ fields, message }),
+    }) as ReturnType<typeof createTestLogger>;
+    const lookup = {
+      logger,
+      getAgent: (id: string) => loaded[id] ?? null,
+      getStored: async (id: string) => (stored[id] ?? null) as ManagedAgent | null,
+      serverId: "srv_dev",
+    };
+    await checkPresetFence(lookup, "create_agent", "dev-worker", {
+      kind: "launch",
+      profileId: "other-preset",
+    });
+    await checkPresetFence(lookup, "create_agent", "dev-worker", {
+      kind: "launch",
+      profileId: worker.id,
+    });
+    expect(warnings).toEqual([
+      {
+        message: "Preset fence would refuse",
+        fields: expect.objectContaining({
+          reason: "preset-required",
+          supervisorAgentId: "host-coordinator",
+          supervisorServerId: "srv_host",
+          governance: "forwarded",
+          workerProfileId: worker.id,
+        }),
+      },
+    ]);
+    // Clearing the parent label does not shed it: the stored field is read before the label.
+    loaded["dev-lead"] = thread("dev-lead", {});
+    expect(await governingSupervisor(loaded["dev-lead"]!, lookup)).toMatchObject({
+      kind: "supervisor",
+      serverId: "srv_host",
+    });
+    // Without the stored field the same chain stays parent-remote, and the log says so.
+    delete stored["dev-lead"];
+    loaded["dev-lead"] = devLead;
+    expect(await governingSupervisor(devWorker, lookup)).toEqual({
+      kind: "unknown",
+      why: "parent-remote",
+    });
+  });
+
+  it("forwards governance only to a destination that advertises it (C2)", async () => {
+    const governance = {
+      supervisorAgentId: "host-coordinator",
+      serverId: "srv_host",
+      workerProfileId: worker.id,
+    };
+    const forwardedTo = async (features: Record<string, boolean>) => {
+      const createAgent = vi.fn(async () => ({ id: "dev-thread", provider: "codex" }));
+      const client = {
+        getLastServerInfoMessage: () => ({ features }),
+        fetchWorkspaces: async () => ({
+          entries: [{ id: "ws-dev", workspaceDirectory: "/dev/work" }],
+        }),
+        createAgent,
+      };
+      const resolver = createHostResolver({
+        serverId: "srv_host",
+        callerAgentId: "host-worker",
+        local: {} as never,
+        governance: async () => governance,
+        hosts: () => ({
+          directory: async () => ({}) as never,
+          use: async (_serverId, action) => action(client as never),
+        }),
+      });
+      await resolver.use("srv_dev", (host) =>
+        host.createAgent(
+          {
+            provider: "codex/gpt-5.4",
+            title: "Dev thread",
+            initialPrompt: "Work",
+            workspaceId: "ws-dev",
+          },
+          {} as never,
+        ),
+      );
+      return (createAgent.mock.calls[0] as unknown as [{ forwardedGovernance?: unknown }])[0]
+        .forwardedGovernance;
+    };
+    expect(await forwardedTo({ forwardedGovernance: true })).toEqual(governance);
+    expect(await forwardedTo({})).toBeUndefined();
+  });
+
+  it("admits forwarded governance only from a host link that names the parent's other server (C2)", () => {
+    const governance = {
+      supervisorAgentId: "host-coordinator",
+      serverId: "srv_host",
+      workerProfileId: worker.id,
+    };
+    const labels = { "paseo.parent-agent-id": "host-worker", "paseo.parent-server-id": "srv_host" };
+    const base = {
+      governance,
+      hostLink: { producerServerId: "srv_host" },
+      callerAgentId: undefined as string | undefined,
+      labels,
+      serverId: "srv_dev",
+    };
+    expect(admitForwardedGovernance(base)).toEqual({ admitted: governance });
+    expect(admitForwardedGovernance({ ...base, governance: undefined })).toBeNull();
+    const refusals: Array<[Partial<typeof base>, string]> = [
+      // The CLI, the owner's app or any direct client: not a host link.
+      [{ hostLink: null }, "not-host-link"],
+      // An agent naming itself as the caller is never the Host's forwarder.
+      [{ callerAgentId: "dev-worker" }, "agent-caller"],
+      [{ governance: { ...governance, serverId: "srv_dev" } }, "own-server"],
+      [{ hostLink: { producerServerId: "srv_other" } }, "producer-mismatch"],
+      [{ labels: { "paseo.parent-agent-id": "host-worker" } }, "parent-mismatch"],
+      [{ governance: { ...governance, workerProfileId: "" } }, "malformed"],
+    ];
+    for (const [change, reason] of refusals)
+      expect(admitForwardedGovernance({ ...base, ...change })).toEqual({ refused: reason });
   });
 
   it("refuses only enforceable reasons under enforce, with no exemption for a role label", async () => {

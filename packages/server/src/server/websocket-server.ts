@@ -2187,6 +2187,7 @@ export class VoiceAssistantWebSocketServer {
     });
     connection.permissionCeiling = message.sessionPermissions;
     connection.session.setRouted(message.routed === true);
+    connection.session.setSourceHostLink(ws, hostLinkOf(ws, message));
     this.assignHostSource(connection, message, admitted.principalId, pluginId);
     this.sessions.set(ws, connection);
     if (connection.lifecycle === "reconnectable") {
@@ -2319,6 +2320,7 @@ export class VoiceAssistantWebSocketServer {
     // Per socket: sockets already on the session keep the kind their own hello proved.
     existing.session.setSourceCredential(ws, pending.admission!.credential ?? null);
     existing.session.setRouted(message.routed === true);
+    existing.session.setSourceHostLink(ws, hostLinkOf(ws, message));
     this.assignHostSource(existing, message, pending.admission!.principalId);
     const newAppVersion = message.appVersion ?? null;
     if (newAppVersion && newAppVersion !== existing.appVersion) {
@@ -2418,7 +2420,11 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(previewRestart): added in Vorteo 2026-11, remove gate after 2027-05-23.
         // Restart accepts only password-admitted sessions, so a daemon without a password
         // has no session that could use it.
-        ...(this.passwordHash ? { previewRestart: true, previewStop: true } : {}),
+        // COMPAT(previewStopOutcome): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // Outcomes name their mode, so a client can word a failed stop as a stop.
+        ...(this.passwordHash
+          ? { previewRestart: true, previewStop: true, previewStopOutcome: true }
+          : {}),
         workspaceSetupObservation: true,
         workspaceSortTimes: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.
@@ -2494,6 +2500,9 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(presetFenceSetting): added 2026-11-23, retain until 2027-05-23. The daemon reads
         // `presetFence` and accepts changes only from the owner's app.
         presetFenceSetting: true,
+        // COMPAT(forwardedGovernance): added 2026-11-23, retain until 2027-05-23. This daemon
+        // stores the governance a Host forwards on a host-link create (#360 C2).
+        forwardedGovernance: true,
         // COMPAT(checklistWakeConditions): added 2026-11-18, retain until 2027-05-18.
         checklistWakeConditions: this.agentManager.supportsChecklistWakeConditions(),
         resumeOnStartupSetting: true,
@@ -3872,4 +3881,18 @@ function extractRequestInfoFromUnknownWsInbound(
   }
 
   return null;
+}
+
+/**
+ * A host-link session: its socket is a channel this daemon opened for `hosts.link.open.request`,
+ * which only a connection holding this daemon's credentials can send. The hello's own `routed`
+ * flag is client-declared, so it is not used here. The producer server is the opener's claim.
+ */
+function hostLinkOf(
+  ws: WebSocketLike,
+  hello: WSHelloMessage,
+): { producerServerId: string | null } | null {
+  return ws instanceof VirtualHostSocket
+    ? { producerServerId: hello.producer?.serverId ?? null }
+    : null;
 }

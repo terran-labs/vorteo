@@ -22,6 +22,8 @@ const {
   routePreferenceByServerIdMock,
   routePreferenceListenersMock,
   setPreferredRouteMock,
+  featuresMock,
+  restartPreviewMock,
 } = vi.hoisted(() => {
   const hoistedTheme = {
     opacity: { 50: 0.5 },
@@ -53,6 +55,8 @@ const {
   return {
     theme: hoistedTheme,
     startWorkspaceScriptMock: vi.fn(async () => ({ terminalId: "terminal-script-1" })),
+    featuresMock: {} as Record<string, boolean>,
+    restartPreviewMock: vi.fn(async () => ({ accepted: true, refusalCode: null, error: null })),
     killTerminalMock: vi.fn(async () => ({
       terminalId: "terminal-script-1",
       success: true,
@@ -94,6 +98,7 @@ vi.mock("@/constants/platform", () => ({
 
 vi.mock("@/runtime/host-runtime", () => ({
   useHostRuntimeSnapshot: () => ({ activeConnection: null }),
+  useHosts: () => [],
 }));
 
 vi.mock("@/workspace-service-routes/store", async () => {
@@ -123,7 +128,9 @@ vi.mock("@/stores/session-store", () => ({
           client: {
             startWorkspaceScript: startWorkspaceScriptMock,
             killTerminal: killTerminalMock,
+            restartWorkspaceScriptPreview: restartPreviewMock,
           },
+          serverInfo: { features: featuresMock },
         },
       },
     }),
@@ -232,6 +239,7 @@ function script(
     health: input.health ?? null,
     exitCode: input.exitCode ?? null,
     terminalId: input.terminalId ?? null,
+    ...(input.preview ? { preview: input.preview } : {}),
   };
 }
 
@@ -552,6 +560,77 @@ describe("WorkspaceScriptsButton", () => {
     await act(async () => {});
 
     expect(killTerminalMock).toHaveBeenCalledWith("terminal-script-1");
+  });
+
+  it.each([
+    ["a daemon whose outcomes do not name their mode", { previewStop: true }, false],
+    [
+      "a daemon whose outcomes name their mode",
+      { previewStop: true, previewStopOutcome: true },
+      true,
+    ],
+  ])("stops a managed preview through the broker only on %s", async (_name, features, broker) => {
+    // A daemon with previewStop alone reports a failed stop like a failed start.
+    Object.assign(featuresMock, { previewRestart: true, ...features });
+    restartPreviewMock.mockClear();
+    current = renderScripts([
+      script({
+        scriptName: "dev",
+        type: "service",
+        lifecycle: "running",
+        terminalId: "terminal-script-1",
+        preview: { state: "ready" },
+      }),
+    ]);
+    fireEvent.click(
+      requireRow("dev").querySelector('[data-testid="workspace-scripts-stop-dev"]') as HTMLElement,
+    );
+    await act(async () => {});
+    for (const key of Object.keys(featuresMock)) delete featuresMock[key];
+    if (broker) {
+      expect(restartPreviewMock).toHaveBeenCalledWith(expect.any(String), "dev", "stop");
+      expect(killTerminalMock).not.toHaveBeenCalled();
+    } else {
+      expect(restartPreviewMock).not.toHaveBeenCalled();
+      expect(killTerminalMock).toHaveBeenCalledWith("terminal-script-1");
+    }
+  });
+
+  it.each([
+    ["through the broker", { previewRestart: true, previewStop: true, previewStopOutcome: true }],
+    ["through the terminal", { previewRestart: true }],
+  ])("a pending stop %s holds only its own preview's buttons", async (_name, features) => {
+    // One preview's request must not keep the owner from stopping another.
+    Object.assign(featuresMock, features);
+    restartPreviewMock.mockClear();
+    const never = () => new Promise<never>(() => {});
+    restartPreviewMock.mockImplementationOnce(never);
+    killTerminalMock.mockImplementationOnce(never);
+    const service = (scriptName: string, terminalId: string) =>
+      script({
+        scriptName,
+        type: "service",
+        lifecycle: "running",
+        terminalId,
+        preview: { state: "ready" },
+      });
+    current = renderScripts([
+      service("web", "terminal-script-1"),
+      service("api", "terminal-script-2"),
+    ]);
+    const stop = (name: string) =>
+      requireRow(name).querySelector(
+        `[data-testid="workspace-scripts-stop-${name}"]`,
+      ) as HTMLElement;
+    fireEvent.click(stop("web"));
+    // Mutation state reaches the rows on the next timer tick.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    fireEvent.click(stop("api"));
+    // Mutation state reaches the rows on the next timer tick.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    for (const key of Object.keys(featuresMock)) delete featuresMock[key];
+    const calls = [...restartPreviewMock.mock.calls, ...killTerminalMock.mock.calls];
+    expect(calls).toHaveLength(2);
   });
 
   it("uses icon-only actions with view and fixed-position lifecycle controls", async () => {

@@ -565,6 +565,8 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   workspaceId?: string;
   callerAgentId?: string;
   origin?: CreateAgentRequestMessage["origin"];
+  /** Daemon remote create only (#360 C2); the destination admits it only on a host link. */
+  forwardedGovernance?: CreateAgentRequestMessage["forwardedGovernance"];
   initialPrompt?: string;
   initialGoal?: import("@getpaseo/protocol/agent-goals").AgentGoalSetInput;
   idempotencyKey?: string;
@@ -9267,6 +9269,7 @@ function resolveAgentConfig(options: CreateAgentRequestOptions): AgentSessionCon
     clientMessageId: _clientMessageId,
     callerAgentId: _callerAgentId,
     origin: _origin,
+    forwardedGovernance: _forwardedGovernance,
     outputSchema: _outputSchema,
     attachments: _attachments,
     worktree: _worktree,

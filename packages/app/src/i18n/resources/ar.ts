@@ -1,7 +1,9 @@
+import { previewStatus } from "./preview-status";
 import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
+  previewStatus: previewStatus.ar,
   projectFactory: en.projectFactory,
   vorteoSetup: en.vorteoSetup,
   paneFind: {

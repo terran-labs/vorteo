@@ -1,5 +1,5 @@
 import { useCallback, useMemo, type ReactElement } from "react";
-import { View } from "react-native";
+import { Text, View } from "react-native";
 import { Copy, Eye, Play, RotateCw, Square, SquareTerminal } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -17,6 +17,13 @@ import type {
   WorkspaceScriptLinkTarget,
 } from "@/utils/workspace-script-links";
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
+import {
+  previewBlocksStart,
+  previewRequestInFlight,
+  previewStartLabelKey,
+  runningPreviewListLabel,
+  usePreviewDescription,
+} from "@/preview-status/use-preview-description";
 import { scriptToneColorMapping, summarizeScripts, type ScriptsSummary } from "./script-status";
 import {
   useWorkspaceScriptActions,
@@ -179,7 +186,7 @@ function ScriptsPage({
     <>
       {scripts.map((script) =>
         script.lifecycle === "running" ? (
-          <RunningScriptRow key={script.scriptName} script={script} />
+          <RunningScriptRow key={script.scriptName} script={script} actions={actions} />
         ) : (
           <StoppedScriptRow key={script.scriptName} script={script} actions={actions} />
         ),
@@ -188,18 +195,64 @@ function ScriptsPage({
   );
 }
 
-function RunningScriptRow({ script }: { script: WorkspaceScript }): ReactElement {
+function RunningScriptRow({
+  script,
+  actions,
+}: {
+  script: WorkspaceScript;
+  actions: WorkspaceScriptActions;
+}): ReactElement {
   const { t } = useTranslation();
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  const label = runningPreviewListLabel(script, preview);
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
   return (
     <DropdownMenuSubTrigger
       id={scriptPageId(script.scriptName)}
-      value={t("workspace.scripts.states.running")}
+      value={"valueKey" in label ? t(label.valueKey) : undefined}
+      description={"description" in label ? label.description : undefined}
       leading={leading}
       testID={`workspace-scripts-row-${script.scriptName}`}
     >
       {script.scriptName}
     </DropdownMenuSubTrigger>
+  );
+}
+
+const BLOCKED_STATE = { disabled: true } as const;
+const BLOCKED_DATASET = { menuItem: "true", menuDisabled: "true" } as const;
+
+/**
+ * A preview that cannot start: no press, but its sentence, often the only way to fix it, is
+ * shown at full contrast. A disabled menu item would dim the whole row.
+ */
+function BlockedPreviewRow({
+  script,
+  line,
+}: {
+  script: WorkspaceScript;
+  line: string;
+}): ReactElement {
+  return (
+    <View
+      style={styles.blockedRow}
+      // Read like a disabled menu item, with the whole sentence; the menu's arrow keys skip
+      // disabled items, as they do for every disabled item.
+      accessible
+      accessibilityRole="menuitem"
+      accessibilityState={BLOCKED_STATE}
+      accessibilityLabel={`${script.scriptName}. ${line}`}
+      dataSet={BLOCKED_DATASET}
+      testID={`workspace-scripts-row-${script.scriptName}`}
+    >
+      <ScriptIcon script={script} size={ROW_ICON_SIZE} />
+      <View style={styles.blockedContent}>
+        <Text style={styles.blockedName} numberOfLines={1}>
+          {script.scriptName}
+        </Text>
+        <Text style={styles.blockedLine}>{line}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -215,24 +268,35 @@ function StoppedScriptRow({
   const handleSelect = useCallback(() => start(script.scriptName), [start, script.scriptName]);
   const exitCode = script.exitCode ?? null;
   const leading = useMemo(() => <ScriptIcon script={script} size={ROW_ICON_SIZE} />, [script]);
+  const managed = actions.isManagedPreview(script);
+  const preview = usePreviewDescription(script, managed);
+  // A preview that cannot start shows no play mark.
+  const blocked = previewBlocksStart(script, preview);
+  // A preview's state line carries its meaning; an exit code would suggest a clean exit.
+  const showExitCode = exitCode !== null && !managed;
   const trailing = useMemo(
     () => (
       <View style={styles.trailing}>
-        {exitCode === null ? null : <ExitCodeBadge code={exitCode} />}
-        <ThemedPlay
-          size={TRAILING_ICON_SIZE}
-          uniProps={mutedColorMapping}
-          {...playFillTransparent}
-        />
+        {showExitCode ? <ExitCodeBadge code={exitCode} /> : null}
+        {blocked ? null : (
+          <ThemedPlay
+            size={TRAILING_ICON_SIZE}
+            uniProps={mutedColorMapping}
+            {...playFillTransparent}
+          />
+        )}
       </View>
     ),
-    [exitCode],
+    [exitCode, blocked, showExitCode],
   );
+  if (blocked && preview) return <BlockedPreviewRow script={script} line={preview.line} />;
   return (
     <DropdownMenuItem
       leading={leading}
       trailing={trailing}
-      disabled={actions.isStartPending}
+      description={preview?.line}
+      descriptionFull={preview ? !preview.truncate : false}
+      disabled={actions.isStartPending || blocked}
       onSelect={handleSelect}
       testID={`workspace-scripts-row-${script.scriptName}`}
     >
@@ -272,6 +336,12 @@ function RunningScriptPage({
   const { scriptName } = script;
   const { selected, targets } = actions.resolveLinks(script);
   const { stop, restart, copyUrl, selectRoute } = actions;
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  // Disabled while any request for this preview is pending, here or still with the broker.
+  const stopOrRestartBlocked =
+    actions.isStopPendingFor(script.scriptName) ||
+    actions.isPreviewPendingFor(script.scriptName) ||
+    previewRequestInFlight(script.preview);
 
   const handleOpenService = useCallback(() => {
     if (!selected) return;
@@ -318,15 +388,17 @@ function RunningScriptPage({
       ) : null}
       <DropdownMenuItem
         leading={RESTART_ICON}
-        disabled={actions.isStopPending}
+        disabled={stopOrRestartBlocked}
+        description={preview?.line}
+        descriptionFull={preview ? !preview.truncate : false}
         onSelect={handleRestart}
         testID={`workspace-script-${scriptName}-restart`}
       >
-        {t("workspace.scripts.actions.restart")}
+        {preview ? t("previewStatus.actions.restart") : t("workspace.scripts.actions.restart")}
       </DropdownMenuItem>
       <DropdownMenuItem
         leading={STOP_ICON}
-        disabled={actions.isStopPending}
+        disabled={stopOrRestartBlocked}
         closeOnSelect={false}
         onSelect={handleStop}
         testID={`workspace-script-${scriptName}-stop`}
@@ -389,25 +461,50 @@ function StoppedScriptPage({
   const { t } = useTranslation();
   const { start } = actions;
   const handleRun = useCallback(() => start(script.scriptName), [start, script.scriptName]);
-  const exitCode = script.exitCode ?? null;
+  const managed = actions.isManagedPreview(script);
+  const exitCode = managed ? null : (script.exitCode ?? null);
   const trailing = useMemo(
     () => (exitCode === null ? null : <ExitCodeBadge code={exitCode} />),
     [exitCode],
   );
+  const preview = usePreviewDescription(script, managed);
   return (
     <DropdownMenuItem
       leading={RUN_ICON}
       trailing={trailing}
-      disabled={actions.isStartPending}
+      description={preview?.line}
+      descriptionFull={preview ? !preview.truncate : false}
+      disabled={actions.isStartPending || previewBlocksStart(script, preview)}
       onSelect={handleRun}
       testID={`workspace-script-${script.scriptName}-run`}
     >
-      {t("workspace.scripts.actions.run")}
+      {preview ? t(previewStartLabelKey(preview)) : t("workspace.scripts.actions.run")}
     </DropdownMenuItem>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
+  blockedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    marginHorizontal: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+  },
+  blockedContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+  blockedName: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
+  },
+  blockedLine: {
+    marginTop: 2,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+  },
   trailing: {
     flexDirection: "row",
     alignItems: "center",

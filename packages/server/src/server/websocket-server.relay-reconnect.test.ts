@@ -104,6 +104,12 @@ const sessionMock = vi.hoisted(() => {
     };
     credentialFor = (source: object | undefined) =>
       (source ? this.sourceCredentials.get(source) : null) ?? null;
+    readonly sourceHostLinks = new Map<object, { producerServerId: string | null } | null>();
+    setSourceHostLink = (source: object, link: { producerServerId: string | null } | null) => {
+      this.sourceHostLinks.set(source, link);
+    };
+    hostLinkFor = (source: object | undefined) =>
+      (source ? this.sourceHostLinks.get(source) : null) ?? null;
     private routed = false;
     setRouted = (routed: boolean) => {
       this.routed = routed;
@@ -159,6 +165,7 @@ vi.mock("./push/index.js", () => ({
 
 import { z } from "zod";
 import { VoiceAssistantWebSocketServer, WS_SHUTDOWN_CLOSE_TIMEOUT_MS } from "./websocket-server";
+import { VirtualHostSocket } from "./connected-hosts/index.js";
 import { DAEMON_PERMISSIONS, parseServerInfoStatusPayload } from "./messages.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 
@@ -643,6 +650,52 @@ describe("relay external socket reconnect behavior", () => {
       expect(
         gateCode(session.credentialFor(owner) as SessionCredentialKind | null),
       ).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a host-link socket and an ordinary socket on one session keep their own host-link fact (#360 C2)", async () => {
+    const server = createServer();
+    const link = (output: unknown[]) =>
+      new VirtualHostSocket(
+        async (data) => {
+          output.push(data);
+        },
+        () => {},
+        () => 0,
+        (hello) => hello,
+      );
+    const helloFrom = async (socket: VirtualHostSocket | MockSocket, sent: () => number) => {
+      await asInternals<WebSocketServerInternals>(server).attachSocket(
+        socket,
+        createDirectRequest(),
+      );
+      const hello = JSON.stringify({
+        ...createHelloMessage("shared-client"),
+        routed: true,
+        producer: { serverId: "srv_host", sourceId: "mcp" },
+      });
+      if (socket instanceof VirtualHostSocket) socket.feed(hello);
+      else socket.emit("message", hello);
+      await vi.waitFor(() => expect(sent()).toBeGreaterThan(0));
+    };
+    try {
+      const firstOutput: unknown[] = [];
+      const first = link(firstOutput);
+      await helloFrom(first, () => firstOutput.length);
+      // An ordinary socket resumes the same session, even claiming `routed` and a producer.
+      const ordinary = new MockSocket();
+      await helloFrom(ordinary, () => ordinary.sent.length);
+      const lastOutput: unknown[] = [];
+      const last = link(lastOutput);
+      await helloFrom(last, () => lastOutput.length);
+      expect(sessionMock.instances).toHaveLength(1);
+      const session = sessionMock.instances[0];
+      expect(session.hostLinkFor(first)).toEqual({ producerServerId: "srv_host" });
+      // The later host-link hello must not lend its fact to the ordinary socket.
+      expect(session.hostLinkFor(ordinary)).toBeNull();
+      expect(session.hostLinkFor(last)).toEqual({ producerServerId: "srv_host" });
     } finally {
       await server.close();
     }

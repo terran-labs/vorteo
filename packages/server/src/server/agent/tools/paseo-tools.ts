@@ -74,6 +74,7 @@ import {
 import {
   assertNoReservedLabels,
   checkPresetFence,
+  governanceToForward,
   type PresetFencePath,
   type PresetFenceRequest,
 } from "../lead-launch/fence.js";
@@ -885,6 +886,12 @@ function createToolCatalog(
     serverId: options.serverId ?? "self",
     callerAgentId,
     lockedCwd: callerContext?.lockedCwd,
+    governance: () =>
+      governanceToForward(callerAgentId, {
+        getAgent: (id) => agentManager.getAgent(id),
+        getStored: (id) => agentStorage.get(id),
+        serverId: options.serverId,
+      }),
     hosts: () => {
       if (!options.hosts) throw new Error("Connected hosts are not configured");
       return options.hosts();

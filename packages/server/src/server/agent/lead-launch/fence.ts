@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 import { PARENT_AGENT_ID_LABEL, PARENT_SERVER_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import type { PresetFencePolicy } from "@getpaseo/protocol/messages";
+import type { ForwardedGovernance, PresetFencePolicy } from "@getpaseo/protocol/messages";
 import { effectivePresetFencePolicy, type PresetFencePath } from "./fence-policy.js";
 
 export type { PresetFencePath } from "./fence-policy.js";
@@ -28,6 +28,8 @@ export interface FenceAgent {
   id: string;
   labels: Record<string, string>;
   config?: { profileLaunch?: { worker?: { id: string } | null } | null } | null;
+  /** Stored records only: the governance a Host forwarded with this thread's creation (C2). */
+  forwardedGovernance?: ForwardedGovernance | null;
 }
 
 /**
@@ -101,7 +103,12 @@ export type FenceUnknown = "parent-remote" | "parent-unresolved" | "cycle" | "de
  */
 export type FenceGovernance =
   | { kind: "none" }
-  | { kind: "supervisor"; supervisor: FenceAgent }
+  | {
+      kind: "supervisor";
+      supervisor: FenceAgent;
+      /** Set when the supervisor is on another daemon, known from forwarded governance (C2). */
+      serverId?: string;
+    }
   | { kind: "unknown"; why: FenceUnknown };
 
 /** Parent links followed upward before the chain counts as unknown. */
@@ -110,7 +117,8 @@ const MAX_SUPERVISOR_DEPTH = 8;
 /**
  * Refused when the setting enforces. The others stay report-only in this slice: mode changes
  * until #518, governance labels until the owner's split instruction changes (D6), and chains
- * this daemon cannot follow until cross-host governance (C2) and the D2 decision.
+ * this daemon cannot follow (D2). A Host parent with forwarded governance (C2) is followed, so its
+ * launches get `preset-required` and `detached`, which are refused only once enforcing ships.
  */
 const ENFORCEABLE_REASONS: ReadonlySet<string> = new Set([
   "preset-required",
@@ -125,8 +133,23 @@ async function lookup(dependencies: FenceLookup, agentId: string): Promise<Fence
 }
 
 /**
+ * The governance a Host recorded on this thread at creation. A loaded thread does not carry the
+ * stored field, so it is read from the record. The record is written once by the daemon, so a
+ * thread cannot shed it by editing its parent label.
+ */
+async function forwardedGovernance(
+  agent: FenceAgent,
+  dependencies: FenceLookup,
+): Promise<ForwardedGovernance | null> {
+  if (agent.forwardedGovernance) return agent.forwardedGovernance;
+  return (await dependencies.getStored?.(agent.id))?.forwardedGovernance ?? null;
+}
+
+/**
  * The nearest thread, starting with the caller and following parent labels, whose launch carries
  * a worker preset. Confirmed leads have no parent label, so they answer to their own preset.
+ * A thread created through a Host's remote create answers to the supervisor the Host recorded,
+ * read before its parent label (C2).
  */
 export async function governingSupervisor(
   caller: FenceAgent,
@@ -136,6 +159,17 @@ export async function governingSupervisor(
   let current = caller;
   for (let depth = 0; depth <= MAX_SUPERVISOR_DEPTH; depth += 1) {
     if (current.config?.profileLaunch?.worker) return { kind: "supervisor", supervisor: current };
+    const forwarded = await forwardedGovernance(current, dependencies);
+    if (forwarded)
+      return {
+        kind: "supervisor",
+        supervisor: {
+          id: forwarded.supervisorAgentId,
+          labels: {},
+          config: { profileLaunch: { worker: { id: forwarded.workerProfileId } } },
+        },
+        serverId: forwarded.serverId,
+      };
     const parentId: string | undefined = current.labels[PARENT_AGENT_ID_LABEL];
     if (!parentId) return { kind: "none" };
     if (visited.has(parentId)) return { kind: "unknown", why: "cycle" };
@@ -151,6 +185,34 @@ export async function governingSupervisor(
     current = parent;
   }
   return { kind: "unknown", why: "depth-limit" };
+}
+
+/**
+ * What the Host forwards with a remote create (C2): the caller's governing supervisor, from this
+ * daemon's own records. Nothing is sent for an ungoverned caller, an unknown chain or a failed
+ * lookup; the destination then logs `parent-remote`, as before C2.
+ */
+export async function governanceToForward(
+  callerAgentId: string | undefined,
+  dependencies: FenceLookup,
+): Promise<ForwardedGovernance | null> {
+  try {
+    const caller = callerAgentId ? await lookup(dependencies, callerAgentId) : null;
+    if (!caller || !dependencies.serverId) return null;
+    const governance = await governingSupervisor(caller, dependencies);
+    const workerProfileId =
+      governance.kind === "supervisor"
+        ? governance.supervisor.config?.profileLaunch?.worker?.id
+        : undefined;
+    if (governance.kind !== "supervisor" || !workerProfileId) return null;
+    return {
+      supervisorAgentId: governance.supervisor.id,
+      serverId: governance.serverId ?? dependencies.serverId,
+      workerProfileId,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function ownGovernance(caller: FenceAgent): FenceGovernance {
@@ -286,6 +348,12 @@ function fenceFields(input: {
     enforced: input.enforce,
     callerAgentId: caller.id,
     ...(supervisor && supervisor.id !== caller.id ? { supervisorAgentId: supervisor.id } : {}),
+    // `forwarded`: the supervisor is on another daemon, known from the Host's record (C2).
+    // `supervisorUnknown` says why a chain could not be followed: `parent-remote` (on another
+    // daemon, nothing forwarded), `parent-unresolved`, `cycle` or `depth-limit`.
+    ...(governance.kind === "supervisor" && governance.serverId
+      ? { supervisorServerId: governance.serverId, governance: "forwarded" }
+      : {}),
     ...(governance.kind === "unknown" ? { supervisorUnknown: governance.why } : {}),
     ...(role ? { factoryRole: role, factoryRoleStatus: "factory-role-unverified" } : {}),
     workerProfileId: supervisor?.config?.profileLaunch?.worker?.id ?? null,
@@ -303,6 +371,55 @@ function refusalText(reason: string | null, workerProfileId: string | null): str
   if (reason === "cycle" || reason === "depth-limit")
     return "This thread's parent links cannot be followed, so it cannot launch or reshape threads.";
   return `This thread is held to ${preset}.`;
+}
+
+export type ForwardedGovernanceAdmission =
+  | { admitted: ForwardedGovernance }
+  | {
+      refused:
+        | "not-host-link"
+        | "agent-caller"
+        | "own-server"
+        | "producer-mismatch"
+        | "parent-mismatch"
+        | "malformed";
+    };
+
+/**
+ * Whether a create may store the governance it carries (C2). Only a daemon's remote create sends
+ * it, over a host-link channel, and it describes the parent on that daemon. A forged or refused
+ * value is never better than none: it is dropped and logged, the create proceeds, and the thread
+ * stays `parent-remote`, which no slice refuses. A stored value only adds a supervisor.
+ *
+ * What this proves is limited (#525). A host-link channel is any session that arrived through
+ * `hosts.link.open.request` on a connection holding this daemon's owner credentials; on Dev the
+ * local credential sits in the guest home, which Dev agents can read. So a Dev agent can open a
+ * link to its own daemon and claim any producer server. The checks below keep that from
+ * shadowing a local chain: the parent must name another server, which leaves the fence only
+ * `parent-remote` to replace.
+ */
+export function admitForwardedGovernance(input: {
+  governance: ForwardedGovernance | undefined;
+  /** Set only for a session admitted through a host-link channel; the producer is claimed. */
+  hostLink: { producerServerId: string | null } | null;
+  callerAgentId: string | undefined;
+  labels: Record<string, string> | undefined;
+  serverId: string | undefined;
+}): ForwardedGovernanceAdmission | null {
+  const { governance, hostLink } = input;
+  if (!governance) return null;
+  if (!hostLink) return { refused: "not-host-link" };
+  if (input.callerAgentId) return { refused: "agent-caller" };
+  if (!governance.supervisorAgentId || !governance.serverId || !governance.workerProfileId)
+    return { refused: "malformed" };
+  if (!input.serverId || governance.serverId === input.serverId) return { refused: "own-server" };
+  if (hostLink.producerServerId !== governance.serverId) return { refused: "producer-mismatch" };
+  if (
+    input.labels?.[PARENT_SERVER_ID_LABEL] !== governance.serverId ||
+    !input.labels[PARENT_AGENT_ID_LABEL]
+  )
+    return { refused: "parent-mismatch" };
+  return { admitted: { ...governance } };
 }
 
 /**

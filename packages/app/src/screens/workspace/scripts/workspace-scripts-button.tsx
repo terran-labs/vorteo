@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactElement } from "react";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
 import type { GestureResponderEvent } from "react-native";
 import { Pressable, Text, View } from "react-native";
 import {
@@ -35,6 +35,12 @@ import { isWeb } from "@/constants/platform";
 import { extraMutedIconColorMapping } from "@/components/ui/icon-color";
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
 import { scriptToneColorMapping } from "./script-status";
+import {
+  previewBlocksStart,
+  previewRequestInFlight,
+  previewStartLabelKey,
+  usePreviewDescription,
+} from "@/preview-status/use-preview-description";
 import {
   useWorkspaceScriptActions,
   type WorkspaceScriptActions,
@@ -304,10 +310,18 @@ function ScriptRow({
   const { t } = useTranslation();
   const isRunning = script.lifecycle === "running";
   const exitCode = script.exitCode ?? null;
+  const preview = usePreviewDescription(script, actions.isManagedPreview(script));
+  const hideStart = previewBlocksStart(script, preview);
+  // Disabled while any request for this preview is pending, here or still with the broker.
+  const stopOrRestartBlocked =
+    actions.isStopPendingFor(script.scriptName) ||
+    actions.isPreviewPendingFor(script.scriptName) ||
+    previewRequestInFlight(script.preview);
   const { selected: selectedLink, targets: linkTargets } = actions.resolveLinks(script);
   const liveTerminalId =
     script.terminalId && liveTerminalIdSet.has(script.terminalId) ? script.terminalId : null;
-  const showExitBadge = !isRunning && exitCode !== null;
+  // A preview's state line carries its meaning; an exit code would suggest a clean exit.
+  const showExitBadge = !isRunning && exitCode !== null && !actions.isManagedPreview(script);
   const { start, stop, restart } = actions;
   const closeMenu = useDropdownMenuClose();
 
@@ -369,7 +383,7 @@ function ScriptRow({
         scriptName: script.scriptName,
       })}
       testID={`workspace-scripts-stop-${script.scriptName}`}
-      disabled={actions.isStopPending}
+      disabled={stopOrRestartBlocked}
       icon="stop"
       onPress={handleStop}
       tooltipLabel={t("workspace.scripts.actions.stop")}
@@ -383,7 +397,7 @@ function ScriptRow({
       disabled={actions.isStartPending}
       icon="start"
       onPress={handleRun}
-      tooltipLabel={t("workspace.scripts.actions.run")}
+      tooltipLabel={preview ? t(previewStartLabelKey(preview)) : t("workspace.scripts.actions.run")}
     />
   );
 
@@ -409,14 +423,19 @@ function ScriptRow({
               scriptName: script.scriptName,
             })}
             testID={`workspace-scripts-restart-${script.scriptName}`}
-            disabled={actions.isStopPending}
+            disabled={stopOrRestartBlocked}
             icon="restart"
             onPress={handleRestart}
-            tooltipLabel={t("workspace.scripts.actions.restart")}
+            tooltipLabel={
+              preview ? t("previewStatus.actions.restart") : t("workspace.scripts.actions.restart")
+            }
           />
         ) : null}
-        {lifecycleAction}
+        {hideStart ? null : lifecycleAction}
       </View>
+      {preview ? (
+        <PreviewStatusLine line={preview.line} truncate={preview.truncate ?? false} />
+      ) : null}
       {selectedLink ? (
         <View style={styles.hostList}>
           <ServiceLinkRow
@@ -429,6 +448,29 @@ function ScriptRow({
         </View>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The preview's state. Fixed sentences always show whole; a broker's message is cut at two
+ * lines and expands in place when tapped.
+ */
+function PreviewStatusLine({ line, truncate }: { line: string; truncate: boolean }): ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useCallback(() => setExpanded((value) => !value), []);
+  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  if (!truncate) return <Text style={styles.previewLine}>{line}</Text>;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={line}
+      accessibilityState={accessibilityState}
+      onPress={toggle}
+    >
+      <Text style={styles.previewLine} numberOfLines={expanded ? undefined : 2}>
+        {line}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -577,10 +619,13 @@ export function WorkspaceScriptsButton({
               ) : null}
             </View>
           </DropdownMenuTrigger>
+          {/* Scrolls within the window: a long list of scripts, or previews with a status line
+              each, otherwise runs past the bottom, leaving rows the owner cannot reach. */}
           <DropdownMenuContent
             align="end"
             minWidth={200}
             maxWidth={280}
+            scrollable
             testID="workspace-scripts-menu"
           >
             {scriptRows}
@@ -664,6 +709,13 @@ const styles = StyleSheet.create((theme) => ({
   hostList: {
     marginTop: 2,
     paddingHorizontal: theme.spacing[3],
+  },
+  previewLine: {
+    marginTop: 2,
+    paddingHorizontal: theme.spacing[3],
+    fontSize: theme.fontSize.sm,
+    lineHeight: 16,
+    color: theme.colors.foregroundMuted,
   },
   hostRow: {
     flexDirection: "row",

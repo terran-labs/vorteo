@@ -1,4 +1,6 @@
+import { previewStatus } from "./preview-status";
 export const en = {
+  previewStatus: previewStatus.en,
   projectFactory: {
     overview: "Factory Overview",
     projectHeading: "{{project}} Factory",

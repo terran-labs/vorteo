@@ -11,17 +11,20 @@ import { useReportActionError } from "@/hooks/use-action-error";
 import { formatTimeAgo } from "@/utils/time";
 import { canFullscreen, enterFullscreen } from "./fullscreen";
 import { annotationLocation, snapshotUrl, type PreviewLineage } from "./model";
+import { LivePreviewStatus, useLivePreview } from "./live-preview";
 import { ApprovedMark, kindLabel, PreviewThumb, StarRating } from "./parts";
 import { SNAPSHOT_FRAME_AVAILABLE, SnapshotFrame } from "./snapshot-frame";
 import type { PreviewsActions } from "./use-previews";
 
 /** One artifact, large, with its versions, comments and the owner's controls. */
 export function PreviewZoom({
+  serverId,
   lineage,
   httpBase,
   actions,
   onClose,
 }: {
+  serverId: string;
   lineage: PreviewLineage;
   httpBase: string | null;
   actions: PreviewsActions;
@@ -57,6 +60,7 @@ export function PreviewZoom({
     setCompareId((current) => current ?? others[0]?.id ?? null);
   }, [others]);
   const openInBrowser = useCallback(() => actions.openInBrowser(selected), [actions, selected]);
+  const live = useLivePreview(serverId, selected);
 
   const header = useMemo(
     () => ({
@@ -77,6 +81,7 @@ export function PreviewZoom({
       testID="preview-zoom"
     >
       <View style={styles.body}>
+        {live ? <LivePreviewStatus serverId={serverId} live={live} /> : null}
         <View
           ref={stageRef}
           style={[styles.stageRow, compact && styles.stageColumn, expanded && styles.stageExpanded]}

@@ -44,6 +44,15 @@ describe("scriptStatus", () => {
 });
 
 describe("summarizeScripts", () => {
+  it("never marks a preview whose link was withdrawn as healthy", () => {
+    // The server answers, but the broker withdrew its link: green would read as fine.
+    const withdrawn = {
+      ...service("web", { lifecycle: "running", health: "healthy" }),
+      preview: { state: "stopped" },
+    };
+    expect(scriptStatus(withdrawn)).toBe("running");
+  });
+
   it("is idle with nothing running when nothing runs", () => {
     expect(summarizeScripts([])).toEqual({ tone: "idle", running: [] });
     expect(summarizeScripts([script("lint", "stopped")])).toEqual({ tone: "idle", running: [] });

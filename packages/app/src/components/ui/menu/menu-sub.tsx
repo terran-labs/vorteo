@@ -32,6 +32,7 @@ const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMute
 export function MenuSubTrigger({
   id,
   value,
+  description,
   indicator = false,
   leading,
   disabled,
@@ -42,6 +43,8 @@ export function MenuSubTrigger({
   id: string;
   /** Current value of the decision this row leads to. */
   value?: string;
+  /** A sentence under the label, shown whole. */
+  description?: string;
   /** Marks the branch as holding a non-default setting, e.g. an active filter. */
   indicator?: boolean;
   /**
@@ -106,6 +109,8 @@ export function MenuSubTrigger({
         onSelect={handleSelect}
         leading={leading}
         trailing={trailing}
+        description={description}
+        descriptionFull
         testID={testID}
       >
         {children}

@@ -11003,3 +11003,166 @@ describe("moving a workspace's local project with its group", () => {
     }
   });
 });
+
+test("forwarded governance is admitted only from the host-link socket that sent the create, and a storage failure does not fail it (#360 C2)", async () => {
+  vi.useFakeTimers();
+  const workdir = mkdtempSync(path.join(tmpdir(), "paseo-forwarded-governance-"));
+  try {
+    const cwd = path.join(workdir, "repo");
+    mkdirSync(cwd, { recursive: true });
+    const logger = {
+      child: () => logger,
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const agentStorage = new AgentStorage(path.join(workdir, "agents"), asSessionLogger(logger));
+    let nextId = 0;
+    const agentManager = new AgentManager({
+      clients: { codex: new CreateAgentTestClient() },
+      registry: agentStorage,
+      logger: asSessionLogger(logger),
+      idFactory: () => `00000000-0000-4000-8000-00000000060${(nextId += 1)}`,
+    });
+    const projectRegistry = new FileBackedProjectRegistry(
+      path.join(workdir, "projects.json"),
+      asSessionLogger(logger),
+    );
+    const workspaceRegistry = new FileBackedWorkspaceRegistry(
+      path.join(workdir, "workspaces.json"),
+      asSessionLogger(logger),
+    );
+    await projectRegistry.upsert(
+      createPersistedProjectRecord({
+        projectId: "proj-dev",
+        rootPath: cwd,
+        kind: "git",
+        displayName: "repo",
+        createdAt: "2026-11-23T00:00:00.000Z",
+        updatedAt: "2026-11-23T00:00:00.000Z",
+      }),
+    );
+    await workspaceRegistry.upsert(
+      createPersistedWorkspaceRecord({
+        workspaceId: "ws-dev",
+        projectId: "proj-dev",
+        cwd,
+        kind: "local_checkout",
+        displayName: "repo",
+        title: null,
+        createdAt: "2026-11-23T00:00:00.000Z",
+        updatedAt: "2026-11-23T00:00:00.000Z",
+      }),
+    );
+    const messages: Array<{ type: string; payload?: { status?: string; agentId?: string } }> = [];
+    const session = asTestSession(
+      new Session({
+        workspaceRuntimeStore: createWorkspaceRuntimeStore(),
+        messageReceipts: createMessageReceiptsStub(),
+        agentMessages: createAgentMessageDeliveryStub(),
+        creationService: createTestCreationService(),
+        clientId: "test-client",
+        serverId: "srv_dev",
+        permissions: OWNER_PERMISSIONS,
+        appVersion: null,
+        onMessage: (message) => messages.push(message as (typeof messages)[number]),
+        logger: asSessionLogger(logger),
+        downloadTokenStore: asDownloadTokenStore(),
+        pushNotifications: asPushNotifications(),
+        paseoHome: path.join(workdir, "paseo-home"),
+        agentManager,
+        agentStorage,
+        projectRegistry,
+        workspaceRegistry,
+        scheduleService: asScheduleService(),
+        checkoutDiffManager: asCheckoutDiffManager({
+          subscribe: async () => ({
+            initial: { cwd, files: [], error: null },
+            unsubscribe: () => {},
+          }),
+          scheduleRefreshForCwd: () => {},
+          onWorkspaceStateMayHaveChanged: () => {},
+          invalidateForge: () => {},
+          getMetrics: () => ({
+            checkoutDiffTargetCount: 0,
+            checkoutDiffSubscriptionCount: 0,
+            checkoutDiffWatcherCount: 0,
+            checkoutDiffFallbackRefreshTargetCount: 0,
+          }),
+          dispose: () => {},
+        }),
+        workspaceGitService: createNoopWorkspaceGitService(),
+        daemonConfigStore: asDaemonConfigStore({
+          get: () => ({ mcp: { injectIntoAgents: false }, providers: {} }),
+          onChange: () => () => {},
+        }),
+        mcpBaseUrl: null,
+        stt: null,
+        tts: null,
+        generateWorkspaceName: async () => ({ title: null, branch: null }),
+        providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+        terminalManager: null,
+      }),
+    );
+    const forwardedGovernance = {
+      supervisorAgentId: "host-coordinator",
+      serverId: "srv_host",
+      workerProfileId: "shared-profile/worker",
+    };
+    // One session, two sockets: a host-link channel and an ordinary connection.
+    const hostLink = {};
+    const ordinary = {};
+    session.setSourceHostLink(hostLink, { producerServerId: "srv_host" });
+    const create = async (requestId: string, source: object) => {
+      await session.handleMessage(
+        {
+          type: "create_agent_request",
+          requestId,
+          workspaceId: "ws-dev",
+          config: { provider: "codex", cwd },
+          forwardedGovernance,
+          labels: {
+            "paseo.parent-agent-id": "host-worker",
+            "paseo.parent-server-id": "srv_host",
+          },
+          attachments: [],
+        },
+        source,
+      );
+      await vi.runAllTimersAsync();
+      const created = messages.find(
+        (message) =>
+          message.payload?.status === "agent_created" &&
+          (message.payload as { requestId?: string }).requestId === requestId,
+      );
+      expect(created, JSON.stringify(messages.map((m) => [m.type, m.payload]))).toBeDefined();
+      return created!.payload!.agentId!;
+    };
+
+    const fromOrdinary = await create("ordinary", ordinary);
+    expect((await agentStorage.get(fromOrdinary))?.forwardedGovernance).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "not-host-link" }),
+      "Forwarded governance ignored",
+    );
+
+    const fromLink = await create("host-link", hostLink);
+    expect((await agentStorage.get(fromLink))?.forwardedGovernance).toEqual(forwardedGovernance);
+
+    // The field only feeds a log line, so a storage failure must not fail the create.
+    vi.spyOn(agentStorage, "recordForwardedGovernance").mockRejectedValueOnce(
+      new Error("disk full"),
+    );
+    const failedRecord = await create("record-fails", hostLink);
+    expect(agentManager.getAgent(failedRecord)).toBeDefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: failedRecord }),
+      "Forwarded governance not recorded",
+    );
+  } finally {
+    vi.useRealTimers();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});

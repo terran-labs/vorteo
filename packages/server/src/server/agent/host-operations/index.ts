@@ -1,6 +1,10 @@
 import type { AgentStreamEvent } from "../agent-sdk-types.js";
 import { parentAddressLabels } from "@getpaseo/protocol/agent-labels";
-import type { ActiveTurnBehavior, AgentSnapshotPayload } from "@getpaseo/protocol/messages";
+import type {
+  ActiveTurnBehavior,
+  AgentSnapshotPayload,
+  ForwardedGovernance,
+} from "@getpaseo/protocol/messages";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -213,6 +217,8 @@ export function createHostResolver(input: {
   hosts: () => ToolHosts;
   callerAgentId?: string;
   lockedCwd?: string;
+  /** The caller's governance from this daemon's records (#360 C2); never from tool input. */
+  governance?: () => Promise<ForwardedGovernance | null>;
 }) {
   return {
     directory: () => input.hosts().directory(),
@@ -244,7 +250,13 @@ export function createHostResolver(input: {
                 ? parentAddressLabels({ agentId: input.callerAgentId, serverId: input.serverId })
                 : {}),
             };
+            // Only to a destination that stores it; an older one would drop it anyway.
+            const forwardedGovernance =
+              client.getLastServerInfoMessage()?.features?.forwardedGovernance === true
+                ? await input.governance?.()
+                : null;
             const snapshot = await client.createAgent({
+              ...(forwardedGovernance ? { forwardedGovernance } : {}),
               config: {
                 provider,
                 model,
