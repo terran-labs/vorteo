@@ -1,0 +1,8 @@
+### Fixes
+
+- Keep a hosted agent's background shells, monitors and subagents alive while a session host upgrade is pending. Idle release used to close a quiet hosted session after five minutes even when a watcher was about to wake it, so the thread stopped silently until another message arrived. A thread holding a long watcher now holds the host upgrade until the watcher ends.
+- Hosted sessions that never ran a turn since their provider process started stay releasable. Claude and Codex report that they cannot stop before their first turn, so sessions opened only for reading would otherwise have held every host upgrade and escaped idle cleanup.
+
+## Maintenance review
+
+Durable provider sessions entry revised. The session host contract gains an optional `canStopRuntime` call, advertised by the `runtimeStopCheck` snapshot capability and never sent to a host without it. The host's idle close asks the provider before its synchronous busy checks and refuses on false, rejection or a 10-second timeout; explicit close and shutdown are unchanged. Workers ask first during upgrade release and log a kept session once per pending upgrade instead of warning every pass. Hosted sessions now answer the one-hour idle runtime cleanup's provider check, which previously used only baseline eligibility for them. A host from before this change keeps releasing such sessions until it upgrades. The background work check applies only after the provider process ran a turn or an out-of-band command, tracked in the session port that both the host's idle close and the worker's call use. Focused session host tests cover refusal, retry after the work ends and the old-host gate. Not installed. README overview and onboarding are unchanged.
