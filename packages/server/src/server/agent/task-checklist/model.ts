@@ -44,3 +44,39 @@ export function mutateChecklist(
   }
   return next;
 }
+
+/** The most mutations one update_checklist call may apply together. */
+export const MAX_CHECKLIST_BATCH = 20;
+
+/**
+ * One or several checklist mutations. A single mutation keeps its original request and error
+ * shape; an array is a batch that applies in order and commits only if every mutation succeeds.
+ */
+export type ChecklistMutationInput = ChecklistMutation | readonly ChecklistMutation[];
+
+export function isChecklistBatch(
+  input: ChecklistMutationInput,
+): input is readonly ChecklistMutation[] {
+  return Array.isArray(input);
+}
+
+/**
+ * Name the failing mutation of a batch so the agent can correct it. The batch is all or nothing,
+ * so the message also says that nothing was applied. Single mutations never reach this.
+ */
+export function batchChecklistError(
+  error: unknown,
+  index: number,
+  batch: readonly ChecklistMutation[],
+): unknown {
+  if (!(error instanceof ChecklistError)) return error;
+  const mutation = batch[index];
+  // Creates may carry an ID the agent never chose, so name them by their text.
+  let target = "";
+  if (mutation.operation === "create") target = ` "${mutation.text}"`;
+  else if (mutation.operation !== "reorder") target = ` ${mutation.id}`;
+  return new ChecklistError(
+    error.code,
+    `Mutation ${index + 1} of ${batch.length} (${mutation.operation}${target}) failed, so none were applied: ${error.message}`,
+  );
+}

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentStorage } from "../agent-storage.js";
@@ -726,5 +726,236 @@ describe("thread checklist tool projections", () => {
       mutateChecklist(legacy, { operation: "update", id: "task", metadata: { a: null } })[0]
         .metadata,
     ).toEqual({});
+  });
+});
+
+describe("batched checklist updates", () => {
+  /** Real storage behind the tool, so atomicity is checked against what reaches disk. */
+  async function batchFixture() {
+    const directory = mkdtempSync(join(tmpdir(), "checklist-batch-"));
+    const storage = new AgentStorage(directory, createTestLogger());
+    await storage.upsert({
+      id: "thread",
+      provider: "codex",
+      cwd: directory,
+      createdAt: "2026-11-21T00:00:00Z",
+      updatedAt: "2026-11-21T00:00:00Z",
+      labels: {},
+      lastStatus: "idle",
+    });
+    for (const id of ["a", "b"]) {
+      await storage.mutateChecklist("thread", { operation: "create", id, text: id.toUpperCase() });
+    }
+    await storage.flush();
+    const manager = {
+      readChecklist: () => storage.getLoadedRecord("thread")?.tasks ?? [],
+      mutateChecklist: vi.fn(
+        (_agentId: string, input: Parameters<AgentStorage["mutateChecklist"]>[1]) =>
+          storage.mutateChecklist("thread", input, () => true),
+      ),
+    };
+    const tool = createChecklistTools(manager, "thread")[1];
+    const disk = () =>
+      readdirSync(directory, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => [
+          join(entry.parentPath, entry.name),
+          readFileSync(join(entry.parentPath, entry.name), "utf8"),
+        ]);
+    const state = async () => {
+      const record = await storage.get("thread");
+      return { tasks: record?.tasks, wake: record?.checklistWakeGenerations, files: disk() };
+    };
+    const cleanup = async () => {
+      await storage.flush();
+      rmSync(directory, { recursive: true, force: true });
+    };
+    return { storage, manager, tool, state, cleanup };
+  }
+
+  it.each([
+    {
+      name: "a missing task",
+      failing: { operation: "update", id: "missing" },
+      error: "Task missing does not exist.",
+    },
+    {
+      name: "a rule violation",
+      failing: { operation: "update", id: "k", status: "completed" },
+      error: "Mark every acceptance check",
+    },
+  ] as const)("rolls back memory and disk when a middle mutation hits $name", async (row) => {
+    const { storage, tool, state, cleanup } = await batchFixture();
+    try {
+      const before = await state();
+      const mutations = [
+        { operation: "create", id: "k", text: "K", checks: [{ text: "Passes", done: false }] },
+        row.failing,
+        { operation: "delete", id: "b" },
+      ];
+      await expect(tool.handler({ mutations }, {})).rejects.toThrow(
+        `Mutation 2 of 3 (update ${row.failing.id}) failed, so none were applied: ${row.error}`,
+      );
+      await storage.flush();
+      expect(await state()).toEqual(before);
+
+      const writes = vi.spyOn(
+        storage as unknown as { writeRecord: () => Promise<void> },
+        "writeRecord",
+      );
+      await tool.handler({ mutations: [mutations[0], mutations[2]] }, {});
+      expect(writes).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it.each([
+    {
+      name: "create then start the same item",
+      mutations: [
+        { operation: "create", id: "x", text: "X" },
+        { operation: "update", id: "x", status: "in_progress" },
+      ],
+      expected: { tasks: [expect.objectContaining({ id: "x", status: "in_progress" })] },
+    },
+    {
+      name: "complete a prerequisite created earlier in the batch",
+      mutations: [
+        { operation: "create", id: "p", text: "P" },
+        { operation: "create", id: "q", text: "Q", blockedBy: ["p"] },
+        { operation: "update", id: "p", status: "completed" },
+        { operation: "update", id: "q", status: "in_progress" },
+      ],
+      expected: {
+        tasks: [
+          expect.objectContaining({ id: "p", status: "completed" }),
+          expect.objectContaining({ id: "q", status: "in_progress", blockedBy: ["p"] }),
+        ],
+      },
+    },
+    {
+      name: "reorder every ID left after the batch's creates and deletes",
+      mutations: [
+        { operation: "create", id: "c", text: "C" },
+        { operation: "delete", id: "b" },
+        { operation: "reorder", ids: ["c", "a"] },
+      ],
+      expected: { tasks: [expect.objectContaining({ id: "c" })], deleted: ["b"], ids: ["c", "a"] },
+    },
+    {
+      name: "a deleted item cannot be referenced later",
+      mutations: [
+        { operation: "delete", id: "b" },
+        { operation: "update", id: "b", text: "Gone" },
+      ],
+      error: "Mutation 2 of 2 (update b) failed, so none were applied: Task b does not exist.",
+    },
+    {
+      name: "a reorder must account for the batch's deletes",
+      mutations: [
+        { operation: "delete", id: "b" },
+        { operation: "reorder", ids: ["b", "a"] },
+      ],
+      error: "Mutation 2 of 2 (reorder) failed",
+    },
+    {
+      name: "a prerequisite still open in the batch blocks starting",
+      mutations: [
+        { operation: "create", id: "q", text: "Q", blockedBy: ["a"] },
+        { operation: "update", id: "q", status: "in_progress" },
+      ],
+      error: "Complete dependency a",
+    },
+  ] as const)("sees earlier mutations in the batch: $name", async (row) => {
+    const { tool, state, cleanup } = await batchFixture();
+    try {
+      const before = await state();
+      const run = tool.handler({ mutations: row.mutations }, {});
+      if ("error" in row) {
+        await expect(run).rejects.toThrow(row.error);
+        expect(await state()).toEqual(before);
+      } else {
+        expect((await run).structuredContent).toMatchObject(row.expected);
+      }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps the single-mutation request, response and errors unchanged", async () => {
+    const { manager, tool, cleanup } = await batchFixture();
+    try {
+      const mutation = { operation: "update", id: "a", status: "in_progress" } as const;
+      const response = await tool.handler({ mutation }, {});
+      expect(manager.mutateChecklist).toHaveBeenLastCalledWith("thread", mutation);
+      expect(response.structuredContent).toEqual({
+        tasks: [{ id: "a", text: "A", source: "vorteo", status: "in_progress" }],
+        summary: { pending: 1, in_progress: 1, review: 0, blocked: 0, completed: 0 },
+      });
+      await expect(
+        tool.handler({ mutation: { operation: "update", id: "missing" } }, {}),
+      ).rejects.toThrow(/^Task missing does not exist\.$/);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("arms a wake condition set in a batch once on commit and never on rollback", async () => {
+    const { storage, tool, state, cleanup } = await batchFixture();
+    try {
+      const wait = {
+        operation: "update",
+        id: "a",
+        status: "blocked",
+        wakeCondition: { kind: "deadline", at: "2026-11-22T00:00:00Z" },
+      } as const;
+      const before = await state();
+      await expect(
+        tool.handler({ mutations: [wait, { operation: "update", id: "missing" }] }, {}),
+      ).rejects.toThrow("Mutation 2 of 2");
+      await storage.flush();
+      expect(await state()).toEqual(before);
+
+      await tool.handler(
+        { mutations: [wait, { operation: "update", id: "a", text: "Waiting" }] },
+        {},
+      );
+      const generations = (await storage.get("thread"))?.checklistWakeGenerations;
+      expect(generations).toEqual([
+        expect.objectContaining({ taskId: "a", condition: wait.wakeCondition }),
+      ]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("returns generated IDs for batch creates and validates every item before applying any", async () => {
+    const { tool, state, cleanup } = await batchFixture();
+    try {
+      const created = await tool.handler(
+        { mutation: null, mutations: [{ operation: "create", text: "Unnamed" }] },
+        {},
+      );
+      const [task] = (created.structuredContent as { tasks: AgentTaskItem[] }).tasks;
+      expect(task).toMatchObject({ text: "Unnamed", status: "pending" });
+      expect(task.id).toMatch(/^[0-9a-f-]{36}$/);
+      // The loose batch declaration must refuse anything the strict mutation schema refuses.
+      const before = await state();
+      await expect(
+        tool.handler(
+          {
+            mutations: [
+              { operation: "create", id: "ok", text: "OK" },
+              { operation: "update", id: "a", unknownField: true },
+            ],
+          },
+          {},
+        ),
+      ).rejects.toThrow("Mutation 2 of 2 is invalid, so none were applied");
+      expect(await state()).toEqual(before);
+    } finally {
+      await cleanup();
+    }
   });
 });

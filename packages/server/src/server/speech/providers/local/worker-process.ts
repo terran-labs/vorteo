@@ -1,3 +1,4 @@
+import type { EventEmitter } from "node:events";
 import pino from "pino";
 
 import type { StreamingTranscriptionSession } from "../../speech-provider.js";
@@ -6,7 +7,10 @@ import { getLocalSpeechModelDir, type LocalSttModelId, type LocalTtsModelId } fr
 import { getLocalSttEngine, getLocalTtsEngine } from "./sherpa/model-catalog.js";
 import { SherpaOfflineRecognizerEngine } from "./sherpa/sherpa-offline-recognizer.js";
 import { SherpaOnnxParakeetSTT } from "./sherpa/sherpa-parakeet-stt.js";
-import { SherpaParakeetRealtimeTranscriptionSession } from "./sherpa/sherpa-parakeet-realtime-session.js";
+import {
+  SherpaParakeetRealtimeTranscriptionSession,
+  type RealtimeTranscriptionProgress,
+} from "./sherpa/sherpa-parakeet-realtime-session.js";
 import { SherpaOnnxTTS } from "./sherpa/sherpa-tts.js";
 import {
   ensureSileroVadModel,
@@ -18,6 +22,7 @@ import type {
   LocalSpeechWorkerToParentMessage,
 } from "./worker-protocol.js";
 import { bufferToWorkerBytes, workerBytesToBuffer } from "./worker-bytes.js";
+import { SpeechProviderError } from "../speech-provider-error.js";
 
 process.title = "Paseo Voice";
 
@@ -33,6 +38,33 @@ const ttsProviders = new Map<string, SherpaOnnxTTS>();
 const sessions = new Map<string, StreamingTranscriptionSession | TurnDetectionSession>();
 const unsubscribeBySessionId = new Map<string, Array<() => void>>();
 let ipcClosing = false;
+
+/** Exit status when a native decode overran its bound and still holds the recognizer. */
+const WEDGED_RECOGNIZER_EXIT_CODE = 75;
+
+/**
+ * A decode that overran its bound cannot be cancelled, and every later decode on that
+ * recognizer would queue behind it. Exit so the parent replaces this worker; the parent fails
+ * the remaining sessions with `speech_worker_exited`.
+ */
+function exitIfRecognizerWedged(err: unknown): void {
+  if (!(err instanceof SpeechProviderError) || err.code !== "speech_worker_timeout") {
+    return;
+  }
+  logger.error({ err }, "Local speech recognizer wedged; exiting so the worker is replaced");
+  // Give the IPC channel a moment to deliver the error that explains the exit.
+  setTimeout(() => process.exit(WEDGED_RECOGNIZER_EXIT_CODE), 200).unref();
+}
+
+function reportSessionError(sessionId: string, err: unknown): void {
+  sendToParent({
+    type: "session.error",
+    sessionId,
+    error: err instanceof Error ? err.message : String(err),
+    ...(err instanceof SpeechProviderError ? { code: err.code } : {}),
+  });
+  exitIfRecognizerWedged(err);
+}
 
 function sendToParent(message: LocalSpeechWorkerToParentMessage): void {
   if (ipcClosing || !process.connected || !process.send) {
@@ -164,13 +196,11 @@ function trackTranscriptionSession(
   session.on("transcript", (payload) => {
     sendToParent({ type: "session.transcript", sessionId, payload });
   });
-  session.on("error", (err) => {
-    sendToParent({
-      type: "session.error",
-      sessionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+  // Only the realtime dictation session reports progress; other sessions never emit it.
+  (session as unknown as EventEmitter).on("progress", (payload: RealtimeTranscriptionProgress) => {
+    sendToParent({ type: "session.progress", sessionId, payload });
   });
+  session.on("error", (err) => reportSessionError(sessionId, err));
   unsubscribeBySessionId.set(sessionId, []);
 }
 
@@ -181,13 +211,7 @@ function trackTurnDetectionSession(sessionId: string, session: TurnDetectionSess
   session.on("speech_stopped", () => {
     sendToParent({ type: "session.speech_stopped", sessionId });
   });
-  session.on("error", (err) => {
-    sendToParent({
-      type: "session.error",
-      sessionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  });
+  session.on("error", (err) => reportSessionError(sessionId, err));
   unsubscribeBySessionId.set(sessionId, []);
 }
 
@@ -315,6 +339,8 @@ process.on("message", (message: LocalSpeechWorkerRequest) => {
       ok: false,
       error: error instanceof Error ? error.message : "Local speech worker request failed",
     });
+    // A voice transcription can wedge the shared recognizer too.
+    exitIfRecognizerWedged(error);
   });
 });
 
