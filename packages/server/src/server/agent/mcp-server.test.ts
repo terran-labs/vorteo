@@ -51,7 +51,12 @@ import {
 } from "./mcp-server.js";
 
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
-import { presetFenceReason, type PresetFenceRequest } from "./lead-launch/fence.js";
+import {
+  checkPresetFence,
+  governingSupervisor,
+  presetFenceReason,
+  type PresetFenceRequest,
+} from "./lead-launch/fence.js";
 
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 
@@ -6376,9 +6381,101 @@ describe("preset fence (#360)", () => {
     ).toBeNull();
     // A parent chain that cannot be followed is reported, never treated as ungoverned.
     const unknown = { kind: "unknown" as const, why: "parent-unresolved" as const };
-    expect(presetFenceReason(workerThread, null, launchOther, unknown)).toBe("supervisor-unknown");
+    expect(presetFenceReason(workerThread, null, launchOther, unknown)).toBe("parent-unresolved");
     expect(presetFenceReason(workerThread, null, launchOther, { kind: "none" })).toBeNull();
     expect(presetFenceReason(agents.other!, null, { kind: "launch", profileId: "x" })).toBeNull();
+    // A mode change alone stays its own reason, report-only until #518.
+    expect(
+      presetFenceReason(supervisor, agents.child!, {
+        kind: "change",
+        targetAgentId: "child",
+        mode: true,
+      }),
+    ).toBe("mode-change");
+  });
+
+  it("tells a parent on another host from a missing one", async () => {
+    const remoteChild = thread("remote-child", {
+      "paseo.parent-agent-id": "host-coordinator",
+      "paseo.parent-server-id": "srv_host",
+    });
+    const lookup = { getAgent: () => null, serverId: "srv_dev" };
+    expect(await governingSupervisor(remoteChild, lookup)).toEqual({
+      kind: "unknown",
+      why: "parent-remote",
+    });
+    expect(await governingSupervisor(remoteChild, { ...lookup, serverId: "srv_host" })).toEqual({
+      kind: "unknown",
+      why: "parent-unresolved",
+    });
+  });
+
+  it("refuses only enforceable reasons under enforce, with no exemption for a role label", async () => {
+    const warnings: unknown[] = [];
+    const logger = Object.assign(Object.create(createTestLogger()), {
+      warn: (fields: unknown) => warnings.push(fields),
+    }) as ReturnType<typeof createTestLogger>;
+    const foreman = {
+      ...supervisor,
+      id: "foreman",
+      labels: { "vorteo.factory-role": "prj:factory-intake" },
+    } as unknown as ManagedAgent;
+    const all: Record<string, ManagedAgent> = { ...agents, foreman };
+    const check = (
+      caller: string,
+      request: PresetFenceRequest,
+      policy: { mode: "report" | "enforce"; report?: string[] },
+      path: "create_agent" | "set_agent_mode" = "create_agent",
+    ) =>
+      checkPresetFence(
+        { logger, getAgent: (id) => all[id] ?? null, policy: () => policy },
+        path,
+        caller,
+        request,
+      );
+    const enforce = { mode: "enforce" as const };
+    const launchOther = { kind: "launch" as const, profileId: "other-preset" };
+    await expect(check("child", launchOther, enforce)).rejects.toThrow("request_lead_launch");
+    await expect(check("child", launchOther, { mode: "report" })).resolves.toBeUndefined();
+    await expect(
+      check("child", launchOther, { mode: "enforce", report: ["create_agent"] }),
+    ).resolves.toBeUndefined();
+    await expect(
+      check(
+        "supervisor",
+        { kind: "change", targetAgentId: "child", mode: true },
+        enforce,
+        "set_agent_mode",
+      ),
+    ).resolves.toBeUndefined();
+    // A Factory role label is never an exemption: a forged label is no better than none.
+    await expect(check("foreman", launchOther, enforce)).rejects.toThrow("request_lead_launch");
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        callerAgentId: "foreman",
+        factoryRoleStatus: "factory-role-unverified",
+      }),
+    );
+  });
+
+  it("refuses an agent setting a daemon-only label on itself", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((id: string) => agents[id] ?? null);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger: createTestLogger(),
+      callerAgentId: "child",
+    });
+    for (const label of ["vorteo.factory-role", "paseo.lead-launch-id"])
+      await expect(
+        registeredTool(server, "update_agent").handler({
+          agentId: "child",
+          labels: { [label]: "prj:factory-intake" },
+        }),
+      ).rejects.toThrow("set only by the daemon");
+    expect(spies.agentManager.updateAgentMetadata).not.toHaveBeenCalled();
   });
 
   it("logs a would-refuse decision from update_agent and still applies the change", async () => {

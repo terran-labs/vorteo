@@ -47,7 +47,7 @@ paseo-preview stop preview --workspace WORKSPACE_ID
 
 ```sh
 node ~/.local/share/vorteo-native-preview/paseo-preview.mjs start preview --workspace WORKSPACE_ID
-node ~/.local/share/vorteo-native-preview/paseo-preview.mjs status
+node ~/.local/share/vorteo-native-preview/paseo-preview.mjs status preview --workspace WORKSPACE_ID
 node ~/.local/share/vorteo-native-preview/paseo-preview.mjs stop preview --workspace WORKSPACE_ID
 ```
 
@@ -55,7 +55,7 @@ Replace `preview` with the configured script name. Repeating `start` adopts the 
 
 ## 3. Verify, then share
 
-- Only a `ready` result carries a verified URL. `pending` means wait and run `status` again. A timeout is not permission to kill listeners, restart the daemon or try another directory.
+- Only a `ready` result from `start`, `restart` or a named `status SCRIPT --workspace ID` carries a verified URL. A bare `status` is a fast summary of every reservation as of each entry's `checkedAt`, with no URL; never share a link from it. `pending` means wait and run the named `status` again. A timeout is not permission to kill listeners, restart the daemon or try another directory.
 - Open the returned `https://` URL and confirm the app actually rendered: a browser snapshot or screenshot showing real content, not just an HTTP 200. Check that HMR or the WebSocket connects when the app needs it.
 - Share exactly the `https://…ts.net:PORT/` origin the broker returned, plus any app path.
 

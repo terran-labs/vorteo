@@ -1,5 +1,4 @@
-import * as previewOrigins from "./workspace-preview-origin.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -9,6 +8,7 @@ import {
   buildWorkspaceScriptPayloads,
   createScriptStatusEmitter,
   readPaseoConfigForProjection,
+  type ManagedPreviewContext,
 } from "./script-status-projection.js";
 import { WorkspaceScriptPayloadSchema } from "@getpaseo/protocol/messages";
 import type { ScriptHealthState } from "./script-health-monitor.js";
@@ -63,6 +63,7 @@ async function buildPayloads(input: {
   serviceProxyPublicBaseUrl?: string | null;
   gitMetadata?: { projectSlug: string; currentBranch: string | null };
   resolveHealth?: (hostname: string) => ScriptHealthState | null;
+  managedPreviews?: ManagedPreviewContext;
 }) {
   const paseoConfig =
     input.paseoConfig !== undefined
@@ -83,9 +84,10 @@ async function loadConfig(repoRoot: string): Promise<PaseoConfig | null> {
 
 describe("script-status-projection", () => {
   it("projects broker URLs only for running services and preserves the local route", async () => {
-    const origin = vi
-      .spyOn(previewOrigins, "readWorkspacePreviewOrigin")
-      .mockReturnValue("https://preview.example.ts.net:32780");
+    const managedPreviews = {
+      brokerStatus: null,
+      origins: new Map([["web", "https://preview.example.ts.net:32780"]]),
+    };
     const runtimeStore = new WorkspaceScriptRuntimeStore();
     runtimeStore.set({
       workspaceId: "workspace",
@@ -101,25 +103,21 @@ describe("script-status-projection", () => {
       paseoConfig: { scripts: { web: { type: "service" as const, command: "serve", port: 3000 } } },
       runtimeStore,
       daemonPort: 6767,
+      managedPreviews,
     };
-    try {
-      const running = (await buildPayloads(input))[0];
-      expect(running.publicProxyUrl).toBe("https://preview.example.ts.net:32780");
-      expect(running.proxyUrl).toBe(running.publicProxyUrl);
-      expect(running.localProxyUrl).toBe("http://web--repo.localhost:6767");
-      expect(origin).toHaveBeenCalledWith("workspace", "web");
-      runtimeStore.set({
-        workspaceId: "workspace",
-        scriptName: "web",
-        type: "service",
-        lifecycle: "stopped",
-        terminalId: null,
-        exitCode: 0,
-      });
-      expect((await buildPayloads(input))[0].publicProxyUrl).toBeNull();
-    } finally {
-      origin.mockRestore();
-    }
+    const running = (await buildPayloads(input))[0];
+    expect(running.publicProxyUrl).toBe("https://preview.example.ts.net:32780");
+    expect(running.proxyUrl).toBe(running.publicProxyUrl);
+    expect(running.localProxyUrl).toBe("http://web--repo.localhost:6767");
+    runtimeStore.set({
+      workspaceId: "workspace",
+      scriptName: "web",
+      type: "service",
+      lifecycle: "stopped",
+      terminalId: null,
+      exitCode: 0,
+    });
+    expect((await buildPayloads(input))[0].publicProxyUrl).toBeNull();
   });
 
   it("defaults omitted workspace script terminal ids to null", () => {

@@ -154,7 +154,7 @@ describe("hello admission", () => {
         passwordHash: undefined,
         localCredential: "current",
       }),
-    ).toMatchObject({ admission: { principalId: "owner" } });
+    ).toMatchObject({ admission: { principalId: "owner", credential: "open" } });
   });
   test("accepts a password and current local credential, but rejects old and wrong credentials", async () => {
     const home = await mkdtemp(join(tmpdir(), "paseo-local-auth-"));
@@ -170,13 +170,14 @@ describe("hello admission", () => {
           ...input,
           credential: { kind: "password", password: "correct-password" },
         }),
-      ).toMatchObject({ admission: { principalId: "owner" } });
+        // Only a password proves the owner's app; preview restart relies on the label.
+      ).toMatchObject({ admission: { principalId: "owner", credential: "password" } });
       expect(
         await resolveSessionAdmission({
           ...input,
           credential: { kind: "localCredential", token: second },
         }),
-      ).toMatchObject({ admission: { principalId: "owner" } });
+      ).toMatchObject({ admission: { principalId: "owner", credential: "local" } });
       expect(
         await resolveSessionAdmission({
           ...input,

@@ -91,3 +91,10 @@ export function permissionsForLegacyHubScopes(
   // COMPAT(semanticHubPermissions): added in v0.7, remove after Hub enrollment uses permissions.
   return scopes.includes(LEGACY_HUB_EXECUTION_SCOPE) ? ["hub.execute"] : [];
 }
+
+/**
+ * How a session proved it may act as its principal. Only "password" shows the caller
+ * knew the daemon password; "local" is the credential file any process of the daemon's
+ * OS user can read, so it cannot tell the owner's app from an agent's shell.
+ */
+export type SessionCredentialKind = "password" | "local" | "service" | "open" | "plugin";

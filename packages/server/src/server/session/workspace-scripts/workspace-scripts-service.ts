@@ -23,6 +23,7 @@ import type {
 } from "../../worktree-bootstrap.js";
 import {
   buildWorkspaceScriptPayloads,
+  loadManagedPreviewContext,
   readPaseoConfigForProjection,
 } from "../../script-status-projection.js";
 import { deriveProjectServiceSlug, deriveProjectSlug } from "../../workspace-git-metadata.js";
@@ -127,6 +128,7 @@ export function createWorkspaceScriptsService(deps: {
       serviceProxyPublicBaseUrl,
       gitMetadata: resolveGitMetadata(workspace, project),
       resolveHealth: resolveScriptHealth ?? undefined,
+      managedPreviews: await loadManagedPreviewContext(workspace.workspaceId),
     });
   }
 

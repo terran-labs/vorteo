@@ -401,6 +401,19 @@ export {
   type DaemonTimeZone,
 } from "./installation-settings.js";
 
+/**
+ * The preset fence (#360): how the daemon treats agent launches and changes outside a
+ * coordinator's worker preset. "report" logs; "enforce" refuses, except for the paths listed in
+ * `report`, which keep logging. Unknown path names are kept so older daemons never refuse.
+ */
+export const PresetFencePolicySchema = z
+  .object({
+    mode: z.enum(["report", "enforce"]),
+    report: z.array(z.string().min(1).max(64)).max(32).optional(),
+  })
+  .strict();
+export type PresetFencePolicy = z.infer<typeof PresetFencePolicySchema>;
+
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -514,6 +527,10 @@ export const MutableDaemonConfigPatchSchema = z
     // COMPAT(accountQuotaPolicy): added 2026-11-20. null clears the stored policy; the daemon
     // accepts only the bounded version 1 shape.
     accountQuotaPolicy: AccountQuotaPolicyWireSchema.nullable().optional(),
+    // COMPAT(presetFenceSetting): added 2026-11-23. Write-only: the daemon accepts it only from
+    // the owner's app, saves it outside config.json and applies it at the next daemon restart.
+    // It never appears in the returned config. null clears it (report-only).
+    presetFence: PresetFencePolicySchema.nullable().optional(),
   })
   .partial()
   .passthrough();
@@ -2646,6 +2663,9 @@ export const AgentProfileSwitchRequestMessageSchema = z.object({
       projectId: z.string().optional(),
     })
     .optional(),
+  // COMPAT(presetFenceSetting): added 2026-11-23. The CLI names the agent whose shell runs it,
+  // from PASEO_AGENT_ID; the daemon checks that caller against the preset fence. Self-declared.
+  callerAgentId: z.string().optional(),
   requestId: z.string(),
 });
 
@@ -3695,6 +3715,20 @@ export const WorkspaceScriptStopRequestSchema = z.object({
   requestId: z.string(),
 });
 
+/**
+ * Starts a stopped managed HTTPS preview, or restarts a running one, through the preview
+ * broker, so its link stays the same. Gated by `features.previewRestart`. The response
+ * only says whether the request was accepted; the outcome arrives as `preview.restart`
+ * in `script_status_update`.
+ */
+export const WorkspaceScriptRestartPreviewRequestSchema = z.object({
+  type: z.literal("workspace.script.restart_preview.request"),
+  workspaceId: z.string(),
+  scriptName: z.string(),
+  requestId: z.string(),
+  mode: z.enum(["start", "restart"]).optional(),
+});
+
 export const SubscribeTerminalRequestSchema = z.object({
   type: z.literal("subscribe_terminal_request"),
   terminalId: z.string(),
@@ -4132,6 +4166,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceScriptListRequestSchema,
   WorkspaceScriptStartRequestSchema,
   WorkspaceScriptStopRequestSchema,
+  WorkspaceScriptRestartPreviewRequestSchema,
   SubscribeTerminalRequestSchema,
   UnsubscribeTerminalRequestSchema,
   TerminalInputSchema,
@@ -4447,6 +4482,7 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(accountQuotaPolicy): added 2026-11-20, retain until 2027-05-20. The daemon
         // stores and returns `accountQuotaPolicy`; it does not enforce floors or pool membership.
         accountQuotaPolicy: z.boolean().optional(),
+        presetFenceSetting: z.boolean().optional(),
         // COMPAT(restartRecovery): added in v0.14.0, remove gate after 2027-04-28.
         resumeOnStartupSetting: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
@@ -4702,6 +4738,12 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(localProjectConfig): added in Vorteo 2026-10, remove gate after 2027-04-22.
         // The daemon merges untracked paseo.local.json script entries over paseo.json.
         localProjectConfig: z.boolean().optional(),
+        // COMPAT(previewStatus): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // Workspace script payloads may carry the managed HTTPS preview's `preview` state.
+        previewStatus: z.boolean().optional(),
+        // COMPAT(previewRestart): added in Vorteo 2026-11, remove gate after 2027-05-23.
+        // The daemon accepts workspace.script.restart_preview.request.
+        previewRestart: z.boolean().optional(),
       })
       .optional(),
   })
@@ -4905,6 +4947,35 @@ export const ProjectPlacementPayloadSchema = z.object({
 export const WorkspaceScriptLifecycleSchema = z.enum(["running", "stopped"]);
 export const WorkspaceScriptHealthSchema = z.enum(["healthy", "unhealthy"]);
 
+/**
+ * A service's managed HTTPS preview, present only when the preview broker holds a
+ * reservation for it. Values are strings rather than enums so a later value cannot
+ * fail an older client's validation.
+ * - state: "ready", "not_responding", "starting" or "stopped"
+ * - stopReason: "stopped", "exited", "daemon_restart", "config_changed",
+ *   "process_changed" or "workspace_unavailable"; absent when the cause is unknown
+ * - restart.status: "starting", "failed" or "unconfirmed"
+ * Times are ISO 8601. `stale` means the broker has not reported for over a minute.
+ */
+export const WorkspaceScriptPreviewSchema = z.object({
+  state: z.string(),
+  stopReason: z.string().nullable().optional(),
+  stoppedAt: z.string().nullable().optional(),
+  restartedAt: z.string().nullable().optional(),
+  checkedAt: z.string().nullable().optional(),
+  stale: z.boolean().optional(),
+  needsReview: z.boolean().optional(),
+  error: z.string().nullable().optional(),
+  restart: z
+    .object({
+      status: z.string(),
+      error: z.string().nullable().optional(),
+      at: z.string(),
+    })
+    .nullable()
+    .optional(),
+});
+
 export const WorkspaceScriptPayloadSchema = z.object({
   scriptName: z.string(),
   type: z.enum(["script", "service"]).optional().default("service"),
@@ -4917,6 +4988,7 @@ export const WorkspaceScriptPayloadSchema = z.object({
   health: WorkspaceScriptHealthSchema.nullable(),
   exitCode: z.number().nullable().optional().default(null),
   terminalId: z.string().nullable().optional().default(null),
+  preview: WorkspaceScriptPreviewSchema.optional(),
 });
 
 const WorkspaceGitRuntimePayloadSchema = z
@@ -5576,6 +5648,19 @@ export const WorkspaceScriptStartResponseMessageSchema = z.object({
 export const WorkspaceScriptStopResponseMessageSchema = z.object({
   type: z.literal("workspace.script.stop.response"),
   payload: WorkspaceScriptOperationPayloadSchema,
+});
+
+export const WorkspaceScriptRestartPreviewResponseMessageSchema = z.object({
+  type: z.literal("workspace.script.restart_preview.response"),
+  payload: z.object({
+    requestId: z.string(),
+    workspaceId: z.string(),
+    scriptName: z.string(),
+    accepted: z.boolean(),
+    /** Why it was refused, such as "owner_app_only", "needs_review" or "busy". */
+    refusalCode: z.string().nullable().optional(),
+    error: z.string().nullable(),
+  }),
 });
 
 // COMPAT(desktopEditorBridge): added in v0.1.88, remove after 2026-12-03 once old clients no longer parse daemon editor RPC responses.
@@ -8118,6 +8203,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceScriptListResponseMessageSchema,
   WorkspaceScriptStartResponseMessageSchema,
   WorkspaceScriptStopResponseMessageSchema,
+  WorkspaceScriptRestartPreviewResponseMessageSchema,
   LegacyListAvailableEditorsResponseMessageSchema,
   LegacyOpenInEditorResponseMessageSchema,
   ArchiveWorkspaceResponseMessageSchema,
@@ -8387,11 +8473,18 @@ export type StartWorkspaceScriptResponseMessage = z.infer<
 export type WorkspaceScriptListRequest = z.infer<typeof WorkspaceScriptListRequestSchema>;
 export type WorkspaceScriptStartRequest = z.infer<typeof WorkspaceScriptStartRequestSchema>;
 export type WorkspaceScriptStopRequest = z.infer<typeof WorkspaceScriptStopRequestSchema>;
+export type WorkspaceScriptRestartPreviewRequest = z.infer<
+  typeof WorkspaceScriptRestartPreviewRequestSchema
+>;
+export type WorkspaceScriptPreview = z.infer<typeof WorkspaceScriptPreviewSchema>;
 export type WorkspaceScriptListResponseMessage = z.infer<
   typeof WorkspaceScriptListResponseMessageSchema
 >;
 export type WorkspaceScriptStartResponseMessage = z.infer<
   typeof WorkspaceScriptStartResponseMessageSchema
+>;
+export type WorkspaceScriptRestartPreviewResponseMessage = z.infer<
+  typeof WorkspaceScriptRestartPreviewResponseMessageSchema
 >;
 export type WorkspaceScriptStopResponseMessage = z.infer<
   typeof WorkspaceScriptStopResponseMessageSchema

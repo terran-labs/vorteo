@@ -963,8 +963,6 @@
               "server/system-project/ensure-system-project.ts": ["existsSync"],
               // TODO: system-project source provisioning checks its Git marker synchronously; migrate setup readiness and ownership together.
               "server/system-project/setup-source.ts": ["existsSync"],
-              // TODO: broker reservation lookup is a synchronous shared capability; migrate its callers with origin validation and current-request identity.
-              "server/workspace-preview-origin.ts": ["readFileSync"],
               // TODO: reviewed account deletion rechecks managed-home identity immediately before removal; migrate planning and destructive custody together.
               "services/provider-login/removal.ts": [
                 "existsSync",

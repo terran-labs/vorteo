@@ -2056,3 +2056,124 @@ test("an unrelated settings save between the ask and the click still launches th
     await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
   }
 });
+
+test("an unanswered lead launch expires after 24 hours, closes its card and starts nothing", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "lead-launch-expiry-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = new AgentManager({
+    clients: { one: createTestAgentClient("one") },
+    registry: storage,
+    logger,
+  });
+  const delivered: string[] = [];
+  agentManager.setMessageQueueControl({
+    pause: vi.fn(),
+    wake: vi.fn(),
+    acceptedHistory: async () => [],
+    recordProviderMessageId: vi.fn(),
+    reconcileHistory: vi.fn(),
+    suppressHistoryRestoration: vi.fn(),
+    queueRestartContinuation: vi.fn(),
+    queueQuestionAnswer: async (_agentId: string, _questionId: string, text: string) => {
+      delivered.push(text);
+    },
+  } as unknown as Parameters<AgentManager["setMessageQueueControl"]>[0]);
+  try {
+    const worker = { id: "worker", name: "Worker", provider: "one", model: "gpt-5.4" };
+    const profiles = [{ id: "lead", name: "Lead", provider: "one", model: "gpt-5.4" }];
+    const supervisor = await agentManager.createAgent(
+      {
+        provider: "one",
+        cwd: workdir,
+        profileLaunch: {
+          profile: { id: "team", name: "Team", provider: "one", workerProfileId: worker.id },
+          worker,
+        },
+      },
+      undefined,
+      { workspaceId: "ws-team", owner: { kind: "user" } },
+    );
+    const dependencies = {
+      agentManager,
+      agentStorage: storage,
+      logger,
+      providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+      getAgentProfiles: () => profiles,
+    };
+    agentManager.setLeadLauncher((confirmed, record) =>
+      startConfirmedLeadLaunch(dependencies, confirmed, record),
+    );
+    const request = async (requestedAt: string): Promise<LeadLaunchRecord> => {
+      const id = randomUUID();
+      const binding = await prepareLeadLaunch(
+        dependencies,
+        leadLaunchCreateInput({
+          callerAgentId: supervisor.id,
+          launchId: id,
+          profileId: "lead",
+          provider: "one",
+          title: "Lead",
+          initialPrompt: "Lead the new workspace",
+          cwd: workdir,
+          workspaceId: "ws-lead",
+          leadLaunch: { phase: "prepare" },
+        }),
+      );
+      const record: LeadLaunchRecord = {
+        id,
+        callerAgentId: supervisor.id,
+        requestedAt,
+        title: "Lead",
+        reason: "Needs a stronger model",
+        initialPrompt: "Lead the new workspace",
+        options: [{ optionId: "requested", profileId: "lead", label: "Start on Lead", binding }],
+        status: "pending",
+      };
+      await agentManager.requestLeadLaunch(
+        supervisor.id,
+        record,
+        leadLaunchQuestion({
+          record,
+          callerTitle: "Coordinator",
+          workerBinding: null,
+          workspaceLabel: "lead",
+          now: requestedAt,
+        }),
+      );
+      return record;
+    };
+    const leads = () =>
+      agentManager.listAgents().filter((agent) => agent.labels[LEAD_LAUNCH_ID_LABEL]);
+    const card = async (id: string) =>
+      (await agentManager.readQuestions(supervisor.id)).find((question) => question.id === id);
+
+    // The hourly sweep closes a request past 24 hours and tells the coordinator to ask again.
+    const swept = await request(new Date().toISOString());
+    await agentManager.expireLeadLaunches(Date.now() + 25 * 60 * 60_000);
+    expect(await agentManager.readLeadLaunch(supervisor.id, swept.id)).toMatchObject({
+      status: "cancelled",
+      failureCode: "expired",
+    });
+    expect(await card(swept.id)).toMatchObject({
+      status: "answered",
+      answeredBy: "daemon:lead-launch-expiry",
+    });
+    expect(delivered.at(-1)).toContain("expired after 24 hours");
+
+    // An owner click that arrives after the limit, before the sweep, starts nothing either.
+    const late = await request(new Date(Date.now() - 25 * 60 * 60_000).toISOString());
+    await expect(
+      agentManager.answerQuestion(supervisor.id, {
+        questionId: late.id,
+        answer: "Start on Lead",
+        answeredBy: "browser:owner",
+        optionIds: ["requested"],
+        source: "option",
+      }),
+    ).rejects.toThrow("expired");
+    expect((await card(late.id))?.answeredBy).toBe("daemon:lead-launch-expiry");
+    expect(leads()).toEqual([]);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});

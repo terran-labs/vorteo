@@ -3360,6 +3360,29 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Starts or restarts a managed HTTPS preview through the preview broker. Requires
+   * `server_info.features.previewRestart`. The response says only whether the daemon
+   * accepted the request; the result arrives as `preview.restart` on the script.
+   */
+  async restartWorkspaceScriptPreview(
+    workspaceId: string,
+    scriptName: string,
+    mode: "start" | "restart" = "start",
+    requestId?: string,
+  ): Promise<
+    Extract<
+      SessionOutboundMessage,
+      { type: "workspace.script.restart_preview.response" }
+    >["payload"]
+  > {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "workspace.script.restart_preview.request", workspaceId, scriptName, mode },
+      responseType: "workspace.script.restart_preview.response",
+    });
+  }
+
   async archiveWorkspace(
     workspaceId: string,
     requestId?: string,

@@ -26,6 +26,21 @@ SERVICE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 # verification, whichever comes first. Every other failure withdraws at once.
 TIMEOUT_MISS_LIMIT = 3
 TIMEOUT_GRACE_SECONDS = 90
+# Both installers run the broker every BROKER_INTERVAL_SECONDS (launchd StartInterval),
+# and each run spends at most RECONCILE_SECONDS rechecking entries.
+BROKER_INTERVAL_SECONDS = 10
+RECONCILE_SECONDS = 20
+# A stopped service is attributed to a daemon restart only when the new daemon worker
+# started within one broker cycle of the last verification under the old one. While the
+# broker keeps its cadence, an exit earlier than that would have been seen and recorded
+# as 'exited' first. A longer gap leaves room for an unrelated exit: no cause is recorded.
+RESTART_ATTRIBUTION_SECONDS = BROKER_INTERVAL_SECONDS + RECONCILE_SECONDS
+# Owner-readable preview state for the daemon and helper, at the pinned channel root.
+STATUS_FILE = 'preview-status.json'
+STATUS_FIELDS = ('workspaceId', 'service', 'frontend', 'desired', 'status', 'stopReason',
+                 'stoppedAt', 'restartedAt', 'verifiedAt', 'checkedAt', 'needsReview', 'error')
+UNVERIFIED_MESSAGE = re.compile(r'Checks timed out \(\d+ of \d+\); route kept but unverified')
+IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}')
 
 
 def digest(value):
@@ -144,6 +159,24 @@ class ListenerLost(RuntimeError):
     The route is withdrawn at once, but the owner's running intent is kept, as
     for any other definite check failure, so restore-after-restart and the next
     clean check can still bring the preview back."""
+
+
+# Failures that stop a preview and say why. Each stays a ValueError, so the
+# fail-closed handling and the error text are unchanged; `reason` only labels it.
+class ServiceGone(ValueError):
+    """The managed service is not running. Broker.service_gone_cause decides why."""
+
+
+class ConfigChanged(ValueError):
+    reason = 'config_changed'
+
+
+class ProcessChanged(ValueError):
+    reason = 'process_changed'
+
+
+class WorkspaceUnavailable(ValueError):
+    reason = 'workspace_unavailable'
 
 
 def _libproc_socket_types():
@@ -271,6 +304,37 @@ def loopback_listener_port(info, size):
             or bytes(address.insi_laddr.ina_46.i46a_addr4) != bytes([127, 0, 0, 1])):
         return None
     return socket.ntohs(address.insi_lport & 0xffff), bool(socket_info.soi_options & 0x0200)  # SO_REUSEPORT
+
+
+def _broker_messages(path=None):
+    """Every fixed message this module raises or records. Computed from the source so a
+    new message is covered without a list to maintain; f-strings never match.
+
+    A source that cannot be read yields an empty set, so the broker still imports and
+    every error publishes as its exception type name, the safe direction."""
+    names = 'ValueError|ServiceGone|ConfigChanged|ProcessChanged|WorkspaceUnavailable|RecoveryPending|ListenerLost'
+    try:
+        source = Path(path or __file__).read_text(encoding='utf-8')
+    except (OSError, ValueError):
+        return frozenset()
+    found = set(re.findall(r"\b(?:" + names + r")\('([^'{}\\]+)'\)", source))
+    found.update(re.findall(r"entry\['error'\] = '([^'{}\\]+)'", source))
+    found.add('Checks timed out; route withdrawn until a check succeeds')
+    return frozenset(found)
+
+
+BROKER_MESSAGES = _broker_messages()
+
+
+def public_error(message):
+    """An error fit to publish: a fixed broker message, the timeout count, or a type name.
+
+    Older ledgers may still hold str() of a library error, which can echo its input."""
+    if not isinstance(message, str):
+        return 'Error'
+    if message in BROKER_MESSAGES or UNVERIFIED_MESSAGE.fullmatch(message) or IDENTIFIER.fullmatch(message):
+        return message
+    return 'Error'
 
 
 class Runtime:
@@ -446,7 +510,7 @@ process.stdout.write(found[0].value);
         workspaces = self.cli(['workspace', 'ls'])
         match = next((w for w in workspaces if w['workspaceId'] == workspace), None)
         if not match or match.get('archivedAt') or match.get('isolation') not in ('local', 'worktree'):
-            raise ValueError('Unknown, archived or unsupported workspace')
+            raise WorkspaceUnavailable('Unknown, archived or unsupported workspace')
         registered_cwd = match['cwd']
         cwd = self.canonical_workspace_cwd(registered_cwd)
         if not self.workspace_path_allowed(cwd):
@@ -489,6 +553,11 @@ process.stdout.write(found[0].value);
                 if isinstance(definition, dict) and definition.get('type') == 'service' and type(definition.get('port')) is int:
                     ports.add(definition['port'])
         return ports
+
+    def daemon_worker(self):
+        # Container identities carry kernel ticks, not wall time, so a stop here is
+        # never attributed to a restart. The owner sees the stop time with no cause.
+        return None
 
     def lifecycle(self, operation, entry):
         return self.cli(['script', operation, entry['service'], '--workspace', entry['workspaceId']])
@@ -637,6 +706,15 @@ class NativeRuntime(Runtime):
         if safe_read(lock_path) != lock or self.process_identity(owner['pid']) != owner:
             raise ValueError('Native daemon changed during identity verification')
         return f"{worker['pid']}:{worker['birth']}"
+
+    def daemon_worker(self):
+        """The serving daemon worker and its start time, to explain a stop.
+
+        The worker, not the supervisor's pid file, is used: a worker restart inside
+        the same supervisor also closes terminals and keeps the pid file's time."""
+        identity = self.daemon_identity()
+        seconds, microseconds = identity.split(':')[1:3]
+        return {'identity': identity, 'startedAt': int(seconds) + int(microseconds) / 1e6}
 
     def listener_identity(self, port, terminal):
         if not isinstance(terminal, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', terminal):
@@ -892,22 +970,22 @@ class Broker:
         daemon = self.runtime.daemon_identity() if self.c.get('restoreAfterRestart') else None
         current = self.runtime.current(entry['workspaceId'], entry['service'])
         if current['cwd'] != entry['cwd'] or current['fingerprint'] != entry['fingerprint']:
-            raise ValueError('Service configuration identity changed')
+            raise ConfigChanged('Service configuration identity changed')
         port = current.get('port')
         if current.get('lifecycle') != 'running' or not current.get('terminalId'):
-            raise ValueError('Managed service stopped; explicit start required')
+            raise ServiceGone('Managed service stopped; explicit start required')
         # Native macOS allocation can use the full ephemeral range. The private
         # HTTPS reservation range constrains frontends, not loopback backends.
         if type(port) is not int or not 32768 <= port <= 65535 or port in self.c['reservedPorts'] or any(e.get('frontend') == port for e in self.ledger['entries'].values()):
             raise ValueError('Backend allocation conflicts with control plane or frontend')
         if entry.get('terminal') and (entry['terminal'] != current['terminalId'] or entry.get('backend') != port):
-            raise ValueError('Service process identity changed; explicit start required')
+            raise ProcessChanged('Service process identity changed; explicit start required')
         entry.update(backend=port, terminal=current['terminalId'])
         self.save()
         self.runtime.backend_ready(port)
         listener = self.runtime.listener_identity(port, current['terminalId'])
         if entry.get('listener') and entry['listener'] != listener:
-            raise ValueError('Backend listener process changed; explicit start required')
+            raise ProcessChanged('Backend listener process changed; explicit start required')
         entry['listener'] = listener
         self.save()
         # Self-check of the ABI-sensitive in-process check: it must confirm what
@@ -933,14 +1011,20 @@ class Broker:
         self.runtime.verify(url)
         again = self.runtime.current(entry['workspaceId'], entry['service'])
         if (again['fingerprint'], again.get('terminalId'), again.get('port'), again.get('lifecycle')) != (entry['fingerprint'], entry['terminal'], port, 'running'):
-            raise ValueError('Service changed during verification')
+            raise ProcessChanged('Service changed during verification')
         if daemon is not None:
             if self.runtime.daemon_identity() != daemon:
                 self.remove_then_raise(entry, RecoveryPending('Daemon changed during verification'))
             entry['daemon'] = daemon
             entry.pop('recovery', None)
-        for stale in ('error', 'misses', 'removalPending'):
+        for stale in ('error', 'misses', 'removalPending', 'needsReview', 'stopReason', 'restartedAt'):
             entry.pop(stale, None)
+        if 'daemonWorker' not in entry:
+            # Recorded once per start: any later daemon change makes the next check
+            # fail with ServiceGone, so this is the daemon the preview last ran under.
+            worker = self.observed_daemon_worker()
+            if worker:
+                entry['daemonWorker'] = worker
         # Only a full verification opens a timeout grace window. A remembered
         # "ready" from an earlier run never does once this time is too old.
         entry.update(status='ready', url=url, verifiedAt=time.time(), inProcessCheckAgreed=agreed)
@@ -955,13 +1039,13 @@ class Broker:
             return
         current = self.runtime.current(entry['workspaceId'], entry['service'])
         if current['cwd'] != entry['cwd'] or current['fingerprint'] != entry['fingerprint']:
-            raise ValueError('Service configuration identity changed')
+            raise ConfigChanged('Service configuration identity changed')
         recovery = entry.get('recovery', {})
         if recovery.get('daemon') != daemon:
             recovery = {'daemon': daemon, 'attempts': 0, 'retryAt': 0}
         if current['lifecycle'] == 'running':
             if not recovery.get('terminal') or current.get('terminalId') != recovery['terminal']:
-                raise ValueError('Unrecognized service after daemon restart; explicit start required')
+                raise ProcessChanged('Unrecognized service after daemon restart; explicit start required')
             return
         # Remove the stale route before allowing the daemon to allocate a new backend.
         try:
@@ -1023,8 +1107,8 @@ class Broker:
                 entry = {'workspaceId': r['workspaceId'], 'service': r['service'], 'cwd': current['cwd']}
                 # A stop without a reservation still needs a durable replay barrier.
                 self.ledger['entries'][key] = entry
-            entry.update(desired='stopped', status='stopped', stoppedAt=now)
-            for stale in ('url', 'misses', 'error'):
+            entry.update(desired='stopped', status='stopped', stoppedAt=now, stopReason='stopped')
+            for stale in ('url', 'misses', 'error', 'restartedAt', 'daemonWorker'):
                 entry.pop(stale, None)
             self.save()
             if entry.get('backend'):
@@ -1051,7 +1135,7 @@ class Broker:
             self.runtime.lifecycle('stop', current)
             current = self.runtime.current(r['workspaceId'], r['service'])
         entry.update(desired='running', status='pending', fingerprint=current['fingerprint'])
-        for stale in ('recovery', 'misses'):
+        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker'):
             entry.pop(stale, None)
         self.save()
         # This is startup configuration, not a verified browser link.
@@ -1072,6 +1156,58 @@ class Broker:
             self.save()
             return {'status': 'pending', 'message': 'Backend or HTTPS is not ready; inspect status', 'frontendPort': entry['frontend']}
 
+    def observed_daemon_worker(self):
+        try:
+            return self.runtime.daemon_worker()
+        except Exception:
+            return None  # Only explains stops; an unanswered check records no cause.
+
+    def record_stop_cause(self, entry, error):
+        for stale in ('stopReason', 'restartedAt'):
+            entry.pop(stale, None)
+        reason = self.service_gone_cause(entry) if isinstance(error, ServiceGone) else getattr(error, 'reason', None)
+        if reason:
+            entry['stopReason'] = reason
+
+    def service_gone_cause(self, entry):
+        """Why a verified service is gone, or None when that cannot be shown.
+
+        'exited' needs the same daemon worker still serving. 'daemon_restart' needs
+        a new worker that started after, and within RESTART_ATTRIBUTION_SECONDS of,
+        the last verification under the old one. Anything else records no cause."""
+        before = entry.get('daemonWorker')
+        verified = entry.get('verifiedAt')
+        if not before or type(verified) not in (int, float):
+            return None
+        now = self.observed_daemon_worker()
+        if not now:
+            return None
+        if now['identity'] == before['identity']:
+            return 'exited'
+        if 0 <= now['startedAt'] - verified <= RESTART_ATTRIBUTION_SECONDS:
+            entry['restartedAt'] = now['startedAt']
+            return 'daemon_restart'
+        return None
+
+    def publish_status(self):
+        """Write every reservation's state for the daemon and helper to read.
+
+        Only STATUS_FIELDS leave the ledger: names, ports, states, times and an error
+        that is one of this module's fixed messages or an exception type name. No paths,
+        terminals, listeners, fingerprints, URLs or command lines."""
+        services = []
+        # Every reservation, uncapped: the ledger holds at most 32 (reserve() refuses more).
+        for entry in self.ledger['entries'].values():
+            if 'frontend' not in entry:
+                continue
+            item = {field: entry[field] for field in STATUS_FIELDS if field in entry}
+            if 'error' in item:
+                item['error'] = public_error(item['error'])
+            services.append(item)
+        # publishedAt says the broker is running; each entry's checkedAt says when that
+        # entry was last rechecked, which a run that spends its deadline on requests skips.
+        atomic(self.channel / STATUS_FILE, {'version': 1, 'publishedAt': time.time(), 'services': services}, mode=0o644)
+
     def settle_failure(self, entry, error):
         """Apply one rule to a failed check of a route, for reconcile() and status.
 
@@ -1091,11 +1227,13 @@ class Broker:
         # Fail closed on process/config changes. Never revive a stopped service.
         if isinstance(error, ValueError):
             entry.update(desired='stopped', stoppedAt=time.time())
+            self.record_stop_cause(entry, error)
         if timed_out:
             message = 'Checks timed out; route withdrawn until a check succeeds'
-        elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)):
+        elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)) and str(error) in BROKER_MESSAGES:
             message = str(error)
         else:
+            # Library errors can echo their input, such as a path or parsed text.
             message = type(error).__name__
         # Keep 'failed' after timeouts: the rebind refuses while any entry is 'pending'.
         entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed', error=message)
@@ -1106,6 +1244,7 @@ class Broker:
             entry.pop('removalPending', None)
         except ValueError:
             entry['error'] = 'Mapping removal requires administrator review'
+            entry['needsReview'] = True
             error = ValueError(entry['error'])
         except Exception:
             # Usually another timeout. The route may still be published; the
@@ -1146,7 +1285,7 @@ class Broker:
         return True
 
     def reconcile(self):
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + RECONCILE_SECONDS
         entries = list(self.ledger['entries'].values())[:32]
         if not entries:
             return
@@ -1159,6 +1298,7 @@ class Broker:
                 break
             entry = entries[(cursor + index) % len(entries)]
             self.ledger['reconcileCursor'] = (cursor + index + 1) % len(entries)
+            entry['checkedAt'] = time.time()
             self.save()
             if not entry.get('backend'):
                 continue
@@ -1228,6 +1368,7 @@ class Broker:
                     receipt.unlink(missing_ok=True)
             if time.monotonic() < deadline:
                 self.reconcile()
+            self.publish_status()
 
 
 if __name__ == '__main__':

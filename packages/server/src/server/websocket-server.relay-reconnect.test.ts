@@ -21,6 +21,22 @@ import {
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import type { AgentGrant } from "@getpaseo/protocol/messages";
 import { APPLICATION_SOCKET_LEASE_MS } from "./websocket/physical-socket.js";
+import { admitPreviewRestart } from "./preview-broker-restart.js";
+import type { SessionCredentialKind } from "./authorization/index.js";
+
+function gateCode(credential: SessionCredentialKind | null) {
+  return admitPreviewRestart({
+    credential,
+    restarter: { inFlight: () => false, atCapacity: () => false },
+    brokerAvailable: true,
+    workspace: { archivedAt: null },
+    hasReservation: true,
+    broker: { workspaceId: "wks_a", service: "web" },
+    workspaceId: "wks_a",
+    scriptName: "web",
+    requester: "mock-session-id",
+  })?.code;
+}
 
 type SocketListener = (...args: unknown[]) => void;
 
@@ -82,6 +98,12 @@ const sessionMock = vi.hoisted(() => {
     setAgentGrants = (grants: readonly AgentGrant[] | undefined) => {
       this.args.agentGrants = grants;
     };
+    readonly sourceCredentials = new Map<object, string | null>();
+    setSourceCredential = (source: object, credential: string | null) => {
+      this.sourceCredentials.set(source, credential);
+    };
+    credentialFor = (source: object | undefined) =>
+      (source ? this.sourceCredentials.get(source) : null) ?? null;
     private routed = false;
     setRouted = (routed: boolean) => {
       this.routed = routed;
@@ -553,6 +575,79 @@ describe("relay external socket reconnect behavior", () => {
       await server.close();
     }
   });
+  test("a weaker credential that reuses the owner app's clientId cannot restart previews", async () => {
+    const server = createServer({
+      auth: {
+        password: "$2b$12$OLxyuuP9uLK30Uzc4wQX0O6liuU/Q1t5P2b0Ebf36mULvpVK3DRZW",
+        localCredential: () => "local-token",
+      },
+    });
+    try {
+      const app = new MockSocket();
+      await server.attachExternalSocket(app, { transport: "relay" });
+      app.emit(
+        "message",
+        JSON.stringify({
+          ...createHelloMessage("owner-app"),
+          auth: { kind: "password", password: "correct-password" },
+        }),
+      );
+      await vi.waitFor(() => expect(sentServerInfoEnvelopes(app)).toHaveLength(1));
+      // The clientId is not secret: owner answers record it as answeredBy.
+      const agent = new MockSocket();
+      await server.attachExternalSocket(agent, { transport: "relay" });
+      agent.emit(
+        "message",
+        JSON.stringify({
+          ...createHelloMessage("owner-app"),
+          auth: { kind: "localCredential", token: "local-token" },
+        }),
+      );
+      await vi.waitFor(() => expect(sentServerInfoEnvelopes(agent)).toHaveLength(1));
+      expect(sessionMock.instances).toHaveLength(1);
+      const session = sessionMock.instances[0];
+      expect(gateCode(session.credentialFor(agent) as SessionCredentialKind | null)).toBe(
+        "owner_app_only",
+      );
+      expect(gateCode(session.credentialFor(app) as SessionCredentialKind | null)).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("an agent socket left on the owner app's session stays refused after the app reconnects", async () => {
+    const server = createServer({
+      auth: {
+        password: "$2b$12$OLxyuuP9uLK30Uzc4wQX0O6liuU/Q1t5P2b0Ebf36mULvpVK3DRZW",
+        localCredential: () => "local-token",
+      },
+    });
+    const hello = async (auth: Record<string, string>) => {
+      const socket = new MockSocket();
+      await server.attachExternalSocket(socket, { transport: "relay" });
+      socket.emit("message", JSON.stringify({ ...createHelloMessage("owner-app"), auth }));
+      await vi.waitFor(() => expect(sentServerInfoEnvelopes(socket)).toHaveLength(1));
+      return socket;
+    };
+    try {
+      await hello({ kind: "password", password: "correct-password" });
+      const agent = await hello({ kind: "localCredential", token: "local-token" });
+      const owner = await hello({ kind: "password", password: "correct-password" });
+      expect(sessionMock.instances).toHaveLength(1);
+      const session = sessionMock.instances[0];
+      // The agent's socket is still attached; it must keep the kind its own hello proved.
+      expect(agent.readyState).not.toBe(3);
+      expect(gateCode(session.credentialFor(agent) as SessionCredentialKind | null)).toBe(
+        "owner_app_only",
+      );
+      expect(
+        gateCode(session.credentialFor(owner) as SessionCredentialKind | null),
+      ).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
   test("admits a relay hello password, but rejects a wrong or missing password", async () => {
     const server = createServer({
       auth: {

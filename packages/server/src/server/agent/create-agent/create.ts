@@ -85,6 +85,8 @@ export interface CreateAgentCommandDependencies {
   createPaseoWorktree?: CreatePaseoWorktreeWorkflowFn;
   // Mints a fresh directory workspace for a cwd and returns its id.
   ensureWorkspaceForCreate?: EnsureWorkspaceForCreate;
+  /** This daemon's server ID, so the preset fence can tell a remote parent from a missing one. */
+  serverId?: string;
 }
 
 export type EnsureWorkspaceForCreate = (
@@ -536,6 +538,7 @@ async function fenceInheritedWorkerLaunch(
       logger: dependencies.logger,
       getAgent: (id) => dependencies.agentManager.getAgent(id),
       getStored: (id) => dependencies.agentStorage.get(id),
+      serverId: dependencies.serverId,
     },
     "create_agent",
     input.callerAgentId,

@@ -13,6 +13,7 @@ import {
   WorkspaceSetupSnapshotSchema,
   WorkspaceSetupProgressMessageSchema,
   AgentTimelineEntryPayloadSchema,
+  WorkspaceScriptPayloadSchema,
 } from "./messages.js";
 
 test("profile switches retain legacy replies and optional preview results", () => {
@@ -245,6 +246,21 @@ describe("wire schema compatibility", () => {
         },
       ],
     });
+  });
+
+  test("workspace script preview state is optional and accepts later values", () => {
+    const script = {
+      scriptName: "web",
+      type: "service",
+      hostname: "web",
+      port: 3000,
+      lifecycle: "stopped",
+      health: null,
+    };
+    expect(WorkspaceScriptPayloadSchema.parse(script).preview).toBeUndefined();
+    // A state or reason added later must not fail an older client's validation.
+    const preview = { state: "paused", stopReason: "later_reason", restart: null };
+    expect(WorkspaceScriptPayloadSchema.parse({ ...script, preview }).preview).toEqual(preview);
   });
 
   test("checklist progress and checks cross versions in both directions", () => {
