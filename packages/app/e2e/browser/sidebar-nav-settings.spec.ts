@@ -93,7 +93,8 @@ test.describe("Sidebar contribution visibility and order", () => {
     page,
   }) => {
     await gotoAppShell(page);
-    await expectSidebarOrder(page, [deploysKey, legacyKey]);
+    // Unplaced plugin rows follow the registry's serverId/pluginId sort, so legacy-sidebar leads.
+    await expectSidebarOrder(page, [legacyKey, deploysKey]);
     await openSidebarNavSettings(page);
     await expectSidebarNavSettingsRow(page, { key: deploysKey, label: "Deploys", visible: true });
     await expectSidebarNavSettingsRow(page, {
@@ -101,15 +102,15 @@ test.describe("Sidebar contribution visibility and order", () => {
       label: "Legacy entry",
       visible: true,
     });
-    // Move until this contribution precedes Deploys, independent of unrelated registered rows.
+    // Move until Deploys precedes this contribution, independent of unrelated registered rows.
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      const before = await page.getByTestId(`sidebar-nav-item-${legacyKey}`).boundingBox();
-      const target = await page.getByTestId(`sidebar-nav-item-${deploysKey}`).boundingBox();
+      const before = await page.getByTestId(`sidebar-nav-item-${deploysKey}`).boundingBox();
+      const target = await page.getByTestId(`sidebar-nav-item-${legacyKey}`).boundingBox();
       if (before && target && before.y < target.y) break;
-      await moveSidebarNavItemUp(page, legacyKey);
+      await moveSidebarNavItemUp(page, deploysKey);
     }
     await leaveSettings(page);
-    await expectSidebarOrder(page, [legacyKey, deploysKey]);
+    await expectSidebarOrder(page, [deploysKey, legacyKey]);
     await openSidebarNavSettings(page);
     await setSidebarNavItemVisible(page, deploysKey, false);
     await leaveSettings(page);
@@ -162,7 +163,8 @@ test.describe("Sidebar contribution visibility and order", () => {
     await expectFooterItemHidden(page, "usage");
     await expectFooterOrder(page, [syncKey]);
     await expectSidebarToolbar(page);
-    await expectFooterSeparator(page, true);
+    // No separator assertion here: since 469492c4e the footer's top rule shows only where the
+    // project list reaches the footer, which this short list does not.
     await openSidebarNavSettings(page);
     await moveFooterItemUp(page, syncKey);
     await expectFooterSettingsKeys(page, [syncKey, "usage", brokenKey]);

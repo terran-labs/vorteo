@@ -13,6 +13,7 @@ import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
+  Activity,
   Check,
   Copy,
   ExternalLink,
@@ -48,6 +49,8 @@ import {
 import { formatCheckPresentationCountsLabel } from "@/git/check-presentation-copy";
 import { CheckPresentationIcon, getCheckPresentationTone } from "@/git/check-presentation.view";
 import { buildForgeChecksUrl } from "@/git/forge-url";
+import { useAppSettings } from "@/hooks/use-settings";
+import { FactoryStatusLine, useWorkspaceStatusLine } from "@/components/sidebar/factory-status";
 
 const HOVER_CARD_WIDTH = 260;
 
@@ -104,6 +107,7 @@ function WorkspaceHoverCardContent({
           {workspace.name}
         </Text>
       </View>
+      <HoverStatusLineRow workspace={workspace} />
       {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
       {workspace.diffStat ? (
         <View style={styles.cardInfoRow}>
@@ -145,6 +149,7 @@ function WorkspaceHoverCardContent({
 }
 
 const ThemedGitBranch = withUnistyles(GitBranch);
+const ThemedActivity = withUnistyles(Activity);
 const ThemedFolder = withUnistyles(Folder);
 const ThemedFolderTree = withUnistyles(FolderTree);
 const ThemedServer = withUnistyles(Server);
@@ -199,6 +204,22 @@ const ThemedCheck = withUnistyles(Check);
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+
+/** The workspace status line, when the sidebar shows it on hover. */
+function HoverStatusLineRow({ workspace }: { workspace: SidebarWorkspaceEntry }) {
+  const {
+    settings: { workspaceStatusLine },
+  } = useAppSettings();
+  const status = useWorkspaceStatusLine(workspace, workspaceStatusLine === "hover");
+  return status ? (
+    <View style={styles.cardInfoRow} testID="hover-card-workspace-status-line">
+      <ThemedActivity size={12} uniProps={foregroundMutedColorMapping} />
+      <View style={styles.statusLineText}>
+        <FactoryStatusLine status={status} />
+      </View>
+    </View>
+  ) : null;
+}
 
 function InfoRow({
   icon: Icon,
@@ -407,6 +428,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minWidth: 0,
   },
+  statusLineText: { flex: 1, minWidth: 0 },
   cardInfoRow: {
     flexDirection: "row",
     alignItems: "center",

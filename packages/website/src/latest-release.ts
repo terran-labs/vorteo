@@ -1,4 +1,4 @@
-import { getBlockingColdCache, type WebsiteCacheContext } from "./github-cache";
+import { getBlockingColdCache, githubApiUrl, type WebsiteCacheContext } from "./github-cache";
 
 interface GitHubAsset {
   name: string;
@@ -33,7 +33,7 @@ const REQUIRED_ASSET_PATTERNS = [
   /Paseo-Setup-.*\.exe$/,
 ];
 
-const GITHUB_RELEASES_URL = "https://api.github.com/repos/getpaseo/paseo/releases?per_page=10";
+const GITHUB_RELEASES_PATH = "/repos/getpaseo/paseo/releases?per_page=10";
 const RELEASE_CACHE_KEY = "github-release:v2";
 const ANDROID_RELEASE_CACHE_KEY = "github-android-release:v1";
 
@@ -66,8 +66,8 @@ function versionFromTag(tag: string): string {
   return tag.replace(/^v/, "");
 }
 
-async function fetchGitHubReleases(): Promise<GitHubRelease[]> {
-  const response = await fetch(GITHUB_RELEASES_URL, {
+async function fetchGitHubReleases(context: WebsiteCacheContext): Promise<GitHubRelease[]> {
+  const response = await fetch(githubApiUrl(context, GITHUB_RELEASES_PATH), {
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "paseo-website",
@@ -133,8 +133,8 @@ export function selectReleaseChannels(releases: GitHubRelease[]): ReleaseChannel
   return { stable, beta: beta && leadsStable(beta.version, stable.version) ? beta : null };
 }
 
-async function fetchReleaseChannels(): Promise<ReleaseChannels> {
-  return selectReleaseChannels(await fetchGitHubReleases());
+async function fetchReleaseChannels(context: WebsiteCacheContext): Promise<ReleaseChannels> {
+  return selectReleaseChannels(await fetchGitHubReleases(context));
 }
 
 export function getLatestAndroidVersionFromReleases(releases: GitHubRelease[]): string {
@@ -150,8 +150,8 @@ export function getLatestAndroidVersionFromReleases(releases: GitHubRelease[]): 
   return versionFromTag(release.tag_name);
 }
 
-async function fetchLatestAndroidVersion(): Promise<string> {
-  return getLatestAndroidVersionFromReleases(await fetchGitHubReleases());
+async function fetchLatestAndroidVersion(context: WebsiteCacheContext): Promise<string> {
+  return getLatestAndroidVersionFromReleases(await fetchGitHubReleases(context));
 }
 
 function isAndroidVersion(value: unknown): value is string {
@@ -193,7 +193,7 @@ export async function getReleaseChannels(context: WebsiteCacheContext): Promise<
     context,
     key: RELEASE_CACHE_KEY,
     isValue: isReleaseChannels,
-    fetchFresh: fetchReleaseChannels,
+    fetchFresh: () => fetchReleaseChannels(context),
   });
 }
 
@@ -202,6 +202,6 @@ export async function getLatestAndroidVersion(context: WebsiteCacheContext): Pro
     context,
     key: ANDROID_RELEASE_CACHE_KEY,
     isValue: isAndroidVersion,
-    fetchFresh: fetchLatestAndroidVersion,
+    fetchFresh: () => fetchLatestAndroidVersion(context),
   });
 }

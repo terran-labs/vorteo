@@ -38,6 +38,7 @@ export function ComposerInputPresentation({
   inputPointerEvents,
   attachmentSlot,
   showFullscreenButton,
+  fullscreenButtonPlacement,
   onEnter,
   overlay,
 }: {
@@ -53,6 +54,8 @@ export function ComposerInputPresentation({
   inputPointerEvents: ViewProps["pointerEvents"];
   attachmentSlot: ReactNode;
   showFullscreenButton: boolean;
+  /** Where the inline Fullscreen button sits when the top-right corner is taken. */
+  fullscreenButtonPlacement?: { top: number; right: number };
   onEnter: () => void;
   overlay: ReactNode;
 }) {
@@ -75,7 +78,10 @@ export function ComposerInputPresentation({
     [],
   );
   // The toolbar row bleeds 6px past the input padding; the inline glyph sits on that edge.
-  const enterStyle = useMemo(() => [styles.enterButton, { right: -6 + railOffset }], [railOffset]);
+  const enterStyle = useMemo(
+    () => [styles.enterButton, fullscreenButtonPlacement ?? { right: -6 + railOffset }],
+    [fullscreenButtonPlacement, railOffset],
+  );
   const exitStyle = useMemo(() => [styles.iconButton, { marginRight: railOffset }], [railOffset]);
   return (
     <View

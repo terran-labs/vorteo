@@ -323,7 +323,7 @@ describe("ProviderUsageService", () => {
         historyFile,
       });
       await first.listUsage({ forceRefresh: true });
-      now += 60_000; // within five minutes: replaces the latest sample
+      now += 30_000; // within the same minute: replaces the latest sample
       used = 12;
       await first.listUsage({ forceRefresh: true });
       now += 10 * 60_000;
@@ -373,13 +373,70 @@ describe("ProviderUsageService", () => {
       ],
     });
     let latest = await service.listUsage({ forceRefresh: true });
-    for (let minute = 2; minute <= 12; minute += 2) {
-      now += 2 * 60_000;
+    for (let step = 1; step <= 6; step += 1) {
+      now += 30_000;
       used += 1;
       latest = await service.listUsage({ forceRefresh: true });
     }
-    // Twelve minutes span three five-minute buckets.
-    expect(latest.providers[0]?.windows[0]?.history?.length).toBe(3);
+    // Three minutes of half-minute polls span four one-minute buckets.
+    expect(latest.providers[0]?.windows[0]?.history?.length).toBe(4);
+  });
+
+  // Usage logging is daemon-owned and must never hammer a provider that refuses it.
+  it("samples every minute past the cache and backs off a provider that answers 429", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.parse("2026-06-19T00:00:00.000Z"));
+      let calls = 0;
+      let limited = false;
+      const service = new ProviderUsageService({
+        logger: createLogger(),
+        historyFile: null,
+        fetchers: [
+          {
+            providerId: "codex",
+            displayName: "Codex",
+            fetchUsage: async () => {
+              calls += 1;
+              if (limited) throw new Error("Codex usage API returned 429");
+              return {
+                providerId: "codex",
+                displayName: "Codex",
+                status: "available",
+                windows: [{ id: "weekly", label: "Weekly", usedPct: calls }],
+              };
+            },
+          },
+        ],
+      });
+      service.startHistorySampling();
+      // The two-minute cache does not absorb the sampler: each minute is a real reading.
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(calls).toBe(3);
+      // A client poll inside the cache window shares the sampler's reading.
+      await service.listUsage();
+      expect(calls).toBe(3);
+
+      // 429s wait 2, then 4, then 8 minutes before the next attempt.
+      limited = true;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toBe(4);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      expect(calls).toBe(5);
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(calls).toBe(6);
+      await vi.advanceTimersByTimeAsync(7 * 60_000);
+      expect(calls).toBe(6);
+      // Success clears the back-off, so the next minute samples again.
+      limited = false;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toBe(7);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toBe(8);
+      await service.stopHistorySampling();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("serves cached usage for two minutes by default", async () => {
