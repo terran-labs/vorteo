@@ -1,6 +1,10 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): merged Dev's installed release notes into the installed source so later Dev updates stay append-only; functionality is unchanged.
+
 Maintenance review (2026-11-03): the Claude sign-in check allows 15 seconds and retries one timed-out `claude auth status`, so heavy load no longer makes a connected account report "Could not verify Claude authentication". README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): the shared command runner now forwards its cancel signal to the child process, so a cancelled check stops instead of running until its time limit. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): merged `main` after the sixth Host delivery into the installed Host source for its pull request; functionality is unchanged.
 

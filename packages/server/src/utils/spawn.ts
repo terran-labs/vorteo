@@ -111,6 +111,8 @@ export async function execCommand(
     killSignal: options?.killSignal,
     timeout: options?.timeout,
     maxBuffer: options?.maxBuffer,
+    // Cancelling must stop the child, not just stop waiting for it.
+    signal: options?.signal,
     shell,
     windowsHide: true,
   }) as Promise<ExecCommandResult>;
