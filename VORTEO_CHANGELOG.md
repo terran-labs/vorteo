@@ -12,6 +12,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Take one safety snapshot at a time. With capture no longer blocking, a second snapshot could remove the first one's partial files, and the first would then save an incomplete snapshot as a success. A file is now skipped only when it is really gone from the source.
+
+## Unreleased - 2026-11-06
+
+### Fixes
+
 - Safety snapshots no longer fail when a file in the live Host home disappears mid-copy, as a rotated daemon log did on the first release upgrade here. Snapshots also copy without blocking the coordinator, so the interface keeps answering while a large Host home copies, and they clone files where the file system supports it.
 
 ## 26.11.504 - 2026-11-05

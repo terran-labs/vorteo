@@ -137,6 +137,19 @@ posixTest("captures every part with a manifest and leaves caches out", async () 
   expect(service.list()).toEqual([snapshot]);
 });
 
+posixTest(
+  "a second snapshot waits its turn instead of removing the first one's files",
+  async () => {
+    const { sources } = installation();
+    const service = snapshots(sources);
+    const first = service.take({ reason: "owner" });
+    await expect(service.take({ reason: "owner" })).rejects.toThrow("already being taken");
+    const snapshot = await first;
+    expect(service.storedParts(snapshot).map((part) => part.part.kind)).toContain("host-home");
+    expect(snapshot.parts.find((part) => part.kind === "host-home")?.files).toBeGreaterThan(0);
+  },
+);
+
 test("keeps the newest five and never prunes a protected snapshot", async () => {
   const { sources } = installation();
   let time = Date.parse("2026-10-30T12:00:00Z");
