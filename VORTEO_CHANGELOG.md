@@ -8,6 +8,27 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## Unreleased - 2026-11-06
+
+### Fixes
+
+- Safety snapshots no longer fail when a file in the live Host home disappears mid-copy, as a rotated daemon log did on the first release upgrade here. Snapshots also copy without blocking the coordinator, so the interface keeps answering while a large Host home copies, and they clone files where the file system supports it.
+
+## 26.11.504 - 2026-11-05
+
+### Added
+
+- Rerunning the one-command installer on an existing installation now shows the installed and latest versions, asks to upgrade and whether to change settings, and upgrades the Host, coordinator and Dev in place. Tested from 26.11.103 and 26.11.206 on Linux with Dev and on macOS.
+
+### Fixed
+
+- Linux upgrades with a Dev container snapshot Dev's home through a one-shot container, so the upgrade no longer stops with permission denied.
+- Installation adoption runs the macOS Tailscale app as a CLI under launchd instead of reporting that Tailscale is signed out.
+
+### Maintenance
+
+- Release preparation for 26.11.504. Several batches in this release were merged without waiting for CI at the owner's direction; install tests passed on the installer upgrade itself.
+
 ## Unreleased - 2026-11-05
 
 ### Maintenance
