@@ -305,6 +305,47 @@ describe("stop", () => {
       terminalId: "terminal-1",
     });
   });
+
+  // Vorteo: a daemon replaced while the terminal is still exiting must not re-link it.
+  test("withdraws the service from the record of running services before killing it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "workspace-scripts-"));
+    tempDirs.push(dir);
+    writeFileSync(
+      join(dir, "paseo.json"),
+      JSON.stringify({ scripts: { web: { type: "service", command: "npm run web" } } }),
+    );
+    const runtimeStore = new WorkspaceScriptRuntimeStore();
+    runtimeStore.set({
+      workspaceId: "ws-1",
+      scriptName: "web",
+      type: "service",
+      lifecycle: "running",
+      terminalId: "terminal-1",
+      exitCode: null,
+      service: { launchNonce: "launch-nonce-0000000000001" },
+    });
+    let recorded: string[] = [];
+    runtimeStore.persistRunningServices((services) => {
+      recorded = [];
+      for (const entry of services) recorded.push(entry.terminalId);
+    });
+    let recordedAtKill: string[] | null = null;
+    const terminalManager = {
+      getTerminal: () => ({}),
+      async killTerminalAndWait() {
+        recordedAtKill = recorded;
+      },
+    } as unknown as TerminalManager;
+    const { service } = buildService({
+      workspace: { workspaceId: "ws-1", cwd: dir } as PersistedWorkspaceRecord,
+      scriptRuntimeStore: runtimeStore,
+      terminalManager,
+    });
+
+    expect(recorded).toEqual(["terminal-1"]);
+    await service.stop({ workspaceId: "ws-1", scriptName: "web" });
+    expect(recordedAtKill).toEqual([]);
+  });
 });
 
 describe("start", () => {

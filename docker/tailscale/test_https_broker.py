@@ -1006,6 +1006,35 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.runtime.starts, 1)
         self.assertEqual(self.runtime.config['Web']['test.example.ts.net:44443']['Handlers']['/']['Proxy'], 'http://127.0.0.1:39000')
 
+    def test_relinked_survivor_keeps_its_preview_across_daemon_restart(self):
+        # The new daemon re-linked the service whose terminal outlived the old one: same
+        # terminal, same backend, same listener process. No start, and the link stays.
+        self.c['restoreAfterRestart'] = True
+        before = self.b.handle(self.request())
+        self.runtime.daemon = 'boot:200:2'
+        Broker(self.c, self.runtime).reconcile()
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        self.assertEqual((entry['status'], entry['desired'], entry['backend']), ('ready', 'running', before['backendPort']))
+        self.assertEqual((self.runtime.starts, entry['daemon']), (0, 'boot:200:2'))
+        self.assertIn('44444', self.runtime.config['TCP'])
+        # The same terminal and backend under a different listener process is refused.
+        self.runtime.daemon = 'boot:300:3'
+        self.runtime.listener_identity = lambda port, terminal: 'another-process'
+        Broker(self.c, self.runtime).reconcile()
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        self.assertEqual((entry['desired'], entry['stopReason'], self.runtime.starts), ('stopped', 'process_changed', 0))
+
+    def test_unrecognized_running_service_after_daemon_restart_is_still_refused(self):
+        # Another terminal running under the same name is not the verified one.
+        self.c['restoreAfterRestart'] = True
+        self.b.handle(self.request())
+        self.runtime.daemon = 'boot:200:2'
+        self.runtime.entry['terminalId'] = 'term-other'
+        Broker(self.c, self.runtime).reconcile()
+        entry = safe_read(self.b.ledger_path)['entries']['wks_test.preview']
+        self.assertEqual((entry['desired'], entry['stopReason'], self.runtime.starts), ('stopped', 'process_changed', 0))
+        self.assertNotIn('44444', self.runtime.config['TCP'])
+
     def test_explicit_stop_stays_stopped_across_restart(self):
         self.c['restoreAfterRestart'] = True
         self.b.handle(self.request())

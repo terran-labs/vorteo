@@ -252,6 +252,9 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
   private readonly schema: z.ZodType<TRecord, unknown>;
   private readonly getId: (record: TRecord) => string;
   private loaded = false;
+  // Whether the file existed and every record parsed. A failed or missing read still loads an
+  // empty registry for other callers; only this says whether "absent" can be trusted.
+  private loadedFromFile = false;
   private readonly cache = new Map<string, TRecord>();
   private mutationQueue: Promise<void> = Promise.resolve();
   private mutationsBlockedUntilRestart = false;
@@ -286,6 +289,12 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
     } catch {
       return false;
     }
+  }
+
+  /** True only when the registry file existed and parsed without error. */
+  async loadedCleanly(): Promise<boolean> {
+    await this.load();
+    return this.loadedFromFile;
   }
 
   async list(): Promise<TRecord[]> {
@@ -357,6 +366,7 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
       for (const record of parsed) {
         this.cache.set(this.getId(record), record);
       }
+      this.loadedFromFile = true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {

@@ -43,6 +43,8 @@ export class NoTerminalWorkerAvailableError extends Error {
 export interface TerminalWorkerPoolMember {
   manager: DaemonTerminalManager;
   workerPid: number;
+  /** The worker's birth time, verified with its pid before it was adopted or launched. */
+  workerStartedAt: string;
   /** Resolves only after confirmed worker death and its scoped cleanup. */
   exited: Promise<void>;
   /** Waits for any reconnect; false once the member is retired or stopping. */
@@ -66,9 +68,19 @@ export interface TerminalWorkerPoolOptions {
   onDrained?: (member: TerminalWorkerPoolMember) => void;
 }
 
+export interface TerminalWorkerIdentity {
+  pid: number;
+  startedAt: string;
+}
+
+/** The daemon's terminal service: it also names the verified worker behind each terminal. */
+export interface TerminalWorkerService extends DaemonTerminalManager {
+  workerIdentityOf(terminalId: string): TerminalWorkerIdentity | null;
+}
+
 export function createTerminalWorkerPool(
   options: TerminalWorkerPoolOptions,
-): DaemonTerminalManager {
+): TerminalWorkerService {
   let current = options.current;
   const draining = new Set(options.draining);
   const terminalsChangedListeners = new Set<TerminalsChangedListener>();
@@ -263,6 +275,19 @@ export function createTerminalWorkerPool(
       for (const member of members()) member.stopRecovery();
       await starting?.catch(() => {});
       await Promise.all(members().map((member) => member.manager.detach()));
+    },
+
+    scriptLaunchOf(terminalId) {
+      return ownerOf(terminalId)?.scriptLaunchOf(terminalId) ?? null;
+    },
+
+    workerIdentityOf(terminalId) {
+      for (const member of members()) {
+        if (member.manager.getTerminal(terminalId)) {
+          return { pid: member.workerPid, startedAt: member.workerStartedAt };
+        }
+      }
+      return null;
     },
 
     async adoptTerminals() {

@@ -25,6 +25,7 @@ import {
   TERMINAL_WORKER_PROTOCOL_VERSION,
   type TerminalWorkerHello,
   type TerminalWorkerHelloAck,
+  type TerminalScriptLaunch,
   type TerminalWorkerListResult,
   type TerminalWorkerRequest,
   type TerminalWorkerToParentMessage,
@@ -174,6 +175,7 @@ function runWorker(argv: string[]): void {
   const manager = createTerminalManager();
   const inspector = createTerminalWorkerProcessInspector();
   const sessionsById = new Map<string, LocalTerminalSession>();
+  const scriptLaunchById = new Map<string, TerminalScriptLaunch>();
   const unsubscribeByTerminalId = new Map<string, Array<() => void>>();
   const outputCoalescerByTerminalId = new Map<string, TerminalOutputCoalescer>();
   // A terminal is published (terminalCreated) only once its program is recorded. An exit that
@@ -355,6 +357,7 @@ function runWorker(argv: string[]): void {
       outputCoalescer.flush();
       clearTerminalSubscriptions(session.id);
       sessionsById.delete(session.id);
+      scriptLaunchById.delete(session.id);
       void persistRecord().catch((error) => {
         if (!exiting) console.error("Cannot publish terminal exit:", error);
       });
@@ -458,6 +461,9 @@ function runWorker(argv: string[]): void {
         return;
       }
       sessionsById.set(session.id, session);
+      if (message.options.vorteoLaunch) {
+        scriptLaunchById.set(session.id, message.options.vorteoLaunch);
+      }
       exitsHeldDuringCreation.set(session.id, null);
       watchTerminal(session);
       try {
@@ -466,6 +472,7 @@ function runWorker(argv: string[]): void {
         exitsHeldDuringCreation.delete(session.id);
         clearTerminalSubscriptions(session.id);
         sessionsById.delete(session.id);
+        scriptLaunchById.delete(session.id);
         await session.killAndWait().catch(() => undefined);
         throw error;
       }
@@ -517,6 +524,7 @@ function runWorker(argv: string[]): void {
         state: terminalMetadata(session),
         activityToken: manager.getTerminalActivityToken(session.id),
         replayPreamble: session.getReplayPreamble(),
+        vorteoLaunch: scriptLaunchById.get(session.id) ?? null,
       };
     });
   }

@@ -790,6 +790,45 @@ it("adopts a detached worker's terminals with their activity tokens and keeps th
   await waitForCondition(() => messages.join("").includes("adopted-output:after-adopt"), 10000);
 });
 
+// Vorteo: the worker keeps a script launch marker with the terminal, so a later daemon can
+// prove which terminal it launched for a service. Creation without one, as clients and agents
+// create terminals, lists none.
+it("keeps a script launch marker across adoption, only for the terminal created with it", async () => {
+  const paseoHome = createTemporaryHome();
+  const cwd = mkdtempSync(join(tmpdir(), "worker-terminal-manager-launch-"));
+  temporaryDirs.push(cwd);
+  const marker = {
+    kind: "workspace-script" as const,
+    workspaceId: "ws-launch",
+    scriptName: "web",
+    port: 41001,
+    projectSlug: "repo",
+    branchName: "feature/launch",
+    scriptConfig: "a".repeat(64),
+    nonce: "launch-nonce-000000000000001",
+  };
+  const first = await startRealWorkerManager({ paseoHome });
+  const service = await first.createTerminal({
+    workspaceId: "ws-launch",
+    cwd,
+    name: "web",
+    vorteoLaunch: marker,
+    ...nodeTerminalCommand("setInterval(() => {}, 1000);"),
+  });
+  const plain = await first.createTerminal({
+    workspaceId: "ws-launch",
+    cwd,
+    name: "web",
+    ...nodeTerminalCommand("setInterval(() => {}, 1000);"),
+  });
+
+  await first.detach();
+  manager = await startRealWorkerManager({ paseoHome });
+
+  expect(manager.scriptLaunchOf(service.id)).toEqual(marker);
+  expect(manager.scriptLaunchOf(plain.id)).toBeNull();
+});
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);

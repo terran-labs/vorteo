@@ -11151,6 +11151,35 @@ test("forwarded governance is admitted only from the host-link socket that sent 
     const fromLink = await create("host-link", hostLink);
     expect((await agentStorage.get(fromLink))?.forwardedGovernance).toEqual(forwardedGovernance);
 
+    // The Host's client sends agent.create.request, through the creation service. The socket must
+    // reach admission through every hop, or the governance is silently dropped.
+    await session.handleMessage(
+      {
+        type: "agent.create.request",
+        requestId: "host-route",
+        idempotencyKey: "host-route-key",
+        workspaceId: "ws-dev",
+        config: { provider: "codex", cwd },
+        forwardedGovernance,
+        labels: {
+          "paseo.parent-agent-id": "host-worker",
+          "paseo.parent-server-id": "srv_host",
+        },
+        initialPrompt: "Work",
+      },
+      hostLink,
+    );
+    await vi.runAllTimersAsync();
+    const routed = messages.find(
+      (message) =>
+        message.type === "agent.create.response" &&
+        (message.payload as { requestId?: string }).requestId === "host-route",
+    )?.payload as { agent?: { id: string } | null } | undefined;
+    expect(routed?.agent, JSON.stringify(messages.map((m) => [m.type, m.payload]))).toBeTruthy();
+    expect((await agentStorage.get(routed!.agent!.id))?.forwardedGovernance).toEqual(
+      forwardedGovernance,
+    );
+
     // The field only feeds a log line, so a storage failure must not fail the create.
     vi.spyOn(agentStorage, "recordForwardedGovernance").mockRejectedValueOnce(
       new Error("disk full"),

@@ -264,6 +264,14 @@ import type {
 import { type PersistedConfig } from "./persisted-config.js";
 import { createServiceProxySubsystem, type ServiceProxySubsystem } from "./service-proxy.js";
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
+import { getCurrentBranch } from "../utils/checkout-git.js";
+import {
+  createSurvivingServicesWriter,
+  readSurvivorWorkspaces,
+  relinkWorkspaceScripts,
+  SURVIVING_SERVICES_FILE,
+  type SurvivingService,
+} from "./workspace-script-relink.js";
 import { ScriptHealthMonitor } from "./script-health-monitor.js";
 import { createScriptStatusEmitter } from "./script-status-projection.js";
 import { installPreviewBrokerRestarter, PreviewBrokerRestarter } from "./preview-broker-restart.js";
@@ -271,7 +279,11 @@ import { watchPreviewBrokerStatus } from "./preview-broker-status.js";
 import { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import { createWorkspaceScriptsService } from "./session/workspace-scripts/workspace-scripts-service.js";
 import { assertWorkspaceAutomationAllowedForWorkspace } from "./workspace-automation-gate.js";
-import { spawnWorkspaceScript } from "./worktree-bootstrap.js";
+import {
+  readSurvivorScript,
+  restoreSurvivingService,
+  spawnWorkspaceScript,
+} from "./worktree-bootstrap.js";
 import {
   createManagedProcessRegistry,
   createSystemManagedProcessTable,
@@ -317,6 +329,8 @@ import { BuiltinPluginLoader } from "./plugins/builtin/index.js";
 import { ManagedPluginSources } from "./plugins/managed-source.js";
 
 const MCP_DEBUG_BATCH_LIMIT = 10;
+// Startup waits at most this long to re-link services that survived the previous daemon.
+const SURVIVING_SERVICES_RELINK_DEADLINE_MS = 3_000;
 const MCP_DEBUG_SECRET = "[redacted]";
 const DOWNLOAD_OPEN_FLAGS =
   process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
@@ -1384,6 +1398,46 @@ export async function createPaseoDaemon(
     scriptRuntimeStore.removeForWorkspace(workspaceId);
     releaseWorkspaceServicePortPlan(workspaceId);
   };
+  await relinkSurvivingWorkspaceServices();
+
+  // Services whose terminals outlived the previous daemon get their script state back before
+  // this one listens, so nothing (the app, the preview broker) sees them as stopped. Bounded:
+  // past the deadline the daemon starts and those services show as stopped. The record of
+  // running services is written only after the old one has been read.
+  async function relinkSurvivingWorkspaceServices(): Promise<void> {
+    const recordPath = path.join(config.paseoHome, SURVIVING_SERVICES_FILE);
+    await relinkWorkspaceScripts({
+      recordPath,
+      terminals: terminalManager,
+      readWorkspaces: () => readSurvivorWorkspaces(archiveWorkspaceRegistry),
+      readScript: readSurvivorScript,
+      readBranch: (cwd) => getCurrentBranch(cwd),
+      restore: (decision) =>
+        restoreSurvivingService({
+          decision,
+          serviceProxy,
+          serviceProxyPublicBaseUrl,
+          runtimeStore: scriptRuntimeStore,
+          logger,
+          onLifecycleChanged: () => void emitScriptStatus(decision.launch.workspaceId),
+        }),
+      stopTerminal: (terminalId) => terminalManager.killTerminalAndWait(terminalId),
+      deadlineMs: SURVIVING_SERVICES_RELINK_DEADLINE_MS,
+      logger,
+    }).catch((error: unknown) => {
+      logger.warn({ err: error }, "Workspace service re-link failed; continuing startup");
+    });
+    const writeRecord = createSurvivingServicesWriter({ recordPath, logger });
+    scriptRuntimeStore.persistRunningServices((running) => {
+      const services: SurvivingService[] = [];
+      for (const entry of running) {
+        const worker = terminalManager.workerIdentityOf(entry.terminalId);
+        if (!worker) continue;
+        services.push({ terminalId: entry.terminalId, launchNonce: entry.launchNonce, worker });
+      }
+      writeRecord(services);
+    });
+  }
   const workspaceReconciliation = new WorkspaceReconciliationService({
     serverId,
     projectRegistry,

@@ -230,7 +230,9 @@ export function createWorkspaceScriptsService(deps: {
       throw new Error(`Terminal for script '${input.scriptName}' is no longer available`);
     }
 
-    // The launcher's terminal exit listener owns route removal and runtime state updates.
+    // Out of the durable record first, so a daemon replaced mid-stop never re-links it. The
+    // launcher's terminal exit listener owns route removal and runtime state updates.
+    available.runtimeStore.markStopRequested(input);
     await available.terminalManager.killTerminalAndWait(runtime.terminalId);
 
     const script = (await buildSnapshot(workspace, project)).find(
