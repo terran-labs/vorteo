@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/nova-bridge",
-  "version": "26.11.206",
+  "version": "26.11.302",
   "private": true,
   "type": "module",
   "scripts": {

@@ -620,6 +620,10 @@ function AccountChoices(props: AccountChoicesProps) {
   );
 }
 
+function presetEnvironmentLabel(environments: PresetEnvironment[], serverId: string | null) {
+  return environments.find((item) => item.serverId === serverId)?.label;
+}
+
 function ReadyAccountChoices({ account, inspected, rows, heading, ...props }: AccountChoicesProps) {
   const { width } = useWindowDimensions();
   const [listWidth, setListWidth] = useState(0);
@@ -652,7 +656,13 @@ function ReadyAccountChoices({ account, inspected, rows, heading, ...props }: Ac
   return (
     <View style={styles.detail} testID={`preset-choices-${account.provider}`}>
       <View
-        style={[settingsStyles.card, styles.detailCard, props.inline && styles.inlineColumn]}
+        style={[
+          settingsStyles.card,
+          styles.detailCard,
+          props.inline && styles.inlineColumn,
+          // An outdated CLI makes the whole profile card the warning, not a card inside it.
+          entry?.cliUpdate && styles.warningCard,
+        ]}
         testID="preset-profile-card"
       >
         {heading}
@@ -663,7 +673,11 @@ function ReadyAccountChoices({ account, inspected, rows, heading, ...props }: Ac
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.choices}>
-            <CliUpdateWarning update={entry?.cliUpdate} />
+            <CliUpdateWarning
+              update={entry?.cliUpdate}
+              environment={presetEnvironmentLabel(props.environments, props.serverId)}
+              embedded
+            />
             {props.compact && inspected ? props.renderRail(inspected) : null}
             <View onLayout={measureList} style={[styles.profileList, grid && styles.profileGrid]}>
               {rows.map((row, index) => (
@@ -898,6 +912,7 @@ const styles = StyleSheet.create((theme) => ({
   sectionValue: { flex: 1, color: theme.colors.foreground, fontSize: theme.fontSize.base },
   detail: { flex: 1, minHeight: 0 },
   detailCard: { flex: 1, minHeight: 0, overflow: "hidden" },
+  warningCard: { borderColor: theme.colors.palette.amber[500] },
   account: {
     padding: theme.spacing[1],
   },

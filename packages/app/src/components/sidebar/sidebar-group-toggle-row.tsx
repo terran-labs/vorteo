@@ -1,6 +1,6 @@
 import { sidebarIndentStyle } from "./indent";
 import { useSidebarRowDensity } from "@/components/sidebar/use-sidebar-row-density";
-import { useCallback } from "react";
+import { useCallback, type ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
@@ -11,34 +11,35 @@ import { DensityIcon } from "@/components/ui/density-icon";
 import { density as densityTokens, densityIconBox } from "@/styles/density";
 
 /**
- * The row that ends a truncated group. It is a workspace row that happens to say "Show more", so
- * it takes the workspace row's geometry — height, padding, radius, and both fills — rather than a
- * set of its own. Sitting under a column of rows, anything it does differently reads as a mistake
+ * A list row that acts rather than opens a workspace, such as "Show more" or Factory's
+ * Overview. It is a workspace row that happens to say something else, so it takes the
+ * workspace row's geometry — height, padding, radius, and both fills — rather than a set of
+ * its own. Sitting under a column of rows, anything it does differently reads as a mistake
  * rather than as a distinction.
  *
  * `indented` because the two groupings disagree: status rows sit on their header's label rail and
- * project rows sit inside their project heading, so the caller says which list this row is ending. The indent itself is
- * the workspace row's, imported rather than re-derived.
+ * project rows sit inside their project heading, so the caller says which list this row belongs
+ * to. The indent itself is the workspace row's, imported rather than re-derived.
  */
-export function SidebarGroupToggleRow({
-  expanded,
+export function SidebarListActionRow({
+  icon,
+  label,
+  accessibilityLabel,
   onPress,
   indented = false,
   level = 1,
   testID,
 }: {
-  expanded: boolean;
+  icon: ComponentProps<typeof DensityIcon>["icon"];
+  label: string;
+  accessibilityLabel?: string;
   onPress: () => void;
   indented?: boolean;
-  /** Project-mode hierarchy level of the rows this toggle extends. */
+  /** Project-mode hierarchy level of the rows around this one. */
   level?: number;
   testID: string;
 }) {
   const density = useSidebarRowDensity();
-  const { t } = useTranslation();
-  const label = t(
-    expanded ? "sidebar.workspace.actions.showLess" : "sidebar.workspace.actions.showMore",
-  );
   const rowStyle = useCallback(
     ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.row,
@@ -54,7 +55,7 @@ export function SidebarGroupToggleRow({
   return (
     <Pressable
       accessibilityRole={isWeb ? undefined : "button"}
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? label}
       onPress={onPress}
       style={rowStyle}
       testID={testID}
@@ -63,7 +64,7 @@ export function SidebarGroupToggleRow({
         <>
           <View style={styles.iconSlot}>
             <DensityIcon
-              icon={expanded ? ChevronUp : ChevronDown}
+              icon={icon}
               size="sm"
               color={hovered || pressed ? "foreground" : "foregroundMuted"}
             />
@@ -74,6 +75,36 @@ export function SidebarGroupToggleRow({
         </>
       )}
     </Pressable>
+  );
+}
+
+/** The row that ends a truncated group. */
+export function SidebarGroupToggleRow({
+  expanded,
+  onPress,
+  indented = false,
+  level = 1,
+  testID,
+}: {
+  expanded: boolean;
+  onPress: () => void;
+  indented?: boolean;
+  /** Project-mode hierarchy level of the rows this toggle extends. */
+  level?: number;
+  testID: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <SidebarListActionRow
+      icon={expanded ? ChevronUp : ChevronDown}
+      label={t(
+        expanded ? "sidebar.workspace.actions.showLess" : "sidebar.workspace.actions.showMore",
+      )}
+      onPress={onPress}
+      indented={indented}
+      level={level}
+      testID={testID}
+    />
   );
 }
 

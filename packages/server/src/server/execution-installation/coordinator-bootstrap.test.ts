@@ -198,6 +198,169 @@ test("bootstrap launchers preserve environment and lifetime settings with exact 
   ).toThrow("no longer matches");
 });
 
+test("a declared releaseSeals change lets the candidate launcher add or remove exactly VORTEO_RELEASE_SEALS=enabled", () => {
+  const { plan } = fixture();
+  const configurationFile = "/protected/active-config.json";
+  const current = {
+    Label: plan.service.split("/").slice(2).join("/"),
+    ProgramArguments: [plan.previous.node.path, plan.previous.entrypoint.path, configurationFile],
+    EnvironmentVariables: { PATH: "/usr/bin:/bin" },
+    KeepAlive: true,
+  };
+  const replaced = {
+    ...current,
+    ProgramArguments: [
+      plan.candidate.node.path,
+      plan.candidate.entrypoint.path,
+      plan.candidate.configuration.path,
+    ],
+  };
+  const sealed = {
+    ...replaced,
+    EnvironmentVariables: { ...current.EnvironmentVariables, VORTEO_RELEASE_SEALS: "enabled" },
+  };
+  const enable = {
+    ...plan,
+    configurationChanges: [{ setting: "releaseSeals", value: "enabled" }],
+  };
+  const disable = { ...plan, configurationChanges: [{ setting: "releaseSeals", value: null }] };
+  const verify = (input: {
+    plan: typeof plan;
+    current: Record<string, unknown>;
+    candidate: unknown;
+    recovery?: boolean;
+  }) =>
+    verifyBootstrapLaunchers({
+      configurationFile,
+      previous: structuredClone(input.current),
+      ...input,
+    });
+
+  // Turning seals on, including on a launcher without any environment, and off.
+  expect(() => verify({ plan: enable, current, candidate: sealed })).not.toThrow();
+  const { EnvironmentVariables: _environment, ...bare } = current;
+  const { EnvironmentVariables: _replaced, ...bareReplaced } = replaced;
+  expect(() =>
+    verify({
+      plan: enable,
+      current: bare,
+      candidate: { ...bareReplaced, EnvironmentVariables: { VORTEO_RELEASE_SEALS: "enabled" } },
+    }),
+  ).not.toThrow();
+  const currentSealed = { ...current, EnvironmentVariables: sealed.EnvironmentVariables };
+  expect(() =>
+    verify({ plan: disable, current: currentSealed, candidate: replaced }),
+  ).not.toThrow();
+  // A later renewal without the change keeps the sealed environment as it is.
+  expect(() => verify({ plan, current: currentSealed, candidate: sealed })).not.toThrow();
+  // Compatible recovery restores the previous configuration, so it keeps the current environment.
+  expect(() =>
+    verify({ plan: enable, current, candidate: replaced, recovery: true }),
+  ).not.toThrow();
+
+  const refusals: [Parameters<typeof verify>[0], string][] = [
+    // Not declared: the old rule, now naming the variable.
+    [
+      { plan, current, candidate: sealed },
+      "Candidate launcher changes unapproved service settings: EnvironmentVariables.VORTEO_RELEASE_SEALS. Only a declared releaseSeals change",
+    ],
+    // Any other value.
+    [
+      {
+        plan: enable,
+        current,
+        candidate: {
+          ...sealed,
+          EnvironmentVariables: { ...sealed.EnvironmentVariables, VORTEO_RELEASE_SEALS: "1" },
+        },
+      },
+      "unapproved service settings: EnvironmentVariables.VORTEO_RELEASE_SEALS",
+    ],
+    // Declared, but the candidate does not carry it.
+    [
+      { plan: enable, current, candidate: replaced },
+      "unapproved service settings: EnvironmentVariables.VORTEO_RELEASE_SEALS",
+    ],
+    // Any other variable or key alongside it.
+    [
+      {
+        plan: enable,
+        current,
+        candidate: {
+          ...sealed,
+          EnvironmentVariables: { ...sealed.EnvironmentVariables, PATH: "/unapproved" },
+        },
+      },
+      "unapproved service settings: EnvironmentVariables.PATH",
+    ],
+    [
+      {
+        plan: enable,
+        current,
+        candidate: {
+          ...sealed,
+          EnvironmentVariables: { ...sealed.EnvironmentVariables, OTHER: "enabled" },
+        },
+      },
+      "unapproved service settings: EnvironmentVariables.OTHER",
+    ],
+    [
+      { plan: enable, current, candidate: { ...sealed, KeepAlive: false } },
+      "unapproved service settings: KeepAlive",
+    ],
+    // Unexpected current launcher state.
+    [
+      { plan: enable, current: currentSealed, candidate: sealed },
+      "Current coordinator launcher already sets VORTEO_RELEASE_SEALS",
+    ],
+    [
+      { plan: disable, current, candidate: replaced },
+      "Current coordinator launcher does not set VORTEO_RELEASE_SEALS=enabled",
+    ],
+    [
+      {
+        plan: disable,
+        current: {
+          ...current,
+          EnvironmentVariables: { ...current.EnvironmentVariables, VORTEO_RELEASE_SEALS: "1" },
+        },
+        candidate: replaced,
+      },
+      "does not set VORTEO_RELEASE_SEALS=enabled",
+    ],
+    [
+      { plan: enable, current: { ...current, EnvironmentVariables: "x" }, candidate: sealed },
+      "EnvironmentVariables is not a string dictionary",
+    ],
+    // Any other declared value, and a recovery launcher that follows the change.
+    [
+      {
+        plan: { ...plan, configurationChanges: [{ setting: "releaseSeals", value: "on" }] },
+        current,
+        candidate: sealed,
+      },
+      "Invalid value for configuration setting: releaseSeals",
+    ],
+    [
+      { plan: enable, current, candidate: sealed, recovery: true },
+      "Recovery launcher changes unapproved service settings: EnvironmentVariables.VORTEO_RELEASE_SEALS. A recovery launcher keeps",
+    ],
+  ];
+  for (const [input, message] of refusals) expect(() => verify(input)).toThrow(message);
+});
+
+test("only explicit maintenance delegation approves a release seal change automatically", async () => {
+  for (const delegated of [false, true]) {
+    const f = automaticCoordinatorFixture(delegated);
+    f.plan.configurationChanges = [{ setting: "releaseSeals", value: "enabled" }];
+    f.plan.candidate.configuration.sha256 = "f".repeat(64);
+    const submitted = await f.submit();
+    const approval = f.service().approveAutomatic(automaticCoordinatorIdentity(submitted));
+    if (delegated) expect((await approval).status).toBe("approved");
+    else await expect(approval).rejects.toThrow("require exact owner review");
+  }
+});
+
 test("loaded coordinator PID parsing rejects nested, foreign and incomplete records", () => {
   const service = "gui/501/local.vorteo.fixture.installation";
   expect(loadedCoordinatorPid(service, `${service} = {\n\tpid = 123\n}`)).toBe(123);

@@ -1,4 +1,8 @@
-import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
+import {
+  questionOptions,
+  type AgentQuestion,
+  type QuestionAnswerSource,
+} from "@getpaseo/protocol/agent-questions";
 import type { Agent } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
 
@@ -60,4 +64,50 @@ export function workspaceOpenQuestionCount(
     count += openQuestionCount(agent.questions);
   }
   return count;
+}
+
+export interface ComposedAnswer {
+  answer: string;
+  optionIds?: string[];
+  note?: string;
+  source: QuestionAnswerSource;
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id) => right.includes(id));
+}
+
+/**
+ * The answer text stays readable on its own, because older daemons and the thread message use
+ * only the text. Option IDs, the note and the source ride along for daemons that record them.
+ */
+export function composeOptionAnswer(
+  question: AgentQuestion,
+  optionIds: readonly string[],
+  note: string,
+): ComposedAnswer {
+  const options = questionOptions(question.input);
+  // Keep the question's option order so the answer reads the same however it was clicked.
+  const ordered = options.filter((option) => optionIds.includes(option.id));
+  const trimmed = note.trim();
+  const labels = ordered.map((option) => option.label).join(", ") || "None";
+  return {
+    answer: trimmed ? `${labels}. Note: ${trimmed}` : labels,
+    optionIds: ordered.map((option) => option.id),
+    ...(trimmed ? { note: trimmed } : {}),
+    source:
+      !trimmed && sameIds(optionIds, question.recommendedOptionIds ?? [])
+        ? "recommended"
+        : "option",
+  };
+}
+
+export function composeTextAnswer(question: AgentQuestion, text: string): ComposedAnswer {
+  const answer = text.trim();
+  const kind = question.input?.kind ?? "text";
+  if (kind !== "text") return { answer, source: "other" };
+  return {
+    answer,
+    source: answer === question.recommendedDefault.trim() ? "recommended" : "edited",
+  };
 }

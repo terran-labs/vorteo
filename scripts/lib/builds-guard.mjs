@@ -18,3 +18,19 @@ export function assertBuildsCoordinator(action, env = process.env) {
       "Finish on your task branch and hand it to Builds instead (AGENTS.md, Builds coordinator).",
   );
 }
+
+// A project's Factory Releases thread tags accepted commits. VORTEO_RELEASES admits only
+// vorteo-release.mjs tag and the release tag push it makes; everything else needs Builds.
+export const RELEASES_ENV = "VORTEO_RELEASES";
+
+export function isReleaseTagger(env = process.env) {
+  return isBuildsCoordinator(env) || env[RELEASES_ENV] === "1";
+}
+
+export function assertReleaseTagger(action, env = process.env) {
+  if (isReleaseTagger(env)) return;
+  throw new Error(
+    `${action} is reserved for the Vorteo :: Builds thread and Factory Releases. ` +
+      "Hand the accepted commit to Releases instead (docs/release.md).",
+  );
+}

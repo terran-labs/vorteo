@@ -4352,12 +4352,28 @@ export class DaemonClient {
     agentId: string,
     questionId: string,
     answer: string,
+    details?: {
+      optionIds?: string[];
+      note?: string;
+      source?: import("@getpaseo/protocol/agent-questions").QuestionAnswerSource;
+    },
   ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
-    if (this.lastServerInfoMessage?.features?.agentQuestions !== true)
+    const features = this.lastServerInfoMessage?.features;
+    if (features?.agentQuestions !== true)
       throw new Error("Update the daemon before answering open questions.");
+    // COMPAT(agentQuestionInputs): older daemons receive only the answer text.
+    const typed = features.agentQuestionInputs === true ? (details ?? {}) : {};
     const result =
       await this.sendNamespacedCorrelatedSessionRequest<"agent.questions.answer.response">({
-        message: { type: "agent.questions.answer.request", agentId, questionId, answer },
+        message: {
+          type: "agent.questions.answer.request",
+          agentId,
+          questionId,
+          answer,
+          ...(typed.optionIds?.length ? { optionIds: typed.optionIds } : {}),
+          ...(typed.note?.trim() ? { note: typed.note } : {}),
+          ...(typed.source ? { source: typed.source } : {}),
+        },
       });
     if (result.error || !result.questions) throw new Error(result.error ?? "Answer unconfirmed");
     return result.questions;

@@ -9,6 +9,7 @@ import type {
 import type { InstallationPanelModel } from "./panel-model";
 import type { RestartSummary } from "@getpaseo/protocol/execution-installation";
 import { InstallationControls, InstallationRestartBanner } from "./panel";
+import { useSessionStore } from "@/stores/session-store";
 import { sessionHostJobFixture, sessionHostStatusFixture } from "./session-host-review.fixture";
 import type { SessionHostAction, SessionHostOverview } from "./session-host-review";
 
@@ -16,6 +17,7 @@ vi.mock("@/utils/copy-to-clipboard", () => ({ copyToClipboard: vi.fn() }));
 
 const capture = vi.hoisted(() => ({
   model: undefined as InstallationPanelModel | undefined,
+  environments: [] as { kind: string; serverId: string }[],
 }));
 vi.mock("./panel-model", async (original) => {
   const actual = await original<typeof import("./panel-model")>();
@@ -44,7 +46,7 @@ vi.mock("./safety-snapshots", () => ({ SafetySnapshotsCard: () => null }));
 vi.mock("./installation-upgrade-card", () => ({ InstallationUpgradeCard: () => null }));
 vi.mock("./policy", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./policy")>()),
-  readExecutionInstallation: () => ({ environments: [] }),
+  readExecutionInstallation: () => ({ environments: capture.environments }),
 }));
 vi.mock("@/runtime/host-runtime", () => ({
   getHostRuntimeStore: () => ({ getHosts: () => [] }),
@@ -307,6 +309,78 @@ test("an uninspectable session host keeps its jobs reviewable and blocks new req
     expect(attribute(`session-host-${job.id}-approve`)).not.toBe("true");
     expect(attribute(`session-host-${job.id}-cancel`)).not.toBe("true");
   } finally {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+test("a pending upgrade names the Host agents holding the session host", async () => {
+  vi.stubGlobal("React", React);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const detail = {
+    ...sessionHostStatusFixture.detail!,
+    plist: "matching" as const,
+    loaded: true,
+    pid: 4242,
+    lastExitStatus: 0,
+    runs: 1,
+    host: { pid: 4242, release: "0.11.0-beta.3.vorteo.707", sessions: 2 },
+    installedRelease: "0.11.0-beta.3.vorteo.760",
+    upgradePending: true,
+    settingEnabled: true,
+  };
+  const agent = (id: string, title: string, overrides: Record<string, unknown>) => ({
+    id,
+    title,
+    hosted: true,
+    status: "idle",
+    pendingPermissions: [],
+    ...overrides,
+  });
+  const agents = new Map(
+    [
+      agent("asking", "Release notes", { pendingPermissions: [{ id: "permission-1" }] }),
+      agent("quiet", "Idle helper", {}),
+    ].map((entry) => [entry.id, entry]),
+  );
+  const previous = useSessionStore.getState().sessions;
+  capture.environments = [{ kind: "host", serverId: "host-1" }];
+  // Only the fields the card reads; the rest of a session is irrelevant here.
+  useSessionStore.setState({
+    sessions: { ...previous, "host-1": { agents } } as unknown as typeof previous,
+  });
+  overview = { jobs: [], status: { supported: true, installed: true, detail } };
+  try {
+    act(() => root.render(<InstallationControls key="holders" />));
+    const model = await vi.waitFor(() => {
+      expect(capture.model).toBeDefined();
+      return capture.model!;
+    });
+    await act(() => model.initialize());
+    await act(() => model.refresh());
+    const holders = await vi.waitFor(() => {
+      const element = container.querySelector('[data-testid="session-host-upgrade-holders"]');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    expect(holders.textContent).toContain("Answer their requests");
+    expect(holders.textContent).toContain("Release notes: waiting for your answer");
+    expect(holders.textContent).not.toContain("Idle helper");
+
+    // Without a pending upgrade the list disappears.
+    overview = {
+      jobs: [],
+      status: { supported: true, installed: true, detail: { ...detail, upgradePending: false } },
+    };
+    await act(() => model.refresh());
+    expect(container.querySelector('[data-testid="session-host-upgrade-holders"]')).toBeNull();
+  } finally {
+    capture.environments = [];
+    useSessionStore.setState({ sessions: previous });
     act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();

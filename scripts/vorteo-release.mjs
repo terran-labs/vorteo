@@ -25,7 +25,7 @@ import path from "node:path";
 import { findGitleaks, git, isAncestor, parseArgs, repositoryRoot } from "./lib/delivery-git.mjs";
 import { resolveRepository, runGh } from "./lib/github.mjs";
 import { isMainModule } from "./is-main-module.mjs";
-import { assertBuildsCoordinator } from "./lib/builds-guard.mjs";
+import { assertReleaseTagger } from "./lib/builds-guard.mjs";
 import {
   CHANNELS,
   UNRELEASED,
@@ -414,7 +414,7 @@ function main() {
     );
     return;
   }
-  assertBuildsCoordinator("Creating release tags");
+  assertReleaseTagger("Creating release tags");
   createTag(plan);
   console.log(`Verified: ${remote} has ${plan.name} at ${plan.commit}.`);
   if (args.release) {

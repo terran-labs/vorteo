@@ -14,12 +14,19 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { defaultRun, type EngineCommand } from "./factory-verify.js";
+import {
+  launcherDifferences,
+  launcherEnvironment,
+  RELEASE_SEALS_VALUE,
+  RELEASE_SEALS_VARIABLE,
+  withReleaseSeals,
+} from "./launcher-environment.js";
 
 const LINK = "PASEO_MANAGED_RELEASE_LINK";
 const ROOT = "PASEO_MANAGED_RELEASE_ROOT";
 const VERIFY_DEADLINE_MS = 180_000;
 
-/** Everything the one-time Host launcher update touches, from protected configuration. */
+/** Everything a reviewed Host launcher update touches, from protected configuration. */
 export interface HostLauncherTarget {
   /** launchd domain and label, for example `gui/501` and `local.vorteo.<id>.host`. */
   domain: string;
@@ -57,15 +64,24 @@ function sha256(bytes: Buffer | string): string {
 }
 
 /**
- * The candidate must equal the live launcher plus exactly the managed release link
- * and root, matching the configured source updates. Nothing else may change.
+ * What a reviewed Host launcher candidate changes. Exactly one of:
+ * - `managed-release`: adds the managed release link and root to a launcher without them.
+ * - `release-seals-on` / `release-seals-off`: adds or removes exactly
+ *   `VORTEO_RELEASE_SEALS=enabled` on a launcher that already selects the configured
+ *   managed releases.
+ */
+export type HostLauncherChange = "managed-release" | "release-seals-on" | "release-seals-off";
+
+/**
+ * The candidate must equal the live launcher plus exactly one reviewed change, matching
+ * the configured source updates. Nothing else may change. Returns the change.
  */
 export function verifyLauncherCandidate(
   live: unknown,
   candidate: unknown,
   link: string,
   root: string,
-): void {
+): HostLauncherChange {
   const record = (value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
@@ -73,17 +89,46 @@ export function verifyLauncherCandidate(
   const current = record(live);
   const next = record(candidate);
   if (!current || !next) throw new Error("Host launcher must be a dictionary");
-  const environment = record(current.EnvironmentVariables) ?? {};
-  if (LINK in environment || ROOT in environment)
-    throw new Error("The Host launcher already selects managed releases");
-  const expected = {
-    ...current,
-    EnvironmentVariables: { ...environment, [LINK]: link, [ROOT]: root },
-  };
+  const environment = launcherEnvironment(current);
+  if (!environment)
+    throw new Error("The Host launcher EnvironmentVariables is not a string dictionary");
+  const differences = (expected: Record<string, unknown>) =>
+    launcherDifferences(expected, next).join(", ");
+  if (!(LINK in environment) && !(ROOT in environment)) {
+    const expected = {
+      ...current,
+      EnvironmentVariables: { ...environment, [LINK]: link, [ROOT]: root },
+    };
+    if (!isDeepStrictEqual(next, expected))
+      throw new Error(
+        `The candidate Host launcher changes more than the managed release link and root: ${differences(expected)}`,
+      );
+    return "managed-release";
+  }
+  if (environment[LINK] !== link || environment[ROOT] !== root)
+    throw new Error(
+      "The Host launcher selects managed releases with a link or root that differs from the configured source updates",
+    );
+  if (isDeepStrictEqual(next, current))
+    throw new Error(
+      "The Host launcher already selects managed releases; the candidate changes nothing",
+    );
+  const sealed = environment[RELEASE_SEALS_VARIABLE];
+  if (sealed !== undefined && sealed !== RELEASE_SEALS_VALUE)
+    throw new Error(
+      `The Host launcher sets ${RELEASE_SEALS_VARIABLE} to a value other than ${RELEASE_SEALS_VALUE}`,
+    );
+  const change = sealed === undefined ? "release-seals-on" : "release-seals-off";
+  const expected = withReleaseSeals(
+    current,
+    change === "release-seals-on" ? RELEASE_SEALS_VALUE : null,
+    "The Host launcher",
+  );
   if (!isDeepStrictEqual(next, expected))
     throw new Error(
-      "The candidate Host launcher changes more than the managed release link and root",
+      `The candidate Host launcher changes more than ${RELEASE_SEALS_VARIABLE}=${RELEASE_SEALS_VALUE}: ${differences(expected)}`,
     );
+  return change;
 }
 
 function readProtectedCandidate(candidate: HostLauncherTarget["candidate"]): Buffer {
@@ -104,25 +149,28 @@ function readProtectedCandidate(candidate: HostLauncherTarget["candidate"]): Buf
 export function inspectHostLauncherPlan(
   target: HostLauncherTarget,
   plistJson: (file: string) => unknown = defaultPlistJson,
-): { digest: string; live: Buffer; candidate: Buffer } {
+): { digest: string; live: Buffer; candidate: Buffer; change: HostLauncherChange } {
   const candidate = readProtectedCandidate(target.candidate);
   const live = readFileSync(target.plist);
-  verifyLauncherCandidate(
+  const change = verifyLauncherCandidate(
     plistJson(target.plist),
     plistJson(target.candidate.path),
     target.link,
     target.root,
   );
   // Binding the live bytes too means any later change to the plist voids an approval.
+  // The managed release digest keeps its original shape, so existing approvals still match;
+  // a release seal change also binds which way it goes.
   const digest = sha256(
     JSON.stringify({
       candidate: target.candidate.sha256,
       live: sha256(live),
       link: target.link,
       root: target.root,
+      ...(change === "managed-release" ? {} : { change }),
     }),
   );
-  return { digest, live, candidate };
+  return { digest, live, candidate, change };
 }
 
 /** The digest, or undefined when the plan is missing, changed or already applied. */
@@ -214,6 +262,7 @@ export async function runHostLauncherUpdate(
       before,
       previousSupervisor,
       expectedVersion,
+      change: plan.change,
     });
     return detail;
   } catch (error) {
@@ -244,6 +293,7 @@ async function verifyReloaded(
     before: { pid: number; version: string };
     previousSupervisor: number | null;
     expectedVersion: string;
+    change: HostLauncherChange;
   },
 ): Promise<string> {
   const service = `${target.domain}/${target.label}`;
@@ -281,6 +331,19 @@ async function verifyReloaded(
       !environment.includes(`${ROOT}=${target.root}`)
     )
       throw new Error("The new Host supervisor does not carry the managed release settings");
+    const seals = environment.filter((item) => item.startsWith(`${RELEASE_SEALS_VARIABLE}=`));
+    if (input.change === "release-seals-on") {
+      if (!isDeepStrictEqual(seals, [`${RELEASE_SEALS_VARIABLE}=${RELEASE_SEALS_VALUE}`]))
+        throw new Error(
+          `The new Host supervisor does not carry ${RELEASE_SEALS_VARIABLE}=${RELEASE_SEALS_VALUE}`,
+        );
+      return `Host launcher updated: supervisor ${supervisor}, worker ${daemon.pid} on ${daemon.version} with release seals turned on.`;
+    }
+    if (input.change === "release-seals-off") {
+      if (seals.length !== 0)
+        throw new Error(`The new Host supervisor still carries ${RELEASE_SEALS_VARIABLE}`);
+      return `Host launcher updated: supervisor ${supervisor}, worker ${daemon.pid} on ${daemon.version} with release seals turned off.`;
+    }
     return `Host launcher updated: supervisor ${supervisor}, worker ${daemon.pid} on ${daemon.version} with managed release selection.`;
   }
   throw new Error(`The Host did not come back in time: waiting for ${unmet}`);

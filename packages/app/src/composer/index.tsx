@@ -1490,6 +1490,8 @@ function ComposerContentImpl({
   const { pickImages } = useImageAttachmentPicker();
   const { pickFiles } = useFilePicker();
   const agentIdRef = useRef(agentId);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const sendAgentMessageRef = useRef<
     | ((
         agentId: string,
@@ -1680,6 +1682,8 @@ function ComposerContentImpl({
         setAttachments: (nextAttachments) => {
           setSelectedAttachments(composerWorkspaceAttachment.userAttachmentsOnly(nextAttachments));
         },
+        getUserInput: () => textSource.getSnapshot(),
+        getAttachments: () => attachmentsRef.current,
         setSendError: isParentManagedSubmit ? ignoreSubmitFailure : setSendError,
         reportConnectionError: isParentManagedSubmit ? ignoreSubmitFailure : reportActionError,
         setIsProcessing,
@@ -1708,6 +1712,7 @@ function ComposerContentImpl({
       submitBehavior,
       submitMessage,
       t,
+      textSource,
     ],
   );
 

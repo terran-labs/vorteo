@@ -1541,7 +1541,7 @@ describe("DaemonConfigStore", () => {
     expect(loadPersistedConfig(home).daemon?.installationProjectPolicies).toEqual(policies);
   });
 
-  test("fresh account exclusions reject delayed binding creation before persistence", async () => {
+  test("fresh account exclusions reject delayed binding creation and concurrent local writes retry", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "vorteo-excluded-account-"));
     tempDirs.push(home);
     const binding = {
@@ -1575,8 +1575,9 @@ describe("DaemonConfigStore", () => {
         },
       },
       undefined,
-      { installationSettingsReader: { read: async () => admission } },
+      { installationSettingsReader: { read: () => read() } },
     );
+    let read = async () => admission;
     const before = loadPersistedConfig(home);
     admission.settings.resourceExclusions.host = {
       providerIds: [definition.id],
@@ -1593,6 +1594,24 @@ describe("DaemonConfigStore", () => {
     ).rejects.toThrow("excluded from this environment");
     expect(store.get().providers["local-account"]).toBeUndefined();
     expect(loadPersistedConfig(home)).toEqual(before);
+
+    // Regression: account sync writing local settings during the authority read used to fail
+    // the owner's sign-in with "settings changed". The read now repeats and the account lands.
+    admission.settings.resourceExclusions.host.providerIds = [];
+    let reads = 0;
+    read = async () => {
+      reads += 1;
+      if (reads === 1) store.patch({ providers: { codex: { env: { LOCAL: "sync" } } } });
+      return admission;
+    };
+    await store.createProviderAccountBinding("local-account", {
+      extends: "codex",
+      label: "Shared",
+      enabled: true,
+      env: { CODEX_HOME: path.join(home, "account") },
+    });
+    expect(reads).toBe(2);
+    expect(store.get().providers["local-account"]).toMatchObject({ label: "Shared" });
   });
 
   test("installation settings reject independent daemon edits but retain local terminal bindings", () => {

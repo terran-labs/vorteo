@@ -398,6 +398,7 @@ export async function verifyBootstrapPlan(
         current,
         previous,
         candidate: await readBootstrapLauncher(plan.compatibleRecovery.launcher, roots),
+        recovery: true,
       });
     }
     const reader = await createNativeBootstrapServiceReader({ ...host, writableMountRoots: roots });

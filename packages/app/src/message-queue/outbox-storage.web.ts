@@ -32,19 +32,28 @@ function completed(transaction: IDBTransaction): Promise<void> {
 export function createOutboxStorage(
   databaseName = demoStorageName("paseo-message-outbox"),
 ): OutboxStorage {
+  // One shared connection serves every transaction. The browser can close it
+  // without our consent (storage pressure, backing store errors, an idle or
+  // frozen tab), so a closed connection must be forgotten and reopened rather
+  // than cached forever. Otherwise every later read, including the queue's
+  // Retry, fails with "The database connection is closing."
   let opening: Promise<IDBDatabase> | null = null;
+  function forget(db: IDBDatabase, pending: Promise<IDBDatabase> | null): void {
+    if (opening === pending) opening = null;
+    db.close();
+  }
   function database(): Promise<IDBDatabase> {
-    opening ??= new Promise<IDBDatabase>((resolve, reject) => {
+    if (opening) return opening;
+    const pending: Promise<IDBDatabase> = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(databaseName, 1);
       request.addEventListener("upgradeneeded", () =>
         request.result.createObjectStore("operations"),
       );
       request.addEventListener("success", () => {
-        request.result.addEventListener("versionchange", () => {
-          request.result.close();
-          opening = null;
-        });
-        resolve(request.result);
+        const db = request.result;
+        db.addEventListener("versionchange", () => forget(db, pending));
+        db.addEventListener("close", () => forget(db, pending));
+        resolve(db);
       });
       request.addEventListener("error", () =>
         reject(request.error ?? new Error("Cannot open message outbox")),
@@ -53,18 +62,32 @@ export function createOutboxStorage(
         reject(new Error("Close other Vorteo tabs to upgrade the message outbox.")),
       );
     }).catch((error: unknown) => {
-      opening = null;
+      if (opening === pending) opening = null;
       throw error;
     });
-    return opening;
+    opening = pending;
+    return pending;
+  }
+
+  /** Starts a transaction, reopening once if the cached connection has closed. */
+  async function begin(mode: IDBTransactionMode): Promise<IDBTransaction> {
+    const pending = database();
+    const db = await pending;
+    try {
+      return db.transaction("operations", mode, { durability: "strict" });
+    } catch (error) {
+      // Some engines close the connection without firing "close" first.
+      if (!(error instanceof DOMException && error.name === "InvalidStateError")) throw error;
+      forget(db, pending);
+      return (await database()).transaction("operations", mode, { durability: "strict" });
+    }
   }
 
   async function transact<T>(
     mode: IDBTransactionMode,
     run: (store: IDBObjectStore) => Promise<T>,
   ): Promise<T> {
-    const db = await database();
-    const transaction = db.transaction("operations", mode, { durability: "strict" });
+    const transaction = await begin(mode);
     const done = completed(transaction);
     try {
       const result = await run(transaction.objectStore("operations"));

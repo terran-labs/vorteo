@@ -61,13 +61,6 @@ export async function refreshLoginUsage(page: Page) {
   await page.getByRole("button", { name: "Refresh Claude", exact: true }).click();
 }
 
-export async function hoverUsageWindow(page: Page, window: string) {
-  await page
-    .getByRole("checkbox", { name: new RegExp(`^Pin Claude ${window}, `) })
-    .getByTestId(/usage-pin-glyph-/)
-    .hover();
-}
-
 /** Exercises the built-in Codex adapter through the real plugin loader and daemon transport. */
 export async function installCodexWindowUsage(payload: unknown) {
   const directory = await mkdtemp(path.join(tmpdir(), "usage-codex-windows-"));

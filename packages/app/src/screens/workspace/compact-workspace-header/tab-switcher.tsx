@@ -1,3 +1,4 @@
+import { useSendToFactory } from "@/components/sidebar/use-send-to-factory";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { Keyboard, Pressable, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -182,6 +183,13 @@ function MobileWorkspaceTabOption({
   onCloseTabsBelow: (tabId: string) => Promise<void> | void;
   onCloseOtherTabs: (tabId: string) => Promise<void> | void;
 }) {
+  const sendToFactory = useSendToFactory(
+    tab.target.kind === "agent"
+      ? (tab.target.environment?.serverId ?? normalizedServerId)
+      : normalizedServerId,
+    normalizedWorkspaceId,
+    tab.target.kind === "agent" ? tab.target.agentId : null,
+  );
   const { t } = useTranslation();
   const tabMenuLabels = useMemo<WorkspaceTabMenuLabels>(
     () => ({
@@ -204,6 +212,7 @@ function MobileWorkspaceTabOption({
   const menuTestIDBase = `workspace-tab-menu-${tab.tabId}`;
   const menuEntries = buildWorkspaceTabMenuEntries({
     surface: "mobile",
+    onSendToFactory: sendToFactory,
     tab,
     index: tabIndex,
     tabCount,

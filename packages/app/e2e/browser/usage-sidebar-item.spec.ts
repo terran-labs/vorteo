@@ -121,7 +121,7 @@ async function expectNonpinnableReports(page: Page) {
 }
 
 test.describe("Usage screen with the sidebar summary hidden", () => {
-  test("compact direct Usage navigation and browser Back preserve the starting route", async ({
+  test("direct-route compact Usage navigation and browser Back preserve the starting route", async ({
     page,
   }) => {
     await page.setViewportSize(COMPACT);
@@ -144,7 +144,7 @@ test.describe("Usage screen with the sidebar summary hidden", () => {
     await expect(page).toHaveURL(startUrl);
   });
 
-  test("on desktop direct Usage opens its screen and Back returns to the workspace", async ({
+  test("direct-route on desktop Usage opens its screen and Back returns to the workspace", async ({
     page,
   }) => {
     const repo = await createTempGitRepo("usage-modal-");
@@ -176,7 +176,7 @@ test.describe("Usage screen with the sidebar summary hidden", () => {
   });
 
   for (const [size, viewport] of Object.entries({ desktop: WIDE, compact: COMPACT })) {
-    test(`long usage reports scroll between their first and last windows on ${size}`, async ({
+    test(`direct-route long usage reports scroll between their first and last windows on ${size}`, async ({
       page,
     }) => {
       test.setTimeout(120_000);
@@ -204,7 +204,7 @@ test.describe("Usage screen with the sidebar summary hidden", () => {
     });
   }
 
-  test("full-screen percentages follow Used/Remaining and persist without sidebar pins", async ({
+  test("direct-route full-screen percentages follow Used/Remaining and persist without sidebar pins", async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -271,7 +271,7 @@ test.describe("Usage screen with the sidebar summary hidden", () => {
   });
 });
 
-test("an unavailable report remains reachable directly without a sidebar summary", async ({
+test("direct-route unavailable report remains reachable without a sidebar summary", async ({
   page,
 }) => {
   await installUsageReportsFixture(page, {
@@ -304,7 +304,7 @@ test("an unavailable report remains reachable directly without a sidebar summary
   await qaScreenshot(page, "usage-unavailable-report");
 });
 
-test("a saved visible preference stays stored while usage remains hidden and nonpinnable after reload", async ({
+test("direct-route saved visible preference stays stored while usage remains hidden and nonpinnable after reload", async ({
   page,
 }) => {
   await installUsageReportsFixture(page, { lists: [() => claudeAndCodexReports()] });
@@ -338,7 +338,9 @@ test("a saved visible preference stays stored while usage remains hidden and non
   await closeUsageOptions(page);
 });
 
-test("released hosts supply source logos through the client conversion", async ({ page }) => {
+test("direct-route released hosts supply source logos through the client conversion", async ({
+  page,
+}) => {
   await installUsageReportsFixture(page, {
     lists: [() => claudeAndCodexReports()],
     providerUsageListOnly: true,
@@ -362,7 +364,7 @@ test("released hosts supply source logos through the client conversion", async (
   await qaScreenshot(page, "released-host-usage-screen");
 });
 
-test("hidden usage sends no requests until opened directly", async ({ page }) => {
+test("direct-route hidden usage sends no requests until opened", async ({ page }) => {
   test.setTimeout(180_000);
   const usage = await installUsageReportsFixture(page, { lists: [() => claudeAndCodexReports()] });
   await page.setViewportSize(WIDE);
@@ -375,7 +377,7 @@ test("hidden usage sends no requests until opened directly", async ({ page }) =>
   expect(usage.listRequests()).toHaveLength(1);
 });
 
-test("a saved visible sidebar preference cannot load usage before direct entry", async ({
+test("direct-route saved visible sidebar preference cannot load usage before entry", async ({
   page,
 }) => {
   test.setTimeout(180_000);

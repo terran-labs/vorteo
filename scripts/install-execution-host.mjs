@@ -40,6 +40,7 @@ import {
   projectsFolderAliasCommands,
   writeProjectsFolderSettings,
 } from "./lib/projects-folder.mjs";
+import { enableDurableSessions } from "./lib/durable-sessions-setup.mjs";
 import {
   applyWorktreeLinkChanges,
   formatWorktreeLinkReport,
@@ -354,7 +355,7 @@ async function install(planFile) {
     `Installation started: ${origin}\nOwner password file: ${path.join(
       plan.root,
       "owner-password",
-    )}\nRun status and complete host/phone acceptance before claiming delivery.\n`,
+    )}\nRun status and complete host/phone acceptance before claiming delivery.\nDurable sessions are off until you run enable-durable-sessions --root ${plan.root}, after the one-time Host source update setup.\n`,
   );
 }
 
@@ -1018,7 +1019,7 @@ export async function assertSessionHostJobRemoved(
   }
   if (loaded || ports.exists(path.join(ports.launchAgents, `${label}.plist`)))
     throw new Error(
-      `Remove the session host job (${label}) from Installation controls before removing this installation.`,
+      `Remove the session host job (${label}) from Installation controls before removing this installation: turn off durable sessions, wait until the session host runs no sessions, then remove the job.`,
     );
 }
 
@@ -1095,6 +1096,7 @@ if (isMainModule(import.meta.url)) {
       from: { type: "string", multiple: true },
       depth: { type: "string" },
       apply: { type: "boolean" },
+      request: { type: "string" },
     },
   });
   if (positionals[0] === "install" && values.plan) await install(values.plan);
@@ -1102,6 +1104,12 @@ if (isMainModule(import.meta.url)) {
     process.stdout.write(JSON.stringify(await configureWebSource(values.plan)) + "\n");
   else if (positionals[0] === "configure-dev-updates" && values.plan)
     await configureContainerUpdates(values.plan);
+  else if (positionals[0] === "enable-durable-sessions" && values.root)
+    process.stdout.write(
+      JSON.stringify(
+        await enableDurableSessions({ root: values.root, requestId: values.request }),
+      ) + "\n",
+    );
   else if (positionals[0] === "configure-system-source" && values.root)
     process.stdout.write(
       JSON.stringify(await configureSystemSource(values.root, values.checkout), null, 2) + "\n",
@@ -1139,6 +1147,6 @@ if (isMainModule(import.meta.url)) {
   else if (values.root) await manage(positionals[0], values.root);
   else
     throw new Error(
-      "Use install/configure-dev-updates/configure-web-source --plan <private-plan.json>, configure-system-source --root <installation-root> [--checkout <path>], configure-projects-folder --root <installation-root> --folder <path> [--migrate-from <old container path>] [--alias <container path>] [--allow-outside <path>] [--keep-path <exact recorded path>], repair-projects-folder-worktree-links --folder <path> --from <old prefix> [--root <installation-root>] [--keep-path <repository root>] [--depth <n>] [--apply], or status/remove --root <installation-root>",
+      "Use install/configure-dev-updates/configure-web-source --plan <private-plan.json>, enable-durable-sessions --root <installation-root> [--request <id>], configure-system-source --root <installation-root> [--checkout <path>], configure-projects-folder --root <installation-root> --folder <path> [--migrate-from <old container path>] [--alias <container path>] [--allow-outside <path>] [--keep-path <exact recorded path>], repair-projects-folder-worktree-links --folder <path> --from <old prefix> [--root <installation-root>] [--keep-path <repository root>] [--depth <n>] [--apply], or status/remove --root <installation-root>",
     );
 }

@@ -101,7 +101,7 @@ function ThreadQuestionGroup({
         </View>
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           leftIcon={ArrowUpRight}
           onPress={openThread}
           accessibilityLabel={`Open thread ${thread.threadTitle}`}
@@ -141,8 +141,8 @@ const styles = StyleSheet.create((theme) => ({
   originText: { flex: 1, minWidth: 0 },
   thread: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.medium,
   },
-  project: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.sm },
+  project: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.base },
 }));

@@ -1,3 +1,4 @@
+import { useSendToFactory } from "@/components/sidebar/use-send-to-factory";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import { useResponsiveSidebar } from "@/hooks/use-responsive-sidebar";
 import { useWorkspace } from "@/stores/session-store-hooks";
@@ -1542,12 +1543,20 @@ function ResolvedDesktopTabChip({
   showDropIndicatorBefore: boolean;
   showDropIndicatorAfter: boolean;
 }) {
+  const sendToFactory = useSendToFactory(
+    item.tab.target.kind === "agent"
+      ? (item.tab.target.environment?.serverId ?? serverId)
+      : serverId,
+    workspaceId,
+    item.tab.target.kind === "agent" ? item.tab.target.agentId : null,
+  );
   const { t } = useTranslation();
   const presentation = item.presentation;
   const resolvedTab = useMemo(
     () =>
       buildWorkspaceDesktopTabActions({
         tab: item.tab,
+        onSendToFactory: sendToFactory,
         index,
         tabCount,
         onCopyResumeCommand,
@@ -1563,6 +1572,7 @@ function ResolvedDesktopTabChip({
         labels,
       }),
     [
+      sendToFactory,
       index,
       item.tab,
       onCloseOtherTabs,

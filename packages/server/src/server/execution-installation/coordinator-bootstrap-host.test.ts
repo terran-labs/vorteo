@@ -988,12 +988,14 @@ test("coordinator reconciliation revokes protected submissions after credential 
   );
   const observer = createBootstrapReconciliationLedger(f.file, "host-id");
   // The coordinator loop gets bookkeeping and system cancellations only; never
-  // preparation, owner decisions or dispatch claims.
+  // preparation, owner decisions or dispatch claims. readLifecycle is a read-only
+  // journal view for the dispatch notifier.
   expect(Object.keys(observer).sort()).toEqual([
     "cancelForReplacedHostRelease",
     "cancelUnderManagement",
     "finishAutomaticReconciliation",
     "list",
+    "readLifecycle",
     "reserveAutomaticReconciliation",
     "revokeAutomatic",
   ]);
@@ -1782,6 +1784,7 @@ test.runIf(process.platform === "darwin")(
       coordinatorBootstrapFactoryGate: false,
       coordinatorBootstrapHostLauncherUpdate: false,
       coordinatorBootstrapConfigurationChanges: false,
+      coordinatorBootstrapDispatchStatus: false,
       coordinatorBootstrapSourceUpdateTooling: false,
       coordinatorBootstrapBootRecovery: false,
       coordinatorBootstrapRecoveryBootPlan: false,

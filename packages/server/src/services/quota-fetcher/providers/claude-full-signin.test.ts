@@ -304,3 +304,39 @@ it("waits for the Host instead of asking for sign-in when a projected token expi
   expect(usage.details?.[0]?.id).toBe("claude-host-refresh-pending");
   expect(usage.authRecovery).toBeUndefined();
 });
+
+it("waits out a rate limit with the last good reading instead of polling again", async () => {
+  const account = await home();
+  await writeFile(join(account, ".credentials.json"), JSON.stringify(credentials("busy-token")));
+  let now = 1_000_000;
+  const responses = [
+    usageResponse(),
+    new Response(null, { status: 429, headers: { "retry-after": "600" } }),
+  ];
+  const fetch = vi.fn(async () => responses.shift() ?? usageResponse());
+  // Fetchers are rebuilt for every list, so each fetch uses a fresh provider.
+  const fetchUsage = () =>
+    new ClaudeQuotaProvider({
+      logger,
+      providerId: "claude-account-rate-limited",
+      claudeHome: account,
+      strictClaudeHome: true,
+      signIn: "full",
+      platform: "linux",
+      fetch,
+      now: () => now,
+    }).fetchUsage();
+
+  expect((await fetchUsage()).windows.map((window) => window.usedPct)).toEqual([21, 63]);
+  const limited = await fetchUsage();
+  expect(limited.windows.map((window) => window.usedPct)).toEqual([21, 63]);
+  expect(limited.details?.find((detail) => detail.id === "claude-rate-limited")?.value).toContain(
+    "10m",
+  );
+  now += 5 * 60_000;
+  await fetchUsage();
+  expect(fetch).toHaveBeenCalledTimes(2);
+  now += 6 * 60_000;
+  await fetchUsage();
+  expect(fetch).toHaveBeenCalledTimes(3);
+});

@@ -101,6 +101,7 @@ function bootstrapFromEnvironment(): BootstrapResult {
     const installationClient = resolveManagedInstallationClient({
       configuredPath: process.env.VORTEO_INSTALLATION_CLIENT_CONFIG,
       managedWorker,
+      paseoHome,
       environment: config.sharedProviderPreferences?.installation?.environment,
       platform: process.platform,
       homeDir: homedir(),

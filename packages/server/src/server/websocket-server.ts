@@ -2365,6 +2365,8 @@ export class VoiceAssistantWebSocketServer {
         agentJournal: true,
         // COMPAT(agentQuestions): added in v0.11.0-beta.3.vorteo.690; retain until the client floor includes it.
         agentQuestions: true,
+        // COMPAT(agentQuestionInputs): added November 2026; retain until the client floor includes it.
+        agentQuestionInputs: true,
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain advertisement.
         projectedSubagentTimeline: true,
         wholeTurnTimeline: true,
@@ -2373,6 +2375,7 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.
         workspacePinning: true,
         workspaceLifecycle: true,
+        factoryWorkspaceMembership: true,
         systemProject: true,
         systemProjectSource: true,
         // COMPAT(workspaceMarkUnread): added in v0.5.0, remove after 2027-08-20.

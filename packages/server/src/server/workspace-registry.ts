@@ -224,6 +224,17 @@ export interface WorkspaceRegistry {
     membership: NonNullable<PersistedWorkspaceRecord["factoryMembership"]>;
     assertCurrent(): void;
   }): Promise<PersistedWorkspaceRecord | null>;
+  /**
+   * Per-project Factory only: sets or clears a role workspace's membership. The Factory
+   * state file owns role identity, so this skips the coordinator role reservation that
+   * `bindFactoryMember` enforces for the retained controller.
+   */
+  setProjectFactoryMember?(
+    workspaceId: string,
+    membership: NonNullable<PersistedWorkspaceRecord["factoryMembership"]> | null,
+    /** Clearing removes only a membership of this installation, never another owner's. */
+    installationId: string,
+  ): Promise<PersistedWorkspaceRecord | null>;
   /** Startup seeding only: binds, keeps or retires a system role, which ordinary writes cannot change. */
   writeSystemWorkspace?(record: PersistedWorkspaceRecord): Promise<void>;
   /** Central lifecycle seam for daemon-global workspace observers. */
@@ -774,6 +785,47 @@ export class FileBackedWorkspaceRegistry
       workspaceId: parsed.workspaceId,
       workspace: parsed,
     });
+  }
+
+  async setProjectFactoryMember(
+    workspaceId: string,
+    membership: NonNullable<PersistedWorkspaceRecord["factoryMembership"]> | null,
+    installationId: string,
+  ): Promise<PersistedWorkspaceRecord | null> {
+    const parsed = membership ? WorkspaceFactoryMembershipSchema.parse(membership) : null;
+    if (parsed && parsed.installationId !== installationId)
+      throw new Error("Factory membership does not match its installation.");
+    const workspace = await this.mutateCache((records) => {
+      const current = records.get(workspaceId);
+      if (!current) return null;
+      if (parsed) {
+        if (current.archivedAt) throw new Error("Restore this workspace before Factory binding.");
+        if (parsed.projectId !== current.projectId)
+          throw new Error("Factory workspace belongs to another project.");
+        if (current.systemMembership)
+          throw new Error("System workspaces cannot join a Factory installation.");
+        if (
+          current.factoryMembership &&
+          current.factoryMembership.installationId !== installationId
+        )
+          throw new Error("Workspace already belongs to a different Factory relationship.");
+        if (isDeepStrictEqual(current.factoryMembership, parsed)) return current;
+        const bound = {
+          ...current,
+          factoryMembership: parsed,
+          updatedAt: new Date().toISOString(),
+        };
+        records.set(workspaceId, bound);
+        return bound;
+      }
+      if (current.factoryMembership?.installationId !== installationId) return current;
+      const { factoryMembership: _retired, ...retained } = current;
+      const cleared = { ...retained, updatedAt: new Date().toISOString() };
+      records.set(workspaceId, cleared);
+      return cleared;
+    });
+    if (workspace) await this.notifyMutation({ kind: "upsert", workspaceId, workspace });
+    return workspace;
   }
 
   async bindFactoryMember(input: {

@@ -83,6 +83,7 @@ import { writeJsonFileAtomic } from "../../atomic-file.js";
 import { AgentStorage } from "../../agent/agent-storage.js";
 import { FileBackedWorkspaceRegistry } from "../../workspace-registry.js";
 import { FactorySetupSchema } from "../../../../../../plugins/factory/shared/operations.js";
+import { ProjectFactoryStateSchema } from "../../../../../../plugins/factory/shared/project.js";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
 import { fixtureSnapshot } from "../../../../../../plugins/factory/client/fixtures.js";
 import { compilePlugin } from "../compiler.js";
@@ -1631,6 +1632,18 @@ test("bundled Factory observes serving identity without creating or adopting wor
       state: "unavailable",
     });
     expect(setup.reason).toContain("installer is unavailable");
+    const projectFactory = ProjectFactoryStateSchema.parse(
+      await client.invokePluginRpc("factory", "factory.project.get", { projectId }),
+    );
+    expect(projectFactory).toMatchObject({
+      serverId: snapshot.serverId,
+      projectId,
+      state: "off",
+      repository: null,
+    });
+    await expect(
+      client.invokePluginRpc("factory", "factory.project.enable", { projectId, repository: "x" }),
+    ).rejects.toThrow();
     expect(Object.values(setup.operations)).toEqual(Array(5).fill(false));
     expect(setup.observedAt).not.toBeNull();
     await expect(

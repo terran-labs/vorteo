@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 import { installUsageReportsFixture } from "../support/helpers/usage-reports";
 import {
   claudeAndCodexReports,
-  expectPinnedUsage,
+  expectNoUsageItem,
   openCompactSidebar,
   expectCompactSidebarOpen,
 } from "../support/helpers/usage-sidebar-item";
@@ -53,7 +53,10 @@ test("developer toasts leave concurrent sidebar layout checks uninterrupted", as
   await expect(page.locator("#error-toast")).toBeHidden();
 });
 
-test("responsive toolbar remains available as Usage rows are hidden and restored", async ({
+// The retained Usage visibility policy forces the footer Usage row hidden (docs/glossary.md,
+// "Usage (sidebar item)"): a saved visible preference cannot show it, so the footer has no rows
+// and no separator here.
+test("responsive toolbar remains available while a saved preference cannot show the Usage row", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -61,30 +64,17 @@ test("responsive toolbar remains available as Usage rows are hidden and restored
   await seedSidebarFooterPreferences(page, [{ key: "usage", visible: true }]);
   await page.setViewportSize({ width: 1440, height: 900 });
   await gotoAppShell(page);
-  await expectPinnedUsage(page, ["31% 5h", "54% wk", "7% 5h", "12% wk"]);
+  await expectNoUsageItem(page);
   await expectSidebarToolbar(page);
-  await expectFooterSeparator(page, true);
-  await footerScreenshot(page, "toolbar-desktop-with-rows");
-  await openSidebarNavSettings(page);
-  await expectFooterSettingsKeys(page, ["usage"]);
-  await setFooterItemVisible(page, "usage", false);
-  await leaveSettings(page);
   await expectFooterSeparator(page, false);
-  await expectSidebarToolbar(page);
+  await footerScreenshot(page, "toolbar-desktop-without-rows");
   await page.setViewportSize({ width: 390, height: 844 });
   await openCompactSidebar(page);
   await expectCompactSidebarOpen(page);
+  await expectNoUsageItem(page);
   await expectFooterSeparator(page, false);
   await expectSidebarToolbar(page);
   await footerScreenshot(page, "toolbar-compact-without-rows");
-  // The same helper must reach Settings through the fitted toolbar or its overflow.
-  await openSidebarNavSettings(page);
-  await setFooterItemVisible(page, "usage", true);
-  await leaveSettings(page);
-  await openCompactSidebar(page);
-  await expectFooterSeparator(page, true);
-  await expectSidebarToolbar(page);
-  await expectPinnedUsage(page, ["31% 5h", "54% wk", "7% 5h", "12% wk"]);
 });
 
 test.describe("Sidebar contribution visibility and order", () => {
@@ -168,23 +158,26 @@ test.describe("Sidebar contribution visibility and order", () => {
     await openSidebarNavSettings(page);
     await expectFooterSettingsKeys(page, ["usage", syncKey, brokenKey]);
     await leaveSettings(page);
-    await expectFooterOrder(page, ["usage", syncKey]);
-    await expectSidebarToolbar(page);
-    await expectFooterSeparator(page, true);
-    await openSidebarNavSettings(page);
-    await moveFooterItemUp(page, syncKey);
-    await setFooterItemVisible(page, "usage", false);
-    await expectFooterSettingsKeys(page, [syncKey, "usage", brokenKey]);
-    await leaveSettings(page);
+    // A saved visible preference cannot show the Usage row; plugin rows still render.
     await expectFooterItemHidden(page, "usage");
     await expectFooterOrder(page, [syncKey]);
     await expectSidebarToolbar(page);
     await expectFooterSeparator(page, true);
+    await openSidebarNavSettings(page);
+    await moveFooterItemUp(page, syncKey);
+    await expectFooterSettingsKeys(page, [syncKey, "usage", brokenKey]);
+    await leaveSettings(page);
     await page.reload();
     await expectFooterOrder(page, [syncKey]);
     await expectFooterItemHidden(page, "usage");
     await expectSidebarToolbar(page);
     await openSidebarNavSettings(page);
     await expectFooterSettingsKeys(page, [syncKey, "usage", brokenKey]);
+    await setFooterItemVisible(page, syncKey, false);
+    await leaveSettings(page);
+    await expectFooterItemHidden(page, syncKey);
+    await expectFooterItemHidden(page, "usage");
+    await expectFooterSeparator(page, false);
+    await expectSidebarToolbar(page);
   });
 });

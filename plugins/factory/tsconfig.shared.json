@@ -7,5 +7,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["shared/contracts.ts", "shared/operations.ts"]
+  "include": ["shared/contracts.ts", "shared/operations.ts", "shared/project.ts"]
 }

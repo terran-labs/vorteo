@@ -162,7 +162,6 @@ import { AgentStorage } from "./agent/agent-storage.js";
 import { migrateMovedPaths } from "./migrations/moved-paths.migration.js";
 import { reconcileQuotaReserveStartup } from "./agent/quota-reserve/reconcile-startup.js";
 import { QuotaReservePolling } from "./agent/quota-reserve/polling.js";
-import { ClaudeLimitObservations } from "./agent/providers/claude/limit-observation.js";
 import { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -182,6 +181,11 @@ import { loadAdoptedAgents, planHostedStartup } from "./session-host/boot-attach
 import { startHostedIdleRelease } from "./session-host/idle-release.js";
 import { startIdleSessionRelease } from "./agent/idle-release.js";
 import { ensureAgentLoaded } from "./agent/agent-loading.js";
+import { formatSystemNotificationPrompt } from "./agent/agent-messages/index.js";
+import { startAgentRun } from "./agent/agent-prompt.js";
+import { switchAgentProfileCommand } from "./agent/profile-switch/command.js";
+import { ProjectFactoryService } from "./factory/project/service.js";
+import { profileProvider, resolveDefaultLaunch } from "./system-project/launch-selection.js";
 import type { SessionHostConnector } from "./session-host/connector.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
 import {
@@ -809,12 +813,14 @@ export async function createPaseoDaemon(
   });
   let resolveFactoryObservation: () => NativeFactoryObservationService | null = () => null;
   let factorySetupService: NativeFactorySetupService | null = null;
+  let projectFactoryService: ProjectFactoryService | null = null;
   let resolveFactoryInstaller: () => NativeFactoryInstaller | null = () => null;
   const pluginRuntime: PluginService = new PluginService(logger, daemonConfigStore, daemonVersion, {
     factoryObservation: () => resolveFactoryObservation(),
     factorySetup: () => factorySetupService,
     factoryInstallation: () => (resolveFactoryInstaller() ? factorySetupService : null),
     factoryControls: () => factorySetupService,
+    factoryProject: () => projectFactoryService,
     usageAgents: {
       hasAgent: (id) => agentManager.getAgent(id) !== null,
       usageSession: (id) => agentManager.usageSession(id),
@@ -826,6 +832,7 @@ export async function createPaseoDaemon(
     }),
     builtinPlugins: resolveBuiltinPluginLoader(dependencies),
     settingsDirectory: path.join(config.paseoHome, "plugin-settings"),
+    usageSnapshotPath: path.join(config.paseoHome, "usage", "last-readings.json"),
   });
 
   const serverId = getOrCreateServerId(config.paseoHome, { logger });
@@ -1246,14 +1253,12 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   const reserveRecoveryStops = await reconcileQuotaReserveStartup(agentStorage);
   logger.info({ reserveRecoveryStops }, "Quota reserve startup reconciliation completed");
-  const claudeLimitObservations = new ClaudeLimitObservations();
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,
-    claudeLimitObservations,
   });
   agentManager.setUsageLimitObserver((provider, stop) => {
-    if (claudeLimitObservations.record(provider, stop)) providerUsageService.invalidate();
+    providerUsageService.recordUsageLimitStop(provider, stop);
   });
   const quotaReservePolling = new QuotaReservePolling({
     agentManager,
@@ -1871,6 +1876,60 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  projectFactoryService = new ProjectFactoryService({
+    paseoHome: config.paseoHome,
+    serverId,
+    projects: projectRegistry,
+    workspaces: workspaceRegistry,
+    agentStorage,
+    createAgent,
+    createWorkspace: async (input) => {
+      const workspace = await workspaceProvisioning.createWorkspaceForDirectory(
+        input.cwd,
+        input.title,
+        input.projectId,
+        { workspaceId: input.workspaceId, expectsInitialAgent: true },
+      );
+      await emitWorkspaceUpdatesExternal([workspace.workspaceId]);
+      return workspace;
+    },
+    agents: {
+      setLabels: (agentId, labels) => agentManager.updateAgentMetadata(agentId, { labels }),
+      setSystemPrompt: (agentId, systemPrompt) =>
+        agentManager.setStoredSystemPrompt(agentId, systemPrompt),
+      sendPrompt: async (agentId, prompt, options) => {
+        const agent = await ensureAgentLoaded(agentId, { agentManager, agentStorage, logger });
+        if (!options.steer && agentManager.hasInFlightRun(agent.id)) return "busy";
+        await startAgentRun(
+          agentManager,
+          agent.id,
+          formatSystemNotificationPrompt(prompt),
+          logger,
+          { replaceRunning: true, activeTurnBehavior: "steer" },
+        );
+        return "sent";
+      },
+      switchLaunch: (agentId, launch, standingInstructions) =>
+        switchAgentProfileCommand(
+          { ...createAgentCommandDependencies, providerSnapshotManager },
+          { agentId, provider: launch.provider, profileId: launch.profileId, reason: "manual" },
+          { standingInstructions },
+        ),
+    },
+    defaultLaunch: () =>
+      resolveDefaultLaunch({
+        providers: providerSnapshotManager,
+        readUsage: (options) => providerUsageService.listUsage(options),
+        getSettings: () => daemonConfigStore.get(),
+      }),
+    profileProvider: (profileId) => profileProvider(profileId, daemonConfigStore.get()),
+    schedules: scheduleService,
+    onWorkspacesChanged: (workspaceIds) => void emitWorkspaceUpdatesExternal(workspaceIds),
+    logger,
+  });
+  void projectFactoryService
+    .start()
+    .catch((error) => logger.warn({ err: error }, "Per-project Factory did not start"));
   let optimizerAgent: { stop: () => void } | null = null;
   const startOptimizerSeeding = (environment: SystemEnvironment) =>
     startOptimizerAgent({
@@ -2474,6 +2533,7 @@ export async function createPaseoDaemon(
   const stop = async (options?: { onStep?: (step: string) => void; keepTerminals?: boolean }) => {
     const step = options?.onStep ?? (() => {});
     optimizerAgent?.stop();
+    projectFactoryService?.stop();
     // A stopped daemon never starts it later, even if seeding settles now.
     optimizerAgent = { stop: () => {} };
     blockedTaskReviews.stop();

@@ -15,6 +15,10 @@ export default defineConfig({
         __dirname,
         "../../plugins/factory/shared/operations.ts",
       ),
+      "@getpaseo/server/factory-project": path.resolve(
+        __dirname,
+        "../../plugins/factory/shared/project.ts",
+      ),
     },
   },
   test: {

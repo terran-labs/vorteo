@@ -17,6 +17,7 @@ import {
   mutateQuestions,
   QuestionError,
   type AnsweredQuestions,
+  type OwnerAnswerInput,
 } from "./questions/model.js";
 import { AgentTaskItemSchema } from "@getpaseo/protocol/messages";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
@@ -548,10 +549,7 @@ export class AgentStorage {
     return structuredClone(committed);
   }
 
-  async answerQuestion(
-    agentId: string,
-    input: { questionId: string; answer: string; answeredBy: string },
-  ): Promise<AnsweredQuestions> {
+  async answerQuestion(agentId: string, input: OwnerAnswerInput): Promise<AnsweredQuestions> {
     await this.load();
     let committed: AnsweredQuestions | null = null;
     await this.queueRecordMutation(

@@ -196,8 +196,9 @@ it("keeps Factory shortcuts in rendered order and respects its collapsed section
   const input = twoProjectInput("project");
   const factory = makeWorkspace("factory");
   factory.entry.standing = true;
+  // Only per-project Factory members join the Factory folder.
   factory.entry.factoryMembership = {
-    installationId: "installation",
+    installationId: "project-factory:project",
     serverId: "srv",
     projectId: "project",
     role: "factory",

@@ -48,13 +48,15 @@ export function ContextWindowDetails({
   const { t } = useTranslation();
   const breakdown = useContextBreakdown(serverId, agentId);
   const accountUsage = useAgentUsage(serverId, agentId);
-  const { view: planUsage } = useProviderUsage(serverId, { refreshOnMount: true });
-  const provider = useSessionStore(
-    (state) => state.sessions[serverId]?.agents.get(agentId)?.provider,
-  );
   // The agent's own account answers for its quotas. Plan usage is matched by provider alone, so
   // it can show another login's quotas; it stands in only when the host reports no account.
   const showPlanUsage = accountUsage.kind === "none";
+  // Read plan usage only when it is shown, from the shared cache: every forced read polls each
+  // Claude login's usage endpoint, which rate-limits the account card's own reads.
+  const { view: planUsage } = useProviderUsage(serverId, { enabled: showPlanUsage });
+  const provider = useSessionStore(
+    (state) => state.sessions[serverId]?.agents.get(agentId)?.provider,
+  );
   const loading =
     breakdown.kind === "loading" ||
     accountUsage.kind === "loading" ||

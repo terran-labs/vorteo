@@ -3,6 +3,7 @@ import { useCallback, type ReactNode, type ChangeEvent } from "react";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgentProfileFormModel, AgentProfileFormState } from "../internal/profile-form-model";
+import { NavigationContext } from "expo-router/react-navigation";
 import { AgentProfileCenteredModal } from "./agent-profile-page";
 const mocks = vi.hoisted(() => ({
   show: vi.fn(),
@@ -19,15 +20,18 @@ vi.mock("react-native", () => ({
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({
-    addListener: (_name: string, listener: typeof mocks.listener) => {
-      mocks.listener = listener;
-      return () => {};
-    },
-    dispatch: mocks.dispatch,
-  }),
-}));
+vi.mock("expo-router/react-navigation", async () => {
+  const { createContext } = await import("react");
+  return {
+    NavigationContext: createContext<unknown>({
+      addListener: (_name: string, listener: typeof mocks.listener) => {
+        mocks.listener = listener;
+        return () => {};
+      },
+      dispatch: mocks.dispatch,
+    }),
+  };
+});
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ show: mocks.show }) }));
 vi.mock("@/execution-installation/policy", () => ({ readExecutionInstallation: () => null }));
 vi.mock("@/components/ui/button", () => ({
@@ -144,4 +148,19 @@ it("keeps a dirty draft open and reports a failed deletion", async () => {
   await waitFor(() => expect(mocks.show).toHaveBeenCalledWith("Delete failed"));
   expect(close).not.toHaveBeenCalled();
   expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("Draft");
+});
+
+it("opens outside any navigator, as the composer's centered window does, without crashing", () => {
+  render(
+    <NavigationContext.Provider value={undefined}>
+      <AgentProfileCenteredModal
+        serverId="host"
+        profile={profile}
+        onSave={save}
+        onBack={close}
+        onDelete={remove}
+      />
+    </NavigationContext.Provider>,
+  );
+  expect(screen.getByRole("textbox", { name: "Name" })).toBeTruthy();
 });

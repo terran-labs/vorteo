@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertBuildsCoordinator, isBuildsCoordinator } from "./lib/builds-guard.mjs";
+import {
+  assertBuildsCoordinator,
+  assertReleaseTagger,
+  isBuildsCoordinator,
+} from "./lib/builds-guard.mjs";
 import { pushesMain, pushesReleaseTag, refusePush } from "./guard-main-push.mjs";
 
 const run = promisify(execFile);
@@ -22,6 +26,19 @@ test("only the builds coordinator passes the guard", () => {
     () => assertBuildsCoordinator("Publishing", {}),
     /reserved for the Vorteo :: Builds thread/,
   );
+});
+
+test("VORTEO_RELEASES admits release tagging only", () => {
+  const releases = { VORTEO_RELEASES: "1" };
+  assert.doesNotThrow(() => assertReleaseTagger("Creating release tags", releases));
+  assert.doesNotThrow(() => assertReleaseTagger("Creating release tags", { VORTEO_BUILDS: "1" }));
+  assert.throws(() => assertReleaseTagger("Creating release tags", {}), /Factory Releases/);
+  assert.throws(
+    () => assertBuildsCoordinator("Publishing", releases),
+    /reserved for the Vorteo :: Builds thread/,
+  );
+  assert.equal(refusePush("refs/tags/release-9 1 refs/tags/release-9 2\n", releases), null);
+  assert.match(refusePush("refs/heads/a 1 refs/heads/main 2\n", releases), /pull request/);
 });
 
 test("the pre-push guard recognizes pushes to main and release tags", () => {

@@ -59,8 +59,23 @@ export function useFetchQuery<
 
 export function useFetchQueries<TData>(
   inputs: FetchQueryInput<TData, Error, TData, QueryKey>[],
-): UseQueryResult<TData, Error>[] {
-  return useQueries({ queries: inputs.map((input) => fetchQueryOptions(input)) });
+): UseQueryResult<TData, Error>[];
+/**
+ * With `combine`, the result keeps its identity until a query's data changes, so memos that
+ * depend on it hold across renders. Pass a stable function, such as one defined at module scope.
+ */
+export function useFetchQueries<TData, TCombined>(
+  inputs: FetchQueryInput<TData, Error, TData, QueryKey>[],
+  combine: (results: UseQueryResult<TData, Error>[]) => TCombined,
+): TCombined;
+export function useFetchQueries<TData, TCombined>(
+  inputs: FetchQueryInput<TData, Error, TData, QueryKey>[],
+  combine?: (results: UseQueryResult<TData, Error>[]) => TCombined,
+) {
+  return useQueries({
+    queries: inputs.map((input) => fetchQueryOptions(input)),
+    ...(combine ? { combine } : {}),
+  });
 }
 
 function replicaQueryOptions<

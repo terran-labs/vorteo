@@ -136,32 +136,15 @@ function visible(page: Page, testID: string): Locator {
   return page.locator(`[data-testid="${testID}"]:visible`).first();
 }
 
-/** The sidebar footer's Usage item: each summary window with data. */
-export function usageItem(page: Page): Locator {
-  return visible(page, "sidebar-usage");
-}
-
 /** The retained full-screen Usage route. */
 export function usageModal(page: Page): Locator {
   return visible(page, "usage-screen");
-}
-
-/** Each pinned window as it reads: its percent and short label, "31% 5h". */
-export async function expectPinnedUsage(page: Page, windows: string[]): Promise<void> {
-  const pinned = usageItem(page).getByTestId("sidebar-usage-pinned-window");
-  await expect(pinned).toHaveText(windows);
 }
 
 /** The retained fork policy renders neither a Usage summary nor the retired Usage icon. */
 export async function expectNoUsageItem(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="sidebar-usage"]:visible')).toHaveCount(0);
   await expect(page.locator('[data-testid="sidebar-usage-icon"]:visible')).toHaveCount(0);
-}
-
-/** A window row, which is itself the pin toggle: "Claude", "Session". */
-export function pinRow(scope: Locator, source: string, window: string): Locator {
-  // The row's label goes on with its percent and reset: "Pin Claude Session, 31% · resets in 2h".
-  return scope.getByRole("checkbox", { name: new RegExp(`^Pin ${source} ${window}, `) });
 }
 
 /**
@@ -177,26 +160,17 @@ export async function expectUnpinnableRows(card: Locator): Promise<void> {
   expect(focusable).toBe(0);
 }
 
-export async function togglePin(scope: Locator, source: string, window: string) {
-  const row = pinRow(scope, source, window);
-  const pinned = await row.isChecked();
-  await row.click();
-  await expect(row).toBeChecked({ checked: !pinned });
+/** The left sidebar's Quota card, which lists each account on the usage host. */
+export function quotaCard(page: Page): Locator {
+  return visible(page, "global-quota-card");
 }
 
 /**
- * The footer's Usage icon, which is there whether or not the Usage item is on. On a phone the
- * sidebar drawer has to be open.
+ * The Quota card's Open Usage link: the supported sidebar entry to Usage, shown while the card
+ * lists an account. On a phone the sidebar drawer has to be open.
  */
-export async function openUsageFromIcon(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Usage", exact: true }).click({ timeout: 30000 });
-  await expect(page).toHaveURL(/\/usage$/);
-  await expect(usageModal(page)).toBeVisible();
-}
-
-/** The footer's Usage item, its summary of pinned windows. */
-export async function openUsageFromItem(page: Page): Promise<void> {
-  await usageItem(page).click();
+export async function openUsageFromQuotaCard(page: Page): Promise<void> {
+  await quotaCard(page).getByTestId("global-quota-open-usage").click({ timeout: 30_000 });
   await expect(page).toHaveURL(/\/usage$/);
   await expect(usageModal(page)).toBeVisible();
 }
@@ -225,28 +199,6 @@ export async function scrollUsageToWindow(page: Page, label: string): Promise<vo
 export async function closeUsage(page: Page): Promise<void> {
   await page.goBack();
   await expect(page).not.toHaveURL(/\/usage$/);
-}
-
-/** Usage is a route; browser Back replaces the retired modal backdrop. */
-export async function closeUsageFromBackdrop(page: Page): Promise<void> {
-  await closeUsage(page);
-}
-
-function summaryInSidebarSwitch(page: Page): Locator {
-  return page.getByRole("switch", { name: "Summary in sidebar", exact: true });
-}
-
-/** Turns the sidebar Usage summary on or off from the Usage modal's Settings. */
-export async function setSummaryInSidebar(page: Page, on: boolean): Promise<void> {
-  await openUsageOptions(page);
-  await summaryInSidebarSwitch(page).click();
-  await expectSummaryInSidebar(page, on);
-}
-
-export async function expectSummaryInSidebar(page: Page, on: boolean): Promise<void> {
-  await openUsageOptions(page);
-  await expect(summaryInSidebarSwitch(page)).toBeChecked({ checked: on });
-  await closeUsageOptions(page);
 }
 
 /** Expand the inline Settings disclosure without replacing the usage reports. */
@@ -304,8 +256,8 @@ export async function openCompactSidebar(page: Page): Promise<void> {
 }
 
 export async function expectCompactSidebarOpen(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "Close menu", exact: true })).toHaveAttribute(
-    "aria-expanded",
-    "true",
-  );
+  // The menu button and the sidebar's collapse control share the "Close menu" name.
+  await expect(
+    page.getByRole("button", { name: "Close menu", exact: true }).filter({ visible: true }).first(),
+  ).toHaveAttribute("aria-expanded", "true");
 }

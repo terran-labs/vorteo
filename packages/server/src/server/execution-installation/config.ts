@@ -160,6 +160,9 @@ export const InstallationConfigSchema = z.strictObject({
   claudeHostRefresh: z.boolean().optional(),
   /** Off by default. Shared Codex accounts sign in once on the Host and reach Dev; `true` opts in. */
   codexHostRefresh: z.boolean().optional(),
+  /** Reviewed record that the coordinator launcher sets `VORTEO_RELEASE_SEALS=enabled`.
+   * Changes only through the `releaseSeals` coordinator setting, together with the launcher. */
+  releaseSeals: z.literal("enabled").optional(),
   sourceUpdates: z
     .strictObject({
       sourceRepository: z.string().startsWith("/"),

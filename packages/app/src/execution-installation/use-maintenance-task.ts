@@ -9,6 +9,8 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { getIsElectron, isWeb } from "@/constants/platform";
 import { isDemoSession } from "@/demo/mode";
 import { isIsolatedDemoPreview } from "@/demo/preview";
+import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
+import { useWorkspace } from "@/stores/session-store-hooks";
 import { readExecutionInstallation } from "./policy";
 import {
   installationMaintenancePrompt,
@@ -35,12 +37,23 @@ export function useMaintenanceTaskTarget(): MaintenanceTaskTarget {
   );
 }
 
+export interface MaintenanceTaskOptions {
+  /**
+   * Open the draft in the active project when that project belongs to the Host.
+   * A Dev project's path means nothing on the Host, so other projects fall back to
+   * the Host's default new workspace page.
+   */
+  inActiveProject?: boolean;
+}
+
 export function useMaintenanceTask() {
   const router = useRouter();
   const toast = useToast();
   const hosts = useHosts();
+  const selection = useActiveWorkspaceSelection();
+  const activeWorkspace = useWorkspace(selection?.serverId ?? null, selection?.workspaceId ?? null);
   return useCallback(
-    (prompt: string) => {
+    (prompt: string, options: MaintenanceTaskOptions = {}) => {
       try {
         const serverId = maintenanceTaskTarget(
           readExecutionInstallation(),
@@ -53,11 +66,18 @@ export function useMaintenanceTask() {
           draft: { text: installationMaintenancePrompt(prompt), attachments: [] },
         });
         // Saving and navigating prepares an editable draft. It never creates an agent.
-        router.push(buildNewWorkspaceRoute({ draftId, serverId }));
+        const project =
+          options.inActiveProject && activeWorkspace && selection?.serverId === serverId
+            ? {
+                sourceDirectory: activeWorkspace.projectRootPath,
+                projectId: activeWorkspace.projectId,
+              }
+            : {};
+        router.push(buildNewWorkspaceRoute({ draftId, serverId, ...project }));
       } catch (error) {
         toast.error(toErrorMessage(error));
       }
     },
-    [hosts, router, toast],
+    [hosts, router, toast, activeWorkspace, selection?.serverId],
   );
 }

@@ -245,7 +245,7 @@ it("prefers a window with a reset time when allowances tie", () => {
   ]);
   const window = limitingWindow(usage);
   expect(window?.id).toBe("weekly_model_fable");
-  expect(resetDescription(usage, window!)).toBe("Resets in 3 days");
+  expect(resetDescription(usage, window!)).toBe("Weekly \u00b7 Fable resets in 3 days");
 });
 
 it("names the next known reset when the limiting window has none", () => {
@@ -283,7 +283,7 @@ it("labels an unstarted session instead of a missing reset time", () => {
       resetsAt: new Date(2 * HOUR).toISOString(),
     },
   ]);
-  expect(resetDescription(started, limitingWindow(started)!)).toBe("Resets in 2h");
+  expect(resetDescription(started, limitingWindow(started)!)).toBe("Session resets in 2h");
 });
 
 it("keeps a healthy cached reading current until the display threshold passes", () => {
@@ -329,5 +329,5 @@ it("shows a limit-message window as an ordinary reading and marks its source", (
   expect(reading(setupToken)).toMatchObject({ statusLabel: "Usage not provided", observed: false });
   const observed = reading(observedUsage);
   expect(observed).toMatchObject({ remaining: 0, statusLabel: null, observed: true });
-  expect(resetDescription(observed.usage, observed.window!)).toBe("Resets in 9h");
+  expect(resetDescription(observed.usage, observed.window!)).toBe("Weekly resets in 9h");
 });

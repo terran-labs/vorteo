@@ -702,6 +702,47 @@ test("retains the last successful poll across failures, cache expiry, and recove
   expect(recovered?.fetchedAt).toBe(new Date(now).toISOString());
 });
 
+test("a restarted daemon shows the last successful poll while the account is rate-limited", async () => {
+  const root = await mkdtemp(join(tmpdir(), "usage-readings-"));
+  try {
+    const path = join(root, "usage", "last-readings.json");
+    let report: unknown = {
+      status: "available",
+      windows: [{ id: "week", label: "Weekly", usedPct: 42 }],
+    };
+    const quota = () =>
+      source({
+        id: "quota",
+        discover: async () => [{ key: "account", input: {} }],
+        fetch: async () => report,
+      });
+    const before = new UsageSourceRegistry(
+      Date.now,
+      300_000,
+      undefined,
+      undefined,
+      undefined,
+      path,
+    );
+    before.register(quota());
+    const [success] = await before.listReports();
+    await before.flushSaves();
+
+    report = { status: "error", error: "Rate limited by Claude. Try again in 9m." };
+    const after = new UsageSourceRegistry(Date.now, 300_000, undefined, undefined, undefined, path);
+    after.register(quota());
+    const [limited] = await after.listReports();
+    // The registry stamps a successful reading when its fetch completes (successfulAt), not
+    // when it starts (fetchedAt); the two differ by a millisecond on slow runners.
+    expect(limited?.lastSuccessful).toEqual({
+      fetchedAt: success!.successfulAt,
+      report: success!.report,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("successful history is isolated by login set and pruned when identities retire", async () => {
   let login = "old";
   let present = true;

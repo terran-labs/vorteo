@@ -1,6 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Alert, Platform, ScrollView, Text, View, StyleSheet } from "react-native";
-import { useNavigation } from "@react-navigation/native";
+// The app runs on expo-router's bundled React Navigation; the standalone package is a separate
+// copy whose context is never provided, so importing hooks from it crashes at runtime.
+import { NavigationContext } from "expo-router/react-navigation";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import { Button } from "@/components/ui/button";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
@@ -83,20 +93,20 @@ export function AgentProfilePage({
   }, [draftKey]);
   const dirty = additionalDirty || (touched.current && showProfileSaveBar(baseline, state));
   const allowLeave = useRef(false);
-  const navigation = useNavigation();
+  // Null when the editor opens as a centered window outside a navigator (from the composer).
+  const navigation = useContext(NavigationContext);
   const toast = useToast();
-  useEffect(
-    () =>
-      navigation.addListener("beforeRemove", (event) => {
-        if (!dirty || allowLeave.current) return;
-        event.preventDefault();
-        confirmDiscard(() => {
-          allowLeave.current = true;
-          navigation.dispatch(event.data.action);
-        });
-      }),
-    [navigation, dirty],
-  );
+  useEffect(() => {
+    if (!navigation) return;
+    return navigation.addListener("beforeRemove", (event) => {
+      if (!dirty || allowLeave.current) return;
+      event.preventDefault();
+      confirmDiscard(() => {
+        allowLeave.current = true;
+        navigation.dispatch(event.data.action);
+      });
+    });
+  }, [navigation, dirty]);
   useEffect(() => {
     if (Platform.OS !== "web" || !dirty) return;
     const handler = (event: BeforeUnloadEvent) => {

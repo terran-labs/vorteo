@@ -4,6 +4,216 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- The Vorteo System browser test, the README and a charter comment now name the Vorteo :: Mechanic workspace instead of the Optimizer.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Update the sidebar projection test's Factory fixture to a per-project Factory member, matching the Factory folder's grouping rule.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Changing a Factory role's provider or profile no longer drops its charter. The new session starts with the role's instructions ahead of the carried context, and the next prompt, sent right away, repeats them in full.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Turning Factory on again with a new repository, or any other change to a role's charter inputs, now updates each role agent's instructions and sends them once with its next heartbeat. Previously the agents kept the old repository's instructions.
+- A heartbeat that fired while Factory was being paused or turned off could rearm itself; it now stays off.
+- Clearing a role's provider or profile now switches the agent back to the default launch, and a launch set by profile alone uses that profile's provider.
+- Factory now records that it owns the Optimizer review pause before pausing it, and keeps the record until a resume succeeds, so a crash or failed resume is finished at the next start.
+- A charter-change notice that fails to reach the Mechanic is retried on the next start or Mechanic heartbeat instead of being dropped.
+- Ordinary projects no longer read Factory state every minute: the sidebar asks only for projects with Factory role workspaces, and its Factory list no longer changes identity on every render.
+- Instruction conflicts are recognized by the exact daemon conflict messages, which the app and daemon now share, instead of by keywords.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Add per-project Factory. Turning Factory on for a project creates, or adopts, five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a heartbeat; reruns, restarts and a lost state file never create a second. Pause, resume and turn off control the heartbeats, and turning off releases the workspaces while keeping agents and history. On Vorteo System the Mechanic adopts the existing Optimizer agent.
+- Add the project menu's Factory controls: turn on with a GitHub repository, pause, resume and turn off. Role workspaces group in the sidebar's Factory folder in role order, and fresh role status lines appear beneath them.
+- Add editable per-role project instructions with revision checks, history and charter review: when a Vorteo update changes a role's shipped charter, the Mechanic reviews it and the operator accepts or dismisses its proposal. A revision conflict keeps the draft and shows the latest instructions beside it, review diffs show the changed lines in context, and accepting applies only the proposal the operator saw.
+- Choose each role's provider and profile, and the profiles the Foreman gives workers and reviewers, with the existing profile controls.
+- Send a thread to Factory from the tab menu. Triage turns it into one issue, routed through the thread's owning environment and project.
+- Gate Triage, Foreman and Builds heartbeats on a GitHub fingerprint, so an unchanged repository does not wake them; missing evidence always wakes.
+- Add `paseo factory project show|enable|pause|resume|disable|configure`, `paseo factory project status set` and `paseo factory project instructions show|set|propose|acknowledge|resolve`. The daemon serves these RPCs natively through the bundled Factory plugin and advertises Factory workspace membership.
+- `VORTEO_RELEASES=1` admits only `scripts/vorteo-release.mjs tag` and its release tag push, so a Factory Releases thread can tag without Builds rights.
+
+### Changed
+
+- The Vorteo :: Optimizer workspace and newly created Optimizer agents are now titled Mechanic; the stored role and label are unchanged.
+
+## Unreleased - 2026-11-04
+
+### Fixed
+
+- Messages sent into a running Claude turn no longer fail with "The provider returned an invalid steerActiveTurn result." The message had already reached Claude, so the error put it back in the composer and every resend delivered another copy. A send that does fail now keeps anything typed meanwhile below the restored message instead of overwriting it.
+
+## 26.11.302 - 2026-11-03
+
+Fix-forward beta for the VortLab bootstrap. 26.11.301 merged but was never tagged because its full checks were not green.
+
+### Fixes
+
+- Settings search finds the Delivery mode row in Installation settings. Live dev mode added the row without a settings catalog entry, which failed the app tests.
+
+### Tests
+
+- The restarted-daemon usage test compares the saved reading with the time its fetch completed, which the registry records, instead of the start time. It failed intermittently on slower runners.
+
+## 26.11.301 - 2026-11-03
+
+Beta bootstrap release for installer-made installations. It carries every change listed below since 26.11.206; 26.11.300 was prepared but never tagged.
+
+### Documentation
+
+- The agent guide points to live dev delivery in the task delivery guide instead of repeating it, keeping the guide within its size budget.
+
+## 26.11.300 - 2026-11-03
+
+Prepared but never tagged; superseded by 26.11.301.
+
+### Features
+
+- Live dev mode: an owner-only Delivery mode in Installation settings that serves the signed-in owner the interface from a live checkout on the Host, with Fast Refresh and a safe link to the published interface.
+- Typed questions: agents can ask yes or no, single-choice and multiple-choice questions answered in one click.
+
+### Fixes
+
+- Upgrades from Installation controls finish on installer-made installations instead of staying "running" with a failed Host build.
+- Provider account connections survive concurrent settings writes, and a Dev container paired after its daemon started syncs accounts after its next daemon start.
+- The message queue reopens its browser storage after the browser closes it.
+- Server tests are green again; the daemon bootstrap no longer names a specific provider.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- When a provider CLI is too old for its models, the whole profile card now shows the warning border and carries the update notice, instead of nesting a second warning card inside it. An **Upgrade** button opens a new Host workspace in the current project with an editable upgrade task; nothing runs until the owner submits it.
+- The **Profile permissions changed** prompt no longer offers **Recreate chat** while the chat still has an open permission request, which the daemon refuses. It asks the owner to answer that request first.
+- Connecting a Claude or Codex account no longer fails with "Daemon settings changed while verifying installation authority" when account sync writes local settings during the sign-in. The authority read repeats, up to three attempts, against the new settings.
+- A Dev container paired after its daemon started now finds the pairing client when its daemon next starts. Before this, the Dev daemon refused every shared settings request, so Claude accounts connected on the Host never synchronized to Dev.
+
+### Tooling
+
+- Merged current `main` into typed questions before delivery.
+- Merged live dev mode into typed questions for the VortLab bootstrap release.
+- Merged the server test repairs into the VortLab bootstrap release.
+- Merged the provider account connection fixes and current `main` into the VortLab bootstrap release.
+
+### Fixes
+
+- Upgrades from Installation controls finish on installations made by the one-command installer. The coordinator refused to save its own Host build ID, so it relaunched the Host build every two seconds, the overlapping builds failed, and the upgrade stayed running forever.
+- Harden live dev mode after an independent security review. The proxy no longer forwards your session to the dev server, refuses encoded and dotted paths, never redirects off-site, and keeps a failed live page's assets static. The supervisor only signals its own dev server, stops orphaned watchers and stays stopped after you switch to Reliable. The live checkout tool takes its lock atomically, promotes only local branches, checks merges before touching the tree, merges changelog entries as a union and writes its own changelog entry for tweaks.
+
+### Fixed
+
+- Add profile and Edit on a provider page no longer crash Settings with "Couldn't find a navigation object". The profile page now reads navigation from the expo-router copy the app runs on, and still guards unsaved edits; opened outside a navigator, as the chat composer's centered window will be, it simply skips that guard.
+
+## Unreleased - 2026-11-03
+
+### Features
+
+- Ask typed questions. Agents can offer Yes and No, a choice of options or checkboxes, and you answer in one click, with an optional note or your own answer when none fit. Free-text questions now show one editable field pre-filled with the recommendation.
+- Make every line in the Open questions cards the same size as normal sidebar text.
+- Add a Delivery mode to Installation settings. Reliable, the default, serves the published interface. Live dev serves your signed-in browser the interface from a live checkout on the Host, so agents' edits appear within seconds through Fast Refresh. A Live dev marker and a safe interface link keep the published interface one click away, and other browsers and the recovery address always get it.
+- Add a live checkout tool for agents: one-off tweaks with claims and commits, branch promotion and syncing with main, each under a lock that refuses conflicts.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The daemon bootstrap no longer names a provider. Claude usage-limit stops are now recorded by the provider usage service, which restores the upstream rule that keeps the generic bootstrap provider-neutral. Account usage behavior is unchanged.
+
+### Tests
+
+- Server test stubs follow two recent changes: agent manager stubs answer the new history reload check, and the coordinator ledger tests expect its read-only lifecycle view and dispatch status feature. These were the 13 server test failures on Ubuntu and Windows CI.
+
+- Turn release seals on or off through tracked workflows. A reviewed coordinator update with the new `releaseSeals` setting adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, and the Host launcher update does the same for the Host service once managed release selection is in place. Full maintenance delegation covers both. Any other launcher difference, value or unexpected launcher state is refused with a message naming what differed.
+
+## Unreleased - 2026-11-03
+
+### Documentation
+
+- Builds now states what each long wait is watching, when it started, its usual duration and what ends it, and keeps its checklist current after each install, so the operator can tell progress from a stall.
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Merged current `main` into the message queue reconnect fix before delivery.
+- Merged current `main`, including the message queue reconnect fix, into the provider account connection fixes before delivery.
+
+### Tests
+
+- Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The message queue reopens its saved-queue storage after the browser closes the connection. It used to show "The database connection is closing" until the page reloaded, and Retry failed the same way.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Name the hosted agents holding a pending session host upgrade in the Session host card: those waiting for the owner's answer first, then those running a turn or still starting. Idle hosted agents are left out because they leave after about five quiet minutes. Interface only, with no wire change; older coordinators show no list.
+- Add `install-execution-host.mjs enable-durable-sessions` for Host setup. It refuses without Host source updates or a matching session host job, installs the job through the owner-approved request, waits until the coordinator sees its host answer, then writes `{"enabled": true}` only when no setting exists. An explicit off survives reruns, a broken setting file is reported as broken, and `--request <id>` resumes waiting on an earlier request.
+
+### Changed
+
+- The installer's removal refusal and `install` output name the durable sessions steps. The docs give the order for uninstalling or rolling back below the session host and say that turning the setting off ends no hosted session.
+
+### Maintenance
+
+- Merge current `main` into the durable sessions branch, keeping both sides' new installer tests and the browser test's mocks for the upgrade and snapshot cards.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- The Factory Overview row in the sidebar now steps in with the Factory workspaces below it at every nesting depth, instead of keeping a fixed indent.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Account tiles name the usage window their reset belongs to, such as Session resets in 3h or Weekly resets in 4 days, so a short session reset no longer reads as the weekly quota resetting.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Make the sidebar's waiting hourglass smaller and neutral grey, with sand that gently drains into a pile over eight seconds and then resets. Reduced motion holds the sand at rest.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Stop rate-limiting Claude account usage checks. The sidebar quota fetcher now waits out Claude's requested delay for each account and keeps showing its last good reading, and the Context window details no longer force a provider usage refresh each time they open.
+- Keep each account's last good usage reading across daemon restarts. While Claude limits checks, the account card shows that reading with its age and a muted note instead of a red error.
+
 ## Unreleased - 2026-11-03
 
 ### Maintenance

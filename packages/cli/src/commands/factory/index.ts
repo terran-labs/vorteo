@@ -4,6 +4,7 @@ import { addJsonAndDaemonHostOptions } from "../../utils/command-options.js";
 import { runStatusCommand } from "./status.js";
 import { runSetupCommand } from "./setup.js";
 import { runInstallCommand } from "./install.js";
+import { createFactoryProjectCommand } from "./project.js";
 
 export function createFactoryCommand(): Command {
   const factory = new Command("factory").description("Observe and install a project's Factory");
@@ -31,5 +32,6 @@ export function createFactoryCommand(): Command {
       .requiredOption("--operation-id <id>", "Stable identity for this installation attempt")
       .allowExcessArguments(false),
   ).action(withOutput(runInstallCommand));
+  factory.addCommand(createFactoryProjectCommand());
   return factory;
 }

@@ -240,7 +240,7 @@ If macOS requires the responsible service to reopen, preserve active work and us
 
 ## Managed Dev client discovery
 
-A paired Linux worker selected by the managed supervisor can recover a missing `VORTEO_INSTALLATION_CLIENT_CONFIG` from the existing pairing client at `~/.local/share/vorteo-installation-client/client.json`. The worker requires its persisted installation binding to identify Dev and validates that the client is a private regular file owned by its user, carries the container-only credential kind, and uses HTTPS or loopback. It rejects symlinks, malformed clients and insecure remote origins before starting. Explicit launcher configuration remains authoritative. Host and standalone workers do not discover this Dev client.
+A paired Linux worker selected by the managed supervisor, or the Dev image's own daemon using `~/.paseo`, can recover a missing `VORTEO_INSTALLATION_CLIENT_CONFIG` from the existing pairing client at `~/.local/share/vorteo-installation-client/client.json`. The worker requires its persisted installation binding to identify Dev and validates that the client is a private regular file owned by its user, carries the container-only credential kind, and uses HTTPS or loopback. It rejects symlinks, malformed clients and insecure remote origins before starting. Explicit launcher configuration remains authoritative. The image daemon needs this because pairing runs inside an already started container, so its launcher can start before the client file exists. Host workers and repository development daemons with their own `PASEO_HOME` do not discover this Dev client.
 
 Profile and settings admission still verifies the coordinator response against the exact installation, daemon identity and environment. A missing supervisor environment variable can therefore be repaired through an approved managed worker source update. New installations should continue configuring the owned launcher explicitly.
 
@@ -419,9 +419,68 @@ Release seals are off unless both the coordinator and Host services run with `VO
 
 Never point a worktree's dependencies at an installed release: writes into it fail with "Operation not permitted". Cleanup code must remove releases through `removeBootstrapRelease`, because a plain recursive delete fails on flagged files. To remove a sealed release by hand, first clear the flags on the tree and its seal files: `chflags -R nouchg <release> <release>.release-*`. Then delete them. Sealing does not detect writable shared memory mappings opened before sealing.
 
+#### Turn release seals on or off
+
+Each service changes through its tracked workflow, coordinator first, then Host. Nothing else in either launcher may change, and each change is refused with a message naming the setting that differed. A Host builds and installs sealed releases only once both services carry the variable. After turning seals off, existing sealed releases keep their flags until removed as above.
+
+**Coordinator.** A reviewed coordinator renewal carries `{ "setting": "releaseSeals", "value": "enabled" }` in `configurationChanges`; `null` turns seals off. The candidate configuration adds (or removes) `"releaseSeals": "enabled"`, and the candidate launcher equals the current one except `ProgramArguments`, `Program` and exactly `EnvironmentVariables.VORTEO_RELEASE_SEALS` = `enabled` added (or removed). Without that declared change, any difference in `VORTEO_RELEASE_SEALS` is refused. The compatible recovery launcher and configuration keep the current environment and configuration, so rollback restores the previous setting. A current launcher that already sets the variable (when turning on), lacks `enabled` (when turning off) or carries any other value is refused. Like other registered settings, the change needs the owner's review, or an active [full maintenance delegation](#full-maintenance-delegation); automatic plans without that grant refuse it.
+
+**Host.** The [Host launcher update](#one-time-host-launcher-update) also accepts a candidate that adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` on a launcher that already sets `PASEO_MANAGED_RELEASE_LINK` and `PASEO_MANAGED_RELEASE_ROOT` to the configured `sourceUpdates.currentReleaseLink` and `releaseRoot`. It reloads the Host service once, so both the supervisor and the worker it starts carry the change. Verification additionally requires the new supervisor's environment to carry the variable (on) or not carry it (off). Its plan digest also binds the direction.
+
+Builds runs these steps on the Host with the installed Host client (`<client>` below). Run `<client> capabilities` first and stop if `coordinatorMaintenance.available` is false.
+
+1. Prepare the Host candidate from the live Host plist, outside guest-writable mounts:
+
+   ```sh
+   cp ~/Library/LaunchAgents/<host-label>.plist <protected>/host-seals.plist
+   plutil -insert EnvironmentVariables.VORTEO_RELEASE_SEALS -string enabled <protected>/host-seals.plist
+   shasum -a 256 <protected>/host-seals.plist
+   ```
+
+   To turn seals off, use `plutil -remove EnvironmentVariables.VORTEO_RELEASE_SEALS` instead.
+
+2. Prepare the coordinator renewal exactly as for any renewal, with three differences. In the candidate configuration, add `"releaseSeals": "enabled"` and set `host.launcherUpdate` to `{ "candidate": "<protected>/host-seals.plist", "sha256": "<digest>" }`. In the candidate launcher, run `plutil -insert EnvironmentVariables.VORTEO_RELEASE_SEALS -string enabled` (when the launcher has no `EnvironmentVariables`, first run `plutil -insert EnvironmentVariables -dictionary`). Leave the compatible recovery launcher and configuration unchanged. Then write `preparation.json`:
+
+   ```json
+   {
+     "id": "<new request uuid>",
+     "reason": "Turn on release seals for the coordinator and stage the Host launcher change",
+     "plan": {
+       "...": "the renewal plan, unchanged otherwise",
+       "configurationChanges": [
+         { "setting": "releaseSeals", "value": "enabled" },
+         {
+           "setting": "hostLauncherUpdate",
+           "value": { "candidate": "<protected>/host-seals.plist", "sha256": "<digest>" }
+         }
+       ]
+     }
+   }
+   ```
+
+   To turn seals off, use `"value": null` for `releaseSeals`, remove the key from the candidate configuration and remove the variable from the candidate launcher.
+
+3. Submit it and follow it to a verified coordinator:
+
+   ```sh
+   VORTEO_BUILDS=1 <client> request-coordinator --request-file preparation.json
+   <client> coordinator-status <request-id>
+   ```
+
+   Confirm the running coordinator's environment with `launchctl print gui/$(id -u)/<coordinator-label>`.
+
+4. Once `<client> capabilities` reports `hostLauncherUpdate.available: true`, take its `sha256` and request the Host restart. `reason.txt` names the change, for example "Turn on release seals for the Host service".
+
+   ```sh
+   VORTEO_BUILDS=1 <client> request-restart --target host --host-launcher-plan <sha256> --reason-file reason.txt
+   <client> restart-status <request-id>
+   ```
+
+   The result reads "with release seals turned on" (or "off"). Any failure restores and reloads the previous Host plist without retrying.
+
 ## Full maintenance delegation
 
-Installation controls let an owner explicitly delegate supported maintenance to authenticated Host requests on a never-enrolled installation. Revoking the full grant restores the existing per-service choices; those choices remain visible but cannot override an active full grant. This separate grant covers daemon updates and restarts, exact coordinator configuration and tooling changes, supervisor and Factory plans, Docker restart and degraded recovery plans, Host launcher updates, native helpers, the preview monitor and the session host. Ordinary service permissions retain their narrower scope. The manual approval rules below apply unless this full grant is active. A new operation is excluded until its executor explicitly supports delegation. The grant also includes [installation management](#delegated-installation-management), which can only cancel retained requests.
+Installation controls let an owner explicitly delegate supported maintenance to authenticated Host requests on a never-enrolled installation. Revoking the full grant restores the existing per-service choices; those choices remain visible but cannot override an active full grant. This separate grant covers daemon updates and restarts, exact coordinator configuration and tooling changes (including the coordinator `releaseSeals` change and its launcher), supervisor and Factory plans, Docker restart and degraded recovery plans, Host launcher updates (including the release seal variant), native helpers, the preview monitor and the session host. Ordinary service permissions retain their narrower scope. The manual approval rules below apply unless this full grant is active. A new operation is excluded until its executor explicitly supports delegation. The grant also includes [installation management](#delegated-installation-management), which can only cancel retained requests.
 
 The owner-authenticated `maintenance-delegation/query` and `maintenance-delegation/change` routes under `/api/installation/owner/` expose the current revision and accept `{expectedRevision, enabled}`. Both require an allowed Origin and owner authentication. Scoped agent credentials cannot enable delegation. The coordinator stores the grant in protected state, preserves existing delegation settings and rejects unsafe files or stale revisions. Host capabilities advertise `maintenanceDelegation.available` and `enabled`; clients must check availability before offering this control.
 
@@ -535,6 +594,8 @@ The Host client discovers `hostLauncherUpdate` through `capabilities` and submit
 
 On any failure after the swap, it puts the previous plist back and reloads it, and reports the failure without retrying. If launchd cannot reload the previous plist either, the detail names the fallback copy for a manual reload.
 
+The same operation also turns release seals on or off for the Host service: on a launcher that already selects managed releases, the candidate may add or remove only `VORTEO_RELEASE_SEALS=enabled`. See [Turn release seals on or off](#turn-release-seals-on-or-off).
+
 ### Factory checks around Dev restarts
 
 Once `container.factoryGate` is configured, the coordinator runs Factory's read-only lock acceptance script around every restart that replaces the Dev worker. That covers source updates, plain and idle restarts, held restarts, supervisor maintenance, Factory adoption and the Docker restart. Configure it through an owner-reviewed coordinator plan or renewal with `factoryGateConfiguration`: the pinned `docker` binary, the socket path, the Dev container's full ID, and `verify` with the script path, its `sha256`, the pinned `lockInode` and the expected `ownerMode`. `null` removes it. The script must be version 2 or later, which reports the owner sequence and a custody digest.
@@ -551,7 +612,7 @@ A failure after the restart names the difference and needs Factory's review. Not
 
 ### Reviewed coordinator configuration changes
 
-A reviewed coordinator plan or renewal changes a registered coordinator setting with `configurationChanges`: a list of `{ "setting": <name>, "value": <value> }`, where a `null` value removes the setting. The registry in `packages/protocol/src/coordinator-configuration-settings.ts` names each setting, its configuration path, its value schema and whether a runner renewal may carry it. It includes `factoryRuntimeAdoption`, `previewMonitor`, `claudeHostRefresh`, `engineRestart`, `engineRecovery`, `recoveryOrigin`, `factoryGate` and `hostLauncherUpdate`. The candidate configuration must differ from the live one by exactly the listed changes. Unknown settings, invalid values and a setting named twice are refused. Automatic coordinator plans refuse every configuration change.
+A reviewed coordinator plan or renewal changes a registered coordinator setting with `configurationChanges`: a list of `{ "setting": <name>, "value": <value> }`, where a `null` value removes the setting. The registry in `packages/protocol/src/coordinator-configuration-settings.ts` names each setting, its configuration path, its value schema and whether a runner renewal may carry it. It includes `factoryRuntimeAdoption`, `previewMonitor`, `claudeHostRefresh`, `engineRestart`, `engineRecovery`, `recoveryOrigin`, `factoryGate`, `hostLauncherUpdate` and `releaseSeals`. `releaseSeals` is the only setting that also changes the coordinator launcher, by exactly `VORTEO_RELEASE_SEALS=enabled`. The candidate configuration must differ from the live one by exactly the listed changes. Unknown settings, invalid values and a setting named twice are refused. Automatic coordinator plans refuse every configuration change.
 
 Clients negotiate review by setting name, behind `coordinatorBootstrapConfigurationChanges`. A client that does not name every listed setting sees the request without the list, with a reload reason, and cannot approve it. Cancellation stays available. Adding a setting takes one registry entry, its review text in the app and a test.
 
@@ -829,10 +890,13 @@ The coordinator owns the durable session host's launchd job, `local.vorteo.<inst
 - `request-session-host --install` or `--remove` asks the coordinator for a plan; `session-host-status` reports the job, its host and the durable sessions setting, with the installed release beside the host's own release and hosted sessions by provider. The coordinator derives the plan from its own configuration: the session host entrypoint through the current link, the Host job's node, and the Host job's `HOME` and `PATH` beside `PASEO_HOME`, with no other environment.
 - The owner approves the exact operation and plan digest in Installation controls. Restart decisions and the trusted Host approval policy never approve it. An approved operation waits for pending restarts and other lifecycle work, then dispatch recomputes the plan and changes nothing when it differs. A coordinator restart marks an approved or running operation failed and never replays it; check the status before requesting again.
 - Install writes the plist with mode 0600 and requires the new host to answer with launchd's pid within 60 seconds and without a watchdog kill, or removes the job again. A watchdog kill during that check fails the install even though launchd starts another host. It never writes the durable sessions setting; the owner enables that separately.
+- Durable sessions are part of Host setup once source updates are configured: `node scripts/install-execution-host.mjs enable-durable-sessions --root <installation root>` refuses without source updates, a session host capable release or a matching job, opens the install request and prints its review link, and waits up to 30 minutes for the owner's approval. Once the new host answers, it writes `{"enabled": true}` only when no setting file exists, so an explicit off survives a rerun, and confirms the status reads on. If the approval comes later, rerun with `--request <id>` to wait on the same request. The installer never writes the setting in `install` itself, and a missing file still means off.
 - `request-session-host --restart` restarts the host on the installed release through launchd: the coordinator writes a restart marker in the session host directory, signals the running host to stop, and requires a new process to answer within 90 seconds, killing a host that ignores the stop once its command is verified. Every hosted turn running at that moment is interrupted; its worker sees the marker, waits for the new host and continues the agent there instead of starting a provider locally. The new host removes the marker; a failed restart removes it too and leaves the job loaded for launchd. The request shows how many hosted sessions the last observation found, and the owner approves it like the other operations. Clients send the operation only when `sessionHostJob.restart` is advertised.
 - Hosted providers call the daemon's agent tools through the host. At open, the host replaces the daemon's injected tool server with the shipped stdio-to-socket bridge pointed at a private per-session socket under `$PASEO_HOME/session-host/tools/`, and forwards each tool message to the daemon's tool endpoint with the host's own token. While the daemon refuses connections, the host holds a message and retries for up to a minute. A notification or a read-only method is repeated after any failure, and a rejected token is held too, since it comes from a worker that has not learned the host's token yet; a tool call that fails after it may have reached a worker, whether its reply stream breaks, ends without a reply or carries a failed status, is answered at once with an error saying its outcome is unknown, so a tool never runs twice. Each request is answered exactly once from its own reply; one call's failure never touches the others in flight, a notification is never answered, and closing the provider's connection aborts its calls at the daemon. The worker strips the relay form from stored configs as it strips the direct form. A release without the bridge beside its built scripts runs hosted providers with the direct connection and logs a warning at host start.
-- A host does not need a restart request to move to a newer release. Once a minute it compares its release with the one under the current link; when they differ it writes an upgrade marker, exits as soon as it runs no session, and launchd relaunches it on the installed release. Workers release hosted sessions idle for five minutes while the marker exists and wait for the returning host; running turns and pending permissions are never cut, so a host with a long turn stays until that turn ends or the owner approves a restart. The setting file accepts `idleReleaseMs` and `releaseCheckMs`; the status detail shows `upgradePending` to owner clients that declare `upgrade: true` in their query, as interfaces from release 762 do, since older interfaces parse the status strictly.
+- A host does not need a restart request to move to a newer release. Once a minute it compares its release with the one under the current link; when they differ it writes an upgrade marker, exits as soon as it runs no session, and launchd relaunches it on the installed release. Workers release hosted sessions idle for five minutes while the marker exists and wait for the returning host; running turns and pending permissions are never cut, so a host with a long turn stays until that turn ends or the owner approves a restart. The setting file accepts `idleReleaseMs` and `releaseCheckMs`; the status detail shows `upgradePending` to owner clients that declare `upgrade: true` in their query, as interfaces from release 762 do, since older interfaces parse the status strictly. While an upgrade is pending, the Session host card in Installation controls lists the hosted Host agents that hold it, with an unanswered request, a running turn or a session still starting as the reason; idle ones are left out because workers release them after five quiet minutes.
 - Removal is refused while the setting is on or the host runs sessions. A host that stopped answering is stopped once the setting has stayed off past the workers' five-minute alive window, and the receipt records that forced stop. A host that refuses the connection, answers in another protocol version or never sends its session list is alive and is never stopped by force; after five minutes of that, removal fails without changes. A process that survives bootout is killed only after its command is verified as the session host.
 - Host restarts and source updates never touch the job. While it is installed, source updates and supervisor maintenance refuse to select a Host release without the session host entrypoint; the lifecycle queue registers this guard whenever source updates are configured, and `install-execution-host.mjs remove` refuses to run: remove the job first. No Host release selection is automatic today. A future automatic selection must stop the job with the same forced-stop sequence rather than refuse, so a failed update cannot leave the Host down.
+
+To uninstall, or to roll the Host back to a release from before the session host, work in this order: turn the setting off, wait until the session host runs no sessions (turning the setting off ends no hosted session, and idle ones are released only while an upgrade is pending, so close any agents whose sessions remain), remove the job from Installation controls, and only then select the older release or run `install-execution-host.mjs remove`. Each later step refuses while an earlier one is unfinished.
 
 Session host records share the lifecycle journal. Coordinators without session host support reject that journal once such a record exists, including terminal history. After the first request, keep a coordinator with session host support as the rollback target, and never remove records to start an older coordinator.

@@ -95,6 +95,9 @@ export class ProviderPreferencesConflictError extends Error {
     this.name = "ProviderPreferencesConflictError";
   }
 }
+/** Concurrent local writes during an authority read repeat it this many times in total. */
+const INSTALLATION_AUTHORITY_READ_ATTEMPTS = 3;
+
 const SPEECH_PERSISTED_PATHS = ["features.dictation", "features.voiceMode"];
 
 interface LoggerLike {
@@ -758,18 +761,35 @@ export class DaemonConfigStore {
     return this.applyPatch(parsed, admission ?? undefined);
   }
 
+  /**
+   * Reads the installation's settings authority for the current local settings. Account sync
+   * and provider refreshes write local settings while the read is in flight, which would make
+   * the answer stale; the read then repeats against the new settings instead of failing a
+   * sign-in the owner cannot retry meaningfully. Persistent churn still fails.
+   */
   public async readInstallationSettingsAuthority(): Promise<InstallationSettingsAdmission | null> {
-    const before = this.current;
-    const binding = before.sharedProviderPreferences?.installation;
-    if (!binding) return null;
-    this.installationSettingsReader ??= createInstallationSettingsReader(
-      process.env.VORTEO_INSTALLATION_CLIENT_CONFIG,
-    );
-    const admission = await this.installationSettingsReader.read(binding);
-    if (this.current !== before)
-      throw new InstallationSettingsAdmissionError(
-        "Daemon settings changed while verifying installation authority. Read them again before retrying.",
+    for (let attempt = 1; ; attempt += 1) {
+      const before = this.current;
+      const binding = before.sharedProviderPreferences?.installation;
+      if (!binding) return null;
+      this.installationSettingsReader ??= createInstallationSettingsReader(
+        process.env.VORTEO_INSTALLATION_CLIENT_CONFIG,
       );
+      const admission = await this.installationSettingsReader.read(binding);
+      if (this.current === before) return this.checkInstallationAdmission(admission, binding);
+      if (attempt >= INSTALLATION_AUTHORITY_READ_ATTEMPTS)
+        throw new InstallationSettingsAdmissionError(
+          "Daemon settings changed while verifying installation authority. Read them again before retrying.",
+        );
+    }
+  }
+
+  private checkInstallationAdmission(
+    admission: InstallationSettingsAdmission,
+    binding: NonNullable<
+      NonNullable<MutableDaemonConfig["sharedProviderPreferences"]>["installation"]
+    >,
+  ): InstallationSettingsAdmission {
     if (
       admission.installationId !== binding.installationId ||
       admission.serverId !== binding.serverId ||

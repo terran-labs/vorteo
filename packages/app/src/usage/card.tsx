@@ -59,10 +59,12 @@ export function UsageCard({
   // Where there is no hover the freshness is printed on the card; elsewhere the Refresh tooltip.
   const showsFreshnessInline = isNative || isCompact || !refreshable;
   const usage = entry.report;
-  const status = statusText(usage, t);
   const footer = entry.account.label ?? null;
   const { windows, balances, details, planLabel, successfulAt, retained, messages } =
     resolveUsageReport(entry, t);
+  // With an earlier reading still on the card, a failed refresh, such as Claude rate-limiting
+  // usage checks, is a note about freshness rather than an error.
+  const status = retained ? null : statusText(usage, t);
 
   const containerStyle = useMemo(
     () => [styles.container, compact ? styles.containerCompact : styles.containerPadded],
@@ -105,7 +107,7 @@ export function UsageCard({
       </View>
 
       {messages.length > 0 ? (
-        <Text style={styles.error} testID="usage-login-error">
+        <Text style={retained ? styles.notice : styles.error} testID="usage-login-error">
           {messages.join("\n")}
         </Text>
       ) : null}
@@ -357,6 +359,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   error: {
     color: theme.colors.palette.red[300],
+    fontSize: theme.fontSize.sm,
+    lineHeight: theme.fontSize.sm * 1.4,
+  },
+  notice: {
+    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     lineHeight: theme.fontSize.sm * 1.4,
   },

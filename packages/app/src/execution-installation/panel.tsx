@@ -1,3 +1,4 @@
+import type { LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
@@ -36,6 +37,8 @@ import {
   sessionHostRestartWarning,
   sessionHostReviewSummary,
   sessionHostStatusLines,
+  sessionHostUpgradeHolderLines,
+  sessionHostUpgradeHolders,
   visibleSessionHostJobs,
   type SessionHostAction,
   type SessionHostOverview,
@@ -65,6 +68,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 
 import { getHostRuntimeStore, useHostRegistryLoaded } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
 import { useVortonTouch } from "@/vorton-touch";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import {
@@ -522,6 +526,7 @@ function InstallationPanel({
               onCancel={model.cancelMaintenanceService}
             />
             <DaemonAutomationControl model={model} state={state} />
+            <DeliveryModeCard model={model} state={state} />
             {state.brokerJobs.map((job) => (
               <BrokerRequest
                 key={`${job.id}:${job.revision}`}
@@ -1598,6 +1603,66 @@ function InstructionRequestReview({
  * The session host's launchd job, owned by the coordinator. Hidden for coordinators without session
  * host jobs. Install and Remove only prepare a plan; each plan needs its own Approve.
  */
+const LIVE_SERVER_TEXT: Record<LiveDevStatus["server"]["state"], string> = {
+  stopped: "The live dev server is stopped.",
+  starting: "The live dev server is starting.",
+  ready: "The live dev server is ready. Reload to use it.",
+  failed: "The live dev server is not running.",
+};
+
+/** Reliable serves the published interface; Live dev serves the Host's live checkout. */
+function DeliveryModeCard({
+  model,
+  state,
+}: {
+  model: InstallationPanelModel;
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  const status = state.liveDev;
+  const live = status?.mode === "live";
+  const toggle = useCallback(
+    () => void model.changeLiveDev(live ? "reliable" : "live"),
+    [model, live],
+  );
+  if (!status) return null;
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="delivery-mode-card">
+      <Text style={settingsStyles.rowTitle}>Delivery mode</Text>
+      <Text style={styles.text}>
+        {live
+          ? "Live dev. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers and the recovery address keep the published interface."
+          : "Reliable. Every browser runs the published interface, and changes arrive through tracked updates."}
+      </Text>
+      {live ? (
+        <Text style={styles.text} testID="delivery-mode-server">
+          {status.server.detail ?? LIVE_SERVER_TEXT[status.server.state]}
+        </Text>
+      ) : null}
+      {!status.available && status.reason ? <Text style={styles.text}>{status.reason}</Text> : null}
+      {!live && status.available ? (
+        <Text style={styles.text}>
+          Live dev runs uncommitted edits by Host agents in your signed-in browser without a
+          publication step. Dev container agents cannot reach the live checkout.
+        </Text>
+      ) : null}
+      <Button
+        size="md"
+        disabled={state.busy || (!live && !status.available)}
+        onPress={toggle}
+        testID="delivery-mode-change"
+      >
+        {live ? "Switch to Reliable" : "Switch to Live dev"}
+      </Button>
+      {live ? (
+        <Text style={styles.text}>
+          If a live edit breaks the interface, open the safe interface at /?interface=safe.
+        </Text>
+      ) : null}
+      {state.liveDevError ? <Text style={styles.text}>{state.liveDevError}</Text> : null}
+    </View>
+  );
+}
+
 function SessionHostCard({
   model,
   state,
@@ -1616,6 +1681,18 @@ function SessionHostCard({
     void model.requestSessionHost("session-host-restart");
   }, [model]);
   const overview = state.sessionHost;
+  // The session host runs on Host, so only Host agents can hold its upgrade.
+  const hostServerId =
+    readExecutionInstallation()?.environments.find((environment) => environment.kind === "host")
+      ?.serverId ?? "";
+  const hostAgents = useSessionStore((store) => store.sessions[hostServerId]?.agents);
+  const holderLines = useMemo(
+    () =>
+      sessionHostUpgradeHolderLines(
+        sessionHostUpgradeHolders(overview?.status ?? null, hostAgents?.values() ?? []),
+      ),
+    [overview?.status, hostAgents],
+  );
   if (!overview) return null;
   const review = { busy: state.busy, unlocked: state.unlocked };
   return (
@@ -1631,6 +1708,11 @@ function SessionHostCard({
         <Text selectable style={styles.text} testID="session-host-status">
           {sessionHostStatusLines(overview.status).join("\n")}
         </Text>
+        {holderLines.length > 0 ? (
+          <Text selectable style={styles.text} testID="session-host-upgrade-holders">
+            {holderLines.join("\n")}
+          </Text>
+        ) : null}
         {state.sessionHostError ? (
           <>
             <Text accessibilityRole="alert" style={styles.error}>

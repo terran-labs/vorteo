@@ -27,7 +27,15 @@ export const UPGRADE_STEPS = UpgradeStepNameSchema.options;
 /** Coordinator-private step state. Projected out of every reply. */
 const UpgradePrivateSchema = z.strictObject({
   adoptionLaunchedAt: z.string().datetime().optional(),
-  hostJobId: z.string().uuid().optional(),
+  // Tracked restart jobs use UUIDs; installer-made Hosts build releases directly as
+  // `installer-<upgrade id>` (see release-upgrade-runtime.ts). Refusing that ID failed every
+  // save, so the coordinator relaunched the Host build on each tick and the upgrade never ended.
+  hostJobId: z
+    .union([
+      z.string().uuid(),
+      z.string().regex(/^installer-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
+    ])
+    .optional(),
   coordinatorNext: z.string().startsWith("/").optional(),
   coordinatorPrevious: z.string().startsWith("/").optional(),
   coordinatorLaunchedAt: z.string().datetime().optional(),

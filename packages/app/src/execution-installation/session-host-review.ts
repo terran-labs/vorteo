@@ -208,3 +208,75 @@ export function sessionHostStatusLines(status: SessionHostStatus | null): string
     lines.push("Plist: differs from the coordinator's plan. Remove the job and install it again.");
   return lines;
 }
+
+/** The slice of an agent the upgrade hint reads. */
+export interface SessionHostHoldingCandidate {
+  id: string;
+  title: string | null;
+  hosted?: boolean;
+  status: string;
+  pendingPermissions: readonly unknown[];
+  archivedAt?: Date | null;
+}
+
+export interface SessionHostUpgradeHolder {
+  id: string;
+  title: string;
+  reason: "waiting-for-owner" | "running" | "starting";
+}
+
+const HOLDING_REASON_TEXT: Record<SessionHostUpgradeHolder["reason"], string> = {
+  "waiting-for-owner": "waiting for your answer",
+  running: "running a turn",
+  starting: "starting",
+};
+
+function holdingReason(
+  agent: SessionHostHoldingCandidate,
+): SessionHostUpgradeHolder["reason"] | null {
+  if (agent.pendingPermissions.length > 0) return "waiting-for-owner";
+  if (agent.status === "running") return "running";
+  // Workers release only idle or errored sessions, so one still starting holds the host too.
+  if (agent.status === "initializing") return "starting";
+  return null;
+}
+
+/**
+ * Hosted agents that keep the session host on its old release while an upgrade is pending. Workers
+ * never release a hosted session with a running turn or an unanswered request, so these are the
+ * agents the owner can act on. Idle hosted agents are left out: workers release them once they
+ * have been quiet for the idle release window, five minutes by default.
+ */
+export function sessionHostUpgradeHolders(
+  status: SessionHostStatus | null,
+  agents: Iterable<SessionHostHoldingCandidate>,
+): SessionHostUpgradeHolder[] {
+  if (!status?.detail?.upgradePending) return [];
+  const holders: SessionHostUpgradeHolder[] = [];
+  for (const agent of agents) {
+    if (agent.hosted !== true || agent.archivedAt) continue;
+    const reason = holdingReason(agent);
+    if (reason) holders.push({ id: agent.id, title: agent.title?.trim() || agent.id, reason });
+  }
+  // Requests the owner can answer come first; they are the ones that otherwise wait forever.
+  return holders.sort(
+    (a, b) =>
+      Number(b.reason === "waiting-for-owner") - Number(a.reason === "waiting-for-owner") ||
+      a.title.localeCompare(b.title),
+  );
+}
+
+/** Owner-facing lines for the holders, empty when nothing holds the upgrade. */
+export function sessionHostUpgradeHolderLines(
+  holders: readonly SessionHostUpgradeHolder[],
+): string[] {
+  if (holders.length === 0) return [];
+  const waiting = holders.some((holder) => holder.reason === "waiting-for-owner");
+  return [
+    waiting
+      ? "The upgrade waits for these agents. Answer their requests, or let their turns finish:"
+      : "The upgrade waits for these agents to finish:",
+    ...holders.map((holder) => `- ${holder.title}: ${HOLDING_REASON_TEXT[holder.reason]}`),
+    "Idle hosted agents leave on their own after about five quiet minutes.",
+  ];
+}

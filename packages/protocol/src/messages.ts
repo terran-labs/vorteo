@@ -4340,6 +4340,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentJournal: z.boolean().optional(),
         // COMPAT(agentQuestions): added in v0.11.0-beta.3.vorteo.690; gate the Open questions card until the daemon floor includes it.
         agentQuestions: z.boolean().optional(),
+        // COMPAT(agentQuestionInputs): added November 2026; send typed answer fields only when advertised.
+        agentQuestionInputs: z.boolean().optional(),
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain wire field.
         projectedSubagentTimeline: z.boolean().optional(),
         wholeTurnTimeline: z.boolean().optional(),

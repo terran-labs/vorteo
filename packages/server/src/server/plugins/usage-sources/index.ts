@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { AgentUsageSession } from "../../agent/agent-sdk-types.js";
 import type { UsageScope } from "@getpaseo/plugin/server/usage";
 import { z } from "zod";
@@ -57,6 +59,15 @@ export class UsageSourceRegistry {
   private readonly byAgent = new Map<string, AgentReports>();
   private readonly cache = new Map<string, { at: number; entry: UsageReportEntry }>();
   private readonly successful = new Map<string, NonNullable<UsageReportEntry["lastSuccessful"]>>();
+  /**
+   * Readings saved by an earlier daemon. Discovery after a restart has not rebuilt every
+   * identity yet, so these sit outside pruning and stand in until a fresh success replaces them.
+   */
+  private readonly restored = new Map<string, NonNullable<UsageReportEntry["lastSuccessful"]>>();
+  /** Settles once the saved readings are loaded; fetches wait on it before consulting them. */
+  private readonly restoring: Promise<void>;
+  /** Serializes saves so an older write never lands after a newer one. */
+  private saving: Promise<void> = Promise.resolve();
   private readonly pending = new Map<string, Promise<UsageReportEntry>>();
 
   constructor(
@@ -65,7 +76,11 @@ export class UsageSourceRegistry {
     private readonly logger: Pick<Logger, "warn"> = { warn: console.warn },
     private readonly agents: AgentUsageLookup = { hasAgent: () => false, usageSession: () => null },
     private readonly deadlineMs = 20_000,
-  ) {}
+    /** Where the last good readings persist across restarts; in memory only when absent. */
+    private readonly snapshotPath?: string,
+  ) {
+    this.restoring = this.restore(snapshotPath);
+  }
 
   register(source: UsageSource): void {
     if (this.sources.has(source.id)) throw new Error(`Duplicate usage source: ${source.id}`);
@@ -177,7 +192,12 @@ export class UsageSourceRegistry {
     }
     // Fetch freshness expires independently of successful snapshots. Retain only live identities.
     const active = this.activeCacheKeys();
-    for (const key of this.successful.keys()) if (!active.has(key)) this.successful.delete(key);
+    for (const key of this.successful.keys()) {
+      if (active.has(key)) continue;
+      this.successful.delete(key);
+      // An identity seen live and then retired drops its saved reading too.
+      this.restored.delete(key);
+    }
     for (const key of this.cache.keys()) if (!active.has(key)) this.cache.delete(key);
   }
 
@@ -273,6 +293,7 @@ export class UsageSourceRegistry {
     const request = (async () => {
       const fetchedAt = new Date(this.now()).toISOString();
       const outcome = await this.fetchWithFallback(known);
+      await this.restoring;
       const completedAt = new Date(this.now()).toISOString();
       const entry: UsageReportEntry = {
         id,
@@ -286,17 +307,19 @@ export class UsageSourceRegistry {
       if (entry.report.status === "available") {
         entry.successfulAt = completedAt;
       } else {
-        entry.lastSuccessful = this.successful.get(cacheKey);
+        entry.lastSuccessful = this.successful.get(cacheKey) ?? this.restored.get(cacheKey);
       }
       if (
         this.sources.get(known.source.id) === known.source &&
         this.activeCacheKeys().has(cacheKey)
       ) {
         if (entry.report.status === "available") {
-          this.successful.set(cacheKey, {
-            fetchedAt: completedAt,
-            report: entry.report,
-          });
+          const snapshot = { fetchedAt: completedAt, report: entry.report };
+          // Re-inserted so the oldest readings sit first when the file is trimmed.
+          this.successful.delete(cacheKey);
+          this.successful.set(cacheKey, snapshot);
+          this.restored.delete(cacheKey);
+          this.saveSnapshots();
         }
         this.writeCache(cacheKey, entry);
       }
@@ -307,6 +330,39 @@ export class UsageSourceRegistry {
       if (this.pending.get(cacheKey) === request) this.pending.delete(cacheKey);
     });
     return request;
+  }
+
+  /** Rewrites the saved readings whole, through a temporary file so a crash never truncates it. */
+  private saveSnapshots(): void {
+    if (!this.snapshotPath) return;
+    // Restored readings not yet refreshed come first, so they are trimmed before live ones.
+    const readings = [...this.restored, ...this.successful].slice(-SNAPSHOT_LIMIT);
+    const path = this.snapshotPath;
+    const contents = JSON.stringify({ version: 1, readings: Object.fromEntries(readings) });
+    const temporary = `${path}.${process.pid}.tmp`;
+    this.saving = this.saving.then(() => this.writeSnapshots(path, temporary, contents));
+  }
+
+  private async restore(path: string | undefined): Promise<void> {
+    const readings = await readSnapshots(path, this.logger);
+    // A success recorded while loading is newer than anything saved.
+    for (const [key, reading] of readings)
+      if (!this.successful.has(key)) this.restored.set(key, reading);
+  }
+
+  private async writeSnapshots(path: string, temporary: string, contents: string): Promise<void> {
+    try {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(temporary, contents, { mode: 0o600 });
+      await rename(temporary, path);
+    } catch (error) {
+      this.logger.warn({ err: error }, "Could not save usage readings");
+    }
+  }
+
+  /** Settles once every save requested so far has been written. */
+  flushSaves(): Promise<void> {
+    return this.saving;
   }
 
   private writeCache(id: string, entry: UsageReportEntry): void {
@@ -391,6 +447,39 @@ function loginKey(login: Login): string {
       ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
       : value,
   );
+}
+
+/** Bounds the saved file; the oldest readings go first. */
+const SNAPSHOT_LIMIT = 200;
+
+const SavedSnapshotsSchema = z.object({
+  version: z.literal(1),
+  readings: z.record(z.string(), z.object({ fetchedAt: z.string(), report: z.unknown() })),
+});
+
+async function readSnapshots(
+  path: string | undefined,
+  logger: Pick<Logger, "warn">,
+): Promise<Map<string, NonNullable<UsageReportEntry["lastSuccessful"]>>> {
+  const restored = new Map<string, NonNullable<UsageReportEntry["lastSuccessful"]>>();
+  if (!path) return restored;
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return restored;
+  }
+  try {
+    const saved = SavedSnapshotsSchema.parse(JSON.parse(raw));
+    for (const [key, reading] of Object.entries(saved.readings)) {
+      const report = UsageReportSchema.safeParse(reading.report);
+      if (report.success && report.data.status === "available")
+        restored.set(key, { fetchedAt: reading.fetchedAt, report: report.data });
+    }
+  } catch (error) {
+    logger.warn({ err: error, path }, "Ignoring unreadable saved usage readings");
+  }
+  return restored;
 }
 
 function cacheIdentity(id: string, known: KnownReport): string {

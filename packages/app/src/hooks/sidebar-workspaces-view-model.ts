@@ -44,6 +44,7 @@ export interface SidebarStatusWorkspacePlacement extends SidebarWorkspacePlaceme
 }
 
 export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
+  projectId?: string;
   workspaceDirectory: string;
   workspaceDirectoryLabel: string;
   // Raw user-set title (null when the name is derived from branch/directory).
@@ -182,6 +183,7 @@ export function createSidebarWorkspaceEntry(input: {
     title: input.workspace.title ?? null,
     pinnedAt: input.workspace.pinnedAt,
     standing: input.workspace.standing,
+    projectId: input.workspace.projectId,
     factoryMembership: matchesFactoryIdentity ? membership : undefined,
     projectSystem: input.workspace.projectSystem,
     systemMembership: input.workspace.systemMembership,
@@ -435,7 +437,9 @@ export function buildSidebarWorkspacePlacementModel(input: {
   projects: readonly HostProjectListItem[];
   managedWorkspaces?: readonly ManagedWorkspacePlacement[];
 }): SidebarWorkspacePlacementModel {
-  let projects = buildSidebarProjectsFromHostProjects({ projects: input.projects });
+  let projects = buildSidebarProjectsFromHostProjects({
+    projects: input.projects,
+  });
   const managed = input.managedWorkspaces ?? [];
   if (managed.length) {
     const projectByWorkspace = new Map(
@@ -825,7 +829,10 @@ export function computeSidebarOrderUpdates(input: {
       visibleKeys: project.workspaces.map((workspace) => workspace.workspaceKey),
     });
     if (nextWorkspaceOrder !== persistedWorkspaceOrder) {
-      workspaceOrders.push({ projectViewKey: project.viewKey, order: nextWorkspaceOrder });
+      workspaceOrders.push({
+        projectViewKey: project.viewKey,
+        order: nextWorkspaceOrder,
+      });
     }
   }
 

@@ -6248,6 +6248,9 @@ export class Session {
           questionId: msg.questionId,
           answer,
           answeredBy: `${this.clientType}:${this.clientId}`,
+          ...(msg.optionIds?.length ? { optionIds: msg.optionIds } : {}),
+          ...(msg.note?.trim() ? { note: msg.note } : {}),
+          ...(msg.source ? { source: msg.source } : {}),
         }),
         null,
       );

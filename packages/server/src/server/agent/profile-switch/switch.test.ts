@@ -501,7 +501,10 @@ test.each([false, true])(
           logger: createTestLogger(),
         },
         { agentId: id, provider: "codex" },
+        { standingInstructions: "You are the Foreman." },
       );
+      // Standing instructions, such as a Factory charter, lead the new session's prompt.
+      expect(codex.created.at(-1)?.systemPrompt).toMatch(/^You are the Foreman\.\n\n/);
       expect(codex.created.at(-1)?.systemPrompt).toContain("Preserve my approved plan");
       expect(codex.created.at(-1)?.systemPrompt).toContain("The next step is validation");
       expect(reader.getAgent(id)).toMatchObject({

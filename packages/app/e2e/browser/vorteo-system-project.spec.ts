@@ -14,7 +14,7 @@ async function runnerWorkspaceId(client: SeedDaemonClient): Promise<string> {
       (entry as { systemMembership?: { role: string } }).systemMembership?.role ===
       "optimization-runner",
   );
-  if (!runner) throw new Error("Expected the daemon to seed the Vorteo :: Optimizer workspace");
+  if (!runner) throw new Error("Expected the daemon to seed the Vorteo :: Mechanic workspace");
   return runner.id;
 }
 
@@ -41,7 +41,7 @@ test.describe("desktop", () => {
     await expect(projectRow).toContainText("Vorteo System");
     const row = runnerRow(page, workspaceId);
     await expect(row).toBeVisible();
-    await expect(row).toContainText("Vorteo :: Optimizer");
+    await expect(row).toContainText("Vorteo :: Mechanic");
 
     await row.hover();
     await page.getByTestId(`sidebar-workspace-kebab-${getServerId()}:${workspaceId}`).click();

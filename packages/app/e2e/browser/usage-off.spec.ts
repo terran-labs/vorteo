@@ -9,7 +9,7 @@ import {
   closeUsage,
 } from "../support/helpers/usage-sidebar-item";
 
-test("Check usage applies to the host and Turn on restores cards", async ({
+test("direct-route Check usage applies to the host and Turn on restores cards", async ({
   page,
   e2eWorkerClient,
 }) => {
@@ -60,7 +60,7 @@ test("Check usage applies to the host and Turn on restores cards", async ({
   }
 });
 
-test("older hosts keep usage without a Check usage switch", async ({ page }) => {
+test("direct-route older hosts keep usage without a Check usage switch", async ({ page }) => {
   test.setTimeout(180_000);
   await installUsageReportsFixture(page, {
     usageSettingSupported: false,

@@ -2,6 +2,7 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
+  projectFactory: en.projectFactory,
   paneFind: {
     connectionFailure:
       "Impossible de rechercher dans cette conversation. Vérifiez la connexion à l’hôte et réessayez.",
@@ -1791,8 +1792,14 @@ export const fr: TranslationResources = {
           connectDocs: "Docs",
           openConnectDocs: "Ouvrir la documentation sur la connectivité",
           recommended: "Recommandé",
-          relay: { title: "Relais", hint: "Chiffré de bout en bout, scannez un QR code" },
-          tailscale: { title: "Tailscale", hint: "Demande un peu de configuration" },
+          relay: {
+            title: "Relais",
+            hint: "Chiffré de bout en bout, scannez un QR code",
+          },
+          tailscale: {
+            title: "Tailscale",
+            hint: "Demande un peu de configuration",
+          },
         },
       },
     },
@@ -3201,7 +3208,7 @@ export const fr: TranslationResources = {
       system: {
         title: "À propos de Vorteo System",
         description:
-          "Ce projet sert à faire évoluer cette installation de Vorteo. Il s'appuie sur le checkout à partir duquel l'installation a été construite et contient aussi les espaces de maintenance gérés par le daemon, comme l'Vorteo :: Optimizer. Le daemon le recrée et en dépend, il ne peut donc être ni retiré ni renommé.",
+          "Ce projet sert à faire évoluer cette installation de Vorteo. Il s'appuie sur le checkout à partir duquel l'installation a été construite et contient aussi les espaces de maintenance gérés par le daemon, comme l'Vorteo :: Mechanic. Le daemon le recrée et en dépend, il ne peut donc être ni retiré ni renommé.",
       },
       readFailures: {
         invalidTitle: "Impossible d’analyser paseo.json",

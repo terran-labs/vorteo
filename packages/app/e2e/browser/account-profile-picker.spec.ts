@@ -221,7 +221,7 @@ test("chooser opens while usage is pending and refreshes within the account tile
     await expect(page.getByTestId("preset-usage-loading-mock")).toHaveCount(0);
     const account = page.getByTestId("preset-account-mock");
     const remaining = account.getByText("8% left", { exact: true });
-    const reset = account.getByText("Resets in 3 days", { exact: true });
+    const reset = account.getByText("Weekly resets in 3 days", { exact: true });
     await expect(remaining).toBeVisible();
     await expect(reset).toBeVisible();
     expect((await remaining.boundingBox())!.y).toBeLessThan((await reset.boundingBox())!.y);

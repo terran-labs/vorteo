@@ -258,6 +258,41 @@ describe("submitAgentInput", () => {
     expect(reportConnectionError).toHaveBeenCalledWith(error);
   });
 
+  it("keeps a draft typed while a failed send was in flight", async () => {
+    const composer = { text: "", attachments: [] as string[] };
+    const deferred = createDeferredPromise<void>();
+    const result = submitAgentInput({
+      message: "first message",
+      attachments: ["sent.png"],
+      forceSend: true,
+      isAgentRunning: true,
+      canSubmit: true,
+      queueMessage: vi.fn(),
+      submitMessage: () => deferred.promise,
+      clearDraft: vi.fn(),
+      setUserInput: (text) => {
+        composer.text = text;
+      },
+      setAttachments: (next) => {
+        composer.attachments = next;
+      },
+      getUserInput: () => composer.text,
+      getAttachments: () => composer.attachments,
+      setSendError: vi.fn(),
+      reportConnectionError: vi.fn(),
+      setIsProcessing: vi.fn(),
+    });
+    composer.text = "second thought";
+    composer.attachments = ["draft.png"];
+    deferred.reject(new Error("The provider returned an invalid steerActiveTurn result."));
+
+    await expect(result).resolves.toBe("failed");
+    expect(composer).toEqual({
+      text: "first message\n\nsecond thought",
+      attachments: ["sent.png", "draft.png"],
+    });
+  });
+
   it("submits when empty submit is explicitly allowed", async () => {
     const queueMessage = vi.fn();
     const submitMessage = vi.fn(async () => {});

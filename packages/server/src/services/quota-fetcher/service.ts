@@ -1,7 +1,10 @@
 import type { Logger } from "pino";
 import type { ProviderUsage } from "../../server/messages.js";
 import { createProviderUsageFetchers } from "./manifest.js";
-import type { ClaudeLimitObservationReader } from "../../server/agent/providers/claude/limit-observation.js";
+import {
+  ClaudeLimitObservations,
+  type UsageLimitStop,
+} from "../../server/agent/providers/claude/limit-observation.js";
 import type { ProviderApiFetch, ProviderUsageConfigMap, ProviderUsageFetcher } from "./provider.js";
 import { unavailableUsage } from "./usage.js";
 
@@ -11,7 +14,8 @@ export interface ProviderUsageServiceOptions {
   getProviderConfigs?: () => ProviderUsageConfigMap;
   createFetchers?: (providers?: ProviderUsageConfigMap) => ProviderUsageFetcher[];
   fetch?: ProviderApiFetch;
-  claudeLimitObservations?: ClaudeLimitObservationReader;
+  /** Defaults to a service-owned store fed by recordUsageLimitStop. */
+  claudeLimitObservations?: ClaudeLimitObservations;
   cacheTtlMs?: number;
   now?: () => number;
 }
@@ -31,6 +35,7 @@ export class ProviderUsageService {
   private cached: { fetchedAtMs: number; result: ProviderUsageListResult } | null = null;
   private inFlight: Promise<ProviderUsageListResult> | null = null;
   private generation = 0;
+  private readonly claudeLimitObservations: ClaudeLimitObservations;
 
   invalidate(): void {
     this.generation += 1;
@@ -38,8 +43,17 @@ export class ProviderUsageService {
     this.inFlight = null;
   }
 
+  /**
+   * Records a live usage-limit stop for accounts whose credential cannot read usage.
+   * Provider-specific parsing stays here so the daemon bootstrap remains provider-neutral.
+   */
+  recordUsageLimitStop(providerId: string, stop: UsageLimitStop): void {
+    if (this.claudeLimitObservations.record(providerId, stop)) this.invalidate();
+  }
+
   constructor(options: ProviderUsageServiceOptions) {
     this.logger = options.logger.child({ module: "provider-usage-service" });
+    this.claudeLimitObservations = options.claudeLimitObservations ?? new ClaudeLimitObservations();
     this.getFetchers = options.fetchers
       ? () => options.fetchers as ProviderUsageFetcher[]
       : () =>
@@ -48,7 +62,7 @@ export class ProviderUsageService {
             logger: this.logger,
             fetch: options.fetch,
             providers: options.getProviderConfigs?.(),
-            claudeLimitObservations: options.claudeLimitObservations,
+            claudeLimitObservations: this.claudeLimitObservations,
           });
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;

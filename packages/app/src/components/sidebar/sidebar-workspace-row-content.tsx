@@ -1,3 +1,6 @@
+import { FactoryRoleStatus } from "./factory-status";
+import { useTranslation } from "react-i18next";
+import { useProjectFactory } from "./factory-instructions";
 import { useSidebarWidth } from "./sidebar-width";
 import { TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
 import { WorkspaceLifecycleIndicators } from "@/workspace/lifecycle/indicators";
@@ -51,8 +54,12 @@ import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sideba
 import { WorkspaceLabelChip } from "@/workspace-labels/chip";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
 
-const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const managedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
+const foregroundMutedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundMuted,
+});
+const managedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundExtraMuted,
+});
 const managedAlertMapping = (theme: Theme) => ({
   color: theme.colors.surface0,
   fill: theme.colors.foregroundExtraMuted,
@@ -91,7 +98,10 @@ export function SidebarWorkspaceRowFrame({
     if (open) setIsHovered(false);
   }, []);
   const hoverHandlers = useMemo(
-    () => ({ onPointerEnter: handlePointerEnter, onPointerLeave: handlePointerLeave }),
+    () => ({
+      onPointerEnter: handlePointerEnter,
+      onPointerLeave: handlePointerLeave,
+    }),
     [handlePointerEnter, handlePointerLeave],
   );
 
@@ -169,7 +179,10 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   const {
     settings: { workspaceTitleSource },
   } = useAppSettings();
-  const workspaceLabel = resolveSidebarWorkspacePrimaryLabel({ workspace, workspaceTitleSource });
+  const workspaceLabel = resolveSidebarWorkspacePrimaryLabel({
+    workspace,
+    workspaceTitleSource,
+  });
 
   const installedEnvironment = useHasExecutionEnvironment(workspace.serverId);
   const workspaceBranchTextStyle = useMemo(
@@ -215,6 +228,15 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
               {children}
             </View>
           </View>
+          <FactoryRoleStatus
+            serverId={workspace.serverId}
+            projectId={workspace.projectId ?? ""}
+            workspaceId={workspace.workspaceId}
+            enabled={Boolean(
+              workspace.factoryMembership ||
+              workspace.systemMembership?.role === "optimization-runner",
+            )}
+          />
           <WorkspaceMetaRow
             currentBranch={workspace.currentBranch}
             projectName={leadingProjectName}
@@ -470,7 +492,13 @@ export function SidebarWorkspaceTrailingDetails({
         hostOnly
         muted={Boolean(workspace.standing || workspace.factoryMembership)}
       />
-      <WorkspaceLifecycleIndicators workspace={workspace} />
+      <WorkspaceLifecycleIndicators
+        workspace={workspace}
+        hideFactory={Boolean(
+          workspace.factoryMembership?.installationId.startsWith("project-factory:"),
+        )}
+      />
+      <FactoryReviewBadge workspace={workspace} />
       {service ? <ServiceItem summary={service} iconOnly /> : null}
       {sidebarRowItems.activityBadges ? (
         <WorkspaceChecklistProgress
@@ -527,6 +555,24 @@ export function SidebarWorkspaceMenuReveal({
   );
 }
 
+function FactoryReviewBadge({ workspace }: { workspace: SidebarWorkspaceEntry }) {
+  const { t } = useTranslation();
+  const state = useProjectFactory(
+    workspace.serverId,
+    workspace.projectId ?? "",
+    Boolean(
+      workspace.factoryMembership?.installationId.startsWith("project-factory:") ||
+      workspace.systemMembership?.role === "optimization-runner",
+    ),
+  );
+  const role = state.data?.roles.find(
+    (candidate) => candidate.workspaceId === workspace.workspaceId,
+  );
+  return role?.instructions && role.instructions.review !== "none" ? (
+    <Text accessibilityLabel={t("projectFactory.reviewBadge")}>●</Text>
+  ) : null;
+}
+
 // The status dot centres on the title's first line, so both share its line height.
 const TITLE_LINE_HEIGHT = 20;
 
@@ -554,7 +600,9 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     overflow: "hidden",
   },
-  menuBackdrop: (backdrop: SidebarSurfaceBackdrop) => ({ backgroundColor: theme.colors[backdrop] }),
+  menuBackdrop: (backdrop: SidebarSurfaceBackdrop) => ({
+    backgroundColor: theme.colors[backdrop],
+  }),
   touchMenuSpace: { flexShrink: 0, marginLeft: 4 },
   menuEdge: {
     position: "absolute",
@@ -565,7 +613,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   alignedRow: { alignItems: "center" },
   alignedActions: { alignItems: "center", gap: 4 },
-  serviceSlot: { alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  serviceSlot: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
   workspaceRowContent: {
     position: "relative",
   },

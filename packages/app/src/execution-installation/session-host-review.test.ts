@@ -9,6 +9,8 @@ import {
   sessionHostRestartWarning,
   sessionHostReviewSummary,
   sessionHostStatusLines,
+  sessionHostUpgradeHolderLines,
+  sessionHostUpgradeHolders,
   visibleSessionHostJobs,
 } from "./session-host-review";
 
@@ -249,4 +251,51 @@ test("without a status the card still offers decisions on jobs but no new reques
   expect(visibleSessionHostJobs(unknown.jobs)).toEqual([job]);
   expect(sessionHostActionDisabledReason(job, "approve", unlocked)).toBeNull();
   expect(sessionHostActionDisabledReason(job, "cancel", unlocked)).toBeNull();
+});
+
+test("a pending upgrade names the hosted agents holding it, owner requests first", () => {
+  const pending: SessionHostStatus = {
+    ...installed,
+    detail: { ...installed.detail!, upgradePending: true },
+  };
+  const agent = (id: string, overrides: Record<string, unknown> = {}) => ({
+    id,
+    title: `Agent ${id}`,
+    hosted: true,
+    status: "idle",
+    pendingPermissions: [] as unknown[],
+    ...overrides,
+  });
+  const agents = [
+    agent("running", { status: "running" }),
+    agent("asking", { pendingPermissions: [{ id: "permission-1" }] }),
+    agent("idle"),
+    agent("local", { hosted: false, status: "running" }),
+    agent("archived", { status: "running", archivedAt: new Date() }),
+    agent("untitled", { title: " ", status: "running" }),
+    agent("booting", { status: "initializing" }),
+    agent("errored", { status: "error" }),
+  ];
+  const holders = sessionHostUpgradeHolders(pending, agents);
+  expect(holders).toEqual([
+    { id: "asking", title: "Agent asking", reason: "waiting-for-owner" },
+    { id: "booting", title: "Agent booting", reason: "starting" },
+    { id: "running", title: "Agent running", reason: "running" },
+    { id: "untitled", title: "untitled", reason: "running" },
+  ]);
+  expect(sessionHostUpgradeHolderLines(holders)).toEqual([
+    "The upgrade waits for these agents. Answer their requests, or let their turns finish:",
+    "- Agent asking: waiting for your answer",
+    "- Agent booting: starting",
+    "- Agent running: running a turn",
+    "- untitled: running a turn",
+    "Idle hosted agents leave on their own after about five quiet minutes.",
+  ]);
+  expect(sessionHostUpgradeHolderLines(holders.slice(1))[0]).toBe(
+    "The upgrade waits for these agents to finish:",
+  );
+  // Nothing is listed without a pending upgrade, from an older coordinator, or without status.
+  expect(sessionHostUpgradeHolders(installed, agents)).toEqual([]);
+  expect(sessionHostUpgradeHolders(null, agents)).toEqual([]);
+  expect(sessionHostUpgradeHolderLines([])).toEqual([]);
 });

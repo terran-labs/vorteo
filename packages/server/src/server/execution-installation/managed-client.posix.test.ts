@@ -38,9 +38,26 @@ test("paired managed Dev workers discover the existing private client when launc
   ).toBe("/explicit/client.json");
 });
 
+test("the Dev image daemon adopts a client paired after its launcher started", () => {
+  const { file, input } = fixture();
+  const imageDaemon = {
+    ...input,
+    managedWorker: false,
+    paseoHome: path.join(input.homeDir, ".paseo"),
+  };
+  expect(resolveManagedInstallationClient(imageDaemon)).toBe(file);
+});
+
 test("standalone workers and Host do not adopt the Dev pairing client", () => {
   const { input } = fixture();
   expect(resolveManagedInstallationClient({ ...input, managedWorker: false })).toBeUndefined();
+  expect(
+    resolveManagedInstallationClient({
+      ...input,
+      managedWorker: false,
+      paseoHome: path.join(input.homeDir, "checkout/.dev/paseo-home"),
+    }),
+  ).toBeUndefined();
   expect(resolveManagedInstallationClient({ ...input, environment: undefined })).toBeUndefined();
   expect(resolveManagedInstallationClient({ ...input, environment: "host" })).toBeUndefined();
   expect(resolveManagedInstallationClient({ ...input, platform: "darwin" })).toBeUndefined();

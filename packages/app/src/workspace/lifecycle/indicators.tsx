@@ -15,7 +15,9 @@ const Shield = withUnistyles(LockKeyhole);
 const Repeat = withUnistyles(Repeat2);
 const Paused = withUnistyles(CirclePause);
 const FactoryIcon = withUnistyles(Factory);
-const neutral = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
+const neutral = (theme: Theme) => ({
+  color: theme.colors.foregroundExtraMuted,
+});
 
 const shield = <Shield size={16} uniProps={neutral} />;
 const repeat = <Repeat size={16} uniProps={neutral} />;
@@ -36,13 +38,20 @@ function FactoryIndicator({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-export function WorkspaceLifecycleIndicators({ workspace }: { workspace: SidebarWorkspaceEntry }) {
+export function WorkspaceLifecycleIndicators({
+  workspace,
+  hideFactory = false,
+}: {
+  workspace: SidebarWorkspaceEntry;
+  hideFactory?: boolean;
+}) {
   const touch = useVortonTouch();
   const scheduled = useWorkspaceScheduleState(workspace.serverId, workspace.workspaceId);
   const membership = useFactoryMembership(workspace.serverId, workspace.workspaceId);
   const factory = Boolean(membership);
   const systemManaged = useSystemManaged(workspace.serverId, workspace.workspaceId);
   const protectedLabel = systemManaged ? SYSTEM_MANAGED_EXPLANATION : "Protected";
+  const locked = workspace.protected || (factory && hideFactory);
   const label = scheduled === "paused" ? "Paused" : "Scheduled";
   const openSchedules = useCallback(
     (event: GestureResponderEvent) => {
@@ -60,7 +69,7 @@ export function WorkspaceLifecycleIndicators({ workspace }: { workspace: Sidebar
   if (!scheduled && !workspace.protected && !factory) return null;
   return (
     <>
-      {workspace.protected ? (
+      {locked ? (
         <IndicatorTooltip label={protectedLabel}>
           <View
             style={styles.badgeSlot}
@@ -73,7 +82,7 @@ export function WorkspaceLifecycleIndicators({ workspace }: { workspace: Sidebar
           </View>
         </IndicatorTooltip>
       ) : null}
-      {factory ? <FactoryIndicator workspaceId={workspace.workspaceId} /> : null}
+      {factory && !hideFactory ? <FactoryIndicator workspaceId={workspace.workspaceId} /> : null}
       {scheduled ? (
         <IndicatorTooltip label={label}>
           <Pressable

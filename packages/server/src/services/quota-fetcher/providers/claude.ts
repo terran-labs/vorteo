@@ -580,7 +580,18 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   ): Promise<ProviderUsage> {
     const { oauth } = credentials;
     const plan = buildClaudePlan(oauth.subscriptionType, oauth.rateLimitTier);
+    const backoff = usageBackoff.get(this.providerId);
+    if (backoff?.limitedUntil !== undefined && backoff.limitedUntil > this.now())
+      return this.rateLimitedUsage(backoff);
     const resp = await this.callClaudeApi(oauth.accessToken);
+    if (typeof resp === "object" && "rateLimitedForMs" in resp) {
+      const state = {
+        limitedUntil: this.now() + (resp.rateLimitedForMs ?? DEFAULT_RATE_LIMIT_WAIT_MS),
+        lastGood: backoff?.lastGood,
+      };
+      usageBackoff.set(this.providerId, state);
+      return this.rateLimitedUsage(state);
+    }
 
     if (resp === "AUTH_REJECTED") {
       return {
@@ -616,7 +627,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
       });
     }
 
-    return {
+    const usage: ProviderUsage = {
       providerId: this.providerId,
       displayName: this.displayName,
       status: "available",
@@ -625,6 +636,29 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
       balances: [],
       details,
       error: null,
+    };
+    usageBackoff.set(this.providerId, { lastGood: usage });
+    return usage;
+  }
+
+  /**
+   * While Claude rate-limits an account, its last good reading stands in with a note, so the
+   * quotas stay visible. Without one, the wait is reported as the account's error.
+   */
+  private rateLimitedUsage(backoff: UsageBackoff): ProviderUsage {
+    const waitMs = Math.max(0, (backoff.limitedUntil ?? this.now()) - this.now());
+    if (!backoff.lastGood)
+      throw new Error(`Rate limited by Claude. Try again in ${formatWait(waitMs)}.`);
+    return {
+      ...backoff.lastGood,
+      details: [
+        ...(backoff.lastGood.details ?? []),
+        {
+          id: "claude-rate-limited",
+          label: "Updates",
+          value: `Claude is limiting usage checks. Retrying in ${formatWait(waitMs)}.`,
+        },
+      ],
     };
   }
 
@@ -693,7 +727,9 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
 
   private async callClaudeApi(
     token: string,
-  ): Promise<ClaudeUsageResponse | "NEEDS_AUTH" | "AUTH_REJECTED"> {
+  ): Promise<
+    ClaudeUsageResponse | "NEEDS_AUTH" | "AUTH_REJECTED" | { rateLimitedForMs: number | null }
+  > {
     const res = await fetchProviderApi(this.fetchApi, "https://api.anthropic.com/api/oauth/usage", {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -703,7 +739,38 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     });
     if (res.status === 401) return "AUTH_REJECTED";
     if (res.status === 403) return "NEEDS_AUTH";
+    if (res.status === 429)
+      return { rateLimitedForMs: retryAfterMs(res.headers.get("retry-after"), this.now()) };
     if (!res.ok) throw new Error(`Claude usage API returned ${res.status}`);
     return ClaudeUsageResponseSchema.parse(await res.json());
   }
+}
+
+interface UsageBackoff {
+  /** Until when Claude asked this account not to be polled. */
+  limitedUntil?: number;
+  lastGood?: ProviderUsage;
+}
+
+/**
+ * Claude answers a usage poll it considers too frequent with 429 and a Retry-After, observed in
+ * the tens of minutes, per account. Fetchers are rebuilt for every list, so each account's wait
+ * and last good reading live here, keyed by provider ID.
+ */
+const usageBackoff = new Map<string, UsageBackoff>();
+
+/** Used when a 429 carries no Retry-After. */
+const DEFAULT_RATE_LIMIT_WAIT_MS = 5 * 60_000;
+
+function retryAfterMs(header: string | null, now: number): number | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+function formatWait(ms: number): string {
+  const minutes = Math.max(1, Math.ceil(ms / 60_000));
+  return minutes < 60 ? `${minutes}m` : `${Math.ceil(minutes / 60)}h`;
 }
