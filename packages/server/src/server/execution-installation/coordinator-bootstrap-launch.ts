@@ -1486,6 +1486,26 @@ async function initializeManagedBootstrapReview(
           throw new BootstrapRequestConflict("Bootstrap runner artifact changed");
         return roots;
       });
+    // The same identity, protection and pinned-file checks without re-deriving the
+    // renewal or digesting the runtime tree, which the runner repeats under its lock.
+    const verifyLaunchSetup = async () => {
+      if (
+        !isDeepStrictEqual(original, readSetup()) ||
+        !isDeepStrictEqual(admission, readAdmission())
+      )
+        throw new BootstrapRequestConflict("Bootstrap launch setup changed");
+      const roots = await inspectBootstrapWritableMountRoots(admission);
+      await assertBootstrapPathsProtected(
+        [setupFile, setup.admissionSetupFile, setup.runtimeDirectory],
+        roots,
+      );
+      const relative = path.relative(setup.runtimeDirectory, setup.entrypoint.path);
+      if (relative.startsWith("..") || path.isAbsolute(relative))
+        throw new BootstrapRequestConflict("Bootstrap runner is outside its prepared runtime");
+      for (const file of [setup.entrypoint, setup.ownerLauncher, setup.ownershipVerifier])
+        await readBootstrapPreparedFile(file, roots);
+      return roots;
+    };
     phase("verify_setup");
     await verifySetup();
     phase("create_review_service");
@@ -1512,6 +1532,10 @@ async function initializeManagedBootstrapReview(
         setupFile,
         requests,
         verifySetup,
+        // Mirrors the runner's custody condition: only these executors repeat every
+        // byte check under the lock.
+        verifyLaunchSetup:
+          setup.renewal && !setup.maintenance && !setup.supervision ? verifyLaunchSetup : undefined,
         automatic: { configurationFile, uid },
       }),
       renewalContext: {
@@ -1693,6 +1717,9 @@ export function createDispatchingBootstrapReview(options: {
   setupFile: string;
   requests: Awaited<ReturnType<typeof createBootstrapReviewService>>;
   verifySetup(): Promise<string[]>;
+  /** Cheap pre-fork checks for an executor that repeats every byte check under the
+   * execution lock. Absent, launch runs the full candidate and setup verification. */
+  verifyLaunchSetup?(): Promise<string[]>;
   automatic?: { configurationFile: string; uid: number };
   enrollment?: boolean;
   dispatchWaitTimeoutMs?: number;
@@ -1724,6 +1751,17 @@ export function createDispatchingBootstrapReview(options: {
     });
   // Launch re-reads every byte: proofs from review or the owner decision never
   // reach it, so the hash-to-use window excludes password and approval checks.
+  // An ordinary renewal executor re-reads those bytes itself, under the execution
+  // lock: runtime custody at admission, execution runtime, candidate artifacts and
+  // the claim-time renewal derivation. Its launch then keeps only the cheap setup
+  // checks, so the full byte check happens once, where the claim is made. A bad
+  // candidate ends that runner before its claim, and the launch observation closes
+  // the approval as failed.
+  const verifyBeforeFork = async (request: CoordinatorBootstrapRequest) => {
+    if (options.verifyLaunchSetup) return options.verifyLaunchSetup();
+    await verifyCandidate(request);
+    return verifySetup();
+  };
   const dispatch = (request: CoordinatorBootstrapRequest, automatic: boolean) =>
     withFreshBootstrapArtifactReuse(() => dispatchVerified(request, automatic));
   const dispatchVerified = async (request: CoordinatorBootstrapRequest, automatic: boolean) => {
@@ -1734,8 +1772,10 @@ export function createDispatchingBootstrapReview(options: {
     let source: Buffer;
     let executionSetup: string;
     try {
-      await verifyCandidate(request);
-      source = await readBootstrapPreparedFile(setup.ownerLauncher, await verifySetup());
+      source = await readBootstrapPreparedFile(
+        setup.ownerLauncher,
+        await verifyBeforeFork(request),
+      );
       if (automatic) {
         request = requests.reserveAutomaticDispatch({
           id: request.id,

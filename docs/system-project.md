@@ -27,7 +27,7 @@ The startup step in [`ensure-system-project.ts`](../packages/server/src/server/s
 
 When a role leaves the list, its workspace keeps its history and becomes an ordinary workspace you can archive. Nothing is deleted. If more than one System project exists, the daemon keeps the oldest and logs the others for review.
 
-System-managed workspaces are always standing and protected. The registries refuse to archive, remove, move, rename or unprotect them, and refuse to rename, archive or remove the project, whichever client or tool asks. Deleting a thread in a system workspace is refused too, because archiving one already is. Pinning, labels and unread state still work.
+System-managed workspaces are always standing and protected. The registries refuse to archive, remove, move, rename or unprotect them, and refuse to rename, archive or remove the project, whichever client or tool asks. A finished thread in a system workspace can be archived on its own, which keeps its history retrievable; the workspace stays standing and protected. A running thread, one a standing schedule still targets, or one bound to Factory is refused until that clears. Deleting a thread in a system workspace stays refused, so its maintenance history is never removed. Pinning, labels and unread state still work.
 
 The project keeps its own key, `system:<serverId>`, whatever checkout backs it, so it never merges into another project's group. Its root follows `source.checkout` on every start, so a renamed or newly configured checkout takes effect after a restart.
 

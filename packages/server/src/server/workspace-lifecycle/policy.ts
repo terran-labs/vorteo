@@ -36,6 +36,44 @@ export class SystemManagedError extends Error {
   }
 }
 
+/** Raised when one thread in a Vorteo System workspace cannot be archived yet. */
+export class SystemThreadArchiveError extends Error {
+  constructor(reason: string) {
+    super(`Archive blocked: ${reason}. The thread was not archived.`);
+    this.name = "SystemThreadArchiveError";
+  }
+}
+
+/**
+ * Archiving one finished thread in a Vorteo System workspace. The workspace keeps its
+ * own protection: workspace archive, removal and thread deletion stay refused, and
+ * archive keeps the thread's history retrievable. A running thread, one a standing
+ * schedule still targets, or a Factory binding blocks it.
+ */
+export async function assertSystemThreadArchiveAllowed(
+  dependencies: { schedules: Pick<ScheduleStore, "list">; now?: () => number },
+  input: {
+    workspace: Pick<PersistedWorkspaceRecord, "workspaceId" | "factoryMembership">;
+    agentId: string;
+    running: boolean;
+  },
+): Promise<void> {
+  assertWorkspaceNotFactoryManaged(input.workspace);
+  if (input.running)
+    throw new SystemThreadArchiveError("this system thread is still running. Let it finish first");
+  const now = dependencies.now?.() ?? Date.now();
+  const scheduled = (await dependencies.schedules.list()).some(
+    (schedule) =>
+      isStandingSchedule(schedule, now) &&
+      schedule.target.type === "agent" &&
+      schedule.target.agentId === input.agentId,
+  );
+  if (scheduled)
+    throw new SystemThreadArchiveError(
+      "a standing schedule still targets this system thread. Complete or remove the schedule first",
+    );
+}
+
 /**
  * Keeps daemon-owned system project fields fixed across ordinary writes.
  * `next` is null for removal. Kind may change, so the project can become a git

@@ -9,7 +9,10 @@ import {
 } from "./execution-installation/coordinator-bootstrap-launch.js";
 import { mountInstallationAccountConsumers } from "./execution-installation/accounts/consumers.js";
 import { ScheduleStore } from "./schedule/store.js";
-import { assertWorkspaceArchiveAllowed } from "./workspace-lifecycle/policy.js";
+import {
+  assertSystemThreadArchiveAllowed,
+  assertWorkspaceArchiveAllowed,
+} from "./workspace-lifecycle/policy.js";
 import { assertWorkspaceUnprotected } from "./workspace-lifecycle/policy.js";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
@@ -1130,6 +1133,16 @@ export async function createPaseoDaemon(
   const agentManager = new AgentManager({
     getSharedProviderConfig: () => daemonConfigStore.get(),
     assertWorkspaceArchiveAllowed: assertArchiveAllowed,
+    assertThreadArchiveAllowed: async ({ workspaceId, agentId, running }) => {
+      const workspace = await archiveWorkspaceRegistry.get(workspaceId);
+      // Only a Vorteo System workspace narrows to per-thread rules; every other
+      // workspace keeps refusing thread archive exactly as it refuses its own.
+      if (!workspace?.systemMembership) return assertArchiveAllowed(workspaceId);
+      await assertSystemThreadArchiveAllowed(
+        { schedules: archiveScheduleStore },
+        { workspace, agentId, running },
+      );
+    },
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,

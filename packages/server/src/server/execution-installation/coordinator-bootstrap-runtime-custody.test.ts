@@ -203,6 +203,27 @@ test("a runtime change is refused at the next boundary against the admitted dige
   await expect(require("release")).resolves.toBeUndefined();
 });
 
+test("only this process's matched admission digest is offered for reuse", async () => {
+  const runtime = runtimeTree();
+  const custody = {
+    runtimeDirectory: runtime,
+    runtimeSha256: await digestBootstrapArtifact(runtime),
+  };
+  const fresh = () =>
+    createRuntimeCustody({ custody, digest: (directory) => digestBootstrapArtifact(directory) });
+  const require = fresh();
+  expect(require.admitted()).toBeUndefined();
+  await require("freeze");
+  expect(require.admitted()).toBeUndefined();
+  await require("admission");
+  expect(require.admitted()).toEqual(custody);
+  // A failed admission in a separate runner offers nothing, and neither do others' digests.
+  writeFileSync(path.join(runtime, "dist/main.js"), "export const changed = true;");
+  const changed = fresh();
+  await expect(changed("admission")).rejects.toThrow("refused before admission");
+  expect(changed.admitted()).toBeUndefined();
+});
+
 test("the release boundary runs after every release check and its failure withholds release", async () => {
   const events: string[] = [];
   let changed = false;

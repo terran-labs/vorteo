@@ -61,7 +61,13 @@ function treeScans(directory: string): number {
     ).length;
 }
 
-async function dispatchFixture(options: { launch?: boolean; dispatchWaitTimeoutMs?: number } = {}) {
+async function dispatchFixture(
+  options: {
+    launch?: boolean;
+    dispatchWaitTimeoutMs?: number;
+    verifyLaunchSetup?: () => Promise<string[]>;
+  } = {},
+) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "bootstrap-dispatch-")));
   roots.push(root);
   const release = path.join(root, "release");
@@ -115,6 +121,7 @@ async function dispatchFixture(options: { launch?: boolean; dispatchWaitTimeoutM
       typeof createDispatchingBootstrapReview
     >[0]["requests"],
     verifySetup: async () => [],
+    verifyLaunchSetup: options.verifyLaunchSetup,
     dispatchWaitTimeoutMs: options.dispatchWaitTimeoutMs,
   });
   const approval = {
@@ -283,4 +290,26 @@ test("closing a failed launch leaves claimed and changed requests untouched", ()
   expect(records).toEqual(before);
   expect(requests.closeFailedDispatch(identity(approved))).toMatchObject({ status: "canceled" });
   expect(records[1]).toEqual(claimed);
+});
+
+test("an executor that re-checks under its lock skips the launch candidate re-read and still closes on early exit", async () => {
+  const launchChecks: string[] = [];
+  const { release, review, approval, closeFailedDispatch, identity } = await dispatchFixture({
+    launch: true,
+    dispatchWaitTimeoutMs: 50,
+    verifyLaunchSetup: async () => {
+      launchChecks.push("cheap");
+      return [];
+    },
+  });
+  vi.mocked(Worker).mockClear();
+  // The runner refuses a tampered candidate under its lock and exits before claiming.
+  vi.mocked(spawn).mockImplementationOnce(() => fakeChild("exit"));
+  await expect(review.decide(approval, "owner password")).rejects.toThrow(
+    "dispatch is unconfirmed",
+  );
+  // The decision scanned the candidate once; the launch did not scan it again.
+  expect(treeScans(release)).toBe(1);
+  expect(launchChecks).toEqual(["cheap"]);
+  expect(closeFailedDispatch.mock.calls).toEqual([[identity, expect.any(String)]]);
 });

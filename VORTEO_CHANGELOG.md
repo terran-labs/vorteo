@@ -12,6 +12,30 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Improvements
+
+- A coordinator update reaches its claim about a minute sooner after its cancellation window. The launcher no longer re-reads the candidate before starting the runner, which re-reads every byte under its exclusive lock, and the claim reuses the runner's own runtime digest from admission; the digest it replaces was never compared. Every live process and service check at the claim stays.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- Archive a finished thread in a Vorteo System workspace, such as a finished Optimizer thread. The workspace stays protected, running or still-scheduled threads are refused, and deleting system threads stays refused.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- A coordinator update blocked by other installation work now waits up to eight minutes for that work to finish and then starts, within the same approval, instead of failing at once. Only that busy refusal is retried; a canceled or changed approval, or any other error, stops it.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - The Claude sign-in upgrade keeps Dev working while it switches: Dev keeps its setup token until its own account has moved to full sign-in, instead of giving it up during the seconds before settings reach it, and a fenced Dev no longer risks being left with no credential.

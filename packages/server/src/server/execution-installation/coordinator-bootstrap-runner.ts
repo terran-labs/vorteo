@@ -16,6 +16,7 @@ import type { CoordinatorBootstrapRequest } from "@getpaseo/protocol/coordinator
 import {
   BootstrapRequestConflict,
   CoordinatorBootstrapRequests,
+  coordinatorLifecycleBlockers,
   coordinatorPlanDigest,
 } from "./coordinator-bootstrap.js";
 import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
@@ -275,14 +276,14 @@ export function runnerRenewal(
   // boundaries and derives the renewal once, at the claim. Watchdogs never digest
   // the tree; maintenance runners keep the full checks at every fence.
   const custodyBoundaries = role === "executor" && Boolean(setup.renewal) && !setup.maintenance;
-  const requireRuntimeCustody: RequireRuntimeCustody | undefined = custodyBoundaries
-    ? (() => {
-        const check = createRuntimeCustody({
-          custody: { runtimeDirectory: setup.runtimeDirectory, runtimeSha256: setup.runtimeSha256 },
-          digest: (directory) => digestRuntimeInChild(setup.node.path, directory),
-        });
-        return (boundary) => trace("runtime-digest", () => check(boundary));
-      })()
+  const custody = custodyBoundaries
+    ? createRuntimeCustody({
+        custody: { runtimeDirectory: setup.runtimeDirectory, runtimeSha256: setup.runtimeSha256 },
+        digest: (directory) => digestRuntimeInChild(setup.node.path, directory),
+      })
+    : undefined;
+  const requireRuntimeCustody: RequireRuntimeCustody | undefined = custody
+    ? (boundary) => trace("runtime-digest", () => custody(boundary))
     : undefined;
   const verifyRenewal = async (fence: "setup" | "claim") => {
     const renewal = setup.renewal;
@@ -311,6 +312,8 @@ export function runnerRenewal(
           setup: original,
           moduleFile: fileURLToPath(import.meta.url),
           dispatchedRequest: renewal.request,
+          // This process digested this runtime at admission, under the same lock.
+          verifiedRuntime: custody?.admitted(),
         }),
       );
       const expected = { ...renewal, request: undefined };
@@ -909,6 +912,18 @@ export async function runNativeBootstrap(
     };
     if (renewal.requireRuntimeCustody)
       guardReleaseWithRuntimeCustody(operations, renewal.requireRuntimeCustody);
+    // Wait out busy installation work inside the same approval and lock, within the
+    // launcher's observation deadline. The cheap journal check gates each retry, so the
+    // full claim and its byte verification run only once the work looks finished.
+    // Exhaustion closes the approval as failed.
+    const claimRetryDeadline = Date.now() + CLAIM_RETRY_WINDOW_MS;
+    operations.waitForClaimRetry = async () => {
+      while (Date.now() + CLAIM_RETRY_INTERVAL_MS <= claimRetryDeadline) {
+        await delay(CLAIM_RETRY_INTERVAL_MS);
+        if (coordinatorLifecycleBlockers(requests.readLifecycle()).length === 0) return true;
+      }
+      return false;
+    };
     timeExecutorOperations(operations, runnerEvidence);
     const result = await trace("executor-dispatch", () =>
       executeCoordinatorBootstrap(
@@ -925,6 +940,11 @@ export async function runNativeBootstrap(
     throw error;
   });
 }
+
+/** A busy claim is retried for up to eight minutes, inside the launcher's fifteen-minute
+ * observation of the executor's dispatch acknowledgement. */
+const CLAIM_RETRY_INTERVAL_MS = 15_000;
+const CLAIM_RETRY_WINDOW_MS = 8 * 60_000;
 
 /** Executor operations whose wall time is recorded in the runner's diagnostic file. */
 const TIMED_OPERATIONS = [
