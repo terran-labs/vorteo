@@ -10,7 +10,12 @@ import type { BoundCreateAgentCommand } from "../agent/create-agent/create.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 import type { ScheduleService } from "../schedule/service.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
-import { launchAttempts, selectLaunch, usableProviders, type Launch } from "./launch-selection.js";
+import {
+  launchAttempts,
+  resolveDefaultLaunch,
+  type DefaultLaunchInput,
+  type Launch,
+} from "./launch-selection.js";
 import {
   OPTIMIZER_FIRST_REVIEW_PROMPT,
   OPTIMIZER_REVIEW_PROMPT,
@@ -53,6 +58,8 @@ export interface OptimizerAgentInput {
   providers: Pick<ProviderSnapshotManager, "listProviders" | "on" | "off">;
   readUsage: (options: { forceRefresh: boolean }) => Promise<{ providers: ProviderUsage[] }>;
   getSettings: () => MutableDaemonConfig;
+  adoptPrimary?: DefaultLaunchInput["adoptPrimary"];
+  refreshSupport?: DefaultLaunchInput["refreshSupport"];
   onSettingsChange: (handler: () => void) => () => void;
   createAgent: BoundCreateAgentCommand;
   schedules: Pick<ScheduleService, "create">;
@@ -61,11 +68,12 @@ export interface OptimizerAgentInput {
 }
 
 /**
- * Creates the one Optimizer agent in the Optimizer workspace once a provider is usable,
+ * Creates the one Optimizer agent in the Optimizer workspace once the primary connection is usable,
  * then gives it a daily review heartbeat. Runs on daemons whose manifest has the
  * Optimizer role (Host and single installs). The daemon records the agent in
  * `system/state.json` and never creates another, even after the owner archives or
- * deletes it. Without a usable provider it waits quietly for provider or settings changes.
+ * deletes it. Without a usable primary connection it waits quietly for provider or settings
+ * changes, including the owner choosing one.
  */
 export function startOptimizerAgent(input: OptimizerAgentInput): { stop: () => void } {
   if (!rolesForEnvironment(input.environment).some((role) => role.role === OPTIMIZER_ROLE)) {
@@ -156,19 +164,12 @@ async function ensureOptimizerAgent(
     return ensureSchedule(input, statePath, next, logger);
   }
 
-  const entries = await input.providers.listProviders({ wait: options.wait });
-  const ready = entries.filter((entry) => entry.enabled && entry.status === "ready");
-  if (ready.length === 0) return false;
-  const usage = await input.readUsage({
-    forceRefresh: options.refreshUsage(ready.map((entry) => entry.provider).join(",")),
-  });
-  const settings = input.getSettings();
-  const providers = usableProviders(ready, usage.providers, settings);
-  if (providers.length === 0) return false;
+  const launch = await resolveDefaultLaunch(input, options);
+  if (!launch) return false;
 
   const agentId = await createOptimizerAgent(input, logger, {
     workspace,
-    launch: selectLaunch(providers[0]!, settings),
+    launch,
     statePath,
     state,
   });

@@ -199,7 +199,7 @@ const SESSION_HOST_STATUS_CACHE_MS = 30_000;
 // COMPAT(providerRemovalOwner): added in v155, remove after legacy strict catalog clients are unsupported.
 function ownerSettingsSnapshot(
   snapshot: InstallationSettingsSnapshot,
-  client: { removalAware: boolean; projectPoliciesAware: boolean },
+  client: { removalAware: boolean; projectPoliciesAware: boolean; primaryConnectionAware: boolean },
 ) {
   const catalogs = [snapshot.settings, ...Object.values(snapshot.conflicts?.candidates ?? {})];
   for (const catalog of catalogs) {
@@ -210,6 +210,10 @@ function ownerSettingsSnapshot(
     // reject the key; newer ones read its presence as the capability.
     if (client.projectPoliciesAware) catalog.projectPolicies ??= {};
     else delete catalog.projectPolicies;
+    // COMPAT(primaryConnection): added 2026-11-05, remove after 2027-05-05. Older strict clients
+    // reject the key. Newer ones read its presence, even as null, as the coordinator's support.
+    if (client.primaryConnectionAware) catalog.primaryConnection ??= null;
+    else delete catalog.primaryConnection;
   }
   return snapshot;
 }
@@ -218,6 +222,7 @@ function ownerSettingsClient(req: Request) {
   return {
     removalAware: req.get("X-Vorteo-Provider-Removal") === "1",
     projectPoliciesAware: req.get("X-Vorteo-Project-Policies") === "1",
+    primaryConnectionAware: req.get("X-Vorteo-Primary-Connection") === "1",
   };
 }
 
@@ -1742,6 +1747,10 @@ export function createInstallationServer(
     // COMPAT(projectPolicies): added 2026-10-22, remove after 2027-04-22. Older daemons parse
     // admission strictly, so only readers that ask receive project policies.
     if (req.query.projectPolicies !== "1") delete snapshot.settings.projectPolicies;
+    // COMPAT(primaryConnection): added 2026-11-05, remove after 2027-05-05. Same strict readers.
+    if (req.query.primaryConnection !== "1") delete snapshot.settings.primaryConnection;
+    // Present, even as null, so the daemon can tell this coordinator supports the setting.
+    else snapshot.settings.primaryConnection ??= null;
     res.json({
       installationId: config.public.installationId,
       serverId: environment.serverId,
@@ -3320,6 +3329,12 @@ export function createInstallationServer(
       coordinatorSettings: coordinatorSettings.status(),
     });
   });
+  // Only the canonical origin's boot page links to the private recovery origin; the recovery
+  // and local origins are already the way around the canonical gateway.
+  const recoveryLink = (origin: string) =>
+    config.recoveryOrigin && origin === config.public.origin
+      ? { recoveryOrigin: config.recoveryOrigin }
+      : {};
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
       enabled: true,
@@ -3334,6 +3349,7 @@ export function createInstallationServer(
         profileSharing: true,
         idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
         gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+        ...(local ? {} : recoveryLink(origin)),
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
@@ -3346,6 +3362,7 @@ export function createInstallationServer(
     profileSharing: true,
     idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
     gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+    ...recoveryLink(origin),
   });
   const liveDevWebUi = liveDev.middleware(liveDevConfigFor(config.public.origin));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
@@ -3409,7 +3426,8 @@ export function createInstallationServer(
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {
-      res.status(400).json({ error: error.message });
+      // The reason lets clients tell a stale primary connection choice from other refusals.
+      res.status(400).json({ error: error.message, reason: error.reason });
       return;
     }
     if (

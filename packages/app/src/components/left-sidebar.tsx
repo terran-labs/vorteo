@@ -1,3 +1,4 @@
+import { useOpenVorteoSetupGuide } from "@/onboarding";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { SidebarSyncNotice } from "@/sidebar-state/status";
 import { useLayoutEffect } from "react";
@@ -571,6 +572,7 @@ function SidebarToolbar({
     onBeforeNavigate?.();
     handleAddHost();
   }, [onBeforeNavigate, handleAddHost]);
+  const openSetupGuide = useOpenVorteoSetupGuide();
   const menuIcons = useMemo(
     () => ({
       settings: <Settings size={16} color={theme.colors.foregroundMuted} />,
@@ -682,6 +684,15 @@ function SidebarToolbar({
             >
               {t("settings.addHost")}
             </DropdownMenuItem>
+            {openSetupGuide ? (
+              <DropdownMenuItem
+                testID="sidebar-setup-guide"
+                onSelect={openSetupGuide}
+                leading={menuIcons.settings}
+              >
+                {t("vorteoSetup.reopen")}
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Appearance</DropdownMenuLabel>
             <View style={styles.themeMenu}>
@@ -708,6 +719,7 @@ function SidebarToolbar({
       openHistory,
       handleOpenProject,
       openAddHost,
+      openSetupGuide,
       handleNewWorkspace,
       handleNewFolder,
       labels.addProject,

@@ -95,7 +95,7 @@ import {
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import { useHostFeatureMap } from "@/runtime/host-features";
 import { useInstalledPlugins } from "@/plugins/registry";
-import { buildPluginSurfaceRoute } from "@/plugins/routes";
+import { projectFactoryOverviewRoute } from "@/screens/factory/routes";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useIsSystemProjectOnAnyHost } from "@/workspace/lifecycle/system-membership";
 import { useProjectIcons } from "@/projects/icons";
@@ -706,18 +706,11 @@ function ProjectMenuItems({
   const factoryPlugin = plugins.find(
     (plugin) => plugin.id === "factory" && plugin.serverId === settingsTarget?.serverId,
   );
-  const factoryScreenAvailable =
-    factoryPlugin?.surfaces.some((screen) => screen.id === "overview") === true;
+  // The Factory overview is a built-in screen; the host's Factory plugin serves its data.
+  const factoryScreenAvailable = factoryPlugin !== undefined;
   const handleOpenFactory = useCallback(() => {
     if (!settingsTarget || !factoryScreenAvailable) return;
-    router.navigate(
-      buildPluginSurfaceRoute(
-        settingsTarget.serverId,
-        "factory",
-        { kind: "surface", id: "overview" },
-        { projectId: settingsTarget.projectId },
-      ),
-    );
+    router.navigate(projectFactoryOverviewRoute(settingsTarget.serverId, settingsTarget.projectId));
   }, [settingsTarget, factoryScreenAvailable]);
   const handleOpenProjectSettings = useCallback(() => {
     if (!settingsTarget) return;

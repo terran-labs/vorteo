@@ -10,6 +10,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-10
 
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-10
+
 ### Fixes
 
 - Claude model selectors now include every model the installed Claude Code reports, with its own name, description and effort levels, instead of hiding models missing from Vorteo's built-in list. New Claude releases appear without a Vorteo update once the CLI supports them; fast mode, context window size and disabled thinking still need a built-in entry.

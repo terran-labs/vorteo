@@ -76,6 +76,8 @@ it("keeps a setup-token account truthfully unavailable even with native credenti
   expect(fetch).not.toHaveBeenCalled();
   expect(usage.status).toBe("unavailable");
   expect(usage.details?.[0]?.id).toBe("claude-setup-token");
+  // The token itself works, so launch selection must not treat it as missing.
+  expect(usage.credentialsMissing).toBeUndefined();
 });
 
 it("reads only the full account's own Keychain item on macOS and never the default item", async () => {
@@ -183,6 +185,7 @@ it("reports sign-in needed without any lookup outside the account when credentia
   expect(defaultReader).not.toHaveBeenCalled();
   expect(usage.status).toBe("unavailable");
   expect(usage.details?.[0]?.id).toBe("claude-sign-in");
+  expect(usage.credentialsMissing).toBe(true);
   // No home at all: nothing is read.
   await new ClaudeQuotaProvider({
     logger,
@@ -341,4 +344,17 @@ it("waits out a rate limit with the last good reading instead of polling again",
   now += 6 * 60_000;
   await fetchUsage();
   expect(fetch).toHaveBeenCalledTimes(3);
+});
+
+it("never claims a native account has no credentials, since Vorteo does not own its store", async () => {
+  vi.stubEnv("VORTEO_INSTALLATION_CLIENT_CONFIG", "");
+  const usage = await new ClaudeQuotaProvider({
+    logger,
+    claudeHome: await home(),
+    strictClaudeHome: true,
+    platform: "linux",
+    fetch: vi.fn(),
+  }).fetchUsage();
+  expect(usage.status).toBe("unavailable");
+  expect(usage.credentialsMissing).toBeUndefined();
 });

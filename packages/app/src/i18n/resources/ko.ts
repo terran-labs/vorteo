@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   projectFactory: en.projectFactory,
+  vorteoSetup: en.vorteoSetup,
   paneFind: {
     connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
     historyChangedFailure: "검색 중에 채팅이 변경되었습니다. 다시 검색하세요.",
