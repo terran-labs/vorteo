@@ -1,7 +1,21 @@
+import { randomUUID } from "node:crypto";
+import {
+  SPEECH_SECRETS_ADOPT_ROUTE,
+  SpeechSecretsAdoptionSchema,
+  type SpeechSecretsSites,
+} from "./speech-secrets-adoption.js";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { join } from "node:path";
-import type { ProviderSecretsStatus } from "@getpaseo/protocol/provider-secrets";
+import {
+  SPEECH_DEFAULT_BASE_URL,
+  SPEECH_SECRET_SITES,
+  SpeechSecretSiteSchema,
+  SpeechSecretFieldSchema,
+  SpeechSecretUpdatesSchema,
+  type SpeechSecretUpdate,
+  type ProviderSecretsStatus,
+} from "@getpaseo/protocol/provider-secrets";
 import {
   codexHostRefreshEnabled,
   requireEnvironmentDaemon,
@@ -26,6 +40,7 @@ const EnvSchema = z.record(z.string(), z.string());
 interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
   providerSecretDelivery?: boolean;
+  speechSecretDelivery?: boolean;
 }
 interface RuntimeOverrides {
   /** Features and provider env of one daemon. Injected by tests. */
@@ -63,6 +78,16 @@ export function createProviderSecretsRuntime(
       }
     });
   const supported = new Map<string, number>();
+  const imports = new Map<
+    string,
+    {
+      serverId: string;
+      kind: "host" | "container";
+      revision: number;
+      expiresAt: number;
+      sites?: SpeechSecretsSites;
+    }
+  >();
   const readiness = (kind: "host" | "container") =>
     assertReady(kind === "host" ? "host" : "container-daemon");
   function environment(serverId: string) {
@@ -99,6 +124,38 @@ export function createProviderSecretsRuntime(
         })),
     };
   }
+  async function deliver(
+    delivery: import("./provider-secrets-delivery.js").ProviderSecretsDelivery,
+  ) {
+    const target = environment(delivery.serverId);
+    if (!target) throw new ProviderSecretsDeliveryError();
+    if (Object.keys(delivery.values).length > 0) readiness(target.kind);
+    if (!isDeepStrictEqual(config, configuration)) throw new ProviderSecretsDeliveryError();
+    const capability =
+      delivery.kind === "speech" ? "speechSecretDelivery" : "providerSecretDelivery";
+    const capabilityKey = `${target.kind}:${capability}`;
+    const checked = supported.get(capabilityKey);
+    if (checked === undefined || Date.now() - checked > FEATURE_CACHE_MS) {
+      const { features } = await inspect(target.kind);
+      if (features?.installationSettingsAuthority !== true || features[capability] !== true)
+        throw new ProviderSecretsUnsupportedError();
+      supported.set(capabilityKey, Date.now());
+    }
+    const daemon = requireEnvironmentDaemon(config, target.kind);
+    const response = await request(`http://${daemon.endpoint}${PROVIDER_SECRETS_ROUTE}`, {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+      headers: { Authorization: `Bearer ${daemon.password}`, "Content-Type": "application/json" },
+      body: JSON.stringify(delivery),
+    });
+    if (response.status === 404) {
+      supported.delete(capabilityKey);
+      throw new ProviderSecretsUnsupportedError();
+    }
+    if (!response.ok) throw new ProviderSecretsDeliveryError();
+    return ProviderSecretsReceiptSchema.parse(await response.json());
+  }
   const authority = new ProviderSecretsAuthority({
     installationId: config.public.installationId,
     read: () => readClaudeSetupFile(file) ?? [],
@@ -124,41 +181,72 @@ export function createProviderSecretsRuntime(
         }),
       );
     },
-    deliver: async (delivery) => {
-      const target = environment(delivery.serverId);
-      if (!target) throw new ProviderSecretsDeliveryError();
-      // Withdrawal remains available while ordinary Dev work is fenced.
-      if (Object.keys(delivery.values).length > 0) readiness(target.kind);
-      if (!isDeepStrictEqual(config, configuration)) throw new ProviderSecretsDeliveryError();
-      const checked = supported.get(target.kind);
-      if (checked === undefined || Date.now() - checked > FEATURE_CACHE_MS) {
-        const { features } = await inspect(target.kind);
-        if (
-          features?.installationSettingsAuthority !== true ||
-          features.providerSecretDelivery !== true
-        )
-          throw new ProviderSecretsUnsupportedError();
-        supported.set(target.kind, Date.now());
-      }
-      const daemon = requireEnvironmentDaemon(config, target.kind);
-      // Explicit loopback endpoints are validated by installation config, never supplied by clients.
-      const response = await request(`http://${daemon.endpoint}${PROVIDER_SECRETS_ROUTE}`, {
-        method: "POST",
-        redirect: "error",
-        signal: AbortSignal.timeout(10_000),
-        headers: {
-          Authorization: `Bearer ${daemon.password}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(delivery),
-      });
-      if (response.status === 404) {
-        supported.delete(target.kind);
-        throw new ProviderSecretsUnsupportedError();
-      }
-      if (!response.ok) throw new ProviderSecretsDeliveryError();
-      return ProviderSecretsReceiptSchema.parse(await response.json());
+    deliver,
+    now: overrides.now ?? (() => new Date()),
+  });
+  const speech = new ProviderSecretsAuthority({
+    kind: "speech",
+    installationId: config.public.installationId,
+    read: () => readClaudeSetupFile(join(config.stateDir, "provider-secrets", "speech.json")) ?? [],
+    persist: (state) =>
+      writeClaudeSetupFile(join(config.stateDir, "provider-secrets", "speech.json"), state),
+    definitions: () => [...SPEECH_SECRET_SITES],
+    policy: (id) => {
+      SpeechSecretSiteSchema.parse(id);
+      const snapshot = settings.snapshot();
+      if (!snapshot.settings || snapshot.conflicts) throw new ProviderSecretsDeliveryError();
+      return {
+        // Speech delivery generations belong to the credential records, not general settings.
+        revision: 1,
+        removed: false,
+        targets: config.public.environments.map((item) => ({
+          serverId: item.serverId,
+          providerId: id,
+          excluded: false,
+        })),
+      };
     },
+    environment,
+    readEnvironment: async (serverId) => {
+      const target = environment(serverId);
+      if (!target) throw new ProviderSecretsDeliveryError();
+      readiness(target.kind);
+      const { features } = await inspect(target.kind);
+      if (features?.speechSecretDelivery !== true) throw new ProviderSecretsUnsupportedError();
+      const daemon = requireEnvironmentDaemon(config, target.kind);
+      const nonce = randomUUID();
+      const revision = Math.max(1, settings.snapshot().revision);
+      const pending = {
+        serverId,
+        kind: target.kind,
+        revision,
+        expiresAt: (overrides.now?.() ?? new Date()).getTime() + 10_000,
+        sites: undefined as SpeechSecretsSites | undefined,
+      };
+      imports.set(nonce, pending);
+      try {
+        const response = await request(`http://${daemon.endpoint}${SPEECH_SECRETS_ADOPT_ROUTE}`, {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+          headers: {
+            Authorization: `Bearer ${daemon.password}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            nonce,
+            installationId: config.public.installationId,
+            serverId,
+            policyRevision: revision,
+          }),
+        });
+        if (!response.ok || !pending.sites) throw new ProviderSecretsDeliveryError();
+        return pending.sites;
+      } finally {
+        imports.delete(nonce);
+      }
+    },
+    deliver,
     now: overrides.now ?? (() => new Date()),
   });
   function existing(definitionId: string) {
@@ -194,10 +282,34 @@ export function createProviderSecretsRuntime(
     };
   }
   const kick = () => {
-    void authority.reconcile().catch(() => {});
+    void Promise.all([authority.reconcile(), speech.reconcile()]).catch(() => {});
   };
   return {
-    read: (definitionId?: string) => {
+    acceptSpeechAdoption: (
+      body: unknown,
+      identity: { kind: "host" | "container"; serverId: string },
+    ) => {
+      const input = SpeechSecretsAdoptionSchema.safeParse(body);
+      if (!input.success) throw new ProviderSecretsDeliveryError();
+      const pending = imports.get(input.data.nonce);
+      if (
+        !pending ||
+        pending.sites ||
+        pending.expiresAt <= (overrides.now?.() ?? new Date()).getTime() ||
+        pending.kind !== identity.kind ||
+        pending.serverId !== identity.serverId ||
+        pending.serverId !== input.data.serverId ||
+        pending.revision !== input.data.policyRevision ||
+        input.data.installationId !== config.public.installationId
+      )
+        throw new ProviderSecretsDeliveryError();
+      pending.sites = input.data.sites;
+    },
+    read: (definitionId?: string, kind?: "speech") => {
+      if (kind === "speech") {
+        if (definitionId !== undefined) SpeechSecretSiteSchema.parse(definitionId);
+        return definitionId === undefined ? speech.statuses() : [speech.status(definitionId)];
+      }
       if (definitionId === undefined) return authority.statuses().map(withAccountSignIn);
       existing(definitionId);
       return [withAccountSignIn(authority.status(definitionId))];
@@ -208,13 +320,57 @@ export function createProviderSecretsRuntime(
       kick();
       return [withAccountSignIn(authority.status(definitionId))];
     },
-    clear: async (definitionId: string, name: string) => {
+    setSpeech: async (sites: SpeechSecretUpdate[]) => {
+      const updates = SpeechSecretUpdatesSchema.parse(sites).map(
+        ({ definitionId, expectedRevision, values }) => {
+          const changes = Object.fromEntries(
+            Object.entries(values).filter(
+              (entry): entry is [string, string | null] => entry[1] !== undefined,
+            ),
+          );
+          if (
+            changes.baseUrl === null ||
+            (Object.hasOwn(changes, "apiKey") && !Object.hasOwn(changes, "baseUrl"))
+          )
+            changes.baseUrl = SPEECH_DEFAULT_BASE_URL;
+          return { definitionId, expectedRevision, changes };
+        },
+      );
+      await speech.updateMany(updates);
+      kick();
+      return updates.map(({ definitionId }) => speech.status(definitionId));
+    },
+    clear: async (
+      definitionId: string,
+      name: string,
+      kind?: "speech",
+      expectedRevision?: number,
+    ) => {
+      if (kind === "speech") {
+        SpeechSecretSiteSchema.parse(definitionId);
+        SpeechSecretFieldSchema.parse(name);
+        if (expectedRevision === undefined) throw new ProviderSecretsDeliveryError();
+        await speech.updateMany([
+          {
+            definitionId,
+            expectedRevision,
+            changes:
+              name === "baseUrl"
+                ? { baseUrl: SPEECH_DEFAULT_BASE_URL }
+                : { apiKey: null, baseUrl: SPEECH_DEFAULT_BASE_URL },
+          },
+        ]);
+        kick();
+        return [speech.status(definitionId)];
+      }
       existing(definitionId);
       await authority.clear(definitionId, name);
       kick();
       return [withAccountSignIn(authority.status(definitionId))];
     },
-    reconcile: () => authority.reconcile(),
+    reconcile: async () => {
+      await Promise.all([authority.reconcile(), speech.reconcile()]);
+    },
   };
 }
 export type ProviderSecretsRuntime = ReturnType<typeof createProviderSecretsRuntime>;

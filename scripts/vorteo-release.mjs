@@ -6,8 +6,9 @@
 // triggers, which use glob patterns such as v*, android-v* and app-v*; vorteo-* would match v*.
 //
 //   prepare --channel beta|stable [--date YYYY-MM-DD]
-//          Sets the next calendar version in every manifest. Commit it with its changelog
-//          entry on the channel's release branch, install it, then tag it.
+//          Sets the next calendar version in every manifest and folds every change fragment
+//          into its changelog entry and the inventory. Commit it on the channel's release
+//          branch, install it, then tag it.
 //   list   [--channel beta|stable]                 Tags on the remote, newest first.
 //   latest --channel beta|stable [--installed <version>]
 //          Newest tag an installation on that channel should offer, or null. Beta also
@@ -19,13 +20,22 @@
 // Common options: --remote origin, --branch <release branch>, --repo owner/name.
 // Exit status 0 means done (or ready, for a dry run); 1 means refused.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { findGitleaks, git, isAncestor, parseArgs, repositoryRoot } from "./lib/delivery-git.mjs";
 import { resolveRepository, runGh } from "./lib/github.mjs";
 import { isMainModule } from "./is-main-module.mjs";
 import { assertReleaseTagger } from "./lib/builds-guard.mjs";
+import {
+  FRAGMENT_DIRECTORY,
+  FragmentError,
+  foldFragments,
+  insertChangelogEntry,
+  insertMaintenanceReviews,
+  isFragmentPath,
+  parseFragment,
+} from "./lib/change-fragments.mjs";
 import {
   CHANNELS,
   UNRELEASED,
@@ -50,6 +60,9 @@ export { CHANNELS, tagName };
  * planned; until they exist both channels release from main. Change only this map then.
  */
 export const RELEASE_BRANCHES = { beta: "main", stable: "main" };
+
+const CHANGELOG = "VORTEO_CHANGELOG.md";
+const INVENTORY = path.join("docs", "vorteo-customizations.md");
 
 function assertChannel(channel) {
   if (!CHANNELS.includes(channel)) throw new ReleaseRefusal("Channel must be beta or stable.");
@@ -147,16 +160,58 @@ export function prepareVersion({ cwd, channel, remote = "origin", date, tags }) 
     if (error instanceof VersionError) throw new ReleaseRefusal(error.message);
     throw error;
   }
+  // Read every fragment before writing anything, so an invalid one changes nothing.
+  const fragments = trackedFragments(root);
   for (const [file, value] of synchronizedManifests(root, version)) {
     writeFileSync(path.join(root, file), `${JSON.stringify(value, null, 2)}\n`);
   }
+  foldIntoNotes(root, version, date ?? localDate(), fragments);
   return {
     root,
     channel,
     version,
     previous: current,
     branch: RELEASE_BRANCHES[channel],
+    fragments: fragments.map((fragment) => fragment.file),
   };
+}
+
+function localDate(now = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/** Committed change fragments, parsed from the working tree. */
+function trackedFragments(root) {
+  const files = git(root, ["ls-files", "--", FRAGMENT_DIRECTORY])
+    .split("\n")
+    .filter(isFragmentPath);
+  try {
+    return files.map((file) => parseFragment(file, readFileSync(path.join(root, file), "utf8")));
+  } catch (error) {
+    if (error instanceof FragmentError) throw new ReleaseRefusal(error.message);
+    throw error;
+  }
+}
+
+/**
+ * Heads the changelog with the new version's entry holding every fragment's notes, adds
+ * their maintenance reviews to the inventory, then deletes the fragments. Unreleased
+ * entries already in the changelog stay below the new entry, so they join this release.
+ */
+function foldIntoNotes(root, version, date, fragments) {
+  const folded = foldFragments(fragments);
+  const changelog = path.join(root, CHANGELOG);
+  writeFileSync(
+    changelog,
+    insertChangelogEntry(readFileSync(changelog, "utf8"), version, date, folded.changelog),
+  );
+  const inventory = path.join(root, INVENTORY);
+  writeFileSync(
+    inventory,
+    insertMaintenanceReviews(readFileSync(inventory, "utf8"), folded.reviews),
+  );
+  for (const fragment of fragments) rmSync(path.join(root, fragment.file));
 }
 
 /** Checks a tag request against the release branch and existing tags without changing anything. */
@@ -387,7 +442,10 @@ function main() {
     });
     console.log(`Prepared ${prepared.version} (was ${prepared.previous}).`);
     console.log(
-      `Add "## ${prepared.version} - YYYY-MM-DD" to VORTEO_CHANGELOG.md, commit both, and merge to ${prepared.branch}.`,
+      `Folded ${prepared.fragments.length} change fragment(s) into the "## ${prepared.version}" entry of ${CHANGELOG} and the inventory's maintenance reviews, and deleted them.`,
+    );
+    console.log(
+      `Review both, add the release's own notes and review line, stage the manifests, both files and ${FRAGMENT_DIRECTORY}/ (git add -A ${FRAGMENT_DIRECTORY}), commit, and merge to ${prepared.branch}.`,
     );
     return;
   }

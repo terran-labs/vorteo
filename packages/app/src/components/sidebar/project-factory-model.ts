@@ -1,3 +1,4 @@
+import { buildPluginSurfaceRoute } from "@/plugins/routes";
 import { parseGitHubRemoteUrl } from "@getpaseo/protocol/git-remote";
 import type { ProjectFactoryState } from "./project-factory";
 export const validFactoryRepository = (value: string) =>
@@ -36,7 +37,7 @@ export async function sendThreadToFactory(
 }
 export function factoryModelConfiguration(
   projectId: string,
-  field: "role" | "workerProfileId" | "reviewerProfileId",
+  field: "role" | "plannerProfileId" | "workerProfileId" | "reviewerProfileId",
   profileId: string | null,
   role?: import("./factory-instructions-model").RoleId,
   provider?: string | null,
@@ -67,4 +68,26 @@ export function projectFactoryTargets<Host extends { serverId: string; projectId
       .map((workspace) => workspace.serverId),
   );
   return hosts.filter((host) => servers.has(host.serverId));
+}
+
+/** Resolve the row destination only when the corresponding Factory surface exists. */
+export function factoryOverviewRoute(
+  target: { serverId: string; projectId: string; installationId: string },
+  plugin: { surfaces: readonly { id: string }[] } | undefined,
+) {
+  if (!plugin) return null;
+  if (target.installationId.startsWith("project-factory:")) {
+    return {
+      pathname: "/h/[serverId]/factory/[projectId]" as const,
+      params: { serverId: target.serverId, projectId: target.projectId },
+    };
+  }
+  return plugin.surfaces.some((surface) => surface.id === "overview")
+    ? buildPluginSurfaceRoute(
+        target.serverId,
+        "factory",
+        { kind: "surface", id: "overview" },
+        { projectId: target.projectId },
+      )
+    : null;
 }

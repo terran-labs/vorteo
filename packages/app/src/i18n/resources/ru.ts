@@ -2468,6 +2468,7 @@ export const ru: TranslationResources = {
       openai: {
         apiKey: "API-ключ",
         apiKeyHint: "Хранится на хосте и больше не показывается.",
+        apiKeySharedHint: en.settings.voice.openai.apiKeySharedHint,
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "Сохранён",
         missingKey: "Нет API-ключа",

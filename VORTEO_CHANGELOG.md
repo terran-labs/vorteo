@@ -2,11 +2,50 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## Unreleased - 2026-11-05
+## Unreleased - 2026-11-06
 
 ### Maintenance
 
 - Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-06
+
+### Fixes
+
+- Take one safety snapshot at a time. With capture no longer blocking, a second snapshot could remove the first one's partial files, and the first would then save an incomplete snapshot as a success. A file is now skipped only when it is really gone from the source.
+
+## Unreleased - 2026-11-06
+
+### Fixes
+
+- Safety snapshots no longer fail when a file in the live Host home disappears mid-copy, as a rotated daemon log did on the first release upgrade here. Snapshots also copy without blocking the coordinator, so the interface keeps answering while a large Host home copies, and they clone files where the file system supports it.
+
+## 26.11.504 - 2026-11-05
+
+### Added
+
+- Rerunning the one-command installer on an existing installation now shows the installed and latest versions, asks to upgrade and whether to change settings, and upgrades the Host, coordinator and Dev in place. Tested from 26.11.103 and 26.11.206 on Linux with Dev and on macOS.
+
+### Fixed
+
+- Linux upgrades with a Dev container snapshot Dev's home through a one-shot container, so the upgrade no longer stops with permission denied.
+- Installation adoption runs the macOS Tailscale app as a CLI under launchd instead of reporting that Tailscale is signed out.
+
+### Maintenance
+
+- Release preparation for 26.11.504. Several batches in this release were merged without waiting for CI at the owner's direction; install tests passed on the installer upgrade itself.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Put the installer runner's doc comment back on `run()`; the Tailscale CLI-mode helper sat between them.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- In-place adoption no longer reports "Tailscale is not signed in" on a signed-in Mac. Started by the coordinator under launchd, the Tailscale app's binary opened its GUI instead of answering as a CLI, so the status read as signed out. Every installer call to Tailscale now sets `TAILSCALE_BE_CLI=1`.
 
 ## 26.11.503 - 2026-11-05
 

@@ -92,6 +92,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
   },
   label: {
+    flexShrink: 1,
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
