@@ -4,6 +4,12 @@ import { ClaudeLoginSession } from "./login.js";
 import { CLAUDE_SIGN_IN_ENV, claudeSignInMode } from "./sign-in-mode.js";
 import { ClaudeResetCreditSession, noteClaudeCodeVersion } from "./reset-credits.js";
 import {
+  isPackagedClaudeCommand,
+  managedClaudeCli,
+  PACKAGED_CLAUDE_VERSION,
+  packagedClaudeCliManaged,
+} from "./packaged-cli.js";
+import {
   claudeKeychainAccount,
   claudeKeychainServiceForConfigDir,
   readClaudeAccountKeychainCredentials,
@@ -65,6 +71,8 @@ import {
   CLAUDE_DISABLED_THINKING_OPTION_ID,
   CLAUDE_ULTRACODE_THINKING_OPTION_ID,
   getClaudeCliUpdate,
+  claudeCodeVersionAtLeast,
+  claudeModelCliRequirement,
   parseClaudeCodeVersion,
   resolveClaudeDisabledThinkingForModel,
 } from "./model-manifest.js";
@@ -584,6 +592,8 @@ interface ClaudeAgentClientOptions {
   queryFactory?: ClaudeQueryFactory;
   resolveBinary?: () => Promise<string>;
   resolveVersion?: (signal?: AbortSignal) => Promise<string>;
+  /** Claude Code's version for the executable one launch uses; null when it cannot be told. */
+  resolveBinaryVersion?: (executable: string) => Promise<string | null>;
   rewindSdk?: ClaudeRewindSdk;
 }
 
@@ -601,6 +611,7 @@ interface ClaudeAgentSessionOptions {
   logger: Logger;
   queryFactory?: ClaudeQueryFactory;
   resolveBinary: () => Promise<string>;
+  resolveBinaryVersion: (executable: string) => Promise<string | null>;
   rewindSdk?: ClaudeRewindSdk;
 }
 
@@ -1726,6 +1737,7 @@ export class ClaudeAgentClient implements AgentClient {
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveVersion: (signal?: AbortSignal) => Promise<string>;
+  private readonly resolveBinaryVersion: (executable: string) => Promise<string | null>;
   private readonly rewindSdk: ClaudeRewindSdk;
   private readonly scheduleImportDescriptors = createImportDescriptorScheduler(
     (candidate: ClaudeSessionCandidate, signal) => this.readImportDescriptor(candidate, signal),
@@ -1747,6 +1759,9 @@ export class ClaudeAgentClient implements AgentClient {
     this.resolveVersion =
       options.resolveVersion ??
       ((signal) => resolveClaudeCodeVersion(this.runtimeSettings, signal));
+    this.resolveBinaryVersion =
+      options.resolveBinaryVersion ??
+      ((executable) => claudeExecutableVersion(executable, this.runtimeSettings));
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
   }
 
@@ -1769,6 +1784,7 @@ export class ClaudeAgentClient implements AgentClient {
       logger: this.logger,
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
+      resolveBinaryVersion: this.resolveBinaryVersion,
       rewindSdk: this.rewindSdk,
     });
   }
@@ -1798,6 +1814,7 @@ export class ClaudeAgentClient implements AgentClient {
       logger: this.logger,
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
+      resolveBinaryVersion: this.resolveBinaryVersion,
       rewindSdk: this.rewindSdk,
     });
     await session.ensureHistoryReady();
@@ -2160,6 +2177,95 @@ async function resolveClaudeBinary(runtimeSettings?: ProviderRuntimeSettings): P
   throw new Error(
     "Claude binary not found. Install Claude Code (https://github.com/anthropics/claude-code) and ensure it is available in your shell PATH.",
   );
+}
+
+// Keyed by executable path and invalidated when the file changes, so an upgrade is seen at once.
+const claudeExecutableVersions = new Map<string, { file: string; version: string | null }>();
+
+/**
+ * Claude Code's version for one executable, which may differ from the one the catalog probed:
+ * a session host or a provider command can launch another installation. Null when it cannot be
+ * determined, such as a wrapper that prints its own version.
+ */
+export async function claudeExecutableVersion(
+  executable: string,
+  runtimeSettings?: ProviderRuntimeSettings,
+): Promise<string | null> {
+  if (isPackagedClaudeCommand(executable)) return PACKAGED_CLAUDE_VERSION;
+  let file: string;
+  try {
+    const info = await promises.stat(executable);
+    file = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  } catch {
+    return null;
+  }
+  const cached = claudeExecutableVersions.get(executable);
+  if (cached?.file === file) return cached.version;
+  let output = "";
+  try {
+    const { stdout, stderr } = await execCommand(executable, ["--version"], {
+      ...createProviderEnvSpec({ runtimeSettings }),
+      timeout: 5_000,
+    });
+    output = `${stdout}\n${stderr}`;
+  } catch {
+    // Cached as unknown like a wrapper's output, so a hanging executable costs one timeout,
+    // not one per launch; replacing or upgrading the file probes again.
+  }
+  const parsed = /\d+\.\d+\.\d+\s+\(Claude Code\)/i.test(output)
+    ? parseClaudeCodeVersion(output)
+    : null;
+  const version = parsed ? parsed.join(".") : null;
+  claudeExecutableVersions.set(executable, { file, version });
+  return version;
+}
+
+/**
+ * Refuses a launch before the CLI starts when its executable is too old for the requested model.
+ * The catalog gates on the version its own probe saw, which another process or a shared profile
+ * can bypass; the CLI would otherwise fail the first turn with an unrecognized-model API error.
+ */
+async function assertClaudeModelRunsOn(
+  model: string | undefined,
+  executable: string,
+  resolveVersion: (executable: string) => Promise<string | null>,
+): Promise<void> {
+  const requirement = claudeModelCliRequirement(model);
+  if (!requirement) return;
+  const version = await resolveVersion(executable);
+  if (!version || claudeCodeVersionAtLeast(version, requirement.minimumVersion)) return;
+  throw new Error(
+    `${requirement.label} needs Claude Code ${requirement.minimumVersion} or newer, but this ` +
+      `agent would launch Claude Code ${version} from ${executable}. Update that installation ` +
+      "(claude update, or brew upgrade --cask claude-code for Homebrew) or choose another model.",
+  );
+}
+
+export type ClaudeCliSelection =
+  | { source: "release"; executable: string; version: string }
+  | { source: "path"; executable: string | null; version: string | null }
+  | { source: "release-unavailable"; error: string };
+
+/**
+ * Which Claude Code this process launches by default. A process that should use the release's
+ * validated CLI and cannot reports the failure instead of quietly running whatever is on PATH.
+ */
+export async function describeDefaultClaudeCli(): Promise<ClaudeCliSelection> {
+  if (packagedClaudeCliManaged()) {
+    try {
+      const executable = await managedClaudeCli();
+      if (executable) return { source: "release", executable, version: PACKAGED_CLAUDE_VERSION };
+    } catch (error) {
+      return { source: "release-unavailable", error: String(error) };
+    }
+  }
+  const launch = await resolveProviderLaunch({ defaultBinary: "claude" });
+  const { resolvedPath } = await checkProviderLaunchAvailable(launch);
+  return {
+    source: "path",
+    executable: resolvedPath,
+    version: resolvedPath ? await claudeExecutableVersion(resolvedPath) : null,
+  };
 }
 
 export async function resolveClaudeCodeVersion(
@@ -2544,6 +2650,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly logger: Logger;
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly resolveBinary: () => Promise<string>;
+  private readonly resolveBinaryVersion: (executable: string) => Promise<string | null>;
   private query: Query | null = null;
   private readonly runtimeSafety = new ClaudeRuntimeSafety();
   private processingSdkMessages = 0;
@@ -2676,6 +2783,7 @@ class ClaudeAgentSession implements AgentSession {
     this.logger = options.logger.child({ agentId: this.agentId });
     this.queryFactory = options.queryFactory;
     this.resolveBinary = options.resolveBinary;
+    this.resolveBinaryVersion = options.resolveBinaryVersion;
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
     this.contextUsage = new ClaudeContextUsageState(
       getClaudeContextWindowMaxTokens(this.config.model),
@@ -4095,6 +4203,7 @@ class ClaudeAgentSession implements AgentSession {
     assertClaudeModeCanRun(permissionMode, sdkEnv);
 
     const claudeBinary = await this.resolveBinary();
+    await assertClaudeModelRunsOn(this.config.model, claudeBinary, this.resolveBinaryVersion);
     this.logger.debug(
       {
         claudeBinary,

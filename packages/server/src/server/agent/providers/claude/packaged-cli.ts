@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { access, lstat, readFile, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -104,11 +104,39 @@ let managed = false;
 let selection: Promise<string> | undefined;
 let selectedCommand: string | undefined;
 
-/** Called by daemon-worker with its captured flag, after deleting the env marker. */
+/**
+ * Called by daemon-worker with its captured flag, after deleting the env marker, and by the
+ * session host with launchedThroughReleaseLink().
+ */
 export function initializePackagedClaudeCli(managedWorker: boolean): void {
   managed = managedWorker;
   selection = undefined;
   selectedCommand = undefined;
+}
+
+/**
+ * The session host job has no supervisor to pass PASEO_MANAGED_WORKER, but the installation always
+ * starts its entrypoint through the release link, as the supervisor's PASEO_MANAGED_RELEASE_LINK
+ * does for workers. A symlinked release root therefore marks an installed release; a source
+ * checkout or test harness runs the entrypoint from a real directory and keeps PATH `claude`.
+ */
+export async function launchedThroughReleaseLink(
+  entrypoint: string | undefined,
+  relativeEntrypoint: string,
+): Promise<boolean> {
+  if (!entrypoint || !path.isAbsolute(entrypoint)) return false;
+  const suffix = `${path.sep}${path.normalize(relativeEntrypoint)}`;
+  const launched = path.normalize(entrypoint);
+  if (!launched.endsWith(suffix)) return false;
+  try {
+    return (await lstat(launched.slice(0, -suffix.length))).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+export function packagedClaudeCliManaged(): boolean {
+  return managed;
 }
 
 export async function managedClaudeCli(): Promise<string | null> {

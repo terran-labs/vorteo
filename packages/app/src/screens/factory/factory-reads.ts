@@ -28,18 +28,38 @@ export async function loadFactoryList(invoke: FactoryInvoke): Promise<ProjectFac
 const MAX_CONCURRENT_READS = 3;
 let runningReads = 0;
 const waitingReads: (() => void)[] = [];
+const summaryReads: (() => void)[] = [];
+let summaryGrantedLast = false;
 
-export async function boundedFactoryRead<T>(read: () => Promise<T>): Promise<T> {
+interface FactoryReadOptions {
+  priority: "summary";
+}
+
+/** A disabled query can exist before its first read, including in a retained hidden panel. */
+export function factoryQueueNeedsInitialRead(
+  query: { dataUpdatedAt: number; errorUpdatedAt: number } | undefined,
+): boolean {
+  return query === undefined || (query.dataUpdatedAt === 0 && query.errorUpdatedAt === 0);
+}
+
+export async function boundedFactoryRead<T>(
+  read: () => Promise<T>,
+  options?: FactoryReadOptions,
+): Promise<T> {
   // A finished read hands its slot straight to the next waiting one.
   if (runningReads >= MAX_CONCURRENT_READS) {
-    await new Promise<void>((resume) => waitingReads.push(resume));
+    const queue = options?.priority === "summary" ? summaryReads : waitingReads;
+    await new Promise<void>((resume) => queue.push(resume));
   } else {
     runningReads += 1;
   }
   try {
     return await read();
   } finally {
-    const next = waitingReads.shift();
+    const serveSummary =
+      summaryReads.length > 0 && (!summaryGrantedLast || waitingReads.length === 0);
+    const next = serveSummary ? summaryReads.shift() : waitingReads.shift();
+    summaryGrantedLast = serveSummary;
     if (next) next();
     else runningReads -= 1;
   }
