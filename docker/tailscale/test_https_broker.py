@@ -118,6 +118,80 @@ class WorkspacePolicyTests(unittest.TestCase):
     def test_approved_active_worktree(self):
         self.assertEqual(self.runtime.current('wks_site', 'preview')['cwd'], self.cwd)
 
+    def mounted_alias(self):
+        self.alias = str(self.path)
+        self.config.update(container='dev', hostPathMappings={'/shared': str(self.path.parent)})
+        self.config['allowedRoots'] = ['/shared']
+        self.config['approvedWorkspaces'] = {'wks_site': '/shared/site'}
+        self.workspaces[0]['cwd'] = self.alias
+        self.mounts = [{'Type': 'bind', 'Source': str(self.path.parent), 'Destination': '/shared'}]
+        self.resolved = '/shared/site'
+        self.probes = []
+
+        def docker(args):
+            self.probes.append(args)
+            if args == ['inspect', '--format', '{{json .Mounts}}', 'dev']:
+                return json.dumps(self.mounts)
+            self.assertEqual(args, ['exec', '--user', 'paseo', 'dev', '/usr/bin/readlink', '-e', '--', self.alias])
+            return self.resolved + '\n'
+        self.runtime.docker = docker
+
+    def test_proven_mounted_alias_preserves_retained_workspace_identity(self):
+        self.mounted_alias()
+        current = self.runtime.current('wks_site', 'preview')
+        self.assertEqual(current['cwd'], self.config['approvedWorkspaces']['wks_site'])
+        self.assertEqual(self.workspaces[0]['cwd'], self.alias)
+        self.assertEqual(len(self.probes), 4)
+
+    def test_unproven_mounted_alias_rejected(self):
+        self.mounted_alias()
+        for resolved in ('/outside/site', '/shared/other', self.alias):
+            with self.subTest(resolved=resolved):
+                self.resolved = resolved
+                with self.assertRaisesRegex(ValueError, 'does not resolve'):
+                    self.runtime.current('wks_site', 'preview')
+        self.resolved = '/shared/site'
+        self.config['hostPathMappings']['/other'] = str(self.path.parent)
+        with self.assertRaisesRegex(ValueError, 'unambiguous'):
+            self.runtime.current('wks_site', 'preview')
+
+    def test_changed_alias_mount_destination_rejected(self):
+        self.mounted_alias()
+        original = self.mounts[0]
+        cases = [
+            [dict(original, Destination='/moved')],
+            [dict(original, Source='/different')],
+            [dict(original, Type='volume')],
+            [original, dict(original, Destination='/shared/site')],
+        ]
+        for mounts in cases:
+            with self.subTest(mounts=mounts):
+                self.mounts = mounts
+                with self.assertRaisesRegex(ValueError, 'bind differs|shadowed'):
+                    self.runtime.current('wks_site', 'preview')
+        self.mounts = [original]
+        original_cli = self.runtime.cli
+
+        def cli(args):
+            if args[0] == 'script':
+                self.mounts = [dict(original, Destination='/moved')]
+            return original_cli(args)
+        self.runtime.cli = cli
+        with self.assertRaisesRegex(ValueError, 'bind differs'):
+            self.runtime.current('wks_site', 'preview')
+
+    def test_unrelated_workspace_unaffected_by_alias(self):
+        self.mounted_alias()
+        self.workspaces.append({'workspaceId': 'wks_other', 'cwd': '/shared/site', 'isolation': 'local'})
+        self.assertEqual(self.runtime.current('wks_other', 'preview')['cwd'], '/shared/site')
+        self.assertEqual(self.probes, [])
+        (self.path / 'paseo.local.json').write_text(json.dumps({'scripts': {'preview': {'port': 40001}}}))
+        self.resolved = '/outside/site'
+        self.assertEqual(self.runtime.registered_ports(), {40001})
+        self.workspaces[1]['cwd'] = '/unmapped/site'
+        with self.assertRaisesRegex(ValueError, 'outside administrator policy'):
+            self.runtime.current('wks_other', 'preview')
+
     def test_registered_policy_admits_future_workspaces_without_grants(self):
         self.config.update(workspacePolicy='registered', allowedRoots=[], approvedWorkspaces={},
                            hostPathMappings={})

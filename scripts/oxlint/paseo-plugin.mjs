@@ -34,6 +34,68 @@ const noRawPressable = {
   },
 };
 
+const SCROLLER_SOURCES = new Set([
+  "react-native",
+  "react-native-gesture-handler",
+  "@gorhom/bottom-sheet",
+]);
+const SCROLLER_NAMES = new Set([
+  "ScrollView",
+  "FlatList",
+  "SectionList",
+  "VirtualizedList",
+  "BottomSheetScrollView",
+  "BottomSheetFlatList",
+  "BottomSheetSectionList",
+]);
+
+export const NO_RAW_SCROLLER_MESSAGE =
+  "A raw scroller skips the standard scroll edge fade. Use ScrollView or FlatList from " +
+  "@/components/ui/scroll-view, which fade content at any edge with more to scroll; pass " +
+  "edgeFade={false} only for code, diff and terminal surfaces. A plain DOM scroller uses " +
+  "useElementEdgeFade (@/components/ui/scroll-edge-fade). See docs/design.md, Scroll edges.";
+
+function isTypeOnly(declaration, specifier) {
+  return declaration.importKind === "type" || specifier.importKind === "type";
+}
+
+const noRawScroller = {
+  create(context) {
+    let animatedNames = new Set();
+    return {
+      ImportDeclaration(node) {
+        if (node.source.value === "react-native-reanimated" && node.importKind !== "type") {
+          for (const specifier of node.specifiers) {
+            if (specifier.type === "ImportDefaultSpecifier")
+              animatedNames.add(specifier.local.name);
+          }
+        }
+        if (!SCROLLER_SOURCES.has(node.source.value)) return;
+        for (const specifier of node.specifiers) {
+          if (specifier.type !== "ImportSpecifier" || isTypeOnly(node, specifier)) continue;
+          if (specifier.imported.name === "Animated") animatedNames.add(specifier.local.name);
+          if (SCROLLER_NAMES.has(specifier.imported.name)) {
+            context.report({ node: specifier, message: NO_RAW_SCROLLER_MESSAGE });
+          }
+        }
+      },
+      // Animated.ScrollView and Animated.FlatList, from React Native or Reanimated, are raw too.
+      JSXMemberExpression(node) {
+        if (
+          node.object.type === "JSXIdentifier" &&
+          animatedNames.has(node.object.name) &&
+          SCROLLER_NAMES.has(node.property.name)
+        ) {
+          context.report({ node, message: NO_RAW_SCROLLER_MESSAGE });
+        }
+      },
+      "Program:exit"() {
+        animatedNames = new Set();
+      },
+    };
+  },
+};
+
 const SYNC_IO_MODULES = new Set(["fs", "node:fs", "child_process", "node:child_process"]);
 
 function propertyName(node) {
@@ -158,6 +220,7 @@ export default {
   meta: { name: "paseo" },
   rules: {
     "no-raw-pressable": noRawPressable,
+    "no-raw-scroller": noRawScroller,
     "no-sync-io": noSyncIo,
   },
 };

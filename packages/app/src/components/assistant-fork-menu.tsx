@@ -10,6 +10,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 
 export type AssistantForkTarget = "tab" | "workspace";
@@ -23,6 +25,10 @@ const ThemedSplit = withUnistyles(Split);
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+// On web the icon inherits the trigger's CSS color, so browser-owned :hover can brighten it.
+const inheritedIconColorMapping = isWeb
+  ? () => ({ color: "currentColor" })
+  : foregroundMutedColorMapping;
 
 export const AssistantForkMenu = memo(function AssistantForkMenu({
   onFork,
@@ -86,10 +92,10 @@ export const AssistantForkMenu = memo(function AssistantForkMenu({
               style={triggerStyle}
               testID={`${testID}-trigger`}
             >
-              {({ hovered, open }) => (
+              {({ open }) => (
                 <ThemedSplit
                   size={ICON_SIZE.sm}
-                  uniProps={hovered || open ? foregroundColorMapping : foregroundMutedColorMapping}
+                  uniProps={open ? foregroundColorMapping : inheritedIconColorMapping}
                 />
               )}
             </DropdownMenuTrigger>
@@ -129,6 +135,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "transparent",
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
   triggerDisabled: {
     opacity: theme.opacity[50],

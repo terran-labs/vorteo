@@ -5,6 +5,7 @@ import { memo, useCallback, useMemo, useState, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { View, Text, type GestureResponderEvent } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverGroup, hoverSurface, rowSurface } from "@/styles/hover";
 import type { HostBadgeModel } from "@/hosts/appearance";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { density as densityTokens } from "@/styles/density";
@@ -28,9 +29,11 @@ import {
   SidebarWorkspaceMenu,
 } from "@/components/sidebar/sidebar-workspace-menu";
 import {
+  SIDEBAR_WORKSPACE_HOVER_GROUP,
   SidebarWorkspaceRowFrame,
   SidebarWorkspaceRowContent,
   resolveTrailingActionVisibility,
+  sidebarMenuBackdrop,
   SidebarWorkspaceTrailingActionBase,
   SidebarWorkspaceMenuReveal,
   SidebarWorkspaceTrailingActionSlot,
@@ -277,16 +280,16 @@ function WorkspaceRowBody({
 
   return (
     <SidebarWorkspaceRowFrame workspace={workspace} isDragging={isDragging}>
-      {({ isHovered, contextMenuOpen, onContextMenuOpenChange, hoverHandlers }) => {
+      {({ contextMenuOpen, onContextMenuOpenChange }) => {
         const isDesktop = !isTouchPlatform;
         const serviceSummary = isDesktop ? selectWorkspaceServiceSummary(workspace.scripts) : null;
         const workspaceRowStyle = getWorkspaceRowStyle({
           isDragging,
           isPressed,
           selected,
-          isHovered,
+          hoverable: !isTouchPlatform && !contextMenuOpen,
         });
-        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
+        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected });
         return (
           <View
             {...(draggable ? dragAttributes : {})}
@@ -295,7 +298,6 @@ function WorkspaceRowBody({
               draggable ? (dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>) : undefined
             }
             style={styles.workspaceRowContainer}
-            {...hoverHandlers}
           >
             <SidebarWorkspaceContextMenu
               contextMenuOpen={contextMenuOpen}
@@ -332,7 +334,7 @@ function WorkspaceRowBody({
                 hostBadge={hostBadge}
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
-                isHovered={isHovered}
+                selected={selected}
                 isLoading={isArchiving || isCreating}
                 isCreating={isCreating}
                 shortcutNumber={shortcutNumber}
@@ -342,7 +344,6 @@ function WorkspaceRowBody({
                   workspace={workspace}
                   backdrop={backdrop}
                   trailing={trailing}
-                  isHovered={isHovered}
                   isTouchPlatform={isTouchPlatform}
                   isCreating={isCreating}
                   showShortcutBadge={showShortcutBadge}
@@ -371,7 +372,6 @@ function WorkspaceRowTrailingActions({
   workspace,
   backdrop,
   trailing,
-  isHovered,
   isTouchPlatform,
   isCreating,
   showShortcutBadge,
@@ -390,7 +390,6 @@ function WorkspaceRowTrailingActions({
   workspace: SidebarWorkspaceEntry;
   backdrop: SidebarSurfaceBackdrop;
   trailing: SidebarWorkspaceTrailing;
-  isHovered: boolean;
   isTouchPlatform: boolean;
   isCreating: boolean;
   showShortcutBadge: boolean;
@@ -416,12 +415,12 @@ function WorkspaceRowTrailingActions({
     workspace,
     trailing,
     hasArchiveAction: Boolean(onArchive),
-    isHovered,
     isTouchPlatform,
     showShortcut,
   });
   const sessionMenu = useWorkspaceSessionMenu(workspace.serverId, workspace.workspaceId);
   const kebab = useOpenKebabMenuVisibility(showKebabInSlot);
+  const menuBackdrop = sidebarMenuBackdrop(backdrop, kebab.menuProps.open);
 
   return (
     <>
@@ -435,12 +434,16 @@ function WorkspaceRowTrailingActions({
             <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
           </SidebarWorkspaceTrailingActionBase>
           <SidebarWorkspaceTrailingDetails workspace={workspace} />
-          <SidebarWorkspaceMenuReveal visible={kebab.showKebab} backdrop={backdrop}>
+          <SidebarWorkspaceMenuReveal
+            visible={kebab.showKebab}
+            pinned={kebab.menuProps.open}
+            backdrop={menuBackdrop}
+          >
             {kebab.showKebab && onArchive ? (
               <SidebarWorkspaceMenu
                 {...sessionMenu}
                 {...kebab.menuProps}
-                backdrop={backdrop}
+                backdrop={menuBackdrop}
                 workspaceKey={workspace.workspaceKey}
                 serverId={workspace.serverId}
                 workspaceId={workspace.workspaceId}
@@ -468,16 +471,18 @@ function getWorkspaceRowStyle({
   isDragging,
   isPressed,
   selected,
-  isHovered,
+  hoverable,
 }: {
   isDragging: boolean;
   isPressed: boolean;
   selected: boolean;
-  isHovered: boolean;
+  hoverable: boolean;
 }) {
+  // CSS hover outranks the base class, so the selected, dragging and pressed fills win by
+  // leaving the hover fill out.
   return [
     styles.workspaceRow,
-    isHovered && styles.workspaceRowHovered,
+    hoverable && !selected && !isDragging && !isPressed && styles.workspaceRowHoverable,
     selected && styles.sidebarRowSelected,
     isDragging && styles.workspaceRowDragging,
     isPressed && styles.workspaceRowPressed,
@@ -489,6 +494,7 @@ export const MemoSidebarWorkspaceRow = memo(SidebarWorkspaceRow);
 const styles = StyleSheet.create((theme) => ({
   workspaceRowContainer: {
     position: "relative",
+    ...hoverGroup(SIDEBAR_WORKSPACE_HOVER_GROUP),
   },
   workspaceRow: {
     minHeight: densityTokens.rowHeight,
@@ -503,11 +509,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     userSelect: "none",
   },
-  workspaceRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  // Publishes the row's surface so status rings and badge cutouts follow its CSS hover fill.
+  workspaceRowHoverable: hoverSurface(
+    theme.colors.surfaceSidebar,
+    theme.colors.surfaceSidebarHover,
+  ),
   workspaceRowPressed: {
     backgroundColor: theme.colors.surface2,
+    ...rowSurface(theme.colors.surface2),
   },
   workspaceRowDragging: {
     backgroundColor: theme.colors.surface2,
@@ -516,9 +525,11 @@ const styles = StyleSheet.create((theme) => ({
     transform: [{ scale: 1.02 }],
     zIndex: 3,
     ...theme.shadow.md,
+    ...rowSurface(theme.colors.surface2),
   },
   sidebarRowSelected: {
     backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
   },
   workspaceCreatingText: {
     color: theme.colors.foregroundMuted,

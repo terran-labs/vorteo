@@ -1,5 +1,5 @@
 import { MoreVertical, Pause, Pencil, Play, RotateCw, Trash2 } from "lucide-react-native";
-import { useCallback, useState, type ReactElement } from "react";
+import { useCallback, type ReactElement } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
@@ -11,9 +11,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useProviderIcon } from "@/components/provider-icons";
-import { isNative } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { settingsStyles } from "@/styles/settings";
+import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import type { ScheduleDerivedState } from "@/schedules/schedule-derivation";
 import {
@@ -35,7 +36,6 @@ const ThemedTrash2 = withUnistyles(Trash2);
 const ThemedKebab = withUnistyles(MoreVertical);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const destructiveColorMapping = (theme: Theme) => ({ color: theme.colors.destructive });
 
 const MENU_ICON_SIZE = 14;
@@ -164,9 +164,8 @@ function ProviderGlyph({
  * a muted secondary line (model · cadence · next run), a StatusBadge, and the
  * kebab menu that owns every row action. Tapping the row opens the editor.
  *
- * Hover lives on the outer plain View (docs/hover.md): the inner Pressable owns
- * press, the nested kebab Pressable never fights it, and the row background
- * highlights without reflow.
+ * The row highlight is browser-owned CSS hover on the Pressable, so it clears when the row
+ * moves out from under a resting cursor and the nested kebab keeps it lit.
  */
 export function ScheduleRow({
   serverId,
@@ -185,9 +184,6 @@ export function ScheduleRow({
   onDelete,
 }: ScheduleRowProps): ReactElement {
   const isCompact = useIsCompactFormFactor();
-  const [isHovered, setIsHovered] = useState(false);
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
 
   const title = resolveScheduleTitle(schedule);
   const productName = scheduleProductName(schedule);
@@ -199,18 +195,14 @@ export function ScheduleRow({
       settingsStyles.row,
       styles.row,
       !isFirst && settingsStyles.rowBorder,
-      isHovered && !isCompact && styles.rowHovered,
+      !pressed && !isCompact && styles.rowHovered,
       pressed && styles.rowPressed,
     ],
-    [isFirst, isHovered, isCompact],
+    [isFirst, isCompact],
   );
 
   return (
-    <View
-      style={styles.rowContainer}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-    >
+    <View style={styles.rowContainer}>
       <Pressable
         style={rowStyle}
         onPress={onEdit}
@@ -322,14 +314,9 @@ function ScheduleExecutionMenuItems({
   );
 }
 
-function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }): ReactElement {
-  return (
-    <ThemedKebab
-      size={MENU_ICON_SIZE}
-      uniProps={hovered ? foregroundColorMapping : mutedColorMapping}
-    />
-  );
-}
+// On web the icon inherits the trigger's CSS color, so browser-owned :hover brightens it.
+const kebabIconColorMapping = isWeb ? () => ({ color: "currentColor" }) : mutedColorMapping;
+const kebabTriggerIcon = <ThemedKebab size={MENU_ICON_SIZE} uniProps={kebabIconColorMapping} />;
 
 function ScheduleKebabMenu({
   schedule,
@@ -352,12 +339,12 @@ function ScheduleKebabMenu({
     <DropdownMenu>
       <DropdownMenuTrigger
         hitSlop={8}
-        style={kebabTriggerStyle}
+        style={styles.kebabTrigger}
         accessibilityRole={isNative ? "button" : undefined}
         accessibilityLabel={`${productName} actions`}
         testID={`schedule-kebab-${schedule.id}`}
       >
-        {renderKebabTriggerIcon}
+        {kebabTriggerIcon}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width={220}>
         <DropdownMenuItem
@@ -391,12 +378,6 @@ function ScheduleKebabMenu({
   );
 }
 
-function kebabTriggerStyle({
-  hovered = false,
-}: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.kebabTrigger, hovered && styles.kebabTriggerHovered];
-}
-
 const styles = StyleSheet.create((theme) => ({
   // Static color holder for the dynamic provider icon (compliant idiom).
   providerIcon: {
@@ -408,9 +389,7 @@ const styles = StyleSheet.create((theme) => ({
   row: {
     gap: theme.spacing[3],
   },
-  rowHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  rowHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   rowPressed: {
     backgroundColor: theme.colors.surface3,
   },
@@ -444,8 +423,9 @@ const styles = StyleSheet.create((theme) => ({
   kebabTrigger: {
     padding: theme.spacing[1],
     borderRadius: theme.borderRadius.base,
-  },
-  kebabTriggerHovered: {
-    backgroundColor: theme.colors.surface2,
+    ...hoverStyle(
+      { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
 }));

@@ -8,6 +8,7 @@ import {
   type ControlSize,
 } from "@/components/ui/control-geometry";
 import { useContainedControlSize } from "@/components/ui/control-size";
+import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 
 type SegmentedControlIconRenderer = (props: { color: string; size: number }) => ReactNode;
@@ -122,11 +123,12 @@ function SegmentItem<T extends string>({
     }
   }, [option.disabled, option.value, currentValue, onValueChange]);
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    // CSS :hover outranks the base class, so the hover rule steps aside while selected or pressed.
+    ({ pressed }: PressableStateCallbackType) => [
       styles.segment,
       segmentSizeStyle,
       isSelected && styles.segmentSelected,
-      Boolean(hovered) && !isSelected && styles.segmentHover,
+      !isSelected && !pressed && !option.disabled && styles.segmentHoverable,
       pressed && !isSelected && styles.segmentPressed,
       option.disabled && styles.segmentDisabled,
     ],
@@ -194,9 +196,7 @@ const styles = StyleSheet.create((theme) => {
     segmentSelected: {
       backgroundColor: theme.colors.surface3,
     },
-    segmentHover: {
-      backgroundColor: theme.colors.surface2,
-    },
+    segmentHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
     segmentPressed: {
       backgroundColor: theme.colors.surface3,
     },

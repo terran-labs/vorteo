@@ -2,6 +2,7 @@ import { ChevronRight, Folder, FolderGit2, FolderPlus } from "lucide-react-nativ
 import { useCallback, useMemo, type ComponentType, type RefObject } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/shortcut";
 import {
@@ -79,9 +80,10 @@ function Crumb({
 }) {
   const handlePress = useCallback(() => onNavigate(crumb), [crumb, onNavigate]);
   const style = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.crumb,
-      (hovered || pressed) && !disabled && styles.crumbHovered,
+      !disabled && styles.crumbHoverable,
+      pressed && !disabled && styles.crumbHovered,
     ],
     [disabled],
   );
@@ -118,9 +120,9 @@ export function ProjectsFolderRowView({
   const handleAdd = useCallback(() => onAdd(row), [onAdd, row]);
   const accessibilityState = useMemo(() => ({ disabled, selected: active }), [active, disabled]);
   const style = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
-      (active || hovered || pressed) && styles.rowActive,
+      (active || pressed) && styles.rowActive,
     ],
     [active],
   );
@@ -277,6 +279,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.md,
   },
   crumbHovered: { backgroundColor: theme.colors.surface1 },
+  crumbHoverable: hoverStyle({ backgroundColor: theme.colors.surface1 }),
   crumbText: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   crumbCurrent: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
   row: {
@@ -286,6 +289,7 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 44,
     paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[1],
+    ...hoverStyle({ backgroundColor: theme.colors.surface1 }),
   },
   rowActive: { backgroundColor: theme.colors.surface1 },
   iconSlot: { width: 18, alignItems: "center" },

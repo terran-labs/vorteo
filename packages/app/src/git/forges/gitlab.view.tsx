@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { CircleCheck, ExternalLink } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import type { CheckoutPipelineJob, CheckoutPipelineStage } from "@getpaseo/protocol/messages";
@@ -83,12 +84,13 @@ function GitlabApprovalsBadge({ approvals }: { approvals: GitlabApprovals }) {
   );
 }
 
-function rowPressableStyle({ hovered }: { hovered?: boolean }) {
-  return [sectionKitStyles.checkRow, Boolean(hovered) && styles.hoverable];
+// CSS hover, left out for rows without a link: disabled Pressables never reported hover.
+function rowPressableStyle(enabled: boolean) {
+  return [sectionKitStyles.checkRow, enabled && styles.hoverable];
 }
 
-function jobRowPressableStyle({ hovered }: { hovered?: boolean }) {
-  return [styles.pipelineJobRow, Boolean(hovered) && styles.hoverable];
+function jobRowPressableStyle(enabled: boolean) {
+  return [styles.pipelineJobRow, enabled && styles.hoverable];
 }
 
 function formatPipelineDuration(seconds: number | null): string {
@@ -163,7 +165,7 @@ function GitLabPipelineSection({
     >
       <Pressable
         onPress={handleOpenPipeline}
-        style={rowPressableStyle}
+        style={rowPressableStyle(Boolean(summary.url))}
         disabled={!summary.url}
         testID="pr-pane-pipeline-link"
       >
@@ -227,7 +229,11 @@ function PipelineJobRow({ job }: { job: CheckoutPipelineJob }) {
   }, [job.url]);
   const duration = formatPipelineDuration(job.durationSeconds);
   return (
-    <Pressable onPress={handlePress} style={jobRowPressableStyle} disabled={!job.url}>
+    <Pressable
+      onPress={handlePress}
+      style={jobRowPressableStyle(Boolean(job.url))}
+      disabled={!job.url}
+    >
       <GitLabPipelineStatusIcon status={job.status} allowFailure={job.allowFailure} />
       <Text style={sectionKitStyles.checkName} numberOfLines={1}>
         {job.name}
@@ -280,9 +286,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
-  hoverable: {
-    backgroundColor: theme.colors.surface1,
-  },
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surface1 }),
   pipelineStageHeader: {
     flexDirection: "row",
     alignItems: "center",

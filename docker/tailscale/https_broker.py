@@ -245,12 +245,53 @@ process.stdout.write(found[0].value);
             raise ValueError('Unsupported workspace policy')
         return any(cwd == root or cwd.startswith(root.rstrip('/') + '/') for root in self.c['allowedRoots'])
 
+    def canonical_workspace_cwd(self, cwd):
+        # A Host-path alias grants no new access. Prove that Dev resolves it to
+        # the same bind destination used for policy, configuration and ledger checks.
+        path = Path(cwd)
+        if not path.is_absolute() or '..' in path.parts or str(path) != cwd:
+            raise ValueError('Invalid container workspace path')
+        mappings = self.c.get('hostPathMappings', {})
+        if any(cwd == root or cwd.startswith(root.rstrip('/') + '/') for root in (*mappings, '/home/paseo')):
+            return cwd
+        candidates = []
+        for container_root, host_root in mappings.items():
+            if cwd != host_root and not cwd.startswith(host_root.rstrip('/') + '/'):
+                continue
+            for root in (container_root, host_root):
+                if not Path(root).is_absolute() or '..' in Path(root).parts or str(Path(root)) != root:
+                    raise ValueError('Invalid administrator host mapping')
+            canonical = str(Path(container_root) / path.relative_to(host_root))
+            candidates.append((container_root, host_root, canonical))
+        if not candidates:
+            return cwd
+        if len(candidates) != 1:
+            raise ValueError('Workspace has no unambiguous verified host bind alias')
+        container_root, host_root, canonical = candidates[0]
+        if self.host_workspace(canonical) != path:
+            raise ValueError('Workspace alias conflicts with administrator mapping')
+        mounts = json.loads(self.docker(['inspect', '--format', '{{json .Mounts}}', self.c['container']]))
+        matching = [m for m in mounts if m.get('Destination') == container_root]
+        if len(matching) != 1 or matching[0].get('Type') != 'bind' or matching[0].get('Source') != host_root:
+            raise ValueError('Workspace alias bind differs from administrator mapping')
+        for mount in mounts:
+            destination = mount.get('Destination', '')
+            if (destination.startswith(container_root.rstrip('/') + '/') and
+                    (canonical == destination or canonical.startswith(destination.rstrip('/') + '/'))):
+                raise ValueError('Workspace alias is shadowed by a nested mount')
+        resolved = self.docker(['exec', '--user', 'paseo', self.c['container'],
+                                '/usr/bin/readlink', '-e', '--', cwd]).rstrip('\n')
+        if resolved != canonical:
+            raise ValueError('Workspace alias does not resolve to its verified mounted path')
+        return canonical
+
     def current(self, workspace, service):
         workspaces = self.cli(['workspace', 'ls'])
         match = next((w for w in workspaces if w['workspaceId'] == workspace), None)
         if not match or match.get('archivedAt') or match.get('isolation') not in ('local', 'worktree'):
             raise ValueError('Unknown, archived or unsupported workspace')
-        cwd = match['cwd']
+        registered_cwd = match['cwd']
+        cwd = self.canonical_workspace_cwd(registered_cwd)
         if not self.workspace_path_allowed(cwd):
             raise ValueError('Workspace is outside administrator policy')
         approved = self.c.get('approvedWorkspaces', {})
@@ -265,6 +306,8 @@ process.stdout.write(found[0].value);
         entry = next((s for s in scripts if s['scriptName'] == service), None)
         if not entry or entry['type'] != 'service' or not isinstance(definition, dict) or definition.get('type') != 'service':
             raise ValueError('Unknown registered service')
+        if registered_cwd != cwd and self.canonical_workspace_cwd(registered_cwd) != cwd:
+            raise ValueError('Workspace alias changed during verification')
         return {**entry, 'cwd': cwd, 'fingerprint': digest(definition), 'workspaceId': workspace, 'service': service}
 
     def registered_ports(self):
@@ -275,14 +318,15 @@ process.stdout.write(found[0].value);
             if cwd in seen:
                 continue
             seen.add(cwd)
-            if not self.workspace_path_allowed(cwd):
-                continue
             # A workspace whose path is missing, symlinked or otherwise unsafe
             # cannot be served (current() rejects it), so it holds no ports.
             # Skip it rather than failing every other workspace's reservation.
             try:
-                cfg = project_config(self.host_workspace(cwd))
-            except (OSError, ValueError):
+                canonical = self.canonical_workspace_cwd(cwd)
+                if not self.workspace_path_allowed(canonical):
+                    continue
+                cfg = project_config(self.host_workspace(canonical))
+            except (OSError, ValueError, subprocess.SubprocessError):
                 continue
             for definition in cfg.get('scripts', {}).values():
                 if isinstance(definition, dict) and definition.get('type') == 'service' and type(definition.get('port')) is int:
@@ -343,6 +387,9 @@ class NativeRuntime(Runtime):
 
     def ts(self, args):
         return self.command([self.c['tailscale'], *args])
+
+    def canonical_workspace_cwd(self, cwd):
+        return cwd
 
     def host_workspace(self, cwd):
         path = Path(cwd)

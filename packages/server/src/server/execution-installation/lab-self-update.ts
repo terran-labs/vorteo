@@ -35,6 +35,8 @@ export const LAB_UPDATE_STEPS = LabUpdateStepNameSchema.options;
 const LabPrivateSchema = z.strictObject({
   rollbackRestartId: z.string().uuid().optional(),
   coordinatorLaunchedAt: z.string().datetime().optional(),
+  /** When the Host service itself restarted, so a resumed job never restarts it twice. */
+  hostServiceRestartedAt: z.string().datetime().optional(),
 });
 
 const LabRecordSchema = LabUpdateSchema.extend({ private: LabPrivateSchema });
@@ -111,6 +113,12 @@ export interface LabUpdatePorts {
   /** Creates and approves a tracked Host restart; returns its restart queue ID. */
   requestHostRestart(update: LabUpdate, reason: string): string;
   hostRestart(jobId: string): LabHostRestartState;
+  /**
+   * Restarts the Host service itself. The tracked restart only replaces the daemon's worker,
+   * which its supervisor relaunches from the release it resolved when it started; the service
+   * restart makes the supervisor resolve host-current again.
+   */
+  restartHostService(): Promise<void>;
   /** Cancels the tracked Host restart before dispatch; false when it already dispatched. */
   cancelHostRestart(jobId: string): boolean;
   launchCoordinatorSwap(update: LabUpdate, next: string, previous: string): void;
@@ -512,8 +520,7 @@ export class LabSelfUpdates {
     }
     const restart = this.ports.hostRestart(jobId);
     if (restart.status === "running") return { status: "waiting", detail: restart.detail };
-    if (restart.status === "succeeded")
-      return { status: "succeeded", detail: "The Host daemon restarted on the selected release." };
+    if (restart.status === "succeeded") return this.restartHostService(record);
     // Failed or cancelled: put the previous release back.
     const restore = record.previous.host;
     if (restore) await this.ports.pointHostLink(restore);
@@ -545,6 +552,30 @@ export class LabSelfUpdates {
       status: "rolled-back",
       detail: `The Host restart failed (${restart.detail}). The previous release is selected again and a tracked restart onto it was requested.`,
     };
+  }
+
+  /**
+   * The tracked restart finished current turns and replaced the worker; the service restart
+   * that follows moves the supervisor onto the selected release. Without it the job would
+   * report success while the Host still ran the previous release.
+   */
+  private async restartHostService(record: LabRecord): Promise<StepResult> {
+    if (!record.private.hostServiceRestartedAt) {
+      try {
+        await this.ports.restartHostService();
+      } catch (error) {
+        const restore = record.previous.host;
+        if (restore) await this.ports.pointHostLink(restore);
+        return {
+          status: "failed",
+          detail: `The Host service did not restart (${message(error)}). The previous release is selected again; the Host keeps running it.`,
+        };
+      }
+      await this.save(this.latest(record.id), {
+        private: { ...record.private, hostServiceRestartedAt: this.ports.now().toISOString() },
+      });
+    }
+    return { status: "succeeded", detail: "The Host service restarted on the selected release." };
   }
 
   private async runCoordinator(input: LabRecord): Promise<StepResult> {

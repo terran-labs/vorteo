@@ -25,6 +25,7 @@ import { isNative } from "@/constants/platform";
 import { useHosts } from "@/runtime/host-runtime";
 import { useHostFeature } from "@/runtime/host-features";
 import type { Theme } from "@/styles/theme";
+import { hoverGroup, revealOnGroupHover } from "@/styles/hover";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import {
   createWorkspaceLabelManagerModel,
@@ -233,12 +234,17 @@ export function WorkspaceLabelManagerModal({
 
 const managerHostOptionTestID = (serverId: string) => `workspace-label-manager-host-${serverId}`;
 
+function editStyle({ pressed }: PressableStateCallbackType) {
+  return [styles.rowEdit, pressed && styles.rowEditPressed];
+}
+
 /**
  * One label: its colour, its name, and the pencil that opens it.
  *
- * Hover lives on the plain outer `View` and press on the inner `Pressable`, which is the one
- * shape that survives a pressable inside a hover target (docs/hover.md). The pencil fades rather
- * than mounts, so revealing it cannot move the row out from under the pointer.
+ * The row is a CSS hover group and the pencil's wrapper reveals on hover or keyboard focus, so it
+ * hides again when the row moves out from under a resting cursor. The pencil fades rather than
+ * mounts, so revealing it cannot move the row. The reveal sits on a wrapper so the pencil's own
+ * pressed opacity still applies while the row is hovered.
  */
 function WorkspaceLabelManagerRow({
   label,
@@ -251,43 +257,28 @@ function WorkspaceLabelManagerRow({
 }): ReactElement {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
-  const [isHovered, setIsHovered] = useState(false);
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const edit = useCallback(() => onEdit(label), [label, onEdit]);
-  const revealed = isHovered || isNative || isCompact;
-  const editStyle = useCallback(
-    ({ pressed }: PressableStateCallbackType) => [
-      styles.rowEdit,
-      !revealed && styles.rowEditHidden,
-      pressed && styles.rowEditPressed,
-    ],
-    [revealed],
-  );
+  const alwaysRevealed = isNative || isCompact;
 
   return (
-    <View
-      style={styles.row}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-      testID={`workspace-label-manager-label-${label.name}`}
-    >
+    <View style={styles.row} testID={`workspace-label-manager-label-${label.name}`}>
       <WorkspaceLabelDot color={label.color} />
       <Text style={styles.rowName} numberOfLines={1}>
         {label.name}
       </Text>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={t("workspaceLabels.manage.editLabel", { name: label.name })}
-        disabled={disabled}
-        hitSlop={EDIT_HIT_SLOP}
-        onPress={edit}
-        pointerEvents={revealed ? "auto" : "none"}
-        style={editStyle}
-        testID={`workspace-label-manager-edit-${label.name}`}
-      >
-        <ThemedPencil size={EDIT_ICON_SIZE} uniProps={mutedMapping} />
-      </Pressable>
+      <View style={alwaysRevealed ? undefined : styles.rowEditReveal}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("workspaceLabels.manage.editLabel", { name: label.name })}
+          disabled={disabled}
+          hitSlop={EDIT_HIT_SLOP}
+          onPress={edit}
+          style={editStyle}
+          testID={`workspace-label-manager-edit-${label.name}`}
+        >
+          <ThemedPencil size={EDIT_ICON_SIZE} uniProps={mutedMapping} />
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -368,6 +359,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
     minHeight: 32,
+    ...hoverGroup("label-row"),
   },
   rowName: {
     flex: 1,
@@ -381,9 +373,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
-  rowEditHidden: {
-    opacity: 0,
-  },
+  rowEditReveal: revealOnGroupHover("label-row"),
   rowEditPressed: {
     opacity: 0.6,
   },

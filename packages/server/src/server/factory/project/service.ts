@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import {
   PROJECT_FACTORY_INSTRUCTION_CONFLICTS,
@@ -7,18 +8,24 @@ import {
   factoryProjectDisable,
   factoryProjectEnable,
   factoryProjectGet,
+  factoryProjectQueue,
   factoryProjectInstructionsAcknowledge,
   factoryProjectInstructionsGet,
   factoryProjectInstructionsPropose,
   factoryProjectInstructionsResolve,
   factoryProjectInstructionsSet,
+  factoryProjectList,
   factoryProjectPause,
+  factoryProjectPauseAll,
+  factoryProjectResumeAll,
   factoryProjectResume,
   factoryProjectSendThread,
   factoryProjectStatusSet,
   type ProjectFactoryInstructions,
+  type ProjectFactoryList,
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
+  type ProjectFactoryQueue,
 } from "@getpaseo/server/factory-project";
 
 import type { AgentStorage, StoredAgentRecord } from "../../agent/agent-storage.js";
@@ -62,13 +69,33 @@ import {
   type ProjectState,
   type RoleState,
 } from "./state.js";
-import { computeFingerprint, defaultGhRunner, shouldWake, type GatedRole } from "./tick-gate.js";
+import {
+  computeFingerprint,
+  defaultGhRunner,
+  shouldWake,
+  type GatedRole,
+  type GhRunner,
+} from "./tick-gate.js";
+
+import { readIssueQueue } from "./queue.js";
+
+/** Sent to a paused project's Foreman by pause_all, and its counterpart from resume_all. */
+export function drainNotice(id: string): string {
+  return `Drain notice ${id}: admit no new Factory work until this project is resumed. Let running workers finish and push, then set your status line to 'Drained ${id}: <n> workers still finishing'.`;
+}
+export const DRAIN_ENDED = "Drain ended: resume normal intake.";
 
 const GATED_ROLES: ReadonlySet<string> = new Set([
   "factory-intake",
   "factory-triage",
   "factory-builds",
 ]);
+
+interface QueueCache {
+  repository: string;
+  expiresAt: number;
+  result: Promise<ProjectFactoryQueue>;
+}
 
 export type PromptOutcome = "sent" | "busy";
 
@@ -110,6 +137,8 @@ export interface ProjectFactoryServiceInput {
   /** The provider a profile launches with, for a launch configured by profile alone. */
   profileProvider?: (profileId: string) => string | null;
   schedules: Pick<ScheduleService, "list" | "pause" | "resume">;
+  /** GitHub reader shared with the tick gate; injectable for queue tests. */
+  gh?: GhRunner;
   /** Hash of the GitHub state a gated role reacts to; null wakes the agent. */
   fingerprint?: (role: GatedRole, repository: string) => Promise<string | null>;
   onWorkspacesChanged?: (workspaceIds: string[]) => void;
@@ -143,6 +172,7 @@ export class ProjectFactoryService {
   private readonly timerGenerations = new Map<string, number>();
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
+  private readonly issueQueues = new Map<string, QueueCache>();
 
   static supports(method: string): boolean {
     return PROJECT_FACTORY_RPCS.some((rpc) => rpc.name === method);
@@ -177,6 +207,8 @@ export class ProjectFactoryService {
 
   async invoke(method: string, rawInput: unknown): Promise<unknown> {
     switch (method) {
+      case factoryProjectQueue.name:
+        return this.getQueue(factoryProjectQueue.input.parse(rawInput).projectId);
       case factoryProjectGet.name:
         return this.get(factoryProjectGet.input.parse(rawInput).projectId);
       case factoryProjectEnable.name:
@@ -193,6 +225,14 @@ export class ProjectFactoryService {
         return this.setStatus(factoryProjectStatusSet.input.parse(rawInput));
       case factoryProjectSendThread.name:
         return this.sendThread(factoryProjectSendThread.input.parse(rawInput));
+      case factoryProjectList.name:
+        factoryProjectList.input.parse(rawInput);
+        return this.list();
+      case factoryProjectPauseAll.name:
+        return this.pauseAll(factoryProjectPauseAll.input.parse(rawInput).reason);
+      case factoryProjectResumeAll.name:
+        factoryProjectResumeAll.input.parse(rawInput);
+        return this.resumeAll();
       case factoryProjectInstructionsGet.name: {
         const { projectId, role } = factoryProjectInstructionsGet.input.parse(rawInput);
         return this.getInstructions(projectId, role);
@@ -210,6 +250,32 @@ export class ProjectFactoryService {
       default:
         throw new ProjectFactoryError(`Unknown Factory method: ${method}`);
     }
+  }
+
+  private async getQueue(projectId: string): Promise<ProjectFactoryQueue> {
+    await this.requireProject(projectId);
+    const project = await this.readProject(projectId);
+    const now = this.now();
+    if (!project) return { fetchedAt: now.toISOString(), error: null, issues: [] };
+    const cached = this.issueQueues.get(projectId);
+    if (cached && cached.repository === project.repository && cached.expiresAt > now.getTime())
+      return cached.result;
+    const workspaceIds = new Set(
+      Object.values(project.roles).flatMap((role) => (role?.workspaceId ? [role.workspaceId] : [])),
+    );
+    const result = readIssueQueue({
+      repository: project.repository,
+      gh: this.input.gh ?? defaultGhRunner,
+      agents: () => this.input.agentStorage.list(),
+      workspaceIds,
+      now,
+    });
+    this.issueQueues.set(projectId, {
+      repository: project.repository,
+      expiresAt: now.getTime() + 30_000,
+      result,
+    });
+    return result;
   }
 
   async get(projectId: string): Promise<ProjectFactoryState> {
@@ -240,7 +306,12 @@ export class ProjectFactoryService {
         const current = file.projects[request.projectId];
         file.projects[request.projectId] = {
           repository: repository.data,
-          workers: current?.workers ?? { workerProfileId: null, reviewerProfileId: null },
+          workers: current?.workers ?? {
+            plannerProfileId: null,
+            planning: true,
+            workerProfileId: null,
+            reviewerProfileId: null,
+          },
           roles: current?.roles ?? {},
           ...(current?.pausedOptimizerScheduleId
             ? { pausedOptimizerScheduleId: current.pausedOptimizerScheduleId }
@@ -271,6 +342,8 @@ export class ProjectFactoryService {
       await this.mutateProject(projectId, (project) => {
         if (!project.enabled) throw new ProjectFactoryError("Factory is off for this project.");
         project.paused = paused;
+        // A manual pause or resume takes the project out of any pause_all drain.
+        delete project.drain;
       });
       if (paused) this.stopTimers(projectId);
       else this.startTimers(projectId);
@@ -295,9 +368,105 @@ export class ProjectFactoryService {
       await this.mutateProject(projectId, (current) => {
         current.enabled = false;
         current.paused = false;
+        delete current.drain;
       });
       await this.reconcileOptimizerReview(projectId, await this.readProject(projectId));
       return this.describe(record, await this.readProject(projectId), null);
+    });
+  }
+
+  /**
+   * Every project the Factory service knows, with its state. A damaged state file refuses
+   * rather than reporting no projects, so pause_all can never claim a drain it did not make.
+   */
+  async list(): Promise<ProjectFactoryList> {
+    const file = await this.store.read();
+    const projects: ProjectFactoryList["projects"] = [];
+    for (const [projectId, project] of Object.entries(file.projects)) {
+      const record = await this.input.projects.get(projectId);
+      const unavailable = !record || record.archivedAt ? "unavailable" : null;
+      projects.push({
+        projectId,
+        state: unavailable ?? factoryState(project, null),
+        repository: project.repository || null,
+        paused: project.paused,
+        drain: project.drain
+          ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
+          : null,
+      });
+    }
+    return { projects };
+  }
+
+  /**
+   * Pauses every project whose Factory is on, before a restart or upgrade, and records which
+   * ones it paused. Projects already paused, off or unavailable are left alone, so a rerun
+   * records nothing new. Stopping heartbeats does not reach a Foreman already mid-turn, so each
+   * paused project's Foreman also gets one drain notice, steered into its turn when busy. A
+   * notice that fails is retried by the next pause_all. Each drain gets a new id and clears the
+   * Foreman's status line, so an acknowledgment of an earlier drain cannot satisfy this one.
+   * Unavailable projects keep their pending notice until they are restored.
+   */
+  private pauseAll(reason: string): Promise<ProjectFactoryList> {
+    return this.serialize(async () => {
+      const pausedAt = this.now().toISOString();
+      for (const entry of (await this.list()).projects) {
+        if (entry.state === "on") {
+          await this.mutateProject(entry.projectId, (project) => {
+            project.paused = true;
+            project.drain = { id: `drain-${randomUUID()}`, reason, pausedAt };
+            const foreman = project.roles["factory-intake"];
+            if (foreman) foreman.status = null;
+          });
+          this.stopTimers(entry.projectId);
+        }
+        if (entry.state !== "unavailable") await this.sendDrainNotice(entry.projectId);
+      }
+      return this.list();
+    });
+  }
+
+  private async sendDrainNotice(projectId: string): Promise<void> {
+    const project = await this.readProject(projectId);
+    const foreman = project?.roles["factory-intake"]?.agentId;
+    if (!project?.drain || project.drain.noticeSentAt || !foreman) return;
+    if (!(await this.notifyForeman(projectId, foreman, drainNotice(project.drain.id)))) return;
+    await this.mutateProject(projectId, (current) => {
+      if (current.drain) current.drain.noticeSentAt = this.now().toISOString();
+    });
+  }
+
+  /** Steers a Factory prompt into the Foreman's turn. Returns false when it could not be sent. */
+  private async notifyForeman(
+    projectId: string,
+    agentId: string,
+    prompt: string,
+  ): Promise<boolean> {
+    try {
+      await this.input.agents.sendPrompt(agentId, prompt, { steer: true });
+      return true;
+    } catch (error) {
+      this.logger.warn({ err: error, projectId }, "Could not send the Foreman a drain prompt");
+      return false;
+    }
+  }
+
+  /** Resumes only the projects pause_all paused; a project paused by hand stays paused. */
+  private resumeAll(): Promise<ProjectFactoryList> {
+    return this.serialize(async () => {
+      for (const entry of (await this.list()).projects) {
+        // An unavailable project keeps its drain, so restoring it leaves the record intact.
+        if (!entry.drain || entry.state === "unavailable") continue;
+        const resume = entry.state === "paused";
+        const drain = await this.mutateProject(entry.projectId, (project) => {
+          if (resume) project.paused = false;
+          delete project.drain;
+        });
+        if (resume) this.startTimers(entry.projectId);
+        const foreman = drain.roles["factory-intake"]?.agentId;
+        if (resume && foreman) await this.notifyForeman(entry.projectId, foreman, DRAIN_ENDED);
+      }
+      return this.list();
     });
   }
 
@@ -306,6 +475,8 @@ export class ProjectFactoryService {
     role?: ProjectFactoryRoleId;
     provider?: string | null;
     profileId?: string | null;
+    plannerProfileId?: string | null;
+    planning?: boolean;
     workerProfileId?: string | null;
     reviewerProfileId?: string | null;
   }): Promise<ProjectFactoryState> {
@@ -314,6 +485,9 @@ export class ProjectFactoryService {
       if (!request.role && (request.provider !== undefined || request.profileId !== undefined))
         throw new ProjectFactoryError("Name the role whose provider or profile you are setting.");
       const project = await this.mutateProject(request.projectId, (current) => {
+        if (request.plannerProfileId !== undefined)
+          current.workers.plannerProfileId = request.plannerProfileId;
+        if (request.planning !== undefined) current.workers.planning = request.planning;
         if (request.workerProfileId !== undefined)
           current.workers.workerProfileId = request.workerProfileId;
         if (request.reviewerProfileId !== undefined)
@@ -1030,7 +1204,15 @@ export class ProjectFactoryService {
       state,
       repository: project?.repository || null,
       reason: unavailable,
-      workers: project?.workers ?? { workerProfileId: null, reviewerProfileId: null },
+      workers: project?.workers ?? {
+        plannerProfileId: null,
+        planning: true,
+        workerProfileId: null,
+        reviewerProfileId: null,
+      },
+      drain: project?.drain
+        ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
+        : null,
       roles: PROJECT_FACTORY_ROLES.map((role) => {
         const roleState = project?.roles[role.id] ?? emptyRoleState();
         return {

@@ -45,9 +45,12 @@ const styles = StyleSheet.create((theme) => ({
  */
 export function SidebarSectionRule({
   testID,
+  lineHidden = false,
   children,
 }: {
   testID?: string;
+  /** Keeps the row and any grip but draws no line, as where nothing sits above it. */
+  lineHidden?: boolean;
   children?: ReactNode;
 }) {
   const inset = useContext(SidebarInsetContext);
@@ -56,13 +59,14 @@ export function SidebarSectionRule({
       style={[ruleStyles.row, inlineUnistylesStyle({ marginHorizontal: -inset })]}
       testID={testID}
     >
-      <View pointerEvents="none" style={ruleStyles.line} />
+      {lineHidden ? null : <View pointerEvents="none" style={ruleStyles.line} />}
       {children}
     </View>
   );
 }
 
 const ruleStyles = StyleSheet.create((theme) => ({
-  row: { height: 8, flexShrink: 0 },
+  // Only the line takes space; a resize grip overlays it without pushing the section down.
+  row: { height: theme.borderWidth[1], flexShrink: 0, zIndex: 1 },
   line: { height: theme.borderWidth[1], backgroundColor: theme.colors.divider },
 }));

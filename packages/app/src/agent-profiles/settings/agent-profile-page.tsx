@@ -7,7 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Alert, Platform, ScrollView, Text, View, StyleSheet } from "react-native";
+import { Alert, Platform, Text, View, StyleSheet } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 // The app runs on expo-router's bundled React Navigation; the standalone package is a separate
 // copy whose context is never provided, so importing hooks from it crashes at runtime.
 import { NavigationContext } from "expo-router/react-navigation";

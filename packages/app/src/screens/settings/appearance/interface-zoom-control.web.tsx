@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import {
   INTERFACE_ZOOM_MIN,
   INTERFACE_ZOOM_MAX,
@@ -124,9 +125,9 @@ export function InterfaceZoomControl() {
 }
 
 function stepStyle(disabled: boolean) {
-  return ({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => [
+  return ({ pressed }: { pressed: boolean }) => [
     styles.step,
-    disabled ? styles.stepDisabled : (hovered || pressed) && styles.stepActive,
+    disabled ? styles.stepDisabled : [styles.stepHover, pressed && styles.stepActive],
   ];
 }
 
@@ -173,6 +174,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.md,
   },
   stepActive: { backgroundColor: theme.colors.surface2 },
+  stepHover: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   stepDisabled: { opacity: 0.38 },
   smallA: { fontSize: 11, fontWeight: "700", color: theme.colors.foregroundMuted },
   largeA: { fontSize: 16, fontWeight: "700", color: theme.colors.foregroundMuted },

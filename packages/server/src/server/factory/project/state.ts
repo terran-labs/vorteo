@@ -52,13 +52,40 @@ const ProjectStateSchema = z.object({
   repository: z.string(),
   enabled: z.boolean(),
   paused: z.boolean(),
-  workers: z.object({ workerProfileId: nullableId, reviewerProfileId: nullableId }),
+  workers: z.object({
+    plannerProfileId: nullableId.default(null),
+    planning: z.boolean().default(true),
+    workerProfileId: nullableId,
+    reviewerProfileId: nullableId,
+  }),
   roles: z.partialRecord(ProjectFactoryRoleIdSchema, RoleStateSchema),
   /**
    * The Optimizer review heartbeat Factory owns pausing. Recorded before the pause and kept
    * until a resume succeeds, so startup can reconcile either half after a crash or failure.
    */
   pausedOptimizerScheduleId: z.string().optional(),
+  /**
+   * Set when pause_all paused this project. resume_all resumes only these, and any manual
+   * pause, resume or turn off clears it, so an operator's own pause is never undone.
+   */
+  drain: z
+    .object({
+      /** New for every drain. A drain recorded before ids existed takes one from its time. */
+      id: z.string().min(1).optional(),
+      reason: z.string(),
+      pausedAt: z.string(),
+      /** When the Foreman's drain notice was queued; unset until a send succeeds. */
+      noticeSentAt: z.string().optional(),
+    })
+    // A legacy drain's notice predates ids, so its Foreman could never acknowledge it by id.
+    // Deriving the id also forgets that notice; the next pause_all sends one with the id, and
+    // the next write persists both.
+    .transform(({ id, noticeSentAt, ...drain }) =>
+      id
+        ? { ...drain, id, ...(noticeSentAt ? { noticeSentAt } : {}) }
+        : { ...drain, id: `drain-${drain.pausedAt}` },
+    )
+    .optional(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
 

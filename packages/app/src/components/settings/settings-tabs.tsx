@@ -1,6 +1,7 @@
 import { tabShape } from "@/styles/tab-shape";
 import { useCallback, useMemo } from "react";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 

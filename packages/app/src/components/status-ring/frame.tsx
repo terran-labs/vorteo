@@ -3,6 +3,7 @@ import { StyleSheet as RNStyleSheet, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { RadarRing } from "@/components/ui/radar-ring";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
+import { followRowSurface } from "@/styles/hover";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import {
   STATUS_RING_FRAME_SIZE,
@@ -15,6 +16,10 @@ import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geome
 
 export interface StatusRingProps {
   variant?: "agent" | "task";
+  /** "calm": a task ring drawn in the muted color calm sidebar rows use for text and icons. */
+  tone?: "calm";
+  /** "calm": turns at a third of the default rate, as sidebar rows do. */
+  tempo?: "calm";
   // The surface the ring is drawn on top of, named rather than resolved, because theme colours
   // are only legible inside `StyleSheet.create` — see docs/unistyles.md. The frame fills itself
   // with this so the ring reads as a hole punched in whatever it overlaps: the agent icon under a
@@ -44,9 +49,13 @@ const AgentRadar = withUnistyles(RadarRing, (theme) => ({
   color: getStatusDotColor({ theme, bucket: "running" }) ?? theme.colors.foreground,
 }));
 const TaskRadar = withUnistyles(RadarRing, (theme) => ({ color: theme.colors.foreground }));
+const CalmTaskRadar = withUnistyles(RadarRing, (theme) => ({
+  color: theme.colors.foregroundExtraMuted,
+}));
 
-export function StatusRingArc({ variant }: Pick<StatusRingProps, "variant">) {
-  const Ring = variant === "task" ? TaskRadar : AgentRadar;
+export function StatusRingArc({ variant, tone }: Pick<StatusRingProps, "variant" | "tone">) {
+  let Ring = variant === "task" ? TaskRadar : AgentRadar;
+  if (variant === "task" && tone === "calm") Ring = CalmTaskRadar;
   return (
     <Ring
       size={STATUS_RING_SIZE}
@@ -100,12 +109,14 @@ export const styles = StyleSheet.create((theme) => {
       alignItems: "center",
       justifyContent: "center",
     },
-    backdropSurface0: { backgroundColor: theme.colors.surface0 },
-    backdropSurface1: { backgroundColor: theme.colors.surface1 },
-    backdropSurfaceSidebar: { backgroundColor: theme.colors.surfaceSidebar },
-    backdropSurfaceSidebarHover: { backgroundColor: theme.colors.surfaceSidebarHover },
-    backdropSurfaceSidebarSelected: { backgroundColor: theme.colors.surfaceSidebarSelected },
-    backdropSurface2: { backgroundColor: theme.colors.surface2 },
+    // On web the halo follows the containing row's published surface (ROW_SURFACE_VAR), so it
+    // matches a CSS hover fill; the named backdrop is the fallback outside such rows.
+    backdropSurface0: followRowSurface(theme.colors.surface0),
+    backdropSurface1: followRowSurface(theme.colors.surface1),
+    backdropSurfaceSidebar: followRowSurface(theme.colors.surfaceSidebar),
+    backdropSurfaceSidebarHover: followRowSurface(theme.colors.surfaceSidebarHover),
+    backdropSurfaceSidebarSelected: followRowSurface(theme.colors.surfaceSidebarSelected),
+    backdropSurface2: followRowSurface(theme.colors.surface2),
 
     centerDot: {
       width: STATUS_INDICATOR_FILLED_DOT_SIZE,

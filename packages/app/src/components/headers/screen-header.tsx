@@ -5,12 +5,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import {
   HEADER_INNER_HEIGHT,
-  VORTON_HEADER_HEIGHT,
   HEADER_INNER_HEIGHT_MOBILE,
   useIsCompactFormFactor,
 } from "@/constants/layout";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
+import { useSidebarSpacing } from "@/styles/sidebar-spacing";
 
 interface ScreenHeaderProps {
   left?: ReactNode;
@@ -45,9 +45,12 @@ export function ScreenHeader({
     () => [styles.inner, { paddingTop: insets.top + topPadding }],
     [insets.top, topPadding],
   );
+  // The sidebar's toolbar rule moves with its animated inset; a page header shares that height
+  // so the two rules form one line across the window.
+  const { pageHeaderHeight: headerHeight } = useSidebarSpacing();
   const rowStyle = useMemo(
-    () => [styles.row, !isMobile && styles.vortonRow, borderless && styles.borderless],
-    [borderless, isMobile],
+    () => [styles.row, !isMobile && { height: headerHeight }, borderless && styles.borderless],
+    [borderless, isMobile, headerHeight],
   );
   const leftCombinedStyle = useMemo(() => [styles.left, leftStyle], [leftStyle]);
   const rightCombinedStyle = useMemo(() => [styles.right, rightStyle], [rightStyle]);
@@ -89,7 +92,6 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
     userSelect: "none",
   },
-  vortonRow: { height: VORTON_HEADER_HEIGHT },
   left: {
     flex: 1,
     flexDirection: "row",

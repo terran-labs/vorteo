@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { INSTALLATION_SETTINGS_ADMISSION_ERROR_CODE } from "./settings/admission.js";
 
 const AgentIdSchema = z.string().uuid();
 export const DelegationRequestSchema = z.discriminatedUnion("operation", [
@@ -53,6 +54,25 @@ export type DelegationClient = Pick<
   | "createAgent"
 >;
 
+/** Dev refused creation for a reason the owner can act on. Dev is untrusted, so only the
+ * admission code is relayed; its messages name at most the coordinator origin. */
+export class ContainerAdmissionRefused extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(`Dev could not admit the agent: ${message.slice(0, 500)}`, options);
+    this.name = "ContainerAdmissionRefused";
+  }
+}
+
+function relayAdmissionRefusal(error: unknown): never {
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === INSTALLATION_SETTINGS_ADMISSION_ERROR_CODE
+  )
+    throw new ContainerAdmissionRefused(error.message, { cause: error });
+  throw error;
+}
+
 /** This surface only addresses the configured container. It cannot select a host. */
 export async function delegateToContainer(
   client: DelegationClient,
@@ -91,17 +111,20 @@ export async function delegateToContainer(
         cursor = page.pageInfo.hasMore ? (page.pageInfo.nextCursor ?? undefined) : undefined;
       } while (cursor);
       if (!cwd) throw new Error("Container workspace was not found");
-      return client.createAgent({
-        provider: request.provider,
-        cwd,
-        workspaceId: request.workspaceId,
-        title: request.title,
-        initialPrompt: request.initialPrompt,
-        origin: "agent",
-        idempotencyKey: request.idempotencyKey,
-        model: request.model,
-        ...(request.profileId !== undefined ? { profileId: request.profileId } : {}),
-      });
+      // No response deadline here: Dev's settings admission times out first and reports why.
+      return client
+        .createAgent({
+          provider: request.provider,
+          cwd,
+          workspaceId: request.workspaceId,
+          title: request.title,
+          initialPrompt: request.initialPrompt,
+          origin: "agent",
+          idempotencyKey: request.idempotencyKey,
+          model: request.model,
+          ...(request.profileId !== undefined ? { profileId: request.profileId } : {}),
+        })
+        .catch(relayAdmissionRefusal);
     }
   }
 }

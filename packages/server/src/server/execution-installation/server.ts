@@ -111,7 +111,11 @@ import {
   inspectInstallationCoordinator,
 } from "./daemon.js";
 import { CoordinatorBootstrapPreparationSchema } from "@getpaseo/protocol/coordinator-bootstrap";
-import { delegateToContainer, DelegationRequestSchema } from "./delegation.js";
+import {
+  ContainerAdmissionRefused,
+  delegateToContainer,
+  DelegationRequestSchema,
+} from "./delegation.js";
 import {
   InstallationSettingsUpdateSchema,
   type InstallationSettingsSnapshot,
@@ -2724,16 +2728,26 @@ export function createInstallationServer(
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
-  const liveDevWebUi = liveDev.middleware(() => ({
+  /** The interface config Live dev presents on `origin`. */
+  const liveDevConfigFor = (origin: string) => () => ({
     ...config.public,
     name: installationName.read(),
-    origin: config.public.origin,
+    origin,
     environments: config.public.environments,
     profileSharing: true,
     idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
     gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
-  }));
+  });
+  const liveDevWebUi = liveDev.middleware(liveDevConfigFor(config.public.origin));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
+  // The custom domain follows Live dev too, presenting its own origin to the interface.
+  // `?interface=safe` on either address still serves the published interface. A nested
+  // function keeps this branch out of createInstallationServer's complexity budget.
+  const recoveryLiveDevWebUi = () => {
+    const origin = config.recoveryOrigin;
+    return origin ? liveDev.middleware(liveDevConfigFor(origin), origin) : null;
+  };
+  const recoveryLiveWebUi = recoveryLiveDevWebUi();
   const localWebUi = new Map<string, ReturnType<typeof webUi>>();
   app.use((req, res, next) => {
     const origin = localOrigin(req);
@@ -2747,11 +2761,12 @@ export function createInstallationServer(
       return;
     }
     if (isRecoveryRequest(req)) {
-      recoveryWebUi(req, res, next);
+      if (recoveryLiveWebUi) recoveryLiveWebUi(req, res, () => recoveryWebUi(req, res, next));
+      else recoveryWebUi(req, res, next);
       return;
     }
-    // The recovery and local origins always serve the static interface, so a broken live
-    // edit can never take every route to Installation controls with it.
+    // Local origins always serve the static interface, and `?interface=safe` does on every
+    // origin, so a broken live edit can never take every route to Installation controls.
     liveDevWebUi(req, res, () => canonicalWebUi(req, res, next));
   });
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -2777,6 +2792,11 @@ export function createInstallationServer(
       error instanceof InstallationTypeStateError
     ) {
       res.status(409).json({ error: error.message });
+      return;
+    }
+    // Dev answered with a cause the owner can act on; relay it instead of a bare 500.
+    if (error instanceof ContainerAdmissionRefused) {
+      res.status(502).json({ error: error.message });
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import {
   factoryProjectConfigure,
   factoryProjectDisable,
@@ -10,17 +10,23 @@ import {
   factoryProjectInstructionsPropose,
   factoryProjectInstructionsResolve,
   factoryProjectInstructionsSet,
+  factoryProjectList,
   factoryProjectPause,
+  factoryProjectPauseAll,
+  factoryProjectResumeAll,
+  PROJECT_FACTORY_DRAIN_REASON,
   factoryProjectResume,
   factoryProjectStatusSet,
   ProjectFactoryRoleIdSchema,
   type ProjectFactoryInstructions,
+  type ProjectFactoryList,
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
 } from "@getpaseo/server/factory-project";
 import {
   withOutput,
   type CommandOptions,
+  type ListResult,
   type OutputSchema,
   type SingleResult,
 } from "../../output/index.js";
@@ -56,8 +62,15 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Project: ${state.projectId}`,
       `Factory: ${state.state}${state.reason ? ` (${state.reason})` : ""}`,
       `Repository: ${state.repository ?? "none"}`,
+      ...(state.workers.plannerProfileId !== undefined
+        ? [`Planner profile: ${state.workers.plannerProfileId ?? "default"}`]
+        : []),
+      ...(state.workers.planning !== undefined
+        ? [`Planning: ${state.workers.planning ? "on" : "off"}`]
+        : []),
       `Worker profile: ${state.workers.workerProfileId ?? "default"}`,
       `Reviewer profile: ${state.workers.reviewerProfileId ?? "default"}`,
+      `Drain: ${state.drain ? `${state.drain.id} (${state.drain.reason}, ${state.drain.pausedAt})` : "none"}`,
       "",
       ["ROLE", "ID", "AGENT", "WORKSPACE", "HEARTBEAT", "LAUNCH", "INSTRUCTIONS", "STATUS"].join(
         "\t",
@@ -66,6 +79,43 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
     ].join("\n");
   },
 };
+
+type ListedProject = ProjectFactoryList["projects"][number];
+
+const listSchema: OutputSchema<ListedProject> = {
+  idField: "projectId",
+  columns: [
+    { header: "PROJECT", field: "projectId" },
+    { header: "STATE", field: "state" },
+    { header: "REPOSITORY", field: (value) => value.repository ?? "-" },
+    { header: "PAUSED", field: "paused" },
+    {
+      header: "DRAIN",
+      field: (value) =>
+        value.drain ? `${value.drain.id}: ${value.drain.reason} (${value.drain.pausedAt})` : "-",
+    },
+  ],
+};
+
+function listCommand(
+  name: string,
+  description: string,
+  rpc: Rpc<ProjectFactoryList>,
+  input: (options: CommandOptions) => unknown,
+  configure: (command: Command) => Command = (command) => command,
+): Command {
+  const command = configure(new Command(name).description(description).allowExcessArguments(false));
+  return addJsonAndDaemonHostOptions(command).action(
+    withOutput(
+      async (options: CommandOptions, _command: Command): Promise<ListResult<ListedProject>> =>
+        withClient(options, async (client) => ({
+          type: "list",
+          data: (await call(client, rpc, input(options))).projects,
+          schema: listSchema,
+        })),
+    ),
+  );
+}
 
 const instructionsSchema: OutputSchema<ProjectFactoryInstructions> = {
   idField: "role",
@@ -167,6 +217,28 @@ export function createFactoryProjectCommand(): Command {
     "Turn a project's Factory on, off, pause it and configure its roles",
   );
   project.addCommand(
+    listCommand("list", "List every project the Factory knows", factoryProjectList, () => ({})),
+  );
+  project.addCommand(
+    listCommand(
+      "pause-all",
+      "Pause every project whose Factory is on, recording which ones were paused",
+      factoryProjectPauseAll,
+      (options) => ({
+        reason: typeof options.reason === "string" ? options.reason : PROJECT_FACTORY_DRAIN_REASON,
+      }),
+      (command) => command.option("--reason <text>", "Why Factory work is draining"),
+    ),
+  );
+  project.addCommand(
+    listCommand(
+      "resume-all",
+      "Resume only the projects pause-all paused",
+      factoryProjectResumeAll,
+      () => ({}),
+    ),
+  );
+  project.addCommand(
     stateCommand("show", "Show the project's Factory and its roles", factoryProjectGet, (id) => ({
       projectId: id,
     })),
@@ -216,12 +288,14 @@ export function createFactoryProjectCommand(): Command {
         for (const [key, option] of [
           ["provider", "provider"],
           ["profileId", "profile"],
+          ["plannerProfileId", "plannerProfile"],
           ["workerProfileId", "workerProfile"],
           ["reviewerProfileId", "reviewerProfile"],
         ] as const) {
           const value = optionalId(options[option]);
           if (value !== undefined) input[key] = value;
         }
+        if (options.planning !== undefined) input.planning = options.planning === "on";
         return input;
       },
       (command) =>
@@ -229,6 +303,13 @@ export function createFactoryProjectCommand(): Command {
           .option("--role <role-id>", "Role whose launch to set")
           .option("--provider <provider>", "Provider for the role")
           .option("--profile <profile-id>", "Profile for the role")
+          .option("--planner-profile <id|none>", "Profile for issue planning and supervision")
+          .addOption(
+            new Option("--planning <on|off>", "Plan and supervise new issues").choices([
+              "on",
+              "off",
+            ]),
+          )
           .option("--worker-profile <profile-id>", "Profile the Foreman gives workers")
           .option("--reviewer-profile <profile-id>", "Profile the Foreman gives reviewers"),
     ),

@@ -15,7 +15,6 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  FlatList,
   ListRenderItemInfo,
   Pressable,
   Text,
@@ -26,6 +25,7 @@ import {
   type TextInputKeyPressEventData,
   type ViewStyle,
 } from "react-native";
+import { FlatList } from "@/components/ui/scroll-view";
 import { EditingTextInput as TextInput } from "@/components/ui/text-input";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -54,6 +54,7 @@ import {
   type OverlayFlatListScrollbar,
 } from "@/components/ui/overlay-scrollbar/use-overlay-flat-list-scrollbar";
 import type { Theme } from "@/styles/theme";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import type {
   AgentFileExplorerState,
   ExplorerDirectory,
@@ -140,11 +141,8 @@ interface TreeRowItemProps {
   testID?: string;
 }
 
-function sortTriggerStyle({
-  hovered,
-  pressed,
-}: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.sortTrigger, (Boolean(hovered) || pressed) && styles.sortTriggerHovered];
+function sortTriggerStyle({ pressed }: PressableStateCallbackType) {
+  return [styles.sortTrigger, pressed && styles.sortTriggerHovered];
 }
 
 type ExplorerListRow =
@@ -265,9 +263,6 @@ function TreeRowItem({
   onDeleteEntry,
   testID,
 }: TreeRowItemProps) {
-  const [isHovered, setIsHovered] = useState(false);
-  const showNameHover = useCallback(() => setIsHovered(true), []);
-  const hideNameHover = useCallback(() => setIsHovered(false), []);
   const isDirectory = entry.kind === "directory";
   const dragSourceRef = useWorkspaceFileDragSource({
     enabled: !isDirectory,
@@ -290,10 +285,11 @@ function TreeRowItem({
   const accessibilityState = useMemo(() => ({ selected: isSelected }), [isSelected]);
 
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       workspaceTreeRowStyles.row,
+      styles.treeRowHover,
       { paddingLeft: treeRowPaddingLeft(depth) },
-      (Boolean(hovered) || pressed || isSelected) && workspaceTreeRowStyles.active,
+      (pressed || isSelected) && workspaceTreeRowStyles.active,
     ],
     [depth, isSelected],
   );
@@ -357,8 +353,6 @@ function TreeRowItem({
         onLongPress={handleSelect}
         onContextMenu={handleSelect}
         style={pressableStyle}
-        onHoverIn={showNameHover}
-        onHoverOut={hideNameHover}
         accessibilityState={accessibilityState}
         aria-selected={isSelected}
         testID={testID}
@@ -372,11 +366,7 @@ function TreeRowItem({
             )}
           </View>
           <TruncatedText
-            style={[
-              styles.entryName,
-              workspaceTreeRowStyles.name,
-              isHovered && workspaceTreeRowStyles.nameHovered,
-            ]}
+            style={[styles.entryName, workspaceTreeRowStyles.name, styles.treeRowNameHover]}
             numberOfLines={1}
             testID={testID ? `${testID}-name` : undefined}
           >
@@ -1653,6 +1643,12 @@ const styles = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
   },
+  // CSS hover so the highlight clears when a row moves out from under a resting cursor.
+  treeRowHover: hoverGroup(
+    "tree-row",
+    hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover })._web,
+  ),
+  treeRowNameHover: groupHoverStyle("tree-row", { opacity: 1 }),
   desktopSplit: {
     flex: 1,
     flexDirection: "row",
@@ -1699,6 +1695,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[1],
     height: 24,
     borderRadius: theme.borderRadius.base,
+    ...hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   },
   sortTriggerHovered: {
     backgroundColor: theme.colors.surfaceSidebarHover,

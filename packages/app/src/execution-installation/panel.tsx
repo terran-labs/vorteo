@@ -49,6 +49,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ComponentProps,
@@ -62,6 +63,7 @@ import { EditingTextInput } from "@/components/ui/text-input";
 import { usePathname, useRouter } from "expo-router";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
+import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import { MaintenanceNotice, MaintenanceNoticePlacement } from "./maintenance-notice";
 import { confirmDialog } from "@/utils/confirm-dialog";
@@ -243,9 +245,6 @@ const PasswordCopyIcon = withUnistyles(Copy, (theme) => ({ color: theme.colors.f
 // The coordinator reports the path only when the file exists. The command runs
 // on the Host; the password itself never passes through this page.
 function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: boolean }) {
-  const [hovered, setHovered] = useState(false);
-  const enter = useCallback(() => setHovered(true), []);
-  const leave = useCallback(() => setHovered(false), []);
   const command = passwordCopyCommand(passwordFile);
   const toast = useToast();
   const copy = useCallback(async () => {
@@ -269,7 +268,7 @@ function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: 
         Run this command in Terminal on the computer hosting Vorteo. Then paste it into the owner
         password field.
       </Text>
-      <View style={styles.passwordCommandHover} onPointerEnter={enter} onPointerLeave={leave}>
+      <View style={styles.passwordCommandHover}>
         <Pressable
           style={styles.passwordCommand}
           accessibilityRole="button"
@@ -284,10 +283,7 @@ function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: 
           >
             {command}
           </Text>
-          <View
-            style={[styles.passwordCopy, hovered && styles.passwordCopyHighlighted]}
-            pointerEvents="none"
-          >
+          <View style={[styles.passwordCopy, styles.passwordCopyHighlighted]} pointerEvents="none">
             <PasswordCopyIcon size={18} />
           </View>
         </Pressable>
@@ -529,7 +525,6 @@ function InstallationPanel({
             />
             <DaemonAutomationControl model={model} state={state} />
             <CustomDomainCard model={model} state={state} />
-            <DeliveryModeCard model={model} state={state} />
             {state.brokerJobs.map((job) => (
               <BrokerRequest
                 key={`${job.id}:${job.revision}`}
@@ -1613,6 +1608,28 @@ const LIVE_SERVER_TEXT: Record<LiveDevStatus["server"]["state"], string> = {
   failed: "The live dev server is not running.",
 };
 
+/**
+ * Delivery mode for General > About. It shares Installation controls' owner session and loads
+ * its status on first show; nothing renders until controls are unlocked.
+ */
+export function DeliveryModeSetting() {
+  const model = getInstallationPanel(useHostRegistryLoaded());
+  return model ? <DeliveryModeSettingBody model={model} /> : null;
+}
+
+function DeliveryModeSettingBody({ model }: { model: InstallationPanelModel }) {
+  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+  const needsLoad = state.unlocked && !state.liveDev;
+  // Once per unlock: a coordinator without live dev mode keeps reporting no status.
+  const loaded = useRef(false);
+  useEffect(() => {
+    if (!needsLoad || loaded.current) return;
+    loaded.current = true;
+    void model.refresh();
+  }, [model, needsLoad]);
+  return <DeliveryModeCard model={model} state={state} />;
+}
+
 /** Reliable serves the published interface; Live dev serves the Host's live checkout. */
 function DeliveryModeCard({
   model,
@@ -2625,8 +2642,11 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftColor: theme.colors.border,
     paddingLeft: theme.spacing[6],
   },
-  passwordCommandHover: { position: "relative" },
-  passwordCopyHighlighted: { backgroundColor: theme.colors.surface2 },
+  // The command box is the copy icon's hover group; CSS hover clears without pointer movement.
+  passwordCommandHover: { position: "relative", ...hoverGroup("password-command") },
+  passwordCopyHighlighted: groupHoverStyle("password-command", {
+    backgroundColor: theme.colors.surface2,
+  }),
   passwordCopy: {
     position: "absolute",
     top: 0,

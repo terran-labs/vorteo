@@ -232,11 +232,10 @@ for (const [label, width, height] of [
       const card = page.getByTestId("global-open-questions-card");
       await expect(card).toBeVisible();
       await expect(page.getByTestId("global-open-questions-card-count")).toHaveText("2");
-      // Short screens show one open card at a time; the questions card wins over Quota.
-      await expect(page.getByTestId("global-quota-card")).toBeVisible();
-      await expect(page.getByTestId("global-quota-card-body-scroll")).toHaveCount(
-        height < 720 ? 0 : 1,
-      );
+      // Quotas moved into the footer row, so they no longer compete for an open section.
+      await expect(
+        page.locator('[data-testid="sidebar-footer-quota"]:visible').first(),
+      ).toBeVisible();
       for (const ask of asks) {
         const group = page.getByTestId(`global-open-questions-thread-${ask.agent.agentId}`);
         await expect(group.getByText(ask.question)).toBeVisible();

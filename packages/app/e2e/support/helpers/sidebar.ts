@@ -208,19 +208,13 @@ export async function expectWorkspaceAbsentFromSidebar(
 // row. Every caller has to walk the same path, so it lives here: when the menu's shape moves
 // again, this is the only place that has to follow.
 /**
- * Open the display-preferences menu. Since the sidebar toolbar redesign (ab60c1e39) its trigger
- * is hidden and the More menu's View preferences item opens it.
+ * Open the display preferences: the View group in the sidebar's main menu, under Appearance.
+ * Choosing an option keeps that menu open, so callers close it when they are done.
  */
 export async function openSidebarDisplayPreferences(page: Page): Promise<void> {
   await page.locator('[data-testid="sidebar-footer-overflow"]:visible').first().click();
-  await page.getByTestId("sidebar-display-preferences-action").click();
-  // Touch layouts open the menu as a sheet, whose scroll content adds a "-content" suffix.
   await expect(
-    page
-      .getByTestId("sidebar-display-preferences-content")
-      .or(page.getByTestId("sidebar-display-preferences-content-content"))
-      .filter({ visible: true })
-      .first(),
+    page.locator('[data-testid="sidebar-display-grouping"]:visible').first(),
   ).toBeVisible({ timeout: 10_000 });
 }
 
@@ -247,17 +241,19 @@ export async function selectAllProjectsFilter(page: Page): Promise<void> {
 
 export async function closeSidebarDisplayPreferences(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("sidebar-display-preferences-content")).toHaveCount(0);
+  await expect(page.locator('[data-testid="sidebar-display-grouping"]:visible')).toHaveCount(0);
 }
 
 export async function selectSidebarStatusGrouping(page: Page): Promise<void> {
   await openSidebarDisplayPage(page, "sidebar-display-grouping");
   await page.getByTestId("sidebar-grouping-status").click();
+  await closeSidebarDisplayPreferences(page);
 }
 
 export async function selectSidebarProjectGrouping(page: Page): Promise<void> {
   await openSidebarDisplayPage(page, "sidebar-display-grouping");
   await page.getByTestId("sidebar-grouping-project").click();
+  await closeSidebarDisplayPreferences(page);
 }
 
 export async function openMobileAgentSidebar(page: Page): Promise<void> {
@@ -283,12 +279,6 @@ export async function expectMobileAgentSidebarHidden(page: Page): Promise<void> 
 }
 
 /** Help and support opens from the sidebar's More menu; its own trigger stays hidden. */
-export async function openSidebarHelpMenu(page: Page): Promise<void> {
-  await page.locator('[data-testid="sidebar-footer-overflow"]:visible').first().click();
-  await page.getByTestId("sidebar-help-action").click();
-  await expect(page.getByTestId("sidebar-help-menu")).toBeVisible();
-}
-
 /** Drag from the left edge: the only way to open the list while fullscreen hides the header. */
 export async function swipeOpenMobileAgentSidebar(page: Page): Promise<void> {
   const viewport = page.viewportSize();

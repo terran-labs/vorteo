@@ -101,9 +101,15 @@ export interface LiveDevProxyOptions {
   liveMode?: () => boolean;
   /** The dev server's state, for the indicator on static pages. */
   serverStatus?: () => { state: string; detail: string | null };
+  /**
+   * The Host header the dev server sees. The Expo patch admits only the canonical origin and
+   * loopback, so a second origin the coordinator already authorized, the custom domain,
+   * presents itself as the canonical one on this loopback hop. Absent forwards the request's own.
+   */
+  upstreamHost?: string;
 }
 
-function fetchPage(port: number, req: Request): Promise<string | null> {
+function fetchPage(port: number, req: Request, upstreamHost?: string): Promise<string | null> {
   return new Promise((resolve) => {
     const upstream = httpRequest(
       {
@@ -114,7 +120,7 @@ function fetchPage(port: number, req: Request): Promise<string | null> {
         path: "/",
         timeout: PAGE_TIMEOUT_MS,
         headers: {
-          host: req.headers.host,
+          host: upstreamHost ?? req.headers.host,
           accept: "text/html",
           "accept-encoding": "identity",
         },
@@ -138,7 +144,13 @@ function fetchPage(port: number, req: Request): Promise<string | null> {
   });
 }
 
-function pipeAsset(port: number, req: Request, res: Response, next: () => void): void {
+function pipeAsset(
+  port: number,
+  req: Request,
+  res: Response,
+  next: () => void,
+  upstreamHost?: string,
+): void {
   const upstream = httpRequest(
     {
       host: "127.0.0.1",
@@ -146,7 +158,7 @@ function pipeAsset(port: number, req: Request, res: Response, next: () => void):
       method: req.method,
       path: req.originalUrl,
       headers: {
-        host: req.headers.host,
+        host: upstreamHost ?? req.headers.host,
         accept: req.headers.accept ?? "*/*",
         "accept-encoding": req.headers["accept-encoding"] ?? "identity",
       },
@@ -214,7 +226,7 @@ export function createLiveDevMiddleware(options: LiveDevProxyOptions): RequestHa
       return;
     }
     if (isLiveDevAssetPath(requestPath(req))) {
-      pipeAsset(port, req, res, next);
+      pipeAsset(port, req, res, next, options.upstreamHost);
       return;
     }
     if (!wantsPage(req)) {
@@ -244,7 +256,7 @@ async function servePage(
   lastPage: LastPage,
 ): Promise<void> {
   try {
-    const fetched = await fetchPage(port, req);
+    const fetched = await fetchPage(port, req, options.upstreamHost);
     if (fetched !== null) {
       lastPage.port = port;
       lastPage.html = fetched;
@@ -296,6 +308,8 @@ export function forwardLiveDevUpgrade(
   socket: Duplex,
   head: Buffer,
   port: number,
+  /** Presents an authorized second origin as the canonical one; see `upstreamHost`. */
+  presentAs?: { host: string; origin: string },
 ): void {
   const upstream = connect(port, "127.0.0.1", () => {
     const lines = [`${req.method ?? "GET"} ${req.url ?? "/"} HTTP/${req.httpVersion}`];
@@ -304,7 +318,10 @@ export function forwardLiveDevUpgrade(
       const name = req.rawHeaders[index] ?? "";
       const lower = name.toLowerCase();
       if (CREDENTIAL_HEADERS.has(lower) || lower.startsWith("x-forwarded-")) continue;
-      lines.push(`${name}: ${req.rawHeaders[index + 1]}`);
+      let value = req.rawHeaders[index + 1];
+      if (presentAs && lower === "host") value = presentAs.host;
+      if (presentAs && lower === "origin") value = presentAs.origin;
+      lines.push(`${name}: ${value}`);
     }
     upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
     if (head.length > 0) upstream.write(head);

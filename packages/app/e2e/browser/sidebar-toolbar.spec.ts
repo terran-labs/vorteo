@@ -35,17 +35,13 @@ test("Vorton toolbar keeps navigation and sidebar actions above the projects", a
     await more.click();
     await expect(page.getByTestId("sidebar-settings")).toBeVisible();
     await expect(page.getByTestId("sidebar-global-new-workspace")).toBeVisible();
-    await expect(page.getByTestId("sidebar-display-preferences-action")).toBeVisible();
-    await page.getByTestId("sidebar-help-action").click();
-    await expect(page.getByTestId("sidebar-help-menu")).toBeVisible();
-    await page.keyboard.press("Escape");
-
-    await more.click();
-    await page.getByTestId("sidebar-display-preferences-action").click();
-    await expect(page.getByTestId("sidebar-display-preferences-content")).toBeVisible();
+    // View preferences are a group in this menu; choosing one keeps the menu open.
+    await expect(page.getByTestId("sidebar-help-action")).toHaveCount(0);
     await page.getByTestId("sidebar-display-grouping").click();
     await expect(page.getByTestId("sidebar-grouping-status")).toBeVisible();
     await page.getByTestId("sidebar-grouping-project").click();
+    await expect(page.getByTestId("sidebar-grouping-status")).toBeVisible();
+    await page.keyboard.press("Escape");
 
     await more.click();
     await page.getByTestId("sidebar-global-new-workspace").click();
@@ -75,10 +71,10 @@ test("compact toolbar keeps every navigation icon and the menu reachable", async
   await expect(toolbar.getByTestId("sidebar-search")).toBeInViewport();
   await expect(toolbar.getByTestId("sidebar-settings")).toBeInViewport();
   await toolbar.getByTestId("sidebar-footer-overflow").click();
-  await page.getByTestId("sidebar-display-preferences-action").click();
   await expect(page.getByTestId("sidebar-display-grouping")).toBeVisible();
   await page.getByTestId("sidebar-display-grouping").click();
   await page.getByTestId("sidebar-grouping-project").click();
+  await page.keyboard.press("Escape");
   await toolbar.getByTestId("sidebar-sessions").click();
   await expect(page).toHaveURL(/\/sessions$/);
   await expect(toolbar).not.toBeVisible();

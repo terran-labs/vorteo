@@ -1,6 +1,9 @@
 import { ProjectRailPreview } from "./project-rail-preview";
-import { memo, type ReactNode } from "react";
-import { ScrollView, View } from "react-native";
+import { memo, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { View, type LayoutChangeEvent } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
+import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { SidebarInsetContext } from "./sidebar-separator";
 import { StyleSheet } from "react-native-unistyles";
 import { COMPACT_RAIL_MARGIN } from "@/stores/panel-store/state";
 import {
@@ -49,11 +52,58 @@ const ProjectRailItem = memo(function ProjectRailItem({
         onFocused={onFocused}
       />
       {bucket && bucket !== "done" ? (
-        <View pointerEvents="none" style={[styles.dot, statusDotStyle(bucket)]} />
+        <View
+          pointerEvents="none"
+          style={[styles.dot, initials.length > 1 && styles.dotWide, statusDotStyle(bucket)]}
+        />
       ) : null}
     </View>
   );
 });
+
+/**
+ * A rule across the whole rail, through its margin and the sidebar's inset, like the rules
+ * around the full sidebar's list. `hidden` keeps its place so the scroller never shifts.
+ */
+function RailRule({ hidden = false, testID }: { hidden?: boolean; testID: string }) {
+  const inset = useContext(SidebarInsetContext);
+  return (
+    <View
+      pointerEvents="none"
+      style={[
+        styles.rule,
+        hidden && styles.ruleHidden,
+        inlineUnistylesStyle({ marginHorizontal: -(inset + COMPACT_RAIL_MARGIN) }),
+      ]}
+      testID={testID}
+    />
+  );
+}
+
+/** Whether the projects fill the scroller down to the footer, as the full sidebar's list rule. */
+function useReachesFooter() {
+  const sizes = useRef({ viewport: 0, content: 0 });
+  const [reaches, setReaches] = useState(true);
+  const update = useCallback(() => {
+    const { viewport, content } = sizes.current;
+    setReaches(viewport === 0 || content === 0 || content >= viewport - 1);
+  }, []);
+  const onLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      sizes.current.viewport = event.nativeEvent.layout.height;
+      update();
+    },
+    [update],
+  );
+  const onContentSizeChange = useCallback(
+    (_width: number, height: number) => {
+      sizes.current.content = height;
+      update();
+    },
+    [update],
+  );
+  return { reaches, onLayout, onContentSizeChange };
+}
 
 export function CompactProjectRail({
   header,
@@ -63,10 +113,20 @@ export function CompactProjectRail({
   onSelectProject,
   onFocused,
 }: CompactProjectRailProps) {
+  const reach = useReachesFooter();
   return (
     <View style={styles.rail} testID="compact-project-rail">
       {header}
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.projects}>
+      <RailRule testID="compact-rail-top-rule" />
+      {/* The shared scroller dissolves projects under the rules while more lies past them. */}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.projects}
+        onLayout={reach.onLayout}
+        onContentSizeChange={reach.onContentSizeChange}
+        showsVerticalScrollIndicator={false}
+        testID="compact-rail-scroll"
+      >
         {projects.map((project) => (
           <ProjectRailItem
             workspaceEntries={workspaceEntries}
@@ -77,6 +137,7 @@ export function CompactProjectRail({
           />
         ))}
       </ScrollView>
+      <RailRule hidden={!reach.reaches} testID="compact-rail-bottom-rule" />
       {footer}
     </View>
   );
@@ -102,7 +163,16 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
   },
   description: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
-  dot: { position: "absolute", right: 3, top: 3, width: 7, height: 7, borderRadius: 4 },
+  // Tucked against the initials' top-right rather than the button's corner, so it reads as theirs.
+  dot: { position: "absolute", right: 9, top: 11, width: 7, height: 7, borderRadius: 4 },
+  // Two initials are wider, so the dot sits a little further out to clear the second letter.
+  dotWide: { right: 5 },
+  rule: {
+    alignSelf: "stretch",
+    height: theme.borderWidth[1],
+    backgroundColor: theme.colors.divider,
+  },
+  ruleHidden: { backgroundColor: "transparent" },
   failed: { backgroundColor: theme.colors.statusDotDanger },
   running: { backgroundColor: theme.colors.statusDotRunning },
   attention: { backgroundColor: theme.colors.statusDotWarning },

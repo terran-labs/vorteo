@@ -10,6 +10,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { CompactAccountButton } from "./compact-account-button";
+import { useVortonTouch } from "@/vorton-touch";
 import { providerUsageQueryKey } from "./use-provider-usage";
 import { currentResetPreparation, resetPresentation, selectableResetCredits } from "./reset-state";
 import { providerResetQueryOptions } from "./reset-query";
@@ -223,6 +224,7 @@ export function ProviderResetControl(props: {
     select,
   } = useResetControl(props);
   const { name, providerId } = props;
+  const touch = useVortonTouch();
   const { visible, showBadge, badge, enabled } = resetPresentation({
     supported,
     connected,
@@ -270,6 +272,8 @@ export function ProviderResetControl(props: {
   );
   if (!visible) return null;
   const BadgeButton = props.compact ? CompactAccountButton : Button;
+  // The compact badge sits beside a two-line account row; keep it to one text line tall.
+  const shortBadge = props.compact && !touch;
   return (
     <>
       {showBadge ? (
@@ -277,6 +281,7 @@ export function ProviderResetControl(props: {
           dense={props.compact}
           variant="ghost"
           size="sm"
+          style={shortBadge ? styles.shortBadge : undefined}
           onPress={show}
           accessibilityLabel={`${name}: ${badge}`}
           textStyle={[styles.text, props.compact && styles.compactText]}
@@ -319,6 +324,7 @@ export function ProviderResetControl(props: {
 
 const styles = StyleSheet.create((theme) => ({
   compactText: { fontSize: theme.fontSize.sm - 2, lineHeight: 16 },
+  shortBadge: { height: 20, minHeight: 20, paddingHorizontal: theme.spacing[1.5] },
   textColor: { color: theme.colors.foregroundMuted },
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
 }));

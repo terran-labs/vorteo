@@ -1,14 +1,16 @@
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { useFooterLeadingRule } from "@/components/sidebar/footer-rules";
 import { SidebarSectionRule } from "@/components/sidebar/sidebar-separator";
 import { Button } from "@/components/ui/button";
 import { isDemoSession, resetDemo, exitDemo } from "./mode";
 
 export function DemoControls() {
+  const rule = useFooterLeadingRule("demo", isDemoSession());
   if (!isDemoSession()) return null;
   return (
     <>
-      <SidebarSectionRule />
+      {rule ? <SidebarSectionRule /> : null}
       <View style={styles.row} testID="demo-controls">
         <Text style={styles.label}>Demo</Text>
         <Button variant="ghost" size="sm" onPress={resetDemo} testID="demo-reset">

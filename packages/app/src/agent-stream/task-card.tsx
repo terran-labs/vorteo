@@ -28,7 +28,8 @@ import {
   type ComponentProps,
   type Ref,
 } from "react";
-import { ScrollView, View, type StyleProp, type ViewStyle } from "react-native";
+import { View, type StyleProp, type ViewStyle } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { QueueDragScrollContext, useQueueDragScroll } from "@/message-queue/drag-scroll";
 import Animated, {
