@@ -91,6 +91,12 @@ function CoordinatorFollowReleases({ view }: { view: ReturnType<typeof coordinat
   );
 }
 
+/** Names the Host agent that asked for the update; owner requests show nothing. */
+function FollowRequester({ job }: { job: CoordinatorFollowJob | null }) {
+  if (job?.requestedBy !== "host-agent") return null;
+  return <Text style={styles.text}>Requested by {job.requester ?? "a Host agent"}.</Text>;
+}
+
 export function CoordinatorFollowCard({ client }: { client: InstallationClient | null }) {
   const controlSize = useVortonTouch() ? "md" : "sm";
   const status = useCoordinatorFollowStatus(client);
@@ -132,6 +138,7 @@ export function CoordinatorFollowCard({ client }: { client: InstallationClient |
       <Text style={styles.text}>
         {job ? job.detail : "The coordinator runs an older release than the Host."}
       </Text>
+      <FollowRequester job={job} />
       <CoordinatorFollowReleases view={view} />
       {canStart || canCancel ? (
         <View style={styles.actions}>
