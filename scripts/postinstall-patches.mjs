@@ -42,6 +42,9 @@ const patchedPackages = [
   // Layout constraints: backport of https://github.com/jpudysz/react-native-unistyles/pull/1357
   // (commit from the root the commit hands us, so a concurrent window-size commit is kept).
   // Remove the ShadowTreeManager hunk when the installed release includes that PR.
+  // Web stylesheet batching (#609): the web/css/state and web/listener hunks rebuild the
+  // stylesheet once per emitted change instead of once per restyled component. Drop them
+  // at >= 3.8.0, which syncs changed classes instead of rebuilding the whole sheet.
   {
     nodeModulesPath: "node_modules/react-native-unistyles",
     patchPrefix: "react-native-unistyles+",

@@ -20,12 +20,37 @@ MAX_BYTES = 4096
 ID = re.compile(r'^[a-f0-9-]{36}$')
 WS = re.compile(r'^wks_[a-zA-Z0-9_-]{1,80}$')
 SERVICE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
-# A check that times out proves nothing about the backend, so a verified route
-# survives a short run of them. The route is withdrawn on the third consecutive
-# timeout, or once this many seconds have passed since its last full
-# verification, whichever comes first. Every other failure withdraws at once.
-TIMEOUT_MISS_LIMIT = 3
-TIMEOUT_GRACE_SECONDS = 90
+# A check that times out proves nothing about the backend (#358). Under load the
+# subprocess checks (the Paseo CLI twice per check, lsof, curl, tailscale) can time out
+# for minutes while the backend answers in milliseconds. So a verified route stays up
+# while a direct probe that spawns nothing passes: the listener is the same process
+# (pid and microsecond birth), still in the managed terminal, still holds its loopback
+# port, and that port accepts a connection. The probe cannot see the daemon's view of
+# the service, its configuration fingerprint or the Tailscale mapping, so the route may
+# rest on it alone for at most this long after the last full verification. Ten minutes
+# outlasts the load spikes seen so far, which withdrew routes within 30 to 90 seconds,
+# and still bounds how long a changed configuration or mapping goes unnoticed. Then
+# the route is withdrawn with status 'withdrawn' and republished by the first full
+# check that succeeds. Every other failure, and any change the probe finds, withdraws
+# at once.
+PROBE_ONLY_SECONDS = 600
+# A daemon restart leaves the CLI unable to connect for a few seconds: about 5.5 s for a
+# Host replacement on Nov 22, plus up to 3 s of re-linking surviving services before the
+# new daemon listens (#587). A Host install that keeps terminals adds the old daemon's
+# graceful stop (its worker is force-killed after 10 s) and launchd's 5 s relaunch
+# throttle. The same direct probe keeps the route through that gap for at most this
+# long from the first check that found the daemon down. Afterwards the full check must
+# find the same listener again, so a preview that did not survive is withdrawn on the
+# first cycle after the daemon is back.
+DAEMON_GAP_SECONDS = 60
+# A stop whose daemon call failed, typically because the daemon was restarting, is
+# repeated by later cycles for this long, and only against the terminal that was
+# running when the owner stopped it, so a later start is never undone.
+STOP_RETRY_SECONDS = 600
+DAEMON_GAP_MESSAGE = 'Daemon is restarting; route kept while its listener answers'
+DAEMON_DOWN_MESSAGE = 'Daemon unreachable; route withdrawn until a check succeeds'
+DELAYED_MESSAGE = 'Checks are delayed; route kept while its listener answers'
+TIMED_OUT_MESSAGE = 'Checks timed out; route withdrawn until a check succeeds'
 # Both installers run the broker every BROKER_INTERVAL_SECONDS (launchd StartInterval),
 # and each run spends at most RECONCILE_SECONDS rechecking entries.
 BROKER_INTERVAL_SECONDS = 10
@@ -39,6 +64,7 @@ RESTART_ATTRIBUTION_SECONDS = BROKER_INTERVAL_SECONDS + RECONCILE_SECONDS
 STATUS_FILE = 'preview-status.json'
 STATUS_FIELDS = ('workspaceId', 'service', 'frontend', 'desired', 'status', 'stopReason',
                  'stoppedAt', 'restartedAt', 'verifiedAt', 'checkedAt', 'needsReview', 'error')
+# Older brokers recorded a count in the message; a ledger may still hold one.
 UNVERIFIED_MESSAGE = re.compile(r'Checks timed out \(\d+ of \d+\); route kept but unverified')
 IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}')
 
@@ -151,6 +177,11 @@ def validate(request, now):
 
 class RecoveryPending(RuntimeError):
     """Recovery can be retried without discarding the owner's running intent."""
+
+
+class DaemonUnavailable(subprocess.SubprocessError):
+    """The daemon's CLI could not connect, and the daemon's own loopback port refuses or its
+    pid file is gone: it is restarting or stopped. Says nothing about the service."""
 
 
 class ListenerLost(RuntimeError):
@@ -319,7 +350,7 @@ def _broker_messages(path=None):
         return frozenset()
     found = set(re.findall(r"\b(?:" + names + r")\('([^'{}\\]+)'\)", source))
     found.update(re.findall(r"entry\['error'\] = '([^'{}\\]+)'", source))
-    found.add('Checks timed out; route withdrawn until a check succeeds')
+    found.update((TIMED_OUT_MESSAGE, DELAYED_MESSAGE, DAEMON_GAP_MESSAGE, DAEMON_DOWN_MESSAGE))
     return frozenset(found)
 
 
@@ -343,10 +374,17 @@ class Runtime:
         self.base = [config['docker'], '--context', config['context']]
 
     def command(self, args, timeout=12):
-        result = subprocess.run(args, capture_output=True, timeout=timeout, check=True,
-                                # The signed macOS Tailscale binary selects its
-                                # CLI entry point only when TERM is present.
-                                env={'PATH': '/usr/bin:/bin:/usr/local/bin', 'HOME': str(Path.home()), 'TERM': 'dumb'})
+        try:
+            result = subprocess.run(args, capture_output=True, timeout=timeout, check=True,
+                                    # The signed macOS Tailscale binary selects its
+                                    # CLI entry point only when TERM is present.
+                                    env={'PATH': '/usr/bin:/bin:/usr/local/bin', 'HOME': str(Path.home()), 'TERM': 'dumb'})
+        except subprocess.CalledProcessError as error:
+            # curl exits 28 when its own --max-time runs out: like a subprocess timeout,
+            # that says the check did not finish, not that the backend is gone.
+            if args and args[0] == '/usr/bin/curl' and error.returncode == 28:
+                raise subprocess.TimeoutExpired(args, timeout) from None
+            raise
         if len(result.stdout) > 4 * 1024 * 1024:
             raise ValueError('Runtime response too large')
         return result.stdout.decode()
@@ -627,6 +665,18 @@ if(found.length!==1)throw Error('Expected exactly one managed loopback listener'
         """Whether the in-process port check confirms what the full check just proved."""
         return False
 
+    def backend_accepts(self, port):
+        """Connect to the backend on loopback, in process, without a subprocess.
+
+        The kernel completes a loopback connection to a listening socket even when the
+        server or the machine is busy. A refusal is evidence that nothing listens any
+        more; any other failure answers OSError, which grants no grace."""
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=2):
+                return True
+        except ConnectionRefusedError:
+            raise ListenerLost('Backend port refused a direct connection') from None
+
 
 class NativeRuntime(Runtime):
     """Same broker contract for the logged-in macOS user's native daemon."""
@@ -635,7 +685,13 @@ class NativeRuntime(Runtime):
         self.c = config
 
     def cli(self, args):
-        value = json.loads(self.command([*self.c['cliCommand'], '--home', self.c['daemonHome'], *args, '--json'], timeout=20))
+        try:
+            output = self.command([*self.c['cliCommand'], '--home', self.c['daemonHome'], *args, '--json'], timeout=20)
+        except subprocess.CalledProcessError:
+            if self.daemon_unreachable():
+                raise DaemonUnavailable('Daemon unreachable') from None
+            raise
+        value = json.loads(output)
         if isinstance(value, dict) and 'error' in value:
             raise ValueError('Native daemon CLI refused the preview operation')
         return value
@@ -723,6 +779,28 @@ class NativeRuntime(Runtime):
         if safe_read(lock_path) != lock or self.process_identity(owner['pid']) != owner:
             raise ValueError('Native daemon changed during identity verification')
         return f"{worker['pid']}:{worker['birth']}"
+
+    def daemon_unreachable(self):
+        """Whether the native daemon is down, read in process without a subprocess.
+
+        True only on evidence: its pid file is gone, or its pinned loopback port refuses a
+        connection. Anything that cannot be read answers False, the old behavior."""
+        try:
+            lock = safe_read(Path(self.c['daemonHome']) / 'paseo.pid')
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError):
+            return False
+        match = re.fullmatch(r'127\.0\.0\.1:([0-9]+)', lock.get('listen', '') if isinstance(lock, dict) else '')
+        if not match:
+            return False
+        try:
+            with socket.create_connection(('127.0.0.1', int(match[1])), timeout=1):
+                return False
+        except ConnectionRefusedError:
+            return True
+        except OSError:
+            return False
 
     def daemon_worker(self):
         """The serving daemon worker and its start time, to explain a stop.
@@ -1034,7 +1112,7 @@ class Broker:
                 self.remove_then_raise(entry, RecoveryPending('Daemon changed during verification'))
             entry['daemon'] = daemon
             entry.pop('recovery', None)
-        for stale in ('error', 'misses', 'removalPending', 'needsReview', 'stopReason', 'restartedAt'):
+        for stale in ('error', 'misses', 'removalPending', 'needsReview', 'stopReason', 'restartedAt', 'daemonGapSince'):
             entry.pop(stale, None)
         if 'daemonWorker' not in entry:
             # Recorded once per start: any later daemon change makes the next check
@@ -1130,7 +1208,9 @@ class Broker:
                 entry = {'workspaceId': r['workspaceId'], 'service': r['service'], 'cwd': current['cwd']}
                 # A stop without a reservation still needs a durable replay barrier.
                 self.ledger['entries'][key] = entry
-            entry.update(desired='stopped', status='stopped', stoppedAt=now, stopReason='stopped')
+            # stopPending stays until the daemon has stopped the process; reconcile()
+            # repeats it if this request cannot reach the daemon.
+            entry.update(desired='stopped', status='stopped', stoppedAt=now, stopReason='stopped', stopPending=True)
             for stale in ('url', 'misses', 'error', 'restartedAt', 'daemonWorker'):
                 entry.pop(stale, None)
             self.save()
@@ -1143,6 +1223,8 @@ class Broker:
                 current = self.runtime.stoppable(r['workspaceId'], r['service'])
             if current['lifecycle'] == 'running':
                 self.runtime.lifecycle('stop', current)
+            entry.pop('stopPending', None)
+            self.save()
             return {'status': 'stopped'}
         current = self.runtime.current(r['workspaceId'], r['service'])
         if entry and 'frontend' not in entry:
@@ -1162,7 +1244,7 @@ class Broker:
             self.runtime.lifecycle('stop', current)
             current = self.runtime.current(r['workspaceId'], r['service'])
         entry.update(desired='running', status='pending', fingerprint=current['fingerprint'])
-        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker'):
+        for stale in ('recovery', 'misses', 'stopReason', 'restartedAt', 'daemonWorker', 'stopPending'):
             entry.pop(stale, None)
         self.save()
         # This is startup configuration, not a verified browser link.
@@ -1240,7 +1322,8 @@ class Broker:
 
         Returns None while a timeout grace keeps the route, otherwise the error
         that withdrew it. A timeout says nothing about who is listening, so a
-        verified route may survive a short run of them. Everything else, and any
+        verified route survives them while the direct probe passes, for at most
+        PROBE_ONLY_SECONDS. Everything else, and any
         change the in-process listener recheck finds, withdraws at once."""
         try:
             if self.hold_for_timeout(entry, error):
@@ -1250,20 +1333,25 @@ class Broker:
         except Exception:
             pass  # A recheck that cannot answer grants no grace.
         # A stopped entry only retries its removal; it has no route to recover.
-        timed_out = isinstance(error, subprocess.TimeoutExpired) and entry.get('desired') == 'running'
+        timed_out = isinstance(error, (subprocess.TimeoutExpired, DaemonUnavailable)) and entry.get('desired') == 'running'
         # Fail closed on process/config changes. Never revive a stopped service.
         if isinstance(error, ValueError):
             entry.update(desired='stopped', stoppedAt=time.time())
             self.record_stop_cause(entry, error)
-        if timed_out:
-            message = 'Checks timed out; route withdrawn until a check succeeds'
+        if timed_out and isinstance(error, DaemonUnavailable):
+            message = DAEMON_DOWN_MESSAGE
+        elif timed_out:
+            message = TIMED_OUT_MESSAGE
         elif isinstance(error, (ValueError, RecoveryPending, ListenerLost)) and str(error) in BROKER_MESSAGES:
             message = str(error)
         else:
             # Library errors can echo their input, such as a path or parsed text.
             message = type(error).__name__
-        # Keep 'failed' after timeouts: the rebind refuses while any entry is 'pending'.
-        entry.update(status='pending' if isinstance(error, RecoveryPending) else 'failed', error=message)
+        # Never 'pending' after timeouts: the rebind refuses while any entry is 'pending'.
+        # 'withdrawn' tells the owner the route went because checks kept timing out,
+        # not because the service stopped or failed to start; it keeps its running intent.
+        status = 'pending' if isinstance(error, RecoveryPending) else 'withdrawn' if timed_out else 'failed'
+        entry.update(status=status, error=message)
         for stale in ('url', 'misses'):
             entry.pop(stale, None)
         try:
@@ -1280,6 +1368,32 @@ class Broker:
         self.save()
         return error
 
+    def repeat_stop(self, entry):
+        """Carry out a recorded stop whose daemon call failed.
+
+        Only within STOP_RETRY_SECONDS of the stop, and only against the terminal the
+        broker last verified, which a re-linked survivor keeps: a service started again
+        since then runs in another terminal and is left alone. Failures stay inside, so a
+        stopped entry never takes the running failure rules."""
+        stopped = entry.get('stoppedAt')
+        if type(stopped) not in (int, float) or not 0 <= time.time() - stopped < STOP_RETRY_SECONDS:
+            entry.pop('stopPending', None)
+            self.save()
+            return
+        try:
+            try:
+                current = self.runtime.current(entry['workspaceId'], entry['service'])
+            except WorkspaceUnavailable:
+                current = self.runtime.stoppable(entry['workspaceId'], entry['service'])
+            if current.get('lifecycle') == 'running' and entry.get('terminal') and current.get('terminalId') == entry['terminal']:
+                self.runtime.lifecycle('stop', current)
+        except (subprocess.SubprocessError, OSError):
+            return  # The daemon is still unavailable; the next cycle tries again.
+        except ValueError:
+            pass  # Nothing the broker can act on; give up rather than guess.
+        entry.pop('stopPending', None)
+        self.save()
+
     def remove_then_raise(self, entry, definite):
         """Withdraw after a definite failure without letting the removal mask it.
 
@@ -1294,20 +1408,39 @@ class Broker:
         raise definite
 
     def hold_for_timeout(self, entry, error):
-        if not isinstance(error, subprocess.TimeoutExpired):
+        """Keep a verified route through a timed-out check when the direct probe passes.
+
+        Only a route that passed a full verification within PROBE_ONLY_SECONDS, whose
+        in-process check agreed with lsof at that verification, is eligible. The probe
+        raises on positive evidence of a change, which settle_failure() withdraws at once.
+        The miss count only reports how many checks were delayed; it no longer withdraws,
+        because a status request and the reconcile cycle each count one."""
+        gap = isinstance(error, DaemonUnavailable)
+        if not gap and not isinstance(error, subprocess.TimeoutExpired):
             return False
         if entry.get('desired') != 'running' or entry.get('status') not in ('ready', 'unverified'):
             return False
-        misses = entry.get('misses', 0) + 1
+        if gap:
+            since = entry.get('daemonGapSince')
+            now = time.time()
+            if type(since) not in (int, float):
+                since = now
+            if not 0 <= now - since < DAEMON_GAP_SECONDS:
+                return False
         verified = entry.get('verifiedAt')
-        if type(verified) not in (int, float) or not 0 <= time.time() - verified < TIMEOUT_GRACE_SECONDS:
+        if type(verified) not in (int, float) or not 0 <= time.time() - verified < PROBE_ONLY_SECONDS:
             return False
         if entry.get('inProcessCheckAgreed') is not True:
             return False
-        if misses >= TIMEOUT_MISS_LIMIT or not self.runtime.listener_unchanged(entry):
+        if not self.runtime.listener_unchanged(entry) or self.runtime.backend_accepts(entry['backend']) is not True:
             return False
-        entry.update(status='unverified', misses=misses,
-                     error=f'Checks timed out ({misses} of {TIMEOUT_MISS_LIMIT}); route kept but unverified')
+        if gap:
+            entry.update(status='unverified', misses=entry.get('misses', 0) + 1,
+                         daemonGapSince=since, error=DAEMON_GAP_MESSAGE)
+        else:
+            # daemonGapSince stays: only a full verification ends a gap, so an interleaved
+            # timeout cannot restart its 60 seconds.
+            entry.update(status='unverified', misses=entry.get('misses', 0) + 1, error=DELAYED_MESSAGE)
         self.save()
         return True
 
@@ -1335,6 +1468,8 @@ class Broker:
                         published = self.runtime.publication()
                     if self.address(entry) in published.get('Web', {}) or str(entry['frontend']) in published.get('TCP', {}):
                         self.remove(entry)
+                    if entry.get('stopPending'):
+                        self.repeat_stop(entry)
                     continue
                 self.restore_after_restart(entry)
                 self.activate(entry)

@@ -1101,6 +1101,22 @@ Host activation receipts distinguish `activating`, `daemon-ready`, `interface-fa
 
 Prepared updates retain durable admission and activation receipts. Queue recovery can reuse a fully prepared update, but an activation intent prevents another activation attempt. A changed installed base or interface receipt refuses selection and requires fresh preparation. Build and validation failures before activation leave the previous selection unchanged. After selection, a failed restart reply or readiness check does not prove that replacement stopped. Host and Dev retain the reviewed candidate selection and activation intent for native reconciliation instead of racing startup with an unverified selector rollback. A compatible rollback requires independent native evidence and tracked recovery; uncertainty authorizes neither another restart nor another selection attempt.
 
+A Host source update that the owner or the delegated policy approved for immediate replacement keeps open terminals, and with them managed previews, on a launchd Host when both the candidate and the previous release re-link surviving workspace services (#587).
+
+- **The check.** Before it moves the selection, the coordinator reads each release's own compiled re-link module and daemon startup, with bounded reads of regular files.
+- **The replacement.** In place of `launchctl kickstart -k`, it sends the running daemon the shutdown request that `paseo daemon stop --keep-terminals` uses, waits up to 30 seconds for that daemon to go, and starts the service with `launchctl kickstart`. Without `-k`, that never stops a running service. The daemon worker detaches its terminals instead of closing them, and the supervisor skips its exit cleanup.
+- **When it replaces as before and closes terminals:**
+  - either release lacks the re-link, so a rollback to an older release never leaves services running unlinked;
+  - the running daemon did not answer before the restart;
+  - the Host runs under systemd, whose default `KillMode` stops the detached terminal worker together with the unit;
+  - the daemon refuses the request, cannot be reached, does not advertise that it keeps terminals, or is still running at the deadline.
+- **The receipt.** The activation receipt records `terminals` (`kept`, `replaced` or `not-attempted`) with `terminalsReason`.
+- **Approval.** The new step runs inside the same approved dispatch, at the point the old replacement ran. It adds no request type and no approval.
+- **What happens to kept terminals.** Whichever release starts next adopts them and re-links or stops them. If neither starts, the terminal worker keeps them until the next stop that closes terminals, such as a recovery restart, `paseo daemon stop`, uninstall, or a reboot. A coordinator recovery that selects some other release, such as a reviewed compatible-recovery release that predates the re-link, adopts the kept services without re-linking them. They then show as stopped and keep their ports until their terminals are closed from the terminal list or by the next closing stop.
+- **When it takes effect.** This step runs in the installation coordinator, so it takes effect only once the coordinator itself is updated.
+
+Idle and held Host restarts already kept terminals.
+
 Lifecycle admission writes and coordinator claim or promotion checks share the existing protected bootstrap journal lock. Approved, running, held or preparing installation work prevents a new coordinator claim. An unresolved coordinator execution prevents new installation work and queue dispatch. Cancellation, interrupted-operation receipts and completed hold release remain writable. Native freeze, process and preservation checks still apply; journal admission does not prove process quiescence.
 
 Deploy compatible coordinator queue, Host bootstrap journal and rollback readers together through tracked component updates. An older writer does not participate in this exclusion. Recover an existing overlapping claim through its exact independent recovery workflow before using the ordinary Host updater. Never infer that newly prepared admission code makes the installed queue safe, or replace the active executor's pinned artifacts.

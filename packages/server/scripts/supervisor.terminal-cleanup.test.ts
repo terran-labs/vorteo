@@ -164,6 +164,18 @@ describe("supervisor terminal cleanup", () => {
     ]);
   });
 
+  // A Host install's keep-terminals shutdown (#587): neither the worker nor the
+  // supervisor's exit closes terminals.
+  test("a keep stop passes keepTerminals and never cleans up", async () => {
+    const result = await runSupervisorWith(
+      scriptedWorker(
+        `process.send({ type: "paseo:shutdown", reason: "test", keepTerminals: true });`,
+      ),
+    );
+    expect(result.code, result.output).toBe(0);
+    expect(result.events).toEqual([{ started: 1 }, { graceful: 1, keepTerminals: true }]);
+  });
+
   test("a kill stop cleans up when the supervisor exits", async () => {
     const result = await runSupervisorWith(
       scriptedWorker(

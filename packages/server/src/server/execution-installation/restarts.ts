@@ -290,7 +290,18 @@ export interface RestartExecutor {
   /** Final independent evidence after the locked running reservation. */
   verifyDispatch?(job: RestartJob): Promise<void>;
   installUpdate?(job: RestartJob, options: InstallUpdateOptions): Promise<string>;
-  restart(target: RestartJob["target"]): Promise<string>;
+  /**
+   * keepTerminals is set only by a Host source update whose candidate and previous
+   * releases both re-link surviving services; see host-install-terminals.ts.
+   */
+  restart(
+    target: RestartJob["target"],
+    options?: {
+      keepTerminals?: boolean;
+      /** Called with what happened to terminals when keepTerminals was asked for. */
+      onTerminals?: (outcome: import("./host-install-terminals.js").KeepTerminalsOutcome) => void;
+    },
+  ): Promise<string>;
   inspect?(target: RestartJob["target"]): Promise<RestartImpact>;
   restartWhenIdle?(target: RestartJob["target"]): Promise<string | null>;
   holdCurrentTurns?(target: RestartJob["target"], requestId: string): Promise<void>;
