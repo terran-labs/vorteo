@@ -5,6 +5,8 @@ import {
   factoryProjectClaimRelease,
   factoryProjectConfigure,
   factoryProjectDisable,
+  factoryProjectPickAccount,
+  ProjectFactoryStageSchema,
   factoryProjectEnable,
   factoryProjectGet,
   factoryProjectInstructionsAcknowledge,
@@ -20,6 +22,7 @@ import {
   factoryProjectResume,
   factoryProjectStatusSet,
   ProjectFactoryRoleIdSchema,
+  type ProjectFactoryAccountPick,
   type ProjectFactoryAssignment,
   type ProjectFactoryClaim,
   type ProjectFactoryClaimRelease,
@@ -361,6 +364,7 @@ export function createFactoryProjectCommand(): Command {
   );
   project.addCommand(status);
   project.addCommand(createClaimCommand());
+  project.addCommand(createPickAccountCommand());
   project.addCommand(createInstructionsCommand());
   return project;
 }
@@ -409,6 +413,62 @@ function claimArguments(name: string, description: string): Command {
       .argument("<project-id>", "Exact native project identity")
       .argument("<issue>", "GitHub issue number")
       .allowExcessArguments(false),
+  );
+}
+
+const pickSchema: OutputSchema<ProjectFactoryAccountPick> = {
+  idField: "stage",
+  columns: [],
+  renderHuman: (result) => {
+    const value = result.data as ProjectFactoryAccountPick;
+    return [
+      `Stage: ${value.stage}`,
+      `Profile: ${value.profileId ?? "default"}`,
+      describePickedAccount(value),
+      ...value.considered.map(
+        (item) =>
+          `  ${item.provider}: ${item.verdict}${item.remainingPct === null ? "" : ` ${item.remainingPct}%`}`,
+      ),
+    ].join("\n");
+  },
+};
+
+function describePickedAccount(value: ProjectFactoryAccountPick): string {
+  if (!value.provider) return "Account: none qualifies; use the configured default";
+  if (value.bound) return `Account: ${value.provider} (the profile is bound to it)`;
+  return `Account: ${value.provider} (${value.remainingPct}% left in its lowest window)`;
+}
+
+function createPickAccountCommand(): Command {
+  return addJsonAndDaemonHostOptions(
+    new Command("pick-account")
+      .description(
+        "Pick the account a new worker, reviewer or planner starts on, by fresh remaining quota",
+      )
+      .argument("<project-id>", "Exact native project identity")
+      .argument("<stage>", "planner, worker or reviewer")
+      .option("--issue <n>", "Issue the agent is for, recorded with the choice")
+      .option("--avoid <provider>", "Account to leave out, such as the worker's")
+      .allowExcessArguments(false),
+  ).action(
+    withOutput(
+      async (projectId: string, stage: string, options: CommandOptions, _command: Command) => {
+        const parsed = ProjectFactoryStageSchema.safeParse(stage);
+        if (!parsed.success)
+          throw { code: "INVALID_STAGE", message: "Use planner, worker or reviewer." };
+        return withClient(options, async (client) =>
+          single(
+            await call(client, factoryProjectPickAccount, {
+              projectId,
+              stage: parsed.data,
+              ...(typeof options.issue === "string" ? { issue: parseIssue(options.issue) } : {}),
+              ...(typeof options.avoid === "string" ? { avoid: options.avoid } : {}),
+            }),
+            pickSchema,
+          ),
+        );
+      },
+    ),
   );
 }
 

@@ -206,6 +206,15 @@ export class LabSelfUpdates {
     return record ? project(record) : null;
   }
 
+  /**
+   * The active update known without reading the journal, for synchronous restart checks.
+   * Null before the first load; the restart drain loads it on its first pass.
+   */
+  activeLoaded(): LabUpdate | null {
+    const record = this.activeRecord();
+    return record ? project(record) : null;
+  }
+
   private activeRecord(): LabRecord | undefined {
     return this.records.find((item) => ACTIVE.has(item.status));
   }
