@@ -1155,6 +1155,15 @@ export async function createPaseoDaemon(
     logger,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
+    isWorkspaceActive: (cwd) =>
+      agentManager
+        .listAgents()
+        .some(
+          (agent) =>
+            (agent.lifecycle === "running" || agent.lifecycle === "initializing") &&
+            path.resolve(agent.cwd) === cwd,
+        ) ||
+      (wsServer?.listSessions().some((session) => session.isWorkspaceGitActive(cwd)) ?? false),
     deps: {
       forgeOverrides: { github },
     },

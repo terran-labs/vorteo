@@ -1165,4 +1165,39 @@ describe("Claude model discovery process", () => {
     expect(assertCanSpawn).toBeTypeOf("function");
     expect(() => assertCanSpawn?.()).toThrow(failure);
   });
+
+  it("starts no probe while a full sign-in is about to renew, and reuses the last answer", async () => {
+    const advertised = [
+      { value: "fable", resolvedModel: "claude-fable-5-2", displayName: "Fable", description: "" },
+    ];
+    let now = 0;
+    let probes = 0;
+    const open = () => {
+      probes += 1;
+      return { supportedModels: async () => advertised, close: () => {} };
+    };
+    const options = {
+      resolveBinary: async () => "/claude",
+      env: { CLAUDE_CONFIG_DIR: "/renewing-account", VORTEO_CLAUDE_SIGN_IN: "full" },
+      now: () => now,
+      // The grant expires at minute 60. A killed probe inside the renewal window loses it.
+      readGrant: async () => ({
+        accessToken: "synthetic",
+        hasRefreshToken: true,
+        expiresAt: 60 * 60_000,
+        scopes: [],
+      }),
+    };
+    // With no earlier answer the guard still starts nothing and reports no models.
+    now = 55 * 60_000;
+    expect(await discoverClaudeModels(options, open)).toEqual([]);
+    expect(probes).toBe(0);
+    now = 0;
+    expect(await discoverClaudeModels(options, open)).toEqual(advertised);
+    expect(probes).toBe(1);
+    now = 55 * 60_000;
+    // Even an explicit refresh must not start a CLI that could begin the renewal.
+    expect(await discoverClaudeModels({ ...options, force: true }, open)).toEqual(advertised);
+    expect(probes).toBe(1);
+  });
 });

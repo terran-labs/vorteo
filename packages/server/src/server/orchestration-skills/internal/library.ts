@@ -22,6 +22,7 @@ import {
 } from "@getpaseo/protocol/skill-library";
 import {
   inventorySkills,
+  SkillInventoryCache,
   missing,
   packageHash,
   readPackage,
@@ -58,6 +59,7 @@ async function durableJson(file: string, value: unknown): Promise<void> {
 }
 
 export class SkillLibrary {
+  private readonly inventoryCache = new SkillInventoryCache();
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
     private readonly state: string,
@@ -69,7 +71,7 @@ export class SkillLibrary {
   async read(request: SkillLibraryRead): Promise<SkillLibraryResult> {
     if (request.kind === "audit") return { kind: "audit", entries: await this.audit() };
     const cwd = request.kind === "package" ? undefined : request.cwd;
-    const inventory = await this.inventory(cwd);
+    const inventory = await this.inventory(cwd, request.kind === "inventory");
     if (request.kind === "inventory") return { kind: "inventory", inventory };
     const skill = inventory.skills.find((entry) => entry.id === request.id);
     if (!skill) throw new SkillLibraryError("missing", "Skill is no longer in this inventory");
@@ -223,8 +225,12 @@ export class SkillLibrary {
     await fs.unlink(journal);
   }
 
-  private async inventory(cwd?: string): Promise<SkillInventory> {
-    const inventory = await inventorySkills({ home: this.home, cwd });
+  private async inventory(cwd?: string, cached = false): Promise<SkillInventory> {
+    const inventory = await inventorySkills({
+      home: this.home,
+      cwd,
+      ...(cached ? { cache: this.inventoryCache } : {}),
+    });
     const history = await this.audit();
     for (const skill of inventory.skills) {
       if (
