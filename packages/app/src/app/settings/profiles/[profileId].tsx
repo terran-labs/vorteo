@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import { Text } from "react-native";
+import { settingsStyles } from "@/styles/settings";
 import type { AgentProfile, SharedProviderPreferences } from "@getpaseo/protocol/messages";
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
 import { AgentProfilePage } from "@/agent-profiles/settings/agent-profile-page";
@@ -151,7 +152,7 @@ function RouteEditor({ serverId, provider, profileId, shared }: RouteEditorProps
       toggleThinking,
     ],
   );
-  if (!profile) return <Text>Profile unavailable</Text>;
+  if (!profile) return <Text style={settingsStyles.rowHint}>Profile unavailable</Text>;
   return (
     <AgentProfilePage
       serverId={serverId}
@@ -174,9 +175,14 @@ function RouteEditor({ serverId, provider, profileId, shared }: RouteEditorProps
 function ProfileRouteBody() {
   const { serverId, providerType, profileId } = parseProfileRoute(useLocalSearchParams());
   const { shared, ready, error } = useSharedProviderProfiles(serverId ?? "", providerType ?? "");
-  if (!serverId || !providerType || !profileId) return <Text>Profile address is incomplete</Text>;
+  if (!serverId || !providerType || !profileId)
+    return <Text style={settingsStyles.rowHint}>Profile address is incomplete</Text>;
   if (!shared || !ready)
-    return <Text>{error instanceof Error ? error.message : "Loading profiles…"}</Text>;
+    return (
+      <Text style={settingsStyles.rowHint}>
+        {error instanceof Error ? error.message : "Loading profiles…"}
+      </Text>
+    );
   return (
     <RouteEditor
       key={`${serverId}:${providerType}:${profileId}`}
