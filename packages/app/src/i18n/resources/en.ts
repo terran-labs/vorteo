@@ -47,6 +47,12 @@ export const en = {
     },
     checks: { pending: "Checks pending", passing: "Checks passing", failing: "Checks failing" },
     agents: { lead: "Lead", worker: "Worker", reviewer: "Reviewer" },
+    home: {
+      label: "Factory home: {{environment}}",
+      environments: { host: "Host", container: "Dev" },
+      here: "Factory runs in this environment.",
+      elsewhere: "Factory for this repository runs in {{environment}}, so roles here stand down.",
+    },
     assignment: {
       title: "Role assignment",
       installation: "This installation: {{installation}}",

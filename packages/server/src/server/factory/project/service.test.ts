@@ -36,6 +36,10 @@ import { projectFactoryStatePath } from "./state.js";
 import type { DevAgent, IssueAgentHosts } from "./issue-agent-host.js";
 import { DEV_HOST_SOURCE_KEY } from "../../execution-installation/dev-host-link.js";
 import type { HostSummary } from "@getpaseo/protocol/hosts";
+import {
+  createFactoryHomeAuthority,
+  type FactoryHomePort,
+} from "../../execution-installation/factory-home.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
 const PROJECT = "prj_app";
@@ -254,11 +258,12 @@ class FakeSchedules {
 
 function service(
   gh?: GhRunner,
-  installation: { paseoHome?: string; serverId?: string } = {},
+  installation: { paseoHome?: string; serverId?: string; home?: FactoryHomePort } = {},
 ): ProjectFactoryService {
   const instance = new ProjectFactoryService({
     paseoHome: installation.paseoHome ?? home,
     serverId: installation.serverId ?? "srv_test",
+    home: installation.home,
     github,
     accounts,
     hosts: () => issueHosts,
@@ -1899,6 +1904,103 @@ describe("several installations on one repository", () => {
         repository: "Acme/App",
       }),
     ).rejects.toThrow(`Project ${PROJECT} already runs Factory for Acme/App`);
+  });
+});
+
+describe("one Factory home per installation", () => {
+  /** A Host and a Dev daemon with their own state, decided by the coordinator's authority. */
+  function installation() {
+    const daemons: Partial<Record<"host" | "container", ProjectFactoryService>> = {};
+    const reachable = { host: true, container: true };
+    const authority = createFactoryHomeAuthority({
+      environments: ["host", "container"],
+      read: async (kind) => {
+        const daemon = daemons[kind];
+        if (!daemon || !reachable[kind]) throw new Error(`${kind} is down`);
+        return daemon.list();
+      },
+    });
+    const port = (environment: "host" | "container"): FactoryHomePort => ({
+      environment,
+      ask: (request) => authority.decide(environment, request),
+    });
+    const devHome = mkdtempSync(path.join(os.tmpdir(), "vorteo-project-factory-dev-"));
+    const start = (environment: "host" | "container", withHome = true) =>
+      (daemons[environment] = service(undefined, {
+        paseoHome: environment === "host" ? home : devHome,
+        serverId: environment === "host" ? "srv_host" : "srv_dev",
+        home: withHome ? port(environment) : undefined,
+      }));
+    return { start, reachable };
+  }
+
+  test("Dev refuses a repository the Host runs, names the Host and keeps nothing", async () => {
+    const { start, reachable } = installation();
+    const host = start("host");
+    const dev = start("container");
+    const enabled = await enable(host);
+    expect(enabled.home).toEqual({ environment: "host", projectId: PROJECT, here: true });
+    const created = agents.created;
+
+    await expect(enable(dev)).rejects.toThrow("runs in the Host environment");
+    expect((await dev.list()).projects).toEqual([]);
+    expect(agents.created).toBe(created);
+
+    // Neither environment claims a home it cannot confirm with the other.
+    await host.invoke("factory.project.disable", { projectId: PROJECT });
+    reachable.host = false;
+    await expect(enable(dev)).rejects.toThrow("unconfirmed");
+    reachable.host = true;
+    await enable(dev);
+    reachable.container = false;
+    await expect(enable(host)).rejects.toThrow("unconfirmed");
+    expect((await host.list()).projects.find((p) => p.projectId === PROJECT)?.state).toBe("off");
+    // Two environments turning Factory on at once never both win.
+    reachable.container = true;
+    await dev.invoke("factory.project.disable", { projectId: PROJECT });
+    const results = await Promise.allSettled([enable(host), enable(dev)]);
+    expect(results.filter((result) => result.status === "fulfilled").length).toBeLessThan(2);
+  });
+
+  test("an existing Host Factory keeps running; a Dev Factory from an earlier release stands down", async () => {
+    const { start, reachable } = installation();
+    // Both were turned on before the home lock existed; Dev's clone is its own project.
+    const foreman = roleAgent(await enable(start("host", false)), "factory-intake");
+    await addProject("prj_dev");
+    const devForeman = roleAgent(
+      (await start("container", false).invoke("factory.project.enable", {
+        projectId: "prj_dev",
+        repository: REPO,
+      })) as Awaited<ReturnType<typeof enable>>,
+      "factory-intake",
+    );
+
+    const host = start("host");
+    const dev = start("container");
+    await host.start();
+    await dev.start();
+    expect(host.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect((await host.get(PROJECT)).home).toEqual({
+      environment: "host",
+      projectId: PROJECT,
+      here: true,
+    });
+
+    await host.tick(PROJECT, "factory-intake");
+    await dev.tick("prj_dev", "factory-intake");
+    expect(agents.prompts.filter((prompt) => prompt.agentId === foreman)).toHaveLength(1);
+    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
+    const state = await dev.get("prj_dev");
+    expect(state.home).toEqual({ environment: "host", projectId: PROJECT, here: false });
+    expect(state.roles.find((role) => role.role === "factory-intake")?.status?.line).toBe(
+      `Off here: Factory home is the Host environment, which runs ${REPO}.`,
+    );
+
+    // An unanswered check keeps the recorded decision, also after a restart.
+    reachable.host = false;
+    await dev.tick("prj_dev", "factory-intake");
+    await start("container").tick("prj_dev", "factory-intake");
+    expect(agents.prompts.filter((prompt) => prompt.agentId === devForeman)).toHaveLength(0);
   });
 });
 

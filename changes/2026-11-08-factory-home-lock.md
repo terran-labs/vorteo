@@ -1,0 +1,7 @@
+### Features
+
+- A repository's Factory now runs in one environment of an installation, its Factory home, by default the Host. Turning Factory on in Dev for a repository the Host already runs, or the reverse, is refused with a message naming where it runs, so one installation never has two Builds or two Mechanics for one repository. `vorteo factory project show` and the Factory Overview show the home.
+
+## Maintenance review
+
+Factory home lock: a new coordinator route, `POST /api/installation/factory-home`, authenticated by the daemons' existing installation credentials, decides from the other environment's existing `factory.project.list` RPC. No stored lock and no migration: Host-only Factories keep running unchanged. Wire changes add one optional `home` field to the Factory project state; the coordinator route is new and older coordinators answer 404, which keeps the Host's earlier behavior and refuses Dev. The coordinator, the Host and Dev all need the update. Two focused tests in the Factory service suite run the real coordinator decision between a Host and a Dev service: the refusal with rollback, refusal in either direction while the other environment cannot be read, and concurrent enables; and an existing Host Factory with a leftover Dev one that stays down through an unanswered check and a restart. Independent review found that an unreadable peer let the Host claim and that an unanswered check revived a stood-down Dev Factory; both are fixed and covered. README overview and onboarding are unchanged. Not installed.
