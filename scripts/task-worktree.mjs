@@ -12,7 +12,17 @@ import { isMainModule } from "./is-main-module.mjs";
 import { installDependencies } from "./lib/dependency-cache.mjs";
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const BRANCH_PREFIXES = ["feat/", "fix/", "chore/", "docs/", "refactor/", "perf/", "test/"];
+// `factory/` holds Factory issue claims: factory/issue-<n>, created on GitHub by the claim.
+const BRANCH_PREFIXES = [
+  "feat/",
+  "fix/",
+  "chore/",
+  "docs/",
+  "refactor/",
+  "perf/",
+  "test/",
+  "factory/",
+];
 
 export function planTaskWorktree({
   cwd,

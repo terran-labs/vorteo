@@ -204,7 +204,11 @@ function hashInputs(
       labels: item.labels.nodes.map((label) => label.name).sort(),
     }))
     .sort((a, b) => a.number - b.number);
-  const trackedPrs = prs.filter((item) => item.headRefName.includes("factory-issue-"));
+  // Claim branches are factory/issue-<n>; <prefix>/factory-issue-<n> predates claims.
+  const trackedPrs = prs.filter(
+    (item) =>
+      item.headRefName.startsWith("factory/issue-") || item.headRefName.includes("factory-issue-"),
+  );
   if (trackedPrs.some((item) => item.latestReviews.pageInfo.hasPreviousPage)) return null;
   const prInputs = trackedPrs
     .map((item) => ({

@@ -38,12 +38,12 @@ export function ParentAgentPill({
       accessibilityRole="button"
       accessibilityLabel={t("subagents.parent.backTo", { label })}
       onPress={parent.open}
-      style={BODY_STYLE}
+      style={[composerPillStyles.body, styles.body]}
       highlightStyle={composerPillStyles.bodyActive}
     >
       <ThemedChevronLeft size={14} uniProps={inheritedIconColorMapping} />
       <ComposerTrackMark bucket={parent.statusBucket} />
-      <Text style={LABEL_STYLE} numberOfLines={1}>
+      <Text style={[composerPillStyles.label, styles.label]} numberOfLines={1}>
         {label}
       </Text>
     </PressHighlight>
@@ -73,5 +73,3 @@ const styles = StyleSheet.create((theme) => ({
     ...groupHoverStyle("parent-pill", { color: theme.colors.foreground }),
   },
 }));
-const BODY_STYLE = [composerPillStyles.body, styles.body];
-const LABEL_STYLE = [composerPillStyles.label, styles.label];

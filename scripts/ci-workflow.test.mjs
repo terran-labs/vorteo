@@ -589,23 +589,27 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       );
     }
   }
-  // Desktop suites run only on manual runs while PWA is the only release channel.
-  const desktopApps = /^      desktop_apps: \$\{\{ (.+) \}\}$/m.exec(
-    jobs.get("changes").join("\n"),
-  )[1];
-  for (const [event, ref, expected] of [
-    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
-    ["schedule", "refs/heads/main", false],
-    ["push", "refs/tags/release-26.11.500-beta", false],
-    ["workflow_dispatch", "refs/heads/main", true],
-  ]) {
-    const outputs = {
-      ...all,
-      heavy: "true",
-      desktop_apps: String(runInNewContext(desktopApps, contextFor(event, ref))),
-    };
-    for (const jobId of ["desktop-tests-ubuntu", "desktop-tests-windows"]) {
-      assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
+  // Desktop suites (PWA is the only release channel) and Windows server suites (no Windows
+  // Host yet) run only on manual runs.
+  const manualOnly = [
+    ["desktop_apps", ["desktop-tests-ubuntu", "desktop-tests-windows"]],
+    ["windows_host", ["server-tests-windows", "server-integration-windows"]],
+  ];
+  for (const [output, jobIds] of manualOnly) {
+    const expression = new RegExp(`^      ${output}: \\$\\{\\{ (.+) \\}\\}$`, "m").exec(
+      jobs.get("changes").join("\n"),
+    )[1];
+    for (const [event, ref, expected] of [
+      ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+      ["schedule", "refs/heads/main", false],
+      ["push", "refs/tags/release-26.11.500-beta", false],
+      ["workflow_dispatch", "refs/heads/main", true],
+    ]) {
+      const value = String(runInNewContext(expression, contextFor(event, ref)));
+      const outputs = { ...all, heavy: "true", [output]: value };
+      for (const jobId of jobIds) {
+        assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
+      }
     }
   }
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
@@ -640,6 +644,12 @@ test("container installation smokes run after merge and on demand, not on pull r
   assert.match(trigger, /^  workflow_dispatch:/m);
   assert.match(trigger, /- "docker\/\*\*"/);
   assert.match(source, /architecture: \[amd64, arm64\]/);
+  // Each architecture runs natively; QEMU emulation made the arm64 smoke the slowest job.
+  assert.match(
+    source,
+    /runs-on: \$\{\{ matrix\.architecture == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/,
+  );
+  assert.doesNotMatch(source, /setup-qemu-action/);
   assert.match(source, /bash docker\/multiplex\/smoke.sh paseo-container:check/);
   // Version-only manifest bumps do not rebuild the container; manual runs always do.
   const jobs = jobBlocks(source);

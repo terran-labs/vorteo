@@ -38,7 +38,7 @@ import { buildHostWorkspaceRoute } from "@/utils/host-routes";
 import { WORKSPACE_DECK_MAX_MOUNTED_WORKSPACES } from "@/screens/workspace/workspace-deck-retention";
 import { delayBrowserAgentCreatedStatus } from "../support/helpers/new-workspace";
 import { installDaemonWebSocketGate } from "../support/helpers/daemon-websocket-gate";
-import { gotoAppShell, openSettings, selectModel } from "../support/helpers/app";
+import { gotoAppShell, selectModel } from "../support/helpers/app";
 import { observeTimelineSubscriptions } from "../support/helpers/timeline-delivery";
 import { rememberTimelineRequestCounts } from "../support/helpers/timeline-resume";
 import {
@@ -363,8 +363,8 @@ async function replaySteeredSleepTurnInBrowser(
   const gate = await installDaemonWebSocketGate(page);
   gate.holdNextShellToolCall("completed");
   await gotoAppShell(page);
-  await openSettings(page);
-  await selectSteerInSettings(page);
+  // No Settings step: Vorteo removed the ignored Default send choice, and the modified
+  // shortcut below sends into the active turn whatever that setting held.
   const agent = await startRunningMockAgent(page, {
     prefix: `steer-replay-${shape}-${testInfo.workerIndex}-`,
     model: "ten-second-stream",

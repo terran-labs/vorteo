@@ -6,42 +6,59 @@ import { expect, type Page } from "@playwright/test";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { connectDaemonClient } from "./daemon-client-loader";
 import { openSettings } from "./app";
-import { openHostSection, openSettingsHost, seedSavedSettingsHosts } from "./settings";
+import { revealSettingsLocation, seedSavedSettingsHosts, selectSettingsHost } from "./settings";
 import type { IsolatedHostDaemon } from "./isolated-host-daemon";
 
+/**
+ * Opens the Host restart sheet in System. Restart controls left Host details when System
+ * took over lifecycle actions, so the sheet is the only place a user can restart a daemon.
+ */
 export async function openDaemonOverview(page: Page, daemon: IsolatedHostDaemon) {
   await seedSavedSettingsHosts(page, [
     { serverId: daemon.serverId, label: "Lifecycle host", endpoint: `127.0.0.1:${daemon.port}` },
   ]);
   await page.reload();
   await openSettings(page);
-  await openSettingsHost(page, daemon.serverId);
-  await openHostSection(page, daemon.serverId, "host");
+  await selectSettingsHost(page, daemon.serverId);
+  await revealSettingsLocation(page, "system.overview");
+  const pane = page.getByTestId("system-pane").filter({ visible: true });
+  await pane.getByRole("button", { name: "Host actions", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Restart…", exact: true }).click();
+  await expect(restartSheet(page).getByTestId("host-page-restart-card")).toBeVisible();
+}
+
+/** The open System restart sheet; scoping keeps System's own row actions out of the match. */
+function restartSheet(page: Page) {
+  return page.getByTestId("system-restart-host");
 }
 
 export async function restartDaemonInSettings(
   page: Page,
   options: { closeTerminals?: boolean } = {},
 ) {
-  const button = page.getByRole("button", {
+  const sheet = restartSheet(page);
+  const button = sheet.getByRole("button", {
     name: options.closeTerminals ? "Restart and close terminals" : "Restart",
     exact: true,
   });
   await expect(button).toBeEnabled();
   page.once("dialog", (dialog) => dialog.accept());
   await button.click();
-  await expect(page.getByRole("button", { name: "Restarting...", exact: true })).toBeDisabled();
+  await expect(sheet.getByRole("button", { name: "Restarting...", exact: true })).toBeDisabled();
 }
 
 export async function expectDaemonRestartFailed(page: Page, text: string) {
-  const error = page.getByTestId("host-page-restart-error");
+  const sheet = restartSheet(page);
+  const error = sheet.getByTestId("host-page-restart-error");
   await expect(error).toBeVisible({ timeout: 30_000 });
   await expect(error).toContainText(text);
-  await expect(page.getByRole("button", { name: "Restart", exact: true })).toBeEnabled();
+  await expect(sheet.getByRole("button", { name: "Restart", exact: true })).toBeEnabled();
 }
 
 export async function expectDaemonRestartComplete(page: Page) {
-  await expect(page.getByRole("button", { name: "Restart", exact: true })).toBeEnabled({
+  await expect(
+    restartSheet(page).getByRole("button", { name: "Restart", exact: true }),
+  ).toBeEnabled({
     timeout: 30_000,
   });
 }
