@@ -1,7 +1,12 @@
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 import { createIndexedDbDictationRecordingBackend } from "./recording-backend.web";
-import { DictationRecordingStore, MemoryDictationRecordingBackend } from "./recording-store";
+import {
+  DictationRecordingStore,
+  MemoryDictationRecordingBackend,
+  type DictationRecordingStoreEvent,
+} from "./recording-store";
+import { wavParts } from "./recording-wav";
 
 const FORMAT = "audio/pcm;rate=16000;bits=16";
 
@@ -42,6 +47,8 @@ describe("DictationRecordingStore", () => {
       maxBytes: 30,
       now: () => clock,
     });
+    const events: DictationRecordingStoreEvent[] = [];
+    store.subscribe((event) => events.push(event));
     const oldest = store.begin("a", FORMAT)!;
     store.append(oldest, "x".repeat(10));
     await store.flush();
@@ -57,6 +64,14 @@ describe("DictationRecordingStore", () => {
     await store.flush();
 
     expect(store.isComplete(newest)).toBe(true);
+    // The owner is told that an older unsent recording was removed.
+    expect(events.filter((event) => event.kind === "evicted")).toEqual([
+      expect.objectContaining({
+        kind: "evicted",
+        reason: "space",
+        recording: expect.objectContaining({ id: oldest }),
+      }),
+    ]);
     expect(await store.findPending("a")).toBeNull();
     expect((await store.findPending("b"))?.segments).toEqual(["y".repeat(10)]);
   });
@@ -106,5 +121,68 @@ describe("DictationRecordingStore", () => {
     await tabB.deleteForServer("server-1");
     expect(backend.recordings.size).toBe(0);
     expect(locks.size).toBe(0);
+  });
+
+  it("builds a playable 16 kHz mono WAV from the stored segments", async () => {
+    const pcm = (bytes: number[]) => Buffer.from(bytes).toString("base64");
+    const parts: Uint8Array[] = [];
+    for await (const part of wavParts([pcm([1, 0, 2, 0]), pcm([3, 0])])) {
+      parts.push(part);
+    }
+    // A header plus one part per segment: no contiguous copy of the whole recording.
+    expect(parts.map((part) => part.length)).toEqual([44, 4, 2]);
+    const wav = Uint8Array.from(parts.flatMap((part) => Array.from(part)));
+    const view = new DataView(wav.buffer);
+    const ascii = (offset: number) => String.fromCharCode(...wav.slice(offset, offset + 4));
+
+    expect([ascii(0), ascii(8), ascii(12), ascii(36)]).toEqual(["RIFF", "WAVE", "fmt ", "data"]);
+    expect(view.getUint32(24, true)).toBe(16_000);
+    expect(view.getUint16(22, true)).toBe(1);
+    expect(view.getUint32(40, true)).toBe(6);
+    expect(Array.from(wav.slice(44))).toEqual([1, 0, 2, 0, 3, 0]);
+  });
+
+  it("reports a recording as stored only once every segment is on the device", async () => {
+    const backend = new MemoryDictationRecordingBackend();
+    const store = new DictationRecordingStore(backend);
+    const id = store.begin("host:agent", FORMAT)!;
+    store.append(id, "s0");
+    store.append(id, "s1");
+    // The writes are still queued: the device holds none of them yet.
+    expect(store.persistence(id, 2)).toBe("saving");
+    await store.flush();
+    expect(store.persistence(id, 2)).toBe("stored");
+    expect(store.persistence(id, 3)).toBe("saving");
+  });
+
+  it("marks writes lost while storage was failing, and reports the failure once", async () => {
+    const backend = new MemoryDictationRecordingBackend();
+    const list = backend.listRecordings.bind(backend);
+    let failures = 6;
+    backend.listRecordings = async () => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("Connection to Indexed Database server lost");
+      }
+      return list();
+    };
+    const store = new DictationRecordingStore(backend);
+    const events: DictationRecordingStoreEvent[] = [];
+    store.subscribe((event) => events.push(event));
+
+    const lost = store.begin("a", FORMAT)!;
+    for (let seq = 0; seq < 5; seq += 1) {
+      store.append(lost, `a${seq}`);
+    }
+    await store.flush();
+    // Storage recovers and another recording begins, which clears the session failure.
+    const next = store.begin("b", FORMAT)!;
+    store.append(next, "b0");
+    await store.flush();
+
+    expect(store.persistence(lost, 5)).toBe("incomplete");
+    expect(backend.segments.get(lost)).toBeUndefined();
+    expect(events.filter((event) => event.kind === "unavailable")).toHaveLength(1);
+    expect(store.persistence(next, 1)).toBe("stored");
   });
 });

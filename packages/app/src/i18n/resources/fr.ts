@@ -385,6 +385,17 @@ export const fr: TranslationResources = {
       start: "Démarrer la dictée vocale",
       cancel: "Annuler la dictée",
       retry: "Relancer la dictée",
+      saveAudio: "Enregistrer l'audio",
+      audioReady: "Le fichier audio est prêt. Appuyez de nouveau sur Enregistrer l'audio.",
+      preparingAudio: "Préparation du fichier audio…",
+      saveFailed: "L'audio n'a pas pu être enregistré. Réessayez.",
+      recordingKept: "Votre enregistrement est conservé.",
+      recordingNotSaved:
+        "Cet enregistrement n'est pas sauvegardé sur cet appareil. Gardez cette page ouverte jusqu'à son envoi, ou enregistrez l'audio.",
+      recordingEvicted:
+        "Un ancien enregistrement non envoyé a été supprimé pour libérer de l'espace.",
+      storageUnavailable:
+        "Cet appareil ne peut pas sauvegarder d'enregistrements pour le moment. Gardez cette page ouverte jusqu'à l'envoi de la dictée.",
       insert: "Insérer la transcription",
       insertAndSend: "Insérer la transcription et envoyer",
       failed: "Échec de la dictée : {{error}}",

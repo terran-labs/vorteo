@@ -133,6 +133,52 @@ async function finalizeRecorderStoppedPromise(input: {
   }
 }
 
+/** Throws when this environment cannot capture the microphone. */
+function assertMicrophoneEnvironment(): void {
+  const missingNavigator =
+    typeof navigator === "undefined" ||
+    !navigator.mediaDevices ||
+    typeof navigator.mediaDevices.getUserMedia !== "function";
+
+  const secureContext =
+    typeof window !== "undefined" && typeof window.isSecureContext === "boolean"
+      ? window.isSecureContext
+      : true;
+  const currentOrigin =
+    typeof window !== "undefined" && window.location ? window.location.origin : "unknown";
+  const isDesktopApp = isElectronRuntime();
+
+  if (missingNavigator) {
+    throw new Error("Microphone capture is not supported in this environment");
+  }
+  if (!secureContext && !isDesktopApp) {
+    throw new Error(
+      `Microphone access requires HTTPS or localhost. Current origin: ${currentOrigin}`,
+    );
+  }
+  if (!secureContext && isDesktopApp) {
+    console.warn(
+      "[DictationAudio][Web] Insecure context reported under Desktop; attempting getUserMedia anyway",
+      { currentOrigin },
+    );
+  }
+}
+
+/** Stops a freshly granted stream and throws when the source closed while it was requested. */
+function releaseIfDisposed(stream: MediaStream, disposed: boolean): void {
+  if (!disposed) {
+    return;
+  }
+  stream.getTracks().forEach((track) => {
+    try {
+      track.stop();
+    } catch {
+      // no-op
+    }
+  });
+  throw new Error("Dictation audio source was closed");
+}
+
 export function useDictationAudioSource(config: DictationAudioSourceConfig): DictationAudioSource {
   const [volume, setVolume] = useState(0);
 
@@ -199,34 +245,27 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
     }
   }, []);
 
+  /**
+   * One stop at a time. stop() snapshots the capture, waits, then emits the last partial segment
+   * (or the whole recording in MediaRecorder mode), so overlapping calls each emitted it and
+   * duplicated audio. Unmount always overlaps two stops: the dictation hook's cleanup and this
+   * source's own. Concurrent callers share the in-flight stop.
+   */
+  const stopInFlightRef = useRef<Promise<void> | null>(null);
+  /** Set on unmount; a start that resumes after its waits must not open the microphone. */
+  const disposedRef = useRef(false);
+
   const start = useCallback(async () => {
-    const missingNavigator =
-      typeof navigator === "undefined" ||
-      !navigator.mediaDevices ||
-      typeof navigator.mediaDevices.getUserMedia !== "function";
-
-    const secureContext =
-      typeof window !== "undefined" && typeof window.isSecureContext === "boolean"
-        ? window.isSecureContext
-        : true;
-    const currentOrigin =
-      typeof window !== "undefined" && window.location ? window.location.origin : "unknown";
-    const isDesktopApp = isElectronRuntime();
-
-    if (missingNavigator) {
-      throw new Error("Microphone capture is not supported in this environment");
+    // A start during a stop would open a second capture while the first is still emitting its
+    // last audio; wait for the stop to finish first.
+    const stopping = stopInFlightRef.current;
+    if (stopping) {
+      await stopping.catch(() => undefined);
     }
-    if (!secureContext && !isDesktopApp) {
-      throw new Error(
-        `Microphone access requires HTTPS or localhost. Current origin: ${currentOrigin}`,
-      );
+    if (disposedRef.current) {
+      throw new Error("Dictation audio source was closed");
     }
-    if (!secureContext && isDesktopApp) {
-      console.warn(
-        "[DictationAudio][Web] Insecure context reported under Desktop; attempting getUserMedia anyway",
-        { currentOrigin },
-      );
-    }
+    assertMicrophoneEnvironment();
 
     const AudioContextCtor = getAudioContextCtor();
     if (!AudioContextCtor) {
@@ -243,6 +282,8 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
     });
 
     const stream = rawStream;
+    // Unmounted during the permission prompt: release the microphone it just granted.
+    releaseIfDisposed(stream, disposedRef.current);
 
     const context = new AudioContextCtor();
 
@@ -369,14 +410,6 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
     };
   }, []);
 
-  /**
-   * One stop at a time. stop() snapshots the capture, waits, then emits the last partial segment
-   * (or the whole recording in MediaRecorder mode), so overlapping calls each emitted it and
-   * duplicated audio. Unmount always overlaps two stops: the dictation hook's cleanup and this
-   * source's own. Concurrent callers share the in-flight stop.
-   */
-  const stopInFlightRef = useRef<Promise<void> | null>(null);
-
   const stopCapture = useCallback(async () => {
     refs.current.started = false;
     setVolume(0);
@@ -443,7 +476,9 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
   }, [stopCapture]);
 
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
       void stop().catch((err) => {
         onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
       });

@@ -381,6 +381,16 @@ export const ko: TranslationResources = {
       start: "음성 받아쓰기 시작",
       cancel: "받아쓰기 취소",
       retry: "받아쓰기 다시 시도",
+      saveAudio: "오디오 저장",
+      audioReady: "오디오 파일이 준비되었습니다. 오디오 저장을 다시 누르세요.",
+      preparingAudio: "오디오 파일을 준비하는 중…",
+      saveFailed: "오디오를 저장하지 못했습니다. 다시 시도하세요.",
+      recordingKept: "녹음이 보관되어 있습니다.",
+      recordingNotSaved:
+        "이 녹음은 이 기기에 저장되지 않았습니다. 전송될 때까지 이 페이지를 열어 두거나 오디오를 저장하세요.",
+      recordingEvicted: "공간을 확보하기 위해 전송하지 않은 이전 녹음을 삭제했습니다.",
+      storageUnavailable:
+        "지금은 이 기기에 녹음을 저장할 수 없습니다. 받아쓰기가 전송될 때까지 이 페이지를 열어 두세요.",
       insert: "전사 삽입",
       insertAndSend: "전사 삽입 후 보내기",
       failed: "받아쓰기 실패: {{error}}",

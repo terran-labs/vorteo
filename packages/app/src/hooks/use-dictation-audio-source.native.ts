@@ -49,15 +49,34 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
     onInterruptionRef.current = config.onInterruption;
   }, [config.onPcmSegment, config.onError, config.onInterruption]);
 
-  const start = useCallback(async () => {
-    const engine = getOrCreateEngine();
-    await engine.initialize();
-    await engine.startCapture();
-  }, [getOrCreateEngine]);
-
   // Concurrent callers share one in-flight stop, so a stop that overlaps another (unmount, a
   // thread switch during cancel or confirm) cannot deliver the last audio twice.
   const stopInFlightRef = useRef<Promise<void> | null>(null);
+  /** Set on unmount; a start that resumes after its waits must not leave the microphone on. */
+  const disposedRef = useRef(false);
+
+  const start = useCallback(async () => {
+    // A start during a stop waits for it, so two captures never overlap.
+    const stopping = stopInFlightRef.current;
+    if (stopping) {
+      await stopping.catch(() => undefined);
+    }
+    if (disposedRef.current) {
+      throw new Error("Dictation audio source was closed");
+    }
+    const engine = getOrCreateEngine();
+    await engine.initialize();
+    if (disposedRef.current) {
+      throw new Error("Dictation audio source was closed");
+    }
+    await engine.startCapture();
+    if (disposedRef.current) {
+      // Closed while capture was starting (for example during the permission prompt).
+      await engine.stopCapture().catch(() => undefined);
+      throw new Error("Dictation audio source was closed");
+    }
+  }, [getOrCreateEngine]);
+
   const stop = useCallback((): Promise<void> => {
     if (stopInFlightRef.current) {
       return stopInFlightRef.current;
@@ -75,7 +94,9 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
   }, []);
 
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
       const engine = engineRef.current;
       engineRef.current = null;
       void engine?.destroy().catch(() => undefined);

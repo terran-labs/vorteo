@@ -1,4 +1,5 @@
 import { i18n } from "@/i18n/i18next";
+import { DICTATION_PCM_FORMAT } from "@/dictation/recording-wav";
 
 export type DictationStatus = "idle" | "recording" | "paused" | "uploading" | "failed";
 
@@ -36,6 +37,15 @@ export interface UseDictationResult {
   confirmDictation: () => Promise<void>;
   retryFailedDictation: () => Promise<void>;
   discardFailedDictation: () => void;
+  /**
+   * Saves the unsent recording as an audio file without changing or deleting the stored copy.
+   * Call it directly from the press: the web share sheet needs the user's gesture.
+   */
+  saveFailedRecording: () => Promise<void>;
+  /** Where the unsent recording lives, or null when there is none. Drives the notice line. */
+  recordingPersistence: import("@/dictation/recording-store").DictationRecordingPersistence | null;
+  /** Save audio progress: preparing after a press (button disabled), or ready for a second press. */
+  saveAudioState: SaveAudioState;
   reset: () => void;
 }
 
@@ -47,8 +57,10 @@ export interface DictationCancelOptions {
 /** A Cancel button press on a capture shorter than this discards it instead of keeping it. */
 export const SHORT_CAPTURE_DISCARD_MS = 5_000;
 
+export type SaveAudioState = "idle" | "preparing" | "ready";
+
 export const DURATION_TICK_MS = 1000;
-export const PCM_DICTATION_FORMAT = "audio/pcm;rate=16000;bits=16";
+export const PCM_DICTATION_FORMAT = DICTATION_PCM_FORMAT;
 
 export const toError = (error: unknown): Error => {
   if (error instanceof Error) {
