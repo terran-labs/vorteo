@@ -330,7 +330,13 @@ async function prepareCommand(
     expectedSource,
     preservedSettings,
     storedSource,
-    config: await resolveProfileSwitchConfig(dependencies, config, preservedSettings),
+    config: await resolveProfileSwitchConfig(
+      dependencies,
+      config,
+      preservedSettings
+        ? { sourceProvider: sourceConfig.provider, settings: preservedSettings }
+        : undefined,
+    ),
     reason: target.reason ?? ("manual" as const),
     carriedContextChars: 0,
     carryContext: (context: string) =>
@@ -380,10 +386,8 @@ function effectiveSwitchSettings(
   }
   return {
     modeId: currentModeId ?? runtime?.modeId ?? config.modeId,
-    thinkingOptionId:
-      runtime?.thinkingOptionId === null
-        ? undefined
-        : (runtime?.thinkingOptionId ?? config.thinkingOptionId),
+    // Thinking follows the owner's stored choice; mode follows what is actually in force.
+    thinkingOptionId: config.thinkingOptionId,
     featureValues,
   };
 }

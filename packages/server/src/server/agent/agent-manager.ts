@@ -4184,11 +4184,11 @@ export class AgentManager {
     }
   }
 
-  private async validateProfileSwitchSettings(
+  async validateProfileSwitchSettings(
     sourceProvider: AgentProvider,
     preserved: NonNullable<AgentProfileSwitchInput["preservedSettings"]>,
     target: AgentSessionConfig,
-    client: AgentClient,
+    client?: AgentClient,
   ): Promise<void> {
     const sourceFamily = this.resolveProviderFamily(sourceProvider);
     if (
@@ -4216,6 +4216,8 @@ export class AgentManager {
         "incompatible-target",
       );
     }
+    // Resolve the client only after family compatibility, before provider-specific admission.
+    client ??= await this.requireAvailableClient({ provider: target.provider });
     const catalog = await client.fetchCatalog({
       scope: "workspace",
       cwd: target.cwd,
@@ -4244,9 +4246,8 @@ export class AgentManager {
         "incompatible-target",
       );
     if (
-      target.thinkingOptionId
-        ? !model?.thinkingOptions?.some((option) => option.id === target.thinkingOptionId)
-        : (model?.thinkingOptions?.length ?? 0) > 0
+      target.thinkingOptionId &&
+      !model?.thinkingOptions?.some((option) => option.id === target.thinkingOptionId)
     ) {
       throw new ProfileSwitchError(
         "Incompatible target: the preserved thinking option is not advertised for this model.",

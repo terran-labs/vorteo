@@ -2,6 +2,8 @@ import { z } from "zod";
 import { type PreviewBrokerDeploymentJob } from "@getpaseo/protocol/preview-broker-deployment";
 import {
   PreviewBrokerDeploymentWorkflow,
+  BrokerDeploymentReservationChanged,
+  BrokerDeploymentRefused,
   type BrokerDeploymentExecutor,
 } from "./preview-broker-deployment-workflow.js";
 import {
@@ -704,34 +706,147 @@ export class InstallationRestarts {
     return structuredClone(next);
   }
 
+  // Reporting may read retained receipts without admitting their journal as evaluated state.
   listBrokerDeployments(): PreviewBrokerDeploymentJob[] {
-    return structuredClone(this.brokerDeployments);
+    return structuredClone(
+      this.journal
+        .read()
+        .filter(
+          (job): job is PreviewBrokerDeploymentJob => job.target === "preview-broker-deployment",
+        ),
+    );
   }
 
   async brokerDeploymentAvailable(): Promise<boolean> {
     return this.executor.brokerDeployment?.brokerDeploymentCompatible() ?? false;
   }
 
-  private deploymentWorkflow(): PreviewBrokerDeploymentWorkflow {
+  private deploymentWorkflow(preparation = false): PreviewBrokerDeploymentWorkflow {
     const executor = this.executor.brokerDeployment;
+    let reserved = this.snapshot;
+    const deployments = (snapshot: readonly LifecycleJob[]) =>
+      snapshot.filter(
+        (job): job is PreviewBrokerDeploymentJob => job.target === "preview-broker-deployment",
+      );
+    const retainEvaluatedWrite = ({
+      previous,
+      committed,
+      expected,
+      written,
+    }: {
+      previous: readonly LifecycleJob[];
+      committed: LifecycleJob[];
+      expected: LifecycleJob | undefined;
+      written: PreviewBrokerDeploymentJob | undefined;
+    }) => {
+      // A no-op bookkeeping mutation cannot import a competing decision or revision.
+      if (!written) return;
+      if (isDeepStrictEqual(this.snapshot, previous)) {
+        this.snapshot = committed;
+        this.brokerDeployments = deployments(committed);
+        return;
+      }
+      // Retain only our durable outcome so legacy queue writes cannot revert it. Foreign
+      // records and ordering remain unevaluated; full-journal reservations still refuse them.
+      const retained = committed.find((job) => job.id === written.id);
+      if (!retained || retained.target !== "preview-broker-deployment") return;
+      const cached = this.snapshot.find((job) => job.id === written.id);
+      if (!expected || !isDeepStrictEqual(cached, expected)) return;
+      this.snapshot = this.snapshot.map((job) => (job.id === retained.id ? retained : job));
+      this.brokerDeployments = this.brokerDeployments.map((job) =>
+        job.id === retained.id && isDeepStrictEqual(job, expected) ? retained : job,
+      );
+    };
     const current = () => {
-      if (JSON.stringify(this.journal.read()) !== JSON.stringify(this.snapshot))
-        throw new RestartRequestError("Full installation journal reservation changed");
-      return this.snapshot;
+      if (!isDeepStrictEqual(this.journal.read(), reserved))
+        throw new BrokerDeploymentReservationChanged();
+      return reserved;
     };
     return new PreviewBrokerDeploymentWorkflow({
       requireActive: () => this.requireActive(),
       snapshot: current,
       requestExists: (id) => current().some((job) => job.id === id),
-      jobs: () => this.listBrokerDeployments(),
+      // Fresh receipts are only for preparation resubmission/reporting. Decisions and dispatch
+      // use the evaluated reservation, even if a status read has observed newer disk state.
+      jobs: () => (preparation ? this.listBrokerDeployments() : deployments(reserved)),
       replace: (job) => {
-        current();
-        const brokerDeployments = this.brokerDeployments.some((prior) => prior.id === job.id)
-          ? this.brokerDeployments.map((prior) => (prior.id === job.id ? job : prior))
-          : [...this.brokerDeployments, job];
-        this.writeState(this.jobs, this.helpers, this.monitors, this.listServices(), undefined, {
-          brokerDeployments,
+        if (!this.journal.mutate)
+          throw new BrokerDeploymentRefused("Atomic deployment journal is unavailable");
+        let committed = reserved;
+        const activity = this.operationalActivitySink ? createOperationalActivityBatch() : null;
+        this.journal.mutate((previous) => {
+          this.requireActive();
+          if (!isDeepStrictEqual(previous, reserved))
+            throw new BrokerDeploymentReservationChanged();
+          const next = previous.some((prior) => prior.id === job.id)
+            ? previous.map((prior) => (prior.id === job.id ? job : prior))
+            : [...previous, job];
+          committed = parseLifecycleJournal(next);
+          activity?.change(
+            previous.find((prior) => prior.id === job.id),
+            job,
+          );
+          return next;
         });
+        retainEvaluatedWrite({
+          previous: reserved,
+          committed,
+          expected: reserved.find((prior) => prior.id === job.id),
+          written: job,
+        });
+        reserved = committed;
+        if (activity && this.operationalActivitySink)
+          activity.flush(this.operationalActivitySink, this.now);
+      },
+      refreshPreparation: (job) => {
+        const fresh = this.journal.read();
+        const retained = fresh.find((item) => item.id === job.id);
+        // A competing change to this request cannot acquire a new reservation.
+        if (!isDeepStrictEqual(retained, job)) return false;
+        reserved = fresh;
+        return true;
+      },
+      failPreparation: (job, reason) => {
+        const activity = this.operationalActivitySink ? createOperationalActivityBatch() : null;
+        if (!this.journal.mutate)
+          throw new BrokerDeploymentRefused("Atomic deployment journal is unavailable");
+        let written: PreviewBrokerDeploymentJob | undefined;
+        let prior: readonly LifecycleJob[] = [];
+        let committed: LifecycleJob[] = [];
+        this.journal.mutate((previous) => {
+          this.requireActive();
+          prior = previous;
+          const next = previous.map((retained) => {
+            if (
+              retained.id !== job.id ||
+              retained.target !== "preview-broker-deployment" ||
+              retained.revision !== job.revision ||
+              retained.planSha256 !== job.planSha256 ||
+              !isDeepStrictEqual(retained.plan, job.plan) ||
+              retained.reason !== job.reason ||
+              retained.status !== "pending" ||
+              retained.stage !== "preparing" ||
+              retained.approvedAt !== undefined
+            )
+              return retained;
+            const failure = `Consumer preparation refused: ${reason}`;
+            const detail =
+              retained.detail === job.detail ? failure : `${retained.detail} ${failure}`;
+            const failed: PreviewBrokerDeploymentJob = { ...retained, status: "failed", detail };
+            written = failed;
+            activity?.change(retained, failed);
+            return failed;
+          });
+          committed = parseLifecycleJournal(next);
+          return next;
+        });
+        retainEvaluatedWrite({ previous: prior, committed, expected: job, written });
+        if (activity && this.operationalActivitySink)
+          activity.flush(this.operationalActivitySink, this.now);
+        const retained = this.listBrokerDeployments().find((item) => item.id === job.id);
+        if (!retained)
+          throw new BrokerDeploymentRefused("Deployment request is no longer retained");
+        return retained;
       },
       executor,
       now: this.now,
@@ -742,7 +857,7 @@ export class InstallationRestarts {
     input: unknown,
     requestedBy: string,
   ): Promise<PreviewBrokerDeploymentJob> {
-    return this.deploymentWorkflow().prepare(input, requestedBy);
+    return this.deploymentWorkflow(true).prepare(input, requestedBy);
   }
 
   decideBrokerDeployment(input: unknown): PreviewBrokerDeploymentJob {
@@ -3123,7 +3238,7 @@ export class InstallationRestarts {
         : null;
     this.admitDelegatedBrokerQueue(grant, {
       store: evidence.deployment,
-      jobs: this.listBrokerDeployments(),
+      jobs: structuredClone(this.brokerDeployments),
       decide: (job, decision) =>
         this.decideBrokerDeployment({
           operation: job.operation,

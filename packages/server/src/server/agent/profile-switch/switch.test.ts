@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { SwitchHistoryStore } from "./history-store.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
+import { resolveAndValidateCreateAgentMode } from "../create-agent-mode.js";
 import { AgentManager } from "../agent-manager.js";
 import { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import { claudeProjectDirSync } from "../providers/claude/project-dir.js";
@@ -53,6 +54,7 @@ class FakeSession implements AgentSession {
     private readonly history: AgentTimelineItem[],
     private readonly config?: AgentSessionConfig,
     readonly features: AgentFeature[] = [],
+    private readonly runtimeThinkingOptionId?: string | null,
   ) {
     this.mode = config?.modeId ?? null;
   }
@@ -95,7 +97,10 @@ class FakeSession implements AgentSession {
       sessionId: this.id,
       model: this.config?.model ?? null,
       modeId: this.mode,
-      thinkingOptionId: this.config?.thinkingOptionId,
+      thinkingOptionId:
+        this.runtimeThinkingOptionId === undefined
+          ? this.config?.thinkingOptionId
+          : this.runtimeThinkingOptionId,
     };
   }
 
@@ -142,12 +147,15 @@ class FakeClient implements AgentClient {
   history: AgentTimelineItem[] = [];
   catalog: ProviderCatalog = { models: [], modes: [] };
   features: AgentFeature[] = [];
+  availabilityCalls = 0;
   createError: Error | null = null;
+  runtimeThinkingOptionId?: string | null;
   beforeCatalog?: () => Promise<void>;
 
   constructor(readonly provider: AgentProvider) {}
 
   async isAvailable() {
+    this.availabilityCalls += 1;
     return true;
   }
 
@@ -163,7 +171,13 @@ class FakeClient implements AgentClient {
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     if (this.createError) throw this.createError;
     this.created.push(config);
-    const session = new FakeSession(this.provider, [], config, structuredClone(this.features));
+    const session = new FakeSession(
+      this.provider,
+      [],
+      config,
+      structuredClone(this.features),
+      this.runtimeThinkingOptionId,
+    );
     this.sessions.push(session);
     return session;
   }
@@ -229,6 +243,372 @@ async function fixture() {
     cleanup: () => rmSync(workdir, { recursive: true, force: true }),
   };
 }
+
+test.each([
+  { configured: undefined, runtime: "high" },
+  { configured: "high", runtime: null },
+  { configured: "high", runtime: "low" },
+])(
+  "coordinator preserves configured thinking $configured over runtime $runtime",
+  async ({ configured, runtime }) => {
+    const { workdir, storage, manager, codex, second, cleanup } = await fixture();
+    try {
+      codex.runtimeThinkingOptionId = runtime;
+      second.runtimeThinkingOptionId = "low";
+      second.catalog = {
+        models: [
+          {
+            provider: "codex-second",
+            id: "model",
+            label: "Model",
+            isDefault: true,
+            thinkingOptions: [
+              { id: "high", label: "High" },
+              { id: "low", label: "Low" },
+            ],
+          },
+        ],
+        modes: [{ id: "acceptEdits", label: "Accept File Edits" }],
+      };
+      const agent = await manager.createAgent(
+        { provider: "codex", cwd: workdir, modeId: "acceptEdits", thinkingOptionId: configured },
+        undefined,
+        { workspaceId: undefined },
+      );
+      await manager.flush();
+      const result = await switchAgentProfileCommand(
+        {
+          agentManager: manager,
+          agentStorage: storage,
+          logger: createTestLogger(),
+          getAgentProfiles: () => [
+            { id: "target", name: "Target", provider: "codex-second", thinkingOptionId: "low" },
+          ],
+          providerSnapshotManager: {
+            async resolveCreateConfig(
+              input: Parameters<ProviderSnapshotManager["resolveCreateConfig"]>[0],
+            ) {
+              return { modeId: input.requestedMode, featureValues: input.featureValues };
+            },
+            async *readSessionHistory() {},
+          },
+        },
+        {
+          agentId: agent.id,
+          provider: "codex-second",
+          profileId: "target",
+          explanation: "Continue work",
+        },
+        { includeResult: true },
+      );
+      const scenario = JSON.stringify({ configured: configured ?? null, runtime });
+      expect(result.outcome, scenario).toBe("switched");
+      expect(second.created[0]?.thinkingOptionId, scenario).toBe(configured);
+      expect(manager.getAgent(agent.id)?.config.thinkingOptionId, scenario).toBe(configured);
+      expect(manager.getAgent(agent.id)?.runtimeInfo?.thinkingOptionId, scenario).toBe("low");
+      await manager.flush();
+      expect((await storage.get(agent.id))?.config?.thinkingOptionId ?? null, scenario).toBe(
+        configured ?? null,
+      );
+      await manager.closeAgent(agent.id);
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+test("an unloaded stored-unset mode preserves the known effective permission mode", async () => {
+  const { workdir, storage, manager, second, cleanup } = await fixture();
+  const reader = new AgentManager({
+    clients: { "codex-second": second },
+    registry: storage,
+    providerDefinitions: {
+      codex: { enabled: true },
+      "codex-second": { enabled: true, derivedFromProviderId: "codex" },
+    },
+    logger: createTestLogger(),
+  });
+  try {
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: workdir, thinkingOptionId: "high" },
+      undefined,
+      { workspaceId: undefined },
+    );
+    await manager.closeAgent(agent.id);
+    const record = await storage.get(agent.id);
+    if (!record) throw new Error("Missing source record");
+    expect(record.config?.modeId).toBeUndefined();
+    await storage.upsert({ ...record, lastModeId: "acceptEdits" });
+    second.catalog = {
+      models: [
+        {
+          provider: "codex-second",
+          id: "model",
+          label: "Model",
+          isDefault: true,
+          thinkingOptions: [{ id: "high", label: "High" }],
+        },
+      ],
+      modes: [
+        { id: "acceptEdits", label: "Accept File Edits" },
+        { id: "bypassPermissions", label: "Bypass" },
+      ],
+    };
+    const result = await switchAgentProfileCommand(
+      {
+        agentManager: reader,
+        agentStorage: storage,
+        logger: createTestLogger(),
+        getAgentProfiles: () => [
+          {
+            id: "target",
+            name: "Target",
+            provider: "codex-second",
+            modeId: "bypassPermissions",
+            thinkingOptionId: "high",
+          },
+        ],
+        providerSnapshotManager: {
+          async resolveCreateConfig(
+            input: Parameters<ProviderSnapshotManager["resolveCreateConfig"]>[0],
+          ) {
+            return { modeId: input.requestedMode, featureValues: input.featureValues };
+          },
+          async *readSessionHistory(): AsyncGenerator<AgentStreamEvent> {
+            yield {
+              type: "timeline",
+              provider: "codex",
+              item: { type: "user_message", text: "Keep this work" },
+            };
+          },
+        },
+      },
+      {
+        agentId: agent.id,
+        provider: "codex-second",
+        profileId: "target",
+        explanation: "Continue work",
+      },
+      { includeResult: true },
+    );
+    expect(result).toMatchObject({ outcome: "switched", modeId: "acceptEdits" });
+    expect(second.created[0]?.modeId).toBe("acceptEdits");
+    await reader.flush();
+    expect((await storage.get(agent.id))?.config?.modeId).toBe("acceptEdits");
+    await reader.closeAgent(agent.id);
+  } finally {
+    cleanup();
+  }
+});
+
+test.each([
+  {
+    scenario: "unknown-mode",
+    provider: "codex-second",
+    sourceMode: undefined,
+    targetMode: "default",
+    thinking: "high",
+    runtimeThinking: undefined,
+    providerCalls: 1,
+  },
+  {
+    scenario: "unsupported-mode",
+    provider: "codex-second",
+    sourceMode: "acceptEdits",
+    targetMode: "default",
+    thinking: "high",
+    runtimeThinking: undefined,
+    providerCalls: 1,
+  },
+  {
+    scenario: "cross-family",
+    provider: "claude",
+    sourceMode: "acceptEdits",
+    targetMode: "default",
+    thinking: "high",
+    runtimeThinking: undefined,
+    providerCalls: 0,
+  },
+  {
+    scenario: "unsupported-thinking",
+    provider: "codex-second",
+    sourceMode: "acceptEdits",
+    targetMode: "acceptEdits",
+    thinking: "unsupported",
+    runtimeThinking: "low",
+    providerCalls: 1,
+  },
+])(
+  "coordinator refuses $scenario before mode admission without changing the source",
+  async ({ provider, sourceMode, targetMode, thinking, runtimeThinking, providerCalls }) => {
+    const { workdir, storage, manager, codex, second, claude, cleanup } = await fixture();
+    try {
+      const targetClient = provider === "claude" ? claude : second;
+      codex.runtimeThinkingOptionId = runtimeThinking;
+      targetClient.catalog = {
+        models: [
+          {
+            provider: targetClient.provider,
+            id: "model",
+            label: "Model",
+            isDefault: true,
+            thinkingOptions: [
+              { id: "high", label: "High" },
+              { id: "low", label: "Low" },
+            ],
+          },
+        ],
+        modes: [{ id: targetMode, label: "Target mode" }],
+      };
+      const agent = await manager.createAgent(
+        {
+          provider: "codex",
+          cwd: workdir,
+          thinkingOptionId: thinking,
+          modeId: sourceMode,
+        },
+        undefined,
+        { workspaceId: undefined },
+      );
+      await manager.appendTimelineItem(agent.id, { type: "user_message", text: "Keep this work" });
+      await manager.appendJournal(agent.id, { entryId: randomUUID(), text: "Keep this decision" });
+      await manager.flush();
+      const before = await storage.get(agent.id);
+      const config = structuredClone(agent.config);
+      const session = agent.session;
+      const timeline = await manager.getTimelineRows(agent.id);
+      const journal = await manager.readJournal(agent.id);
+      let admissionCalls = 0;
+      let catalogCalls = 0;
+      let closes = 0;
+      codex.sessions[0]!.beforeClose = async () => {
+        closes += 1;
+      };
+      targetClient.beforeCatalog = async () => {
+        catalogCalls += 1;
+      };
+      const result = await switchAgentProfileCommand(
+        {
+          agentManager: manager,
+          agentStorage: storage,
+          logger: createTestLogger(),
+          providerSnapshotManager: {
+            async resolveCreateConfig(
+              input: Parameters<ProviderSnapshotManager["resolveCreateConfig"]>[0],
+            ) {
+              admissionCalls += 1;
+              return {
+                modeId: resolveAndValidateCreateAgentMode({
+                  requestedMode: input.requestedMode,
+                  targetProvider: input.provider,
+                  parent: input.parent,
+                  unattended: input.unattended,
+                  availableModes: targetClient.catalog.modes.map((mode) => mode.id),
+                  targetUnattendedMode: undefined,
+                }),
+                featureValues: input.featureValues,
+              };
+            },
+            async *readSessionHistory() {},
+          },
+        },
+        { agentId: agent.id, provider: targetClient.provider, explanation: "Move approved work" },
+        { includeResult: true },
+      );
+      expect(result).toMatchObject({ outcome: "refused", refusalCode: "incompatible-target" });
+      expect(admissionCalls).toBe(0);
+      expect(catalogCalls).toBe(providerCalls);
+      expect(targetClient.availabilityCalls).toBe(providerCalls);
+      expect(targetClient.created).toEqual([]);
+      expect(closes).toBe(0);
+      expect(manager.getAgent(agent.id)?.session).toBe(session);
+      expect(manager.getAgent(agent.id)?.config).toEqual(config);
+      expect(manager.getAgent(agent.id)?.provider).toBe("codex");
+      expect(await manager.getTimelineRows(agent.id)).toEqual(timeline);
+      expect(await manager.readJournal(agent.id)).toEqual(journal);
+      await manager.flush();
+      expect(await storage.get(agent.id)).toEqual(before);
+      await manager.closeAgent(agent.id);
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+test("coordinator switching keeps ordinary unset thinking and the current permission mode", async () => {
+  const { workdir, storage, manager, codex, second, cleanup } = await fixture();
+  try {
+    codex.features = [{ type: "toggle", id: "fast", label: "Fast", value: true }];
+    second.features = structuredClone(codex.features);
+    second.catalog = {
+      models: [
+        {
+          provider: "codex-second",
+          id: "model",
+          label: "Model",
+          isDefault: true,
+          thinkingOptions: [
+            { id: "high", label: "High" },
+            { id: "low", label: "Low" },
+          ],
+        },
+      ],
+      modes: [
+        { id: "bypassPermissions", label: "Bypass" },
+        { id: "acceptEdits", label: "Accept File Edits" },
+      ],
+    };
+    const dependencies = {
+      agentManager: manager,
+      agentStorage: storage,
+      logger: createTestLogger(),
+      getAgentProfiles: () => [
+        {
+          id: "target",
+          name: "Target",
+          provider: "codex-second",
+          model: "model",
+          modeId: "bypassPermissions",
+        },
+      ],
+      providerSnapshotManager: {
+        async resolveCreateConfig(
+          input: Parameters<ProviderSnapshotManager["resolveCreateConfig"]>[0],
+        ) {
+          return { modeId: input.requestedMode, featureValues: input.featureValues };
+        },
+        async *readSessionHistory() {},
+      },
+    };
+    for (const modeId of ["bypassPermissions", "acceptEdits"]) {
+      const agent = await manager.createAgent(
+        { provider: "codex", cwd: workdir, modeId: "bypassPermissions" },
+        undefined,
+        { workspaceId: undefined },
+      );
+      if (modeId === "acceptEdits") await manager.setAgentMode(agent.id, modeId);
+      const result = await switchAgentProfileCommand(
+        dependencies,
+        {
+          agentId: agent.id,
+          provider: "codex-second",
+          profileId: "target",
+          explanation: "Continue on the second account",
+        },
+        { includeResult: true },
+      );
+      expect(result.outcome).toBe("switched");
+      expect(second.created.at(-1)).toMatchObject({ modeId, featureValues: { fast: true } });
+      expect(second.created.at(-1)?.thinkingOptionId).toBeUndefined();
+      expect(manager.getAgent(agent.id)?.config.thinkingOptionId).toBeUndefined();
+      await manager.flush();
+      expect((await storage.get(agent.id))?.config?.thinkingOptionId ?? null).toBeNull();
+      await manager.closeAgent(agent.id);
+    }
+  } finally {
+    cleanup();
+  }
+});
 
 test("switch preparation preserves effective settings over target profile defaults or refuses before mutation", async () => {
   const { workdir, storage, manager, codex, second, cleanup } = await fixture();

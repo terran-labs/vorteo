@@ -1,4 +1,5 @@
 import { assertCoordinatorLifecycleIdle } from "./coordinator-bootstrap.js";
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -97,6 +98,23 @@ function fixture() {
     replace: (job) => {
       jobs = [...jobs.filter((prior) => prior.id !== job.id), structuredClone(job)];
       written.push(job.status);
+    },
+    refreshPreparation: (job) =>
+      isDeepStrictEqual(
+        jobs.find((item) => item.id === job.id),
+        job,
+      ),
+    failPreparation: (job, reason) => {
+      const retained = jobs.find((item) => item.id === job.id)!;
+      if (
+        retained.status === "pending" &&
+        retained.stage === "preparing" &&
+        retained.revision === job.revision
+      ) {
+        retained.status = "failed";
+        retained.detail = `Consumer preparation refused: ${reason}`;
+      }
+      return retained;
     },
     executor,
     now: Date.now,

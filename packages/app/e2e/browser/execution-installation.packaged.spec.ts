@@ -1,4 +1,5 @@
 import { openSettings } from "../support/helpers/app";
+import { completeInstallationSetupGuide } from "../support/helpers/installation-setup-guide";
 import {
   openSettingsEnvironmentExceptions,
   revealSettingsLocation,
@@ -71,6 +72,15 @@ import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
 // Measure the first document load in each fresh test context, including failures.
 // This is browser load latency, not application readiness or later reload latency.
 const test = base.extend<{ firstLoadTiming: void }>({
+  // Seed the completed setup guide before any page exists, so the first load, reloads
+  // and context.newPage() recovery pages all open without the guide covering Settings.
+  context: async ({ context }, provideContext) => {
+    await completeInstallationSetupGuide(context, {
+      installationId: config.public.installationId,
+      origin,
+    });
+    await provideContext(context);
+  },
   firstLoadTiming: [
     async ({ page }, runTest, info) => {
       let startedAt: number | null = null;
@@ -150,22 +160,36 @@ const ownerPassword = "installation-browser-owner-password";
 const guestToken = "installation-browser-guest-request-token";
 const hostToken = "installation-browser-host-request-token";
 
+function phoneUnlockButton(page: Page) {
+  return page
+    .getByRole("button", { name: /^Unlock / })
+    .filter({ visible: true })
+    .first();
+}
+
 async function openOwnerUnlock(page: Page) {
   await expect(
     page
       .getByTestId("installation-password")
       .or(page.getByTestId("installation-owner-unlock"))
       .or(page.getByTestId("owner-access-owner-unlock"))
+      .or(phoneUnlockButton(page))
       .filter({ visible: true })
       .first(),
   ).toBeVisible();
   if (await page.getByTestId("installation-password").isVisible()) return;
-  await page
+  const lockControl = page
     .getByTestId("installation-owner-unlock")
     .or(page.getByTestId("owner-access-owner-unlock"))
     .filter({ visible: true })
-    .first()
-    .click();
+    .first();
+  if (await lockControl.isVisible()) {
+    await lockControl.click();
+    return;
+  }
+  // Phone Settings opens on a detail page without the sidebar lock control. There an owner
+  // taps a locked card's Unlock button ("Unlock <section>"), which opens the same password sheet.
+  await phoneUnlockButton(page).click();
 }
 
 async function connectReadyInstallationDaemon(kind: "host" | "container") {
@@ -2447,10 +2471,11 @@ test("shared skill selection reviews both environments and preserves the draft w
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/agents`);
   await page.getByRole("button", { name: "Choose skills", exact: true }).click();
-  await page.getByTestId("skill-selection-all").click();
-  const skill = page.getByTestId("skill-selection-list-card").getByRole("checkbox").first();
-  const name = await skill.getAttribute("aria-label");
-  if (!name) throw new Error("Missing bundled skill");
+  const sheet = page.getByRole("dialog", { name: "Choose skills", exact: true });
+  await expect(sheet).toBeVisible();
+  await sheet.getByTestId("skill-selection-all").click();
+  const name = "paseo";
+  const skill = sheet.getByRole("switch", { name, exact: true });
   await skill.click();
   const cancelled = page.waitForEvent("dialog").then(async (dialog) => {
     const message = dialog.message();
@@ -2459,14 +2484,14 @@ test("shared skill selection reviews both environments and preserves the draft w
     expect(message).toContain(`Dev container: ${name}`);
     return message;
   });
-  await Promise.all([page.getByTestId("skill-selection-save").click(), cancelled]);
+  await Promise.all([sheet.getByTestId("skill-selection-save").click(), cancelled]);
   await expect(page.getByTestId("skill-selection-sheet")).toBeVisible();
   for (const daemon of daemons) {
     const file = path.join(daemon.paseoHome, ".agents", "skills", name, "SKILL.md");
     expect((await readFile(file, "utf8")).length).toBeGreaterThan(0);
   }
   const accepted = page.waitForEvent("dialog").then((dialog) => dialog.accept());
-  await Promise.all([page.getByTestId("skill-selection-save").click(), accepted]);
+  await Promise.all([sheet.getByTestId("skill-selection-save").click(), accepted]);
   await expect(page.getByTestId("skill-selection-sheet")).not.toBeVisible();
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
@@ -2496,7 +2521,7 @@ test("shared skill selection reviews both environments and preserves the draft w
     headers: { Origin: origin },
   });
   expect(lock.ok()).toBe(true);
-  await page.getByTestId("skill-selection-save").click();
+  await sheet.getByTestId("skill-selection-save").click();
   await expect(
     page
       .getByText("Unlock Installation controls in General settings to continue.", { exact: true })
@@ -2639,7 +2664,8 @@ test("shared plugins preserve source review on failure and project one catalog t
   ).toBeVisible();
   await expect(page.getByTestId("shared-plugin-source")).toHaveValue(source);
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
@@ -2802,7 +2828,10 @@ test("directory bindings stay local and preserve an excluded plugin through vali
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/environments`);
-  const row = page.getByTestId(`plugin-directory-binding-${dev.serverId}-host-authority-test`);
+  const devExceptions = await openSettingsEnvironmentExceptions(page, dev.serverId);
+  const row = devExceptions.getByTestId(
+    `plugin-directory-binding-${dev.serverId}-host-authority-test`,
+  );
   await row.getByRole("button", { name: "Edit directory", exact: true }).click();
   const input = page.getByTestId("plugin-directory-binding-path");
   await input.fill(path.join(root, "missing-directory"));
@@ -2847,8 +2876,11 @@ test("directory bindings stay local and preserve an excluded plugin through vali
       (await hostClient.listPlugins()).find((plugin) => plugin.id === "host-authority-test")?.path,
     ).toBe(path.join(root, "host-plugin"));
     await expect(
-      page.getByTestId(`plugin-directory-binding-${host.serverId}-host-authority-test`),
+      (await openSettingsEnvironmentExceptions(page, host.serverId)).getByTestId(
+        `plugin-directory-binding-${host.serverId}-host-authority-test`,
+      ),
     ).toContainText(path.join(root, "host-plugin"));
+    await openSettingsEnvironmentExceptions(page, dev.serverId);
     await row.scrollIntoViewIfNeeded();
     await page.screenshot({ path: info.outputPath("local-directory-binding.png"), fullPage: true });
   } finally {
@@ -2861,6 +2893,7 @@ test("a directory plugin is created once with separate environment paths", async
   page,
 }, info) => {
   const pluginId = "shared-directory";
+  const hostServerId = daemons[1]!.serverId;
   await page.goto(origin);
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
@@ -2868,32 +2901,69 @@ test("a directory plugin is created once with separate environment paths", async
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/plugins`);
   await page.getByTestId("shared-plugin-add").click();
-  await page.getByRole("radio", { name: "Local directories", exact: true }).click();
-  await page.getByTestId("shared-plugin-source").fill("invalid directory");
-  await page.getByTestId("shared-plugin-prepare").click();
-  await expect(page.getByRole("alert").filter({ hasText: "Enter a plugin ID" })).toBeVisible();
-  await page.getByTestId("shared-plugin-source").fill(pluginId);
-  await page.getByTestId("shared-plugin-prepare").click();
-  await page.getByTestId("shared-plugin-save").click();
-  await expect(page.getByTestId("shared-plugin-form")).not.toBeVisible();
-  await expect(page.getByTestId(`shared-plugin-${pluginId}`)).toHaveCount(1);
+  const form = page
+    .getByRole("dialog", { name: "Add shared plugin", exact: true })
+    .filter({ visible: true });
+  await expect(form).toBeVisible();
+  await form.getByRole("radio", { name: "Local directories", exact: true }).click();
+  await form.getByRole("textbox", { name: "Plugin ID", exact: true }).fill("invalid directory");
+  await form.getByRole("button", { name: "Review plugin", exact: true }).click();
+  await expect(
+    form.getByText(
+      "Enter a plugin ID starting with a lowercase letter, followed by lowercase letters, numbers or hyphens.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    form.getByRole("button", { name: "Save shared plugin", exact: true }),
+  ).toBeDisabled();
+  await form.getByRole("textbox", { name: "Plugin ID", exact: true }).fill(pluginId);
+  await form.getByRole("button", { name: "Review plugin", exact: true }).click();
+  await expect(form.getByRole("button", { name: "Save shared plugin", exact: true })).toBeEnabled();
+  await form.getByRole("button", { name: "Save shared plugin", exact: true }).click();
+  await expect(form).not.toBeVisible();
+  await page.goto(`${origin}/settings/plugins`);
   await page
-    .getByTestId(`shared-plugin-${pluginId}`)
-    .getByRole("button", { name: "Directories", exact: true })
+    .getByTestId("shared-plugins-list")
+    .filter({ visible: true })
+    .getByRole("button", { name: "Manage plugins", exact: true })
     .click();
-  await expect(page).toHaveURL(`${origin}/settings/environments`);
+  const pluginsDialog = page
+    .getByRole("dialog", { name: "Plugins", exact: true })
+    .filter({ visible: true });
+  await expect(pluginsDialog).toBeVisible();
+  await expect(pluginsDialog.getByTestId(`shared-plugin-${pluginId}`)).toHaveCount(1);
+  await pluginsDialog
+    .getByTestId(`shared-plugin-${pluginId}`)
+    .filter({ visible: true })
+    .getByRole("button", { name: "Directories for shared-directory", exact: true })
+    .click();
+  await expect(page).toHaveURL(`${origin}/settings/hosts/${encodeURIComponent(hostServerId)}/host`);
+  await expect(
+    page
+      .getByRole("dialog")
+      .filter({ has: page.getByTestId(`settings-environment-${hostServerId}`) })
+      .filter({ visible: true }),
+  ).toBeVisible();
   const paths: string[] = [];
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
     const directory = path.join(root, `${kind}-shared-directory`);
     paths.push(directory);
     await cp(path.join(root, `${kind}-plugin`), directory, { recursive: true });
-    const serverId = kind === "host" ? daemons[1]!.serverId : daemons[0]!.serverId;
-    const row = page.getByTestId(`plugin-directory-binding-${serverId}-${pluginId}`);
+    const serverId = kind === "host" ? hostServerId : daemons[0]!.serverId;
+    const environment = await openSettingsEnvironmentExceptions(page, serverId);
+    const row = environment.getByTestId(`plugin-directory-binding-${serverId}-${pluginId}`);
     await row.getByRole("button", { name: "Edit directory", exact: true }).click();
-    await page.getByTestId("plugin-directory-binding-path").fill(directory);
-    await page.getByTestId("plugin-directory-binding-save").click();
-    await expect(page.getByTestId("plugin-directory-binding-form")).not.toBeVisible();
+    const bindingForm = page
+      .getByRole("dialog", { name: "Directory for shared-directory", exact: true })
+      .filter({ visible: true });
+    await expect(bindingForm).toBeVisible();
+    await bindingForm
+      .getByRole("textbox", { name: "Plugin directory", exact: true })
+      .fill(directory);
+    await bindingForm.getByRole("button", { name: "Save directory", exact: true }).click();
+    await expect(bindingForm).not.toBeVisible();
     await expect(row).toContainText(directory);
     try {
       await expect
@@ -2914,13 +2984,19 @@ test("a directory plugin is created once with separate environment paths", async
   ).toEqual([{ id: pluginId, enabled: true, source: { kind: "directory" } }]);
   for (const directory of paths) expect(JSON.stringify(snapshot)).not.toContain(directory);
   await page.goto(`${origin}/settings/plugins`);
+  await page
+    .getByTestId("shared-plugins-list")
+    .filter({ visible: true })
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  await expect(pluginsDialog).toBeVisible();
   for (const daemon of daemons)
     await expect(
-      page
+      pluginsDialog
         .getByTestId(`shared-plugin-environment-${pluginId}-${daemon.serverId}`)
         .getByText("running", { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-  await page.getByTestId(`shared-plugin-${pluginId}`).scrollIntoViewIfNeeded();
+  await pluginsDialog.getByTestId(`shared-plugin-${pluginId}`).scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath("shared-directory-plugin.png"), fullPage: true });
 });
 
@@ -3015,7 +3091,7 @@ test("personal skill exclusions retain files and recover from expired owner acce
   const host = config.public.environments.find((environment) => environment.kind === "host");
   if (!skill || !dev || !host) throw new Error("Missing shared skill fixture");
   await page.goto(`${origin}/settings/environments`);
-  const available = page.getByTestId(
+  const available = (await openSettingsEnvironmentExceptions(page, dev.serverId)).getByTestId(
     `resource-availability-${dev.serverId}-skillIdentities-${skill.identity}`,
   );
   await expect(available).toBeChecked();
@@ -3029,13 +3105,14 @@ test("personal skill exclusions retain files and recover from expired owner acce
       .getByText("Unlock Installation controls in General settings to continue.", { exact: true })
       .last(),
   ).toBeVisible();
-  await expect(available).toBeChecked();
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
   await unlock.close();
+  await expect(available).toBeChecked();
   await available.click();
   await expect(available).not.toBeChecked();
   const response = await page.request.post(`${origin}/api/installation/owner/settings/read`, {
@@ -3129,7 +3206,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
   await expect(page.getByTestId("shared-skill-save")).toBeEnabled();
   await page
     .getByTestId("shared-skill-file-run.sh")
-    .getByRole("button", { name: "Inspect file", exact: true })
+    .getByRole("button", { name: "Inspect run.sh", exact: true })
     .click();
   await expect(page.getByText("After: 14 bytes, executable", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("shared-skill-review.png"), fullPage: true });
@@ -3147,7 +3224,8 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
     source.revision,
   );
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
@@ -3234,7 +3312,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
   await expect(page.getByTestId("shared-skill-package-review")).toBeVisible();
   await page
     .getByTestId("shared-skill-file-SKILL.md")
-    .getByRole("button", { name: "Inspect file", exact: true })
+    .getByRole("button", { name: "Inspect SKILL.md", exact: true })
     .click();
   await expect(
     page.getByText("Reviewed shared instructions", { exact: false }).last(),
@@ -3638,10 +3716,14 @@ test("provider environment exceptions disable Host access while retaining Dev an
   const host = config.public.environments.find((environment) => environment.kind === "host");
   if (!host) throw new Error("Missing host fixture");
   await page.goto(`${origin}/settings/environments`);
-  const toggle = page.getByTestId(
-    `resource-availability-${host.serverId}-providerIds-${definition.id}`,
-  );
+  const hostExceptions = await openSettingsEnvironmentExceptions(page, host.serverId);
+  const toggle = hostExceptions.getByRole("switch", {
+    name: `Provider: ${definition.policy.label ?? definition.providerType} availability`,
+    exact: true,
+  });
+  await expect(toggle).toBeChecked();
   await toggle.click();
+  await expect(toggle).not.toBeChecked();
   await expect
     .poll(async () => (await read()).settings?.resourceExclusions[host.serverId]?.providerIds)
     .toContain(definition.id);
