@@ -38,8 +38,9 @@ export async function openSpeechSite(page: Page, label: SpeechSiteLabel): Promis
   return sheet;
 }
 
+/** The provider picker is a segmented control, which is a radio group. */
 export function providerOption(sheet: Locator, provider: "Local" | "OpenAI"): Locator {
-  return sheet.getByRole("button", { name: provider, exact: true });
+  return sheet.getByRole("radio", { name: provider, exact: true });
 }
 
 export function apiKeyInput(sheet: Locator): Locator {

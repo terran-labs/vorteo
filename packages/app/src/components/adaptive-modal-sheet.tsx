@@ -105,6 +105,8 @@ const styles = StyleSheet.create((theme) => ({
     maxHeight: "100%",
   },
   desktopCard: {
+    // A focus scope, not a control: focusing it programmatically draws no ring.
+    outlineWidth: 0,
     overflow: "hidden",
     width: "100%",
     maxWidth: 520,
@@ -224,6 +226,13 @@ const styles = StyleSheet.create((theme) => ({
   contentGrow: {
     flexGrow: 1,
   },
+  // Wraps the visible frame without taking part in its sizing.
+  compactDialog: {
+    minHeight: 0,
+    flexShrink: 1,
+    // A focus scope, not a control: focusing it programmatically draws no ring.
+    outlineStyle: "none",
+  } as object,
   compactStaticContent: {
     flex: 1,
     minHeight: 0,
@@ -532,8 +541,10 @@ export function SheetFooter({
 }
 
 export interface AdaptiveModalSheetProps {
-  /** Accessible name for the web dialog; omitted callers keep their existing behavior. */
+  /** Accessible name for the dialog. Defaults to the header title. */
   accessibilityLabel?: string;
+  /** The `nativeID` of text that explains the dialog, read when focus enters it. */
+  accessibilityDescribedBy?: string;
   /**
    * The title row with the close button. Leave it out when the body draws its own chrome, such as
    * a full-height side rail: the desktop card then floats the close button over its top-right
@@ -582,6 +593,9 @@ function placementStyles(placement: AdaptiveModalSheetProps["desktopPlacement"])
  * screen's bottom inset, not the one left where the sheet was opened: inside a sheet tab, none is.
  */
 function CompactSheetBody({
+  dialogRef,
+  accessibilityLabel,
+  describedBy,
   header,
   onClose,
   testID,
@@ -593,6 +607,9 @@ function CompactSheetBody({
   contentStyle,
   children,
 }: {
+  dialogRef: (node: unknown) => void;
+  accessibilityLabel: string | undefined;
+  describedBy: string | undefined;
   header?: SheetHeader;
   onClose: () => void;
   testID?: string;
@@ -623,37 +640,51 @@ function CompactSheetBody({
     [footer, footerClearanceStyle],
   );
   return (
-    <SheetVisibleFrame footer={footerView}>
-      {header ? <SheetHeaderView header={header} onClose={onClose} testID={testID} /> : null}
-      <View style={[styles.compactStaticContent, bodyStyle]}>
-        {scrollable ? (
-          <ScrollView
-            testID={sheetPartTestID(testID, "scroll")}
-            onScroll={onScroll}
-            scrollEventThrottle={64}
-            style={styles.bottomSheetVisibleScroll}
-            contentContainerStyle={SCROLL_CONTENT_GROW}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={[styles.contentGrow, bodyClearanceStyle]}>
-              <SheetContent style={[styles.contentGrow, contentStyle]}>{children}</SheetContent>
+    // The same dialog contract as the desktop card: named, modal, and the focus scope that the
+    // overlay registration moves focus into, traps and restores from.
+    <View
+      ref={dialogRef}
+      role="dialog"
+      aria-modal
+      accessibilityViewIsModal
+      accessibilityLabel={accessibilityLabel}
+      aria-describedby={describedBy}
+      tabIndex={-1}
+      style={styles.compactDialog}
+    >
+      <SheetVisibleFrame footer={footerView}>
+        {header ? <SheetHeaderView header={header} onClose={onClose} testID={testID} /> : null}
+        <View style={[styles.compactStaticContent, bodyStyle]}>
+          {scrollable ? (
+            <ScrollView
+              testID={sheetPartTestID(testID, "scroll")}
+              onScroll={onScroll}
+              scrollEventThrottle={64}
+              style={styles.bottomSheetVisibleScroll}
+              contentContainerStyle={SCROLL_CONTENT_GROW}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={[styles.contentGrow, bodyClearanceStyle]}>
+                <SheetContent style={[styles.contentGrow, contentStyle]}>{children}</SheetContent>
+              </View>
+            </ScrollView>
+          ) : (
+            <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
+              <SheetContent style={[styles.compactStaticContent, contentStyle]}>
+                {children}
+              </SheetContent>
             </View>
-          </ScrollView>
-        ) : (
-          <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
-            <SheetContent style={[styles.compactStaticContent, contentStyle]}>
-              {children}
-            </SheetContent>
-          </View>
-        )}
-      </View>
-    </SheetVisibleFrame>
+          )}
+        </View>
+      </SheetVisibleFrame>
+    </View>
   );
 }
 
 export function AdaptiveModalSheet({
   accessibilityLabel,
+  accessibilityDescribedBy: describedBy,
   header,
   visible,
   onClose,
@@ -675,6 +706,8 @@ export function AdaptiveModalSheet({
 }: AdaptiveModalSheetProps) {
   const { t } = useTranslation();
   const isMobile = useIsCompactFormFactor();
+  // Every dialog is named: by its caller, otherwise by the title it shows.
+  const dialogLabel = accessibilityLabel ?? header?.title;
   const isKeyboardVisible = useKeyboardVisibility(visible);
   const resolvedSnapPoints = useMemo(() => snapPoints ?? ["65%", "90%"], [snapPoints]);
   const footerView = useMemo(
@@ -791,6 +824,9 @@ export function AdaptiveModalSheet({
       >
         <OverlayLayerProvider layer={modalLayer}>
           <CompactSheetBody
+            dialogRef={setOverlayScope}
+            accessibilityLabel={dialogLabel}
+            describedBy={describedBy}
             header={header}
             onClose={onClose}
             testID={testID}
@@ -854,8 +890,11 @@ export function AdaptiveModalSheet({
         ref={setOverlayScope}
         style={desktopCardStyle}
         role="dialog"
-        accessibilityLabel={accessibilityLabel}
+        accessibilityLabel={dialogLabel}
+        aria-describedby={describedBy}
         aria-modal
+        // iOS reads aria-modal as nothing; this keeps VoiceOver inside the dialog.
+        accessibilityViewIsModal
         tabIndex={-1}
       >
         {cardInner}

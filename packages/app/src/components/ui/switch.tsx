@@ -16,6 +16,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { switchGeometryForLayout, type SwitchGeometry } from "@/components/ui/control-geometry";
 import { useContainedControlSize } from "@/components/ui/control-size";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { useHiddenDescription } from "./visually-hidden";
 import type { Theme } from "@/styles/theme";
 
 interface SwitchProps {
@@ -23,10 +24,15 @@ interface SwitchProps {
   onValueChange?: (value: boolean) => void;
   disabled?: boolean;
   accessibilityLabel?: string;
+  /** Explains the effect, such as a row hint; announced after the label. */
+  accessibilityHint?: string;
+  /** Marks a change in flight, such as while the new value saves. */
+  "aria-busy"?: boolean;
   testID?: string;
   style?: StyleProp<ViewStyle>;
 }
 
+const TRACK_BORDER = 1;
 const TIMING = { duration: 180, easing: Easing.inOut(Easing.ease) };
 
 interface SwitchTrackProps {
@@ -34,6 +40,7 @@ interface SwitchTrackProps {
   geometry: SwitchGeometry;
   trackOffColor: string;
   trackOnColor: string;
+  trackOffBorderColor: string;
   thumbOffColor: string;
   thumbOnColor: string;
 }
@@ -43,6 +50,7 @@ function SwitchTrack({
   geometry,
   trackOffColor,
   trackOnColor,
+  trackOffBorderColor,
   thumbOffColor,
   thumbOnColor,
 }: SwitchTrackProps) {
@@ -50,6 +58,8 @@ function SwitchTrack({
 
   const trackAnimatedStyle = useAnimatedStyle(() => ({
     backgroundColor: interpolateColor(progress.value, [0, 1], [trackOffColor, trackOnColor]),
+    // The off track's fill nearly matches the card, so its outline carries the 3:1 boundary.
+    borderColor: interpolateColor(progress.value, [0, 1], [trackOffBorderColor, trackOnColor]),
   }));
 
   const { thumbTravel } = geometry;
@@ -63,7 +73,9 @@ function SwitchTrack({
       width: geometry.trackWidth,
       height: geometry.trackHeight,
       borderRadius: geometry.trackHeight / 2,
-      padding: (geometry.trackHeight - geometry.thumbSize) / 2,
+      borderWidth: TRACK_BORDER,
+      // The border sits inside the track, so the thumb keeps its size and travel.
+      padding: (geometry.trackHeight - geometry.thumbSize) / 2 - TRACK_BORDER,
     }),
     [geometry],
   );
@@ -94,6 +106,7 @@ function SwitchTrack({
 const ThemedSwitchTrack = withUnistyles(SwitchTrack, (theme: Theme) => ({
   trackOffColor: theme.colors.surface3,
   trackOnColor: theme.colors.accent,
+  trackOffBorderColor: theme.colors.foregroundExtraMuted,
   thumbOffColor: theme.colors.palette.white,
   thumbOnColor: theme.colors.accentForeground,
 }));
@@ -103,6 +116,8 @@ export function Switch({
   onValueChange,
   disabled = false,
   accessibilityLabel,
+  accessibilityHint,
+  "aria-busy": ariaBusy,
   testID,
   style,
 }: SwitchProps) {
@@ -119,7 +134,10 @@ export function Switch({
   const isCompact = useIsCompactFormFactor();
   const geometry = useMemo(() => switchGeometryForLayout(size, isCompact), [size, isCompact]);
 
-  const accessibilityState = useMemo(() => ({ checked: value, disabled }), [value, disabled]);
+  const accessibilityState = useMemo(
+    () => ({ checked: value, disabled, ...(ariaBusy !== undefined ? { busy: ariaBusy } : {}) }),
+    [value, disabled, ariaBusy],
+  );
   const pressableStyle = useMemo(
     () => [
       styles.switchControl,
@@ -130,7 +148,8 @@ export function Switch({
     [disabled, geometry.reservedHeight, style],
   );
 
-  return (
+  const description = useHiddenDescription(accessibilityHint);
+  const control = (
     <Pressable
       onPress={handlePress}
       disabled={disabled}
@@ -138,12 +157,22 @@ export function Switch({
       accessibilityRole="switch"
       accessibilityState={accessibilityState}
       accessibilityLabel={accessibilityLabel}
+      {...description.props}
       aria-checked={value}
+      aria-disabled={disabled}
+      aria-busy={ariaBusy}
       testID={testID}
       style={pressableStyle}
     >
       <ThemedSwitchTrack value={value} geometry={geometry} />
     </Pressable>
+  );
+  if (!description.node) return control;
+  return (
+    <>
+      {control}
+      {description.node}
+    </>
   );
 }
 

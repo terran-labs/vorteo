@@ -240,15 +240,14 @@ export function InstallationConnectionCheckSection({
               <Button variant="outline" size="md" onPress={copy} disabled={checking}>
                 Copy diagnostic report
               </Button>
-              <Button variant="outline" size="md" onPress={toggleReport}>
+              <Button variant="outline" size="md" onPress={toggleReport} aria-expanded={showReport}>
                 {showReport ? "Hide report" : "Show report"}
               </Button>
             </View>
-            {feedback ? (
-              <Text accessibilityLiveRegion="polite" style={settingsStyles.rowHint}>
-                {feedback}
-              </Text>
-            ) : null}
+            {/* Mounted before its first message, so the copy result is announced. */}
+            <View accessibilityLiveRegion="polite" aria-live="polite">
+              {feedback ? <Text style={settingsStyles.rowHint}>{feedback}</Text> : null}
+            </View>
             {showReport ? (
               <Text selectable testID="connection-diagnostic-report" style={styles.address}>
                 {report}

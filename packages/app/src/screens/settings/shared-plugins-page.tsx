@@ -11,6 +11,8 @@ import { SettingsCard, SettingsRow, SettingsSection } from "@/components/setting
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
+import { SettingsListSummary, useCloseSettingsDialog } from "@/components/settings/list-summary";
+import { installationHostServerId } from "@/execution-installation/policy";
 import { Switch } from "@/components/ui/switch";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
@@ -27,44 +29,28 @@ import { confirmDialog } from "@/utils/confirm-dialog";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 import { useReportActionError } from "@/hooks/use-action-error";
 import { PluginLogsSheet } from "./plugins-page";
-import { openSharedPluginForm, type SharedPluginSourceKind } from "./shared-plugin-form-model";
+import {
+  closeSharedPluginForm,
+  retainedSharedPluginForm,
+  startSharedPluginForm,
+  type OpenSharedPluginForm,
+  type SharedPluginSourceKind,
+} from "./shared-plugin-form-model";
 
 const SOURCE_KINDS: SegmentedControlOption<SharedPluginSourceKind>[] = [
   { value: "managed", label: "Git or npm" },
   { value: "directory", label: "Local directories" },
 ];
 
-function useSharedPluginForm(plugin: InstallationPlugin | null) {
-  const { save } = useInstallationSettings();
-  const reportActionError = useReportActionError();
-  const source = plugin?.source;
-  const [model] = useState(() =>
-    openSharedPluginForm(
-      {
-        resolve: resolveInstallationPluginSource,
-        save,
-        reportConnectionLost: reportActionError,
-      },
-      {
-        source: source && source.kind !== "directory" ? formatPluginIdentity(source.identity) : "",
-        updateId: plugin?.id,
-      },
-    ),
-  );
-  useEffect(() => () => model.close(), [model]);
-  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
-  return { model, state };
-}
-
 function SharedPluginForm({
-  plugin,
+  form: { plugin, model },
   onClose,
 }: {
-  plugin: InstallationPlugin | null;
+  form: OpenSharedPluginForm;
   onClose(): void;
 }) {
   const { data } = useInstallationSettings();
-  const { model, state } = useSharedPluginForm(plugin);
+  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const compact = useIsCompactFormFactor();
   const size = compact ? "md" : "sm";
   const busy = state.phase === "resolving" || state.phase === "saving";
@@ -298,10 +284,16 @@ function SharedPluginCard({
     },
     [snapshot, save, plugin.id],
   );
+  const closeDialog = useCloseSettingsDialog();
   const update = useCallback(() => {
-    if (plugin.source.kind === "directory") router.push("/settings/environments");
-    else edit(plugin);
-  }, [edit, plugin]);
+    // Both leave the Manage dialog: one navigates, the other opens its own editor dialog.
+    closeDialog();
+    // Directory bindings are environment exceptions: open the Host's environment dialog.
+    const hostId = installationHostServerId(installation);
+    if (plugin.source.kind !== "directory") edit(plugin);
+    else if (hostId) router.push(`/settings/hosts/${encodeURIComponent(hostId)}/host`);
+    else router.push("/settings/environments");
+  }, [closeDialog, edit, plugin, installation]);
   const remove = useCallback(async () => {
     const settings = snapshot.settings;
     const plugins = settings?.plugins;
@@ -345,10 +337,19 @@ function SharedPluginCard({
               disabled={pending}
               onValueChange={toggle}
             />
-            <Button variant="outline" size="sm" onPress={update}>
+            <Button
+              variant="outline"
+              onPress={update}
+              accessibilityLabel={`${plugin.source.kind === "directory" ? "Directories for" : "Update"} ${plugin.id}`}
+            >
               {plugin.source.kind === "directory" ? "Directories" : "Update"}
             </Button>
-            <Button variant="outline" size="sm" disabled={pending} onPress={remove}>
+            <Button
+              variant="outline"
+              disabled={pending}
+              onPress={remove}
+              accessibilityLabel={`Remove ${plugin.id}`}
+            >
               Remove
             </Button>
           </View>
@@ -373,10 +374,20 @@ function SharedPluginCard({
 
 export function SharedPluginsPage() {
   const { data, installation, save } = useInstallationSettings();
-  const [form, setForm] = useState<{
-    plugin: InstallationPlugin | null;
-  } | null>(null);
   const reportActionError = useReportActionError();
+  const ports = useMemo(
+    () => ({
+      resolve: resolveInstallationPluginSource,
+      save,
+      reportConnectionLost: reportActionError,
+    }),
+    [save, reportActionError],
+  );
+  // Reopen a form retained while owner access was locked.
+  const [form, setForm] = useState(retainedSharedPluginForm);
+  useEffect(() => {
+    form?.updatePorts(ports);
+  }, [form, ports]);
   const mutation = useMutation({
     mutationFn: (update: InstallationSettingsUpdate) => save(update),
     onError: (failure) => {
@@ -384,9 +395,15 @@ export function SharedPluginsPage() {
     },
   });
   const isRejected = mutation.error !== null && !isConnectionError(mutation.error);
-  const add = useCallback(() => setForm({ plugin: null }), []);
-  const edit = useCallback((plugin: InstallationPlugin) => setForm({ plugin }), []);
-  const close = useCallback(() => setForm(null), []);
+  const add = useCallback(() => setForm(startSharedPluginForm(null, ports)), [ports]);
+  const edit = useCallback(
+    (plugin: InstallationPlugin) => setForm(startSharedPluginForm(plugin, ports)),
+    [ports],
+  );
+  const close = useCallback(() => {
+    if (form) closeSharedPluginForm(form);
+    setForm(null);
+  }, [form]);
   const toggle = useCallback(
     (pluginsEnabled: boolean) => {
       if (data)
@@ -399,7 +416,7 @@ export function SharedPluginsPage() {
   );
   const addButton = useMemo(
     () => (
-      <Button variant="outline" size="sm" onPress={add} testID="shared-plugin-add">
+      <Button variant="outline" onPress={add} testID="shared-plugin-add">
         Add plugin
       </Button>
     ),
@@ -437,19 +454,30 @@ export function SharedPluginsPage() {
           <Text style={settingsStyles.rowHint}>No plugins installed</Text>
         ) : null}
       </SettingsSection>
-      {plugins.map((plugin) => (
-        <SharedPluginCard
-          key={plugin.id}
-          plugin={plugin}
-          snapshot={data}
-          installation={installation}
-          pending={mutation.isPending}
-          save={mutation.mutate}
-          edit={edit}
-        />
-      ))}
+      {/* Each plugin is a card per environment, so a few already make a long page. */}
+      <SettingsListSummary
+        title="Plugins"
+        count={plugins.length}
+        noun={PLUGIN_NOUN}
+        preview={plugins.map((plugin) => plugin.id)}
+        detail={disabledDetail(plugins)}
+        inlineLimit={PLUGINS_INLINE_LIMIT}
+        testID="shared-plugins-list"
+      >
+        {plugins.map((plugin) => (
+          <SharedPluginCard
+            key={plugin.id}
+            plugin={plugin}
+            snapshot={data}
+            installation={installation}
+            pending={mutation.isPending}
+            save={mutation.mutate}
+            edit={edit}
+          />
+        ))}
+      </SettingsListSummary>
       {form ? (
-        <SharedPluginForm key={form.plugin?.id ?? "new"} plugin={form.plugin} onClose={close} />
+        <SharedPluginForm key={form.plugin?.id ?? "new"} form={form} onClose={close} />
       ) : null}
     </View>
   );
@@ -466,3 +494,10 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const reservedLayout1 = { minHeight: 160 } as const;
+const PLUGIN_NOUN = { one: "plugin", other: "plugins" };
+const PLUGINS_INLINE_LIMIT = 2;
+
+function disabledDetail(plugins: readonly InstallationPlugin[]): string | undefined {
+  const disabled = plugins.filter((plugin) => !plugin.enabled).length;
+  return disabled > 0 ? `${disabled} disabled` : undefined;
+}

@@ -59,6 +59,9 @@ const retiredUpstreamTests = [
   /sidebar-reorder\.spec\.ts.* compact groups retain active overflow and reveal the current ordered rows/,
   /sidebar-reorder\.spec\.ts.* collapsed groups lead with the open workspace instead of hiding it behind Show more/,
   /sidebar-reorder\.spec\.ts.* a Manual drag in a collapsed group keeps the open workspace's saved place/,
+  // Asserts pixel insets around the bundled skills label; the settings redesign put a hint row
+  // under that label on purpose, and the testing budget in AGENTS.md forbids pixel assertions.
+  /agent-skills-settings\.spec\.ts.* Agent skills sheet inset (compact|desktop) keeps more space above the bundled skills label than below/,
   // The fixture injects prompt rejections through featureValues, but every UI launch uses a
   // profile, and Vorteo keeps a profile launch's features out of reach of plugin hooks.
   /creation-idempotency\.spec\.ts.* becomes an agent tab when the first prompt is rejected/,

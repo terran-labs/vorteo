@@ -11,7 +11,6 @@ import {
   resolveUsageView,
   settleReports,
   upsertReport,
-  usageWindowRowLabel,
   type UsageHost,
   type UsageQueryState,
 } from "./model";
@@ -164,21 +163,6 @@ describe("resolveUsageModalHostId", () => {
     expect(
       resolveUsageModalHostId({ pickedServerId: null, activeServerId: null, hosts: [] }),
     ).toBeNull();
-  });
-});
-
-describe("usageWindowRowLabel", () => {
-  it("names the window, its percent and its reset after what pinning it pins", () => {
-    expect(
-      usageWindowRowLabel({
-        pinLabel: "Pin Claude Session",
-        value: "31%",
-        trailing: "resets in 2h",
-      }),
-    ).toBe("Pin Claude Session, 31% · resets in 2h");
-    expect(usageWindowRowLabel({ pinLabel: "Pin Codex Weekly", value: "—", trailing: null })).toBe(
-      "Pin Codex Weekly, —",
-    );
   });
 });
 

@@ -8,6 +8,7 @@ import {
   useSectionDividerBleed,
 } from "@/components/sidebar/global-card-shell";
 import { Tooltip, TooltipContent, TooltipText, TooltipTrigger } from "@/components/ui/tooltip";
+import { isWeb } from "@/constants/platform";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { usePanelStore } from "@/stores/panel-store";
@@ -142,6 +143,11 @@ function AccountRow({
     usePanelStore.getState().setQuotaAccountExpanded(account.providerId, !expanded);
   }, [account.providerId, expanded]);
   const toggleState = useMemo(() => ({ expanded }), [expanded]);
+  // React Native Web does not map `accessibilityState.expanded` to `aria-expanded`.
+  const webExpandedProps = useMemo(
+    () => (isWeb ? ({ "aria-expanded": expanded } as const) : null),
+    [expanded],
+  );
   const { action, usage } = useConnection(account, serverId, view);
   const bleed = useSectionDividerBleed();
   const Chevron = expanded ? Down : Right;
@@ -159,6 +165,7 @@ function AccountRow({
     >
       <View style={styles.header}>
         <Pressable
+          {...webExpandedProps}
           onPress={toggle}
           style={styles.headerToggle}
           accessibilityRole="button"
@@ -297,6 +304,8 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: Pro
   );
 }
 
+const METER_LEVEL_TEXT: Partial<Record<Tone, string>> = { warning: ", low", danger: ", very low" };
+
 function Meter({ remaining, tone, label }: { remaining: number; tone: Tone; label: string }) {
   const fill = useMemo(
     () => [
@@ -309,8 +318,21 @@ function Meter({ remaining, tone, label }: { remaining: number; tone: Tone; labe
     [remaining, tone],
   );
   const value = useMemo(() => ({ min: 0, max: 100, now: Math.round(remaining) }), [remaining]);
+  // React Native Web drops `accessibilityValue`, so the web meter carries its value as aria
+  // props. The level is in words as well as color.
+  const webValue = useMemo(() => {
+    if (!isWeb) return null;
+    const level = METER_LEVEL_TEXT[tone] ?? "";
+    return {
+      "aria-valuemin": 0,
+      "aria-valuemax": 100,
+      "aria-valuenow": Math.round(remaining),
+      "aria-valuetext": `${Math.round(remaining)}% left${level}`,
+    } as object;
+  }, [remaining, tone]);
   return (
     <View
+      {...webValue}
       style={styles.meter}
       accessibilityRole="progressbar"
       accessibilityLabel={label}
@@ -448,6 +470,7 @@ function MomentLine({
     return prefix === "Resets" ? <Text style={styles.moment}>Reset time unavailable</Text> : null;
   }
   const countdown = formatCountdown(iso, now);
+  const utc = formatUtcMoment(iso);
   return (
     <Tooltip delayDuration={250} enabledOnDesktop enabledOnMobile>
       <TooltipTrigger asChild>
@@ -462,7 +485,7 @@ function MomentLine({
         </View>
       </TooltipTrigger>
       <TooltipContent maxWidth={320}>
-        <TooltipText label={moment} description={formatUtcMoment(iso) ?? undefined} />
+        <TooltipText label={moment} description={utc ?? undefined} />
       </TooltipContent>
     </Tooltip>
   );

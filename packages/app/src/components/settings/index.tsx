@@ -27,7 +27,8 @@ import { settingsStyles } from "@/styles/settings";
 import { ControlSizeProvider } from "@/components/ui/control-size";
 import { useSettingsRowLayout } from "./row-density";
 export { SettingsGroup } from "./headings/settings-group";
-export { SettingsSection, SettingsPaneScope } from "./headings/settings-section";
+export { SettingsSection, SettingsSectionTrailing } from "./headings/settings-section";
+export { SettingsAdvancedGroup } from "./advanced-group";
 export { SettingsCollapsibleRow } from "./collapsible-row";
 export { SettingsDetailRow } from "./detail-row";
 export { SettingsInfoTip } from "./headings/settings-info-tip";
@@ -189,6 +190,7 @@ export function SettingsInput({
         editable={!disabled}
         secureTextEntry={secureTextEntry}
         accessibilityLabel={row.label}
+        accessibilityHint={row.hint}
         size={compact ? "md" : undefined}
         style={styles.input}
       />
@@ -196,10 +198,28 @@ export function SettingsInput({
   );
 }
 
+/**
+ * A row action's spoken name: its visible text, then the row, so a pane's several "Refresh"
+ * buttons stay distinguishable. A row that already starts with the action ("Discard" on
+ * "Discard title changes") is the whole name, so nothing is read twice.
+ */
+export function settingsActionName(actionLabel: string, rowLabel: string): string {
+  const action = actionLabel.trim();
+  const row = rowLabel.trim();
+  if (!row) return action;
+  if (row.toLowerCase().startsWith(action.toLowerCase())) return row;
+  return `${action}: ${row}`;
+}
+
 export function SettingsAction({ actionLabel, onPress, disabled, ...row }: SettingsActionProps) {
   return (
     <SettingsRow {...row}>
-      <Button variant="outline" onPress={onPress} disabled={disabled}>
+      <Button
+        variant="outline"
+        onPress={onPress}
+        disabled={disabled}
+        accessibilityLabel={settingsActionName(actionLabel, row.label)}
+      >
         {actionLabel}
       </Button>
     </SettingsRow>

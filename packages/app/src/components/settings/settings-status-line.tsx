@@ -3,6 +3,7 @@ import { Text, View, useWindowDimensions } from "react-native";
 import { settingsStyles } from "@/styles/settings";
 
 /**
+ * The live region stays mounted while idle, so its first message is announced.
  * Reserve two scaled lines, including when there is no status to announce. The text node keeps
  * the full message for assistive technology; numberOfLines only clips it visually. A copied
  * accessibilityLabel would also make the message match getByLabel queries for nearby fields.
@@ -24,7 +25,7 @@ export function SettingsStatusLine({
       <Text
         testID={message ? testID : undefined}
         numberOfLines={2}
-        accessibilityLiveRegion={message ? "polite" : undefined}
+        accessibilityLiveRegion="polite"
         style={[settingsStyles.rowHint, lineStyle]}
       >
         {message || " "}

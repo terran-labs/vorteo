@@ -12,14 +12,14 @@
  * label has no entry.
  */
 
+// Notifications & privacy folded into Interface and Environments into System; their old
+// addresses resolve through the panes' legacy slugs.
 export const SETTINGS_SECTION_IDS = [
   "interface",
-  "privacy",
   "general",
   "providers",
   "agents",
   "voice",
-  "environments",
   "projects",
   "system",
 ] as const;
@@ -45,9 +45,17 @@ export interface SettingsAvailability {
   withoutInstallation?: boolean;
 }
 
+export type SettingsGroupName = "This device" | "Vorteo";
+
+/** i18n keys for the top-level groups; the English names stay the catalog's identifiers. */
+export const SETTINGS_GROUP_LABEL_KEYS: Record<SettingsGroupName, string> = {
+  "This device": "settings.groups.thisDevice",
+  Vorteo: "settings.groups.vorteo",
+};
+
 export interface SettingsSectionDefinition {
   id: SettingsSectionId;
-  group: "This device" | "Vorteo";
+  group: SettingsGroupName;
   label: string;
   /** Extra words people use for this whole section. */
   keywords: readonly string[];
@@ -95,12 +103,6 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDefinition[] = [
     ],
   },
   {
-    id: "privacy",
-    group: "This device",
-    label: "Notifications & privacy",
-    keywords: ["notifications", "microphone", "browser", "privacy", "data", "saver"],
-  },
-  {
     id: "general",
     group: "Vorteo",
     label: "General",
@@ -143,12 +145,6 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDefinition[] = [
     group: "Vorteo",
     label: "Voice",
     keywords: ["voice", "dictation", "speech", "transcription", "speaking", "listening", "tts"],
-  },
-  {
-    id: "environments",
-    group: "Vorteo",
-    label: "Environments",
-    keywords: ["hosts", "daemons", "machines", "connections", "pair", "devices", "servers"],
   },
   {
     id: "projects",
@@ -248,37 +244,28 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
   },
   {
     id: "general.notifications",
-    section: "privacy",
+    section: "interface",
     label: "Notifications",
-    legacySlugs: ["general.notifications", "notifications"],
+    // The retired Notifications & privacy section's address lands here, in Interface.
+    legacySlugs: ["general.notifications", "privacy.dataSaver", "notifications", "privacy"],
+    keywords: ["privacy", "alerts"],
     desktopOnly: true,
   },
   {
     id: "agents.browserData",
-    section: "privacy",
+    section: "interface",
     label: "Browser data",
     legacySlugs: ["agents.browserData", "browser"],
+    keywords: ["privacy"],
     desktopOnly: true,
   },
   {
     id: "agents.permissions",
-    section: "privacy",
+    section: "interface",
     label: "Permissions",
     legacySlugs: ["agents.permissions", "permissions"],
+    keywords: ["privacy", "microphone"],
     desktopOnly: true,
-  },
-  {
-    id: "privacy.dataSaver",
-    legacySlugs: ["privacy.dataSaver"],
-    section: "privacy",
-    label: "Data saver",
-    webOnly: true,
-  },
-  {
-    id: "general.attention",
-    legacySlugs: ["general.attention"],
-    section: "general",
-    label: "Status",
   },
   {
     id: "general.installation",
@@ -348,13 +335,6 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     requiresHost: true,
   },
   {
-    id: "agents.metadata",
-    section: "agents",
-    label: "Metadata generation",
-    legacySlugs: ["agents.metadata", "metadata"],
-    requiresHost: true,
-  },
-  {
     id: "terminal.profiles",
     section: "agents",
     label: "Terminal profiles",
@@ -362,18 +342,12 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     requiresHost: true,
   },
   {
-    id: "environments.environments",
-    section: "environments",
-    label: "Environments",
-    legacySlugs: ["environments.environments", "environments"],
+    // Last in Agents: it renders inside the section's collapsed Advanced group.
+    id: "agents.metadata",
+    section: "agents",
+    label: "Metadata generation",
+    legacySlugs: ["agents.metadata", "metadata"],
     requiresHost: true,
-  },
-  {
-    id: "environments.connections",
-    section: "environments",
-    label: "Connections",
-    // Device pairing was retired in favor of authenticated direct connections.
-    legacySlugs: ["environments.connections", "connections", "pair-device"],
   },
   {
     id: "workspaces.projects",
@@ -397,12 +371,38 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     desktopOnly: true,
   },
   {
+    // Everything that needs the owner, each with a Fix that jumps to its control. Always first
+    // in System; "System needs attention" and the old General status row lead here.
+    id: "system.health",
+    section: "system",
+    label: "Health",
+    legacySlugs: ["system.health", "health", "general.attention", "attention"],
+    keywords: ["needs attention", "problems", "issues", "fix", "status"],
+  },
+  {
     // Host and Dev status, one action each, restarts, updates and technical details.
     id: "system.overview",
     section: "system",
     label: "System",
     legacySlugs: ["system.overview", "maintenance.updates", "maintenance.upstream"],
     keywords: ["status", "health", "restart", "update", "daemon", "host", "dev", "upstream"],
+  },
+  {
+    // Environments is a group inside System; the old section address opens it.
+    id: "environments.environments",
+    section: "system",
+    label: "Environments",
+    legacySlugs: ["environments.environments", "environments"],
+    keywords: ["hosts", "daemons", "machines", "servers"],
+    requiresHost: true,
+  },
+  {
+    id: "environments.connections",
+    section: "system",
+    label: "Connections",
+    // Device pairing was retired in favor of authenticated direct connections.
+    legacySlugs: ["environments.connections", "connections", "pair-device"],
+    keywords: ["environments", "pair", "devices"],
   },
   {
     id: "general.about",
@@ -421,6 +421,7 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     id: "maintenance.installation",
     section: "system",
     label: "Installation controls",
+    // Rendered inside System's collapsed Advanced group.
     group: "Advanced",
     legacySlugs: ["maintenance.installation", "maintenance"],
     requiresInstallation: true,
@@ -433,20 +434,11 @@ const environment = "environment" as const;
 
 export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
-    id: "privacy.dataSaver.enabled",
-    pane: "privacy.dataSaver",
-    label: "Use less data in this browser",
-    keywords: ["data saver", "bandwidth", "fonts", "diagrams"],
-    scope: device,
-    webOnly: true,
-  },
-  {
-    id: "privacy.dataSaver.icons",
-    pane: "privacy.dataSaver",
-    label: "Optional custom icons",
-    keywords: ["data saver", "download icons"],
-    scope: device,
-    webOnly: true,
+    id: "system.health.list",
+    pane: "system.health",
+    label: "Health",
+    keywords: ["needs attention", "problems", "issues", "fix", "all good"],
+    scope: installation,
   },
   {
     id: "general.installation.name",
@@ -881,7 +873,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     pane: "appearance.sidebar",
     label: "Header",
     labelKey: "settings.appearance.sidebar.header.title",
-    hint: "Choose which items appear at the top of the sidebar and in what order",
+    hint: "Show, hide and reorder plugin items at the top of the sidebar",
     keywords: ["sidebar items", "sidebar header", "plugin items", "reorder", "hide"],
     scope: device,
   },
@@ -890,7 +882,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     pane: "appearance.sidebar",
     label: "Footer",
     labelKey: "settings.appearance.sidebar.footer.title",
-    hint: "Choose which rows appear at the bottom of the sidebar and in what order",
+    hint: "Show, hide and reorder plugin rows at the bottom of the sidebar",
     keywords: ["sidebar items", "sidebar footer", "plugin rows", "reorder", "hide"],
     scope: device,
   },

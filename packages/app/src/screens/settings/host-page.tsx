@@ -45,8 +45,11 @@ import { ProvidersSection } from "@/screens/settings/providers-section";
 import { HostUsageSection } from "@/usage";
 import { HostAppearanceSection } from "@/screens/settings/host-appearance-section";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { SettingsListSummary, useCloseSettingsDialog } from "@/components/settings/list-summary";
+import { SettingsAdvancedGroup } from "@/components/settings/advanced-group";
 
 import { settingsStyles } from "@/styles/settings";
+import { isWeb } from "@/constants/platform";
 import type { HostConnection, HostProfile } from "@/types/host-connection";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
@@ -150,7 +153,14 @@ function HostStatusBadges({ serverId }: { serverId: string }) {
   );
 }
 
-function HostConnectionError({ serverId }: { serverId: string }) {
+/** `reserve` keeps the status line's height while empty, so a later error does not shift the page. */
+function HostConnectionError({
+  serverId,
+  reserve = true,
+}: {
+  serverId: string;
+  reserve?: boolean;
+}) {
   const { t } = useTranslation();
   const snapshot = useHostRuntimeSnapshot(serverId);
   const toast = useToast();
@@ -165,10 +175,21 @@ function HostConnectionError({ serverId }: { serverId: string }) {
   ]
     .filter(Boolean)
     .join(" ");
+  if (!reserve && !message) return null;
   return <SettingsStatusLine message={message} testID="host-connection-error" />;
 }
 
-export function HostConnectionsPage({ serverId }: { serverId: string }) {
+/**
+ * One environment's connections. `showTitle={false}` drops the "Connections" heading when the
+ * caller already names the group, such as a per-environment subsection under Connections.
+ */
+export function HostConnectionsPage({
+  serverId,
+  showTitle = true,
+}: {
+  serverId: string;
+  showTitle?: boolean;
+}) {
   const host = useHostProfile(serverId);
 
   if (!host) {
@@ -177,8 +198,9 @@ export function HostConnectionsPage({ serverId }: { serverId: string }) {
 
   return (
     <View>
-      <HostConnectionError serverId={serverId} />
-      <ConnectionsSection host={host} />
+      {/* Untitled, the card sits right under the caller's heading: no empty status line. */}
+      <HostConnectionError serverId={serverId} reserve={showTitle} />
+      <ConnectionsSection host={host} showTitle={showTitle} />
     </View>
   );
 }
@@ -312,16 +334,19 @@ export function HostSettingsPage({
 
       <HostAppearanceSection host={host} />
 
-      <RemoveHostSection
-        host={host}
-        isLocalDaemon={isLocalDaemon && !installationOwned}
-        onRemoved={onHostRemoved}
-      />
+      {/* Rarely needed and destructive, so it waits behind Advanced under its own Danger zone heading. */}
+      <SettingsAdvancedGroup testID={`host-page-advanced-${serverId}`}>
+        <RemoveHostSection
+          host={host}
+          isLocalDaemon={isLocalDaemon && !installationOwned}
+          onRemoved={onHostRemoved}
+        />
+      </SettingsAdvancedGroup>
     </View>
   );
 }
 
-function ConnectionsSection({ host }: { host: HostProfile }) {
+function ConnectionsSection({ host, showTitle }: { host: HostProfile; showTitle: boolean }) {
   const { t } = useTranslation();
   const { removeConnection } = useHostMutations();
   const snapshot = useHostRuntimeSnapshot(host.serverId);
@@ -377,7 +402,6 @@ function ConnectionsSection({ host }: { host: HostProfile }) {
         <ActionFooterLeading>
           <Button
             variant="destructive"
-            size="sm"
             onPress={handleConfirmRemove}
             disabled={isRemovingConnection}
             testID="remove-connection-confirm"
@@ -385,20 +409,15 @@ function ConnectionsSection({ host }: { host: HostProfile }) {
             {t("settings.host.connections.removeAction")}
           </Button>
         </ActionFooterLeading>
-        <Button
-          variant="secondary"
-          size="sm"
-          onPress={handleCancelConfirm}
-          disabled={isRemovingConnection}
-        >
+        <Button variant="secondary" onPress={handleCancelConfirm} disabled={isRemovingConnection}>
           {t("common.actions.cancel")}
         </Button>
       </ActionFooter>
     ),
     [handleConfirmRemove, isRemovingConnection, t, handleCancelConfirm],
   );
-  return (
-    <SettingsSection title={t("settings.host.connections.title")}>
+  const content = (
+    <>
       <View style={settingsStyles.card} testID="host-page-connections-card">
         {host.connections.map((conn, index) => {
           const probe = probeByConnectionId.get(conn.id);
@@ -431,7 +450,13 @@ function ConnectionsSection({ host }: { host: HostProfile }) {
           </Text>
         </AdaptiveModalSheet>
       ) : null}
-    </SettingsSection>
+    </>
+  );
+  // Without its heading the caller's section owns the spacing.
+  return showTitle ? (
+    <SettingsSection title={t("settings.host.connections.title")}>{content}</SettingsSection>
+  ) : (
+    content
   );
 }
 
@@ -487,7 +512,12 @@ function ConnectionRow({
         </Text>
       </View>
       <Text style={latencyTextStyle}>{latencyText}</Text>
-      <Button variant="ghost" textStyle={destructiveTextStyle} onPress={handlePressRemove}>
+      <Button
+        variant="ghost"
+        textStyle={destructiveTextStyle}
+        onPress={handlePressRemove}
+        accessibilityLabel={`${t("settings.host.connections.removeAction")}: ${formatHostConnectionLabel(connection, t)}`}
+      >
         {t("settings.host.connections.removeAction")}
       </Button>
     </View>
@@ -691,7 +721,6 @@ function AppendSystemPromptCard({ serverId }: { serverId: string }) {
       <ActionFooter style={styles.appendPromptActions}>
         <Button
           variant="ghost"
-          size="sm"
           onPress={handleReset}
           disabled={!hasChanges || isSaving}
           testID="host-page-append-system-prompt-reset"
@@ -700,7 +729,6 @@ function AppendSystemPromptCard({ serverId }: { serverId: string }) {
         </Button>
         <Button
           variant="default"
-          size="sm"
           onPress={handleSave}
           disabled={!hasChanges || isSaving}
           testID="host-page-append-system-prompt-save"
@@ -880,7 +908,6 @@ function RemoveHostSection({
         <ActionFooterLeading>
           <Button
             variant="destructive"
-            size="sm"
             onPress={handleConfirmRemove}
             disabled={isRemoving}
             testID="remove-host-confirm"
@@ -888,7 +915,7 @@ function RemoveHostSection({
             {t("settings.host.connections.removeAction")}
           </Button>
         </ActionFooterLeading>
-        <Button variant="secondary" size="sm" onPress={handleCancel} disabled={isRemoving}>
+        <Button variant="secondary" onPress={handleCancel} disabled={isRemoving}>
           {t("common.actions.cancel")}
         </Button>
       </ActionFooter>
@@ -974,6 +1001,8 @@ interface TerminalProfileRowProps {
   onMoveDown: (id: string) => void;
 }
 
+const TERMINAL_PROFILE_NOUN = { one: "terminal profile", other: "terminal profiles" };
+
 function TerminalProfileRow({
   profile,
   isFirst,
@@ -985,7 +1014,12 @@ function TerminalProfileRow({
 }: TerminalProfileRowProps) {
   const { t } = useTranslation();
 
-  const handleEdit = useCallback(() => onEdit(profile.id), [onEdit, profile.id]);
+  // The editor is its own dialog, so a surrounding Manage dialog closes first.
+  const closeDialog = useCloseSettingsDialog();
+  const handleEdit = useCallback(() => {
+    closeDialog();
+    onEdit(profile.id);
+  }, [closeDialog, onEdit, profile.id]);
   const handleRemove = useCallback(() => onRemove(profile.id), [onRemove, profile.id]);
   const handleMoveUp = useCallback(() => onMoveUp(profile.id), [onMoveUp, profile.id]);
   const handleMoveDown = useCallback(() => onMoveDown(profile.id), [onMoveDown, profile.id]);
@@ -1029,7 +1063,7 @@ function TerminalProfileRow({
           leftIcon={moveUpIcon}
           onPress={handleMoveUp}
           disabled={isFirst}
-          accessibilityLabel={t("settings.host.terminalProfiles.moveUp")}
+          accessibilityLabel={`${t("settings.host.terminalProfiles.moveUp")}: ${profile.name}`}
           testID={`terminal-profile-move-up-${profile.id}`}
         />
         <Button
@@ -1037,21 +1071,21 @@ function TerminalProfileRow({
           leftIcon={moveDownIcon}
           onPress={handleMoveDown}
           disabled={isLast}
-          accessibilityLabel={t("settings.host.terminalProfiles.moveDown")}
+          accessibilityLabel={`${t("settings.host.terminalProfiles.moveDown")}: ${profile.name}`}
           testID={`terminal-profile-move-down-${profile.id}`}
         />
         <Button
           variant="ghost"
           leftIcon={editProfileIcon}
           onPress={handleEdit}
-          accessibilityLabel={t("settings.host.terminalProfiles.editProfile")}
+          accessibilityLabel={`${t("settings.host.terminalProfiles.editProfile")}: ${profile.name}`}
           testID={`terminal-profile-edit-${profile.id}`}
         />
         <Button
           variant="ghost"
           leftIcon={removeProfileIcon}
           onPress={handleRemove}
-          accessibilityLabel={t("settings.host.terminalProfiles.remove")}
+          accessibilityLabel={`${t("settings.host.terminalProfiles.remove")}: ${profile.name}`}
           testID={`terminal-profile-remove-${profile.id}`}
         />
       </View>
@@ -1175,6 +1209,26 @@ function TerminalProfilesSection({ serverId }: { serverId: string }) {
     [profiles, saveProfiles, reportSaveError, t],
   );
 
+  // After a move, focus stays on the moved row's arrow (the other one at an end, where this
+  // one disables) and its new position is announced through a mounted live region.
+  const [moveAnnouncement, setMoveAnnouncement] = useState("");
+  const settleMove = useCallback(
+    (profile: TerminalProfile, index: number, count: number, direction: "up" | "down") => {
+      setMoveAnnouncement(`${profile.name} moved to position ${index + 1} of ${count}`);
+      if (!isWeb) return;
+      const atEnd = direction === "up" ? index === 0 : index === count - 1;
+      const arrow = atEnd === (direction === "up") ? "down" : "up";
+      requestAnimationFrame(() =>
+        document
+          .querySelector<HTMLElement>(
+            `[data-testid="terminal-profile-move-${arrow}-${profile.id}"]`,
+          )
+          ?.focus(),
+      );
+    },
+    [],
+  );
+
   const handleMoveUp = useCallback(
     async (id: string) => {
       if (!profiles) return;
@@ -1185,11 +1239,12 @@ function TerminalProfilesSection({ serverId }: { serverId: string }) {
       next.splice(index - 1, 0, item);
       try {
         await saveProfiles(next);
+        settleMove(item, index - 1, next.length, "up");
       } catch (error) {
         reportSaveError(error);
       }
     },
-    [profiles, saveProfiles, reportSaveError],
+    [profiles, saveProfiles, reportSaveError, settleMove],
   );
 
   const handleMoveDown = useCallback(
@@ -1202,11 +1257,12 @@ function TerminalProfilesSection({ serverId }: { serverId: string }) {
       next.splice(index + 1, 0, item);
       try {
         await saveProfiles(next);
+        settleMove(item, index + 1, next.length, "down");
       } catch (error) {
         reportSaveError(error);
       }
     },
-    [profiles, saveProfiles, reportSaveError],
+    [profiles, saveProfiles, reportSaveError, settleMove],
   );
 
   const addButton = useMemo(
@@ -1216,10 +1272,11 @@ function TerminalProfilesSection({ serverId }: { serverId: string }) {
         leftIcon={addProfileIcon}
         onPress={handleAddOpen}
         disabled={!isConnected || !profiles}
+        accessibilityLabel={t("settings.host.terminalProfiles.addProfileTitle")}
         testID="terminal-profiles-add-button"
       />
     ),
-    [handleAddOpen, isConnected, profiles],
+    [handleAddOpen, isConnected, profiles, t],
   );
 
   if (!isConnected) {
@@ -1241,28 +1298,39 @@ function TerminalProfilesSection({ serverId }: { serverId: string }) {
         trailing={addButton}
         testID="terminal-profiles-section"
       >
-        <View style={settingsStyles.card} testID="terminal-profiles-card">
-          {profiles && profiles.length > 0 ? (
-            profiles.map((profile, index) => (
-              <TerminalProfileRow
-                key={profile.id}
-                profile={profile}
-                isFirst={index === 0}
-                isLast={index === profiles.length - 1}
-                onEdit={handleEditOpen}
-                onRemove={handleRemove}
-                onMoveUp={handleMoveUp}
-                onMoveDown={handleMoveDown}
-              />
-            ))
-          ) : (
-            <View style={terminalProfileStyles.emptyCard}>
-              <Text style={terminalProfileStyles.emptyText}>
-                {t("settings.host.terminalProfiles.emptyState")}
-              </Text>
-            </View>
-          )}
-        </View>
+        <SettingsListSummary
+          title={t("settings.host.terminalProfiles.sectionTitle")}
+          count={profiles?.length ?? 0}
+          noun={TERMINAL_PROFILE_NOUN}
+          preview={profiles?.map((profile) => profile.name)}
+          testID="terminal-profiles-summary"
+        >
+          <View style={settingsStyles.card} testID="terminal-profiles-card">
+            {profiles && profiles.length > 0 ? (
+              profiles.map((profile, index) => (
+                <TerminalProfileRow
+                  key={profile.id}
+                  profile={profile}
+                  isFirst={index === 0}
+                  isLast={index === profiles.length - 1}
+                  onEdit={handleEditOpen}
+                  onRemove={handleRemove}
+                  onMoveUp={handleMoveUp}
+                  onMoveDown={handleMoveDown}
+                />
+              ))
+            ) : (
+              <View style={terminalProfileStyles.emptyCard}>
+                <Text style={terminalProfileStyles.emptyText}>
+                  {t("settings.host.terminalProfiles.emptyState")}
+                </Text>
+              </View>
+            )}
+          </View>
+        </SettingsListSummary>
+        <Text accessibilityLiveRegion="polite" aria-live="polite" style={styles.visuallyHidden}>
+          {moveAnnouncement}
+        </Text>
       </SettingsSection>
 
       <TerminalProfileEditModal
@@ -1296,10 +1364,13 @@ export function HostTerminalsPage({ serverId }: { serverId: string }) {
 
   return (
     <View>
-      <SettingsSection title="Terminal agents">
-        <EnableTerminalAgentHooksCard serverId={serverId} />
-      </SettingsSection>
       <TerminalProfilesSection serverId={serverId} />
+      {/* Hooks for terminal agents are set once, so they sit behind Advanced at the end. */}
+      <SettingsAdvancedGroup testID="terminal-agents-advanced">
+        <SettingsSection title="Terminal agents">
+          <EnableTerminalAgentHooksCard serverId={serverId} />
+        </SettingsSection>
+      </SettingsAdvancedGroup>
     </View>
   );
 }
@@ -1331,6 +1402,8 @@ const terminalProfileStyles = StyleSheet.create((theme) => ({
 }));
 
 const styles = StyleSheet.create((theme) => ({
+  // Read by screen readers, not shown.
+  visuallyHidden: { position: "absolute", width: 1, height: 1, overflow: "hidden", opacity: 0 },
   savingHeader: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
   savingTitle: { maxWidth: "70%", flexShrink: 1 },
   updateFailure: {

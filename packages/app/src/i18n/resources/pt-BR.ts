@@ -2334,6 +2334,8 @@ export const ptBR: TranslationResources = {
     title: "Configurações",
     loading: "Carregando configurações...",
     groups: {
+      thisDevice: "Este dispositivo",
+      vorteo: "Vorteo",
       app: "App",
       host: "Host",
     },

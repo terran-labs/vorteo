@@ -35,6 +35,10 @@ describe("interface zoom shortcuts", () => {
       interfaceZoomForKey(key({ key: "-", metaKey: true, altKey: true }), 100, true),
     ).toBeNull();
     expect(interfaceZoomForKey(key({ key: "1", metaKey: true }), 100, true)).toBeNull();
+    // At the ends of the range the browser's own zoom takes over.
+    expect(interfaceZoomForKey(key({ key: "=", metaKey: true }), 200, true)).toBeNull();
+    expect(interfaceZoomForKey(key({ key: "-", ctrlKey: true }), 75, false)).toBeNull();
+    expect(interfaceZoomForKey(key({ key: "0", metaKey: true }), 100, true)).toBeNull();
   });
 });
 

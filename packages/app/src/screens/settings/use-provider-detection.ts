@@ -1,7 +1,10 @@
 import { useMemo, useRef } from "react";
 import type { InstallationEnvironment } from "@getpaseo/protocol/execution-installation";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import type { ProviderDetectionSource } from "./shared-providers-model";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
+import { useProviderUsage } from "@/provider-usage/use-provider-usage";
+import { useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import type { ProviderDetectionSource, SignInSource } from "./shared-providers-model";
 
 /**
  * Host and Dev provider snapshots for the shared catalog's default rule. The snapshots are
@@ -29,4 +32,39 @@ export function useProviderDetection(
       sources.push({ serverId: devId, kind: "container", entries: knownDev });
     return sources;
   }, [hostId, devId, knownHost, hostLoading, knownDev, devLoading]);
+}
+
+function useSignInSource(environment: InstallationEnvironment | undefined): SignInSource | null {
+  const serverId = environment?.serverId ?? null;
+  const connected = useHostRuntimeIsConnected(serverId ?? "");
+  const { config } = useDaemonConfig(serverId);
+  const { entries } = useProvidersSnapshot(serverId);
+  const { view } = useProviderUsage(serverId, { enabled: Boolean(serverId && connected) });
+  const usage = view.kind === "ready" ? view.payload.providers : undefined;
+  return useMemo<SignInSource | null>(
+    () =>
+      environment && connected
+        ? {
+            serverId: environment.serverId,
+            kind: environment.kind === "host" ? "host" : "container",
+            providers: config?.providers,
+            entries,
+            usage,
+          }
+        : null,
+    [environment, connected, config?.providers, entries, usage],
+  );
+}
+
+/**
+ * Host and Dev views that tell which shared connections are signed out or expired. Offline
+ * environments are left out, so a disconnected Dev container never reports a false sign-in.
+ */
+export function useSignInSources(environments: readonly InstallationEnvironment[]): SignInSource[] {
+  const host = useSignInSource(environments.find((environment) => environment.kind === "host"));
+  const dev = useSignInSource(environments.find((environment) => environment.kind === "container"));
+  return useMemo(
+    () => [host, dev].filter((source): source is SignInSource => source !== null),
+    [host, dev],
+  );
 }

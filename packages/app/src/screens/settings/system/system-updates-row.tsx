@@ -88,7 +88,13 @@ export function SystemUpdatesRow() {
         >
           Check
         </Button>
-        <Button variant="ghost" onPress={toggle} accessibilityState={accessibilityState}>
+        <Button
+          variant="ghost"
+          onPress={toggle}
+          accessibilityState={accessibilityState}
+          // React Native Web drops `accessibilityState.expanded`.
+          aria-expanded={expanded}
+        >
           Details
         </Button>
       </View>
@@ -141,16 +147,17 @@ function updateStatusText(
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // One compact line like the Host and Dev rows; it wraps on narrow panes.
   row: {
-    minHeight: 88,
-    paddingVertical: theme.spacing[3],
+    minHeight: 44,
+    paddingVertical: theme.spacing[2],
     flexWrap: "wrap",
-    paddingHorizontal: theme.spacing[4],
+    paddingHorizontal: theme.spacing[3],
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
   },
-  description: { flexGrow: 1, flexShrink: 1, flexBasis: 240, gap: theme.spacing[1] },
+  description: { flexGrow: 1, flexShrink: 1, flexBasis: 240, gap: theme.spacing[0.5] },
   status: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm, lineHeight: 20 },
   details: { height: 500 },
   body: { padding: theme.spacing[4], gap: theme.spacing[3] },
