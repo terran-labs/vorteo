@@ -2,12 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { requireClaudeAuthentication } from "./authentication.js";
 
 describe("Claude authentication monitoring", () => {
-  it("checks a managed grant without launching Claude, including near expiry", async () => {
+  it("checks a managed grant without launching Claude, while unexpired", async () => {
     const run = vi.fn();
     const readGrant = vi.fn(async () => ({
       accessToken: "synthetic-access",
       hasRefreshToken: true,
-      expiresAt: 1,
+      expiresAt: Date.now() + 60_000,
       scopes: [],
     }));
     for (let check = 0; check < 3; check += 1) {
@@ -33,6 +33,7 @@ describe("Claude authentication monitoring", () => {
         env: { CLAUDE_CONFIG_DIR: "/managed-account", VORTEO_CLAUDE_SIGN_IN: "full" },
       },
       run: vi.fn(),
+      recoverGrant: async () => {},
     };
     await expect(
       requireClaudeAuthentication({ ...input, readGrant: async () => null }),
@@ -169,4 +170,81 @@ describe("Claude authentication monitoring", () => {
       }),
     ).rejects.toMatchObject({ code: "CHECK_FAILED" });
   });
+});
+
+it.each([true, false])(
+  "coalesces expired grant recovery and validates the reread: %s",
+  async (success) => {
+    let expiresAt = 1;
+    let release: (() => void) | undefined;
+    const recoverGrant = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (success) expiresAt = 200;
+      else throw new Error("private transport detail");
+    });
+    const input = {
+      executable: "/not-executed",
+      args: [],
+      runtimeSettings: {
+        env: { CLAUDE_CONFIG_DIR: "/fake-account", VORTEO_CLAUDE_SIGN_IN: "full" },
+      },
+      now: () => 100,
+      readGrant: async () => ({
+        accessToken: "synthetic",
+        hasRefreshToken: true,
+        expiresAt,
+        scopes: [],
+      }),
+      recoverGrant,
+    };
+    const checks = Promise.allSettled([
+      requireClaudeAuthentication(input),
+      requireClaudeAuthentication(input),
+    ]);
+    await vi.waitFor(() => expect(recoverGrant).toHaveBeenCalledTimes(1));
+    release!();
+    const results = await checks;
+    if (success)
+      expect(results).toEqual([
+        { status: "fulfilled", value: undefined },
+        { status: "fulfilled", value: undefined },
+      ]);
+    else
+      expect(results).toEqual([
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ code: "SIGN_IN_REQUIRED" }),
+        }),
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ code: "SIGN_IN_REQUIRED" }),
+        }),
+      ]);
+  },
+);
+
+it("recovers a missing local grant once and rereads it before accepting authentication", async () => {
+  const recovered = {
+    accessToken: "synthetic-recovered",
+    hasRefreshToken: false,
+    expiresAt: 200,
+    scopes: [],
+  };
+  const readGrant = vi
+    .fn<NonNullable<Parameters<typeof requireClaudeAuthentication>[0]["readGrant"]>>()
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(recovered);
+  const recoverGrant = vi.fn(async () => {});
+  await requireClaudeAuthentication({
+    executable: "/not-executed",
+    args: [],
+    runtimeSettings: { env: { CLAUDE_CONFIG_DIR: "/fake-account", VORTEO_CLAUDE_SIGN_IN: "full" } },
+    now: () => 100,
+    readGrant,
+    recoverGrant,
+  });
+  expect(recoverGrant).toHaveBeenCalledExactlyOnceWith("/fake-account");
+  expect(readGrant).toHaveBeenCalledTimes(2);
 });

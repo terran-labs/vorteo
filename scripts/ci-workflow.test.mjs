@@ -396,6 +396,23 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   assert.match(trigger, /push:\n\s+branches: \[main\]\n\s+tags: \["release-\*"\]/);
   const secretScan = readFileSync(new URL(".github/workflows/secret-scan.yml", repoRoot), "utf8");
   assert.match(secretScan.split("jobs:", 1)[0], /^  merge_group:/m, "scan is required");
+  // Pull requests, merge groups and main pushes scan the commits they add; the nightly
+  // and manual runs scan all reachable history. Branch pushes rely on their pull request.
+  const scanTrigger = secretScan.split("jobs:", 1)[0];
+  assert.match(scanTrigger, /push:\n\s+branches: \[main\]/);
+  assert.match(scanTrigger, /^  schedule:/m);
+  assert.match(scanTrigger, /^  workflow_dispatch:/m);
+  assert.match(secretScan, /pull_request\) range="\$PR_BASE\.\.\$PR_HEAD"/);
+  assert.match(secretScan, /merge_group\) range="\$QUEUE_BASE\.\.\$QUEUE_HEAD"/);
+  assert.match(secretScan, /\*\) range="--all --full-history"/);
+  assert.match(
+    secretScan,
+    /SECRET_SCAN_LOG_OPTS: \$\{\{ steps\.range\.outputs\.log_opts \}\}\n\s+run: npm run security:secrets/,
+  );
+  const secretsScript = JSON.parse(readFileSync(new URL("package.json", repoRoot), "utf8")).scripts[
+    "security:secrets"
+  ];
+  assert.match(secretsScript, /--log-opts="\$\{SECRET_SCAN_LOG_OPTS:---all --full-history\}"/);
 
   const jobs = jobBlocks(source);
   const heavy = /^      heavy: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
@@ -572,6 +589,25 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       );
     }
   }
+  // Desktop suites run only on manual runs while PWA is the only release channel.
+  const desktopApps = /^      desktop_apps: \$\{\{ (.+) \}\}$/m.exec(
+    jobs.get("changes").join("\n"),
+  )[1];
+  for (const [event, ref, expected] of [
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+    ["schedule", "refs/heads/main", false],
+    ["push", "refs/tags/release-26.11.500-beta", false],
+    ["workflow_dispatch", "refs/heads/main", true],
+  ]) {
+    const outputs = {
+      ...all,
+      heavy: "true",
+      desktop_apps: String(runInNewContext(desktopApps, contextFor(event, ref))),
+    };
+    for (const jobId of ["desktop-tests-ubuntu", "desktop-tests-windows"]) {
+      assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
+    }
+  }
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
   assert.match(
@@ -586,6 +622,14 @@ test("Nix packaging runs on main without allocating pull-request runners", () =>
   assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
   assert.doesNotMatch(trigger, /pull_request/);
   assert.doesNotMatch(source, /dorny\/paths-filter/);
+  // Desktop packages build only on manual runs while PWA is the only release channel.
+  assert.match(trigger, /^  workflow_dispatch:/m);
+  const darwin = jobBlocks(source).get("build-desktop-darwin").join("\n");
+  assert.match(darwin, /^    if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}$/m);
+  assert.match(
+    source,
+    /if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}\n\s+run: nix build \.#desktop -o result-desktop/,
+  );
 });
 
 test("container installation smokes run after merge and on demand, not on pull requests", () => {
@@ -597,12 +641,32 @@ test("container installation smokes run after merge and on demand, not on pull r
   assert.match(trigger, /- "docker\/\*\*"/);
   assert.match(source, /architecture: \[amd64, arm64\]/);
   assert.match(source, /bash docker\/multiplex\/smoke.sh paseo-container:check/);
+  // Version-only manifest bumps do not rebuild the container; manual runs always do.
+  const jobs = jobBlocks(source);
+  const changes = jobs.get("changes").join("\n");
+  assert.match(changes, /node scripts\/ci-neutralize-version-bumps\.mjs[\s\S]*dorny\/paths-filter/);
+  for (const path of ["docker/**", "package-lock.json", "packages/server/**"]) {
+    assert.ok(changes.includes(`- "${path}"`), path);
+  }
+  const verify = jobs.get("verify").join("\n");
+  assert.match(verify, /^    needs: changes$/m);
+  const condition = /^    if: \$\{\{ (.+) \}\}$/m.exec(verify)[1];
+  const run = (event_name, container) =>
+    runInNewContext(condition, {
+      github: { event_name },
+      needs: { changes: { outputs: container === undefined ? {} : { container } } },
+    });
+  assert.equal(run("push", "false"), false);
+  assert.equal(run("push", "true"), true);
+  assert.equal(run("push", undefined), true);
+  assert.equal(run("workflow_dispatch", "false"), true);
+  assert.match(jobs.get("smoke").join("\n"), /^    needs: verify$/m);
 });
 
-test("desktop packaging smokes main pushes and manual runs, not pull requests", () => {
+test("desktop packaging smokes run only on manual runs while PWA is the only channel", () => {
   const source = readFileSync(new URL(".github/workflows/desktop-packages.yml", repoRoot), "utf8");
   const trigger = source.split("jobs:", 1)[0];
-  assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
+  assert.doesNotMatch(trigger, /^  push:/m);
   assert.doesNotMatch(trigger, /^  pull_request:/m);
   assert.match(trigger, /^  workflow_dispatch:/m);
   assert.doesNotMatch(source, /dorny\/paths-filter/);

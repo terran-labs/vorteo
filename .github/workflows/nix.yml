@@ -3,6 +3,8 @@ name: Nix
 on:
   push:
     branches: [main]
+  # Vorteo: the desktop package builds run only on demand while PWA releases are the only channel.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -98,9 +100,11 @@ jobs:
           exit 1
 
       - name: Build Nix desktop package
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: nix build .#desktop -o result-desktop
 
   build-desktop-darwin:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
