@@ -1,3 +1,4 @@
+import { ProjectFactoryStateSchema } from "./factory-state";
 import { StyleSheet } from "react-native-unistyles";
 import { factoryModelConfiguration } from "./project-factory-model";
 import { useCallback, useMemo, useState } from "react";
@@ -15,6 +16,7 @@ interface Target {
   serverId: string;
   projectId: string;
   role?: RoleId;
+  stages?: boolean;
 }
 export function FactoryModelControls(target: Target) {
   const { t } = useTranslation();
@@ -30,18 +32,26 @@ export function FactoryModelControls(target: Target) {
       />
     );
   return (
-    <View>
+    <View style={textStyles.pickers}>
+      {target.stages && state.data.workers.plannerProfileId !== undefined ? (
+        <ModelPicker
+          target={target}
+          state={state.data}
+          field="plannerProfileId"
+          label={t("projectFactory.plan")}
+        />
+      ) : null}
       <ModelPicker
         target={target}
         state={state.data}
         field="workerProfileId"
-        label={t("projectFactory.workerModel")}
+        label={t(target.stages ? "projectFactory.build" : "projectFactory.workerModel")}
       />
       <ModelPicker
         target={target}
         state={state.data}
         field="reviewerProfileId"
-        label={t("projectFactory.reviewerModel")}
+        label={t(target.stages ? "projectFactory.review" : "projectFactory.reviewerModel")}
       />
     </View>
   );
@@ -54,7 +64,7 @@ function ModelPicker({
 }: {
   target: Target;
   state: ProjectFactoryState;
-  field: "role" | "workerProfileId" | "reviewerProfileId";
+  field: "role" | "plannerProfileId" | "workerProfileId" | "reviewerProfileId";
   label: string;
 }) {
   const { t } = useTranslation();
@@ -84,7 +94,10 @@ function ModelPicker({
             profile?.provider,
           ),
         );
-        client.setQueryData(["projectFactory", target.serverId, target.projectId], next);
+        client.setQueryData(
+          ["projectFactory", target.serverId, target.projectId],
+          ProjectFactoryStateSchema.parse(next),
+        );
       } catch (e) {
         setError(e instanceof Error ? e.message : t("projectFactory.failed"));
       } finally {
@@ -113,12 +126,11 @@ function ModelPicker({
     [apply, pending, profiles],
   );
   return (
-    <View>
+    <View style={textStyles.pickers}>
       <Text style={textStyles.text}>{label}</Text>
       <Text style={textStyles.text}>
         {profiles?.find((profile) => profile.id === selected)?.name ??
-          selected ??
-          t("projectFactory.defaultModel")}
+          t(selected ? "projectFactory.unavailableProfile" : "projectFactory.defaultModel")}
       </Text>
       <PresetControls
         serverId={target.serverId}
@@ -129,6 +141,7 @@ function ModelPicker({
       <Button variant="secondary" disabled={pending || !selected} onPress={clear}>
         {t("projectFactory.defaultModel")}
       </Button>
+      {pending ? <Text style={textStyles.text}>{t("projectFactory.saving")}</Text> : null}
       {target.role ? <Text style={textStyles.text}>{t("projectFactory.nextTurn")}</Text> : null}
       {error ? (
         <Text style={textStyles.text} accessibilityRole="alert">
@@ -140,5 +153,6 @@ function ModelPicker({
 }
 
 const textStyles = StyleSheet.create((theme) => ({
+  pickers: { gap: theme.spacing[3] },
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
 }));

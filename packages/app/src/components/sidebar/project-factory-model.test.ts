@@ -1,4 +1,5 @@
 import {
+  factoryOverviewRoute,
   freshFactoryStatus,
   factoryModelConfiguration,
   sendThreadToFactory,
@@ -110,6 +111,10 @@ describe("Factory model, status and thread routing", () => {
       provider: null,
       profileId: null,
     });
+    expect(factoryModelConfiguration("p", "plannerProfileId", "planner")).toEqual({
+      projectId: "p",
+      plannerProfileId: "planner",
+    });
     expect(factoryModelConfiguration("p", "workerProfileId", "worker")).toEqual({
       projectId: "p",
       workerProfileId: "worker",
@@ -156,4 +161,26 @@ it("uses the existing LCS diff and collapses unchanged charter runs", () => {
   expect(diff.filter((line) => line.kind === "collapsed").map((line) => line.count)).toEqual([
     7, 6,
   ]);
+});
+
+describe("FactoryOverviewRow routing", () => {
+  const target = {
+    serverId: "host",
+    projectId: "project",
+    installationId: "project-factory:project",
+  };
+  it("opens the native page without a legacy surface", () => {
+    expect(factoryOverviewRoute(target, { surfaces: [] })).toEqual({
+      pathname: "/h/[serverId]/factory/[projectId]",
+      params: { serverId: "host", projectId: "project" },
+    });
+  });
+  it("offers legacy navigation only when the overview surface exists", () => {
+    const legacy = { ...target, installationId: "legacy" };
+    expect(factoryOverviewRoute(legacy, { surfaces: [] })).toBeNull();
+    expect(factoryOverviewRoute(legacy, undefined)).toBeNull();
+    expect(factoryOverviewRoute(legacy, { surfaces: [{ id: "overview" }] })).toBe(
+      "/h/host/plugin/factory/surface/overview?param.projectId=project",
+    );
+  });
 });

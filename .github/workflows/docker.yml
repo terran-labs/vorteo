@@ -1,28 +1,8 @@
 name: Container
 
+# Vorteo: container builds left pull request CI, where both architecture smokes
+# held runners from the required checks. They run after merge and on demand.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/docker.yml"
-      - ".dockerignore"
-      - "docker/**"
-      - "package.json"
-      - "package-lock.json"
-      - "patches/**"
-      - "scripts/**"
-      - "skills/**"
-      - "tsconfig.json"
-      - "tsconfig.base.json"
-      - "packages/app/**"
-      - "packages/cli/**"
-      - "packages/client/**"
-      - "packages/expo-two-way-audio/**"
-      - "packages/highlight/**"
-      - "packages/plugin/**"
-      - "packages/protocol/**"
-      - "packages/relay/**"
-      - "packages/server/**"
   push:
     branches: [main]
     paths:

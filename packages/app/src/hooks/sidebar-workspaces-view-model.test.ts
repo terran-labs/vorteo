@@ -1679,6 +1679,7 @@ it("orders project Factory roles and places the system Mechanic after Releases",
       {
         serverId: "one",
         projectId: base.projectId,
+        state: "on",
         roles: daemonOrder.map((entry) => ({ workspaceId: entry.workspaceId })),
       },
     ],
@@ -1690,4 +1691,108 @@ it("orders project Factory roles and places the system Mechanic after Releases",
   const withoutMembers = splitFactoryWorkspaces([mechanic], entries, new Map([["one", true]]));
   expect(withoutMembers.factory).toEqual([]);
   expect(withoutMembers.standing).toEqual([mechanic]);
+});
+
+it("consolidates standing workspaces after daemon roles, including an adopted non-standing Mechanic", () => {
+  const base = workspaceWithForge(undefined, "https://github.com/acme/repo/pull/42");
+  const mechanic = createSidebarWorkspaceEntry({
+    serverId: "one",
+    workspace: { ...base, id: "adopted", title: "Maintenance", standing: false },
+  });
+  const standing = createSidebarWorkspaceEntry({
+    serverId: "one",
+    workspace: { ...base, id: "standing", standing: true },
+  });
+  const work = createSidebarWorkspaceEntry({
+    serverId: "one",
+    workspace: { ...base, id: "work", standing: false },
+  });
+  const otherHost = createSidebarWorkspaceEntry({
+    serverId: "two",
+    workspace: { ...base, id: "standing", standing: true },
+  });
+  const entries = new Map(
+    [standing, work, mechanic, otherHost].map((entry) => [entry.workspaceKey, entry]),
+  );
+  const states = [
+    {
+      serverId: "one",
+      projectId: base.projectId,
+      state: "on" as const,
+      roles: [{ workspaceId: mechanic.workspaceId }],
+    },
+  ];
+  expect(
+    splitFactoryWorkspaces([standing, work, mechanic, otherHost], entries, new Map(), states),
+  ).toEqual({ factory: [mechanic, standing, otherHost], work: [work], standing: [] });
+  expect(factoryOverviewTargets([standing, mechanic], entries, new Set(["one"]), states)).toEqual([
+    {
+      serverId: "one",
+      projectId: base.projectId,
+      installationId: `project-factory:${base.projectId}`,
+    },
+  ]);
+  const offState = [
+    {
+      serverId: "one",
+      projectId: base.projectId,
+      state: "off" as const,
+      roles: [{ workspaceId: mechanic.workspaceId }],
+    },
+  ];
+  expect(splitFactoryWorkspaces([standing, work, mechanic], entries, new Map(), offState)).toEqual({
+    factory: [],
+    work: [work, mechanic],
+    standing: [standing],
+  });
+  expect(factoryOverviewTargets([standing, mechanic], entries, new Set(["one"]), offState)).toEqual(
+    [],
+  );
+  expect(splitFactoryWorkspaces([standing, work, mechanic], entries, new Map())).toEqual({
+    factory: [],
+    work: [work, mechanic],
+    standing: [standing],
+  });
+});
+
+it("puts a legacy standing controller after per-project Factory members", () => {
+  const base = workspaceWithForge(undefined, "https://github.com/acme/repo/pull/42");
+  const member = createSidebarWorkspaceEntry({
+    serverId: "one",
+    workspace: {
+      ...base,
+      id: "foreman",
+      title: "Project :: Foreman",
+      standing: true,
+      factoryMembership: {
+        installationId: "project-factory:project",
+        projectId: base.projectId,
+        serverId: "one",
+        role: "factory",
+      },
+    },
+  });
+  const legacy = createSidebarWorkspaceEntry({
+    serverId: "one",
+    workspace: {
+      ...base,
+      id: "old",
+      standing: true,
+      factoryMembership: {
+        installationId: "legacy",
+        projectId: base.projectId,
+        serverId: "one",
+        role: "factory",
+      },
+    },
+  });
+  const entries = new Map([legacy, member].map((entry) => [entry.workspaceKey, entry]));
+  expect(splitFactoryWorkspaces([legacy, member], entries, new Map([["one", true]]))).toEqual({
+    factory: [member, legacy],
+    standing: [],
+    work: [],
+  });
+  expect(factoryOverviewTargets([legacy, member], entries, new Set(["one"]))).toEqual([
+    { serverId: "one", projectId: base.projectId, installationId: "project-factory:project" },
+  ]);
 });

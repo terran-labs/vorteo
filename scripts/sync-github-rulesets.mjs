@@ -49,8 +49,15 @@ function validateBranchRules(ruleset, types, fail) {
     fail("allow merge commits only, so installed commits stay in main's history.");
   }
   const checks = ruleset.rules.find((rule) => rule.type === "required_status_checks").parameters;
-  if (!checks?.strict_required_status_checks_policy || !checks.required_status_checks?.length) {
-    fail("require at least one check on a branch that is up to date with its base.");
+  if (!checks?.required_status_checks?.length) fail("require at least one check.");
+  // The merge queue tests each pull request merged with the queue ahead of it, so branches
+  // need not be up to date with the base; without a queue they must be.
+  const queue = ruleset.rules.find((rule) => rule.type === "merge_queue")?.parameters;
+  if (!queue && !checks.strict_required_status_checks_policy) {
+    fail("require up-to-date branches unless a merge queue tests the merged result.");
+  }
+  if (queue && queue.merge_method !== "MERGE") {
+    fail("the merge queue must merge with merge commits, so installed commits stay in main.");
   }
 }
 

@@ -1,3 +1,4 @@
+import { ProjectFactoryStateSchema } from "./factory-state";
 import { PROJECT_FACTORY_ROLE_IDS } from "./factory-role-ids";
 import { FormTextInput } from "@/components/ui/form-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -47,9 +48,7 @@ export function useProjectFactory(
     enabled: enabled && active && !!plugin && !!projectId,
     refetchInterval: options?.refetchInterval ?? (active ? 60_000 : false),
     queryFn: async () =>
-      (await plugin!.invoke("factory.project.get", {
-        projectId,
-      })) as ProjectFactoryState,
+      ProjectFactoryStateSchema.parse(await plugin!.invoke("factory.project.get", { projectId })),
   });
 }
 /** Loaded states only. A module-level function, so combined results keep their identity. */
@@ -57,12 +56,13 @@ function loadedFactoryStates(results: { data?: ProjectFactoryState }[]): Project
   return results.flatMap((result) => (result.data ? [result.data] : []));
 }
 /**
- * Factory state for hosts whose project already has project-factory members. Callers pass only
- * those targets, so ordinary projects never poll. The result is stable until a state changes.
+ * Observe cached state for every project host so enabling Factory is reflected immediately.
+ * Only hosts with project-factory members poll; ordinary projects make no requests.
  */
 export function useProjectFactories(
   targets: readonly { serverId: string; projectId: string }[],
   supported: ReadonlyMap<string, boolean>,
+  pollingTargets = targets,
 ): ProjectFactoryState[] {
   const active = useRetainedPanelActive();
   const plugins = useInstalledPlugins();
@@ -75,12 +75,18 @@ export function useProjectFactories(
         dataShape: "value",
         staleTimeMs: 30_000,
         queryKey: ["projectFactory", target.serverId, target.projectId],
-        enabled: active && !!plugin && supported.get(target.serverId) === true,
+        enabled:
+          active &&
+          !!plugin &&
+          supported.get(target.serverId) === true &&
+          pollingTargets.some(
+            (poll) => poll.serverId === target.serverId && poll.projectId === target.projectId,
+          ),
         refetchInterval: active ? 60_000 : false,
         queryFn: async () =>
-          (await plugin!.invoke("factory.project.get", {
-            projectId: target.projectId,
-          })) as ProjectFactoryState,
+          ProjectFactoryStateSchema.parse(
+            await plugin!.invoke("factory.project.get", { projectId: target.projectId }),
+          ),
       };
     }),
     loadedFactoryStates,
