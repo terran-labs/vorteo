@@ -1,7 +1,8 @@
 import type { QueueItem, QueueSnapshot } from "@getpaseo/protocol/message-queue";
 import type { AgentStreamEvent, AgentPromptInput } from "../agent/agent-sdk-types.js";
-import { MessageQueueStore } from "./store.js";
+import { MessageQueueStore, type QueueSettlementOutcome } from "./store.js";
 import { UNCONFIRMED_DELIVERY_BOUND_MS } from "./evidence.js";
+import { isSessionHostFrameTooLargeError } from "../session-host/client.js";
 
 export { UNCONFIRMED_DELIVERY_BOUND_MS };
 
@@ -37,6 +38,16 @@ export interface QueueDeliveryPort {
   ): AsyncGenerator<AgentStreamEvent> | null | Promise<AsyncGenerator<AgentStreamEvent> | null>;
   changed(snapshot: QueueSnapshot): void;
   failed(error: unknown, agentId: string): void;
+}
+
+/** A stream that ended before acceptance. */
+function unacceptedOutcome(error: unknown): QueueSettlementOutcome {
+  // Refused before it was written, so it certainly did not arrive. Failed waits for the owner,
+  // so the same oversized message is never retried unchanged.
+  if (isSessionHostFrameTooLargeError(error)) return { status: "failed", reason: error.message };
+  const reason =
+    error instanceof Error ? error.message : "Provider acceptance could not be confirmed.";
+  return { status: "uncertain", reason };
 }
 
 export class QueueDeliveryWorker {
@@ -289,14 +300,12 @@ export class QueueDeliveryWorker {
         this.port.failed(error, agentId);
         return false;
       }
-      const reason =
-        error instanceof Error ? error.message : "Provider acceptance could not be confirmed.";
       this.port.changed(
         await this.store.settle({
           agentId,
           messageId: item.id,
           attemptId,
-          outcome: { status: "uncertain", reason },
+          outcome: unacceptedOutcome(error),
         }),
       );
       return false;

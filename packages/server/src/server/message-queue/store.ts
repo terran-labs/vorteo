@@ -42,11 +42,12 @@ const OutcomeSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("failed"), reason: z.string().max(4000) }),
   z.object({ status: z.literal("uncertain"), reason: z.string().max(4000) }),
 ]);
+export type QueueSettlementOutcome = z.infer<typeof OutcomeSchema>;
 interface Settlement {
   agentId: string;
   messageId: string;
   attemptId: string;
-  outcome: z.infer<typeof OutcomeSchema>;
+  outcome: QueueSettlementOutcome;
 }
 type QueueRecord = z.infer<typeof RecordSchema>;
 

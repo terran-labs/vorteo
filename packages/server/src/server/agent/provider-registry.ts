@@ -456,6 +456,10 @@ function forwardProviderSettling(inner: AgentSession): AgentSession["isProviderS
   return inner.isProviderSettling?.bind(inner);
 }
 
+function forwardPromptFits(inner: AgentSession): AgentSession["assertPromptFits"] {
+  return inner.assertPromptFits?.bind(inner);
+}
+
 // Every session member must cross this boundary, including optional capabilities.
 type ForwardedAgentSession = { [K in keyof Required<AgentSession>]: AgentSession[K] };
 
@@ -505,6 +509,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     },
     closeIfIdle: inner.closeIfIdle?.bind(inner),
     isDurablyHosted: inner.isDurablyHosted?.bind(inner),
+    assertPromptFits: forwardPromptFits(inner),
     detach: inner.detach?.bind(inner),
     historyApplied: inner.historyApplied?.bind(inner),
     canStopRuntime: inner.canStopRuntime?.bind(inner),

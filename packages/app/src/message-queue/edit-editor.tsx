@@ -15,6 +15,7 @@ import { useVortonTouch } from "@/vorton-touch";
 import type { AttachmentMetadata } from "@/attachments/types";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
 import { queueAttachmentStore } from "./attachment-store";
+import { reduceAttachedImage } from "@/attachments/service";
 import { SharedQueueAttachments } from "./shared-attachments";
 import { useQueueEditDrafts } from "./edit-draft-context";
 import { type QueueEditDraft, draftHasChanges, draftHasContent } from "./edit-draft";
@@ -72,7 +73,10 @@ export function QueueEditEditor({
         const added: QueueEditDraft["localAttachments"] = [];
         try {
           for (const image of images)
-            added.push({ kind: "image", metadata: await queueAttachmentStore.save(image) });
+            added.push({
+              kind: "image",
+              metadata: await queueAttachmentStore.save(await reduceAttachedImage(image)),
+            });
           await writes.current;
           if (!active.current) {
             await Promise.all(

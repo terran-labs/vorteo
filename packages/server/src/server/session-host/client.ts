@@ -21,13 +21,57 @@ import {
 
 export class SessionHostClientError extends Error {
   constructor(
-    /** unavailable: nothing is listening, so no host is running. */
-    readonly code: SessionHostErrorCode | "disconnected" | "timeout" | "unavailable",
+    /**
+     * unavailable: nothing is listening, so no host is running. frame_too_large: this daemon
+     * refused one request before writing it; the connection is unaffected.
+     */
+    readonly code:
+      | SessionHostErrorCode
+      | "disconnected"
+      | "timeout"
+      | "unavailable"
+      | "frame_too_large",
     message: string,
   ) {
     super(message);
     this.name = "SessionHostClientError";
   }
+}
+
+const MEGABYTE = 1024 * 1024;
+
+/**
+ * A request whose frame would exceed the host's limit. The host closes the whole connection on an
+ * oversize frame, ending every turn on it, so the frame is refused here and never written. Only a
+ * prompt with inline images grows that large, so the message names attachments.
+ */
+export class SessionHostFrameTooLargeError extends SessionHostClientError {
+  constructor(
+    readonly frameBytes: number,
+    readonly limitBytes: number,
+  ) {
+    super(
+      "frame_too_large",
+      // Rounded up, so a frame just over the limit never reads as equal to it.
+      `These attachments are too large to send together (${Math.ceil(frameBytes / MEGABYTE)} MB; the limit is ${Math.floor(limitBytes / MEGABYTE)} MB). Send fewer or smaller images.`,
+    );
+    this.name = "SessionHostFrameTooLargeError";
+  }
+}
+
+/** The frame line for a request, refused before anything is written when it is over the limit. */
+export function serializeSessionHostFrame(request: SessionHostRequest | HelloRequest): string {
+  const line = `${JSON.stringify(request)}\n`;
+  const frameBytes = Buffer.byteLength(line);
+  if (frameBytes > MAX_FRAME_BYTES)
+    throw new SessionHostFrameTooLargeError(frameBytes, MAX_FRAME_BYTES);
+  return line;
+}
+
+export function isSessionHostFrameTooLargeError(
+  error: unknown,
+): error is SessionHostFrameTooLargeError {
+  return error instanceof SessionHostFrameTooLargeError;
 }
 
 export type HostedEventListener = (event: JsonValue, seq: number) => void;
@@ -232,9 +276,10 @@ export async function connectSessionHost(
     socket.destroy();
   });
 
+  /** Throws SessionHostFrameTooLargeError without writing, leaving the connection open. */
   function send(request: SessionHostRequest | HelloRequest): void {
     if (closeError) throw closeError;
-    socket.write(`${JSON.stringify(request)}\n`);
+    socket.write(serializeSessionHostFrame(request));
   }
 
   function call(
@@ -245,7 +290,12 @@ export async function connectSessionHost(
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
       pending.set(requestId, { resolve, reject, onResult });
-      send(frame(requestId));
+      try {
+        send(frame(requestId));
+      } catch (error) {
+        pending.delete(requestId);
+        reject(error);
+      }
     });
   }
 

@@ -1,6 +1,8 @@
 import { collectRetainedAttachmentIds } from "@/attachments/gc-retention";
 import { getAttachmentStore } from "@/attachments/store";
 import type { AttachmentMetadata, SaveAttachmentInput } from "@/attachments/types";
+import { imageCodec } from "@/attachments/image-codec";
+import { reduceImageForSending } from "@/attachments/utils";
 
 const activePersistence = new Set<Promise<AttachmentMetadata>>();
 const persistedDuringGarbageCollection = new Set<string>();
@@ -36,13 +38,33 @@ async function persistAttachment(input: SaveAttachmentInput): Promise<Attachment
   }
 }
 
+/**
+ * The one reduction every attached image passes, before it is stored, previewed or sent. A
+ * reduction that fails keeps the original image.
+ */
+export async function reduceAttachedImage(
+  input: SaveAttachmentInput,
+): Promise<SaveAttachmentInput> {
+  try {
+    return await reduceImageForSending(input, imageCodec);
+  } catch (error) {
+    console.warn("[attachments] Failed to reduce image; attaching the original", { error });
+    return input;
+  }
+}
+
+/** Images enter through the blob, data URL and file functions; bytes are exact file previews. */
+async function persistImageForSending(input: SaveAttachmentInput): Promise<AttachmentMetadata> {
+  return await persistAttachment(await reduceAttachedImage(input));
+}
+
 export async function persistAttachmentFromBlob(input: {
   blob: Blob;
   mimeType?: string;
   fileName?: string | null;
   id?: string;
 }): Promise<AttachmentMetadata> {
-  return await persistAttachment({
+  return await persistImageForSending({
     id: input.id,
     mimeType: input.mimeType,
     fileName: input.fileName,
@@ -56,7 +78,7 @@ export async function persistAttachmentFromDataUrl(input: {
   fileName?: string | null;
   id?: string;
 }): Promise<AttachmentMetadata> {
-  return await persistAttachment({
+  return await persistImageForSending({
     id: input.id,
     mimeType: input.mimeType,
     fileName: input.fileName,
@@ -84,7 +106,7 @@ export async function persistAttachmentFromFileUri(input: {
   fileName?: string | null;
   id?: string;
 }): Promise<AttachmentMetadata> {
-  return await persistAttachment({
+  return await persistImageForSending({
     id: input.id,
     mimeType: input.mimeType,
     fileName: input.fileName,

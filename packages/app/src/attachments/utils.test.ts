@@ -7,6 +7,11 @@ import {
   parseDataUrl,
   parseImageDataUrl,
   pathToFileUri,
+  IMAGE_MAX_LONG_EDGE_PX,
+  IMAGE_TARGET_BYTES,
+  reduceImageForSending,
+  type ImageCodec,
+  type ImageSize,
 } from "./utils";
 
 describe("pathToFileUri", () => {
@@ -123,5 +128,51 @@ describe("parseImageDataUrl", () => {
         contentKey: "second-content",
       }),
     );
+  });
+});
+
+describe("reduceImageForSending", () => {
+  /** Encodes to a size proportional to its pixels, as a screenshot roughly does. */
+  function fakeCodec(original: ImageSize & { byteSize: number }) {
+    const encodedSizes: (ImageSize & { byteSize: number })[] = [];
+    const bytesPerPixel = original.byteSize / (original.width * original.height);
+    const codec: ImageCodec = {
+      async open() {
+        return {
+          ...original,
+          async resize(size) {
+            return {
+              hasTransparency: async () => false,
+              async encode({ type, quality }) {
+                const jpegFactor = type === "image/jpeg" ? quality / 4 : 1;
+                const byteSize = Math.round(size.width * size.height * bytesPerPixel * jpegFactor);
+                encodedSizes.push({ ...size, byteSize });
+                return { source: { kind: "bytes", bytes: new Uint8Array(1) }, byteSize };
+              },
+            };
+          },
+          async release() {},
+        };
+      },
+    };
+    return { codec, encodedSizes };
+  }
+  const screenshot = {
+    mimeType: "image/png",
+    fileName: "screenshot.png",
+    source: { kind: "bytes" as const, bytes: new Uint8Array(1) },
+  };
+
+  it("reduces an image over the limits below them and leaves one within them alone", async () => {
+    const large = fakeCodec({ width: 5120, height: 2880, byteSize: 14_900_000 });
+    const reduced = await reduceImageForSending(screenshot, large.codec);
+    expect(reduced).toMatchObject({ mimeType: "image/jpeg", fileName: "screenshot.jpg" });
+    const final = large.encodedSizes.at(-1)!;
+    expect(Math.max(final.width, final.height)).toBeLessThanOrEqual(IMAGE_MAX_LONG_EDGE_PX);
+    expect(final.byteSize).toBeLessThanOrEqual(IMAGE_TARGET_BYTES);
+
+    const small = fakeCodec({ width: 1440, height: 900, byteSize: IMAGE_TARGET_BYTES / 2 });
+    expect(await reduceImageForSending(screenshot, small.codec)).toBe(screenshot);
+    expect(small.encodedSizes).toEqual([]);
   });
 });

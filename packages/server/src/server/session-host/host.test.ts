@@ -15,7 +15,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import { afterEach, expect, test } from "vitest";
-import { connectSessionHost, type HostedSession, type SessionHostClient } from "./client.js";
+import {
+  connectSessionHost,
+  SessionHostFrameTooLargeError,
+  type HostedSession,
+  type SessionHostClient,
+} from "./client.js";
 import {
   claimSocketPath,
   createRotatingAppender,
@@ -34,7 +39,7 @@ import {
   type SessionHost,
   type SessionHostLimits,
 } from "./host.js";
-import { SELF_PROBE_RELEASE, SESSION_HOST_PROTOCOL_VERSION } from "./protocol.js";
+import { MAX_FRAME_BYTES, SELF_PROBE_RELEASE, SESSION_HOST_PROTOCOL_VERSION } from "./protocol.js";
 
 const token = "test-session-host-token";
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -343,6 +348,33 @@ test("a malformed or oversized frame after hello ends only that connection", asy
 
   provider.emit({ type: "text", text: "still running" });
   await expect.poll(() => seen.seqs).toEqual([1]);
+});
+
+test("the client refuses a prompt over the frame limit without ending the connection or the running turn", async () => {
+  const provider = controllableSession();
+  const { socketPath } = await hostWith(provider);
+  const client = await worker(socketPath);
+  const session = await client.open({ sessionId: "agent-1", provider: "fake", config: {} });
+  const seen = record(session);
+  const detached: string[] = [];
+  session.onDetached((reason) => detached.push(reason));
+  await session.call({ method: "startTurn", prompt: "long task" });
+
+  const refused = session.call({ method: "startTurn", prompt: "x".repeat(MAX_FRAME_BYTES) });
+  await expect(refused).rejects.toBeInstanceOf(SessionHostFrameTooLargeError);
+  await expect(refused).rejects.toMatchObject({
+    code: "frame_too_large",
+    limitBytes: MAX_FRAME_BYTES,
+    message:
+      "These attachments are too large to send together (33 MB; the limit is 32 MB). Send fewer or smaller images.",
+  });
+
+  expect(client.closed).toBe(false);
+  expect(await client.list()).toHaveLength(1);
+  provider.emit({ type: "text", text: "the running turn continues" });
+  await expect.poll(() => seen.seqs).toEqual([1, 2]);
+  expect(detached).toEqual([]);
+  expect(provider.counts).toEqual({ interrupted: 0, closed: 0 });
 });
 
 test("an event too large for one frame is replaced by a marker so seqs stay contiguous", async () => {
