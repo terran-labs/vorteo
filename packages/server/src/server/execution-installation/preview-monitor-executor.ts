@@ -285,13 +285,23 @@ export async function verifyExecutable(
   file: { path: string; sha256: string },
   mounts: readonly string[],
 ): Promise<void> {
-  await assertBootstrapPathsProtected([file.path], mounts);
-  if ((await realpath(file.path)) !== file.path)
-    throw new Error("Recovery executable must be canonical");
-  const handle = await open(
-    file.path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  );
+  if ((await digestProtectedExecutable(file.path, mounts)) !== file.sha256)
+    throw new Error("Recovery executable changed");
+}
+
+/**
+ * The SHA-256 of a protected executable, streamed from one no-follow, non-blocking
+ * descriptor after the protection checks: canonical path outside writable mounts, a
+ * regular file with one link, owned by this user, not group or world writable, owner
+ * executable and at most 512 MiB. A FIFO, device or directory refuses before any read.
+ */
+export async function digestProtectedExecutable(
+  file: string,
+  mounts: readonly string[],
+): Promise<string> {
+  await assertBootstrapPathsProtected([file], mounts);
+  if ((await realpath(file)) !== file) throw new Error("Recovery executable must be canonical");
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   const identity = (s: import("node:fs").BigIntStats) =>
     [s.dev, s.ino, s.uid, s.gid, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs].join(":");
   try {
@@ -313,11 +323,11 @@ export async function verifyExecutable(
       digest.update(buffer.subarray(0, bytesRead));
     }
     if (
-      digest.digest("hex") !== file.sha256 ||
       identity(before) !== identity(await handle.stat({ bigint: true })) ||
-      identity(before) !== identity(await lstat(file.path, { bigint: true }))
+      identity(before) !== identity(await lstat(file, { bigint: true }))
     )
       throw new Error("Recovery executable changed");
+    return digest.digest("hex");
   } finally {
     await handle.close();
   }

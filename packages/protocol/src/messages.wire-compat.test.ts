@@ -15,6 +15,52 @@ import {
   AgentTimelineEntryPayloadSchema,
 } from "./messages.js";
 
+test("profile switches retain legacy replies and optional preview results", () => {
+  const request = {
+    type: "agent.profile.switch.request",
+    requestId: "switch",
+    agentId: "thread",
+    provider: "secondary",
+  };
+  expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+  const preview = {
+    ...request,
+    dryRun: true,
+    explanation: "Move paused work",
+    sourceScope: { provider: "primary", cwd: "/work" },
+  };
+  expect(SessionInboundMessageSchema.parse(preview)).toEqual(preview);
+  const response = {
+    type: "agent.profile.switch.response",
+    payload: { requestId: "switch", agentId: "thread", accepted: true, error: null },
+  };
+  expect(SessionOutboundMessageSchema.parse(response)).toEqual(response);
+  const modern = {
+    ...response,
+    payload: {
+      ...response.payload,
+      result: {
+        agentId: "thread",
+        outcome: "refused",
+        error: "Wait for the current turn",
+        refusalCode: "busy",
+        preview: { sourceEligible: false, targetChecked: false },
+      },
+    },
+  };
+  expect(SessionOutboundMessageSchema.parse(modern)).toEqual(modern);
+  const legacy = z.object({
+    type: z.literal("agent.profile.switch.response"),
+    payload: z.object({
+      requestId: z.string(),
+      agentId: z.string(),
+      accepted: z.boolean(),
+      error: z.string().nullable(),
+    }),
+  });
+  expect(legacy.parse(modern)).toEqual(response);
+});
+
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
   const response = {
     type: "list_terminals_response",

@@ -197,6 +197,7 @@ interface ResolvedCreateAgent {
 export async function resolveProfileSwitchConfig(
   dependencies: CreateAgentCommandDependencies,
   config: AgentSessionConfig,
+  preservedSettings?: Pick<AgentSessionConfig, "modeId" | "thinkingOptionId" | "featureValues">,
 ): Promise<AgentSessionConfig> {
   const bindings = observeLaunchBindings(dependencies);
   dependencies = await admitProfileDependencies(bindings.dependencies, config.profileId);
@@ -206,6 +207,12 @@ export async function resolveProfileSwitchConfig(
     Date.now(),
     dependencies.getSharedProviderConfig?.(),
   );
+  // Profile defaults must not replace the source settings before validation or policy capture.
+  if (preservedSettings) {
+    if (resolved.provider !== config.provider)
+      throw new Error("The selected profile belongs to a different target account.");
+    Object.assign(resolved, structuredClone(preservedSettings));
+  }
   const created = await dependencies.providerSnapshotManager.resolveCreateConfig({
     cwd: resolved.cwd,
     provider: resolved.provider,

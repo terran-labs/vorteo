@@ -1,5 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, stat, readdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  stat,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test as platformTest, vi } from "vitest";
@@ -41,7 +52,9 @@ vi.mock("./coordinator-bootstrap-artifact.js", () => ({
     return raw;
   },
 }));
-vi.mock("./preview-monitor-executor.js", () => ({
+// Fixture pins are synthetic, but a derived framework image is held to the real checks.
+vi.mock("./preview-monitor-executor.js", async (original) => ({
+  ...(await original<typeof import("./preview-monitor-executor.js")>()),
   verifyExecutable: async () => {},
   monitorCommand: async () => "deployment-reader-v1",
 }));
@@ -214,20 +227,48 @@ async function fixture(mode = "normal", scopeBoot = boot, python = "/usr/bin/pyt
   return { executor, job, directory: actualDirectory, scope, configPin };
 }
 
-test("a framework launcher runs and is held to its re-executed interpreter", async () => {
+/** A framework layout whose Python.app image stands in for python3; returns its paths. */
+async function framework() {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "framework-python-")));
   directories.push(root);
   const version = path.join(root, "Python.framework/Versions/3.9");
   const image = path.join(version, "Resources/Python.app/Contents/MacOS/Python");
   await mkdir(path.dirname(image), { recursive: true });
-  // A stand-in interpreter; executable protection is mocked in this suite.
-  await writeFile(image, '#!/bin/sh\nexec /usr/bin/python3 "$@"\n');
+  return { root, launcher: path.join(version, "bin/python3.9"), image };
+}
+const standIn = '#!/bin/sh\nexec /usr/bin/python3 "$@"\n';
+
+test("a framework launcher runs and is held to its re-executed interpreter", async () => {
+  const { launcher, image } = await framework();
+  await writeFile(image, standIn);
   await chmod(image, 0o700);
-  const f = await fixture("normal", boot, path.join(version, "bin/python3.9"));
+  const f = await fixture("normal", boot, launcher);
   const result = await f.executor.executeBrokerDeployment(f.job, () => {});
   expect(result.kind).toBe("committed");
   expect(state.children.map((child) => child.executable)).toEqual([image]);
 });
+
+test.each(["symlink", "group-writable", "fifo"])(
+  "a %s framework image refuses promptly before spawning",
+  async (kind) => {
+    const { root, launcher, image } = await framework();
+    if (kind === "symlink") {
+      const real = path.join(root, "real-python");
+      await writeFile(real, standIn);
+      await chmod(real, 0o700);
+      await symlink(real, image);
+    } else if (kind === "group-writable") {
+      await writeFile(image, standIn);
+      await chmod(image, 0o770);
+    } else execFileSync("/usr/bin/mkfifo", ["-m", "700", image]);
+    const f = await fixture("normal", boot, launcher);
+    const started = Date.now();
+    await expect(f.executor.executeBrokerDeployment(f.job, () => {})).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(state.children).toEqual([]);
+    expect(await readdir(f.directory)).toEqual([]);
+  },
+);
 
 test("a framework launcher without its interpreter refuses before spawning", async () => {
   const f = await fixture("normal", boot, "/missing/Python.framework/Versions/3.9/bin/python3.9");

@@ -192,6 +192,7 @@ import type {
 import type {
   AgentConfigApply,
   AgentProfileSwitchRequestMessage,
+  AgentProfileSwitchResult,
   MutableDaemonConfig,
   MutableDaemonConfigPatch,
 } from "@getpaseo/protocol/messages";
@@ -5034,7 +5035,20 @@ export class DaemonClient {
    * closes the current native session and starts the target with recorded
    * context. Gated on `server_info.features.agentProfileSwitch`.
    */
-  async switchAgentProfile(agentId: string, target: AgentProfileSwitchTarget): Promise<void> {
+  async switchAgentProfile(
+    agentId: string,
+    target: AgentProfileSwitchTarget,
+  ): Promise<AgentProfileSwitchResult | undefined> {
+    const requiresPreview =
+      target.dryRun !== undefined ||
+      target.explanation !== undefined ||
+      target.sourceScope !== undefined;
+    if (
+      requiresPreview &&
+      this.lastServerInfoMessage?.features?.agentProfileSwitchPreview !== true
+    ) {
+      throw new Error("Update the host to preview or audit profile switches.");
+    }
     const requestId = this.createRequestId();
     const message = SessionInboundMessageSchema.parse({
       type: "agent.profile.switch.request",
@@ -5053,9 +5067,12 @@ export class DaemonClient {
         return msg.payload;
       },
     });
-    if (!payload.accepted) {
+    // Existing app callers ignore the return value and still need rejected switches to throw.
+    const structuredRefusal = requiresPreview && payload.result !== undefined;
+    if (!payload.accepted && !structuredRefusal) {
       throw new Error(payload.error ?? "switchAgentProfile rejected");
     }
+    return payload.result;
   }
 
   private requireHeldRestart(options: RestartServerOptions | undefined): HeldRestart | undefined {

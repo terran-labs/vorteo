@@ -237,6 +237,13 @@ class NativeDeploymentTests(unittest.TestCase):
         for argv0 in ('/usr/bin/python3', '/opt/fixture/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python',
                       self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python3'):
             self.assertFalse(route_argv([argv0, '-I', '/root/https_broker.py'], binding))
+        image = self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python'
+        self.assertTrue(route_argv([image, '-I', '/root/https_broker.py'], binding))
+        # Only argv[0] may differ: extra, missing or reordered arguments are refused.
+        for argv in ([image, '-I', '/root/https_broker.py', '--extra'], [image, '/root/https_broker.py', '-I'],
+                     [image, '-I'], [image, '-c', 'import os', '/root/https_broker.py'],
+                     [launcher, '/root/https_broker.py', '-I'], [launcher, '-I', '/root/https_broker.py', '-x']):
+            self.assertFalse(route_argv(argv, binding), argv)
         # A non-framework interpreter has no re-exec image to admit.
         self.assertFalse(route_argv(['/x', '-I', '/r/https_broker.py'], {'interpreter': '/protected/python', 'argv': ['/protected/python', '-I', '/r/https_broker.py']}))
         worker, observer, states, effects = self.native(running=True, interpreter=launcher, image='/usr/bin/python3')
@@ -293,8 +300,17 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertEqual({path.name: path.read_bytes() for path in self.evidence.iterdir()}, evidence)
         # Each incomplete or foreign shape stays unresolved.
         commit = json.loads(evidence['commit.json'])
+        foreign = lambda name: encode({**json.loads(evidence[name]), 'outerPlanSha256': '0' * 64})
+        window = json.loads(evidence['window-verified.json'])
         cases = [('ack-3.json', None), ('intent-5.json', None), ('effect-0-bootstrap-ack.json', None),
                  ('effect-1-enable-ack.json', None), ('admission.json', None),
+                 ('effect-0-disable-intent.json', foreign('effect-0-disable-intent.json')),
+                 ('effect-1-enable-ack.json', foreign('effect-1-enable-ack.json')),
+                 ('before.json', foreign('before.json')),
+                 ('window-verified.json', None),
+                 ('window-verified.json', encode({**window, 'commitSha256': '0' * 64})),
+                 ('window-verified.json', foreign('window-verified.json')),
+                 ('admission.json', encode({**json.loads(evidence['admission.json']), 'evidenceVersion': 3})),
                  ('commit.json', encode({**commit, 'planSha256': '0' * 64})),
                  ('commit.json', encode({**commit, 'files': commit['files'][:7]})),
                  ('abort-restored.json', encode({'outerPlanSha256': worker.outer}))]
@@ -319,6 +335,59 @@ class NativeDeploymentTests(unittest.TestCase):
         # Restoring the bytes does not restore the committed file's identity.
         self.write(consumer, original)
         self.assertEqual(worker.observe()['kind'], 'unresolved', 'rewritten consumer')
+
+    def test_legacy_run_without_window_record_confirms_by_explicit_rule(self):
+        # Workers before evidence version 2 wrote neither the admission marker nor the
+        # window record, like 9491d417. Their commit.json stands for the window check.
+        worker, observer, states, effects = self.native(running=True)
+        record = worker.record
+        def legacy(name, value):
+            if name == 'deployment-commit.json':
+                raise ValueError('Existing channel or ledger changed')
+            if name == 'window-verified.json':
+                return
+            if name == 'admission.json':
+                value = {key: item for key, item in value.items() if key != 'evidenceVersion'}
+            record(name, value)
+        worker.record = legacy
+        with self.assertRaises(ValueError): worker.execute()
+        self.assertFalse((self.evidence / 'window-verified.json').exists())
+        self.assertEqual(worker.observe()['kind'], 'committed')
+        # The legacy rule is keyed on the missing marker, not on a missing window record.
+        admission = self.evidence / 'admission.json'
+        self.write(admission, encode({**json.loads(admission.read_bytes()), 'evidenceVersion': 2}))
+        self.assertEqual(worker.observe()['kind'], 'unresolved')
+
+    def test_receipt_binds_window_evidence(self):
+        worker, observer, states, effects = self.native(running=True)
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        window = self.evidence / 'window-verified.json'
+        original = window.read_bytes()
+        value = json.loads(original)
+        self.assertEqual(value['outerPlanSha256'], worker.outer)
+        self.write(window, encode({**value, 'installedFilesSha256': '0' * 64}))
+        self.assertEqual(worker.observe()['kind'], 'unresolved')
+        self.write(window, original)
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    def test_broker_serving_requests_after_restore_confirms(self):
+        # After restore the broker consumes requests and writes receipts and origins.
+        channel = Path(self.targets[0]['root']) / 'channel'
+        request = channel / 'inbox' / (str(uuid.uuid4()) + '.json')
+        self.write(request, b'queued request')
+        worker, observer, states, effects = self.native(running=True)
+        record = worker.record
+        def serve(name, value):
+            record(name, value)
+            if name == 'effect-0-bootstrap-ack.json':
+                request.unlink()
+                self.write(channel / 'receipts' / request.name, b'{"status": "ready"}')
+                self.write(channel / 'origins' / 'wks_test.preview.json', b'{"origin": "https://h:32768"}')
+                self.churn(self.targets[0]['root'], 1)
+        worker.record = serve
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        self.write(channel / 'origins' / 'wks_test.preview.json', b'{"origin": "https://h:32769"}')
+        self.assertEqual(worker.observe()['kind'], 'committed')
 
     def test_running_mode_refuses_wrong_mode_or_stale_digest_before_effects(self):
         worker, observer, states, effects = self.native(running=True)

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { open, lstat, readFile, realpath } from "node:fs/promises";
+import { open, lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import { z } from "zod";
@@ -16,7 +16,11 @@ import {
   assertBootstrapPathsProtected,
 } from "./coordinator-bootstrap-artifact.js";
 import { createNativeBootstrapServiceReader } from "./coordinator-bootstrap-service.js";
-import { monitorCommand, verifyExecutable } from "./preview-monitor-executor.js";
+import {
+  digestProtectedExecutable,
+  monitorCommand,
+  verifyExecutable,
+} from "./preview-monitor-executor.js";
 import { InstallationConfigSchema, type InstallationConfig } from "./config.js";
 import { parseLifecycleJournal } from "./lifecycle-journal.js";
 import type { BrokerDeploymentExecutor } from "./preview-broker-deployment-workflow.js";
@@ -134,9 +138,8 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
   async function runningInterpreter(roots: readonly string[]) {
     const derived = frameworkInterpreterPath(configuration.python.path);
     if (!derived) return configuration.python;
-    const pin = { path: derived, sha256: digest(await readFile(derived)) };
-    await verifyExecutable(pin, roots);
-    return pin;
+    // Protection checks come before any read, on one no-follow, non-blocking descriptor.
+    return { path: derived, sha256: await digestProtectedExecutable(derived, roots) };
   }
 
   async function verifyEvidenceDirectory(plan: PreviewBrokerDeploymentPlan) {

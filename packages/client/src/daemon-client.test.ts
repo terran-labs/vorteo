@@ -8599,6 +8599,99 @@ test("schedule revision protection transmits the exact revision on supported hos
   await expect(pending).resolves.toEqual(payload);
 });
 
+test.each([
+  { provider: "secondary", dryRun: true },
+  { provider: "secondary", sourceScope: { provider: "primary", cwd: "/work" } },
+])(
+  "profile switch dry runs never reach a host without safe switch capability (%j)",
+  async (target) => {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "profile-switch-dry-run-test",
+      logger: createMockLogger(),
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connected = client.connect();
+    mock.triggerOpen({ features: { agentProfileSwitch: true } });
+    await connected;
+    const outcome = client.switchAgentProfile("thread", target).catch((error: unknown) => error);
+    expect(mock.sent).toEqual([]);
+    expect(await outcome).toEqual(
+      expect.objectContaining({ message: expect.stringContaining("Update the host") }),
+    );
+  },
+);
+
+test.each(["legacy", "preview", "refused", "legacy-refused"] as const)(
+  "profile switch replies retain optional results (%s)",
+  async (kind) => {
+    const modern = kind === "preview" || kind === "refused";
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "profile-switch-results",
+      logger: createMockLogger(),
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connected = client.connect();
+    mock.triggerOpen({ features: { agentProfileSwitch: true, agentProfileSwitchPreview: modern } });
+    await connected;
+    const target = modern
+      ? { provider: "secondary", dryRun: true, explanation: "Move paused work" }
+      : { provider: "secondary" };
+    const pending = client.switchAgentProfile("thread", target);
+    const sent = JSON.parse(assertStr(mock.sent[0]));
+    expect(sent.message).toEqual({
+      type: "agent.profile.switch.request",
+      agentId: "thread",
+      ...target,
+      requestId: expect.any(String),
+    });
+    // A dry run comes back refused: it checks the source thread only, never the target account.
+    const results = {
+      legacy: undefined,
+      preview: {
+        agentId: "thread",
+        outcome: "refused",
+        error: "The target account was not checked",
+        preview: { sourceEligible: true, targetChecked: false },
+      },
+      refused: {
+        agentId: "thread",
+        outcome: "refused",
+        provider: "secondary",
+        modeId: "bypassPermissions",
+        status: "idle",
+        error: "Target cannot preserve thinking settings",
+        refusalCode: "incompatible-target",
+      },
+    };
+    const result = kind === "legacy-refused" ? results.refused : results[kind];
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "agent.profile.switch.response",
+        payload: {
+          requestId: sent.message.requestId,
+          agentId: "thread",
+          accepted: result === undefined,
+          error: result?.error ?? null,
+          ...(result ? { result } : {}),
+        },
+      }),
+    );
+    if (kind === "legacy-refused") {
+      await expect(pending).rejects.toThrow("Target cannot preserve thinking settings");
+    } else {
+      expect(await pending).toEqual(result);
+    }
+  },
+);
+
 const scheduleQuotaPolicy = {
   version: 1 as const,
   account: { issuer: "test", accountId: "account" },

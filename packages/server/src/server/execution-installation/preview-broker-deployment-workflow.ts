@@ -40,10 +40,23 @@ export class BrokerDeploymentRefused extends Error {
 const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-/** The first line of an error, bounded, for job details and the installation log. */
+// eslint-disable-next-line no-control-regex -- ANSI CSI and OSC sequences are the target.
+const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+// eslint-disable-next-line no-control-regex -- C0, DEL and C1 controls are the target.
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/**
+ * The first line of an error, bounded, for job details and the installation log.
+ * Terminal escapes and control characters are removed, and a carriage return ends the
+ * line like a newline, so the surfaced text cannot rewrite what the reader sees.
+ */
 export function firstLine(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
-  return (text.split("\n", 1)[0] ?? "").trim().slice(0, 300) || "unknown error";
+  const text = (error instanceof Error ? error.message : String(error)).replace(
+    TERMINAL_ESCAPES,
+    "",
+  );
+  const line = (text.split(/[\r\n]/, 1)[0] ?? "").replace(CONTROL_CHARACTERS, "");
+  return line.trim().slice(0, 300) || "unknown error";
 }
 
 /** The installation queue remains the sole journal and dispatch owner. */

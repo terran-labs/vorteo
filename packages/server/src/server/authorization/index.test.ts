@@ -121,6 +121,28 @@ describe("SessionAuthorization", () => {
     expect(workspaceWriter.allowsInbound(admit)).toBe(false);
   });
 
+  test.each([
+    ["workspace.write", true],
+    ["hub.execute", true],
+    ["workspace.read", false],
+    ["daemon.read", false],
+  ] as const)("profile switch previews retain %s authority", (permission, allowed) => {
+    const authorization = new SessionAuthorization([permission]);
+    expect(
+      authorization.allowsInbound({
+        type: "agent.profile.switch.request",
+        requestId: "switch",
+        agentId: "thread",
+        provider: "secondary",
+        dryRun: true,
+        explanation: "Move paused work",
+      }),
+    ).toBe(allowed);
+    expect(authorization.allowsOutbound(outboundMessage("agent.profile.switch.response"))).toBe(
+      allowed,
+    );
+  });
+
   test("quota observation requires provider read authority in both directions", () => {
     for (const permission of ["workspace.write", "automation.manage", "hub.execute"] as const) {
       const authorization = new SessionAuthorization([permission]);

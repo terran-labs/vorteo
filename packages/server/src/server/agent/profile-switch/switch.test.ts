@@ -11,17 +11,20 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { SwitchHistoryStore } from "./history-store.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { AgentManager } from "../agent-manager.js";
 import { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import { claudeProjectDirSync } from "../providers/claude/project-dir.js";
-import { switchAgentProfileCommand } from "./command.js";
+import { selectProfileSwitchCandidates, switchAgentProfileCommand } from "./command.js";
 import { MessageQueueService } from "../../message-queue/service.js";
 import { MessageQueueStore } from "../../message-queue/store.js";
 import { QueueAttachmentStore } from "../../message-queue/attachments.js";
 import { AgentStorage } from "../agent-storage.js";
 import type {
   AgentClient,
+  ProviderCatalog,
+  AgentFeature,
   AgentPersistenceHandle,
   AgentProvider,
   AgentSession,
@@ -43,21 +46,43 @@ class FakeSession implements AgentSession {
   readonly capabilities = CAPABILITIES;
   readonly id = randomUUID();
 
+  private mode: string | null;
+
   constructor(
     readonly provider: AgentProvider,
     private readonly history: AgentTimelineItem[],
-  ) {}
+    private readonly config?: AgentSessionConfig,
+    readonly features: AgentFeature[] = [],
+  ) {
+    this.mode = config?.modeId ?? null;
+  }
 
   async run() {
     return { sessionId: this.id, finalText: "", timeline: [] };
   }
 
+  private readonly listeners = new Set<(event: AgentStreamEvent) => void>();
+  private turnId: string | undefined;
+
   async startTurn() {
-    return { turnId: randomUUID() };
+    this.turnId = randomUUID();
+    for (const listener of this.listeners)
+      listener({ type: "turn_started", provider: this.provider, turnId: this.turnId });
+    return { turnId: this.turnId };
   }
 
-  subscribe(): () => void {
-    return () => undefined;
+  completeTurn(): void {
+    if (!this.turnId) return;
+    for (const listener of this.listeners)
+      listener({ type: "turn_completed", provider: this.provider, turnId: this.turnId });
+    this.turnId = undefined;
+  }
+
+  subscribe(listener: (event: AgentStreamEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
@@ -65,7 +90,17 @@ class FakeSession implements AgentSession {
   }
 
   async getRuntimeInfo() {
-    return { provider: this.provider, sessionId: this.id, model: null, modeId: null };
+    return {
+      provider: this.provider,
+      sessionId: this.id,
+      model: this.config?.model ?? null,
+      modeId: this.mode,
+      thinkingOptionId: this.config?.thinkingOptionId,
+    };
+  }
+
+  async listCommands() {
+    return [];
   }
 
   async getAvailableModes() {
@@ -73,10 +108,12 @@ class FakeSession implements AgentSession {
   }
 
   async getCurrentMode() {
-    return null;
+    return this.mode;
   }
 
-  async setMode(): Promise<void> {}
+  async setMode(modeId: string): Promise<void> {
+    this.mode = modeId;
+  }
 
   getPendingPermissions() {
     return [];
@@ -90,15 +127,23 @@ class FakeSession implements AgentSession {
 
   async interrupt(): Promise<void> {}
 
-  async close(): Promise<void> {}
+  beforeClose?: () => Promise<void>;
+
+  async close(): Promise<void> {
+    await this.beforeClose?.();
+  }
 }
 
 class FakeClient implements AgentClient {
   readonly capabilities = CAPABILITIES;
   readonly created: AgentSessionConfig[] = [];
+  readonly sessions: FakeSession[] = [];
   readonly resumed: AgentPersistenceHandle[] = [];
   history: AgentTimelineItem[] = [];
+  catalog: ProviderCatalog = { models: [], modes: [] };
+  features: AgentFeature[] = [];
   createError: Error | null = null;
+  beforeCatalog?: () => Promise<void>;
 
   constructor(readonly provider: AgentProvider) {}
 
@@ -106,14 +151,21 @@ class FakeClient implements AgentClient {
     return true;
   }
 
-  async fetchCatalog() {
-    return { models: [], modes: [] };
+  async fetchCatalog(): Promise<ProviderCatalog> {
+    await this.beforeCatalog?.();
+    return this.catalog;
+  }
+
+  async listFeatures(): Promise<AgentFeature[]> {
+    return this.features;
   }
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     if (this.createError) throw this.createError;
     this.created.push(config);
-    return new FakeSession(this.provider, []);
+    const session = new FakeSession(this.provider, [], config, structuredClone(this.features));
+    this.sessions.push(session);
+    return session;
   }
 
   async resumeSession(handle: AgentPersistenceHandle): Promise<AgentSession> {
@@ -122,23 +174,490 @@ class FakeClient implements AgentClient {
   }
 }
 
+class TestSwitchHistory extends SwitchHistoryStore {
+  beforeWrite?: () => Promise<void>;
+
+  override async writeSegment(...args: Parameters<SwitchHistoryStore["writeSegment"]>) {
+    await this.beforeWrite?.();
+    return super.writeSegment(...args);
+  }
+}
+
+class TestStorage extends AgentStorage {
+  override readonly switchHistory: TestSwitchHistory;
+
+  constructor(directory: string, logger: ReturnType<typeof createTestLogger>) {
+    super(directory, logger);
+    this.switchHistory = new TestSwitchHistory({
+      directory: (agentId) => join(directory, "..", "agent-switch-history", agentId),
+      logger,
+    });
+  }
+
+  journalError: Error | null = null;
+
+  override async appendJournal(...args: Parameters<AgentStorage["appendJournal"]>) {
+    if (this.journalError) throw this.journalError;
+    return super.appendJournal(...args);
+  }
+}
+
 async function fixture() {
   const workdir = mkdtempSync(join(tmpdir(), "profile-switch-"));
   const logger = createTestLogger();
-  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const storage = new TestStorage(join(workdir, "agents"), logger);
   await storage.initialize();
   const codex = new FakeClient("codex");
   const claude = new FakeClient("claude");
-  const manager = new AgentManager({ clients: { codex, claude }, registry: storage, logger });
+  const second = new FakeClient("codex-second");
+  const manager = new AgentManager({
+    clients: { codex, claude, "codex-second": second },
+    providerDefinitions: {
+      codex: { enabled: true },
+      "codex-second": { enabled: true, derivedFromProviderId: "codex" },
+    },
+    registry: storage,
+    logger,
+  });
   return {
     workdir,
     storage,
     codex,
     claude,
+    second,
     manager,
     cleanup: () => rmSync(workdir, { recursive: true, force: true }),
   };
 }
+
+test("switch preparation preserves effective settings over target profile defaults or refuses before mutation", async () => {
+  const { workdir, storage, manager, codex, second, cleanup } = await fixture();
+  try {
+    const preserved = {
+      modeId: "bypassPermissions",
+      thinkingOptionId: "high",
+      featureValues: { fast: true, quality: "high" },
+    };
+    codex.features = [
+      { type: "toggle", id: "fast", label: "Fast", value: true },
+      {
+        type: "select",
+        id: "quality",
+        label: "Quality",
+        value: "high",
+        options: [
+          { id: "high", label: "High" },
+          { id: "low", label: "Low" },
+        ],
+      },
+    ];
+    second.features = structuredClone(codex.features);
+    second.catalog = {
+      models: [
+        {
+          provider: "codex-second",
+          id: "model",
+          label: "Model",
+          thinkingOptions: [{ id: "high", label: "High" }],
+        },
+      ],
+      modes: [],
+    };
+    const agent = await manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+        model: "model",
+        ...preserved,
+        featureValues: { fast: null, quality: null },
+      },
+      undefined,
+      { workspaceId: undefined },
+    );
+    const dependencies = {
+      agentManager: manager,
+      agentStorage: storage,
+      logger: createTestLogger(),
+      getAgentProfiles: () => [
+        {
+          id: "target",
+          name: "Target defaults",
+          provider: "codex-second",
+          model: "model",
+          modeId: "default",
+          thinkingOptionId: "low",
+          featureValues: { fast: false, quality: "low" },
+        },
+      ],
+      providerSnapshotManager: {
+        async resolveCreateConfig(
+          input: Parameters<ProviderSnapshotManager["resolveCreateConfig"]>[0],
+        ) {
+          expect(input.requestedMode).toBe(preserved.modeId);
+          expect(input.featureValues).toEqual(preserved.featureValues);
+          return { modeId: input.requestedMode, featureValues: input.featureValues };
+        },
+        async *readSessionHistory() {},
+      },
+    };
+    const target = {
+      agentId: agent.id,
+      provider: "codex-second",
+      profileId: "target",
+      explanation: "Continue on the second account",
+    };
+    await expect(switchAgentProfileCommand(dependencies, target)).rejects.toMatchObject({
+      code: "incompatible-target",
+    });
+    expect(second.created).toEqual([]);
+    expect((await storage.get(agent.id))?.profileSwitches ?? []).toEqual([]);
+    second.catalog.modes = [{ id: "bypassPermissions", label: "Bypass" }];
+    expect(
+      await switchAgentProfileCommand(
+        dependencies,
+        { ...target, dryRun: true },
+        { includeResult: true },
+      ),
+    ).toEqual({
+      agentId: agent.id,
+      outcome: "refused",
+      error: expect.any(String),
+      preview: { sourceEligible: true, targetChecked: false },
+    });
+    expect(second.created).toEqual([]);
+    await switchAgentProfileCommand(dependencies, target);
+    expect(second.created[0]).toMatchObject(preserved);
+    // Coordinator requests never infer permission equivalence across provider families.
+    await expect(
+      switchAgentProfileCommand(dependencies, {
+        ...target,
+        provider: "claude",
+        profileId: undefined,
+      }),
+    ).rejects.toMatchObject({ code: "incompatible-target" });
+    expect(manager.getAgent(agent.id)?.provider).toBe("codex-second");
+    // App switches carry no explanation and keep switching across provider families.
+    await switchAgentProfileCommand(
+      {
+        ...dependencies,
+        providerSnapshotManager: {
+          async resolveCreateConfig() {
+            return { modeId: undefined, featureValues: undefined };
+          },
+          async *readSessionHistory() {},
+        },
+      },
+      { agentId: agent.id, provider: "claude" },
+    );
+    expect(manager.getAgent(agent.id)?.provider).toBe("claude");
+    await manager.closeAgent(agent.id);
+  } finally {
+    cleanup();
+  }
+});
+
+test("batch candidates use workspace membership and exact source account", () => {
+  const agents = [
+    { id: "selected", provider: "source", workspaceId: "one" },
+    { id: "other-account", provider: "other", workspaceId: "one" },
+    { id: "same-project", provider: "source", workspaceId: "two" },
+    { id: "other-project", provider: "source", workspaceId: "three" },
+    { id: "unassigned", provider: "source" },
+  ];
+  const workspaces = [
+    { workspaceId: "one", projectId: "project" },
+    { workspaceId: "two", projectId: "project" },
+    { workspaceId: "three", projectId: "other" },
+  ];
+  expect(
+    selectProfileSwitchCandidates({
+      agents,
+      workspaces,
+      selection: { sourceProvider: "source", workspaceId: "one" },
+    }),
+  ).toEqual(["selected"]);
+  expect(
+    selectProfileSwitchCandidates({
+      agents,
+      workspaces,
+      selection: { sourceProvider: "source", projectId: "project" },
+    }),
+  ).toEqual(["selected", "same-project"]);
+  expect(() =>
+    selectProfileSwitchCandidates({ agents, workspaces, selection: { sourceProvider: "source" } }),
+  ).toThrow("exactly one");
+});
+
+test("an eligible switch preview leaves sessions, history, journal and timeline unchanged", async () => {
+  const { workdir, storage, codex, second, manager, cleanup } = await fixture();
+  try {
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: workdir, title: "Review work" },
+      undefined,
+      {
+        workspaceId: undefined,
+      },
+    );
+    await manager.appendTimelineItem(agent.id, { type: "user_message", text: "Keep this work" });
+    await manager.appendJournal(agent.id, { entryId: randomUUID(), text: "Approved scope" });
+    await manager.flush();
+    const before = await storage.get(agent.id);
+    expect(before?.persistence).toMatchObject({ provider: "codex" });
+    const timeline = await manager.getTimelineRows(agent.id);
+    const journal = await manager.readJournal(agent.id);
+    const filesBefore = readdirSync(workdir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => [
+        join(entry.parentPath, entry.name),
+        readFileSync(join(entry.parentPath, entry.name), "utf8"),
+      ]);
+    let runtimeStarts = 0;
+    second.beforeCatalog = async () => {
+      runtimeStarts += 1;
+      await second.createSession({ provider: "codex-second", cwd: workdir });
+    };
+    const dependencies = {
+      agentManager: manager,
+      agentStorage: storage,
+      logger: createTestLogger(),
+      providerSnapshotManager: {
+        async resolveCreateConfig() {
+          return { modeId: undefined, featureValues: undefined };
+        },
+        async *readSessionHistory() {},
+      },
+    };
+    const target = {
+      agentId: agent.id,
+      provider: "codex-second",
+      explanation: "Move the approved work",
+    };
+    const options = {
+      includeResult: true as const,
+      actor: { kind: "agent" as const, id: agent.id },
+    };
+    const preview = await switchAgentProfileCommand(
+      dependencies,
+      { ...target, dryRun: true },
+      options,
+    );
+    expect(runtimeStarts).toBe(0);
+    // A dry run reports source eligibility only, with no settings that could pass for the target's.
+    expect(preview).toEqual({
+      agentId: agent.id,
+      outcome: "refused",
+      error: expect.any(String),
+      preview: { sourceEligible: true, targetChecked: false },
+    });
+    expect(
+      await switchAgentProfileCommand(
+        dependencies,
+        { ...target, dryRun: true },
+        {
+          ...options,
+          validateScope: async () => {
+            throw new Error("Outside the selection");
+          },
+        },
+      ),
+    ).toEqual({
+      agentId: agent.id,
+      outcome: "refused",
+      error: "Outside the selection",
+      refusalCode: "out-of-scope",
+      preview: { sourceEligible: false, targetChecked: false },
+    });
+    expect(second.created).toEqual([]);
+    const unloadedManager = new AgentManager({
+      clients: { codex, "codex-second": second },
+      registry: storage,
+      logger: createTestLogger(),
+    });
+    expect(unloadedManager.getAgent(agent.id)).toBeNull();
+    const unloadedPreview = await switchAgentProfileCommand(
+      {
+        ...dependencies,
+        agentManager: unloadedManager,
+        providerSnapshotManager: {
+          ...dependencies.providerSnapshotManager,
+          async *readSessionHistory() {
+            runtimeStarts += 1;
+            await codex.resumeSession({ provider: "codex", sessionId: agent.id });
+            yield { type: "user_message" as const, text: "Saved history" };
+          },
+        },
+      },
+      { ...target, dryRun: true },
+      options,
+    );
+    expect(unloadedPreview).toMatchObject({ preview: { sourceEligible: true } });
+    expect(runtimeStarts).toBe(0);
+    expect(codex.resumed).toEqual([]);
+    const restrictedPreview = await switchAgentProfileCommand(
+      {
+        ...dependencies,
+        getAgentProfiles: () => [
+          {
+            id: "restricted",
+            name: "Restricted skills",
+            provider: "codex",
+            model: "model",
+            skillPolicy: { mode: "inherit" as const, include: [], exclude: ["excluded-skill"] },
+          },
+        ],
+      },
+      { ...target, provider: "codex", profileId: "restricted", dryRun: true },
+      options,
+    );
+    expect(codex.created).toHaveLength(1);
+    expect(second.created).toEqual([]);
+    expect(restrictedPreview).toMatchObject({
+      preview: { sourceEligible: true, targetChecked: false },
+    });
+    await manager.flush();
+    expect(codex.created).toHaveLength(1);
+    expect(second.created).toEqual([]);
+    expect(await storage.get(agent.id)).toEqual(before);
+    expect(await manager.readJournal(agent.id)).toEqual(journal);
+    expect(await manager.getTimelineRows(agent.id)).toEqual(timeline);
+    const filesAfter = readdirSync(workdir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => [
+        join(entry.parentPath, entry.name),
+        readFileSync(join(entry.parentPath, entry.name), "utf8"),
+      ]);
+    expect(filesAfter).toEqual(filesBefore);
+    second.beforeCatalog = undefined;
+    expect(
+      await switchAgentProfileCommand(dependencies, { ...target, dryRun: false }, options),
+    ).toMatchObject({ outcome: "switched" });
+    const afterJournal = await manager.readJournal(agent.id);
+    expect(afterJournal).toHaveLength(2);
+    expect(JSON.parse(afterJournal[1]?.machineContext ?? "null")).toMatchObject({
+      actor: options.actor,
+      reason: target.explanation,
+      from: "codex",
+      to: "codex-second",
+    });
+    storage.journalError = new Error("Journal unavailable");
+    expect(
+      await switchAgentProfileCommand(
+        dependencies,
+        { ...target, provider: "codex", dryRun: false },
+        options,
+      ),
+    ).toMatchObject({ outcome: "switched", provider: "codex", auditError: "Journal unavailable" });
+    expect(manager.getAgent(agent.id)?.provider).toBe("codex");
+    storage.journalError = null;
+    expect(second.created).toHaveLength(1);
+    await manager.closeAgent(agent.id);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a restriction queued during history writing applies to the replacement session", async () => {
+  const { workdir, storage, codex, second, manager, cleanup } = await fixture();
+  const writing = Promise.withResolvers<void>();
+  const finishWriting = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  const finishClosing = Promise.withResolvers<void>();
+  try {
+    second.catalog = {
+      models: [],
+      modes: [{ id: "bypassPermissions", label: "Bypass" }],
+    };
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: workdir, modeId: "bypassPermissions" },
+      undefined,
+      { workspaceId: undefined },
+    );
+    const sourceSession = codex.sessions[0]!;
+    sourceSession.beforeClose = async () => {
+      closing.resolve();
+      await finishClosing.promise;
+    };
+    storage.switchHistory.beforeWrite = async () => {
+      writing.resolve();
+      await finishWriting.promise;
+    };
+    const switched = switchAgentProfileCommand(
+      {
+        agentManager: manager,
+        agentStorage: storage,
+        logger: createTestLogger(),
+        providerSnapshotManager: {
+          async resolveCreateConfig() {
+            return { modeId: "bypassPermissions", featureValues: undefined };
+          },
+          async *readSessionHistory() {},
+        },
+      },
+      { agentId: agent.id, provider: "codex-second", explanation: "Continue elsewhere" },
+    );
+    await writing.promise;
+    const restriction = manager.setAgentMode(agent.id, "default");
+    finishWriting.resolve();
+    await closing.promise;
+    finishClosing.resolve();
+    await switched;
+    await restriction;
+    expect(manager.getAgent(agent.id)?.currentModeId).toBe("default");
+    expect(await second.sessions[0]?.getCurrentMode()).toBe("default");
+    expect(await sourceSession.getCurrentMode()).toBe("bypassPermissions");
+    await manager.closeAgent(agent.id);
+  } finally {
+    finishWriting.resolve();
+    finishClosing.resolve();
+    cleanup();
+  }
+});
+
+test.each([false, true])(
+  "a settings change during target resolution refuses the switch before replacement (structured: %s)",
+  async (structured) => {
+    const { workdir, storage, codex, manager, cleanup } = await fixture();
+    try {
+      codex.catalog = { models: [], modes: [{ id: "default", label: "Default" }] };
+      const agent = await manager.createAgent(
+        { provider: "codex", cwd: workdir, modeId: "default" },
+        undefined,
+        { workspaceId: undefined },
+      );
+      const attempt = switchAgentProfileCommand(
+        {
+          agentManager: manager,
+          agentStorage: storage,
+          logger: createTestLogger(),
+          providerSnapshotManager: {
+            async resolveCreateConfig() {
+              await manager.setAgentMode(agent.id, "bypassPermissions");
+              return { modeId: "default", featureValues: undefined };
+            },
+            async *readSessionHistory() {},
+          },
+        },
+        { agentId: agent.id, provider: "codex", explanation: "Continue elsewhere" },
+        { includeResult: structured },
+      );
+      if (structured) {
+        await expect(attempt).resolves.toMatchObject({
+          outcome: "refused",
+          modeId: "default",
+          refusalCode: "source-changed",
+        });
+      } else {
+        await expect(attempt).rejects.toMatchObject({ code: "source-changed" });
+      }
+      expect(codex.created).toHaveLength(1);
+      expect(manager.getAgent(agent.id)?.config.modeId).toBe("bypassPermissions");
+      expect((await storage.get(agent.id))?.profileSwitches ?? []).toEqual([]);
+      await manager.closeAgent(agent.id);
+    } finally {
+      cleanup();
+    }
+  },
+);
 
 test("a switch keeps the thread, carries recorded context and replays every segment", async () => {
   const { workdir, storage, codex, claude, manager, cleanup } = await fixture();
@@ -239,18 +758,24 @@ test("a switch keeps the thread, carries recorded context and replays every segm
   }
 });
 
-test("a switch refuses while permission requests are pending", async () => {
-  const { workdir, manager, cleanup } = await fixture();
+test.each(["permission", "running"])("a switch refuses while busy (%s)", async (busy) => {
+  const { workdir, manager, codex, cleanup } = await fixture();
+  let run: Promise<unknown> | undefined;
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
-    manager.getAgent(agent.id)?.pendingPermissions.set("permission", {
-      id: "permission",
-      provider: "codex",
-      name: "Bash",
-      kind: "tool",
-    });
+    if (busy === "running") {
+      run = manager.runAgent(agent.id, "Keep running until the fixture completes the turn");
+      await manager.waitForAgentRunStart(agent.id);
+      expect(manager.hasInFlightRun(agent.id)).toBe(true);
+    } else
+      manager.getAgent(agent.id)?.pendingPermissions.set("permission", {
+        id: "permission",
+        provider: "codex",
+        name: "Bash",
+        kind: "tool",
+      });
     await expect(
       manager.switchAgentProfile(agent.id, {
         config: { provider: "claude", cwd: workdir },
@@ -259,6 +784,8 @@ test("a switch refuses while permission requests are pending", async () => {
       }),
     ).rejects.toThrow("Wait for the current turn");
   } finally {
+    for (const session of codex.sessions) session.completeTurn();
+    await run;
     await manager.flush();
     cleanup();
   }

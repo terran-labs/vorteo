@@ -182,11 +182,24 @@ Coordinators older than the release that added the `admission` field cannot pars
 a journal containing it. Once a deployment with that field has run, rolling the
 coordinator or Host back below that release is not supported. Lost replies retain uncertainty. After a lost reply or any file
 write, recovery reads evidence and native state without replaying commands,
-replacing files or automatically restoring registrations. Recovery can confirm a
-run that committed and restored but never wrote its final receipt: every per-file
-intent and acknowledgement must match `commit.json`, every suppression and
-restoration effect must be acknowledged for this plan, no abort record may exist,
-and the same post-restore checks must pass. That confirmation writes nothing.
+replacing files or automatically restoring registrations. Before re-enabling any broker, the worker records `window-verified.json`: the
+full end-of-window preservation report, bound to the plan and to `commit.json`.
+The final receipt carries its digest.
+
+Recovery can confirm a run that committed and restored but never wrote its final
+receipt, in refusing and running mode alike. Every per-file intent and
+acknowledgement must match `commit.json`, every suppression and restoration
+effect must be acknowledged for this plan, and the same post-restore checks must
+pass: the full live comparison for a refusing broker, and committed files, config
+and installed marker for a running one. A run whose `admission.json` carries
+`evidenceVersion` 2 must also have a consistent `window-verified.json`. A run
+without that marker was made by a worker that never wrote the window record; for
+it, `commit.json`, written only after the under-lock preservation check, stands
+for the window check. What refuses an aborted run is the missing evidence: an
+abort before the first write leaves no `commit.json`, and one after it leaves no
+restoration acknowledgements. Abort records are best-effort and are not written
+once replacement has begun, so their absence proves nothing. That confirmation
+writes nothing.
 The client commands are `request-broker-consumer-deployment --request-file` and
 `broker-deployment-status ID`. Submission requires the configured capability;
 exact approval remains separate. Source validation is not installed availability.

@@ -139,6 +139,8 @@ The broker pins a hash of its node's packet filter and refuses every operation w
 
 If the change was a device that should not stay, remove it from the tailnet and the broker recovers on its next run. To accept the new scope on the same node, rerun the native installer with its existing arguments and `--accept-access-scope`. It runs under the broker's lock, refuses if the node itself differs, and prints what it accepted as grants added and removed. A grant is one source reaching one destination with its ports and protocols, shown with device names, so a source that gains ports is reported even when the set of sources is unchanged. An install that predates this record prints every current grant, and a changed hash with no grant difference prints the raw rules and says so. Reserved preview origins are kept, so running previews and their review toolbar are unaffected. Read that output before relying on the broker again.
 
+The Dev container broker takes the same flag: rerun `install-https-broker.py` with its existing arguments and `--accept-access-scope`. Without the flag, it refuses and prints the same grant summary, so you can review the change before accepting it. A different node or hostname always refuses. The file replacement and config write happen under the broker's lock, and the install refuses if the config changed after it was checked. The installer writes the broker's launchd job with the interpreter that runs it, so run it with the same Python the job already uses.
+
 Adding the dedicated previews node is itself such a change for the old node. A move to the new node checks that the old node is still the same node and publishes none of the broker's ports; it does not require the old node's scope to be unchanged.
 
 ## Broker rollback

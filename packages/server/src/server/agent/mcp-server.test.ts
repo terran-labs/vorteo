@@ -143,6 +143,150 @@ import { createWorkspaceProvisioningService } from "../session/workspace-provisi
 
 const REPO_CWD = resolvePath("/tmp/repo");
 
+it("switch tool enforces policy, caller scope and exact batch membership", async () => {
+  const home = await mkdtemp(join(tmpdir(), "mcp-switch-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(join(home, "agents"), logger);
+  const clients = createTestAgentClients();
+  clients.codex.listFeatures = async () => [
+    { type: "toggle", id: "test_feature", label: "Test feature", value: false },
+  ];
+  const manager = new AgentManager({
+    clients,
+    registry: storage,
+    logger,
+  });
+  try {
+    const caller = await manager.createAgent(
+      { provider: "codex", cwd: home, modeId: "default" },
+      undefined,
+      {
+        workspaceId: "other",
+      },
+    );
+    const target = await manager.createAgent(
+      { provider: "codex", cwd: home, modeId: "default" },
+      undefined,
+      {
+        workspaceId: "selected",
+      },
+    );
+    const outside = await manager.createAgent({ provider: "codex", cwd: tmpdir() }, undefined, {
+      workspaceId: "selected",
+    });
+    const workspace = createPersistedWorkspaceRecord({
+      workspaceId: "selected",
+      projectId: "project",
+      cwd: home,
+      kind: "local_checkout",
+      displayName: "Selected",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const providerStub = createProviderSnapshotManagerStub();
+    providerStub.resolveCreateConfig.mockImplementation(async (input) => ({
+      modeId: input.requestedMode,
+      featureValues: input.featureValues,
+    }));
+    const options = {
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      paseoHome: home,
+      callerAgentId: caller.id,
+      providerSnapshotManager: providerStub.manager,
+      resolveCallerContext: () => ({ lockedCwd: home, allowCustomCwd: true }),
+      workspaceRegistry: {
+        async list() {
+          return [workspace];
+        },
+        async get() {
+          return workspace;
+        },
+        async upsert() {},
+      },
+    };
+    expect(
+      createPaseoToolCatalog({
+        ...options,
+        paseoToolPolicy: { disabledTools: ["switch_agent_profile"] },
+      }).tools.has("switch_agent_profile"),
+    ).toBe(false);
+    const catalog = createPaseoToolCatalog(options);
+    const result = await catalog.executeTool("switch_agent_profile", {
+      workspaceId: "selected",
+      sourceProvider: "codex",
+      provider: "codex",
+      reason: "Continue approved work",
+      dryRun: true,
+    });
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        {
+          agentId: target.id,
+          outcome: "refused",
+          preview: { sourceEligible: true, targetChecked: false },
+        },
+        {
+          agentId: outside.id,
+          outcome: "refused",
+          refusalCode: "out-of-scope",
+          preview: { sourceEligible: false, targetChecked: false },
+        },
+      ],
+    });
+    expect(manager.getAgent(target.id)?.provider).toBe("codex");
+    expect(manager.getAgent(caller.id)?.provider).toBe("codex");
+    const snapshots = options.providerSnapshotManager;
+    vi.spyOn(snapshots, "resolveCreateConfig").mockImplementationOnce(async (input) => {
+      const stored = (await storage.get(target.id))!;
+      await storage.upsert({ ...stored, workspaceId: "other" });
+      return { modeId: input.requestedMode, featureValues: input.featureValues };
+    });
+    const moved = await catalog.executeTool("switch_agent_profile", {
+      agentId: target.id,
+      provider: "codex",
+      reason: "Continue approved work",
+      dryRun: false,
+    });
+    expect(moved.structuredContent).toMatchObject({
+      results: [{ agentId: target.id, outcome: "refused", refusalCode: "source-changed" }],
+    });
+    expect(manager.getAgent(target.id)?.provider).toBe("codex");
+    for (const managed of [
+      { internal: true },
+      { config: { controllerExecutionId: "controller" } },
+    ]) {
+      const stored = (await storage.get(target.id))!;
+      await storage.upsert({ ...stored, workspaceId: "selected", internal: false, ...managed });
+      const refused = await catalog.executeTool("switch_agent_profile", {
+        agentId: target.id,
+        provider: "codex",
+        reason: "Continue approved work",
+        dryRun: false,
+      });
+      expect(refused.structuredContent).toMatchObject({
+        results: [{ outcome: "refused", refusalCode: "managed" }],
+      });
+    }
+
+    await expect(
+      createPaseoToolCatalog({ ...options, callerAgentId: undefined }).executeTool(
+        "switch_agent_profile",
+        {
+          agentId: target.id,
+          provider: "codex",
+          reason: "Continue approved work",
+          dryRun: true,
+        },
+      ),
+    ).rejects.toThrow("agent-scoped");
+    for (const agent of [caller, target, outside]) await manager.closeAgent(agent.id);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 it.each([false, true])(
   "records canonical MCP follow-up identity without provider echoes (caller-scoped: %s)",
   async (scoped) => {

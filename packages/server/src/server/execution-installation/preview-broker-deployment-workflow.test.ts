@@ -8,6 +8,7 @@ import {
 } from "@getpaseo/protocol/preview-broker-deployment";
 import {
   PreviewBrokerDeploymentWorkflow,
+  firstLine,
   type BrokerDeploymentExecutor,
 } from "./preview-broker-deployment-workflow.js";
 
@@ -165,6 +166,17 @@ describe("broker consumer deployment queue boundary", () => {
     expect(log).toHaveBeenCalledWith(
       `Broker consumer deployment ${f.input.id} preparation refused: Deployment child custody differs\n`,
     );
+  });
+
+  it("surfaces refusal text without terminal escapes or control characters", () => {
+    expect(firstLine(new Error("\u001b[31mcustody\u001b[0m differs\rFORGED"))).toBe(
+      "custody differs",
+    );
+    expect(firstLine(new Error("bell\u0007 osc\u001b]0;title\u0007 c1\u009b end"))).toBe(
+      "bell osc c1 end",
+    );
+    expect(firstLine(new Error("\r\n"))).toBe("unknown error");
+    expect(firstLine("x".repeat(400))).toHaveLength(300);
   });
 
   it("recovery observes without preparation or effect replay", async () => {
