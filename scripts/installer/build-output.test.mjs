@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { build, run } from "./primitives.mjs";
@@ -47,4 +47,20 @@ test("a logging failure rejects the command instead of throwing from an event li
     }),
     /log unavailable/,
   );
+});
+
+test("Tailscale runs in CLI mode even without a terminal, as under launchd", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "tailscale-cli-"));
+  try {
+    // The macOS app binary opens its GUI unless TAILSCALE_BE_CLI is set; other tools are left alone.
+    const script = '#!/bin/sh\nprintf "%s" "${TAILSCALE_BE_CLI:-unset}"\n';
+    for (const name of ["Tailscale", "other"]) {
+      writeFileSync(path.join(directory, name), script, { mode: 0o755 });
+    }
+    const env = { PATH: "/usr/bin:/bin" };
+    assert.equal(await run(path.join(directory, "Tailscale"), [], { env }), "1");
+    assert.equal(await run(path.join(directory, "other"), [], { env }), "unset");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

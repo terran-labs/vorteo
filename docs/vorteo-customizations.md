@@ -1,5 +1,9 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): comment order fix in the installer command runner; no behavior change. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): installer calls to Tailscale set `TAILSCALE_BE_CLI=1`, so the Mac app answers as a CLI under launchd and coordinator-started adoption sees the signed-in tailnet. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): prepared beta release 26.11.503 for VortLab, superseding the untagged 26.11.501 and 26.11.502 after main moved, and adding the Mechanic CI duty. Version and changelog only. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.502 for VortLab, superseding the untagged 26.11.501 after main moved. Version and changelog only. README overview and onboarding are unchanged.
