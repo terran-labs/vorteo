@@ -30,6 +30,7 @@ import type {
 import type { AgentAttachment, FirstAgentContext } from "../../messages.js";
 import {
   ProfileSwitchError,
+  WorkerLaunchRefusal,
   type AgentManager,
   type CreateAgentOptions,
   type ManagedAgent,
@@ -49,7 +50,7 @@ import { buildAgentPrompt } from "../prompt-attachments.js";
 import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
 import { resolveCreateAgentIntent } from "./intent.js";
-import { resolveProfileLaunch } from "./profile.js";
+import { ProfileLaunchError, resolveProfileLaunch } from "./profile.js";
 import {
   readInstallationProfileConfig,
   type InstallationProfileReader,
@@ -312,32 +313,12 @@ export async function createAgentCommand(
   dependencies: CreateAgentCommandDependencies,
   input: CreateAgentCommandInput,
 ): Promise<CreateAgentCommandResult> {
-  const bindings = observeLaunchBindings(dependencies);
-  dependencies = await admitProfileDependencies(
-    bindings.dependencies,
-    input.kind === "session" ? input.config.profileId : input.profileId,
-  );
-  const resolved =
-    input.kind === "session"
-      ? await resolveSessionCreateAgent(dependencies, input)
-      : await resolveMcpCreateAgent(dependencies, input);
-
-  await validateSharedLaunch(dependencies, resolved.config);
-  await captureLaunchPolicy(dependencies, resolved.config, {
-    requestedProfileId: input.kind === "session" ? input.config.profileId : input.profileId,
+  const admitted = await admitAndCreateAgent(dependencies, input).catch((error: unknown) => {
+    logRefusedWorkerLaunch(dependencies, input, error);
+    throw error;
   });
-
-  if (resolved.config.quotaReserve) {
-    await dependencies.agentManager.checkQuotaReserveLaunch(resolved.config);
-  }
-
-  bindings.assertCurrent();
-
-  const snapshot = await dependencies.agentManager.createAgent(
-    resolved.config,
-    input.kind === "session" ? input.agentId : undefined,
-    resolved.createOptions,
-  );
+  const { resolved, snapshot } = admitted;
+  dependencies = admitted.dependencies;
   await input.onCreated?.({
     agentId: snapshot.id,
     createdWorktree: resolved.createdWorktree ?? null,
@@ -378,6 +359,98 @@ export async function createAgentCommand(
     initialPromptError,
     ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
   };
+}
+
+/** Everything that can refuse a launch: admission, preset resolution, policy and registration. */
+async function admitAndCreateAgent(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+) {
+  const bindings = observeLaunchBindings(dependencies);
+  dependencies = await admitProfileDependencies(
+    bindings.dependencies,
+    input.kind === "session" ? input.config.profileId : input.profileId,
+  );
+  const resolved =
+    input.kind === "session"
+      ? await resolveSessionCreateAgent(dependencies, input)
+      : await resolveMcpCreateAgent(dependencies, input);
+
+  await validateSharedLaunch(dependencies, resolved.config);
+  await captureLaunchPolicy(dependencies, resolved.config, {
+    requestedProfileId: input.kind === "session" ? input.config.profileId : input.profileId,
+  });
+
+  if (resolved.config.quotaReserve) {
+    await dependencies.agentManager.checkQuotaReserveLaunch(resolved.config);
+  }
+
+  bindings.assertCurrent();
+
+  const snapshot = await dependencies.agentManager.createAgent(
+    resolved.config,
+    input.kind === "session" ? input.agentId : undefined,
+    resolved.createOptions,
+  );
+  return { dependencies, resolved, snapshot };
+}
+
+const LOG_STRING_LIMIT = 200;
+
+function boundLogValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return value.slice(0, LOG_STRING_LIMIT);
+  if (value === null || typeof value !== "object") return value;
+  if (depth > 1) return "[omitted]";
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, boundLogValue(entry, depth + 1)]),
+  );
+}
+
+/**
+ * Records a refusal without ever replacing it: strings are cut to a fixed length and a failing
+ * logger is ignored. Callers pass codes, never error messages, which can carry paths or URLs.
+ */
+export function logRefusal(logger: Logger, message: string, fields: Record<string, unknown>): void {
+  try {
+    logger.warn(boundLogValue(fields), message);
+  } catch {
+    // The caller's own error matters more than this record.
+  }
+}
+
+/** A refusal's loggable code; null for any other failure. */
+function workerRefusalCode(error: unknown): string | null {
+  if (error instanceof WorkerLaunchRefusal || error instanceof ProfileLaunchError) {
+    return error.code;
+  }
+  return null;
+}
+
+/** A supervisor only sees the refusal text; the log keeps who asked for what. */
+function logRefusedWorkerLaunch(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+  error: unknown,
+): void {
+  const code = workerRefusalCode(error);
+  // Other failures, such as a provider that will not start, are reported where they occur.
+  if (!code || input.kind !== "mcp" || !input.callerAgentId) return;
+  try {
+    const caller = dependencies.agentManager.getAgent(input.callerAgentId);
+    const worker = caller?.config.profileLaunch?.worker;
+    if (!caller || !worker) return;
+    logRefusal(dependencies.logger, "Managed worker launch refused", {
+      callerAgentId: caller.id,
+      callerProvider: caller.provider,
+      requestedProvider: input.provider,
+      requestedProfileId: input.profileId ?? null,
+      workerProfileId: worker.id,
+      workerProvider: worker.provider,
+      refusalCode: code,
+    });
+  } catch {
+    // Never let the record replace the refusal.
+  }
 }
 
 function initialPromptNotificationRequest(
@@ -500,17 +573,42 @@ interface McpProfileSelection {
   caller: ManagedAgent | null;
 }
 
+/**
+ * The account in a frozen worker preset is a default. A launch may instead ask for the account
+ * the supervisor currently runs on, when both have one provider type, and runs the same preset
+ * there; whether the supervisor ever moved is not checked. Any other account keeps the preset's
+ * own, so the caller's request is refused by the checks that follow.
+ */
+function workerOnSupervisorAccount(
+  worker: AgentProfile,
+  caller: ManagedAgent | null,
+  input: CreateAgentFromMcpInput,
+  settings: MutableDaemonConfig | undefined,
+): AgentProfile {
+  const current = caller?.provider;
+  const providers = settings?.providers;
+  if (!current || !providers || current === worker.provider) return worker;
+  if (resolveProviderModel(input.provider).provider !== current) return worker;
+  if (resolveProviderType(current, providers) !== resolveProviderType(worker.provider, providers)) {
+    return worker;
+  }
+  return { ...worker, provider: current };
+}
+
 function resolveMcpProfileSelection({
   dependencies,
   input,
-  worker,
+  worker: frozen,
   caller,
 }: McpProfileSelection): AgentSessionConfig {
   const settings = dependencies.getSharedProviderConfig?.();
-  if (worker && settings?.sharedProviderPreferences?.installation) {
+  const worker = frozen && workerOnSupervisorAccount(frozen, caller, input, settings);
+  if (frozen && worker && settings?.sharedProviderPreferences?.installation) {
     // Frozen workers keep their values, but every new dispatch checks current exclusions.
+    // Canonical presets check the account in use; older references stay bound to their account.
+    const account = worker.id.startsWith("shared-profile/") ? worker.provider : frozen.provider;
     resolveProfileLaunch(
-      { provider: worker.provider, cwd: input.cwd ?? "", profileId: worker.id },
+      { provider: account, cwd: input.cwd ?? "", profileId: worker.id },
       [],
       Date.now(),
       settings,
@@ -542,15 +640,24 @@ function resolveMcpProfileInput(
     : null;
   const worker = caller?.config.profileLaunch?.worker;
   if (worker && input.profileId !== worker.id) {
-    throw new Error(`This supervisor must launch its configured worker preset: ${worker.id}`);
+    throw new WorkerLaunchRefusal(
+      `This supervisor must launch its configured worker preset: ${worker.id}`,
+      "preset-required",
+    );
   }
   if (worker && input.detached)
-    throw new Error("Managed workers cannot be detached from their supervisor.");
+    throw new WorkerLaunchRefusal(
+      "Managed workers cannot be detached from their supervisor.",
+      "detached",
+    );
   if (input.profileId) {
     const resolved = resolveMcpProfileSelection({ dependencies, input, worker, caller });
     if (!resolved.model) throw new Error("MCP launches require a preset with an explicit model.");
     if (resolveProviderModel(input.provider).provider !== resolved.provider) {
-      throw new Error("The requested provider must match the preset provider.");
+      throw new WorkerLaunchRefusal(
+        "The requested provider must match the preset provider.",
+        "provider-mismatch",
+      );
     }
     input = {
       ...input,

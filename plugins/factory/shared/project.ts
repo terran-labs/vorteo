@@ -46,6 +46,63 @@ export const ProjectFactoryDrainSchema = z.object({
   pausedAt: z.string(),
 });
 
+/** Only named subprocess facts cross the assignment boundary; no raw error text. */
+export const ProjectFactoryAssignmentDiagnosticSchema = z.object({
+  category: z.enum([
+    "transport",
+    "timeout",
+    "spawn",
+    "exit",
+    "signal",
+    "http",
+    "response",
+    "content",
+    "schema",
+  ]),
+  code: z
+    .union([
+      z.enum([
+        "ENOENT",
+        "EACCES",
+        "EPERM",
+        "EAGAIN",
+        "ENOMEM",
+        "ETIMEDOUT",
+        "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        "ABORT_ERR",
+      ]),
+      z.number().int().min(0).max(255),
+    ])
+    .nullable(),
+  signal: z
+    .enum([
+      "SIGTERM",
+      "SIGKILL",
+      "SIGINT",
+      "SIGABRT",
+      "SIGHUP",
+      "SIGQUIT",
+      "SIGSEGV",
+      "SIGPIPE",
+      "SIGBUS",
+      "SIGILL",
+      "SIGFPE",
+      "SIGTRAP",
+    ])
+    .nullable(),
+  killed: z.boolean().nullable(),
+  timeout: z.enum(["confirmed", "unknown"]),
+  httpStatus: z.number().int().min(100).max(599).nullable(),
+  /** Generated from safe facts, never stderr or Error.message. */
+  reason: z
+    .string()
+    .max(240)
+    .regex(/^[^\r\n]*$/),
+});
+export type ProjectFactoryAssignmentDiagnostic = z.infer<
+  typeof ProjectFactoryAssignmentDiagnosticSchema
+>;
+
 /**
  * Who runs Triage and Releases for a repository, from `.github/factory.json` on its default
  * branch. "none" means no file, so every installation keeps single-installation behavior.
@@ -57,6 +114,8 @@ export const ProjectFactoryAssignmentSchema = z.object({
   releases: z.string().nullable(),
   /** Why the file could not be used; null when it was. */
   detail: z.string().nullable(),
+  /** Optional for state and peers written before assignment diagnostics. */
+  diagnostics: ProjectFactoryAssignmentDiagnosticSchema.optional(),
   readAt: z.string(),
 });
 export type ProjectFactoryAssignment = z.infer<typeof ProjectFactoryAssignmentSchema>;
