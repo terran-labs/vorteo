@@ -10,6 +10,9 @@ import type {
 import {
   activeUpgrade,
   coordinatorFollowView,
+  DELEGATION_VISIBLE_POLL_MS,
+  installationChangesPollMs,
+  sourceUpgradesPollMs,
   installationUpdateEntry,
   latestFinishedUpgrade,
   pendingUpgradeDecisions,
@@ -333,4 +336,21 @@ describe("coordinatorSettingsView", () => {
       ],
     });
   });
+});
+
+it("an open page finds a new delegated request well before its thirty-second window ends", () => {
+  const window = 30_000;
+  // Empty or idle: the next poll still lands inside the window, so Cancel shows before dispatch.
+  for (const interval of [
+    sourceUpgradesPollMs(null),
+    sourceUpgradesPollMs({ upgrades: [] }),
+    sourceUpgradesPollMs({ upgrades: [{ status: "succeeded" }] }),
+    installationChangesPollMs(undefined),
+    installationChangesPollMs([]),
+    installationChangesPollMs([{ finishedAt: "2026-11-08T12:00:00.000Z" }]),
+  ])
+    expect(interval * 2).toBeLessThanOrEqual(window);
+  expect(sourceUpgradesPollMs({ upgrades: [{ status: "pending" }] })).toBeLessThan(
+    DELEGATION_VISIBLE_POLL_MS,
+  );
 });
