@@ -5,7 +5,7 @@ import {
   claudeAccessProjection,
   needsHostRefresh,
   type ClaudeOAuthGrant,
-} from "./claude-oauth-host.js";
+} from "./claude-oauth-storage.js";
 import {
   HostOwnedRefresher,
   HostRefreshStateSchema,

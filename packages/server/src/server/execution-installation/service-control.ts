@@ -127,7 +127,9 @@ export function managedServices(
       ? { launchdService: config.host.launchdService }
       : { systemdService: config.host.systemdService };
   if (!config.container) return { coordinator, host };
+  // Adoption records no deployment directory for a Dev it does not manage; that Dev is left
+  // out, so restores and upgrades never stop, replace or start it.
   const directory = config.deployment?.containerDirectory;
-  if (!directory) return "The installer did not record Dev's deployment directory.";
+  if (!directory) return { coordinator, host };
   return { coordinator, host, dev: { directory } };
 }

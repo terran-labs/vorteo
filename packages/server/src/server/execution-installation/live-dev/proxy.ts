@@ -4,7 +4,12 @@ import { request as httpRequest, type IncomingMessage } from "node:http";
 import { connect } from "node:net";
 import type { Duplex } from "node:stream";
 import type { Logger } from "pino";
-import { prepareWebUiHtml } from "../../web-ui.js";
+import { INJECTED_BODY_HTML, prepareWebUiHtml } from "../../web-ui.js";
+import {
+  injectBeforeBodyEnd,
+  liveDevIndicatorHtml,
+  type LiveDevIndicatorState,
+} from "./indicator.js";
 
 /**
  * Serves the live dev server to the owner's browser in live dev mode. Everything else, and
@@ -52,21 +57,35 @@ function wantsPage(req: Request): boolean {
   return (req.headers.accept ?? "").includes("text/html");
 }
 
-function choseSafeInterface(req: Request): boolean {
-  return (
-    req.headers.cookie?.split(";").some((part) => {
-      const value = part.trim();
-      return value === `${INTERFACE_COOKIE}=safe` || value === `${INTERFACE_COOKIE}=fallback`;
-    }) ?? false
-  );
+function interfaceCookie(req: Request): string | null {
+  for (const part of req.headers.cookie?.split(";") ?? []) {
+    const value = part.trim();
+    if (value.startsWith(`${INTERFACE_COOKIE}=`)) return value.slice(INTERFACE_COOKIE.length + 1);
+  }
+  return null;
 }
 
-const MARKER = `<div id="vorteo-live-dev-marker" role="status" style="position:fixed;right:12px;bottom:12px;z-index:2147483647;font:500 13px/1.4 system-ui,sans-serif;color:#fff;background:rgba(109,40,217,.92);padding:6px 10px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.25)">Live dev · <a href="/?interface=safe" style="color:#fff;text-decoration:underline">Safe interface</a></div>`;
+function choseSafeInterface(req: Request): boolean {
+  const cookie = interfaceCookie(req);
+  return cookie === "safe" || cookie === "fallback";
+}
 
-/** The marker is outside the bundle, so it still shows when live code fails to compile. */
+/** The live page carries the indicator in its live state. */
 export function injectLiveDevMarker(html: string): string {
-  const index = html.lastIndexOf("</body>");
-  return index === -1 ? `${html}${MARKER}` : `${html.slice(0, index)}${MARKER}${html.slice(index)}`;
+  return injectBeforeBodyEnd(html, liveDevIndicatorHtml("live"));
+}
+
+/** Which indicator a static page shows while the installation is in Live dev mode. */
+function staticIndicatorState(
+  req: Request,
+  server: { state: string } | null,
+  port: number | null,
+): LiveDevIndicatorState {
+  const cookie = interfaceCookie(req);
+  if (cookie === "safe") return "safe";
+  if (cookie === "fallback" || port !== null) return "slow";
+  if (server?.state === "starting") return "starting";
+  return "down";
 }
 
 export interface LiveDevProxyOptions {
@@ -78,6 +97,10 @@ export interface LiveDevProxyOptions {
   logger: Logger;
   /** Matches the owner cookie: Secure on the HTTPS public origin. */
   secureCookies: boolean;
+  /** Whether the installation is in Live dev mode, so owner pages carry the indicator. */
+  liveMode?: () => boolean;
+  /** The dev server's state, for the indicator on static pages. */
+  serverStatus?: () => { state: string; detail: string | null };
 }
 
 function fetchPage(port: number, req: Request): Promise<string | null> {
@@ -154,6 +177,7 @@ function pipeAsset(port: number, req: Request, res: Response, next: () => void):
  * immediately before the static web UI middleware.
  */
 export function createLiveDevMiddleware(options: LiveDevProxyOptions): RequestHandler {
+  const lastPage: LastPage = { port: null, html: null };
   return (req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
       next();
@@ -175,7 +199,17 @@ export function createLiveDevMiddleware(options: LiveDevProxyOptions): RequestHa
       return;
     }
     const port = options.port();
-    if (port === null || choseSafeInterface(req) || !options.ownerSession(req)) {
+    const owner = options.ownerSession(req);
+    // Every owner page in Live dev mode shows the indicator. The static page server injects this
+    // one; a page served live replaces it with the live state.
+    if (owner && wantsPage(req) && options.liveMode?.()) {
+      const server = options.serverStatus?.() ?? null;
+      res.locals[INJECTED_BODY_HTML] = liveDevIndicatorHtml(
+        staticIndicatorState(req, server, port),
+        server?.state === "ready" ? null : server?.detail,
+      );
+    }
+    if (port === null || choseSafeInterface(req) || !owner) {
       next();
       return;
     }
@@ -187,8 +221,18 @@ export function createLiveDevMiddleware(options: LiveDevProxyOptions): RequestHa
       next();
       return;
     }
-    void servePage(port, req, res, next, options);
+    void servePage(port, req, res, next, options, lastPage);
   };
+}
+
+/**
+ * The last page this dev server returned. Metro's page barely changes between edits, which
+ * arrive through the bundle and Fast Refresh, so a slow answer under load reuses it instead of
+ * falling back to the static interface. A restarted server has a new port and starts empty.
+ */
+interface LastPage {
+  port: number | null;
+  html: string | null;
 }
 
 async function servePage(
@@ -197,11 +241,20 @@ async function servePage(
   res: Response,
   next: () => void,
   options: LiveDevProxyOptions,
+  lastPage: LastPage,
 ): Promise<void> {
   try {
-    const html = await fetchPage(port, req);
+    const fetched = await fetchPage(port, req);
+    if (fetched !== null) {
+      lastPage.port = port;
+      lastPage.html = fetched;
+    }
+    const html = fetched ?? (lastPage.port === port ? lastPage.html : null);
+    if (fetched === null && html !== null)
+      options.logger.info("Live dev page slow; serving the last page from this dev server");
     if (html === null) {
       options.logger.warn("Live dev page unavailable; serving the static interface");
+      if (options.liveMode?.()) res.locals[INJECTED_BODY_HTML] = liveDevIndicatorHtml("slow");
       // The static page's own assets must come from the static interface too.
       res.cookie(INTERFACE_COOKIE, "fallback", {
         httpOnly: true,
@@ -213,6 +266,7 @@ async function servePage(
       next();
       return;
     }
+    delete res.locals[INJECTED_BODY_HTML];
     const result = await prepareWebUiHtml({
       html: injectLiveDevMarker(html),
       req,

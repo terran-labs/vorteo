@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ManagedService, ServiceControl } from "./service-control.js";
-import { createServiceControl } from "./service-control.js";
+import { createServiceControl, managedServices } from "./service-control.js";
 import {
   createInstallationSnapshots,
   executeRestore,
@@ -308,6 +308,16 @@ posixTest("snapshot sources follow the installation layout", () => {
     "deployment",
     "host-home",
   ]);
+  // A Dev the installer does not manage (adopted without containerDirectory) is neither
+  // captured nor stopped: snapshots and restores cover the Host only.
+  const { containerDirectory: _directory, ...hostDeployment } = config.deployment!;
+  const unmanaged = { ...config, deployment: hostDeployment };
+  expect(snapshotSources(unmanaged, "/fixture/coordinator.json").map((s) => s.kind)).toEqual([
+    "coordinator-state",
+    "deployment",
+    "host-home",
+  ]);
+  expect(managedServices(unmanaged)).not.toHaveProperty("dev");
 });
 
 posixTest(
