@@ -1,4 +1,3 @@
-import { resolveResumeProcessCwd } from "./resume-process-cwd.js";
 import { getProviderProbeCwd } from "../../../utils/provider-probe-cwd.js";
 import {
   verifySkillSnapshot,
@@ -8455,7 +8454,6 @@ export class CodexAppServerAgentClient implements AgentClient {
             quotaGoverned: true,
             processCustody: input.processCustody,
             workerCwd: input.config.cwd,
-            processCwd: input.config.cwd,
             agentId,
           }),
         this.sessionDeps(launchEnv),
@@ -8526,7 +8524,6 @@ export class CodexAppServerAgentClient implements AgentClient {
       async () =>
         this.spawnAppServer(launchContext?.env, {
           goalsEnabled,
-          processCwd: config.cwd,
           agentId: launchContext?.agentId,
           environment,
         }),
@@ -8564,11 +8561,6 @@ export class CodexAppServerAgentClient implements AgentClient {
       async () =>
         this.spawnAppServer(launchContext?.env, {
           goalsEnabled,
-          processCwd: await resolveResumeProcessCwd(
-            merged.cwd,
-            options?.purpose,
-            getProviderProbeCwd,
-          ),
           agentId: launchContext?.agentId,
           environment,
         }),
