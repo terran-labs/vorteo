@@ -300,4 +300,37 @@ describe("coordinatorSettingsView", () => {
       follow: "/releases/new",
     });
   });
+  it("lists each changed field of a reviewed broker setting with its verification", () => {
+    const broker = {
+      ...job,
+      changes: [
+        {
+          key: "previewBroker",
+          displaySafe: true,
+          fields: [
+            {
+              field: "worker",
+              before: "/releases/a/worker.py · sha256 0123456789ab",
+              after: "/releases/b/worker.py · sha256 ba9876543210",
+              verified: true,
+            },
+            { field: "evidenceRoot", before: null, after: "/evidence" },
+          ],
+        },
+      ],
+    };
+    expect(
+      coordinatorSettingsView({ available: true, detail: "", job: broker }, null),
+    ).toMatchObject({
+      rows: [
+        {
+          key: "previewBroker.worker",
+          before: "/releases/a/worker.py · sha256 0123456789ab",
+          after: "/releases/b/worker.py · sha256 ba9876543210",
+          verified: true,
+        },
+        { key: "previewBroker.evidenceRoot", before: "not set", after: "/evidence" },
+      ],
+    });
+  });
 });

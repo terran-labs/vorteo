@@ -13,10 +13,34 @@ const upstreamSetupWalkthroughSpec = "**/onboarding.spec.ts";
 // - The composer model selector: Vorteo's composer picks an account profile instead (471d7f22a).
 // - Labeled docked navigation at 600-720px: Vorteo compacts narrow windows to the icon rail,
 //   whose larger buttons leave Settings in the More menu (912be3133, ab60c1e39).
+// Later entries match the spec file too, because Playwright tests these patterns against
+// "project file describe title", so a retired title cannot hide a namesake in another spec.
 const retiredUpstreamTests = [
   /opening Settings closes the composer model selector until it is opened again/,
   /opening Settings closes an existing chat's model selector until it is opened again/,
   /docked navigation keeps its density and Settings preserves reading width/,
+  // The composer diff pill went with Standard mode (6483ba11c, citing 471d7f22a); the merge in
+  // 51f16b39f restored these three. The file's review comment and feedback tests stay routed in.
+  /composer-diff-stat\.spec\.ts.* composer diff stat /,
+  // Vorteo's meter (7723a55f6, 12eb45f71) is a desktop Tooltip with role image, renders nothing
+  // until context data exists, keeps its ring hidden through importantForAccessibility, and
+  // moves Refresh into the compact sheet and the Context window card.
+  /context-window-meter\.spec\.ts.* draws usage clockwise from twelve o'clock/,
+  /context-window-meter\.spec\.ts.* shows account usage before the first turn \((desktop|compact)\)/,
+  /context-window-meter\.spec\.ts.* the context window hover card shows the agent's usage \((light|dark)\)/,
+  /context-window-meter\.spec\.ts.* context details support keyboard entry and dismiss when the viewport moves/,
+  /context-window-meter\.spec\.ts.* Find remains available after dismissing context details/,
+  // Its setup waits for "Select agent mode", but the composer shows the profile picker since
+  // 471d7f22a. The file's other tests on that helper are already fixme'd for the same commit.
+  /command-center-agent-controls\.spec\.ts.* keeps an action first when the action is the best match/,
+  // The Claude details sheet opens with sign-in guidance (8ffd96665), shown for every Claude
+  // host since 471d7f22a, so at 390px the model list starts below the fold.
+  /custom-model-removal\.spec\.ts.* removes a long custom model at 390px without removing another model/,
+  // Install failures report through a toast instead of the inline alert (cdafe96d5).
+  /acp-provider-catalog\.spec\.ts.* unsupported host asks for an update without writing Hoplite config/,
+  // Asserts the chevron's CSS transform through an svg/../.. lookup; the testing budget in
+  // AGENTS.md forbids CSS assertions.
+  /usage-modal\.spec\.ts.* direct-route Usage Settings disclosure (desktop|compact) (light|dark)/,
 ];
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {
