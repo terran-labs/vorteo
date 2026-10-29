@@ -9,6 +9,11 @@ const POLL_MS = 5_000;
 /** The owner has this long to approve the install before the step stops waiting. */
 const DEFAULT_APPROVAL_WAIT_MS = 30 * 60_000;
 const FAILED = new Set(["failed", "rejected"]);
+/**
+ * The coordinator caches its session host observation for 30 seconds without keying on the
+ * setting file, so a fresh reading can take that long to appear. Wait a little past it.
+ */
+const STATUS_SETTLE_MS = 45_000;
 
 function readJson(file) {
   return JSON.parse(readFileSync(file, "utf8"));
@@ -69,26 +74,72 @@ function coordinatorCaller(client, fetchImpl) {
   };
 }
 
+function reviewLink(client, id) {
+  const review = new URL("/settings/general", new URL(client.publicOrigin ?? client.origin));
+  review.searchParams.set("installation", "1");
+  review.searchParams.set("sessionHost", id);
+  return review.href;
+}
+
+/** Polls the status until `ready` holds or the settle window passes; returns the last reading. */
+async function settledStatus({ call, ready, sleep, now }) {
+  const deadline = now() + STATUS_SETTLE_MS;
+  let status = await call("/api/installation/session-host");
+  while (!ready(status) && now() < deadline) {
+    await sleep(POLL_MS);
+    status = await call("/api/installation/session-host");
+  }
+  return status;
+}
+
+/** The job this installation's coordinator would write is loaded and its host answers. */
+function hostAnswers(status) {
+  return (
+    status.installed === true &&
+    status.detail?.plist === "matching" &&
+    status.detail.loaded === true &&
+    status.detail.host != null
+  );
+}
+
+/** What an existing setting file says, so a broken file is not mistaken for an explicit off. */
+function describeExistingSetting(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof parsed?.enabled === "boolean")
+      return parsed.enabled ? "turns them on" : "turns them off";
+  } catch {
+    /* reported below */
+  }
+  return "cannot be read as a setting, so the daemon treats it as off; fix or remove it";
+}
+
 /** Opens the install request, or resumes the given one, and waits for its recorded outcome. */
 async function installSessionHostJob({ call, client, requestId, sleep, now, log, approvalWaitMs }) {
   let job;
   if (requestId) job = await call(`/api/installation/session-host-requests/${requestId}`);
   else {
-    job = await call("/api/installation/session-host-requests", {
-      method: "POST",
-      body: JSON.stringify({
-        id: randomUUID(),
-        operation: "session-host-install",
-        reason: "Turns on durable sessions as part of Host setup.",
-      }),
-    });
-    const review = new URL("/settings/general", new URL(client.publicOrigin ?? client.origin));
-    review.searchParams.set("installation", "1");
-    review.searchParams.set("sessionHost", job.id);
-    log(`Approve the session host install in Installation controls: ${review.href}`);
+    try {
+      job = await call("/api/installation/session-host-requests", {
+        method: "POST",
+        body: JSON.stringify({
+          id: randomUUID(),
+          operation: "session-host-install",
+          reason: "Turns on durable sessions as part of Host setup.",
+        }),
+      });
+    } catch (error) {
+      if (!String(error?.message).includes("(409)")) throw error;
+      throw new Error(
+        `${error.message}. Decide or cancel the open request in Installation controls; if it installs the session host job, run this step again with --request <its id>.`,
+        { cause: error },
+      );
+    }
   }
   if (job.operation !== "session-host-install")
     throw new Error(`Request ${job.id} does not install the session host job.`);
+  if (job.status !== "succeeded")
+    log(`Approve the session host install in Installation controls: ${reviewLink(client, job.id)}`);
   const deadline = now() + approvalWaitMs;
   while (job.status !== "succeeded") {
     if (FAILED.has(job.status))
@@ -102,13 +153,13 @@ async function installSessionHostJob({ call, client, requestId, sleep, now, log,
     await sleep(POLL_MS);
     job = await call(`/api/installation/session-host-requests/${job.id}`);
   }
-  log("The session host job is installed and its host answered.");
 }
 
 /**
  * Turns durable sessions on for a Host installation: installs the coordinator's session host job
- * through the owner-approved request, then writes the setting if none exists. The job must answer
- * before the setting turns on, so no worker ever waits for a host that is not there.
+ * through the owner-approved request, then writes the setting if none exists. The setting is
+ * written only once the coordinator sees the job loaded and its host answering, so no worker
+ * waits for a host that is not there.
  */
 export async function enableDurableSessions({
   root,
@@ -132,23 +183,40 @@ export async function enableDurableSessions({
     throw new Error(
       "A different session host job is installed. Remove it from Installation controls, then run this step again.",
     );
-  const jobReady = before.installed && before.detail?.loaded === true;
-  if (jobReady) log("The session host job is already installed.");
-  else await installSessionHostJob({ call, client, requestId, sleep, now, log, approvalWaitMs });
-
-  const { written } = writeDurableSessionsSettingIfMissing(record.hostHome);
-  const after = await call("/api/installation/session-host");
-  if (!after.detail?.host)
+  const installNeeded = !before.installed;
+  if (installNeeded)
+    await installSessionHostJob({ call, client, requestId, sleep, now, log, approvalWaitMs });
+  else log("The session host job is already installed.");
+  // A succeeded request says nothing about now: the job may have been removed since, or its host
+  // may be down. Only a job that answers today lets the setting turn on.
+  const ready = await settledStatus({ call, ready: hostAnswers, sleep, now });
+  if (!hostAnswers(ready))
     throw new Error(
-      "The session host does not answer. Inspect its status in Installation controls.",
+      "The session host job is not loaded with a host that answers. Durable sessions stay off; inspect the job in Installation controls.",
     );
-  if (after.detail.settingEnabled) {
-    log(written ? "Durable sessions are on." : "Durable sessions were already on.");
-    return { jobInstalled: !jobReady, settingWritten: written, enabled: true };
+  log("The session host answers.");
+
+  const file = path.join(record.hostHome, DURABLE_SESSIONS_SETTINGS_FILE);
+  const { written } = writeDurableSessionsSettingIfMissing(record.hostHome);
+  if (!written) {
+    const existing = describeExistingSetting(file);
+    log(`${file} already exists and ${existing}. This step never overrides it.`);
+    return {
+      jobInstalled: installNeeded,
+      settingWritten: false,
+      enabled: existing === "turns them on",
+    };
   }
-  if (written) throw new Error("The durable sessions setting was written but reads as off.");
-  log(
-    `Durable sessions stay off: ${path.join(record.hostHome, DURABLE_SESSIONS_SETTINGS_FILE)} already sets them, and this step never overrides it.`,
-  );
-  return { jobInstalled: !jobReady, settingWritten: false, enabled: false };
+  const after = await settledStatus({
+    call,
+    ready: (status) => status.detail?.settingEnabled === true,
+    sleep,
+    now,
+  });
+  if (after.detail?.settingEnabled !== true)
+    throw new Error(
+      `The durable sessions setting was written to ${file}, but the coordinator still reads it as off. Inspect its status in Installation controls.`,
+    );
+  log("Durable sessions are on.");
+  return { jobInstalled: installNeeded, settingWritten: true, enabled: true };
 }

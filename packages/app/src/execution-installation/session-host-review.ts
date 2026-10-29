@@ -222,21 +222,30 @@ export interface SessionHostHoldingCandidate {
 export interface SessionHostUpgradeHolder {
   id: string;
   title: string;
-  reason: "waiting-for-owner" | "running";
+  reason: "waiting-for-owner" | "running" | "starting";
 }
+
+const HOLDING_REASON_TEXT: Record<SessionHostUpgradeHolder["reason"], string> = {
+  "waiting-for-owner": "waiting for your answer",
+  running: "running a turn",
+  starting: "starting",
+};
 
 function holdingReason(
   agent: SessionHostHoldingCandidate,
 ): SessionHostUpgradeHolder["reason"] | null {
   if (agent.pendingPermissions.length > 0) return "waiting-for-owner";
   if (agent.status === "running") return "running";
+  // Workers release only idle or errored sessions, so one still starting holds the host too.
+  if (agent.status === "initializing") return "starting";
   return null;
 }
 
 /**
  * Hosted agents that keep the session host on its old release while an upgrade is pending. Workers
  * never release a hosted session with a running turn or an unanswered request, so these are the
- * agents the owner can act on. Idle hosted agents are left out: they are released on their own.
+ * agents the owner can act on. Idle hosted agents are left out: workers release them once they
+ * have been quiet for the idle release window, five minutes by default.
  */
 export function sessionHostUpgradeHolders(
   status: SessionHostStatus | null,
@@ -267,9 +276,7 @@ export function sessionHostUpgradeHolderLines(
     waiting
       ? "The upgrade waits for these agents. Answer their requests, or let their turns finish:"
       : "The upgrade waits for these agents to finish their turns:",
-    ...holders.map(
-      (holder) =>
-        `- ${holder.title}: ${holder.reason === "waiting-for-owner" ? "waiting for your answer" : "running a turn"}`,
-    ),
+    ...holders.map((holder) => `- ${holder.title}: ${HOLDING_REASON_TEXT[holder.reason]}`),
+    "Idle hosted agents leave on their own after about five quiet minutes.",
   ];
 }

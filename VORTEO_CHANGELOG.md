@@ -4,6 +4,19 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 0.11.0-beta.3.vorteo.912 - 2026-10-29
+
+### Fixed
+
+- `enable-durable-sessions` writes the setting only once the coordinator sees the job loaded with a host that answers. A loaded job whose host is down, or a resumed request whose job was removed since, now leaves durable sessions off.
+- Wait out the coordinator's 30-second status cache before judging the written setting, so a successful run no longer reports that the setting reads as off.
+- Explain how to resume when another session host request is open, print the review link when resuming a pending request, and name a broken setting file instead of calling it an explicit off.
+- List hosted agents that are still starting among those holding a session host upgrade, and say that idle ones leave after about five quiet minutes.
+
+### Changed
+
+- The uninstall and rollback order says that turning the setting off ends no hosted session, so remaining agents must be closed.
+
 ## 0.11.0-beta.3.vorteo.911 - 2026-10-29
 
 ### Added
