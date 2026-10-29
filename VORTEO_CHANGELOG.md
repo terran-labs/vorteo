@@ -4,6 +4,16 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 0.11.0-beta.3.vorteo.911 - 2026-10-29
+
+### Added
+
+- Add `install-execution-host.mjs enable-durable-sessions` for Host setup. It refuses without Host source updates or a matching session host job, installs the job through the owner-approved request and waits for its host to answer, then writes `{"enabled": true}` only when no setting exists. An explicit off survives reruns, and `--request <id>` resumes waiting on an earlier request.
+
+### Changed
+
+- The installer's removal refusal and `install` output name the durable sessions steps, and the docs give the order for uninstalling or rolling back below the session host.
+
 ## 0.11.0-beta.3.vorteo.910 - 2026-10-29
 
 ### Added

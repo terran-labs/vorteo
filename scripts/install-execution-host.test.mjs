@@ -1,5 +1,9 @@
 import { expect, test, vi } from "vitest";
 import { postCoordinatorRequest } from "./installation-agent.mjs";
+import {
+  enableDurableSessions,
+  writeDurableSessionsSettingIfMissing,
+} from "./lib/durable-sessions-setup.mjs";
 import fs from "node:fs/promises";
 import {
   mkdtempSync,
@@ -1684,5 +1688,193 @@ test("repair-projects-folder-worktree-links rewrites old Dev links once, with ba
     });
   } finally {
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+function durableSessionsFixture({ sourceUpdates = true } = {}) {
+  const root = mkdtempSync(path.join(os.tmpdir(), "durable-sessions-setup-"));
+  const hostHome = path.join(root, "state/host");
+  mkdirSync(hostHome, { recursive: true });
+  const configFile = path.join(root, "coordinator.json");
+  writeFileSync(
+    configFile,
+    JSON.stringify({
+      host: { startupValidation: { node: "/usr/bin/node", entrypoint: "/e", home: hostHome } },
+      ...(sourceUpdates
+        ? { sourceUpdates: { currentReleaseLink: path.join(root, "current") } }
+        : {}),
+    }),
+  );
+  writeFileSync(
+    path.join(root, "installation.json"),
+    JSON.stringify({ phase: "started", configFile, hostHome }),
+  );
+  writeFileSync(
+    path.join(root, "host-agent.json"),
+    JSON.stringify({
+      origin: "http://127.0.0.1:6770",
+      publicOrigin: "https://h.ts.net:443",
+      token: "t",
+    }),
+  );
+  return { root, hostHome, setting: path.join(hostHome, "durable-sessions.json") };
+}
+
+/** A coordinator whose job answers once the owner approves on the given poll. */
+function fakeCoordinator({
+  hostHome,
+  installed = false,
+  plist = "matching",
+  approveOnPoll = 1,
+  outcome = "succeeded",
+}) {
+  const calls = [];
+  let polls = 0;
+  let jobInstalled = installed;
+  const reply = (body, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const status = () => {
+    const settingFile = path.join(hostHome, "durable-sessions.json");
+    const settingEnabled = existsSync(settingFile)
+      ? JSON.parse(readFileSync(settingFile, "utf8")).enabled === true
+      : false;
+    return {
+      supported: true,
+      installed: jobInstalled,
+      detail: {
+        plist: jobInstalled ? plist : "absent",
+        loaded: jobInstalled,
+        host: jobInstalled ? { pid: 42, sessions: 0 } : null,
+        settingEnabled,
+      },
+    };
+  };
+  const fetch = vi.fn(async (url, init = {}) => {
+    const { pathname } = new URL(url);
+    calls.push(`${init.method ?? "GET"} ${pathname}`);
+    expect(init.headers.Authorization).toBe("Bearer t");
+    if (pathname === "/api/installation/capabilities")
+      return reply({ sessionHostJob: { available: true } });
+    if (pathname === "/api/installation/session-host") return reply(status());
+    if (pathname === "/api/installation/session-host-requests") {
+      const body = JSON.parse(init.body);
+      expect(body.operation).toBe("session-host-install");
+      return reply({ id: "job-1", operation: body.operation, status: "pending" }, 201);
+    }
+    if (pathname === "/api/installation/session-host-requests/job-1") {
+      polls += 1;
+      if (polls < approveOnPoll)
+        return reply({ id: "job-1", operation: "session-host-install", status: "pending" });
+      if (outcome === "succeeded") jobInstalled = true;
+      return reply({ id: "job-1", operation: "session-host-install", status: outcome });
+    }
+    return reply({ error: "unexpected" }, 404);
+  });
+  return { fetch, calls };
+}
+
+const quiet = { sleep: async () => {}, log: () => {} };
+
+test("enabling durable sessions installs the job through an approved request before writing the setting", async () => {
+  const fixture = durableSessionsFixture();
+  try {
+    const coordinator = fakeCoordinator({ hostHome: fixture.hostHome, approveOnPoll: 2 });
+    const lines = [];
+    const result = await enableDurableSessions({
+      root: fixture.root,
+      fetch: coordinator.fetch,
+      ...quiet,
+      log: (line) => lines.push(line),
+    });
+    expect(result).toEqual({ jobInstalled: true, settingWritten: true, enabled: true });
+    expect(JSON.parse(readFileSync(fixture.setting, "utf8"))).toEqual({ enabled: true });
+    expect(statSync(fixture.setting).mode & 0o777).toBe(0o600);
+    // The setting is written only after the job's request succeeded.
+    expect(coordinator.calls).toEqual([
+      "GET /api/installation/capabilities",
+      "GET /api/installation/session-host",
+      "POST /api/installation/session-host-requests",
+      "GET /api/installation/session-host-requests/job-1",
+      "GET /api/installation/session-host-requests/job-1",
+      "GET /api/installation/session-host",
+    ]);
+    expect(lines[0]).toBe(
+      "Approve the session host install in Installation controls: https://h.ts.net/settings/general?installation=1&sessionHost=job-1",
+    );
+    // No temporary files are left beside the setting.
+    expect(readdirSync(fixture.hostHome)).toEqual(["durable-sessions.json"]);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("enabling durable sessions never overrides an explicit setting and skips an installed job", async () => {
+  const fixture = durableSessionsFixture();
+  try {
+    writeFileSync(fixture.setting, '{"enabled": false}');
+    const coordinator = fakeCoordinator({ hostHome: fixture.hostHome, installed: true });
+    const result = await enableDurableSessions({
+      root: fixture.root,
+      fetch: coordinator.fetch,
+      ...quiet,
+    });
+    expect(result).toEqual({ jobInstalled: false, settingWritten: false, enabled: false });
+    expect(readFileSync(fixture.setting, "utf8")).toBe('{"enabled": false}');
+    expect(coordinator.calls).not.toContain("POST /api/installation/session-host-requests");
+    expect(writeDurableSessionsSettingIfMissing(fixture.hostHome)).toEqual({ written: false });
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("enabling durable sessions changes nothing without source updates, a matching job or an approval", async () => {
+  const unconfigured = durableSessionsFixture({ sourceUpdates: false });
+  const fixture = durableSessionsFixture();
+  try {
+    const untouched = fakeCoordinator({ hostHome: unconfigured.hostHome });
+    await expect(
+      enableDurableSessions({ root: unconfigured.root, fetch: untouched.fetch, ...quiet }),
+    ).rejects.toThrow("one-time Host setup");
+    expect(untouched.calls).toEqual([]);
+
+    const different = fakeCoordinator({
+      hostHome: fixture.hostHome,
+      installed: true,
+      plist: "different",
+    });
+    await expect(
+      enableDurableSessions({ root: fixture.root, fetch: different.fetch, ...quiet }),
+    ).rejects.toThrow("A different session host job is installed");
+
+    const declined = fakeCoordinator({ hostHome: fixture.hostHome, outcome: "rejected" });
+    await expect(
+      enableDurableSessions({ root: fixture.root, fetch: declined.fetch, ...quiet }),
+    ).rejects.toThrow("was declined; durable sessions stay off");
+
+    let clock = 0;
+    const waiting = fakeCoordinator({ hostHome: fixture.hostHome, approveOnPoll: Infinity });
+    await expect(
+      enableDurableSessions({
+        root: fixture.root,
+        fetch: waiting.fetch,
+        ...quiet,
+        now: () => (clock += 60_000),
+        approvalWaitMs: 120_000,
+      }),
+    ).rejects.toThrow("run this step again with --request job-1");
+    // Resuming with the request id waits on that request instead of opening a second one.
+    const resumed = fakeCoordinator({ hostHome: fixture.hostHome });
+    await enableDurableSessions({
+      root: fixture.root,
+      requestId: "job-1",
+      fetch: resumed.fetch,
+      ...quiet,
+    });
+    expect(resumed.calls).not.toContain("POST /api/installation/session-host-requests");
+    expect(existsSync(fixture.setting)).toBe(true);
+    expect(existsSync(unconfigured.setting)).toBe(false);
+  } finally {
+    rmSync(unconfigured.root, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
