@@ -1735,6 +1735,9 @@ function fakeCoordinator({
   conflict = false,
   /** The request succeeded long ago and its job was removed since. */
   removedSince = false,
+  loaded = true,
+  /** The daemon's reader refuses the file's contents, as with a non-positive interval. */
+  rejectsSetting = false,
 }) {
   const calls = [];
   const settingFile = path.join(hostHome, "durable-sessions.json");
@@ -1748,7 +1751,8 @@ function fakeCoordinator({
     // Like the daemon's reader: a missing or unreadable file means off.
     let settingEnabled = false;
     try {
-      settingEnabled = JSON.parse(readFileSync(settingFile, "utf8")).enabled === true;
+      settingEnabled =
+        !rejectsSetting && JSON.parse(readFileSync(settingFile, "utf8")).enabled === true;
     } catch {
       /* off */
     }
@@ -1757,8 +1761,8 @@ function fakeCoordinator({
       installed: jobInstalled,
       detail: {
         plist: jobInstalled ? plist : "absent",
-        loaded: jobInstalled,
-        host: jobInstalled && hostUp ? { pid: 42, sessions: 0 } : null,
+        loaded: jobInstalled && loaded,
+        host: jobInstalled && loaded && hostUp ? { pid: 42, sessions: 0 } : null,
         settingEnabled,
       },
     };
@@ -1878,6 +1882,19 @@ test("enabling durable sessions never overrides an existing setting and names a 
     expect(lines.at(-1)).toContain("turns them off. This step never overrides it.");
     expect(writeDurableSessionsSettingIfMissing(fixture.hostHome)).toEqual({ written: false });
 
+    // A file the daemon rejects reads as off even when it says enabled.
+    writeFileSync(fixture.setting, '{"enabled": true, "idleReleaseMs": 0}');
+    lines.length = 0;
+    const rejected = await enableDurableSessions({
+      root: fixture.root,
+      fetch: fakeCoordinator({ hostHome: fixture.hostHome, installed: true, rejectsSetting: true })
+        .fetch,
+      ...quiet,
+      log: (line) => lines.push(line),
+    });
+    expect(rejected.enabled).toBe(false);
+    expect(lines.at(-1)).toContain("is not a setting the daemon can use");
+
     writeFileSync(fixture.setting, "{broken");
     lines.length = 0;
     await enableDurableSessions({
@@ -1886,7 +1903,7 @@ test("enabling durable sessions never overrides an existing setting and names a 
       ...quiet,
       log: (line) => lines.push(line),
     });
-    expect(lines.at(-1)).toContain("treats it as off; fix or remove it");
+    expect(lines.at(-1)).toContain("durable sessions stay off; fix or remove it");
     expect(readFileSync(fixture.setting, "utf8")).toBe("{broken");
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -1902,6 +1919,20 @@ test("enabling durable sessions never turns on without a job whose host answers"
       enableDurableSessions({ root: fixture.root, fetch: down.fetch, ...quiet, now: fastClock() }),
     ).rejects.toThrow("not loaded with a host that answers");
     expect(down.calls()).not.toContain("POST /api/installation/session-host-requests");
+    // A matching plist that launchd has not loaded gets a next step, not a new request.
+    const unloaded = fakeCoordinator({
+      hostHome: fixture.hostHome,
+      installed: true,
+      loaded: false,
+    });
+    await expect(
+      enableDurableSessions({
+        root: fixture.root,
+        fetch: unloaded.fetch,
+        ...quiet,
+        now: fastClock(),
+      }),
+    ).rejects.toThrow("launchd has not loaded it");
     // Resuming an old request that succeeded for a job removed since.
     const removed = fakeCoordinator({ hostHome: fixture.hostHome, removedSince: true });
     await expect(
@@ -1946,7 +1977,7 @@ test("enabling durable sessions changes nothing without source updates, a matchi
     const open = fakeCoordinator({ hostHome: fixture.hostHome, conflict: true });
     await expect(
       enableDurableSessions({ root: fixture.root, fetch: open.fetch, ...quiet }),
-    ).rejects.toThrow("run this step again with --request <its id>");
+    ).rejects.toThrow("still open. Decide or cancel it first. If that request installs");
 
     const waiting = fakeCoordinator({ hostHome: fixture.hostHome, approveOnPoll: Infinity });
     await expect(

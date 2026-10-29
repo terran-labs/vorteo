@@ -4,6 +4,13 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 0.11.0-beta.3.vorteo.913 - 2026-10-29
+
+### Fixed
+
+- `enable-durable-sessions` reports an existing setting by the daemon's own reading, so a file the daemon rejects is no longer called on. It names a job launchd has not loaded, adds the resume hint only to the open-request conflict, and prints the review link only for a request that still awaits a decision.
+- The upgrade hint's header no longer mentions turns when only starting agents hold the upgrade.
+
 ## 0.11.0-beta.3.vorteo.912 - 2026-10-29
 
 ### Fixed

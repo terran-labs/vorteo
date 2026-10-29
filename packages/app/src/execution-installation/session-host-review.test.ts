@@ -292,7 +292,7 @@ test("a pending upgrade names the hosted agents holding it, owner requests first
     "Idle hosted agents leave on their own after about five quiet minutes.",
   ]);
   expect(sessionHostUpgradeHolderLines(holders.slice(1))[0]).toBe(
-    "The upgrade waits for these agents to finish their turns:",
+    "The upgrade waits for these agents to finish:",
   );
   // Nothing is listed without a pending upgrade, from an older coordinator, or without status.
   expect(sessionHostUpgradeHolders(installed, agents)).toEqual([]);

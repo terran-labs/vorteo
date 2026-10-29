@@ -275,7 +275,7 @@ export function sessionHostUpgradeHolderLines(
   return [
     waiting
       ? "The upgrade waits for these agents. Answer their requests, or let their turns finish:"
-      : "The upgrade waits for these agents to finish their turns:",
+      : "The upgrade waits for these agents to finish:",
     ...holders.map((holder) => `- ${holder.title}: ${HOLDING_REASON_TEXT[holder.reason]}`),
     "Idle hosted agents leave on their own after about five quiet minutes.",
   ];

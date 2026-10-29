@@ -102,16 +102,18 @@ function hostAnswers(status) {
   );
 }
 
-/** What an existing setting file says, so a broken file is not mistaken for an explicit off. */
-function describeExistingSetting(file) {
+/**
+ * What an existing setting file does, judged by the coordinator's reading (the daemon's own
+ * reader), so a file the daemon rejects is not mistaken for an explicit choice.
+ */
+function describeExistingSetting(file, enabled) {
+  if (enabled) return "turns them on";
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
-    if (typeof parsed?.enabled === "boolean")
-      return parsed.enabled ? "turns them on" : "turns them off";
+    if (JSON.parse(readFileSync(file, "utf8"))?.enabled === false) return "turns them off";
   } catch {
     /* reported below */
   }
-  return "cannot be read as a setting, so the daemon treats it as off; fix or remove it";
+  return "is not a setting the daemon can use, so durable sessions stay off; fix or remove it";
 }
 
 /** Opens the install request, or resumes the given one, and waits for its recorded outcome. */
@@ -129,16 +131,17 @@ async function installSessionHostJob({ call, client, requestId, sleep, now, log,
         }),
       });
     } catch (error) {
-      if (!String(error?.message).includes("(409)")) throw error;
+      if (!String(error?.message).includes("Another session host request is still open"))
+        throw error;
       throw new Error(
-        `${error.message}. Decide or cancel the open request in Installation controls; if it installs the session host job, run this step again with --request <its id>.`,
+        `${error.message} If that request installs the session host job, run this step again with --request <its id> once it is decided.`,
         { cause: error },
       );
     }
   }
   if (job.operation !== "session-host-install")
     throw new Error(`Request ${job.id} does not install the session host job.`);
-  if (job.status !== "succeeded")
+  if (job.status === "pending" || job.status === "approved" || job.status === "running")
     log(`Approve the session host install in Installation controls: ${reviewLink(client, job.id)}`);
   const deadline = now() + approvalWaitMs;
   while (job.status !== "succeeded") {
@@ -192,20 +195,21 @@ export async function enableDurableSessions({
   const ready = await settledStatus({ call, ready: hostAnswers, sleep, now });
   if (!hostAnswers(ready))
     throw new Error(
-      "The session host job is not loaded with a host that answers. Durable sessions stay off; inspect the job in Installation controls.",
+      ready.installed && ready.detail?.loaded !== true
+        ? "The session host job is installed but launchd has not loaded it. Durable sessions stay off; remove the job in Installation controls, then run this step again."
+        : "The session host job is not loaded with a host that answers. Durable sessions stay off; inspect the job in Installation controls.",
     );
   log("The session host answers.");
 
   const file = path.join(record.hostHome, DURABLE_SESSIONS_SETTINGS_FILE);
   const { written } = writeDurableSessionsSettingIfMissing(record.hostHome);
   if (!written) {
-    const existing = describeExistingSetting(file);
-    log(`${file} already exists and ${existing}. This step never overrides it.`);
-    return {
-      jobInstalled: installNeeded,
-      settingWritten: false,
-      enabled: existing === "turns them on",
-    };
+    // The file did not change, so the coordinator's cached reading is current.
+    const enabled = (await call("/api/installation/session-host")).detail?.settingEnabled === true;
+    log(
+      `${file} already exists and ${describeExistingSetting(file, enabled)}. This step never overrides it.`,
+    );
+    return { jobInstalled: installNeeded, settingWritten: false, enabled };
   }
   const after = await settledStatus({
     call,
