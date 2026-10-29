@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 0.11.0-beta.3.vorteo.910 - 2026-10-29
+
+### Added
+
+- Name the hosted agents holding a pending session host upgrade in the Session host card, with whether each waits for the owner's answer or runs a turn. Requests the owner can answer come first; idle hosted agents are left out since workers release them. Interface only, with no wire change; older coordinators show no list.
+
 ## 0.11.0-beta.3.vorteo.909 - 2026-10-29
 
 ### Fixed
