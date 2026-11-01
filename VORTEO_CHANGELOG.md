@@ -8,6 +8,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Installation
 
+- The installer wordmark uses clear square tiles with slowly wandering highlight clusters, retaining its silhouette throughout the animation.
+
 - Build steps show a continuous green Matrix wordmark inside a particle collider, with slow layered texture and live elapsed progress. The animation pauses for questions, adapts to terminal size, and restores ordinary output after a build.
 
 ### Maintenance

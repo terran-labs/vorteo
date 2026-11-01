@@ -40,7 +40,7 @@ function noise(x, y) {
   return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
 }
 
-/** Plain ASCII cells and green intensity bands, sized to leave room for real status. */
+/** Terminal cells and green intensity bands, sized to leave room for real status. */
 export function colliderFrame({ seconds, columns, rows, color }) {
   const width = Math.min(100, columns - 1);
   const height = Math.min(27, rows - 5);
@@ -93,17 +93,25 @@ export function colliderFrame({ seconds, columns, rows, color }) {
   for (const [y, row] of letters.entries()) {
     for (const [x, c] of [...row].entries()) {
       if (c === " ") continue;
-      const flow = noise(x * 0.13 + seconds * 0.09, y * 0.27 - seconds * 0.12);
-      put(left + x, top + y, " ", 0);
-      if (full && flow < -0.32) continue;
-      const glyph = "01:"[(x * 7 + y * 3 + Math.floor(seconds * 3)) % 3];
-      put(left + x, top + y, glyph, 3);
+      // Independent, slow fields make tile clusters wander without scanning in rows.
+      // Keep every stroke occupied so animation never sacrifices the silhouette.
+      const drift = noise(x * 0.21 + seconds * 0.035, y * 0.37 - seconds * 0.047);
+      const shimmer = noise(x * 0.53 - seconds * 0.023 + 19, y * 0.61 + seconds * 0.031);
+      const highlight = drift + 0.35 * shimmer;
+      const glyph = highlight < -0.18 ? "▪" : "■";
+      put(left + x, top + y, glyph, highlight > 0.22 ? 4 : 3);
     }
   }
   const footer = "YOUR MACHINE. YOUR AGENTS. YOUR COMMAND.";
   const footerLeft = Math.floor((width - footer.length) / 2);
   for (const [x, c] of [...footer].entries()) put(footerLeft + x, height - 1, c, 3);
-  const colors = ["\u001b[0m", "\u001b[38;5;22m", "\u001b[38;5;28m", "\u001b[38;5;82m"];
+  const colors = [
+    "\u001b[0m",
+    "\u001b[38;5;22m",
+    "\u001b[38;5;28m",
+    "\u001b[38;5;82m",
+    "\u001b[38;5;120m",
+  ];
   return grid.map((row, y) => {
     if (!color) return row.join("");
     let band = -1;
