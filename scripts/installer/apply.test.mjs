@@ -3,17 +3,20 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { applyPlan, installationStatus, repair, uninstall } from "./apply.mjs";
-import { fakeContext } from "./fakes.mjs";
-import { AGENT_SCRIPT, INSTALLATION_SKILL } from "./host-installation.mjs";
+import { fakeContext, fakeRunner } from "./fakes.mjs";
+import { AGENT_SCRIPT, buildRelease, INSTALLATION_SKILL } from "./host-installation.mjs";
 import { createPlan } from "./plan.mjs";
 
 const DEV_ID = "srv_dev123";
@@ -367,6 +370,33 @@ describe("apply", () => {
         (call) => call.command === "docker" && call.args.includes("paseo-abcdefabcdef-paseo-1"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("release build", () => {
+  // The packaged Claude CLI stays a placeholder until its install hook runs after `npm ci`.
+  test("runs dependency install hooks before patching and building", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "vorteo-release-build-"));
+    const run = fakeRunner();
+    try {
+      await buildRelease({
+        release: path.join(root, "releases", "abc"),
+        revision: "abc",
+        sourceDirectory: root,
+        logDir: path.join(root, "logs"),
+        runCommand: run,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    const npm = run.calls
+      .filter((call) => call.command === "npm")
+      .map((call) => call.args.slice(0, 2));
+    expect(npm.slice(0, 3)).toEqual([
+      ["ci", "--ignore-scripts"],
+      ["rebuild", "--foreground-scripts"],
+      ["run", "postinstall"],
+    ]);
   });
 });
 

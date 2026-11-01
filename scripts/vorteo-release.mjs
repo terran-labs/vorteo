@@ -19,7 +19,7 @@
 // Common options: --remote origin, --branch <release branch>, --repo owner/name.
 // Exit status 0 means done (or ready, for a dry run); 1 means refused.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { findGitleaks, git, isAncestor, parseArgs, repositoryRoot } from "./lib/delivery-git.mjs";
