@@ -1,6 +1,6 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-01): release 26.11.107 combines the approved square-tile build animation, welcome and starter-profile fixes, curated release summaries, and the reviewed dependency lifecycle fix. Final combined installation acceptance is pending.
+Maintenance review (2026-11-01): release 26.11.108 combines the approved square-tile build animation, welcome and starter-profile fixes, curated release summaries, and the reviewed dependency lifecycle fix. Synthetic shell checkouts include the animation module. Final combined installation acceptance is pending.
 
 Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
 

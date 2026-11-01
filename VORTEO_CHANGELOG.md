@@ -4,6 +4,10 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.108 - 2026-11-01
+
+- Complete release acceptance fixtures by including the terminal animation module in synthetic installer checkouts.
+
 ## 26.11.107 - 2026-11-01
 
 ### Installation
