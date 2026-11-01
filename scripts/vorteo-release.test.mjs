@@ -28,6 +28,7 @@ import {
 import {
   RELEASE_BRANCHES,
   createTag,
+  curatedReleaseNotes,
   latestFor,
   parseInstalled,
   parseRemoteTags,
@@ -406,4 +407,19 @@ test("the trigger parser reads the workflow shapes GitHub accepts", () => {
     ),
   );
   assert.ok(!requiresUpstream("github.repository == 'getpaseo/paseo' && a || b"));
+});
+
+test("public release notes require an executive summary instead of concatenated engineering entries", () => {
+  const summary =
+    "**A simpler first installation.** Ready accounts receive starter profiles.\n\n### Features\n\n- Create a workspace immediately.\n\n### Fixes\n\n- Recognize native authentication.";
+  assert.equal(curatedReleaseNotes(summary), `(AI Generated).\n\n${summary}\n`);
+  assert.equal(curatedReleaseNotes(`(AI Generated).\n\n${summary}`), curatedReleaseNotes(summary));
+  for (const notes of [
+    undefined,
+    "",
+    "## 26.11.103 - 2026-11-01\n\n- Internal entry",
+    "Summary.\n\n## Unreleased - 2026-11-01\n\n- Internal entry",
+    "- An ungrouped log",
+  ])
+    assert.throws(() => curatedReleaseNotes(notes), /release|Release/);
 });

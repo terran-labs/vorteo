@@ -12,7 +12,7 @@
 //   latest --channel beta|stable [--installed <version>]
 //          Newest tag an installation on that channel should offer, or null. Beta also
 //          offers stable. Legacy 0.11.0-beta.3.vorteo.<n> versions are older than any tag.
-//   tag    --channel beta|stable --commit <ref> [--release] [--dry-run]
+//   tag    --channel beta|stable --commit <ref> [--release --notes-file <path>] [--dry-run]
 //          Tags a prepared commit on the channel's release branch. Stable needs a beta tag
 //          on the same commit. Tags are permanent: never move, delete or reuse one.
 //
@@ -249,9 +249,30 @@ function installerAsset(plan) {
  * Publishes a GitHub Release for the tag; beta releases are prereleases and never "latest".
  * The release carries `install.sh`, which https://github.com/terran-labs/vorteo/releases/latest/download/install.sh redirects to.
  */
-export function createRelease(plan, { gh = runGh, repository } = {}) {
-  const changelog = git(plan.root, ["show", `${plan.commit}:VORTEO_CHANGELOG.md`]);
-  const notes = releaseNotes(changelog, plan.previous, plan.version) || "No changelog entries.";
+export function curatedReleaseNotes(input) {
+  if (typeof input !== "string" || !input.trim())
+    throw new ReleaseRefusal("Publishing a release requires curated notes via --notes-file.");
+  const notes = input.replace(/^\(AI Generated\)\.\s*/, "").trim();
+  if (
+    /^#{1,6}\s+(?:Unreleased\b|(?:Vorteo\s+)?v?\d+(?:\.\d+){2}|20\d{2}-\d{2}-\d{2})/im.test(notes)
+  )
+    throw new ReleaseRefusal(
+      "Public release notes must summarize the release, without internal version, date or Unreleased headings.",
+    );
+  if (
+    /^(?:#|[-*]\s)/.test(notes) ||
+    !/^#{2,3}\s+(?:Features|Improvements|Fixes(?: and reliability)?|Upgrade notes|Install or upgrade|Known limitations|Follow-ups)\s*$/m.test(
+      notes,
+    )
+  )
+    throw new ReleaseRefusal(
+      "Start release notes with an outcome summary, followed by relevant Features, Improvements or Fixes sections.",
+    );
+  return `(AI Generated).\n\n${notes}\n`;
+}
+
+export function createRelease(plan, { gh = runGh, repository, notes: input } = {}) {
+  const notes = curatedReleaseNotes(input);
   const channelFlags = plan.channel === "beta" ? ["--prerelease", "--latest=false"] : ["--latest"];
   const asset = installerAsset(plan);
   gh(
@@ -269,7 +290,7 @@ export function createRelease(plan, { gh = runGh, repository } = {}) {
       "-",
       ...channelFlags,
     ],
-    { input: `(AI Generated).\n\n${notes}\n` },
+    { input: notes },
   );
 }
 
@@ -277,7 +298,7 @@ function main() {
   const [command, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest, {
     flags: ["release", "dry-run"],
-    options: ["channel", "installed", "commit", "remote", "branch", "repo", "date"],
+    options: ["channel", "installed", "commit", "remote", "branch", "repo", "date", "notes-file"],
   });
   const remote = args.remote ?? "origin";
   const root = repositoryRoot(process.cwd());
@@ -304,6 +325,12 @@ function main() {
   if (command !== "tag") {
     throw new ReleaseRefusal("Usage: vorteo-release.mjs prepare|list|latest|tag …");
   }
+  let notes;
+  if (args.release) {
+    if (!args["notes-file"])
+      throw new ReleaseRefusal("Publishing a release requires curated notes via --notes-file.");
+    notes = curatedReleaseNotes(readFileSync(args["notes-file"], "utf8"));
+  }
   const plan = prepareTag({
     cwd: root,
     channel: args.channel,
@@ -323,7 +350,7 @@ function main() {
   console.log(`Verified: ${remote} has ${plan.name} at ${plan.commit}.`);
   if (args.release) {
     const repository = resolveRepository({ root, remote, explicit: args.repo });
-    createRelease(plan, { repository });
+    createRelease(plan, { repository, notes });
     console.log(`Published the GitHub Release for ${plan.name} on ${repository}.`);
   }
 }
