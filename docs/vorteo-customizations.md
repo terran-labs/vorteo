@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): the compiled restart fixture waits for durable capture acknowledgement before asserting an empty pending-work count. Runtime behavior and restart approval requirements are unchanged.
+
 Maintenance review (2026-11-01): installer builds report elapsed time and live activity, with planning estimates before approval and a startup wordmark. The welcome card preserves Matrix rain and confirms command copying with a toast. Ready accounts remain selectable without saved profiles; the installation provisions one starter profile per ready provider and remembers provisioning across restarts. Existing profiles and deliberate starter deletions are retained. Native Claude CLI authentication remains available in managed installations; separately bound accounts still require credential delivery.
 
 Maintenance review (2026-11-01): release 26.11.103 extends existing exact-path Git trust to registered Projects repositories whose root or .git ownership differs from the daemon account. This completes agent and terminal Git access for shared Linux projects without wildcard trust or ownership changes. Focused trust tests and a real two-UID Docker Git index-write check pass.

@@ -4,6 +4,10 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-01
+
+- Wait for durable restart capture acknowledgement in the compiled restart fixture before checking that no work remains pending. Keep the worker replacement and no-replay assertions unchanged.
+
 ## 26.11.105 - 2026-11-01
 
 - Provision a starter profile for each ready provider, including connections added later, while preserving edited and deleted profiles.
