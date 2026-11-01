@@ -4,11 +4,13 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## 26.11.105 - 2026-11-01
+## 26.11.106 - 2026-11-01
 
 - Provision a starter profile for each ready provider, including connections added later, while preserving edited and deleted profiles.
 
 ### Interface
+
+- Keep the welcome toast API independent of native rendering imports in browser contexts.
 
 - Put owner sign-in in a bordered card over the existing falling Matrix background, with readable password help and a copy-confirmation toast.
 - Show detected accounts in new workspaces even when no profiles have been saved. New tasks can use account defaults without another login.
