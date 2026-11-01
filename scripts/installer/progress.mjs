@@ -131,6 +131,7 @@ export function createRenderer({
     },
     done(event) {
       line(`  ${paint(color, 32, "✓")} ${label(event)}`);
+      if (event.fix) line(`    ${paint(color, 1, "Note:")} ${event.fix}`);
     },
     skip(event) {
       // The engine skips steps that are already done on a rerun or do not apply.

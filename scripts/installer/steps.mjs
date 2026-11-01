@@ -25,7 +25,7 @@ import {
   interfaceOrigins,
   devClientOrigin,
 } from "./coordinator-config.mjs";
-import { readEnvFile, tailscaleStatus } from "./detect.mjs";
+import { readEnvFile, tailscaleStatus, assertGateMigrationSupported } from "./detect.mjs";
 import {
   INSTALLATION_SKILL,
   AGENT_SCRIPT,
@@ -307,6 +307,7 @@ async function devCreate(s) {
 async function devAdopt(s) {
   const { plan, context, outputs } = s;
   const deployment = plan.dev.legacy.path;
+  assertGateMigrationSupported(deployment);
   if (existsSync(path.join(deployment, ".gate-mode"))) {
     await composeUp(s, deployment);
     return { message: `Dev in ${deployment} already runs in gate mode.` };

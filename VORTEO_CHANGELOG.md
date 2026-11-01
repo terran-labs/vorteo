@@ -4,6 +4,13 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-01
+
+### Installation
+
+- Refuse conversion to gate mode when a legacy deployment contains recognized custom Compose overrides, before changing its mounts or services. Recheck saved plans and the migration step, and keep all override files intact.
+- Display follow-up notes from completed installation steps instead of silently discarding them.
+
 ## 26.11.108 - 2026-11-01
 
 - Complete release acceptance fixtures by including the terminal animation module in synthetic installer checkouts.

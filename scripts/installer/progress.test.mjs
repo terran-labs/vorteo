@@ -20,7 +20,12 @@ describe("installer progress", () => {
   test("renders steps, skips and plain output as tidy lines", () => {
     const { output, state } = render([
       { step: "identity", status: "start", message: "Creating the identity" },
-      { step: "identity", status: "done", message: "Created the identity" },
+      {
+        step: "identity",
+        status: "done",
+        message: "Created the identity",
+        fix: "Check Dev connectivity.",
+      },
       { step: "dev", status: "skip", message: "Dev container" },
       "docker: pulling layer",
       { result: { origin: "https://vorteo.example.ts.net" } },
@@ -30,6 +35,7 @@ describe("installer progress", () => {
       [
         "  … Creating the identity",
         "  ✓ Created the identity",
+        "    Note: Check Dev connectivity.",
         "  · Dev container (skipped)",
         "    docker: pulling layer",
         "",

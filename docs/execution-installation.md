@@ -8,6 +8,8 @@ curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/instal
 
 The installer creates the installation, or wraps an existing one, including a container-only deployment, while keeping Dev's identity, home, workspace and agents. Every later change, including updates, happens in the interface. This guide is the reference for what it installs and how the installation operates.
 
+Before converting a legacy deployment to gate mode, the installer refuses recognized custom Compose overrides (`compose.override.yaml`, `compose.override.yml`, `docker-compose.override.yaml`, and `docker-compose.override.yml`). It checks during planning, before applying a saved plan, and again at the migration step. These files can supply mounts, services or environment settings that gate mode would otherwise ignore. The refusal preserves the deployment. Review the running container's mounts and custom configuration for a gate-compatible migration; do not delete or rename an override just to bypass the check, or copy arbitrary services and networking settings into the gate configuration. Manually modified Compose files and custom `-f` configurations also require review; this filename check does not establish their compatibility.
+
 An installation requires acceptance on the Host. Source checks alone do not establish that an installation is running or usable from a phone.
 
 ## Use the installation

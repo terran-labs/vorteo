@@ -18,6 +18,7 @@ import { applyPlan, installationStatus, repair, uninstall } from "./apply.mjs";
 import { fakeContext, fakeRunner } from "./fakes.mjs";
 import { AGENT_SCRIPT, buildRelease, INSTALLATION_SKILL } from "./host-installation.mjs";
 import { createPlan } from "./plan.mjs";
+import { STEPS } from "./steps.mjs";
 
 const DEV_ID = "srv_dev123";
 const REPOSITORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -353,6 +354,18 @@ describe("apply", () => {
     mkdirSync(path.join(legacy, "data"));
     const plan = await planFor(context);
     expect(plan.kind).toBe("adopt");
+    // Recheck a saved plan before writing its journal or changing the deployment.
+    const override = path.join(legacy, "compose.override.yml");
+    writeFileSync(override, "services: {}\n");
+    context.run.calls.length = 0;
+    await expect(apply(plan, context)).rejects.toThrow("Gate migration would ignore");
+    await expect(STEPS["dev-adopt"]({ plan, context, outputs: {} })).rejects.toThrow(
+      "Gate migration would ignore",
+    );
+    expect(context.run.calls).toHaveLength(0);
+    expect(existsSync(path.join(context.root, "state", "install.json"))).toBe(false);
+    expect(existsSync(override)).toBe(true);
+    rmSync(override);
     const { ok } = await apply(plan, context);
     expect(ok).toBe(true);
     expect(readFileSync(path.join(legacy, "common.sh.before-installer"), "utf8")).toBe("# old\n");

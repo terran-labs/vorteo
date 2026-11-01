@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): legacy gate migration refuses common custom Compose override files during planning, before applying a saved plan, and at the migration boundary, preserving files and avoiding silent mount changes. Completed steps display their follow-up notes. Focused planning, application and renderer tests pass; arbitrary custom Compose configurations still require review.
+
 Maintenance review (2026-11-01): release 26.11.108 combines the approved square-tile build animation, welcome and starter-profile fixes, curated release summaries, and the reviewed dependency lifecycle fix. Synthetic shell checkouts include the animation module. Final combined installation acceptance is pending.
 
 Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
