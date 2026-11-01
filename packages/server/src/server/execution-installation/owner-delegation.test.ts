@@ -1,3 +1,5 @@
+import { syncBuiltinESMExports } from "node:module";
+import fs from "node:fs";
 import {
   chmodSync,
   mkdtempSync,
@@ -16,6 +18,7 @@ import {
   readOwnerDelegation,
   maintenanceDelegationActivation,
   maintenanceDelegationStatus,
+  managementDelegationAuthority,
   changeMaintenanceDelegation,
 } from "./owner-delegation.js";
 
@@ -307,5 +310,75 @@ test.skipIf(process.platform !== "win32")(
       changeMaintenanceDelegation(dir, { expectedRevision: null, enabled: false }),
     ).toThrow("directory is not protected");
     expect(readFileSync(file, "utf8")).toBe(bytes);
+  },
+);
+
+posixTest("management requires a separate opt-in and revokes with full delegation", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "management-grant-")));
+  dirs.push(dir);
+  const legacy = changeMaintenanceDelegation(dir, { expectedRevision: null, enabled: true });
+  expect(managementDelegationAuthority(dir)).toBeNull();
+  const managed = changeMaintenanceDelegation(dir, {
+    expectedRevision: legacy.revision,
+    enabled: true,
+    management: true,
+  });
+  expect(managementDelegationAuthority(dir)).toEqual({
+    revision: managed.revision,
+    activatedAt: expect.any(String),
+  });
+  expect(managed.activatedAt).toBe(legacy.activatedAt);
+  expect(managed.revision).not.toBe(legacy.revision);
+  const managementOff = changeMaintenanceDelegation(dir, {
+    expectedRevision: managed.revision,
+    enabled: true,
+    management: false,
+  });
+  expect(managementOff.activatedAt).toBe(legacy.activatedAt);
+  expect(managementDelegationAuthority(dir)).toBeNull();
+  changeMaintenanceDelegation(dir, { expectedRevision: managementOff.revision, enabled: false });
+  expect(managementDelegationAuthority(dir)).toBeNull();
+});
+
+posixTest(
+  "grant revocation refuses success when its parent directory cannot be synchronized",
+  () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "management-durability-")));
+    dirs.push(dir);
+    const grant = changeMaintenanceDelegation(dir, {
+      expectedRevision: null,
+      enabled: true,
+      management: true,
+    });
+    const sync = fs.fsyncSync;
+    let refuse = true;
+    let directorySyncs = 0;
+    const spy = vi.spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+      if (fs.fstatSync(fd).isDirectory()) {
+        directorySyncs++;
+        if (refuse) throw new Error("Directory sync failed");
+      }
+      sync(fd);
+    });
+    syncBuiltinESMExports();
+    try {
+      expect(() =>
+        changeMaintenanceDelegation(dir, { expectedRevision: grant.revision, enabled: false }),
+      ).toThrow("Directory sync failed");
+      expect(managementDelegationAuthority(dir)).toBeNull();
+      const observed = maintenanceDelegationStatus(dir);
+      expect(() =>
+        changeMaintenanceDelegation(dir, { expectedRevision: observed.revision, enabled: false }),
+      ).toThrow("Directory sync failed");
+      refuse = false;
+      expect(
+        changeMaintenanceDelegation(dir, { expectedRevision: observed.revision, enabled: false })
+          .enabled,
+      ).toBe(false);
+      expect(directorySyncs).toBe(3);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
   },
 );

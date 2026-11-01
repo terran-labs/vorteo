@@ -427,6 +427,14 @@ Fresh requests bind the grant epoch, credentials, exact plan and request revisio
 
 Coordinator submissions still use the authenticated automatic submission path. Preparers must not force manual review merely because a configuration change is present when the installed coordinator advertises this full delegation. Compatible rollback runtimes must understand the retained private delegation evidence. Existing enrolled installations cannot use this grant to bypass their exact standing admission, even if an older delegation file remains on disk.
 
+### Delegated installation management
+
+On a never-enrolled installation, the owner can separately enable **Delegate installation management**. This also enables full maintenance delegation. Existing grants and older `enabled: true` requests do not enable management. The owner must explicitly send `management: true` with the current grant revision through the owner-authenticated delegation control. Revoking full maintenance also revokes management; revoking management alone leaves the existing maintenance permissions intact. Enrolled installations do not inherit this legacy permission.
+
+Authenticated Host clients can then use `management-status`, `management-cancel --request-file <file>`, and `management-receipt <receipt-id>`. A cancellation file contains a fresh `receiptId`, the observed `authorityRevision`, and the exact `kind`, `id`, `revision` and `jobSha256` returned by status. Supported queues are daemon/source restarts, coordinator requests, maintenance services, broker deployment and rebind, monitor, helper and session host. The existing lifecycle transition decides whether a request remains cancellable. Claimed work is never stopped by this API.
+
+Cancellation records durable intent before changing the existing queue and a separate result afterward. A lost response requires receipt and request observation, never automatic replay. The new surface cannot approve manual-review work, enable its own grant, alter accounts or credentials, or change installation settings. Supported fresh work continues through the existing automatic admission and exact-plan checks. A request explicitly requiring owner approval retains that requirement.
+
 ## Validation
 
 Run `npm run test:e2e:installation --workspace=@getpaseo/app` for the packaged interface on desktop and phone-sized Chromium. It starts two isolated supervised daemons and the real coordinator, verifies plugin and credential boundaries, prepares both editable update drafts without starting agents, and approves and verifies a container-daemon restart. All fixture processes and state are torn down. This does not test launchd, Tailscale, macOS folder permissions or a physical phone; those belong to host acceptance.

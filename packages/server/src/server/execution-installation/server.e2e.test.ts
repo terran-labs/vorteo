@@ -4548,3 +4548,94 @@ test("the gate route authority reaches agent routes only", async () => {
   });
   expect(other.status).toBe(403);
 });
+
+test("management cancellation requires explicit Host authority and exact retained work", async () => {
+  const f = await fixture();
+  const request = await f.request("/api/installation/restart-requests", "host-agent-test-token", {
+    target: "host",
+    reason: "test managed cancellation",
+    requireOwnerApproval: true,
+  });
+  const job = await request.json();
+  const route = "/api/installation/management/requests";
+  expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  const query = "/api/installation/owner/maintenance-delegation/query?management=1";
+  const initial = await (await f.request(query, "owner-test-password", {})).json();
+  const legacy = await (
+    await f.request(
+      "/api/installation/owner/maintenance-delegation/change?management=1",
+      "owner-test-password",
+      { expectedRevision: initial.revision, enabled: true },
+    )
+  ).json();
+  expect(legacy.managementEnabled).toBe(false);
+  expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  const grant = await (
+    await f.request(
+      "/api/installation/owner/maintenance-delegation/change?management=1",
+      "owner-test-password",
+      { expectedRevision: legacy.revision, enabled: true, management: true },
+    )
+  ).json();
+  expect(grant.managementEnabled).toBe(true);
+  expect((await f.request(route, "guest-agent-test-token")).status).toBe(403);
+  const snapshot = await (await f.request(route, "host-agent-test-token")).json();
+  const retained = snapshot.jobs.find((item: { id: string }) => item.id === job.id);
+  const input = {
+    receiptId: randomUUID(),
+    authorityRevision: snapshot.authority.revision,
+    kind: retained.kind,
+    id: retained.id,
+    revision: retained.revision,
+    jobSha256: retained.jobSha256,
+  };
+  const cancel = "/api/installation/management/cancel";
+  const stale = await f.request(cancel, "host-agent-test-token", {
+    ...input,
+    revision: randomUUID(),
+  });
+  expect(stale.status, JSON.stringify(await stale.json())).toBe(409);
+  expect(
+    (await f.request(cancel, "host-agent-test-token", { ...input, decision: "approve" })).status,
+  ).toBe(400);
+  const clientFile = path.join(f.root, "management-client.json");
+  const decisionFile = path.join(f.root, "management-decision.json");
+  writeFileSync(
+    clientFile,
+    JSON.stringify({ origin: f.url, kind: "host-agent", token: "host-agent-test-token" }),
+  );
+  writeFileSync(decisionFile, JSON.stringify(input));
+  const cli = await promisify(execFile)(process.execPath, [
+    path.resolve(import.meta.dirname, "../../../../../scripts/installation-agent.mjs"),
+    "--config",
+    clientFile,
+    "management-cancel",
+    "--request-file",
+    decisionFile,
+  ]);
+  expect(JSON.parse(cli.stdout)).toMatchObject({
+    actor: "host-agent",
+    status: "completed",
+    result: { id: job.id, status: "rejected" },
+  });
+  const receipt = await f.request(
+    `/api/installation/management/receipts/${input.receiptId}`,
+    "host-agent-test-token",
+  );
+  expect(await receipt.json()).toMatchObject({
+    status: "completed",
+    result: { status: "rejected" },
+  });
+  expect((await f.request(cancel, "host-agent-test-token", input)).status).toBe(409);
+  await f.request(
+    "/api/installation/owner/maintenance-delegation/change?management=1",
+    "owner-test-password",
+    {
+      expectedRevision: grant.revision,
+      enabled: true,
+      management: false,
+    },
+  );
+  expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  expect(f.calls).toEqual([]);
+});
