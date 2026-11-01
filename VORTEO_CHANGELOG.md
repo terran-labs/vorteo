@@ -6,6 +6,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.
 - Wait for durable restart capture acknowledgement in the compiled restart fixture before checking that no work remains pending. Keep the worker replacement and no-replay assertions unchanged.
 
 ## 26.11.105 - 2026-11-01

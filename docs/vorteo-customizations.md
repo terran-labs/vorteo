@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): the installation panel uses the existing toast API context directly, avoiding a native viewport import in browser review tests. Toast behavior is unchanged.
+
 Maintenance review (2026-11-01): the compiled restart fixture waits for durable capture acknowledgement before asserting an empty pending-work count. Runtime behavior and restart approval requirements are unchanged.
 
 Maintenance review (2026-11-01): installer builds report elapsed time and live activity, with planning estimates before approval and a startup wordmark. The welcome card preserves Matrix rain and confirms command copying with a toast. Ready accounts remain selectable without saved profiles; the installation provisions one starter profile per ready provider and remembers provisioning across restarts. Existing profiles and deliberate starter deletions are retained. Native Claude CLI authentication remains available in managed installations; separately bound accounts still require credential delivery.
