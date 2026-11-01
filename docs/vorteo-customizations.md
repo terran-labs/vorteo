@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): installer build animation uses a separate terminal screen, continuous gradient noise, and green binary lettering. Build completion, errors and EOF restore the normal screen; small terminals retain progress and redirected output remains plain text. Release notes also reject indented internal headings.
+
 Maintenance review (2026-11-01): release publication requires curated executive notes, validates them before tagging, and no longer copies internal changelog batches into public release bodies.
 
 Maintenance review (2026-11-01): welcome feedback imports the shared toast API without loading the native renderer in browser tests.

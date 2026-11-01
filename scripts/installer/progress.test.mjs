@@ -163,3 +163,40 @@ test("a narrow terminal keeps the counter and latest Docker stage visible", () =
   assert.ok(last.length < 60);
   renderer.finish();
 });
+
+test("build animation preserves ordinary output across resize and stops before prompts", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1000 });
+  for (const completion of [
+    { step: "release", status: "done", message: "Built" },
+    { step: "release", status: "fail", message: "Build failed" },
+    { result: { name: "Vorteo" } },
+    null,
+  ]) {
+    let output = "";
+    let columns = 120;
+    let rows = 40;
+    const renderer = createRenderer({
+      write: (text) => (output += text),
+      animate: true,
+      banner: true,
+      columns: () => columns,
+      rows: () => rows,
+    });
+    renderer.handle(JSON.stringify({ step: "release", status: "start", message: "Building" }));
+    assert.equal(output.split("\u001b[?1049h").length - 1, 1);
+    columns = 40;
+    rows = 10;
+    t.mock.timers.tick(1000);
+    assert.match(output, /0:01 elapsed/);
+    columns = 100;
+    rows = 35;
+    t.mock.timers.tick(1000);
+    assert.equal(output.split("\u001b[?1049h").length - 1, 1);
+    if (completion) renderer.handle(JSON.stringify(completion));
+    renderer.finish();
+    assert.equal(output.split("\u001b[?1049l").length - 1, 1);
+    const stopped = output;
+    t.mock.timers.tick(1000);
+    assert.equal(output, stopped);
+  }
+});

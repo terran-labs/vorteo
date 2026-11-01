@@ -254,7 +254,9 @@ export function curatedReleaseNotes(input) {
     throw new ReleaseRefusal("Publishing a release requires curated notes via --notes-file.");
   const notes = input.replace(/^\(AI Generated\)\.\s*/, "").trim();
   if (
-    /^#{1,6}\s+(?:Unreleased\b|(?:Vorteo\s+)?v?\d+(?:\.\d+){2}|20\d{2}-\d{2}-\d{2})/im.test(notes)
+    /^[ \t]{0,3}#{1,6}\s+(?:Unreleased\b|(?:Vorteo\s+)?v?\d+(?:\.\d+){2}|20\d{2}-\d{2}-\d{2})/im.test(
+      notes,
+    )
   )
     throw new ReleaseRefusal(
       "Public release notes must summarize the release, without internal version, date or Unreleased headings.",

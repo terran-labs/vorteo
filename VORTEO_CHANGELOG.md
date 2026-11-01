@@ -6,6 +6,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+### Installation
+
+- Build steps show a continuous green Matrix wordmark inside a particle collider, with slow layered texture and live elapsed progress. The animation pauses for questions, adapts to terminal size, and restores ordinary output after a build.
+
 ### Maintenance
 
 - Require curated executive summaries for public releases and reject internal version/date headings before publishing. Keep detailed engineering history separate.

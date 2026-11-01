@@ -418,6 +418,7 @@ test("public release notes require an executive summary instead of concatenated 
     undefined,
     "",
     "## 26.11.103 - 2026-11-01\n\n- Internal entry",
+    "Summary.\n\n   ## Unreleased - 2026-11-01\n\n- Internal entry",
     "Summary.\n\n## Unreleased - 2026-11-01\n\n- Internal entry",
     "- An ungrouped log",
   ])
