@@ -6,6 +6,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Record the completed upstream merge and its Git committer timestamp for Settings > General. This source record does not imply either daemon or the web release has been updated.
+
+## Unreleased - 2026-11-01
+
 - Synchronize with Paseo's `0.15.0-beta.1` development line, including retained terminal workers, native terminal rendering, provider history fixes, plugin lifecycle and panel APIs, and Expo 57.
 - Preserve Vorteo's account and profile workflows, installation controls, private connectivity, branding and appearance while adapting the upstream changes. Document the speech-settings migration and metadata model selection behavior. Source integration does not activate either daemon or establish physical-device acceptance.
 - Retain the legacy mobile terminal preference on the new replay API, native scene launch data, host Voice controls and compact workspace actions. Restore inert Markdown handling for active URL schemes and private-session attachment downloads.

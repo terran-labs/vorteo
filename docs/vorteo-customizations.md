@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): the upstream synchronization record now identifies the actual Paseo merge commit and its committer timestamp. Settings > General reads this source provenance; installation and device acceptance remain separate. No workflow or onboarding behavior changes.
+
 Maintenance review (2026-11-01): the upstream synchronization adapts Expo 57, terminal replay, plugin APIs and recovery while preserving Vorteo account, profile and installation workflows. The [upstream comparison](#upstream-comparison) records partial overlap and retained differences. Focused regressions, seven isolated browser checks, the production web export and simulator-target compilation cover the compatibility repairs. Publication, native launch and device acceptance, and installation remain separate. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
