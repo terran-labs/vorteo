@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-02): release publisher formatting now matches the repository formatter; release behavior is unchanged.
+
 Maintenance review (2026-11-02): relay integration tests explicitly use the local Durable Object instead of forwarding to the production cutover hostname. Production relay configuration is unchanged.
 
 Maintenance review (2026-11-02): pre-existing duplicate release pages require explicit asset reconciliation before mutation; normal beta promotion preserves the original page and assets.

@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Apply repository formatting to the release publisher and regression tests.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
 - Keep relay integration tests local by disabling the production cutover upstream in the test server.
 
 ## Unreleased - 2026-11-02
