@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Make the background-agent keyboard safety regression explicitly exercise legacy host mode controls, avoiding a race with the modern profile picker.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
 - Apply repository formatting to the release publisher and regression tests.
 
 ## Unreleased - 2026-11-02
