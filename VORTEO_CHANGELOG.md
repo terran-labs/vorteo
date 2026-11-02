@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+### Changed
+
+- Offer **Stop turn and switch** in the account switch sheet while a thread is working, instead of only reporting that the switch must wait. It stops the turn like the Stop button, which declines open permission requests and pauses an active goal, then switches in place.
+
 ## 26.11.204 - 2026-11-02
 
 ### Improvements

@@ -19,7 +19,7 @@ import {
   readProfileHandoff,
 } from "./successor";
 import { ProfileHandoffModal } from "../handoff-modal";
-import { ProfileSwitchSheet } from "@/profile-switch/confirm-sheet";
+import { ProfileSwitchSheet, type ProfileSwitchRequest } from "@/profile-switch/confirm-sheet";
 import { profileSwitchReason } from "@/profile-switch/reason";
 import { useHostFeature } from "@/runtime/host-features";
 import { agentProfileApplyAction } from "./apply-action";
@@ -223,27 +223,42 @@ export function useAgentProfilePicker(
       })
     : null;
   const [pendingSwitch, setPendingSwitch] = useState<AgentProfile | null>(null);
+  // The daemon refuses to switch a thread with a running turn or open permission
+  // request, so the sheet offers to stop the turn first while either is true.
+  const switchTargetBusy = useSessionStore((state) => {
+    if (target.kind !== "agent") return false;
+    const agent = state.sessions[serverId ?? ""]?.agents.get(target.agentId);
+    return agent?.status === "running" || (agent?.pendingPermissions.length ?? 0) > 0;
+  });
   const closeSwitch = useCallback(() => setPendingSwitch(null), []);
-  const confirmSwitch = useCallback(async () => {
-    if (target.kind !== "agent" || !pendingSwitch || !serverId) {
-      throw new Error("Select a profile for this thread before switching.");
-    }
-    if (!client) throw new Error("Reconnect to the host before switching accounts.");
-    const session = useSessionStore.getState().sessions[serverId];
-    const items = [
-      ...(session?.agentStreamTail.get(target.agentId) ?? []),
-      ...(session?.agentStreamHead.get(target.agentId) ?? []),
-    ];
-    await client.switchAgentProfile(target.agentId, {
-      provider: pendingSwitch.provider,
-      profileId: pendingSwitch.id,
-      model: pendingSwitch.model,
-      thinkingOptionId: pendingSwitch.thinkingOptionId,
-      reason: profileSwitchReason(items),
-    });
-    setPendingSwitch(null);
-    recovery?.onRecovered();
-  }, [client, pendingSwitch, serverId, target, recovery]);
+  const confirmSwitch = useCallback(
+    async ({ stopTurn, onStage }: ProfileSwitchRequest) => {
+      if (target.kind !== "agent" || !pendingSwitch || !serverId) {
+        throw new Error("Select a profile for this thread before switching.");
+      }
+      if (!client) throw new Error("Reconnect to the host before switching accounts.");
+      if (stopTurn) {
+        // Resolves after the turn settles and its permission requests are declined.
+        await client.cancelAgent(target.agentId);
+        onStage("switching");
+      }
+      const session = useSessionStore.getState().sessions[serverId];
+      const items = [
+        ...(session?.agentStreamTail.get(target.agentId) ?? []),
+        ...(session?.agentStreamHead.get(target.agentId) ?? []),
+      ];
+      await client.switchAgentProfile(target.agentId, {
+        provider: pendingSwitch.provider,
+        profileId: pendingSwitch.id,
+        model: pendingSwitch.model,
+        thinkingOptionId: pendingSwitch.thinkingOptionId,
+        reason: profileSwitchReason(items),
+      });
+      setPendingSwitch(null);
+      recovery?.onRecovered();
+    },
+    [client, pendingSwitch, serverId, target, recovery],
+  );
   const createSuccessor = useCallback(
     async (profile: AgentProfile) => {
       if (target.kind !== "agent" || !client || !serverId || applyingRef.current) return;
@@ -273,6 +288,7 @@ export function useAgentProfilePicker(
     handoffElement = createElement(ProfileSwitchSheet, {
       key: `${target.agentId}:${pendingSwitch.id}:${pendingSwitch.provider}`,
       profileName: pendingSwitch.name,
+      busy: switchTargetBusy,
       onSwitch: confirmSwitch,
       onNewTask: recovery ? undefined : startSuccessorInstead,
       onClose: closeSwitch,
