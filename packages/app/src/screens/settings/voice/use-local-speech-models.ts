@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { LocalSpeechModel } from "@getpaseo/protocol/speech/rpc-schemas";
 import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import { useHostFeature } from "@/runtime/host-features";
 import { isLocalModelBusy } from "./voice-settings";
 
 const DOWNLOAD_POLL_INTERVAL_MS = 1000;
@@ -24,40 +25,44 @@ export function useLocalSpeechModels(serverId: string): LocalSpeechModels {
   const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
+  const supported = useHostFeature(serverId, "speechSettings");
+  const enabled = Boolean(client && isConnected && supported);
   const query = useFetchQuery({
     queryKey: localSpeechModelsQueryKey(serverId),
-    enabled: Boolean(client && isConnected),
+    enabled,
     dataShape: "list",
     staleTimeMs: 0,
     queryFn: () => {
+      // Explicit refetch and cache invalidation must also respect older hosts.
+      if (!supported) return Promise.resolve([]);
       if (!client) throw new Error(t("workspace.terminal.hostDisconnected"));
       return client.listLocalSpeechModels();
     },
     refetchInterval: (current) =>
-      current.state.data?.some(isLocalModelBusy) ? DOWNLOAD_POLL_INTERVAL_MS : false,
+      enabled && current.state.data?.some(isLocalModelBusy) ? DOWNLOAD_POLL_INTERVAL_MS : false,
   });
   const { refetch } = query;
 
   const refresh = useCallback(() => {
-    void refetch();
-  }, [refetch]);
+    if (enabled) void refetch();
+  }, [enabled, refetch]);
 
   const download = useCallback(
     async (modelId: string) => {
-      if (!client) return;
+      if (!client || !enabled) return;
       await client.downloadLocalSpeechModel(modelId);
       await refetch();
     },
-    [client, refetch],
+    [client, enabled, refetch],
   );
 
   const remove = useCallback(
     async (modelId: string) => {
-      if (!client) return;
+      if (!client || !enabled) return;
       await client.deleteLocalSpeechModel(modelId);
       await refetch();
     },
-    [client, refetch],
+    [client, enabled, refetch],
   );
 
   return {

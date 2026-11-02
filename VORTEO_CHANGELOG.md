@@ -6,6 +6,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Gate Voice model queries, refresh and model changes on the Host speech-settings capability, so an older daemon receives no unsupported model requests.
+
+## Unreleased - 2026-11-01
+
 - Integrate the reviewed delegated installation cancellation and restart-fixture corrections with the upstream synchronization. Preserve explicit management opt-in, revocation and manual restart approval. Bound the synchronous receipt-writer lint exception to its five existing APIs.
 
 ## Unreleased - 2026-11-01
