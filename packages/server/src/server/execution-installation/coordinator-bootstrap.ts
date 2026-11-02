@@ -149,11 +149,11 @@ export function coordinatorLifecycleWork(journal: unknown) {
       );
     }
     if (job.target === "host" || job.target === "container-daemon") {
-      const active = job.status === "approved" || job.status === "running";
+      const active = ["approved", "running"].includes(job.status);
       const held =
         (job.finishCurrentTurns === true || job.continuationCaptureRequested === true) &&
         job.holdReleased !== true;
-      const preparing = job.sourceBatch?.status === "preparing";
+      const preparing = job.status === "pending" && job.sourceBatch?.status === "preparing";
       const registration = job.supervisorEffect && !isSupervisorEffectSettled(job.supervisorEffect);
       return active || held || preparing || registration;
     }

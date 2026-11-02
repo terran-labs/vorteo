@@ -4,6 +4,10 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+- Ignore stale source-preparation state on terminal update requests when checking coordinator idleness. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
+
 ## Unreleased - 2026-11-01
 
 - Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.

@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-02): coordinator admission ignores a canceled update’s stale source-batch preparation state. Admission still blocks pending source preparation, active jobs, unresolved holds, unsettled supervisor effects and native children. The regression reproduces rejected Host and Dev batches. This source correction is not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-01): the installation panel uses the existing toast API context directly, avoiding a native viewport import in browser review tests. Toast behavior is unchanged.
 
 Maintenance review (2026-11-01): the compiled restart fixture waits for durable capture acknowledgement before asserting an empty pending-work count. Runtime behavior and restart approval requirements are unchanged.
