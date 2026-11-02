@@ -57,6 +57,10 @@ Otherwise ask once through `update_questions`: "What authorization level should 
 - At Level 2 and higher, use a dedicated task checkout or worktree. Reuse it for sequential work; create separate filesystem worktrees when concurrent edits need isolation. Read-only reviewers need no worktree. Never edit the primary checkout or discard another task's changes. See [task delivery](docs/task-delivery.md#start-in-a-task-worktree).
 - When the work needs more than the granted level, finish what the level allows. Then ask for the specific higher level and say what it would do.
 
+## Public release presentation
+
+Release notes never contain AI-generated prefixes or authorship disclaimers. This exception overrides the general external-post attribution rule for release notes only. Publish one GitHub Release page per calendar version; promote its beta page to stable while preserving assets and both immutable channel tags. Follow the release publisher and [public release summaries](docs/release.md#public-release-summaries).
+
 ## Builds coordinator
 
 Vorteo :: Builds owns build and release validation, integration, publication, installation and installation recovery. It serializes writes to GitHub `main`, web publication and installation lifecycle state, including coordinator maintenance and approval decisions within its recorded grant. Published source, served interface and installed daemon can differ; record and verify each separately.

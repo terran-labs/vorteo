@@ -35,7 +35,7 @@ Use [Freed's changelog](https://www.freed.wtf/changelog) as the editorial refere
 
 Review every substantive change since the previous published release. Consolidate related work under Features, Improvements or Fixes; include Upgrade notes or Known limitations only when readers need them. Describe user-visible behavior and practical benefits. Keep internal CI repairs, preparation commits, hashes and repeated implementation notes in the engineering changelog. Do not claim unverified acceptance, performance or compatibility. Link the full changelog for detail.
 
-Prepare a concise, human-readable summary before tagging and pass it through `--notes-file`. The publisher adds the required `(AI Generated).` attribution once. Beta and stable promotion of the same commit use the same substantive summary. No automatic engineering-log fallback is permitted.
+Prepare a concise, human-readable summary before tagging and pass it through `--notes-file`. Release notes must never contain an AI-generated prefix or authorship disclaimer. This is an explicit exception to the attribution rule for other external posts. The publisher strips legacy prefixes. Beta and stable promotion of the same commit use one public GitHub Release page: promotion changes that page to the stable tag and clears its prerelease status, preserving its assets. Never publish duplicate beta and stable pages for one version. Immutable channel tags remain intact. No automatic engineering-log fallback is permitted.
 
 The initial baseline covers custom behavior through `0.9.0-beta.2.vorton.40`; it is a cumulative summary, not a claim that every feature first shipped in that commit.
 

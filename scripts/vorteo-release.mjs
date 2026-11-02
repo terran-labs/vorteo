@@ -22,7 +22,13 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { findGitleaks, git, isAncestor, parseArgs, repositoryRoot } from "./lib/delivery-git.mjs";
+import {
+  findGitleaks,
+  git,
+  isAncestor,
+  parseArgs,
+  repositoryRoot,
+} from "./lib/delivery-git.mjs";
 import { resolveRepository, runGh } from "./lib/github.mjs";
 import { isMainModule } from "./is-main-module.mjs";
 import { assertBuildsCoordinator } from "./lib/builds-guard.mjs";
@@ -52,7 +58,8 @@ export { CHANNELS, tagName };
 export const RELEASE_BRANCHES = { beta: "main", stable: "main" };
 
 function assertChannel(channel) {
-  if (!CHANNELS.includes(channel)) throw new ReleaseRefusal("Channel must be beta or stable.");
+  if (!CHANNELS.includes(channel))
+    throw new ReleaseRefusal("Channel must be beta or stable.");
 }
 
 /** An installed version: a calendar version, a legacy counter version, or none. */
@@ -91,13 +98,15 @@ export function channelTags(tags, channel) {
 export function latestFor(tags, channel, installed = null) {
   return (
     channelTags(tags, channel).find(
-      (tag) => installed === null || compareVersions(tag.version, installed) > 0,
+      (tag) => installed === null || compareVersions(tag.version, installed) > 0
     ) ?? null
   );
 }
 
 export function remoteTags(root, remote) {
-  return parseRemoteTags(git(root, ["ls-remote", "--tags", remote, "refs/tags/release-*"]));
+  return parseRemoteTags(
+    git(root, ["ls-remote", "--tags", remote, "refs/tags/release-*"])
+  );
 }
 
 /**
@@ -111,11 +120,13 @@ export function releaseNotes(changelog, after, version, limit = 30) {
       release !== null &&
       isVersion(release) &&
       compareVersions(release, version) <= 0 &&
-      (after === null || compareVersions(release, after) > 0),
+      (after === null || compareVersions(release, after) > 0)
   );
   const shown = entries.slice(0, limit).map((entry) => entry.text);
   if (entries.length > limit) {
-    shown.push(`And ${entries.length - limit} earlier entries in VORTEO_CHANGELOG.md.`);
+    shown.push(
+      `And ${entries.length - limit} earlier entries in VORTEO_CHANGELOG.md.`
+    );
   }
   return shown.join("\n\n");
 }
@@ -124,14 +135,24 @@ function todayFrom(date) {
   if (date === undefined) return undefined;
   const match = /^20(\d{2})-(\d{2})-(\d{2})$/.exec(date);
   if (!match) throw new ReleaseRefusal("--date must be YYYY-MM-DD.");
-  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
 }
 
 /**
  * Writes the next calendar version into every manifest and the lockfile. The version is
  * one build past every tag of either channel and the current manifest on the same day.
  */
-export function prepareVersion({ cwd, channel, remote = "origin", date, tags }) {
+export function prepareVersion({
+  cwd,
+  channel,
+  remote = "origin",
+  date,
+  tags,
+}) {
   assertChannel(channel);
   const root = repositoryRoot(cwd);
   const current = JSON.parse(git(root, ["show", "HEAD:package.json"])).version;
@@ -146,15 +167,28 @@ export function prepareVersion({ cwd, channel, remote = "origin", date, tags }) 
   for (const [file, value] of synchronizedManifests(root, version)) {
     writeFileSync(path.join(root, file), `${JSON.stringify(value, null, 2)}\n`);
   }
-  return { root, channel, version, previous: current, branch: RELEASE_BRANCHES[channel] };
+  return {
+    root,
+    channel,
+    version,
+    previous: current,
+    branch: RELEASE_BRANCHES[channel],
+  };
 }
 
 /** Checks a tag request against the release branch and existing tags without changing anything. */
-export function prepareTag({ cwd, channel, commit, remote = "origin", branch }) {
+export function prepareTag({
+  cwd,
+  channel,
+  commit,
+  remote = "origin",
+  branch,
+}) {
   assertChannel(channel);
   // A GitHub merge commit shares its head's version, so the commit is always explicit:
   // the one the installation actually installed.
-  if (!commit) throw new ReleaseRefusal("Name the installed commit with --commit.");
+  if (!commit)
+    throw new ReleaseRefusal("Name the installed commit with --commit.");
   const releaseBranch = branch ?? RELEASE_BRANCHES[channel];
   const root = repositoryRoot(cwd);
   git(root, ["fetch", "--quiet", remote, releaseBranch]);
@@ -162,39 +196,53 @@ export function prepareTag({ cwd, channel, commit, remote = "origin", branch }) 
   const sha = git(root, ["rev-parse", "--verify", `${commit}^{commit}`]);
   if (!isAncestor(root, sha, branchHead)) {
     throw new ReleaseRefusal(
-      `${sha.slice(0, 9)} is not on ${remote}/${releaseBranch}. Release tags go only on merged commits.`,
+      `${sha.slice(
+        0,
+        9
+      )} is not on ${remote}/${releaseBranch}. Release tags go only on merged commits.`
     );
   }
-  const version = JSON.parse(git(root, ["show", `${sha}:package.json`])).version;
+  const version = JSON.parse(
+    git(root, ["show", `${sha}:package.json`])
+  ).version;
   if (!isVersion(version)) {
     throw new ReleaseRefusal(
-      `${version} is not a calendar version. Run vorteo-release.mjs prepare and commit it first.`,
+      `${version} is not a calendar version. Run vorteo-release.mjs prepare and commit it first.`
     );
   }
   // Commits after a release preparation keep its version; only the prepared state is that
   // release, so nothing may wait as Unreleased above its changelog entry.
-  const [top] = changelogEntries(git(root, ["show", `${sha}:VORTEO_CHANGELOG.md`]));
+  const [top] = changelogEntries(
+    git(root, ["show", `${sha}:VORTEO_CHANGELOG.md`])
+  );
   if (top?.label !== version) {
     throw new ReleaseRefusal(
-      `${sha.slice(0, 9)} has ${top?.label === UNRELEASED ? "Unreleased changes" : "no changelog entry"} above ${version}. Prepare a new version for it.`,
+      `${sha.slice(0, 9)} has ${
+        top?.label === UNRELEASED ? "Unreleased changes" : "no changelog entry"
+      } above ${version}. Prepare a new version for it.`
     );
   }
   const name = tagName(channel, version);
   const tags = remoteTags(root, remote);
   if (tags.some((tag) => tag.name === name)) {
-    throw new ReleaseRefusal(`${name} already exists. Tags are permanent; fix forward.`);
+    throw new ReleaseRefusal(
+      `${name} already exists. Tags are permanent; fix forward.`
+    );
   }
   const newest = tags.find((tag) => tag.channel === channel);
   if (newest && compareVersions(newest.version, version) >= 0) {
     throw new ReleaseRefusal(
-      `${newest.name} is already as new as ${version}; installations would never offer ${name}.`,
+      `${newest.name} is already as new as ${version}; installations would never offer ${name}.`
     );
   }
   if (channel === "stable") {
     const beta = tags.find((tag) => tag.name === tagName("beta", version));
     if (!beta || beta.commit !== sha) {
       throw new ReleaseRefusal(
-        `Stable needs ${tagName("beta", version)} on ${sha.slice(0, 9)} first, so stable installs code that already ran as beta.`,
+        `Stable needs ${tagName("beta", version)} on ${sha.slice(
+          0,
+          9
+        )} first, so stable installs code that already ran as beta.`
       );
     }
   }
@@ -205,13 +253,26 @@ export function prepareTag({ cwd, channel, commit, remote = "origin", branch }) 
 /** Creates and pushes an annotated tag, then proves the remote tag resolves to the commit. */
 export function createTag(plan, env = process.env) {
   const gitleaks = findGitleaks(env);
-  if (!gitleaks) throw new ReleaseRefusal("Gitleaks is needed for the pre-push secret scan.");
+  if (!gitleaks)
+    throw new ReleaseRefusal(
+      "Gitleaks is needed for the pre-push secret scan."
+    );
   const label = `Vorteo ${plan.version} (${plan.channel})`;
-  git(plan.root, ["tag", "--annotate", "--message", label, plan.name, plan.commit]);
+  git(plan.root, [
+    "tag",
+    "--annotate",
+    "--message",
+    label,
+    plan.name,
+    plan.commit,
+  ]);
   try {
     execFileSync("git", ["push", plan.remote, `refs/tags/${plan.name}`], {
       cwd: plan.root,
-      env: { ...env, PATH: [path.dirname(gitleaks), env.PATH ?? ""].join(path.delimiter) },
+      env: {
+        ...env,
+        PATH: [path.dirname(gitleaks), env.PATH ?? ""].join(path.delimiter),
+      },
       stdio: "inherit",
     });
   } catch (error) {
@@ -219,10 +280,12 @@ export function createTag(plan, env = process.env) {
     git(plan.root, ["tag", "--delete", plan.name], { allowFailure: true });
     throw error;
   }
-  const pushed = remoteTags(plan.root, plan.remote).find((tag) => tag.name === plan.name);
+  const pushed = remoteTags(plan.root, plan.remote).find(
+    (tag) => tag.name === plan.name
+  );
   if (pushed?.commit !== plan.commit) {
     throw new ReleaseRefusal(
-      `${plan.remote} reports ${plan.name} at ${pushed?.commit ?? "nothing"}.`,
+      `${plan.remote} reports ${plan.name} at ${pushed?.commit ?? "nothing"}.`
     );
   }
   return pushed;
@@ -241,7 +304,9 @@ function installerAsset(plan) {
   }
   const directory = mkdtempSync(path.join(tmpdir(), "vorteo-release-"));
   const file = path.join(directory, "install.sh");
-  writeFileSync(file, script.endsWith("\n") ? script : `${script}\n`, { mode: 0o600 });
+  writeFileSync(file, script.endsWith("\n") ? script : `${script}\n`, {
+    mode: 0o600,
+  });
   return file;
 }
 
@@ -251,31 +316,76 @@ function installerAsset(plan) {
  */
 export function curatedReleaseNotes(input) {
   if (typeof input !== "string" || !input.trim())
-    throw new ReleaseRefusal("Publishing a release requires curated notes via --notes-file.");
-  const notes = input.replace(/^\(AI Generated\)\.\s*/, "").trim();
+    throw new ReleaseRefusal(
+      "Publishing a release requires curated notes via --notes-file."
+    );
+  const notes = input.replace(/^(?:\s*\(AI Generated\)\.\s*)+/i, "").trim();
   if (
     /^[ \t]{0,3}#{1,6}\s+(?:Unreleased\b|(?:Vorteo\s+)?v?\d+(?:\.\d+){2}|20\d{2}-\d{2}-\d{2})/im.test(
-      notes,
+      notes
     )
   )
     throw new ReleaseRefusal(
-      "Public release notes must summarize the release, without internal version, date or Unreleased headings.",
+      "Public release notes must summarize the release, without internal version, date or Unreleased headings."
     );
   if (
     /^(?:#|[-*]\s)/.test(notes) ||
     !/^#{2,3}\s+(?:Features|Improvements|Fixes(?: and reliability)?|Upgrade notes|Install or upgrade|Known limitations|Follow-ups)\s*$/m.test(
-      notes,
+      notes
     )
   )
     throw new ReleaseRefusal(
-      "Start release notes with an outcome summary, followed by relevant Features, Improvements or Fixes sections.",
+      "Start release notes with an outcome summary, followed by relevant Features, Improvements or Fixes sections."
     );
-  return `(AI Generated).\n\n${notes}\n`;
+  return `${notes}\n`;
 }
 
-export function createRelease(plan, { gh = runGh, repository, notes: input } = {}) {
+export function createRelease(
+  plan,
+  { gh = runGh, repository, notes: input } = {}
+) {
   const notes = curatedReleaseNotes(input);
-  const channelFlags = plan.channel === "beta" ? ["--prerelease", "--latest=false"] : ["--latest"];
+  // Keep one public page per calendar version. Promotion preserves assets and tags.
+  const releases = JSON.parse(
+    gh(["api", `repos/${repository}/releases`, "--paginate", "--slurp"])
+  ).flat();
+  const stable = releases.find(
+    (release) => release.tag_name === tagName("stable", plan.version)
+  );
+  const beta = releases.find(
+    (release) => release.tag_name === tagName("beta", plan.version)
+  );
+  if (plan.channel === "beta" && stable) {
+    throw new ReleaseRefusal(
+      "This version is already stable; do not publish a duplicate beta release."
+    );
+  }
+  const existing = stable ?? beta;
+  if (existing) {
+    gh(
+      [
+        "release",
+        "edit",
+        existing.tag_name,
+        "-R",
+        repository,
+        "--tag",
+        plan.name,
+        "--title",
+        `Vorteo ${plan.version}`,
+        `--prerelease=${plan.channel === "beta"}`,
+        `--latest=${plan.channel === "stable"}`,
+        "--notes-file",
+        "-",
+      ],
+      { input: notes }
+    );
+    if (stable && beta)
+      gh(["release", "delete", beta.tag_name, "-R", repository, "--yes"]);
+    return;
+  }
+  const channelFlags =
+    plan.channel === "beta" ? ["--prerelease", "--latest=false"] : ["--latest"];
   const asset = installerAsset(plan);
   gh(
     [
@@ -287,12 +397,12 @@ export function createRelease(plan, { gh = runGh, repository, notes: input } = {
       repository,
       "--verify-tag",
       "--title",
-      `Vorteo ${plan.version}${plan.channel === "beta" ? " beta" : ""}`,
+      `Vorteo ${plan.version}`,
       "--notes-file",
       "-",
       ...channelFlags,
     ],
-    { input: notes },
+    { input: notes }
   );
 }
 
@@ -300,37 +410,61 @@ function main() {
   const [command, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest, {
     flags: ["release", "dry-run"],
-    options: ["channel", "installed", "commit", "remote", "branch", "repo", "date", "notes-file"],
+    options: [
+      "channel",
+      "installed",
+      "commit",
+      "remote",
+      "branch",
+      "repo",
+      "date",
+      "notes-file",
+    ],
   });
   const remote = args.remote ?? "origin";
   const root = repositoryRoot(process.cwd());
   if (command === "list") {
     const tags = remoteTags(root, remote);
-    for (const tag of args.channel ? tags.filter((t) => t.channel === args.channel) : tags) {
+    for (const tag of args.channel
+      ? tags.filter((t) => t.channel === args.channel)
+      : tags) {
       console.log(`${tag.name}\t${tag.commit}`);
     }
     return;
   }
   if (command === "latest") {
-    const tag = latestFor(remoteTags(root, remote), args.channel, parseInstalled(args.installed));
+    const tag = latestFor(
+      remoteTags(root, remote),
+      args.channel,
+      parseInstalled(args.installed)
+    );
     console.log(JSON.stringify(tag));
     return;
   }
   if (command === "prepare") {
-    const prepared = prepareVersion({ cwd: root, channel: args.channel, remote, date: args.date });
+    const prepared = prepareVersion({
+      cwd: root,
+      channel: args.channel,
+      remote,
+      date: args.date,
+    });
     console.log(`Prepared ${prepared.version} (was ${prepared.previous}).`);
     console.log(
-      `Add "## ${prepared.version} - YYYY-MM-DD" to VORTEO_CHANGELOG.md, commit both, and merge to ${prepared.branch}.`,
+      `Add "## ${prepared.version} - YYYY-MM-DD" to VORTEO_CHANGELOG.md, commit both, and merge to ${prepared.branch}.`
     );
     return;
   }
   if (command !== "tag") {
-    throw new ReleaseRefusal("Usage: vorteo-release.mjs prepare|list|latest|tag …");
+    throw new ReleaseRefusal(
+      "Usage: vorteo-release.mjs prepare|list|latest|tag …"
+    );
   }
   let notes;
   if (args.release) {
     if (!args["notes-file"])
-      throw new ReleaseRefusal("Publishing a release requires curated notes via --notes-file.");
+      throw new ReleaseRefusal(
+        "Publishing a release requires curated notes via --notes-file."
+      );
     notes = curatedReleaseNotes(readFileSync(args["notes-file"], "utf8"));
   }
   const plan = prepareTag({
@@ -343,7 +477,7 @@ function main() {
   console.log(`${plan.name} -> ${plan.commit} (${plan.version})`);
   if (args["dry-run"]) {
     console.log(
-      "Dry run: the commit is prepared and on its release branch, the tag is new and the channel rules hold.",
+      "Dry run: the commit is prepared and on its release branch, the tag is new and the channel rules hold."
     );
     return;
   }
@@ -353,7 +487,9 @@ function main() {
   if (args.release) {
     const repository = resolveRepository({ root, remote, explicit: args.repo });
     createRelease(plan, { repository, notes });
-    console.log(`Published the GitHub Release for ${plan.name} on ${repository}.`);
+    console.log(
+      `Published the GitHub Release for ${plan.name} on ${repository}.`
+    );
   }
 }
 
