@@ -129,13 +129,14 @@ export function runDefaultSendAction(ctx: SendActionContext): void {
 export type AlternateSendAction = "queue" | "send";
 
 /**
- * What Mod+Enter and a long-press on Send do instead of the default send. Null while
- * no turn is running, where both fall back to the default send.
+ * Queue-capable stopped threads retain their alternate queue action without resuming.
+ * While running, the alternate action reverses the selected send behavior.
  */
 export function resolveAlternateSendAction(
   ctx: Pick<SendActionContext, "defaultSendBehavior" | "isAgentRunning" | "onQueue">,
 ): AlternateSendAction | null {
-  if (!ctx.isAgentRunning || !ctx.onQueue) return null;
+  if (!ctx.onQueue) return null;
+  if (!ctx.isAgentRunning) return "queue";
   return ctx.defaultSendBehavior === "queue" ? "send" : "queue";
 }
 
@@ -171,7 +172,7 @@ export function resolveMessageInputEnterAction(
   if (ctx.shiftKey) return null;
   const hasModifier = ctx.metaKey || ctx.ctrlKey;
   if (ctx.sendShortcut === "mod-enter") return hasModifier ? "default-send" : null;
-  if (hasModifier && ctx.isAgentRunning && ctx.onQueue) return "alternate-send";
+  if (hasModifier && ctx.onQueue) return "alternate-send";
   return "default-send";
 }
 

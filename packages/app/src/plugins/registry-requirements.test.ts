@@ -118,7 +118,7 @@ it("rejects the unreleased translation API on 0.12.0 before evaluating its impor
   expect(starts()).toBe(0);
   expect(result.getSnapshot()).toEqual([]);
   expect(result.getEvaluationError("host", "translated")).toBe(
-    'Plugin "translated" requires Paseo >=0.12.1. Your app is 0.12.0. Use a compatible plugin version or update the app.',
+    'Plugin "translated" requires Vorteo >=0.12.1. Your app is 0.12.0. Use a compatible plugin version or update the app.',
   );
 });
 

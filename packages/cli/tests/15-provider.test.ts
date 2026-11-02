@@ -156,7 +156,7 @@ await writeFile(
   `
   const command = process.argv.slice(2).join(" ");
   if (command === "auth status") console.log(JSON.stringify({ loggedIn: true }));
-  else if (command === "--version") console.log("2.1.284 (Claude Code)");
+  else if (command === "--version") console.log("2.1.293 (Claude Code)");
   else process.exit(1);
 `,
 );

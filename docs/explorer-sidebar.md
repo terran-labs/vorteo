@@ -73,8 +73,11 @@ the sheet's tab into a pane, and edits the autosave has not started writing are 
 ## Explorer sidebar
 
 `packages/app/src/workspace-tabs/explorer-sidebar.ts` owns show, hide, toggle, and view selection.
-One Explorer host stays beside the center column across compact overlays and docks. Keep its
-providers and gesture roots at the same React position when width or appearance changes. The
+Files and Changes use a checkout-bound Explorer on compact layouts and when desktop pane splits
+are unavailable. Their selected view is stored by server and working directory. Callers provide
+that checkout or resolve it from a known workspace; missing checkout context does not open a panel.
+Split-capable desktop layouts use the workspace Explorer pane. Keep each host’s providers and
+gesture roots at the same React position when width or appearance changes. The
 workspace route preserves panel ancestry during appearance updates. Appearance-dependent leaves
 subscribe to theme changes; the file editor reconfigures its existing editor theme compartment.
 Ordinary leaf routes retain the stack appearance policy.
@@ -82,8 +85,9 @@ The shell is outside the workspace split canvas so it divides the full workspace
 never read or modify that width.
 
 `packages/app/src/workspace-tabs/open-supporting-view.ts` owns semantic Changes and pull-request
-opens. Compact and wide native layouts select the matching workspace tab in Explorer. Desktop Changes opens
-follow the shared diff preference. Desktop pull requests use their Main panel, On the side, or
+opens. Compact and wide native Changes opens select the checkout-bound view. Pull requests still
+use workspace tabs in Explorer on those layouts. Split-capable desktop Changes opens follow the
+shared diff preference. Desktop pull requests use their Main panel, On the side, or
 Explorer sidebar setting. Automatic PR discovery follows that preference once per workspace without
 interrupting the user's work. Closing the tab opts that workspace out of future automatic opens,
 even for a different PR; moving or reordering it remains the user's choice.
@@ -110,17 +114,18 @@ between compatible panes, but the dock cannot be split or maximized. Selecting a
 does not change workspace focus. Web dragging shares the workspace drag scope; compact layouts
 accept only reordering inside the source pane.
 
-Cmd+E shows or hides Explorer without changing its selected view. All layouts use the same
-workspace tabs, launcher, and panel host. Below 600 points the shell is the swipeable Explorer
-overlay; at 600 points and above it reserves width beside the workspace. Native docking keeps its
-touch resize handle. Full workspace splits remain a separate web-only capability.
+Cmd+E shows or hides Explorer without changing its selected view. Checkout-bound Files/Changes
+retain their selection across visibility toggles; they do not create a compact workspace pane.
+Below 600 points the shell is the swipeable Explorer overlay; at 600 points and above it reserves
+width beside the workspace. Native docking keeps its touch resize handle. Full workspace splits
+remain a separate web-only capability.
 
 The dock reserves at least 240 points and the workspace 360. App navigation yields when it cannot
 share the remaining width with both. This keeps a portrait tablet from rendering three unusably
 narrow columns; widening restores navigation without changing its saved open state.
 
-Compact panel gestures own overlay visibility; the workspace layout owns its tab selection and
-contents on every platform. Explicit pane destinations bypass compact sheet placement, so choosing
+Compact panel gestures own overlay visibility. The panel store owns checkout-bound Files/Changes
+selection; the workspace layout owns workspace tabs, including pull requests. Explicit pane destinations bypass compact sheet placement, so choosing
 a panel in Explorer's + menu keeps it there. Ordinary compact file and subagent look-ups still use
 the sheet policy. Resolving an existing main tab reveals center immediately; a new file sheet
 keeps Explorer underneath and closing the sheet uncovers it. Semantic navigation resolves the

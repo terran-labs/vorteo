@@ -1627,13 +1627,7 @@ function reduceTimelineEvent(
     case "tool_call":
       return reduceTimelineToolCall(state, event, item, timestamp, timelineCursor);
     case "todo": {
-      const items: TodoEntry[] = (item.items ?? []).map((todo) => ({
-        text: todo.text,
-        completed: todo.completed,
-        id: todo.id,
-        status: todo.status,
-        activeForm: todo.activeForm,
-      }));
+      const items: TodoEntry[] = item.items ?? [];
       return finalizeActiveThoughts(
         appendTodoList(state, event.provider, items, timestamp, timelineCursor),
       );

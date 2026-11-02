@@ -635,6 +635,22 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
 
   // Chat & editor
   {
+    id: "chat.sending.shortcut",
+    pane: "chat.sending",
+    label: "Send shortcut",
+    labelKey: "settings.general.sendShortcut.label",
+    keywords: ["enter", "command", "control", "keyboard"],
+    scope: device,
+  },
+  {
+    id: "chat.files.associations",
+    pane: "chat.files",
+    label: "Files",
+    labelKey: "settings.files.title",
+    keywords: ["file types", "open with", "panel associations", "ask again", "plugins"],
+    scope: device,
+  },
+  {
     id: "chat.chat.reasoning",
     pane: "chat.chat",
     label: "Always expand reasoning",
@@ -645,9 +661,9 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "chat.chat.toolCalls",
     pane: "chat.chat",
-    label: "Tool call display",
-    labelKey: "settings.general.toolCallDetail.label",
-    keywords: ["summary", "full detail", "timeline"],
+    label: "Chat display",
+    labelKey: "settings.general.chatDisplay.label",
+    keywords: ["summary", "full detail", "timeline", "tool calls", "collapse turns"],
     scope: device,
   },
   {

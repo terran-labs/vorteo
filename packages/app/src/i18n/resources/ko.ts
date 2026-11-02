@@ -1092,8 +1092,8 @@ export const ko: TranslationResources = {
           },
         },
         states: {
-          awaitingMerge: en.workspace.git.pr.states.awaitingMerge,
-          merging: en.workspace.git.pr.states.merging,
+          awaitingMerge: "병합 대기 중",
+          merging: "병합 중",
           draft: "초안",
           merged: "병합됨",
           closed: "닫힘",
@@ -2487,6 +2487,11 @@ export const ko: TranslationResources = {
     },
     diagnostics: {
       title: "진단",
+      legacyTerminalRenderer: {
+        label: "레거시 터미널 렌더러 사용",
+        description: "터미널을 다시 열 때 이전 WebView 터미널을 사용합니다.",
+        accessibilityLabel: "레거시 터미널 렌더러 사용",
+      },
       testAudio: "오디오 테스트",
       playTest: "테스트 재생",
       playing: "재생 중...",

@@ -6,6 +6,11 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Preserve complete task checklist fields and stopped-thread queue actions after upstream integration. Restore searchable settings and legacy terminal translations, and translate new pull-request merge states.
+- Reconcile protocol, provider, native-font and app fixtures with generated validation, subscribed workspace updates and retained layout behavior. Keep rejection assertions and test deadlines; clarify checkout-bound Explorer navigation.
+
+## Unreleased - 2026-11-01
+
 - Gate Voice model queries, refresh and model changes on the Host speech-settings capability, so an older daemon receives no unsupported model requests.
 
 ## Unreleased - 2026-11-01

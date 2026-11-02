@@ -17,7 +17,10 @@ const resolver = createTerminalCellStyleResolver(DEFAULT_TERMINAL_THEME);
 const RED = parseTerminalColor(DEFAULT_TERMINAL_THEME.red, 0);
 const FOREGROUND = parseTerminalColor(DEFAULT_TERMINAL_THEME.foreground, 0);
 
-async function frameFor(output: string, options: { cols?: number; rows?: number } = {}) {
+async function frameFor(
+  output: string,
+  options: { cols?: number; rows?: number; resolver?: typeof resolver } = {},
+) {
   const terminal = createNativeHeadlessTerminal({
     cols: options.cols ?? 20,
     rows: options.rows ?? 4,
@@ -27,7 +30,12 @@ async function frameFor(output: string, options: { cols?: number; rows?: number 
   terminal.dispose();
   return {
     state,
-    frame: buildTerminalFrame({ state, columns: state.cols, resolver, selection: null }),
+    frame: buildTerminalFrame({
+      state,
+      columns: state.cols,
+      resolver: options.resolver ?? resolver,
+      selection: null,
+    }),
   };
 }
 
@@ -182,7 +190,15 @@ describe("native terminal frame", () => {
     const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
     const actual = await Promise.all(
       graphemeRows.map(async ({ output, contrastStarts }) => {
-        const { frame } = await frameFor(output, { cols: 8, rows: 1 });
+        const { frame } = await frameFor(output, {
+          cols: 8,
+          rows: 1,
+          // The Android fixture fixes its palette independently of the app theme.
+          resolver: createTerminalCellStyleResolver({
+            ...DEFAULT_TERMINAL_THEME,
+            foreground: "#fafafa",
+          }),
+        });
         const row = frame.rows[0];
         const [encoded] = encodeTerminalFrame({ ...frame, rows: [row] }).rows;
         return {
@@ -231,7 +247,12 @@ test("builds native frames after replay commits at captured geometry and the lat
     await drain.flush();
     expect(parsedColumns).toEqual([120, 50]);
     const state = terminal.getViewportState();
-    const frame = buildTerminalFrame({ state, columns: state.cols, resolver, selection: null });
+    const frame = buildTerminalFrame({
+      state,
+      columns: state.cols,
+      resolver,
+      selection: null,
+    });
     expect(frame.columns).toBe(50);
     expect(frame.rows).toHaveLength(10);
     expect(frame.rows[0].text.trimEnd()).toBe("LIVE-界🙂");

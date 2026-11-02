@@ -2,35 +2,15 @@
  * @vitest-environment jsdom
  */
 import React, { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
 import { ToastApiProvider } from "@/contexts/toast-api-context";
 
-const { theme, snapshotState, configState, patchConfigMock, openProviderSettingsMock } = vi.hoisted(
+const { snapshotState, configState, patchConfigMock, openProviderSettingsMock } = vi.hoisted(
   () => ({
-    theme: {
-      spacing: { 1: 4, "1.5": 6, 2: 8, 3: 12, 4: 16, 6: 24 },
-      iconSize: { sm: 14, md: 20 },
-      fontSize: { xs: 11, sm: 13, base: 15 },
-      fontWeight: { normal: "400" },
-      borderRadius: { lg: 8 },
-      opacity: { 50: 0.5 },
-      colors: {
-        surface1: "#111",
-        surface2: "#222",
-        surface3: "#333",
-        foreground: "#fff",
-        foregroundMuted: "#aaa",
-        border: "#555",
-        accent: "#0a84ff",
-        statusSuccess: "#00ff00",
-        statusWarning: "#ff9500",
-        statusDanger: "#ff0000",
-        palette: { red: { 300: "#ff6b6b" }, white: "#fff" },
-      },
-    },
     snapshotState: {
       entries: undefined as ProviderSnapshotEntry[] | undefined,
       isLoading: false,
@@ -44,8 +24,9 @@ const { theme, snapshotState, configState, patchConfigMock, openProviderSettings
   }),
 );
 
-vi.mock("react-native", () => ({
-  Platform: { OS: "web" },
+vi.mock("react-native", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-native")>()),
+  Platform: { ...(await importOriginal<typeof import("react-native")>()).Platform, OS: "web" },
   View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
     React.createElement("div", { "data-testid": testID }, children),
   Text: ({ children }: { children?: React.ReactNode }) =>
@@ -87,24 +68,18 @@ vi.mock("react-native", () => ({
   ActivityIndicator: () => React.createElement("span", { "data-testid": "activity-indicator" }),
 }));
 
-vi.mock("react-native-unistyles", () => ({
-  StyleSheet: {
-    create: (factory: unknown) =>
-      typeof factory === "function" ? (factory as (t: typeof theme) => unknown)(theme) : factory,
-  },
-  useUnistyles: () => ({ theme, rt: { breakpoint: "md" } }),
-}));
-
-vi.mock("lucide-react-native", () => {
+vi.mock("lucide-react-native", async (importOriginal) => {
   const icon = (name: string) => () => React.createElement("span", { "data-icon": name });
   return {
+    ...(await importOriginal<typeof import("lucide-react-native")>()),
     ChevronRight: icon("ChevronRight"),
     MoreHorizontal: icon("MoreHorizontal"),
     Trash2: icon("Trash2"),
   };
 });
 
-vi.mock("react-i18next", () => ({
+vi.mock("react-i18next", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-i18next")>()),
   useTranslation: () => ({
     t: (key: string, values?: Record<string, string | number>) =>
       (
@@ -233,6 +208,11 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
     ),
 }));
 
+vi.mock("@/constants/layout", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/constants/layout")>()),
+  useIsCompactFormFactor: () => false,
+}));
+
 vi.mock("@/components/provider-icons", () => ({
   useProviderIcon: (provider: string) => () =>
     React.createElement("span", { "data-icon": `provider-${provider}` }),
@@ -268,7 +248,9 @@ vi.mock("@/hooks/use-daemon-config", () => ({
   }),
 }));
 
-vi.mock("@/runtime/host-runtime", () => ({
+vi.mock("@/runtime/host-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/runtime/host-runtime")>()),
+  useHostRuntimeClient: () => null,
   useHostRuntimeIsConnected: () => true,
 }));
 
@@ -339,10 +321,12 @@ function indexOfText(nodes: HTMLElement[], text: string): number {
 }
 
 describe("ProvidersSection", () => {
+  let queryClient: QueryClient;
   let root: Root | null = null;
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.stubGlobal("React", React);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 
@@ -360,6 +344,7 @@ describe("ProvidersSection", () => {
   });
 
   afterEach(() => {
+    queryClient.clear();
     if (root) {
       act(() => {
         root?.unmount();
@@ -374,9 +359,11 @@ describe("ProvidersSection", () => {
   function render(): void {
     act(() => {
       root?.render(
-        <ToastApiProvider api={toastApi}>
-          <ProvidersSection serverId="server-1" />
-        </ToastApiProvider>,
+        <QueryClientProvider client={queryClient}>
+          <ToastApiProvider api={toastApi}>
+            <ProvidersSection serverId="server-1" />
+          </ToastApiProvider>
+        </QueryClientProvider>,
       );
     });
   }
@@ -417,7 +404,8 @@ describe("ProvidersSection", () => {
 
     render();
 
-    const row = findRow("Claude provider details");
+    const row = findRow("Claude provider details").parentElement;
+    if (!row) throw new Error("Expected provider row containing details and sibling controls");
     const nodes = descendants(row);
     const chevron = indexOfMatches(nodes, '[data-icon="ChevronRight"]');
     const icon = indexOfMatches(nodes, '[data-icon="provider-claude"]');
@@ -460,7 +448,8 @@ describe("ProvidersSection", () => {
 
     render();
 
-    const row = findRow("Claude provider details");
+    const row = findRow("Claude provider details").parentElement;
+    if (!row) throw new Error("Expected provider row containing details and sibling controls");
     const switchEl = row.querySelector<HTMLElement>('[role="switch"]');
     expect(switchEl).not.toBeNull();
     expect(switchEl?.getAttribute("aria-checked")).toBe("true");

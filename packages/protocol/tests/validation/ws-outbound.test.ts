@@ -319,7 +319,7 @@ const SourceSchema = z.object({
       collapsedFolders: { f: true },
     };
     for (const snapshotState of [state, { ...state, ...folders }]) {
-      const result = GeneratedWSOutboundMessageSchema.safeParse({
+      const result = validateWSOutboundMessage({
         type: "session",
         message: {
           type: "sidebar.state.read.response",
@@ -467,19 +467,17 @@ it("retains compaction inspection data on the generated wire boundary and accept
     preTokens: 12000,
     inspection,
   });
-  expect(GeneratedWSOutboundMessageSchema.safeParse(detailed)).toMatchObject({
+  expect(validateWSOutboundMessage(detailed)).toMatchObject({
     success: true,
     data: detailed,
   });
   expect(
-    GeneratedWSOutboundMessageSchema.safeParse(
-      envelope({ type: "compaction", status: "completed" }),
-    ).success,
+    validateWSOutboundMessage(envelope({ type: "compaction", status: "completed" })).success,
   ).toBe(true);
   const invalid = envelope({
     type: "compaction",
     status: "completed",
     inspection: { summary: { type: "text", text: 42 } },
   });
-  expect(GeneratedWSOutboundMessageSchema.safeParse(invalid).success).toBe(false);
+  expect(validateWSOutboundMessage(invalid).success).toBe(false);
 });

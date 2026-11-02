@@ -1076,8 +1076,8 @@ export const zhCN: TranslationResources = {
           },
         },
         states: {
-          awaitingMerge: en.workspace.git.pr.states.awaitingMerge,
-          merging: en.workspace.git.pr.states.merging,
+          awaitingMerge: "等待合并",
+          merging: "正在合并",
           draft: "草稿",
           merged: "已合并",
           closed: "已关闭",
@@ -2446,6 +2446,11 @@ export const zhCN: TranslationResources = {
     },
     diagnostics: {
       title: "诊断",
+      legacyTerminalRenderer: {
+        label: "使用旧版终端渲染器",
+        description: "重新打开终端后使用之前的 WebView 终端",
+        accessibilityLabel: "使用旧版终端渲染器",
+      },
       testAudio: "测试音频",
       playTest: "播放测试",
       playing: "正在播放...",

@@ -1108,8 +1108,8 @@ export const ptBR: TranslationResources = {
           },
         },
         states: {
-          awaitingMerge: en.workspace.git.pr.states.awaitingMerge,
-          merging: en.workspace.git.pr.states.merging,
+          awaitingMerge: "Aguardando mesclagem",
+          merging: "Mesclando",
           draft: "Rascunho",
           merged: "Mergeada",
           closed: "Fechada",
@@ -2511,6 +2511,11 @@ export const ptBR: TranslationResources = {
     },
     diagnostics: {
       title: "Diagnósticos",
+      legacyTerminalRenderer: {
+        label: "Usar renderizador de terminal anterior",
+        description: "Usa o terminal WebView anterior após reabrir um terminal",
+        accessibilityLabel: "Usar renderizador de terminal anterior",
+      },
       testAudio: "Testar áudio",
       playTest: "Reproduzir teste",
       playing: "Reproduzindo...",

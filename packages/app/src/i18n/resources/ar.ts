@@ -1085,8 +1085,8 @@ export const ar: TranslationResources = {
           },
         },
         states: {
-          awaitingMerge: en.workspace.git.pr.states.awaitingMerge,
-          merging: en.workspace.git.pr.states.merging,
+          awaitingMerge: "بانتظار الدمج",
+          merging: "جارٍ الدمج",
           draft: "مسودة",
           merged: "تم الدمج",
           closed: "مغلق",
@@ -2510,6 +2510,11 @@ export const ar: TranslationResources = {
     },
     diagnostics: {
       title: "التشخيص",
+      legacyTerminalRenderer: {
+        label: "استخدام عارض الطرفية السابق",
+        description: "استخدام طرفية WebView السابقة بعد إعادة فتح الطرفية",
+        accessibilityLabel: "استخدام عارض الطرفية السابق",
+      },
       testAudio: "اختبار الصوت",
       playTest: "لعب الاختبار",
       playing: "جارٍ اللعب...",

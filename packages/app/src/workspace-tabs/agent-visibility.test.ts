@@ -571,13 +571,13 @@ describe("workspace agent visibility", () => {
       expect(select(useSessionStore.getState())).toBe(before);
     });
 
-    it("recomputes when agent details reveal a parent in another workspace", () => {
+    it("keeps an orphan reachable when details reveal a parent in another workspace", () => {
       seedSession(new Map([[child.id, child]]));
       const select = createWorkspaceAgentVisibilitySelector({
         serverId: SERVER_ID,
         workspaceId: WORKSPACE_ID,
       });
-      expect(select(useSessionStore.getState()).autoOpenAgentIds).toEqual(new Set<string>());
+      expect(select(useSessionStore.getState()).autoOpenAgentIds).toEqual(new Set([child.id]));
 
       useSessionStore
         .getState()

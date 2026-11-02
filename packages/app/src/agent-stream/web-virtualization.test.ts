@@ -182,7 +182,14 @@ describe("estimateStreamItemHeight", () => {
     };
     setAssistantMessageHeight({ markdown: item.text, width: 608, height: 640 });
     expect(estimateStreamItemHeight({ item, contentMaxWidth: 608 })).toBe(640);
-    expect(estimateStreamItemHeight({ item, contentMaxWidth: 320 })).toBe(220);
+    // An unmeasured width uses the fork image estimate, not another width's measurement.
+    expect(estimateStreamItemHeight({ item, contentMaxWidth: 320 })).toBe(328);
+    expect(
+      estimateStreamItemHeight({
+        item: { ...item, text: "Unmeasured text" },
+        contentMaxWidth: 320,
+      }),
+    ).toBe(220);
     clearAssistantMessageHeightEstimateCache();
   });
 });

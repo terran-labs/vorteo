@@ -24,6 +24,7 @@ import {
 } from "@/workspace-tabs/open-supporting-view";
 
 const WORKSPACE_KEY = "server-1:workspace-1";
+const checkout = { serverId: "server-1", cwd: "/repo", isGit: true };
 
 function activeExplorerKind() {
   const state = useWorkspaceLayoutStore.getState();
@@ -36,6 +37,8 @@ function activeExplorerKind() {
 beforeEach(() => {
   usePanelStore.setState({
     mobilePanel: { target: "agent", revision: 0 },
+    explorerTabByCheckout: {},
+    explorerTab: "files",
   });
   useWorkspaceLayoutStore.setState({
     layoutMode: "split-panes",
@@ -54,11 +57,15 @@ describe("openWorkspaceChanges", () => {
     openWorkspaceChanges({
       isCompact: true,
       workspaceKey: WORKSPACE_KEY,
+      checkout,
       preferences: DEFAULT_APP_SETTINGS.openInSidePane,
     });
 
     expect(usePanelStore.getState().mobilePanel.target).toBe("file-explorer");
-    expect(activeExplorerKind()).toBe("changes_tree");
+    expect(usePanelStore.getState().explorerTab).toBe("changes");
+    expect(usePanelStore.getState().explorerTabByCheckout).toEqual({
+      "server-1::/repo": "changes",
+    });
   });
 });
 
@@ -67,6 +74,7 @@ describe("openComposerChanges", () => {
     isCompact: false,
     supportsPaneSplits: true,
     workspaceKey: WORKSPACE_KEY,
+    checkout,
     preferences: DEFAULT_APP_SETTINGS.openInSidePane,
   };
 
@@ -117,7 +125,10 @@ describe("openComposerChanges", () => {
     openComposerChanges({ ...input, isCompact: true });
 
     expect(usePanelStore.getState().mobilePanel.target).toBe("file-explorer");
-    expect(activeExplorerKind()).toBe("changes_tree");
+    expect(usePanelStore.getState().explorerTab).toBe("changes");
+    expect(usePanelStore.getState().explorerTabByCheckout).toEqual({
+      "server-1::/repo": "changes",
+    });
   });
 });
 

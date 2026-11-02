@@ -1102,8 +1102,8 @@ export const ru: TranslationResources = {
           },
         },
         states: {
-          awaitingMerge: en.workspace.git.pr.states.awaitingMerge,
-          merging: en.workspace.git.pr.states.merging,
+          awaitingMerge: "Ожидает слияния",
+          merging: "Слияние",
           draft: "Черновик",
           merged: "Объединён",
           closed: "Закрыт",
@@ -2514,6 +2514,11 @@ export const ru: TranslationResources = {
     },
     diagnostics: {
       title: "Диагностика",
+      legacyTerminalRenderer: {
+        label: "Использовать прежний рендерер терминала",
+        description: "Использовать прежний WebView-терминал после повторного открытия",
+        accessibilityLabel: "Использовать прежний рендерер терминала",
+      },
       testAudio: "Проверка звука",
       playTest: "Воспроизвести тестовый звук",
       playing: "Воспроизведение...",

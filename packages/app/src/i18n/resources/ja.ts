@@ -1098,8 +1098,8 @@ export const ja: TranslationResources = {
           },
         },
         states: {
-          awaitingMerge: en.workspace.git.pr.states.awaitingMerge,
-          merging: en.workspace.git.pr.states.merging,
+          awaitingMerge: "マージ待ち",
+          merging: "マージ中",
           draft: "ドラフト",
           merged: "マージ済み",
           closed: "クローズ済み",
@@ -2494,6 +2494,11 @@ export const ja: TranslationResources = {
     },
     diagnostics: {
       title: "診断",
+      legacyTerminalRenderer: {
+        label: "以前のターミナルレンダラーを使用",
+        description: "ターミナルを開き直した後、以前の WebView ターミナルを使用します",
+        accessibilityLabel: "以前のターミナルレンダラーを使用",
+      },
       testAudio: "音声をテスト",
       playTest: "テスト再生",
       playing: "再生中...",

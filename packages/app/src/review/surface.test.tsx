@@ -4,6 +4,7 @@ import { i18n as testI18n } from "@/i18n/i18next";
 import { act, fireEvent, render, renderHook, cleanup } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { useReviewDraftStore, type ReviewDraftComment } from "./store";
 import { buildReviewableDiffTargetKey, type ReviewableDiffTarget } from "@/utils/diff-layout";
@@ -28,6 +29,11 @@ const { pressablePropsByLabel } = vi.hoisted(() => {
   Object.assign(globalThis, { __DEV__: false });
   return { pressablePropsByLabel: new Map<string, Record<string, unknown>>() };
 });
+
+vi.mock("@/constants/layout", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/constants/layout")>()),
+  useIsCompactFormFactor: vi.fn(() => false),
+}));
 
 vi.mock("react-native", async (importOriginal) => {
   const ReactModule = await import("react");
@@ -144,6 +150,27 @@ describe("useInlineReviewController", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it("owns the same editor in a compact sheet", () => {
+    vi.mocked(useIsCompactFormFactor).mockReturnValue(true);
+    try {
+      const reviewTarget = target();
+      const { result } = renderHook(() =>
+        useInlineReviewController({ reviewDraftKey: "review:compact" }),
+      );
+      act(() => result.current.onStartComment(reviewTarget));
+      expect(result.current.editor).toBeNull();
+      expect(result.current.sheetEditor).toEqual({
+        target: reviewTarget,
+        commentId: null,
+        body: "",
+      });
+      act(() => result.current.onCancelEditor());
+      expect(result.current.sheetEditor).toBeNull();
+    } finally {
+      vi.mocked(useIsCompactFormFactor).mockReturnValue(false);
+    }
   });
 
   it("owns draft comment add, edit, delete, cancel, and key-change editor reset", () => {

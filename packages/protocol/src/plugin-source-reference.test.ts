@@ -101,6 +101,7 @@ it("round trips registry scheme and base path for source review", () => {
   expect(reference).toBe("registry:http://127.0.0.1:8123/internal/acme/example");
   expect(parsePluginRegistryReference(reference, "https://unrelated.example")).toEqual(registry);
   expect(parsePluginSourceReference(reference)).toEqual({
+    kind: "managed",
     source: reference,
     pluginPath: undefined,
   });

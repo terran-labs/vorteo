@@ -3,7 +3,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAllByRole } from "@testing-library/dom";
 import { i18n as testI18n } from "@/i18n/i18next";
-import { DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "@/stores/panel-store";
+import { DEFAULT_SIDEBAR_WIDTH, SIDEBAR_COMPACT_SNAP_WIDTH } from "@/stores/panel-store/state";
+import { sidebarPresentationWidth } from "./sidebar-width";
 import { SidebarProjectEmptyState } from "./empty-states";
 
 // App sources compile against the classic JSX runtime, which expects React on the global.
@@ -68,7 +69,9 @@ function expectActionsInsideCard(card: HTMLElement) {
 
 describe("SidebarProjectEmptyState", () => {
   const cases = ["en", "ru", "fr", "ja", "es", "pt-BR", "ar", "ko", "zh-CN"].flatMap((language) =>
-    [MIN_SIDEBAR_WIDTH, DEFAULT_SIDEBAR_WIDTH].map((width) => ({ language, width })),
+    [sidebarPresentationWidth(SIDEBAR_COMPACT_SNAP_WIDTH + 1), DEFAULT_SIDEBAR_WIDTH].map(
+      (width) => ({ language, width }),
+    ),
   );
   it.each(cases)(
     "keeps every action inside the card ($language, $width px sidebar)",

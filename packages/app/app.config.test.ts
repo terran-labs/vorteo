@@ -69,11 +69,14 @@ it("follows system rotation on Android", async () => {
 }, 30_000);
 
 it("allows all orientations on iPhone and iPad", async () => {
-  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { cp, mkdtemp, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const root = await mkdtemp(join(tmpdir(), "paseo-ios-config-"));
   try {
+    await cp(join(__dirname, "assets/appearance-fonts"), join(root, "assets/appearance-fonts"), {
+      recursive: true,
+    });
     const { exp } = await getPrebuildConfigAsync(__dirname, { platforms: ["ios"] });
     await compileModsAsync(exp, {
       projectRoot: root,
@@ -96,11 +99,14 @@ it("allows all orientations on iPhone and iPad", async () => {
 }, 30_000);
 
 it("uses Expo scene startup with paste input and retains native fonts", async () => {
-  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { cp, mkdtemp, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const root = await mkdtemp(join(tmpdir(), "vorteo-ios-scenes-"));
   try {
+    await cp(join(__dirname, "assets/appearance-fonts"), join(root, "assets/appearance-fonts"), {
+      recursive: true,
+    });
     const { exp } = await getPrebuildConfigAsync(__dirname, { platforms: ["ios"] });
     await compileModsAsync(exp, {
       projectRoot: root,

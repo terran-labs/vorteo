@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): integration corrections preserve complete checklist fields, queue-without-resume behavior and searchable settings. Protocol and app fixtures follow generated validation, live directory updates, actual font assets and retained checkout-bound navigation. Focused checks pass; combined validation, CI and installation remain separate. The README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-01): Voice model access checks the advertised speech-settings capability before queries, refresh, download or deletion. A mounted-hook regression covers refusal on an older connected daemon and capability changes. Static mixed-version delivery still requires its separate compatibility acceptance.
 
 Maintenance review (2026-11-01): combined integration preserves reviewed installation management cancellation, explicit authority opt-in and revocation, and manual restart approval alongside the upstream synchronization. Installation remains separately gated on the exact deployment and recovery plan. The synchronous receipt transaction retains a module-specific, five-API lint exception; moving it to asynchronous custody requires preserving mutation-time authority and queue checks.

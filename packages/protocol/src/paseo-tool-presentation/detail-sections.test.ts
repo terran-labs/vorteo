@@ -167,12 +167,25 @@ describe("published Paseo tool-call detail entry", () => {
         path.join(fixture, "node_modules"),
         "junction",
       );
+      // Compile the public entry closure, not unrelated protocol schemas and validators.
+      const fixtureConfig = path.join(fixture, "tsconfig.json");
+      writeFileSync(
+        fixtureConfig,
+        JSON.stringify({
+          extends: path.join(packageRoot, "tsconfig.json"),
+          files: [
+            path.join(packageRoot, "src/paseo-tool-call-detail.ts"),
+            path.join(packageRoot, "src/paseo-tool-presentation/index.ts"),
+          ],
+          include: [],
+        }),
+      );
       execFileSync(
         process.execPath,
         [
           compiler,
           "-p",
-          path.join(packageRoot, "tsconfig.json"),
+          fixtureConfig,
           "--outDir",
           path.join(fixture, "dist"),
           "--incremental",

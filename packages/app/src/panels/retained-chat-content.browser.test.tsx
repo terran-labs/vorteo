@@ -38,7 +38,7 @@ import {
   SheetPaneHostProvider,
   useSheetPaneBridge,
   type SheetPaneHost,
-} from "@/screens/workspace/sheet-pane";
+} from "@/screens/workspace/sheet-pane/host";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAssistantFileLinkActions, type InlinePathTarget } from "@/assistant-file-links";
 

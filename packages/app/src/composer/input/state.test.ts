@@ -310,13 +310,13 @@ describe("composer send behavior", () => {
     expect(alternateAction.calls).toEqual(["send"]);
   });
 
-  it("sends with the alternate action while no turn is running", () => {
+  it("sends with the alternate action when a stopped composer cannot queue", () => {
     for (const defaultSendBehavior of ["steer", "interrupt", "queue"] as const) {
       const alternateAction = actions();
       runAlternateSendAction({
         defaultSendBehavior,
         isAgentRunning: false,
-        onQueue: alternateAction.onQueue,
+        onQueue: undefined,
         handleSendMessage: alternateAction.handleSendMessage,
         handleQueueMessage: alternateAction.handleQueueMessage,
       });
@@ -324,7 +324,7 @@ describe("composer send behavior", () => {
     }
   });
 
-  it("offers an alternate action only while a turn runs and the composer can queue", () => {
+  it("offers an alternate action whenever the composer can queue", () => {
     const onQueue = () => undefined;
     expect(
       resolveAlternateSendAction({ defaultSendBehavior: "steer", isAgentRunning: true, onQueue }),
@@ -341,7 +341,7 @@ describe("composer send behavior", () => {
     ).toBe("send");
     expect(
       resolveAlternateSendAction({ defaultSendBehavior: "steer", isAgentRunning: false, onQueue }),
-    ).toBeNull();
+    ).toBe("queue");
     expect(
       resolveAlternateSendAction({
         defaultSendBehavior: "queue",
@@ -415,9 +415,9 @@ describe("resolveMessageInputEnterAction", () => {
     ).toBeNull();
   });
 
-  it("sends on Cmd+Enter and Ctrl+Enter while idle even with a queue handler", () => {
-    expect(resolveMessageInputEnterAction(enterContext({ metaKey: true }))).toBe("default-send");
-    expect(resolveMessageInputEnterAction(enterContext({ ctrlKey: true }))).toBe("default-send");
+  it("queues on Cmd+Enter and Ctrl+Enter while stopped with a queue handler", () => {
+    expect(resolveMessageInputEnterAction(enterContext({ metaKey: true }))).toBe("alternate-send");
+    expect(resolveMessageInputEnterAction(enterContext({ ctrlKey: true }))).toBe("alternate-send");
   });
 
   it("queues on Cmd+Enter and Ctrl+Enter while the agent is running with a queue handler", () => {
