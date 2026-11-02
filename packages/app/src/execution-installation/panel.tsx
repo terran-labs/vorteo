@@ -51,7 +51,7 @@ import {
 } from "react";
 import { Pressable, Text, View } from "react-native";
 import { CheckSquare, Square, Info, ChevronDown, ChevronUp, Copy } from "lucide-react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { EditingTextInput } from "@/components/ui/text-input";
@@ -231,9 +231,14 @@ function InstallationWelcomeForm({
   );
 }
 
+const PasswordCopyIcon = withUnistyles(Copy, (theme) => ({ color: theme.colors.foreground }));
+
 // The coordinator reports the path only when the file exists. The command runs
 // on the Host; the password itself never passes through this page.
 function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: boolean }) {
+  const [hovered, setHovered] = useState(false);
+  const enter = useCallback(() => setHovered(true), []);
+  const leave = useCallback(() => setHovered(false), []);
   const command = passwordCopyCommand(passwordFile);
   const toast = useToast();
   const copy = useCallback(async () => {
@@ -257,19 +262,28 @@ function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: 
         Run this command in Terminal on the computer hosting Vorteo. Then paste it into the owner
         password field.
       </Text>
-      <View style={styles.passwordCommand}>
-        <Text selectable style={styles.passwordCommandText} testID="installation-password-command">
-          {command}
-        </Text>
-        <Button
-          variant="ghost"
-          size="lg"
-          leftIcon={Copy}
+      <View style={styles.passwordCommandHover} onPointerEnter={enter} onPointerLeave={leave}>
+        <Pressable
+          style={styles.passwordCommand}
+          accessibilityRole="button"
           accessibilityLabel="Copy command"
           onPress={copy}
-          style={styles.passwordCopy}
           testID="installation-password-copy-command"
-        />
+        >
+          <Text
+            selectable
+            style={styles.passwordCommandText}
+            testID="installation-password-command"
+          >
+            {command}
+          </Text>
+          <View
+            style={[styles.passwordCopy, hovered && styles.passwordCopyHighlighted]}
+            pointerEvents="none"
+          >
+            <PasswordCopyIcon size={18} />
+          </View>
+        </Pressable>
       </View>
     </View>
   );
@@ -2379,6 +2393,8 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftColor: theme.colors.border,
     paddingLeft: theme.spacing[6],
   },
+  passwordCommandHover: { position: "relative" },
+  passwordCopyHighlighted: { backgroundColor: theme.colors.surface2 },
   passwordCopy: {
     position: "absolute",
     top: 0,
@@ -2386,6 +2402,9 @@ const styles = StyleSheet.create((theme) => ({
     width: 44,
     height: 44,
     paddingHorizontal: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.borderRadius.md,
   },
   passwordHelp: {
     marginTop: theme.spacing[2],
