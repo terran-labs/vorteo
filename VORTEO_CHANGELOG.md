@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Maintenance
+
+- Keep relay integration tests local by disabling the production cutover upstream in the test server.
+
+## Unreleased - 2026-11-02
+
 ### Fixed
 
 - Refuse automatic reconciliation of existing duplicate release pages until their assets have been compared and preserved.
