@@ -9,6 +9,7 @@
 // expected, see --no-result), 1 after a failed step, 2 when the stream ended early.
 import { writeFileSync } from "node:fs";
 import readline from "node:readline";
+import { colliderFrame } from "./banner.mjs";
 import { isMainModule } from "../is-main-module.mjs";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -26,9 +27,14 @@ export function createRenderer({
   animate = false,
   color = false,
   intervalMs = 1000,
+  banner = false,
+  rows = () => process.stdout.rows || 24,
   columns = () => process.stdout.columns || 120,
 }) {
   let active = null;
+  let showBanner = false;
+  let alternateScreen = false;
+  const animationStarted = Date.now();
   let frame = 0;
   let timer = null;
   let started = 0;
@@ -51,10 +57,18 @@ export function createRenderer({
   };
   const state = { failed: null, result: null };
 
+  const clearFrame = () => {
+    if (!alternateScreen) return;
+    write("\u001b[?1049l");
+    alternateScreen = false;
+  };
   const clearSpinner = () => {
     if (timer) clearInterval(timer);
     timer = null;
-    if (active && animate) write("\r\u001b[K");
+    if (active && animate) {
+      if (alternateScreen) clearFrame();
+      else write("\r\u001b[K");
+    }
     active = null;
   };
   const line = (text) => {
@@ -67,6 +81,7 @@ export function createRenderer({
     start(event) {
       clearSpinner();
       active = label(event);
+      showBanner = banner && ["dev-images", "release"].includes(event.step);
       counter = event.index ? `[${event.index}/${event.total}] ` : "";
       started = Date.now();
       lastOutput = null;
@@ -81,14 +96,31 @@ export function createRenderer({
             lastOutput === null ? "" : ` | output ${duration(Date.now() - lastOutput)} ago`;
           const compact = `${elapsed} | ${activity}${quiet}`;
           const text = `  ${SPINNER[frame++ % SPINNER.length]} ${width < 100 ? compact : status()}`;
-          write(`\r${text.slice(0, width)}\u001b[K`);
+          if (showBanner) {
+            const art = colliderFrame({
+              seconds: (Date.now() - animationStarted) / 1000,
+              columns: columns(),
+              rows: rows(),
+              color,
+            });
+            const lines = [...art, paint(color, 32, text.slice(0, width))];
+            if (!alternateScreen) {
+              write("\u001b[?1049h");
+              alternateScreen = true;
+            }
+            // A dedicated build surface keeps terminal reflow away from prior logs.
+            write("\u001b[H" + lines.join("\u001b[K\r\n") + "\u001b[K\u001b[J");
+          } else {
+            write(`\r${text.slice(0, width)}\u001b[K`);
+          }
         } else {
           write(`  … ${status()}\n`);
         }
       };
       if (animate) draw();
       else write(`  ${paint(color, 2, "…")} ${active}\n`);
-      timer = setInterval(draw, animate ? intervalMs : 15000);
+      const animatedInterval = showBanner ? 150 : intervalMs;
+      timer = setInterval(draw, animate ? animatedInterval : 15000);
       timer.unref?.();
     },
     progress(event) {
@@ -99,6 +131,7 @@ export function createRenderer({
     },
     done(event) {
       line(`  ${paint(color, 32, "✓")} ${label(event)}`);
+      if (event.fix) line(`    ${paint(color, 1, "Note:")} ${event.fix}`);
     },
     skip(event) {
       // The engine skips steps that are already done on a rerun or do not apply.
@@ -155,11 +188,24 @@ async function main(argv) {
   const renderer = createRenderer({
     write: (text) => process.stdout.write(text),
     animate: interactive,
+    banner: interactive,
     color: interactive && !process.env.NO_COLOR,
   });
+  const interrupted = (signal) => {
+    renderer.finish();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
   const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const rawLine of input) renderer.handle(rawLine);
-  const state = renderer.finish();
+  try {
+    for await (const rawLine of input) renderer.handle(rawLine);
+  } finally {
+    renderer.finish();
+    process.removeListener("SIGINT", interrupted);
+    process.removeListener("SIGTERM", interrupted);
+  }
+  const state = renderer.state;
   if (resultFile && state.result) {
     writeFileSync(resultFile, `${JSON.stringify(state.result)}\n`, { mode: 0o600 });
   }

@@ -28,6 +28,8 @@ import {
 import {
   RELEASE_BRANCHES,
   createTag,
+  createRelease,
+  curatedReleaseNotes,
   latestFor,
   parseInstalled,
   parseRemoteTags,
@@ -43,7 +45,11 @@ after(() => {
 });
 
 const run = (cwd, ...args) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 
 // A bare origin whose main carries versioned commits, and a clone of it.
 function fixture() {
@@ -191,7 +197,13 @@ test("prepare picks the next build; tags go only on prepared commits, never repe
   );
   // The release branch is explicit per channel and can be overridden.
   assert.throws(
-    () => prepareTag({ cwd: clone, channel: "stable", commit: "HEAD", branch: "production" }),
+    () =>
+      prepareTag({
+        cwd: clone,
+        channel: "stable",
+        commit: "HEAD",
+        branch: "production",
+      }),
     /production/,
   );
   // prepare sets one build past every tag and the current version on the same day.
@@ -204,7 +216,10 @@ test("prepare picks the next build; tags go only on prepared commits, never repe
     );
     writeFileSync(
       path.join(prepared, "package-lock.json"),
-      `${JSON.stringify({ version: "0.11.0-beta.3.vorteo.957", packages: { "": {} } })}\n`,
+      `${JSON.stringify({
+        version: "0.11.0-beta.3.vorteo.957",
+        packages: { "": {} },
+      })}\n`,
     );
     run(prepared, "add", ".");
     run(prepared, "commit", "--quiet", "-m", "legacy");
@@ -239,7 +254,12 @@ test("required checks come from the checked-in main ruleset", () => {
   assert.deepEqual(requiredChecks(mainRuleset), ["changes", "format", "lint", "typecheck", "scan"]);
   assert.equal(requiredCheckApp(mainRuleset), 15368);
   const required = ["changes", "format", "lint", "typecheck", "scan"];
-  const done = (id, name, conclusion) => ({ id, name, status: "completed", conclusion });
+  const done = (id, name, conclusion) => ({
+    id,
+    name,
+    status: "completed",
+    conclusion,
+  });
   const summary = summarizeChecks(
     [
       done(1, "format", "failure"),
@@ -309,7 +329,10 @@ test("ruleset sync creates missing rulesets and ignores fields GitHub adds", () 
     source: "owner/vorteo",
     rules: ruleset.rules.map((rule) => ({
       ...rule,
-      parameters: rule.parameters && { ...rule.parameters, required_reviewers: [] },
+      parameters: rule.parameters && {
+        ...rule.parameters,
+        required_reviewers: [],
+      },
     })),
   }));
   assert.deepEqual(planSync(desired, applied), []);
@@ -406,4 +429,78 @@ test("the trigger parser reads the workflow shapes GitHub accepts", () => {
     ),
   );
   assert.ok(!requiresUpstream("github.repository == 'getpaseo/paseo' && a || b"));
+});
+
+test("public release notes require an executive summary instead of concatenated engineering entries", () => {
+  const summary =
+    "**A simpler first installation.** Ready accounts receive starter profiles.\n\n### Features\n\n- Create a workspace immediately.\n\n### Fixes\n\n- Recognize native authentication.";
+  assert.equal(curatedReleaseNotes(summary), `${summary}\n`);
+  assert.equal(curatedReleaseNotes(`(AI Generated).\n\n${summary}`), curatedReleaseNotes(summary));
+  for (const notes of [
+    undefined,
+    "",
+    "## 26.11.103 - 2026-11-01\n\n- Internal entry",
+    "Summary.\n\n   ## Unreleased - 2026-11-01\n\n- Internal entry",
+    "Summary.\n\n## Unreleased - 2026-11-01\n\n- Internal entry",
+    "- An ungrouped log",
+  ])
+    assert.throws(() => curatedReleaseNotes(notes), /release|Release/);
+});
+
+test("stable promotion reuses the beta page and preserves its assets and immutable tags", () => {
+  const calls = [];
+  createRelease(
+    { channel: "stable", version: "26.11.200", name: "release-26.11.200" },
+    {
+      repository: "example/project",
+      notes: "A ready installation.\n\n### Improvements\n\n- Start working.",
+      gh: (args, options) => {
+        calls.push({ args, options });
+        return args[0] === "api" ? JSON.stringify([[{ tag_name: "release-26.11.200-beta" }]]) : "";
+      },
+    },
+  );
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args.slice(0, 3), ["release", "edit", "release-26.11.200-beta"]);
+  assert.ok(calls[1].args.includes("--prerelease=false"));
+  assert.ok(calls[1].args.includes("--latest=true"));
+  assert.ok(!calls[1].options.input.includes("AI Generated"));
+});
+
+test("a stable version cannot acquire another beta release page", () => {
+  assert.throws(
+    () =>
+      createRelease(
+        { channel: "beta", version: "26.11.200" },
+        {
+          repository: "example/project",
+          notes: "Ready.\n\n### Fixes\n\n- Works.",
+          gh: () => JSON.stringify([[{ tag_name: "release-26.11.200" }]]),
+        },
+      ),
+    /already stable/,
+  );
+});
+
+test("existing duplicate pages require asset reconciliation before any mutation", () => {
+  const calls = [];
+  assert.throws(
+    () =>
+      createRelease(
+        { channel: "stable", version: "26.11.200" },
+        {
+          repository: "example/project",
+          notes: "Ready.\n\n### Fixes\n\n- Works.",
+          gh: (args) => {
+            calls.push(args);
+            return JSON.stringify([
+              [{ tag_name: "release-26.11.200" }, { tag_name: "release-26.11.200-beta" }],
+            ]);
+          },
+        },
+      ),
+    /preserve every asset/,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "api");
 });

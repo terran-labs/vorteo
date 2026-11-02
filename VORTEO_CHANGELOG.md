@@ -4,19 +4,68 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## Unreleased - 2026-11-01
+## Unreleased - 2026-11-02
 
-- Make installer failures on existing deployments visible: report Tailscale's reason for a refused route, test that Dev can reach the coordinator through the gate and report the firewall rule when it cannot, and warn that gate mode does not read compose.override.yaml.
+### Maintenance
+
+- Apply repository formatting to the release publisher and regression tests.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Keep relay integration tests local by disabling the production cutover upstream in the test server.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Refuse automatic reconciliation of existing duplicate release pages until their assets have been compared and preserved.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Remove attribution prefixes from public release notes and promote each beta release page to stable instead of publishing duplicate pages.
+
+## 26.11.200 - 2026-11-02
+
+### Installation
+
+- Verify Dev coordinator health and installation identity through the agent route before reporting readiness. Failed connectivity remains resumable and reports diagnostic guidance without assuming every failure is a firewall block.
+
+- Refuse conversion to gate mode when a legacy deployment contains recognized custom Compose overrides, before changing its mounts or services. Recheck saved plans and the migration step, and keep all override files intact.
+- Display follow-up notes from completed installation steps instead of silently discarding them.
+
+## 26.11.108 - 2026-11-01
+
+- Complete release acceptance fixtures by including the terminal animation module in synthetic installer checkouts.
+
+## 26.11.107 - 2026-11-01
+
+### Installation
+
+- Make installer failures on existing deployments visible: report Tailscale's reason for a refused route, test that Dev can reach the coordinator through the gate and report the firewall rule when it cannot, and refuse unsafe migration when recognized custom Compose overrides would be ignored.
 - Explain that the built-in Claude connection cannot connect to the installation, instead of offering Connect Claude and failing with an unconfirmed request.
 - Retry the packaged Claude CLI check after a failure instead of keeping the error until the process restarts.
 - Keep existing Dev threads on the built-in Claude provider working after an upgrade: the Dev image's own CLAUDE_CONFIG_DIR no longer marks the native account as a bound account awaiting delivery.
 - Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
-## 26.11.105 - 2026-11-01
+- The installer wordmark uses clear square tiles with slowly wandering highlight clusters, retaining its silhouette throughout the animation.
+
+- Build steps show a continuous green Matrix wordmark inside a particle collider, with slow layered texture and live elapsed progress. The animation pauses for questions, adapts to terminal size, and restores ordinary output after a build.
+
+### Maintenance
+
+- Require curated executive summaries for public releases and reject internal version/date headings before publishing. Keep detailed engineering history separate.
+
+## 26.11.106 - 2026-11-01
 
 - Provision a starter profile for each ready provider, including connections added later, while preserving edited and deleted profiles.
 
 ### Interface
+
+- Keep the welcome toast API independent of native rendering imports in browser contexts.
 
 - Put owner sign-in in a bordered card over the existing falling Matrix background, with readable password help and a copy-confirmation toast.
 - Show detected accounts in new workspaces even when no profiles have been saved. New tasks can use account defaults without another login.

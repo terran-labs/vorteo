@@ -2,7 +2,12 @@
 // anything. `apply` executes exactly this plan; it never re-reads the answers.
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { detectExisting, detectPrerequisites, tailscaleStatus } from "./detect.mjs";
+import {
+  detectExisting,
+  detectPrerequisites,
+  tailscaleStatus,
+  assertGateMigrationSupported,
+} from "./detect.mjs";
 import { servicePath } from "./service-path.mjs";
 import { DEFAULT_PORTS, choosePorts, servePortsInUse } from "./ports.mjs";
 import { InstallerError, assertProjectsFolderSeparate, shellQuote } from "./primitives.mjs";
@@ -331,9 +336,6 @@ export async function planDev(context, docker, existing, adopt) {
       path: adopt.path,
       gateMode: adopt.gateMode,
       ...(adopt.projectsFolder ? { projectsFolder: adopt.projectsFolder } : {}),
-      ...(existsSync(path.join(adopt.path, "compose.override.yaml")) && !adopt.gateMode
-        ? { composeOverride: path.join(adopt.path, "compose.override.yaml") }
-        : {}),
     },
   };
 }
@@ -374,6 +376,7 @@ export async function createPlan(rawAnswers, context) {
   const existing = await detectExisting(context, { docker: answers.devContainer });
   assertNoCurrent(existing, context.root);
   const adopt = adoptedDeployment(existing, answers);
+  if (adopt) assertGateMigrationSupported(adopt.path);
   assertLayout(answers, context.root, adopt);
   const prerequisites = await detectPrerequisites(context, { docker: answers.devContainer });
   assertPrerequisites(prerequisites, answers);
@@ -488,10 +491,6 @@ export function summarizePlan(plan) {
     )
       lines.push(
         `Dev mounted ${plan.dev.legacy.projectsFolder} before; it will mount ${plan.paths.projectsFolder} instead. Nothing is moved.`,
-      );
-    if (plan.dev.legacy?.composeOverride)
-      lines.push(
-        `Gate mode does not read ${plan.dev.legacy.composeOverride}. Mounts, services and environment it adds stop applying; review it first and carry what you need into shared-folders.compose.json.`,
       );
   } else {
     lines.push("No Dev container. Docker is not used.");

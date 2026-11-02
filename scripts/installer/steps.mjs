@@ -25,7 +25,7 @@ import {
   interfaceOrigins,
   devClientOrigin,
 } from "./coordinator-config.mjs";
-import { readEnvFile, tailscaleStatus } from "./detect.mjs";
+import { readEnvFile, tailscaleStatus, assertGateMigrationSupported } from "./detect.mjs";
 import {
   INSTALLATION_SKILL,
   AGENT_SCRIPT,
@@ -307,6 +307,7 @@ async function devCreate(s) {
 async function devAdopt(s) {
   const { plan, context, outputs } = s;
   const deployment = plan.dev.legacy.path;
+  assertGateMigrationSupported(deployment);
   if (existsSync(path.join(deployment, ".gate-mode"))) {
     await composeUp(s, deployment);
     return { message: `Dev in ${deployment} already runs in gate mode.` };
@@ -326,14 +327,8 @@ async function devAdopt(s) {
     env: scriptEnvironment(s, { ...gateEnvironment(s), PASEO_IMAGE: outputs.devImage }),
     timeout: 15 * 60_000,
   });
-  const override = plan.dev.legacy.composeOverride;
   return {
     message: `Dev in ${deployment} now runs behind the gate, with its identity, home and workspace kept.`,
-    ...(override
-      ? {
-          fix: `Gate mode does not read ${override}. Carry the mounts, services and environment you still need into shared-folders.compose.json.`,
-        }
-      : {}),
   };
 }
 
@@ -618,15 +613,15 @@ async function guestClient(s) {
     release: plan.paths.hostReleaseLink,
     runCommand: context.run,
   });
-  const fix = plan.remote.mode === "tailscale" ? await devCoordinatorFirewallFix(s) : undefined;
-  return { message: "Dev agents can request installation changes.", ...(fix ? { fix } : {}) };
+  await verifyDevCoordinatorRoute(s);
+  return { message: "Dev agents can request installation changes." };
 }
 
 /**
  * The gate reaches the coordinator's route over the Host's tailnet address, which a Host
- * firewall can drop while Dev otherwise looks healthy. Reports the fix; it needs root.
+ * firewall can drop while Dev otherwise looks healthy. Verify the agent path before readiness.
  */
-async function devCoordinatorFirewallFix(s) {
+async function verifyDevCoordinatorRoute(s) {
   const { plan, context, outputs } = s;
   const docker = plan.executables.docker;
   const origin = devClientOrigin(plan, outputs.hostname);
@@ -638,37 +633,51 @@ async function devCoordinatorFirewallFix(s) {
     }
   };
   try {
-    // Proxied by the container's environment. Any HTTP reply proves the route is open.
-    await context.run(docker, [
-      "exec",
-      containerName(s),
-      "curl",
-      "-s",
-      "-o",
-      "/dev/null",
-      "-m",
-      "15",
-      "--retry",
-      "2",
-      "--retry-all-errors",
-      origin,
-    ]);
-    return undefined;
+    // Keep the agent's user and proxy environment; a proxy error is not coordinator health.
+    const output = await context.run(
+      docker,
+      [
+        "exec",
+        "--user",
+        plan.dev.user,
+        containerName(s),
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "10",
+        "--retry",
+        "2",
+        "--retry-delay",
+        "1",
+        "--retry-all-errors",
+        new URL("/api/installation/health", origin).href,
+      ],
+      { timeout: 45_000 },
+    );
+    const health = JSON.parse(output);
+    if (health.installationId !== plan.installationId)
+      throw new Error("Wrong installation identity");
+    return;
   } catch {
-    const network = `${outputs.instance}_egress`;
-    const subnet = await quiet(docker, [
-      "network",
-      "inspect",
-      "--format",
-      "{{(index .IPAM.Config 0).Subnet}}",
-      network,
-    ]);
-    const address = await quiet(plan.executables.tailscale, ["ip", "-4"]);
-    return (
-      `Dev could not reach the coordinator at ${origin}, so settings saves and installation ` +
-      "requests from Dev will time out. If the Host runs a firewall, allow the gate through it, " +
-      `for example: sudo ufw allow from ${subnet || "<gate egress subnet>"} to ` +
-      `${address || "<Host tailnet address>"} port ${new URL(origin).port || 443} proto tcp`
+    let fix =
+      "Check Dev's proxy configuration, the gate and coordinator logs, DNS, certificates and Host firewall rules, then rerun the installer to resume. The running installation and its data are retained.";
+    if (plan.platform === "linux" && plan.remote.mode === "tailscale") {
+      const subnet = await quiet(docker, [
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Subnet}}",
+        `${outputs.instance}_egress`,
+      ]);
+      const address = await quiet(plan.executables.tailscale, ["ip", "-4"]);
+      if (subnet && address)
+        fix += ` If UFW is blocking this route, a scoped rule is: sudo ufw allow from ${subnet} to ${address} port ${new URL(origin).port || 443} proto tcp`;
+    }
+    throw new InstallerError(
+      `Dev could not verify this installation's coordinator at ${origin}. Installation is incomplete; Dev settings and installation requests need this route.`,
+      fix,
     );
   }
 }

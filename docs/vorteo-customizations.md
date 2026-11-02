@@ -1,6 +1,19 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-01): the installer reports Tailscale's refusal reason, tests Dev's route to the coordinator and reports the Host firewall rule, and warns before adoption that gate mode does not read compose.override.yaml.
+Maintenance review (2026-11-02): release publisher formatting now matches the repository formatter; release behavior is unchanged.
+
+Maintenance review (2026-11-02): relay integration tests explicitly use the local Durable Object instead of forwarding to the production cutover hostname. Production relay configuration is unchanged.
+
+Maintenance review (2026-11-02): pre-existing duplicate release pages require explicit asset reconciliation before mutation; normal beta promotion preserves the original page and assets.
+
+Maintenance review (2026-11-02): public release summaries omit attribution prefixes. Publication promotes one page per version from beta to stable while preserving assets and immutable tags; agent instructions record both rules.
+
+Maintenance review (2026-11-02): release 26.11.200 combines the square-tile installer animation, welcome page and provider defaults with reviewed legacy Claude fixes. Gate migration preserves unsupported custom deployments by refusing before changes, and Dev connectivity must verify the correct coordinator before installation completes. Focused tests and a live Dev-user health check pass; final release acceptance remains pending.
+
+Maintenance review (2026-11-01): legacy gate migration refuses common custom Compose override files during planning, before applying a saved plan, and at the migration boundary, preserving files and avoiding silent mount changes. Completed steps display their follow-up notes. Focused planning, application and renderer tests pass; arbitrary custom Compose configurations still require review.
+
+Maintenance review (2026-11-01): release 26.11.108 combines the approved square-tile build animation, welcome and starter-profile fixes, curated release summaries, and the reviewed dependency lifecycle fix. Synthetic shell checkouts include the animation module. Final combined installation acceptance is pending.
+Maintenance review (2026-11-02): the installer reports Tailscale refusal details and verifies coordinator health and installation identity through the Dev agent route in both local and Tailscale modes. A failed probe leaves installation incomplete and resumable. Recognized custom Compose overrides stop gate migration before changes.
 
 Maintenance review (2026-11-01): the Claude connection panel no longer offers a shared connection for the built-in provider, which the coordinator always refuses. It points to adding a Claude account.
 
@@ -9,6 +22,12 @@ Maintenance review (2026-11-01): a failed packaged Claude CLI selection is no lo
 Maintenance review (2026-11-01): the native Claude account stays usable in Dev containers, whose image sets CLAUDE_CONFIG_DIR for the whole daemon. Only a directory a binding chose differently from the daemon's own marks a bound account.
 
 Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
+
+Maintenance review (2026-11-01): installer build animation uses a separate terminal screen, continuous gradient noise, and green square-tile lettering with independently drifting highlights. Build completion, errors and EOF restore the normal screen; small terminals retain progress and redirected output remains plain text. Release notes also reject indented internal headings.
+
+Maintenance review (2026-11-01): release publication requires curated executive notes, validates them before tagging, and no longer copies internal changelog batches into public release bodies.
+
+Maintenance review (2026-11-01): welcome feedback imports the shared toast API without loading the native renderer in browser tests.
 
 Maintenance review (2026-11-01): installer builds report elapsed time and live activity, with planning estimates before approval and a startup wordmark. The welcome card preserves Matrix rain and confirms command copying with a toast. Ready accounts remain selectable without saved profiles; the installation provisions one starter profile per ready provider and remembers provisioning across restarts. Existing profiles and deliberate starter deletions are retained. Native Claude CLI authentication remains available in managed installations; separately bound accounts still require credential delivery.
 
