@@ -58,7 +58,7 @@
 # do not choose for them. Never put a Tailscale auth key on the command line or in chat:
 # the owner saves it to a file and the answer is that file's path.
 #
-# On success the installer prints these lines on standard output, then exits 0:
+# In agent mode, success prints these machine-readable lines, then exits 0:
 #   VORTEO_RESULT origin <address>
 #   VORTEO_RESULT local-origin <address on this machine>
 #   VORTEO_RESULT password-file <path of the owner password file>
@@ -1512,10 +1512,12 @@ VORTEO_BANNER
     say "  Sign in with the owner password. Everything else, including updates, happens in the interface."
     say "  Commands: vorteo status, vorteo doctor, vorteo open, vorteo update, vorteo repair, vorteo uninstall"
     open_address "$origin"
-    say ""
-    say "VORTEO_RESULT origin $origin"
-    say "VORTEO_RESULT local-origin $local_origin"
-    say "VORTEO_RESULT password-file $password_file"
+    if [ -z "$interactive" ]; then
+      say ""
+      say "VORTEO_RESULT origin $origin"
+      say "VORTEO_RESULT local-origin $local_origin"
+      say "VORTEO_RESULT password-file $password_file"
+    fi
   }
 
   # Existing installations --------------------------------------------------------------

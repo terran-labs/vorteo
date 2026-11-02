@@ -4,6 +4,19 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.204 - 2026-11-02
+
+### Improvements
+
+- Copy the password command by clicking anywhere in its block; hovering anywhere highlights the copy icon, and copying confirms with a toast.
+
+## 26.11.203 - 2026-11-02
+
+### Improvements
+
+- Split welcome sign-in and password help into two columns on wide screens, with an accessible copy icon inside the command field and toast confirmation.
+- Keep machine-readable installation results out of the interactive completion screen while preserving agent output.
+
 ## 26.11.202 - 2026-11-02
 
 ### Maintenance
