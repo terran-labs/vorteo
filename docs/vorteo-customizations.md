@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-02): the upstream integration retains the separately reviewed coordinator admission repair as an ancestor. Both sides’ documentation is preserved; runtime source is unchanged by this merge. Installation and remaining platform acceptance are still pending.
+
 Maintenance review (2026-11-02): coordinator admission ignores a canceled update’s stale source-batch preparation state. Admission still blocks pending source preparation, active jobs, unresolved holds, unsettled supervisor effects and native children. The regression reproduces rejected Host and Dev batches. This source correction is not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): saved-layout reconciliation preserves the selected workspace route and waits for the declared owner and known workspace directories before removing foreign pins. Archived and detail-only group members remain protected. The sidebar Usage consumer now gates its query on resolved visibility; full-screen and agent consumers keep their defaults. Script-toolbar fixtures read completed command output rather than the deliberately empty legacy aggregate log. Foreign-layout acceptance, both script-toolbar cases, both relative-navigation cases and all ten Usage cases pass locally. Final combined validation, CI and installation remain pending. README overview and onboarding are unchanged.

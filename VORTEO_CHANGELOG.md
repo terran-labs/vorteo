@@ -6,6 +6,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+- Preserve the separately reviewed coordinator admission repair in upstream integration ancestry. The merge changes no runtime behavior.
 - Ignore stale source-preparation state on terminal update requests when checking coordinator idleness. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
 - Preserve the current workspace route when restoring unrelated saved tabs. Remove foreign pins only after workspace ownership is known, retaining archived and detail-only members of the workspace group.
 - Gate sidebar Usage queries on resolved item visibility while preserving direct Usage access and host settings. Reconcile script-toolbar fixtures with command-level setup output.
