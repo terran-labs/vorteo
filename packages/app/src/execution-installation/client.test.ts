@@ -739,9 +739,12 @@ test("full maintenance delegation requires unlocked access and a supported query
   await client.unlock("owner-password");
   expect(await client.maintenanceDelegation()).toBeNull();
   await expect(client.changeMaintenanceDelegation(preference, true)).rejects.toThrow("unavailable");
-  expect(calls).toEqual(["unlock", "maintenance-delegation/query"]);
+  expect(calls).toEqual(["unlock", "maintenance-delegation/query?management=1"]);
   supported = true;
   expect(await client.maintenanceDelegation()).toEqual(preference);
+  await expect(client.changeMaintenanceDelegation(preference, true, true)).rejects.toThrow(
+    "Installation management is unavailable",
+  );
   supported = false;
   await expect(client.maintenanceDelegation()).rejects.toThrow("Unavailable");
 });

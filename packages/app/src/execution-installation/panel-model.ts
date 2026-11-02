@@ -533,7 +533,7 @@ export class InstallationPanelModel {
     }
   }
 
-  async changeMaintenanceDelegation(enabled: boolean): Promise<void> {
+  async changeMaintenanceDelegation(enabled: boolean, management?: boolean): Promise<void> {
     const preference = this.state.maintenanceDelegation;
     if (
       this.state.busy ||
@@ -552,7 +552,7 @@ export class InstallationPanelModel {
       notice: "Saving full maintenance delegation...",
     });
     try {
-      const saved = await this.client.changeMaintenanceDelegation(preference, enabled);
+      const saved = await this.client.changeMaintenanceDelegation(preference, enabled, management);
       if (generation !== this.accessGeneration) return;
       this.automationGeneration++;
       this.publish({

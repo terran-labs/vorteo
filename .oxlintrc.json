@@ -737,6 +737,14 @@
                 "openSync",
                 "readFileSync"
               ],
+              // TODO: cancellation receipts share the synchronous authority and queue mutation boundary; move receipt custody and all mutation-time rechecks to async together.
+              "server/execution-installation/management.ts": [
+                "closeSync",
+                "fsyncSync",
+                "openSync",
+                "readFileSync",
+                "writeFileSync"
+              ],
               // TODO: retained helper artifact preparation: retained bounded compiler invocation creates the native helper artifact before use.
               "server/execution-installation/native-helper-artifact.ts": ["spawnSync"],
               // TODO: delegated authority binds exact private decision files and durable descriptors; migrate reads, grants and revocations together.

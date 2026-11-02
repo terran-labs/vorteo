@@ -6,6 +6,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Integrate the reviewed delegated installation cancellation and restart-fixture corrections with the upstream synchronization. Preserve explicit management opt-in, revocation and manual restart approval. Bound the synchronous receipt-writer lint exception to its five existing APIs.
+
+## Unreleased - 2026-11-01
+
 - Record the completed upstream merge and its Git committer timestamp for Settings > General. This source record does not imply either daemon or the web release has been updated.
 
 ## Unreleased - 2026-11-01
@@ -20,6 +24,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ## Unreleased - 2026-11-01
 
 - Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
+
+- Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.
+- Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.
+- Wait for durable restart capture acknowledgement in the compiled restart fixture before checking that no work remains pending. Keep the worker replacement and no-replay assertions unchanged.
 
 ## 26.11.105 - 2026-11-01
 

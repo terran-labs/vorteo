@@ -18,5 +18,7 @@ export const MaintenanceDelegationStatusSchema = z.strictObject({
     .nullable(),
   activatedAt: z.string().datetime().nullable(),
   enabled: z.boolean(),
+  managementAvailable: z.boolean().optional(),
+  managementEnabled: z.boolean().optional(),
 });
 export type MaintenanceDelegationStatus = z.infer<typeof MaintenanceDelegationStatusSchema>;
