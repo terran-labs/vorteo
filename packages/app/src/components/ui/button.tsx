@@ -1,4 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { useContainedControlSize } from "@/components/ui/control-size";
 import {
   default as React,
   useCallback,
@@ -176,11 +177,12 @@ const styles = StyleSheet.create((theme) => {
 export function Button({
   children,
   variant = "secondary",
-  size = "md",
+  size: sizeProp,
   leftIcon,
   trailing,
   style,
   textStyle,
+  numberOfLines,
   disabled,
   loading = false,
   accessibilityRole,
@@ -188,16 +190,20 @@ export function Button({
   ...props
 }: PropsWithChildren<
   Omit<PressableProps, "style"> & {
+    ref?: React.Ref<View>;
     variant?: ButtonVariant;
     size?: ButtonSize;
     leftIcon?: LeftIcon;
     trailing?: ReactNode;
     style?: StyleProp<ViewStyle>;
     textStyle?: StyleProp<TextStyle>;
+    numberOfLines?: number;
     loading?: boolean;
   }
 >) {
   const [hovered, setHovered] = useState(false);
+  const containedSize = useContainedControlSize();
+  const size = sizeProp ?? containedSize ?? "md";
   const isDisabled = disabled || loading;
 
   let variantStyle: ViewStyle;
@@ -292,7 +298,11 @@ export function Button({
         iconSize={buttonIconSize[size]}
         uniProps={resolveIconMapping()}
       />
-      {children != null ? <Text style={resolvedTextStyle}>{children}</Text> : null}
+      {children != null ? (
+        <Text numberOfLines={numberOfLines} style={resolvedTextStyle}>
+          {children}
+        </Text>
+      ) : null}
       {trailing}
     </Pressable>
   );

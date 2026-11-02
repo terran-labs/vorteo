@@ -1,3 +1,4 @@
+import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
 import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
@@ -22,7 +23,7 @@ import {
 } from "react-native";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { useRouter } from "expo-router";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect } from "expo-router/react-navigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -1047,6 +1048,7 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "chat.sending": () => <SendingSection />,
   "chat.openLocation": () => <OpenLocationSection />,
   "chat.editor": () => <EditorSection />,
+  "chat.files": () => <FilesSection />,
   "chat.shortcuts": () => <KeyboardShortcutsSection />,
   "terminal.terminal": () => <TerminalSection />,
   "terminal.profiles": installationPane("terminals"),

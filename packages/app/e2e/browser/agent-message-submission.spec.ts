@@ -19,7 +19,9 @@ import {
   expectComposerVisible,
   cancelAgent,
   composerLocator,
+  expectQueuedMessageButton,
   fillComposerDraft,
+  holdSendButton,
   sendDraftToQueue,
   startRunningMockAgent,
   submitMessage,
@@ -53,6 +55,7 @@ import {
 import { expectInFlightForkAvailable } from "../support/helpers/assistant-fork";
 import {
   scrollTimelineToNewestLoadedEdge,
+  userScrollsTimelineToHistoryStart,
   scrollTimelineUntilOlderHistoryIsReachable,
 } from "../support/helpers/timeline-pagination";
 import {
@@ -293,7 +296,6 @@ async function expectRejectedSubmissionRestored(
   await expectComposerDraft(page, input.prompt);
   await expectComposerEditable(page);
   await expectAttachmentPill(page, "composer-image-attachment-pill");
-  await expect(page.getByTestId("user-message").filter({ hasText: input.prompt })).toHaveCount(0);
   if (input.preservesActiveTurn) {
     await expect(page.getByTestId("turn-working-indicator")).toBeVisible();
     return;
@@ -304,11 +306,19 @@ async function expectRejectedSubmissionRestored(
 
 async function retryRestoredSubmission(page: Page, prompt: string): Promise<void> {
   await page.getByRole("textbox", { name: "Message agent..." }).first().press("Enter");
-  const userMessage = page.getByTestId("user-message").filter({ hasText: prompt });
-  await expect(userMessage).toHaveCount(1);
+  const attempts = page.getByTestId("user-message").filter({ hasText: prompt });
+  await expect(attempts).toHaveCount(2);
+  const userMessage = attempts.last();
   await expect(userMessage).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
   await expect(userMessage.getByRole("button", { name: "Open image attachment" })).toBeVisible();
   await expect(page.getByTestId("composer-image-attachment-pill")).toHaveCount(0);
+}
+
+async function expectRejectedPromptBeforeError(page: Page, prompt: string, errorMessage: string) {
+  const messages = page.getByTestId("user-message").or(page.getByTestId("assistant-message"));
+  await expect(messages).toHaveCount(2);
+  await expect(messages.nth(0)).toContainText(prompt);
+  await expect(messages.nth(1)).toContainText(`[System Error] ${errorMessage}`);
 }
 
 async function configureSteerInSettings(page: Page): Promise<void> {
@@ -994,7 +1004,7 @@ test.describe("Agent message submission", () => {
     }
   });
 
-  test("keeps one prompt when its provider echo crosses the bounded tail", async ({
+  test("keeps one prompt when a delayed provider echo belongs to a large whole turn", async ({
     page,
   }, testInfo) => {
     const workspace = await seedWorkspace({
@@ -1011,8 +1021,10 @@ test.describe("Agent message submission", () => {
       await expectVisibleAgentSurfacesIdle(page);
       await page.reload();
 
-      await expect(submittedPrompt).toHaveCount(0);
-      await scrollTimelineUntilOlderHistoryIsReachable(page, prompt);
+      // The complete turn arrives on reload; scrolling mounts its oldest rows
+      // without requiring another page or an increase in total content height.
+      await userScrollsTimelineToHistoryStart(page);
+      await expect(submittedPrompt).toBeVisible();
       await expect(submittedPrompt).toHaveCount(1);
       await expect(submittedPrompt).toHaveAttribute("aria-busy", "false");
     } finally {
@@ -1167,17 +1179,15 @@ test.describe("Agent message submission", () => {
       page,
       page.getByTestId("assistant-message").last(),
     );
-    const assistantMessageCount = await page.getByTestId("assistant-message").count();
-    const toolCallCount = await page.getByTestId("tool-call-badge").count();
     await composer.press("Enter");
     const userMessage = page.getByTestId("user-message").filter({ hasText: prompt }).last();
     await expect(userMessage).toBeVisible();
-    await expect
-      .poll(async () => page.getByTestId("assistant-message").count())
-      .toBeGreaterThan(assistantMessageCount);
-    await expect
-      .poll(async () => page.getByTestId("tool-call-badge").count())
-      .toBeGreaterThan(toolCallCount);
+    await expect(
+      page.getByTestId("assistant-message").filter({
+        hasText: "I'll take a look at the scroll anchor behavior you described.",
+      }),
+    ).toBeVisible();
+    await awaitToolCall(page, "Read");
     await finishTimelineRowStabilityCheck();
   });
 
@@ -1193,13 +1203,14 @@ test.describe("Agent message submission", () => {
     await toasts.expectNeverShown("agent-updating-toast");
   });
 
-  test("restores a rejected submission and accepts its retry", async ({
+  test("retains a rejected submission before its error and accepts its retry", async ({
     page,
     rejectionScenario,
   }) => {
     const prompt = "Restore this rejected submission.";
     await submitMessageThatWillBeRejected(page, prompt);
     await expectRejectedSubmissionRestored(page, { prompt, ...rejectionScenario });
+    await expectRejectedPromptBeforeError(page, prompt, rejectionScenario.errorMessage);
     await retryRestoredSubmission(page, prompt);
   });
 
@@ -1232,6 +1243,7 @@ test.describe("Agent message submission", () => {
         errorMessage: "Requested mock steer transport failure",
         preservesActiveTurn: true,
       });
+      await expect(page.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(0);
 
       expect(gate.getClientRequestCount("send_agent_message_request")).toBe(sendsBefore + 1);
       expect(gate.getClientRequestCount("cancel_agent_request")).toBe(cancelsBefore);
@@ -1307,6 +1319,49 @@ test.describe("Agent message submission", () => {
       expect(request.activeTurnBehavior).toBe("interrupt");
       gate.accept();
       await expect(page.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(1);
+    } finally {
+      await agent.cleanup();
+    }
+  });
+
+  test("queues a draft by holding Send while a tap still steers", async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const gate = await gateNextAgentMessage(page);
+    const agent = await startRunningMockAgent(page, {
+      prefix: `hold-send-queue-${testInfo.workerIndex}-`,
+      model: "one-minute-stream",
+      prompt: "Keep this turn active while the user holds Send.",
+    });
+    try {
+      await expectComposerVisible(page);
+      await expectAgentReadyToInterrupt(page);
+
+      const queuedPrompt = "Queue this follow-up by holding Send.";
+      await test.step("holding Send queues the draft", async () => {
+        await fillComposerDraft(page, queuedPrompt);
+        await holdSendButton(page, "Send and steer");
+        await expectQueuedMessageButton(page);
+        await expectComposerDraft(page, "");
+        await expectAgentReadyToInterrupt(page);
+        await expect(
+          page.getByTestId("user-message").filter({ hasText: queuedPrompt }),
+        ).toHaveCount(0);
+      });
+
+      await test.step("tapping Send still steers", async () => {
+        const steeredPrompt = "Steer this turn with a tap.";
+        await fillComposerDraft(page, steeredPrompt);
+        await page.getByRole("button", { name: "Send and steer", exact: true }).click();
+
+        const request = await gate.waitForRequest();
+        expect(request.text).toBe(steeredPrompt);
+        expect(request.activeTurnBehavior).toBe("steer");
+        gate.accept();
+        await expect(
+          page.getByTestId("user-message").filter({ hasText: steeredPrompt }),
+        ).toHaveCount(1);
+        await expectQueuedMessageButton(page);
+      });
     } finally {
       await agent.cleanup();
     }

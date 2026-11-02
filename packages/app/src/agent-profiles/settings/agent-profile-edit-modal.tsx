@@ -764,7 +764,6 @@ function OpenAgentProfileEditModal({
       onClose={handleCancel}
       onDismiss={onDismiss}
       footer={actions}
-      sizeContentToCurrentSnapPoint
       desktopMaxWidth={520}
       desktopPlacement="end"
       testID="agent-profile-edit-modal"

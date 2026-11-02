@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): the upstream synchronization adapts Expo 57, terminal replay, plugin APIs and recovery while preserving Vorteo account, profile and installation workflows. The [upstream comparison](#upstream-comparison) records partial overlap and retained differences. Focused regressions, seven isolated browser checks, the production web export and simulator-target compilation cover the compatibility repairs. Publication, native launch and device acceptance, and installation remain separate. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
 
 Maintenance review (2026-11-01): installer builds report elapsed time and live activity, with planning estimates before approval and a startup wordmark. The welcome card preserves Matrix rain and confirms command copying with a toast. Ready accounts remain selectable without saved profiles; the installation provisions one starter profile per ready provider and remembers provisioning across restarts. Existing profiles and deliberate starter deletions are retained. Native Claude CLI authentication remains available in managed installations; separately bound accounts still require credential delivery.
@@ -1587,6 +1589,16 @@ Sidebar integration review: shared state is integrated with the published Nova b
 
 ## Upstream comparison
 
+The November 1, 2026 synchronization targets Paseo commit `efc64a5443dfe166dfb0d80434ecb48516b8fbe2` from the `0.15.0-beta.1` line. The comparison below credits incoming implementation; deployment and physical-device acceptance remain separate.
+
+- **Terminal continuity has partial overlap.** Paseo adds a retained terminal worker, bounded replay and native mobile rendering. Vorteo retains its separate durable agent-session host, tracked installation approvals, environment isolation and recovery controls. The device-local WebView fallback remains available and adapts to upstream replay and character-width APIs. A terminal worker surviving a daemon restart does not establish safe installation rollback or agent-session continuity. See [terminal workers](terminal-worker.md) and [instance continuity](instance-continuity.md).
+- **Restart recovery has partial overlap.** Paseo adds automatic startup resumption. Vorteo preserves its existing tracked restart continuation and durable queue ownership. The new startup path only admits an eligible loaded Codex session with a final dispatch permit; cold startup recovery remains incomplete. Owner pauses, queue changes, quota and maintenance holds revoke admission. See [agent lifecycle](agent-lifecycle.md#daemon-restart-recovery).
+- **Plugin APIs have partial overlap.** Paseo adds `server.addHook`, agent and file panels, persisted tab state, cached client bundles and retention during temporary disconnects. Deprecated panel and UI aliases remain part of the compatibility contract. Vorteo retains trusted local plugin policy, serving-host attribution, installation controls and its shared account/profile workflows. See the [plugin reference](../public-docs/plugins/reference.md).
+- **Appearance and native startup have partial overlap.** Paseo moves to Expo 57 and provides built-in iOS scene support, adaptive-theme fixes and native layout corrections. Vorteo still requires its bundled fonts, theme choices, interface scaling, private-preview origin checks and numeric theme-rule updates. The SDK57 scene adaptation captures notification and link launch data, registers paste after React startup and reuses the runtime on scene reconnection. Transform checks pass; native compilation and device acceptance remain separate. Related upstream work does not replace the fork's appearance system.
+- **Speech settings and metadata selection change inherited behavior.** Paseo moves speech credentials and options into each use site's settings. Saving can remove the legacy shared fields, so rollback requires a protected pre-update configuration copy. A nonempty metadata model list now means manual selection with no automatic fallback. These changes do not replace Vorteo's account binding or profile policy.
+
+The earlier comparison remains useful for features with no established replacement in this synchronization:
+
 Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d98ce8d5c8a270c519085c8` from the `0.11.0-beta.3` line. This is the integrated baseline, not a claim about the latest upstream release. The [upstream changelog](../CHANGELOG.md) records the inherited changes.
 
 - **Usage visibility has partial overlap.** Paseo provides per-subscription usage discovery across coding tools, custom credential-home support, plugin usage sources and pinned windows. Those are inherited capabilities. Vorteo retains its account connection workflows, usage in profile selection, reset-credit management and quota lifecycle. Usage visibility by itself is no longer a fork differentiator.
@@ -1597,6 +1609,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+November 1, 2026: Upstream synchronization preserves the fork's installer CI job, supported macOS runner pins and bounded browser-job timeouts while adopting eight browser shards. Local relay tests clear the deployment forwarding override so they exercise the checkout's adapter. The README retains the fork's installer, security overview and demonstrations; incoming upstream installation instructions do not replace them.
 
 October 29, 2026: The diagnostic branch reuses four reviewed layout-settle test files from main. All responsive and disclosure assertions remain; measured test budgets accommodate the known layout-switch freeze without claiming it fixed. Runtime behavior, README overview and onboarding are unchanged.
 

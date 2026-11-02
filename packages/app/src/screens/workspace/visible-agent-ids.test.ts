@@ -130,3 +130,36 @@ test("routes visible task details to their execution environment", async () => {
     container: ["remote"],
   });
 });
+
+test("single-pane tablet includes its visible Explorer agent without including other splits", () => {
+  const layout: WorkspaceLayout = {
+    focusedPaneId: "main",
+    root: {
+      kind: "group",
+      group: {
+        id: "root",
+        direction: "horizontal",
+        sizes: [0.5, 0.25, 0.25],
+        children: [
+          { kind: "pane", pane: { id: "main", tabIds: ["a"], focusedTabId: "a" } },
+          { kind: "pane", pane: { id: "explorer", tabIds: ["b"], focusedTabId: "b" } },
+          { kind: "pane", pane: { id: "other", tabIds: ["c"], focusedTabId: "c" } },
+        ],
+      },
+    },
+  };
+  const tabs: WorkspaceTab[] = ["a", "b", "c"].map((id) => ({
+    tabId: id,
+    createdAt: 1,
+    target: { kind: "agent", agentId: id },
+  }));
+  expect(
+    selectVisibleAgentIds({
+      layout,
+      tabs,
+      routeFocused: true,
+      focusedPaneOnly: true,
+      explorerPaneId: "explorer",
+    }),
+  ).toEqual(["a", "b"]);
+});

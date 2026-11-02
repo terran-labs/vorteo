@@ -213,3 +213,11 @@ it("keeps internal dividers quieter than borders across every appearance", () =>
     expect(alpha(theme.colors.divider)).toBeCloseTo(alpha(theme.colors.border) * 0.55);
   }
 });
+
+it("cycles the authored appearance catalog in picker order", () => {
+  for (let index = 0; index < THEME_OPTIONS.length; index++) {
+    expect(getNextThemePreference(THEME_OPTIONS[index].name)).toBe(
+      THEME_OPTIONS[(index + 1) % THEME_OPTIONS.length].name,
+    );
+  }
+});

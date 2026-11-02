@@ -118,6 +118,7 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   getBackgroundThrottling(): boolean;
   setBackgroundThrottling(allowed: boolean): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
+  insertText(text: string): Promise<void>;
 }
 
 export function adaptWebContents(contents: BrowserAutomationWebContents): TabContents {
@@ -150,6 +151,7 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       }
     },
     sendInputEvent: (event) => contents.sendInputEvent(event),
+    insertText: (text) => contents.insertText(text),
     getConsoleMessages: () => consoleMessagesByContentsId.get(contentsId) ?? [],
     captureDialogs: (task) => dialogMonitor.capture(task),
     sendDebugCommand: (command: string, params?: Record<string, unknown>) =>

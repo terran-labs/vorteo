@@ -6,6 +6,15 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Synchronize with Paseo's `0.15.0-beta.1` development line, including retained terminal workers, native terminal rendering, provider history fixes, plugin lifecycle and panel APIs, and Expo 57.
+- Preserve Vorteo's account and profile workflows, installation controls, private connectivity, branding and appearance while adapting the upstream changes. Document the speech-settings migration and metadata model selection behavior. Source integration does not activate either daemon or establish physical-device acceptance.
+- Retain the legacy mobile terminal preference on the new replay API, native scene launch data, host Voice controls and compact workspace actions. Restore inert Markdown handling for active URL schemes and private-session attachment downloads.
+- Preserve tracked restart continuations. Restrict the new upstream startup-resume path to eligible loaded sessions until providers support safe cold loading and final dispatch checks. Keep quota admission failures visible during agent creation.
+- Restore the Usage route and teach commit validation to accept an upstream merge parent without relaxing Vorteo release-version checks.
+- Make local relay regression tests exercise the local adapter instead of inheriting the deployment's external forwarding URL.
+
+## Unreleased - 2026-11-01
+
 - Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
 ## 26.11.105 - 2026-11-01

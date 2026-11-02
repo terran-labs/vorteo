@@ -31,8 +31,14 @@ if (existsSync(mergeHeadPath)) {
     parents.push(versionAt(".", head));
   }
 }
-for (const parent of parents) {
-  if (parent && compareVersions(version, parent) < 0) {
+// Only additional merge parents may use Paseo's 0.x stable/beta namespace.
+// HEAD and the current root must remain on Vorteo's version line.
+const upstreamVersion = /^0\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
+for (const [index, parent] of parents.entries()) {
+  const upstreamParent =
+    index > 0 && typeof parent === "string" && upstreamVersion.exec(parent)?.[0] === parent;
+  if (upstreamParent) continue;
+  if (parent !== null && compareVersions(version, parent) < 0) {
     throw new Error(`The version cannot go below a parent's: ${version} < ${parent}.`);
   }
 }

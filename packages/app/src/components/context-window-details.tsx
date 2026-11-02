@@ -68,7 +68,12 @@ export function ContextWindowDetails({
       />
       {loading ? null : (
         <>
-          <AgentUsageSection serverId={serverId} view={accountUsage} refreshable={refreshable} />
+          <AgentUsageSection
+            agentId={agentId}
+            serverId={serverId}
+            view={accountUsage}
+            refreshable={refreshable}
+          />
           <ProviderUsageTooltipSection view={planUsage} activeProviderId={provider} />
         </>
       )}

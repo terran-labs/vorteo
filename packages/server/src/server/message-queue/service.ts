@@ -45,9 +45,12 @@ export class MessageQueueService {
     for (const agentId of new Set([...stored, ...held])) void this.delivery.wake(agentId);
   }
 
-  async captureRestartContinuation(agentId: string, requestId: string): Promise<void> {
-    await this.initialize();
-    await this.store.captureRestartContinuation(agentId, requestId, this.restartOwner);
+  captureRestartContinuation(agentId: string, requestId: string): Promise<void> {
+    // Revoke pending automatic dispatch before initialization or the store lane yields.
+    return this.trackQueueMutation(agentId, async () => {
+      await this.initialize();
+      await this.store.captureRestartContinuation(agentId, requestId, this.restartOwner);
+    });
   }
 
   async restartContinuationReleased(requestId: string): Promise<boolean> {

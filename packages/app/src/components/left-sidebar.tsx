@@ -46,6 +46,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { type LucideIcon } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import {
   cloneElement,
@@ -81,6 +82,7 @@ import {
 } from "@/styles/floating-panel";
 import { COMPACT_RAIL_MARGIN, SIDEBAR_OUTER_GAP } from "@/stores/panel-store/state";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
+
 import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
@@ -90,8 +92,10 @@ import {
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
 import { SidebarSeparator, SidebarInsetContext } from "@/components/sidebar/sidebar-separator";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
+
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
+
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
@@ -102,6 +106,7 @@ import {
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
 } from "@/hooks/use-sidebar-workspaces-list";
+
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import type { PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { RetainedPanelActivity } from "@/components/retained-panel";
@@ -121,7 +126,7 @@ import {
   buildSettingsRoute,
 } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
-import { UsageSidebarItem, useHasUsageSummary } from "@/usage";
+import { UsageSidebarItem, useUsageSummary } from "@/usage";
 import { SidebarGlobalCards } from "@/components/sidebar/global-cards";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
@@ -228,9 +233,8 @@ const LeftSidebarBase = memo(function LeftSidebarBase({
   const { open: openImportSession, sheet: importSessionSheet } = useImportSession();
 
   const handleOpenProjectMobile = useCallback(() => {
-    showMobileAgent();
     void openProjectPicker();
-  }, [showMobileAgent, openProjectPicker]);
+  }, [openProjectPicker]);
 
   const handleOpenProjectDesktop = useCallback(() => {
     void openProjectPicker();
@@ -267,9 +271,8 @@ const LeftSidebarBase = memo(function LeftSidebarBase({
   }, []);
 
   const handleImportSessionMobile = useCallback(() => {
-    showMobileAgent();
     openImportSession();
-  }, [openImportSession, showMobileAgent]);
+  }, [openImportSession]);
 
   const labels = useMemo(
     (): SidebarLabels => ({
@@ -369,7 +372,7 @@ function FooterIconButton({
   onPress: () => void;
   testID: string;
   label: string;
-  icon: typeof FolderPlus;
+  icon: LucideIcon;
   /** Only for a glyph that reads larger than the others at the same size. */
   iconSizeAdjustment?: number;
   shortcutKeys?: ReturnType<typeof useShortcutKeys>;
@@ -381,7 +384,7 @@ function FooterIconButton({
   const rail = useSidebarWidth() <= 96;
   const accessibilityState = useMemo(() => ({ selected: active }), [active]);
   const isCompact = useIsCompactFormFactor();
-  const iconSize = isCompact ? theme.iconSize.xl : theme.iconSize.md;
+  const iconSize = isCompact ? theme.iconSize.lg : theme.iconSize.md;
   const buttonStyle = useCallback(
     ({ hovered }: { hovered?: boolean }) => [
       styles.footerIconButton,
@@ -787,10 +790,10 @@ function SidebarToolbar({
 
 function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const { items } = useSidebarNavItems("footer");
-  const hasUsageSummary = useHasUsageSummary();
+  const usageSummary = useUsageSummary();
   const rowsRef = useRef<View | null>(null);
   const visibleItems = items.filter(
-    (item) => item.visible && (item.kind === "plugin" || hasUsageSummary),
+    (item) => item.visible && (item.kind === "plugin" || usageSummary.length > 0),
   );
   if (visibleItems.length === 0) return null;
   return (
@@ -1000,7 +1003,9 @@ function DesktopSidebar({
     [setCompact],
   );
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
-  const { width: viewportWidth } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const viewportWidth = windowWidth - insets.left - insets.right;
   const visibleSidebarWidth = resolveDesktopSidebarWidth({
     requestedWidth: sidebarWidth,
     viewportWidth,

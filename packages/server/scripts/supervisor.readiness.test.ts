@@ -468,3 +468,37 @@ posixTest(
     expect(result.events).toEqual(["original", null]);
   },
 );
+
+test.each([false, true])(
+  "graceful worker shutdown retains the first terminal policy: keep=%s",
+  async (keepTerminals) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const observed: Array<{ keepTerminals?: boolean } | undefined> = [];
+    let forced = false;
+    const shutdown = createWorkerShutdown({
+      now: Date.now,
+      forceExit: () => {
+        forced = true;
+      },
+      stop: async (options) => {
+        observed.push(options);
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const first = shutdown.begin(Date.now() + 10_000, { keepTerminals });
+    try {
+      await entered.promise;
+      const duplicate = shutdown.begin(Date.now() + 20_000, { keepTerminals: !keepTerminals });
+      expect(duplicate).toBe(first);
+      expect(observed).toEqual([{ keepTerminals }]);
+      release.resolve();
+      await first;
+      expect(forced).toBe(false);
+    } finally {
+      release.resolve();
+      await first;
+    }
+  },
+);

@@ -9,7 +9,7 @@ import {
 import { useLocalSearchParams } from "expo-router";
 import { SelectField } from "@/components/ui/select-field";
 import { ScrollView, Text, View } from "react-native";
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused } from "expo-router/react-navigation";
 import { CalendarClock, Plus } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { MenuHeader } from "@/components/headers/menu-header";

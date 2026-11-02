@@ -9,6 +9,8 @@ function workspace(
 ): WorkspaceDescriptor {
   return {
     id,
+    createdAt: null,
+    lastUserMessageAt: null,
     projectId: "project",
     projectDisplayName: "Repo",
     projectRootPath: "/repo",

@@ -132,3 +132,7 @@ export const Palette = StubIcon;
 export const Sparkles = StubIcon;
 export const Calendar = StubIcon;
 export const Puzzle = StubIcon;
+export const Maximize2 = StubIcon;
+export const Workflow = StubIcon;
+export const ZoomIn = StubIcon;
+export const ZoomOut = StubIcon;

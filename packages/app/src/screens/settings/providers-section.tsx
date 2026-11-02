@@ -4,7 +4,6 @@ import type { DraggableListDragHandleProps } from "@/components/draggable-list.t
 import { useFetchQuery } from "@/data/query";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { CompactAccountButton } from "@/provider-usage/compact-account-button";
-import { useToast } from "@/contexts/toast-context";
 import { AdaptiveRenameModal } from "@/components/rename-modal";
 import { ProviderReconnectControl } from "@/provider-usage/reconnect-control";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
@@ -15,6 +14,7 @@ import { useTranslation } from "react-i18next";
 import { Alert, Pressable, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { useToast } from "@/contexts/toast-api-context";
 import { settingsStyles } from "@/styles/settings";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useHostFeature } from "@/runtime/host-features";
@@ -459,7 +459,9 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
     [view],
   );
   const { t } = useTranslation();
+  const toast = useToast();
   const isConnected = useHostRuntimeIsConnected(serverId);
+  useHostFeature(serverId, "hopliteProvider");
   const supportsProviderRemoval = useHostFeature(serverId, "providerRemoval");
   const supportsCredentialRemoval = useHostFeature(serverId, "providerCredentialRemoval");
   const client = useHostRuntimeClient(serverId);
@@ -491,12 +493,13 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
   });
   const { patchConfig } = useDaemonConfig(serverId);
   const { reorder, status: reorderStatus } = useProviderOrder(serverId);
+
   const openProviderSettings = useProviderSettingsStore((state) => state.open);
+  useState<string | null>(null);
   const [pendingProviderId, setPendingProviderId] = useState<string | null>(null);
   const [removingProviderId, setRemovingProviderId] = useState<string | null>(null);
   const removingProviderIdRef = useRef<string | null>(null);
   const [renamingProvider, setRenamingProvider] = useState<ProviderDefinition | null>(null);
-  const toast = useToast();
   const reportActionError = useReportActionError();
 
   const providerDefinitions = useMemo(() => buildProviderDefinitions(entries), [entries]);

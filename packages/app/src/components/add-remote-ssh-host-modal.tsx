@@ -9,6 +9,7 @@ import type { HostProfile } from "@/types/host-connection";
 import { useHostMutations, useHosts } from "@/runtime/host-runtime";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
+import { CONTROL_HEIGHTS, createControlGeometry } from "@/components/ui/control-geometry";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { DaemonConnectionTestError } from "@/utils/test-daemon-connection";
@@ -16,17 +17,61 @@ import { AdaptiveModalSheet, type SheetHeader } from "./adaptive-modal-sheet";
 
 const ThemedTerminal = withUnistyles(Terminal);
 
-const styles = StyleSheet.create((theme) => ({
-  helper: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-  },
-  actions: {
-    flexDirection: "row",
-    gap: theme.spacing[3],
-    marginTop: theme.spacing[2],
-  },
-}));
+const styles = StyleSheet.create((theme) => {
+  const geometry = createControlGeometry(theme);
+  return {
+    helper: {
+      color: theme.colors.foregroundMuted,
+      fontSize: theme.fontSize.sm,
+    },
+    passwordRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      alignSelf: "stretch",
+      width: "100%",
+      gap: theme.spacing[2],
+    },
+    passwordInputWrap: {
+      flex: 1,
+      minWidth: 0,
+    },
+    // Boxed adornment next to the field: same height and radius as the field
+    // chrome of the active form size, and the shared interaction phases.
+    iconButtonSm: {
+      minHeight: CONTROL_HEIGHTS.compact,
+      width: CONTROL_HEIGHTS.compact,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: theme.borderRadius.md,
+      backgroundColor: theme.colors.surface2,
+    },
+    iconButtonMd: {
+      minHeight: CONTROL_HEIGHTS.field,
+      width: CONTROL_HEIGHTS.field,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: theme.borderRadius.lg,
+      backgroundColor: theme.colors.surface2,
+    },
+    controlRest: {
+      ...geometry.controlRest,
+    },
+    controlHover: {
+      ...geometry.controlHover,
+    },
+    controlActive: {
+      ...geometry.controlActive,
+    },
+    controlDisabled: {
+      ...geometry.controlDisabled,
+    },
+    actions: {
+      flexDirection: "row",
+      gap: theme.spacing[3],
+      marginTop: theme.spacing[2],
+    },
+  };
+});
 
 export interface AddRemoteSshHostModalProps {
   visible: boolean;
@@ -51,14 +96,20 @@ export function AddRemoteSshHostModal({
   const isCompact = useIsCompactFormFactor();
   const { probeAndUpsertRemoteSshConnection } = useHostMutations();
   const targetRef = useRef("");
+  const passwordRef = useRef("");
   const inputRef = useRef<EditingTextInputHandle>(null);
+  const passwordInputRef = useRef<EditingTextInputHandle>(null);
+  const [, setIsPasswordVisible] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const header = useMemo<SheetHeader>(() => ({ title: t("pairing.remoteSsh.title") }), [t]);
 
   const clear = useCallback(() => {
     targetRef.current = "";
+    passwordRef.current = "";
     inputRef.current?.replaceText("");
+    passwordInputRef.current?.replaceText("");
+    setIsPasswordVisible(false);
     setErrorMessage("");
   }, []);
 
@@ -94,7 +145,10 @@ export function AddRemoteSshHostModal({
     try {
       setIsSaving(true);
       setErrorMessage("");
-      result = await probeAndUpsertRemoteSshConnection(target);
+      result = await probeAndUpsertRemoteSshConnection({
+        ...target,
+        password: passwordRef.current === "" ? undefined : passwordRef.current,
+      });
     } catch (error) {
       const message =
         error instanceof DaemonConnectionTestError
@@ -116,6 +170,7 @@ export function AddRemoteSshHostModal({
   const handleTargetChange = useCallback((value: string) => {
     targetRef.current = value;
   }, []);
+
   const handleSubmit = useCallback(() => void handleSave(), [handleSave]);
 
   const modalFooter1 = useMemo(

@@ -104,6 +104,7 @@ async function probeDaemonStatus(
         daemonNode: status.nodePath,
         providers: status.providers,
         relay: status.relay,
+        ...(status.terminalsUnavailable ? { terminals: status.terminalsUnavailable } : {}),
       };
     }
   } finally {

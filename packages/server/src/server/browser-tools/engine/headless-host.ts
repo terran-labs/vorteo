@@ -71,7 +71,11 @@ export interface PlaywrightPageLike {
   reload(options?: { timeout?: number }): Promise<unknown>;
   setViewportSize(size: { width: number; height: number }): Promise<void>;
   close(): Promise<void>;
-  keyboard: { down(key: string): Promise<void>; up(key: string): Promise<void> };
+  keyboard: {
+    down(key: string): Promise<void>;
+    up(key: string): Promise<void>;
+    insertText(text: string): Promise<void>;
+  };
   on(event: string, listener: (payload: never) => void): unknown;
 }
 
@@ -308,6 +312,15 @@ class PlaywrightTabContents implements TabContents {
     this.inputChain = this.inputChain
       .then(() => (event.type === "keyDown" ? keyboard.down(key) : keyboard.up(key)))
       .catch(() => {});
+  }
+
+  public insertText(text: string): Promise<void> {
+    const inserted = this.inputChain.then(() => {
+      if (this.page.isClosed()) throw new BrowserTabClosedError();
+      return this.page.keyboard.insertText(text);
+    });
+    this.inputChain = inserted.catch(() => {});
+    return inserted;
   }
 
   public getConsoleMessages(): BrowserAutomationConsoleLogEntry[] {

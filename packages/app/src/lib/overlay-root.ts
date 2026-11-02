@@ -89,6 +89,7 @@ interface WebOverlayEntry {
   getScope: () => HTMLElement | null;
   getKeyHandler: () => WebOverlayKeyHandler;
   restoreFocus: HTMLElement | null;
+  manageFocus: boolean;
 }
 
 const webOverlayEntries: WebOverlayEntry[] = [];
@@ -111,6 +112,31 @@ function getTopWebOverlay(focusOnly = false): WebOverlayEntry | undefined {
 
 export function hasActiveWebOverlay(): boolean {
   return getTopWebOverlay(true) !== undefined;
+}
+
+/**
+ * True while an element shown with the Popover API is open. Such a layer
+ * floats above the app like a registered overlay but lives outside the
+ * registry: plugins draw their panels this way, since they cannot register.
+ */
+export function hasOpenDomPopover(): boolean {
+  if (typeof document === "undefined") return false;
+  try {
+    return document.querySelector(":popover-open") !== null;
+  } catch {
+    // An engine without the Popover API rejects the selector, and has none open.
+    return false;
+  }
+}
+
+/**
+ * Whether a key belongs to an open popover rather than to the app's shortcuts.
+ * An open popover (a plugin's panel) is the top layer and closes on its own
+ * Escape listener, which runs after the shortcut engine's capture listener:
+ * Escape must not also interrupt the running agent.
+ */
+export function keyBelongsToDomPopover(event: Pick<KeyboardEvent, "key">): boolean {
+  return event.key === "Escape" && hasOpenDomPopover();
 }
 
 function getFocusableElements(scope: HTMLElement): HTMLElement[] {
@@ -142,7 +168,7 @@ function focusFirstElement(scope: HTMLElement): void {
 function handleWebOverlayFocus(event: FocusEvent): void {
   const top = getTopWebOverlay(true);
   const scope = top?.getScope();
-  if (!scope || scope.contains(event.target as Node)) return;
+  if (!top?.manageFocus || !scope || scope.contains(event.target as Node)) return;
   if (webOverlayFocusCheckQueued) return;
 
   // React can autofocus a child before its parent scope ref attaches. Defer
@@ -151,10 +177,29 @@ function handleWebOverlayFocus(event: FocusEvent): void {
   webOverlayFocusCheckQueued = true;
   queueMicrotask(() => {
     webOverlayFocusCheckQueued = false;
-    const currentScope = getTopWebOverlay(true)?.getScope();
-    if (!currentScope || currentScope.contains(document.activeElement)) return;
+    const currentTop = getTopWebOverlay(true);
+    const currentScope = currentTop?.getScope();
+    if (!currentTop?.manageFocus || !currentScope || currentScope.contains(document.activeElement))
+      return;
     focusFirstElement(currentScope);
   });
+}
+
+function wrapOverlayTabFocus(event: KeyboardEvent, scope: HTMLElement): boolean {
+  const focusable = getFocusableElements(scope);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const shouldWrapBackward = event.shiftKey && (!scope.contains(active) || active === first);
+  const shouldWrapForward = !event.shiftKey && (!scope.contains(active) || active === last);
+  if (shouldWrapBackward || shouldWrapForward) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    (shouldWrapBackward ? last : first)?.focus();
+    if (!first) scope.focus();
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -178,20 +223,8 @@ export function dispatchTopWebOverlayKeyDown(event: KeyboardEvent): boolean {
   const scope = top?.getScope();
   if (!top || !scope) return false;
 
-  if (event.key === "Tab") {
-    const focusable = getFocusableElements(scope);
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    const shouldWrapBackward = event.shiftKey && (!scope.contains(active) || active === first);
-    const shouldWrapForward = !event.shiftKey && (!scope.contains(active) || active === last);
-    if (shouldWrapBackward || shouldWrapForward) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      (shouldWrapBackward ? last : first)?.focus();
-      if (!first) scope.focus();
-      return true;
-    }
+  if (top.manageFocus && event.key === "Tab") {
+    if (wrapOverlayTabFocus(event, scope)) return true;
   }
 
   if (!top.getKeyHandler()(event)) return false;
@@ -222,7 +255,7 @@ function addWebOverlay(entry: WebOverlayEntry): (options?: RemoveWebOverlayOptio
   attachWebOverlayListeners();
 
   const focusFrame =
-    entry.focusBehavior === "trap"
+    entry.focusBehavior === "trap" && entry.manageFocus
       ? window.requestAnimationFrame(() => {
           const scope = entry.getScope();
           if (
@@ -241,6 +274,7 @@ function addWebOverlay(entry: WebOverlayEntry): (options?: RemoveWebOverlayOptio
     if (index !== -1) webOverlayEntries.splice(index, 1);
     detachWebOverlayListeners();
     if (
+      entry.manageFocus &&
       options?.restoreFocus !== false &&
       entry.restoreFocus &&
       document.contains(entry.restoreFocus)
@@ -256,6 +290,8 @@ interface WebOverlayRegistration {
   layer: number;
   onKeyDown: WebOverlayKeyHandler;
   restoreFocusRef?: React.RefObject<unknown>;
+  /** Hover surfaces claim overlay keys while preserving the user's existing focus. */
+  manageFocus?: boolean;
 }
 
 /**
@@ -268,6 +304,7 @@ export function useWebOverlayRegistration({
   layer,
   onKeyDown,
   focusBehavior = "trap",
+  manageFocus = true,
   restoreFocusRef: preferredRestoreFocusRef,
 }: WebOverlayRegistration) {
   const idRef = useRef(Symbol("web-overlay"));
@@ -326,10 +363,11 @@ export function useWebOverlayRegistration({
       getScope: () => scopeRef.current,
       getKeyHandler: () => keyHandlerRef.current,
       restoreFocus: focusBehaviorRef.current === "trap" ? capturedRestoreFocusRef.current : null,
+      manageFocus,
     };
     removeEntryRef.current = addWebOverlay(entry);
     registeredRef.current = true;
-  }, []);
+  }, [manageFocus]);
 
   const setScope = useCallback(
     (node: unknown) => {

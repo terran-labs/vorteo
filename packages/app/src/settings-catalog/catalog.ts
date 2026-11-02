@@ -264,6 +264,13 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     webOnly: true,
   },
   {
+    id: "chat.files",
+    section: "chat",
+    label: "Files",
+    legacySlugs: ["files"],
+    keywords: ["file", "panel", "associations", "open with"],
+  },
+  {
     id: "chat.shortcuts",
     section: "chat",
     label: "Keyboard shortcuts",

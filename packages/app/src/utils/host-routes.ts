@@ -428,10 +428,6 @@ export function buildSchedulesRoute() {
   return "/schedules" as const;
 }
 
-export function buildUsageRoute() {
-  return "/usage" as const;
-}
-
 export function buildOpenProjectRoute() {
   return "/open-project" as const;
 }
@@ -509,6 +505,7 @@ export const SETTINGS_SECTION_SLUGS = [
   "terminal",
   "browser",
   "editor",
+  "files",
   "shortcuts",
   "integrations",
   "notifications",
@@ -541,6 +538,7 @@ export const HOST_SECTION_SLUGS = [
   "pair-device",
   "agents",
   "metadata",
+  "voice",
   "workspaces",
   "providers",
   "usage",
@@ -619,4 +617,9 @@ export function buildProviderSettingsRoute(providerType: string) {
 export function normalizeProjectSettingsRouteId(value: string | string[] | undefined): string {
   const id = Array.isArray(value) ? value[0] : value;
   return typeof id === "string" ? id : "";
+}
+
+/** Installation-wide usage screen. */
+export function buildUsageRoute() {
+  return "/usage" as const;
 }

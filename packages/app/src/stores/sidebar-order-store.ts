@@ -84,9 +84,9 @@ function normalizeWorkspaceOrderByProject(
 ): Record<string, string[]> {
   const normalized: Record<string, string[]> = {};
   for (const [projectViewKey, order] of Object.entries(workspaceOrderByProject ?? {})) {
-    const scope = projectViewKey.trim();
-    if (!scope) continue;
-    normalized[scope] = normalizeKeys(order);
+    const scope = projectViewKey;
+    if (!scope.trim()) continue;
+    normalized[scope] = dedupeKeys(order);
   }
   return normalized;
 }
@@ -118,7 +118,7 @@ export function migrateSidebarOrderState(persistedState: unknown): {
   }
   const state: SidebarOrderPersistedState = result.data;
 
-  const projectOrder = normalizeKeys(state.projectOrder ?? []);
+  const projectOrder = dedupeKeys(state.projectOrder ?? []);
   const seenProjects = new Set(projectOrder);
   for (const keys of Object.values(state.projectOrderByServerId ?? {})) {
     for (const key of normalizeKeys(keys)) {
@@ -146,7 +146,7 @@ export function migrateSidebarOrderState(persistedState: unknown): {
 
   return {
     projectOrder,
-    pinnedWorkspaceOrder: normalizeKeys(state.pinnedWorkspaceOrder ?? []),
+    pinnedWorkspaceOrder: dedupeKeys(state.pinnedWorkspaceOrder ?? []),
     workspaceOrderByProject,
   };
 }
@@ -193,7 +193,7 @@ export const useSidebarOrderStore = create<SidebarOrderStoreState>()(
         pinnedWorkspaceOrder: state.pinnedWorkspaceOrder,
         workspaceOrderByProject: state.workspaceOrderByProject,
       }),
-      version: 1,
+      version: 3,
       migrate: migrateSidebarOrderState,
     },
   ),

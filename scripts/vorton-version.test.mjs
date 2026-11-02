@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { compareVersions, VersionError } from "./vorteo-version.mjs";
 
 const script = path.resolve("scripts/vorton-version.mjs");
 
@@ -156,3 +157,102 @@ for (const [task, incoming, label] of [
     }
   });
 }
+
+function upstreamMergeRepository(incoming, task = "26.11.105") {
+  const fixture = repository("vorteo-upstream-parent-");
+  const { git, write } = fixture;
+  const writeVersion = (version) => {
+    write("package.json", { name: "root", version, workspaces: [] });
+    write("package-lock.json", { version, packages: { "": { version } } });
+  };
+  try {
+    git("init", "-b", "task");
+    git("config", "user.name", "Version test");
+    git("config", "user.email", "version@example.invalid");
+    git("config", "core.hooksPath", "/dev/null");
+    writeVersion(task);
+    git("add", ".");
+    git("commit", "-m", "task fixture");
+    git("checkout", "-b", "upstream");
+    writeVersion(incoming);
+    git("add", ".");
+    git("commit", "-m", "upstream fixture");
+    git("checkout", "task");
+    git("merge", "--no-ff", "--no-commit", "upstream");
+    writeVersion(task);
+    git("add", ".");
+    return { ...fixture, writeVersion };
+  } catch (error) {
+    rmSync(fixture.cwd, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+for (const incoming of ["0.15.0-beta.1", "0.15.0"]) {
+  test(`a calendar fork merge admits only the upstream parent namespace: ${incoming}`, () => {
+    const { cwd, git, read, stageChangelog, hook, writeVersion } =
+      upstreamMergeRepository(incoming);
+    try {
+      // The shared release/installed comparator must still refuse plain upstream versions.
+      assert.throws(() => compareVersions("26.11.105", incoming), VersionError);
+      assert.throws(() => hook(), /entry for every commit \(## Unreleased\)/);
+      stageChangelog("Unreleased", "Merge upstream without changing the fork version");
+      hook();
+      hook("--check");
+      assert.equal(read("package.json").version, "26.11.105");
+      assert.equal(read("package-lock.json").version, "26.11.105");
+      assert.equal(read("package-lock.json").packages[""].version, "26.11.105");
+
+      // The exception applies neither to the current root nor to a lower fork version.
+      writeVersion(incoming);
+      git("add", ".");
+      assert.throws(() => hook(), /not a Vorteo version|has year/);
+      writeVersion("26.11.104");
+      git("add", ".");
+      assert.throws(() => hook(), /cannot go below/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const incoming of [
+  "not-a-version",
+  "0.15",
+  "00.15.0-beta.1",
+  "0.15.0-beta.01",
+  "0.15.0-beta.1\n",
+  "0.15.0-beta.1.vorteo.0",
+  "1.15.0-beta.1",
+  "26.13.105",
+  "26.11.0-beta.1",
+  "27.11.105",
+  "",
+  false,
+  0,
+]) {
+  test(`an invalid or newer fork merge parent is not exempt: ${JSON.stringify(incoming)}`, () => {
+    const { cwd, stageChangelog, hook } = upstreamMergeRepository(incoming);
+    try {
+      stageChangelog("Unreleased");
+      assert.throws(() => hook(), /cannot go below|not a Vorteo version|has year|has month/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a plain upstream HEAD parent cannot use the additional-parent exception", () => {
+  const { cwd, git, stageChangelog, hook, writeVersion } = upstreamMergeRepository(
+    "0.16.0-beta.1",
+    "0.15.0-beta.1",
+  );
+  try {
+    writeVersion("26.11.105");
+    git("add", ".");
+    stageChangelog("26.11.105");
+    assert.throws(() => hook(), /not a Vorteo version/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

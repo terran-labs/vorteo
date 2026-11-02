@@ -1,3 +1,4 @@
+import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseQuotaGovernorPolicy } from "@getpaseo/protocol/quota-governor";
@@ -9,11 +10,7 @@ import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
-import {
-  formatSystemNotificationPrompt,
-  startAgentRun,
-  type AgentRunController,
-} from "../agent/agent-prompt.js";
+import { startAgentRun, type AgentRunController } from "../agent/agent-prompt.js";
 import { resolveCreateAgentTitles } from "../agent/create-agent-title.js";
 import { type BoundCreateAgentCommand, formatProviderModel } from "../agent/create-agent/create.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
@@ -59,6 +56,32 @@ function assertConfigurationRevision(
   if (expected !== undefined && expected !== (schedule.configurationRevision ?? null)) {
     throw new Error("Schedule configuration changed. Reload it before saving your edits.");
   }
+}
+
+export class ScheduleNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Schedule not found: ${id}`);
+    this.name = "ScheduleNotFoundError";
+  }
+}
+
+export class ScheduleStateConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScheduleStateConflictError";
+  }
+}
+
+function advanceNextRunAtPast(
+  cadence: StoredSchedule["cadence"],
+  nextRunAt: Date,
+  now: Date,
+): Date {
+  let next = nextRunAt;
+  while (next.getTime() <= now.getTime()) {
+    next = computeNextRunAt(cadence, next);
+  }
+  return next;
 }
 
 function trimOptionalName(value: string | null | undefined): string | null {
@@ -232,7 +255,7 @@ function shouldCompleteSchedule(schedule: StoredSchedule, now: Date): boolean {
 
 function requireSchedule(schedule: StoredSchedule | null, id: string): StoredSchedule {
   if (!schedule) {
-    throw new Error(`Schedule not found: ${id}`);
+    throw new ScheduleNotFoundError(id);
   }
   return schedule;
 }
@@ -286,6 +309,7 @@ type ScheduleAgentManager = Pick<
   AgentRunController,
   | "getAgent"
   | "reloadAgentSession"
+  | "reloadStalePluginSession"
   | "tryRunOutOfBand"
   | "hasInFlightRun"
   | "replaceAgentRun"
@@ -580,10 +604,7 @@ export class ScheduleService {
 
   async inspect(id: string): Promise<StoredSchedule> {
     const schedule = await this.store.get(id);
-    if (!schedule) {
-      throw new Error(`Schedule not found: ${id}`);
-    }
-    return schedule;
+    return requireSchedule(schedule, id);
   }
 
   async logs(id: string): Promise<ScheduleRun[]> {
@@ -594,7 +615,7 @@ export class ScheduleService {
   async pause(id: string): Promise<StoredSchedule> {
     const paused = await this.store.update(id, (schedule) => {
       if (schedule.status === "completed") {
-        throw new Error(`Schedule ${id} is already completed`);
+        throw new ScheduleStateConflictError(`Schedule ${id} is already completed`);
       }
       if (schedule.status === "paused") {
         return schedule;
@@ -614,7 +635,7 @@ export class ScheduleService {
   async resume(id: string): Promise<StoredSchedule> {
     const resumed = await this.store.update(id, (schedule) => {
       if (schedule.status === "completed") {
-        throw new Error(`Schedule ${id} is already completed`);
+        throw new ScheduleStateConflictError(`Schedule ${id} is already completed`);
       }
       if (schedule.status === "active") {
         return schedule;
@@ -771,10 +792,10 @@ export class ScheduleService {
   async runOnce(id: string): Promise<StoredSchedule> {
     const schedule = await this.inspect(id);
     if (schedule.status === "completed") {
-      throw new Error(`Schedule ${id} is already completed`);
+      throw new ScheduleStateConflictError(`Schedule ${id} is already completed`);
     }
     if (this.runningScheduleIds.has(id)) {
-      throw new Error(`Schedule ${id} is already running`);
+      throw new ScheduleStateConflictError(`Schedule ${id} is already running`);
     }
     await this.runSchedule(schedule, this.now(), { manual: true });
     return this.inspect(id);
@@ -951,6 +972,9 @@ export class ScheduleService {
           error: "Daemon restarted before the scheduled run completed",
         };
         updated = { ...updated, runs };
+        if (shouldCompleteSchedule(updated, now)) {
+          updated = completeSchedule(updated, now);
+        }
         dirty = true;
       }
 
@@ -1150,7 +1174,7 @@ export class ScheduleService {
     }
     let appended = false;
     try {
-      const scheduleWithRun = await this.openScheduleRun(schedule, runningRun, resumeRunId);
+      const scheduleWithRun = await this.openScheduleRun(schedule, runningRun, resumeRunId, manual);
       appended = true;
       let result: ScheduleExecutionResult | { state: "frozen"; reason: string };
       if (isExpiredProtectedSchedule(scheduleWithRun, this.now())) {
@@ -1252,11 +1276,12 @@ export class ScheduleService {
     schedule: StoredSchedule,
     runningRun: ScheduleRun,
     resumeRunId?: string,
+    manual = true,
   ): Promise<StoredSchedule> {
     if (!resumeRunId) {
       if (schedule.runs.some((run) => run.status === "running"))
         throw new Error("Reconcile unfinished work before admitting another run.");
-      return this.appendRunningRun(schedule.id, runningRun, schedule);
+      return this.appendRunningRun(schedule.id, runningRun, schedule, !manual);
     }
     const updated = await this.store.update(schedule.id, (current) => {
       if (
@@ -1293,6 +1318,7 @@ export class ScheduleService {
     scheduleId: string,
     runningRun: ScheduleRun,
     preparedSchedule: StoredSchedule,
+    claimDue = false,
   ): Promise<StoredSchedule> {
     const updated = await this.store.update(scheduleId, (schedule) => {
       if (
@@ -1312,6 +1338,18 @@ export class ScheduleService {
         ...schedule,
         quotaState: undefined,
         governorPreparation: undefined,
+        ...(claimDue
+          ? {
+              nextRunAt:
+                schedule.maxRuns !== null && countCompletedRuns(schedule) + 1 >= schedule.maxRuns
+                  ? null
+                  : advanceNextRunAtPast(
+                      schedule.cadence,
+                      computeNextRunAt(schedule.cadence, new Date(runningRun.scheduledFor)),
+                      new Date(runningRun.startedAt),
+                    ).toISOString(),
+            }
+          : {}),
         updatedAt: runningRun.startedAt,
         runs: [...schedule.runs, runningRun],
       };
@@ -1369,14 +1407,16 @@ export class ScheduleService {
           nextRunAt: null,
         };
       } else {
-        const after = new Date(schedule.nextRunAt ?? now.toISOString());
-        let nextRunAt = computeNextRunAt(updated.cadence, after);
-        while (nextRunAt.getTime() <= now.getTime()) {
-          nextRunAt = computeNextRunAt(updated.cadence, nextRunAt);
-        }
+        // A final slot has no successor until its run limit is raised or cleared.
+        // Every runner invocation has a recorded run with this id.
+        const finishedRun = completedRuns.find((run) => run.id === params.runId)!;
+        const nextRunAt = updated.nextRunAt
+          ? new Date(updated.nextRunAt)
+          : computeNextRunAt(updated.cadence, new Date(finishedRun.scheduledFor));
+        // Move an overdue cursor past a long run without advancing a future one twice.
         updated = {
           ...updated,
-          nextRunAt: nextRunAt.toISOString(),
+          nextRunAt: advanceNextRunAtPast(updated.cadence, nextRunAt, now).toISOString(),
         };
       }
 
@@ -1494,7 +1534,6 @@ export class ScheduleService {
         features: config.featureValues,
         unattended: true,
         promptFailure: "return-error",
-        background: true,
         notifyOnFinish: false,
       });
       const agent = created.snapshot;

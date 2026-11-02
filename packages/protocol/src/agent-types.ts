@@ -1,6 +1,7 @@
 import type { CompactionInspection } from "./messages.js";
 import type { AgentAttachment, AgentProfileLaunch, ProviderCliUpdate } from "./messages.js";
 import type { QuotaReserveConfig, QuotaReserveLaunchPolicy } from "./quota-reserve.js";
+import type { AgentMessage } from "./agent-message.js";
 
 export type AgentProvider = string;
 
@@ -294,7 +295,7 @@ export type ToolCallDetail =
       subAgentType?: string;
       description?: string;
       childSessionId?: string;
-      log: string;
+      log?: string;
       actions?: Array<{
         index: number;
         toolName: string;
@@ -318,6 +319,7 @@ export type ToolCallDetail =
     };
 
 interface ToolCallBase {
+  agentMessage?: AgentMessage;
   [key: string]: unknown;
   type: "tool_call";
   callId: string;

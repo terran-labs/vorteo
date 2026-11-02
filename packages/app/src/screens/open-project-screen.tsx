@@ -1,3 +1,5 @@
+import { Inbox } from "lucide-react-native";
+import { useImportSession } from "@/hooks/use-import-session";
 import { useHosts, useHostRuntimeLastError } from "@/runtime/host-runtime";
 import { useCallback, useEffect, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
@@ -25,6 +27,7 @@ import { AccountsFirstGate } from "@/accounts-first/screen";
 
 export function OpenProjectScreen() {
   const { t } = useTranslation();
+  const importSession = useImportSession({});
   const hosts = useHosts();
   const router = useRouter();
   const openDesktopAgentList = usePanelStore((s) => s.openDesktopAgentList);
@@ -80,6 +83,13 @@ export function OpenProjectScreen() {
               accent
             />
             <HomeTile
+              icon={Inbox}
+              title={t("openProject.tiles.importSession.title")}
+              description={t("openProject.tiles.importSession.description")}
+              onPress={importSession.open}
+              testID="open-project-import-session"
+            />
+            <HomeTile
               icon={Plug}
               title={t("openProject.tiles.setupProviders.title")}
               description={t("openProject.tiles.setupProviders.description")}
@@ -92,6 +102,7 @@ export function OpenProjectScreen() {
           <CommunityLinks />
         </View>
       </AccountsFirstGate>
+      {importSession.sheet}
     </View>
   );
 }
@@ -157,18 +168,21 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface0,
     userSelect: "none",
   },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+  },
   content: {
     position: "relative",
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 0,
     justifyContent: { xs: "flex-start", md: "center" },
     alignItems: "center",
     gap: 0,
     padding: theme.spacing[6],
     paddingTop: { xs: theme.spacing[12], md: theme.spacing[6] },
-    paddingBottom: {
-      xs: HEADER_INNER_HEIGHT_MOBILE + HEADER_TOP_PADDING_MOBILE + theme.spacing[6],
-      md: HEADER_INNER_HEIGHT + theme.spacing[6],
-    },
   },
   logo: {
     marginBottom: theme.spacing[8],
@@ -219,10 +233,8 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 18,
   },
   communityRow: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: {
+    flexShrink: 0,
+    paddingBottom: {
       xs: HEADER_INNER_HEIGHT_MOBILE + HEADER_TOP_PADDING_MOBILE + theme.spacing[2],
       md: HEADER_INNER_HEIGHT + theme.spacing[2],
     },

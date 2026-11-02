@@ -5,7 +5,7 @@ import type { AgentGoalSetInput } from "@getpaseo/protocol/agent-goals";
 import { useSessionStore } from "@/stores/session-store";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useRetainedPanelActive } from "@/components/retained-panel";
-import { useAgentCommandsQuery, type DraftCommandConfig } from "@/hooks/use-agent-commands-query";
+import { useAgentCommandsQuery, type DraftCommandConfig } from "@/agent-commands/use-query";
 import { useReportActionError } from "@/hooks/use-action-error";
 import { toErrorMessage } from "@/utils/error-messages";
 

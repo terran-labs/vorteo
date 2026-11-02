@@ -8,15 +8,12 @@ import {
   type Ref,
 } from "react";
 import { Pressable, Text, View } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet } from "react-native-unistyles";
 import { HEADER_INNER_HEIGHT, HEADER_INNER_HEIGHT_MOBILE } from "@/constants/layout";
-import { ICON_SIZE } from "@/styles/theme";
-import type { Theme } from "@/styles/theme";
+import { DensityIcon } from "@/components/ui/density-icon";
 import { Shortcut } from "@/components/ui/shortcut";
+import { density, densityIconBox } from "@/styles/density";
 import type { ShortcutKey } from "@/utils/format-shortcut";
-
-const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 type SidebarHeaderRowVariant = "header" | "compact" | "inline";
 
@@ -51,7 +48,7 @@ interface SidebarHeaderRowProps {
 }
 
 export function SidebarHeaderRow({
-  icon: Icon,
+  icon,
   label,
   onPress,
   isActive = false,
@@ -64,13 +61,16 @@ export function SidebarHeaderRow({
   trailing,
   rowRef,
 }: SidebarHeaderRowProps) {
-  const density = useSidebarRowDensity();
+  const rowDensity = useSidebarRowDensity();
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const ThemedIcon = useMemo(() => (Icon ? withUnistyles(Icon) : null), [Icon]);
+  // The button and its trailing slot are siblings, so the row owns the pressed fill for both.
+  const [, setIsPressed] = useState(false);
+  const handlePressIn = useCallback(() => setIsPressed(true), []);
+  const handlePressOut = useCallback(() => setIsPressed(false), []);
   const isHighlighted = isHovered || isActive;
-  const iconSize = variant === "header" ? ICON_SIZE.md : ICON_SIZE.sm;
+  const iconSize = variant === "header" ? "md" : "sm";
 
   let right = trailing ?? null;
   if (right === null && shortcutKeys && isHovered) {
@@ -78,8 +78,8 @@ export function SidebarHeaderRow({
   }
 
   const rowStyle = useMemo(
-    () => [styles.row, variant !== "header" && density, isHighlighted && styles.rowHighlighted],
-    [variant, density, isHighlighted],
+    () => [styles.row, variant !== "header" && rowDensity, isHighlighted && styles.rowHighlighted],
+    [variant, rowDensity, isHighlighted],
   );
   return (
     <View
@@ -94,6 +94,8 @@ export function SidebarHeaderRow({
       >
         <Pressable
           onPress={onPress}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
           testID={testID}
           nativeID={nativeID}
           accessible
@@ -103,10 +105,11 @@ export function SidebarHeaderRow({
           aria-selected={isActive}
           style={styles.button}
         >
-          {ThemedIcon ? (
-            <ThemedIcon
+          {icon ? (
+            <DensityIcon
+              icon={icon}
               size={iconSize}
-              uniProps={isHighlighted ? foregroundColorMapping : foregroundMutedColorMapping}
+              color={isHighlighted ? "foreground" : "foregroundMuted"}
             />
           ) : (
             <View style={variant === "header" ? styles.iconSpacer : styles.iconSpacerCompact} />
@@ -114,7 +117,14 @@ export function SidebarHeaderRow({
           <Text style={[styles.label, isHighlighted && styles.labelHighlighted]}>{label}</Text>
         </Pressable>
         {right === null ? null : (
-          <Pressable onPress={onPress} accessible={false} focusable={false} style={styles.trailing}>
+          <Pressable
+            onPress={onPress}
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            accessible={false}
+            focusable={false}
+            style={styles.trailing}
+          >
             {right}
           </Pressable>
         )}
@@ -153,11 +163,15 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     // Same row geometry as the settings sidebar items. Shorter than the header
     // strip so the hover highlight clears the strip's bottom separator.
-    minHeight: 28,
+    minHeight: density.tightRowHeight,
     borderRadius: theme.borderRadius.lg,
   },
   rowHighlighted: {
     backgroundColor: theme.colors.surfaceSidebarHover,
+  },
+  // The workspace rows' pressed fill.
+  rowPressed: {
+    backgroundColor: theme.colors.surface2,
   },
   button: {
     flex: 1,
@@ -165,14 +179,14 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    minHeight: 28,
+    minHeight: density.tightRowHeight,
     paddingVertical: theme.spacing[1],
     // Match the project rows' inner padding so the icons align on one vertical
     // edge with the list below.
     paddingHorizontal: theme.spacing[2],
   },
-  iconSpacer: { width: ICON_SIZE.md, height: ICON_SIZE.md },
-  iconSpacerCompact: { width: ICON_SIZE.sm, height: ICON_SIZE.sm },
+  iconSpacer: { width: densityIconBox("md"), height: densityIconBox("md") },
+  iconSpacerCompact: { width: densityIconBox("sm"), height: densityIconBox("sm") },
   label: {
     flexShrink: 1,
     fontSize: theme.fontSize.base,

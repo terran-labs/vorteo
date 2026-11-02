@@ -1,5 +1,5 @@
-import type { Locator, TestInfo } from "@playwright/test";
-import { test, expect, type Page } from "@playwright/test";
+import { type Locator, type TestInfo, test, expect, type Page } from "@playwright/test";
+
 import { copyPluginExample } from "./plugin-fixture";
 import { gotoAppShell } from "./app";
 import { buildAgentRoute } from "./mock-agent";
@@ -30,7 +30,6 @@ async function capture(
   name: string,
   subject: Locator = headerButtons(page),
 ) {
-  await expect(headerButtons(page)).toHaveCount(1);
   await expect(subject).toBeInViewport();
   await waitForSettledPosition(subject);
   const file = info.outputPath(`${name}.png`);
@@ -83,6 +82,7 @@ export async function withButtonAuthorExample(
       refreshFromHeaderAndComposer: () =>
         test.step("icon-only header action and labeled composer action update in place", async () => {
           await exampleCommand(page, "action");
+          await expect(headerButtons(page)).toHaveCount(1);
           await headerButtons(page).click();
           await expect(headerButtons(page)).toHaveAccessibleName("Refresh workspace (1)");
           await page.getByRole("button", { name: "Refresh context", exact: true }).click();
@@ -150,6 +150,7 @@ export async function withButtonAuthorExample(
       inspectLiveWorkspaceDetails: () =>
         test.step("custom icons and content react to workspace changes and adapt to sheets", async () => {
           await exampleCommand(page, "popover");
+          await expect(headerButtons(page)).toHaveCount(1);
           await headerButtons(page).click();
           await expect(
             page.getByRole("button", { name: "Close workspace details", exact: true }),

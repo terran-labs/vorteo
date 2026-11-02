@@ -68,30 +68,38 @@ export const EditingTextInput = forwardRef<EditingTextInputHandle, EditingTextIn
       };
     }, [handleChangeText]);
 
-    useImperativeHandle(ref, () => ({
-      focus: () => inputRef.current?.focus(),
-      blur: () => inputRef.current?.blur(),
-      isFocused: () => document.activeElement === inputRef.current,
-      getText: () => {
-        const input = inputRef.current as unknown as HTMLTextAreaElement | null;
-        // A read must not consume the next input/composition notification.
-        return input?.value ?? textRef.current;
-      },
-      replaceText: (nextText, selection) => {
-        textRef.current = nextText;
-        const input = inputRef.current as unknown as HTMLTextAreaElement | null;
-        if (input && "value" in input) input.value = nextText;
-        if (selection && typeof input?.setSelectionRange === "function") {
-          input.setSelectionRange(selection.start, selection.end);
-        }
-      },
-      reset: () => {
-        textRef.current = "";
-        const input = inputRef.current as unknown as HTMLTextAreaElement | null;
-        if (input && "value" in input) input.value = "";
-      },
-      getNativeRef: () => inputRef.current,
-    }));
+    useImperativeHandle(
+      ref,
+      () => ({
+        focus: () => inputRef.current?.focus(),
+        blur: () => inputRef.current?.blur(),
+        isFocused: () => document.activeElement === inputRef.current,
+        getText: () => {
+          const input = inputRef.current as unknown as HTMLTextAreaElement | null;
+          // A read must not consume the next input/composition notification.
+          return input?.value ?? textRef.current;
+        },
+        replaceText: (nextText, selection) => {
+          textRef.current = nextText;
+          const input = inputRef.current as unknown as HTMLTextAreaElement | null;
+          if (input && "value" in input) input.value = nextText;
+          if (selection && typeof input?.setSelectionRange === "function") {
+            input.setSelectionRange(selection.start, selection.end);
+          }
+        },
+        setSelection: (selection) => {
+          const input = inputRef.current as unknown as HTMLTextAreaElement | null;
+          input?.setSelectionRange?.(selection.start, selection.end);
+        },
+        reset: () => {
+          textRef.current = "";
+          const input = inputRef.current as unknown as HTMLTextAreaElement | null;
+          if (input && "value" in input) input.value = "";
+        },
+        getNativeRef: () => inputRef.current,
+      }),
+      [],
+    );
 
     return (
       <TextInput

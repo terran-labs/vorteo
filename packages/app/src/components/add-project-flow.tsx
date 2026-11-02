@@ -1,3 +1,5 @@
+import { Modal } from "@/components/ui/modal";
+import { usePanelStore } from "@/stores/panel-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { router } from "expo-router";
 import type {
@@ -28,15 +30,9 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type RefObject,
 } from "react";
-import {
-  Modal,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-  type PressableStateCallbackType,
-} from "react-native";
+import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
 import {
   EditingTextInput as TextInput,
   type EditingTextInputHandle,
@@ -114,6 +110,7 @@ import {
   type ProjectPickerOption,
 } from "@/components/project-picker-options";
 import { Shortcut } from "@/components/ui/shortcut";
+import { useRevealActiveItem } from "@/components/ui/scroll-reveal";
 import { useKeyboardShortcutsAvailable } from "@/keyboard/availability";
 import { getIsElectronRuntime } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
@@ -449,7 +446,17 @@ function pathTestId(path: string): string {
   return `add-project-flow-path-${encodeURIComponent(path)}`;
 }
 
-function FlowRow({ option, active }: { option: FlowRowOption; active: boolean }) {
+function FlowRow({
+  option,
+  active,
+  activeItemRef,
+  onRowLayout,
+}: {
+  option: FlowRowOption;
+  active: boolean;
+  activeItemRef: RefObject<View | null>;
+  onRowLayout: () => void;
+}) {
   const accessibilityState = useMemo(
     () => ({ disabled: option.disabled === true, selected: active }),
     [active, option.disabled],
@@ -467,6 +474,8 @@ function FlowRow({ option, active }: { option: FlowRowOption; active: boolean })
       accessibilityRole="button"
       accessibilityState={accessibilityState}
       disabled={option.disabled}
+      ref={active ? activeItemRef : undefined}
+      onLayout={active ? onRowLayout : undefined}
       onPress={option.select}
       style={rowStyle}
       testID={option.testID}
@@ -674,6 +683,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
   );
   const setHasHydratedWorkspaces = useSessionStore((store) => store.setHasHydratedWorkspaces);
   const inputRef = useRef<EditingTextInputHandle>(null);
+  const resultsRef = useRef<ScrollView>(null);
   const submissionInFlightRef = useRef(false);
   const browseInFlightRef = useRef(false);
   const newFolderInputRef = useRef<EditingTextInputHandle>(null);
@@ -791,6 +801,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
   const openNewWorkspaceForProject = useCallback(
     (serverId: string, project: WorkspaceProjectDescriptorPayload) => {
       onClose();
+      usePanelStore.getState().showMobileAgent();
       router.push(
         buildNewWorkspaceRoute({
           serverId,
@@ -1280,6 +1291,7 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
         chooseHost: (serverId) => setState((current) => chooseAddProjectHost(current, serverId)),
         addHost: () => {
           onClose();
+          usePanelStore.getState().showMobileAgent();
           router.push(buildSettingsAddHostRoute(Date.now()));
         },
       });
@@ -1438,6 +1450,13 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
   ]);
 
   const activeIndex = rows.length === 0 ? 0 : Math.min(page.activeIndex, rows.length - 1);
+  const rowListKey = useMemo(() => rows.map((row) => row.id).join("\u0000"), [rows]);
+  const { activeItemRef, contentRef, onItemLayout, onViewportLayout, onScroll } =
+    useRevealActiveItem({
+      activeIndex,
+      listKey: rowListKey,
+      scrollRef: resultsRef,
+    });
   const createDirectory = useCallback(() => {
     if (page.kind !== "new-directory-name") return;
     void createFolder({
@@ -1731,91 +1750,102 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
             ) : null}
           </View>
           <ScrollView
+            ref={resultsRef}
             style={styles.results}
-            contentContainerStyle={styles.resultsContent}
             keyboardShouldPersistTaps="always"
+            onLayout={onViewportLayout}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
             testID="add-project-flow-results"
           >
-            {naming && page.kind === "folder-browser" ? (
-              <NewFolderNameRow
-                inputRef={newFolderInputRef}
-                initialValue={page.newFolderName ?? ""}
-                preview={
-                  folderDirectory && page.newFolderName?.trim()
-                    ? newFolderPreview(folderDirectory, page.newFolderName)
-                    : null
-                }
-                disabled={isSubmitting}
-                onChange={changeNewFolderName}
-                onSubmit={createProjectsFolder}
-                onKeyPress={isWeb ? undefined : handleNativeKeyPress}
-              />
-            ) : null}
-            {preview ? (
-              <Text style={styles.preview} testID="add-project-flow-path-preview">
-                {shortenPath(preview)}
-              </Text>
-            ) : null}
-            {isSubmitting ? (
-              <Text style={styles.stateText} testID="add-project-flow-progress">
-                {progressText(page)}
-              </Text>
-            ) : null}
-            {!isSubmitting && page.error ? (
-              <Text style={styles.errorText} testID="add-project-flow-error">
-                {page.error}
-              </Text>
-            ) : null}
-            {!isSubmitting && queryError ? (
-              <Text style={styles.errorText} testID="add-project-flow-query-error">
-                {queryError}
-              </Text>
-            ) : null}
-            {!isSubmitting && loading ? (
-              <Text style={styles.stateText} testID="add-project-flow-loading">
-                Loading...
-              </Text>
-            ) : null}
-            {/* Typed paths and matching recommendations do not depend on directory search. */}
-            {!isSubmitting && projectsBrowser
-              ? projectsRows.map((row, index) => (
-                  <ProjectsFolderRowView
-                    key={row.id}
-                    row={row}
-                    active={!naming && index === activeIndex}
-                    disabled={naming}
-                    onSelect={selectProjectsRow}
-                    onAdd={addProjectsRow}
-                  />
-                ))
-              : null}
-            {!isSubmitting && !projectsBrowser
-              ? rows.map((option, index) => (
-                  <FlowRow key={option.id} option={option} active={index === activeIndex} />
-                ))
-              : null}
-            {!isSubmitting &&
-            !loading &&
-            !queryError &&
-            rows.length === 0 &&
-            page.kind !== "new-directory-name" ? (
-              <Text style={styles.stateText} testID="add-project-flow-empty">
-                {page.kind === "folder-browser"
-                  ? folderBrowserEmptyText({
-                      purpose: folderBrowserPurpose(page.purpose),
-                      directory: folderDirectory,
-                      filter: page.query,
-                    })
-                  : emptyText(page, host ?? null)}
-              </Text>
-            ) : null}
-            {showShareHint ? (
-              <Text style={styles.hintText} testID="add-project-flow-share-hint">
-                To use folders from your computer, share them with share-folder.sh in the
-                installation directory on the host.
-              </Text>
-            ) : null}
+            <View ref={contentRef} collapsable={false} style={styles.resultsContent}>
+              {naming && page.kind === "folder-browser" ? (
+                <NewFolderNameRow
+                  inputRef={newFolderInputRef}
+                  initialValue={page.newFolderName ?? ""}
+                  preview={
+                    folderDirectory && page.newFolderName?.trim()
+                      ? newFolderPreview(folderDirectory, page.newFolderName)
+                      : null
+                  }
+                  disabled={isSubmitting}
+                  onChange={changeNewFolderName}
+                  onSubmit={createProjectsFolder}
+                  onKeyPress={isWeb ? undefined : handleNativeKeyPress}
+                />
+              ) : null}
+              {preview ? (
+                <Text style={styles.preview} testID="add-project-flow-path-preview">
+                  {shortenPath(preview)}
+                </Text>
+              ) : null}
+              {isSubmitting ? (
+                <Text style={styles.stateText} testID="add-project-flow-progress">
+                  {progressText(page)}
+                </Text>
+              ) : null}
+              {!isSubmitting && page.error ? (
+                <Text style={styles.errorText} testID="add-project-flow-error">
+                  {page.error}
+                </Text>
+              ) : null}
+              {!isSubmitting && queryError ? (
+                <Text style={styles.errorText} testID="add-project-flow-query-error">
+                  {queryError}
+                </Text>
+              ) : null}
+              {!isSubmitting && loading ? (
+                <Text style={styles.stateText} testID="add-project-flow-loading">
+                  Loading...
+                </Text>
+              ) : null}
+              {/* Typed paths and matching recommendations do not depend on directory search. */}
+              {!isSubmitting && projectsBrowser
+                ? projectsRows.map((row, index) => (
+                    <ProjectsFolderRowView
+                      key={row.id}
+                      row={row}
+                      active={!naming && index === activeIndex}
+                      disabled={naming}
+                      onSelect={selectProjectsRow}
+                      onAdd={addProjectsRow}
+                    />
+                  ))
+                : null}
+              {!isSubmitting && !projectsBrowser
+                ? rows.map((option, index) => (
+                    <FlowRow
+                      key={option.id}
+                      option={option}
+                      active={index === activeIndex}
+                      activeItemRef={activeItemRef}
+                      onRowLayout={onItemLayout}
+                    />
+                  ))
+                : null}
+              {!isSubmitting &&
+              !loading &&
+              !queryError &&
+              rows.length === 0 &&
+              page.kind !== "new-directory-name" ? (
+                <Text style={styles.stateText} testID="add-project-flow-empty">
+                  {page.kind === "folder-browser"
+                    ? folderBrowserEmptyText({
+                        purpose: folderBrowserPurpose(page.purpose),
+                        directory: folderDirectory,
+                        filter: page.query,
+                      })
+                    : emptyText(page, host ?? null)}
+                </Text>
+              ) : null}
+              {showShareHint ? (
+                <Text style={styles.hintText} testID="add-project-flow-share-hint">
+                  To use folders from your computer, share them with share-folder.sh in the
+                  installation directory on the host.
+                </Text>
+              ) : null}
+            </View>
           </ScrollView>
           {projectsBrowser && projectsFooter ? (
             <ProjectsFolderFooterBar
@@ -1853,7 +1883,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[12],
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(0, 0, 0, 0.5)",
   },
   panel: {

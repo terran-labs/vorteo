@@ -41,7 +41,7 @@ import {
   navigateToLastWorkspace,
   useActiveWorkspaceSelection,
 } from "@/stores/navigation-active-workspace-store";
-import { dispatchTopWebOverlayKeyDown } from "@/lib/overlay-root";
+import { dispatchTopWebOverlayKeyDown, keyBelongsToDomPopover } from "@/lib/overlay-root";
 
 export function useKeyboardShortcuts({
   enabled,
@@ -317,6 +317,10 @@ export function useKeyboardShortcuts({
     }
     // The chooser consumes Escape to restore the saved theme before route navigation.
     if (event.key === "Escape" && previewingTheme) return;
+
+    if (keyBelongsToDomPopover(event)) {
+      return;
+    }
 
     // During IME composition, Enter confirms the candidate selection and must
     // not route through global shortcuts like message send.
