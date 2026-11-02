@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Installer demo: `install.sh --demo` embeds the production animation and shared installation step order, simulates setup and completion, and spends five minutes animating builds. It needs an existing Node runtime but never downloads source, installs prerequisites, creates temporary files, reads credentials or changes services. Node discovery now checks later PATH entries and Homebrew's installed versioned Node formula before proposing an installation.
+
 Welcome presentation: wide screens split owner sign-in and password help into two columns; compact screens stack them. The whole command field is an accessible copy target with toast feedback; hovering the block highlights its copy icon. Interactive installation completion omits agent-only result markers.
 
 Installer presentation review: the elapsed timer is assigned before export to preserve shell failure reporting. the startup logo has a leading blank line, and the build animation centers within the current terminal dimensions on every frame. Progress remains visible below the artwork; small terminals retain the compact status display.

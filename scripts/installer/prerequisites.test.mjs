@@ -651,3 +651,19 @@ test("downloaded scripts are never piped into a shell", () => {
   assert.doesNotMatch(source, /curl[^\n]*\|\s*(ba)?sh/);
   assert.doesNotMatch(source, /\u2014|\u2013/);
 });
+
+test("reuses keg-only Homebrew Node when an older PATH Node shadows it", (t) => {
+  const result = run(t, ["node"], {
+    brew: true,
+    node: "22.23.2",
+    setup(dirs) {
+      const bin = path.join(dirs.state, "brew-node", "bin");
+      mkdirSync(bin, { recursive: true });
+      writeExecutable(path.join(bin, "node"), fakeNode("24.22.2"));
+    },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /NODE_BIN=.*brew-node\/bin\/node/);
+  assert.ok(!result.calls.some((call) => call.startsWith("brew install")));
+  assert.ok(!result.stdout.includes("VORTEO_QUESTION"));
+});

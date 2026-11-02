@@ -694,3 +694,25 @@ describe("vorteo command", () => {
     assert.ok(call.argv.includes("--keep-data"));
   });
 });
+
+test("standalone demo stops before discovery, downloads and filesystem changes", () => {
+  const box = sandbox();
+  // Use the actual runtime; every installation tool remains the sandbox's recording fake.
+  writeFileSync(path.join(box.bin, "node"), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`);
+  const before = readdirSync(box.dir).sort();
+  const result = box.run(["--demo", "--dev-container", "--yes", "--proceed=no"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Demo canceled/);
+  assert.deepEqual(readdirSync(box.dir).sort(), before);
+  assert.deepEqual(readdirSync(box.home), []);
+  assert.equal(existsSync(box.log), false);
+});
+
+test("embeds the current standalone demo", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(repoRoot, "scripts/installer/embed-demo.mjs"), "--check"],
+    { encoding: "utf8", cwd: repoRoot },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});

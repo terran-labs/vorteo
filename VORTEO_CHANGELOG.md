@@ -4,6 +4,13 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.205 - 2026-11-02
+
+### Improvements
+
+- Preview the installer with `--demo`: answer setup questions, review the simulated plan, watch five minutes of build animation, and see completion without changing the system.
+- Reuse an installed compatible Node.js runtime when an older PATH entry hides Homebrew Node 24, avoiding repeated installation prompts.
+
 ## 26.11.204 - 2026-11-02
 
 ### Improvements
