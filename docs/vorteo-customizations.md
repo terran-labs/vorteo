@@ -1,5 +1,13 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): the installer reports Tailscale's refusal reason, tests Dev's route to the coordinator and reports the Host firewall rule, and warns before adoption that gate mode does not read compose.override.yaml.
+
+Maintenance review (2026-11-01): the Claude connection panel no longer offers a shared connection for the built-in provider, which the coordinator always refuses. It points to adding a Claude account.
+
+Maintenance review (2026-11-01): a failed packaged Claude CLI selection is no longer cached, so repairing a release does not need a process restart.
+
+Maintenance review (2026-11-01): the native Claude account stays usable in Dev containers, whose image sets CLAUDE_CONFIG_DIR for the whole daemon. Only a directory a binding chose differently from the daemon's own marks a bound account.
+
 Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
 
 Maintenance review (2026-11-01): installer builds report elapsed time and live activity, with planning estimates before approval and a startup wordmark. The welcome card preserves Matrix rain and confirms command copying with a toast. Ready accounts remain selectable without saved profiles; the installation provisions one starter profile per ready provider and remembers provisioning across restarts. Existing profiles and deliberate starter deletions are retained. Native Claude CLI authentication remains available in managed installations; separately bound accounts still require credential delivery.

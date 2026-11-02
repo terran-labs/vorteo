@@ -331,6 +331,9 @@ export async function planDev(context, docker, existing, adopt) {
       path: adopt.path,
       gateMode: adopt.gateMode,
       ...(adopt.projectsFolder ? { projectsFolder: adopt.projectsFolder } : {}),
+      ...(existsSync(path.join(adopt.path, "compose.override.yaml")) && !adopt.gateMode
+        ? { composeOverride: path.join(adopt.path, "compose.override.yaml") }
+        : {}),
     },
   };
 }
@@ -485,6 +488,10 @@ export function summarizePlan(plan) {
     )
       lines.push(
         `Dev mounted ${plan.dev.legacy.projectsFolder} before; it will mount ${plan.paths.projectsFolder} instead. Nothing is moved.`,
+      );
+    if (plan.dev.legacy?.composeOverride)
+      lines.push(
+        `Gate mode does not read ${plan.dev.legacy.composeOverride}. Mounts, services and environment it adds stop applying; review it first and carry what you need into shared-folders.compose.json.`,
       );
   } else {
     lines.push("No Dev container. Docker is not used.");

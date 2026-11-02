@@ -1,5 +1,9 @@
 import { beforeEach, expect, test, vi } from "vitest";
-import { claudeFullSignInAvailable, claudeSetupRequest } from "./claude-setup-login";
+import {
+  claudeFullSignInAvailable,
+  claudeProviderConnectsToInstallation,
+  claudeSetupRequest,
+} from "./claude-setup-login";
 import { requestInstallationSettings } from "@/execution-installation/settings";
 import {
   InstallationRequestFailed,
@@ -154,4 +158,9 @@ test("full sign-in is offered only when the coordinator serves its routes", asyn
   await expect(claudeFullSignInAvailable()).resolves.toBe(false);
   request.mockRejectedValueOnce(new OwnerAccessExpired("locked"));
   await expect(claudeFullSignInAvailable()).rejects.toThrow("locked");
+});
+
+test("only installation accounts offer the shared connection", () => {
+  expect(claudeProviderConnectsToInstallation("claude-account-f7b775da")).toBe(true);
+  expect(claudeProviderConnectsToInstallation("claude")).toBe(false);
 });

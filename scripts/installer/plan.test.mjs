@@ -168,6 +168,9 @@ describe("plan generation", () => {
     expect(plan.steps).not.toContain("dev-create");
     expect(summary[0]).toContain("stay where they are");
     expect(JSON.stringify(plan)).not.toContain("PASEO_PASSWORD");
+    writeFileSync(path.join(legacy, "compose.override.yaml"), "services: {}\n");
+    const overridden = await createPlan(answers(), context);
+    expect(overridden.summary.join("\n")).toContain("does not read");
 
     // Without a Dev container the deployment is left alone.
     const hostOnly = await createPlan(answers({ devContainer: false }), context);

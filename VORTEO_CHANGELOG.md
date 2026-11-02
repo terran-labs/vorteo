@@ -6,6 +6,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Make installer failures on existing deployments visible: report Tailscale's reason for a refused route, test that Dev can reach the coordinator through the gate and report the firewall rule when it cannot, and warn that gate mode does not read compose.override.yaml.
+- Explain that the built-in Claude connection cannot connect to the installation, instead of offering Connect Claude and failing with an unconfirmed request.
+- Retry the packaged Claude CLI check after a failure instead of keeping the error until the process restarts.
+- Keep existing Dev threads on the built-in Claude provider working after an upgrade: the Dev image's own CLAUDE_CONFIG_DIR no longer marks the native account as a bound account awaiting delivery.
 - Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
 ## 26.11.105 - 2026-11-01

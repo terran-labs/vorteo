@@ -326,8 +326,14 @@ async function devAdopt(s) {
     env: scriptEnvironment(s, { ...gateEnvironment(s), PASEO_IMAGE: outputs.devImage }),
     timeout: 15 * 60_000,
   });
+  const override = plan.dev.legacy.composeOverride;
   return {
     message: `Dev in ${deployment} now runs behind the gate, with its identity, home and workspace kept.`,
+    ...(override
+      ? {
+          fix: `Gate mode does not read ${override}. Carry the mounts, services and environment you still need into shared-folders.compose.json.`,
+        }
+      : {}),
   };
 }
 
@@ -577,8 +583,12 @@ async function remote(s) {
       await context.run(executable, ["serve", "--bg", `--https=${port}`, target]);
     } catch (error) {
       // Linux tailscaled accepts serve changes only from root or its operator.
+      const reason = String(error.stderr ?? "")
+        .trim()
+        .split("\n")[0]
+        .slice(0, 300);
       throw new InstallerError(
-        `Tailscale refused the HTTPS route on port ${port}.`,
+        `Tailscale refused the HTTPS route on port ${port}${reason ? `: ${reason}` : "."}`,
         plan.platform === "linux"
           ? `Run \`sudo ${executable} set --operator=$USER\`, then run apply again.`
           : "Check that Tailscale is running and signed in, then run apply again.",
@@ -608,7 +618,59 @@ async function guestClient(s) {
     release: plan.paths.hostReleaseLink,
     runCommand: context.run,
   });
-  return { message: "Dev agents can request installation changes." };
+  const fix = plan.remote.mode === "tailscale" ? await devCoordinatorFirewallFix(s) : undefined;
+  return { message: "Dev agents can request installation changes.", ...(fix ? { fix } : {}) };
+}
+
+/**
+ * The gate reaches the coordinator's route over the Host's tailnet address, which a Host
+ * firewall can drop while Dev otherwise looks healthy. Reports the fix; it needs root.
+ */
+async function devCoordinatorFirewallFix(s) {
+  const { plan, context, outputs } = s;
+  const docker = plan.executables.docker;
+  const origin = devClientOrigin(plan, outputs.hostname);
+  const quiet = async (command, args) => {
+    try {
+      return (await context.run(command, args)).trim();
+    } catch {
+      return "";
+    }
+  };
+  try {
+    // Proxied by the container's environment. Any HTTP reply proves the route is open.
+    await context.run(docker, [
+      "exec",
+      containerName(s),
+      "curl",
+      "-s",
+      "-o",
+      "/dev/null",
+      "-m",
+      "15",
+      "--retry",
+      "2",
+      "--retry-all-errors",
+      origin,
+    ]);
+    return undefined;
+  } catch {
+    const network = `${outputs.instance}_egress`;
+    const subnet = await quiet(docker, [
+      "network",
+      "inspect",
+      "--format",
+      "{{(index .IPAM.Config 0).Subnet}}",
+      network,
+    ]);
+    const address = await quiet(plan.executables.tailscale, ["ip", "-4"]);
+    return (
+      `Dev could not reach the coordinator at ${origin}, so settings saves and installation ` +
+      "requests from Dev will time out. If the Host runs a firewall, allow the gate through it, " +
+      `for example: sudo ufw allow from ${subnet || "<gate egress subnet>"} to ` +
+      `${address || "<Host tailnet address>"} port ${new URL(origin).port || 443} proto tcp`
+    );
+  }
 }
 
 async function finish(s) {

@@ -373,6 +373,41 @@ describe("apply", () => {
   });
 });
 
+describe("Tailscale and firewall failures", () => {
+  test("a refused route reports Tailscale's reason", async () => {
+    const refused = Object.assign(new Error("exit 1"), {
+      stderr: "Access denied: serve config\nmore",
+    });
+    const { context } = machine({
+      platform: "linux",
+      extraRules: [["tailscale serve --bg", refused]],
+    });
+    const { ok, lines } = await apply(await planFor(context), context);
+    expect(ok).toBe(false);
+    expect(lines.find((line) => line.status === "fail").message).toContain(
+      "port 44444: Access denied: serve config",
+    );
+  });
+
+  test("a blocked coordinator route finishes with the firewall fix", async () => {
+    const { context } = machine({
+      extraRules: [
+        [(command, args) => command === "docker" && args.includes("curl"), new Error("exit 56")],
+        [
+          (command, args) =>
+            command === "docker" && args.includes("{{(index .IPAM.Config 0).Subnet}}"),
+          "172.18.0.0/16",
+        ],
+        ["tailscale ip", "100.64.0.1"],
+      ],
+    });
+    const { ok, lines } = await apply(await planFor(context), context);
+    expect(ok).toBe(true);
+    const done = lines.find((line) => line.step === "guest-client" && line.status === "done");
+    expect(done.fix).toContain("ufw allow from 172.18.0.0/16 to 100.64.0.1 port 44444");
+  });
+});
+
 describe("release build", () => {
   // The packaged Claude CLI stays a placeholder until its install hook runs after `npm ci`.
   test("runs dependency install hooks before patching and building", async () => {
