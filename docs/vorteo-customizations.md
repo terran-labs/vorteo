@@ -1,8 +1,17 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-02): release 26.11.200 combines the square-tile installer animation, welcome page and provider defaults with reviewed legacy Claude fixes. Gate migration preserves unsupported custom deployments by refusing before changes, and Dev connectivity must verify the correct coordinator before installation completes. Focused tests and a live Dev-user health check pass; final release acceptance remains pending.
+
 Maintenance review (2026-11-01): legacy gate migration refuses common custom Compose override files during planning, before applying a saved plan, and at the migration boundary, preserving files and avoiding silent mount changes. Completed steps display their follow-up notes. Focused planning, application and renderer tests pass; arbitrary custom Compose configurations still require review.
 
 Maintenance review (2026-11-01): release 26.11.108 combines the approved square-tile build animation, welcome and starter-profile fixes, curated release summaries, and the reviewed dependency lifecycle fix. Synthetic shell checkouts include the animation module. Final combined installation acceptance is pending.
+Maintenance review (2026-11-02): the installer reports Tailscale refusal details and verifies coordinator health and installation identity through the Dev agent route in both local and Tailscale modes. A failed probe leaves installation incomplete and resumable. Recognized custom Compose overrides stop gate migration before changes.
+
+Maintenance review (2026-11-01): the Claude connection panel no longer offers a shared connection for the built-in provider, which the coordinator always refuses. It points to adding a Claude account.
+
+Maintenance review (2026-11-01): a failed packaged Claude CLI selection is no longer cached, so repairing a release does not need a process restart.
+
+Maintenance review (2026-11-01): the native Claude account stays usable in Dev containers, whose image sets CLAUDE_CONFIG_DIR for the whole daemon. Only a directory a binding chose differently from the daemon's own marks a bound account.
 
 Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
 

@@ -125,6 +125,13 @@ test("a managed daemon detects the native CLI login without weakening bound-acco
   await expect(readClaudeSetupToken({ CLAUDE_CONFIG_DIR: join(home, "bound") })).rejects.toThrow(
     "Claude",
   );
+  // A Dev image exports the daemon's own directory; threads on the native account inherit it.
+  vi.stubEnv("CLAUDE_CONFIG_DIR", join(home, ".claude"));
+  expect(await readClaudeSetupToken({ CLAUDE_CONFIG_DIR: join(home, ".claude") })).toBeNull();
+  await expect(readClaudeSetupToken({ CLAUDE_CONFIG_DIR: join(home, "bound") })).rejects.toThrow(
+    "Claude",
+  );
+  vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
   await mkdir(join(home, ".claude"));
   await claudeSetupTokenStore(join(home, ".claude")).write(token);
   await expect(readClaudeSetupToken({})).rejects.toThrow("Claude");

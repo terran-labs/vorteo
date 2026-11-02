@@ -30,6 +30,10 @@ function machine({ platform = "darwin", healthy = true, extraRules = [] } = {}) 
   const rules = [
     ...extraRules,
     ["docker ps", ""],
+    [
+      (command, args) => command === "docker" && args.includes("curl"),
+      () => JSON.stringify({ installationId: context.plan.installationId }),
+    ],
     ["docker image inspect", new Error("No such image")],
     [
       "docker build",
@@ -383,6 +387,50 @@ describe("apply", () => {
         (call) => call.command === "docker" && call.args.includes("paseo-abcdefabcdef-paseo-1"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("Tailscale and firewall failures", () => {
+  test("a refused route reports Tailscale's reason", async () => {
+    const refused = Object.assign(new Error("exit 1"), {
+      stderr: "Access denied: serve config\nmore",
+    });
+    const { context } = machine({
+      platform: "linux",
+      extraRules: [["tailscale serve --bg", refused]],
+    });
+    const { ok, lines } = await apply(await planFor(context), context);
+    expect(ok).toBe(false);
+    expect(lines.find((line) => line.status === "fail").message).toContain(
+      "port 44444: Access denied: serve config",
+    );
+  });
+
+  test.each([
+    { mode: "tailscale", probe: new Error("exit 56") },
+    { mode: "tailscale", probe: "Proxy denied" },
+    { mode: "local", probe: JSON.stringify({ installationId: "another-installation" }) },
+  ])("an unverified coordinator route remains incomplete: $mode", async ({ mode, probe }) => {
+    const { context } = machine({
+      platform: "linux",
+      extraRules: [
+        [(command, args) => command === "docker" && args.includes("curl"), probe],
+        [
+          (command, args) =>
+            command === "docker" && args.includes("{{(index .IPAM.Config 0).Subnet}}"),
+          "172.18.0.0/16",
+        ],
+        ["tailscale ip", "100.64.0.1"],
+      ],
+    });
+    const { ok, lines } = await apply(await planFor(context, { remote: { mode } }), context);
+    expect(ok).toBe(false);
+    const failed = lines.find((line) => line.step === "guest-client" && line.status === "fail");
+    expect(failed.message).toContain("Installation is incomplete");
+    expect(lines.some((line) => line.result)).toBe(false);
+    if (mode === "tailscale")
+      expect(failed.fix).toContain("ufw allow from 172.18.0.0/16 to 100.64.0.1 port 44444");
+    else expect(failed.fix).not.toContain("ufw");
   });
 });
 

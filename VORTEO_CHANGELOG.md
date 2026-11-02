@@ -4,9 +4,11 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## Unreleased - 2026-11-01
+## 26.11.200 - 2026-11-02
 
 ### Installation
+
+- Verify Dev coordinator health and installation identity through the agent route before reporting readiness. Failed connectivity remains resumable and reports diagnostic guidance without assuming every failure is a firewall block.
 
 - Refuse conversion to gate mode when a legacy deployment contains recognized custom Compose overrides, before changing its mounts or services. Recheck saved plans and the migration step, and keep all override files intact.
 - Display follow-up notes from completed installation steps instead of silently discarding them.
@@ -19,6 +21,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Installation
 
+- Make installer failures on existing deployments visible: report Tailscale's reason for a refused route, test that Dev can reach the coordinator through the gate and report the firewall rule when it cannot, and refuse unsafe migration when recognized custom Compose overrides would be ignored.
+- Explain that the built-in Claude connection cannot connect to the installation, instead of offering Connect Claude and failing with an unconfirmed request.
+- Retry the packaged Claude CLI check after a failure instead of keeping the error until the process restarts.
+- Keep existing Dev threads on the built-in Claude provider working after an upgrade: the Dev image's own CLAUDE_CONFIG_DIR no longer marks the native account as a bound account awaiting delivery.
 - Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
 - The installer wordmark uses clear square tiles with slowly wandering highlight clusters, retaining its silhouette throughout the animation.
