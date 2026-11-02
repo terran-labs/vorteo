@@ -865,7 +865,8 @@ vp_manual_fix() {
 # END prerequisites.sh
 
 vorteo_install() {
-  export VORTEO_INSTALL_STARTED_MS="$(date +%s)000"
+  VORTEO_INSTALL_STARTED_MS="$(date +%s)000"
+  export VORTEO_INSTALL_STARTED_MS
   local complete_marker="--vorteo-script-complete"
   if [ "$#" -eq 0 ] || [ "${!#}" != "$complete_marker" ]; then
     echo "This copy of the Vorteo installer is incomplete. Download it again." >&2
