@@ -67,7 +67,7 @@ describe("installer progress", () => {
       ],
       { animate: true },
     );
-    assert.ok(output.startsWith("\r  ⠋ 0:00 elapsed | Starting the Host"));
+    assert.ok(output.startsWith("\r  ⠋ 0:00 elapsed | Total 0:00 | Starting the Host"));
     assert.ok(output.endsWith("\r\u001b[K  ✓ Started the Host\n"));
   });
 
@@ -125,6 +125,8 @@ test("live progress reports elapsed time and quiet output without claiming a sta
   const finished = output;
   t.mock.timers.tick(30000);
   assert.equal(output, finished);
+  renderer.handle(JSON.stringify({ step: "release", status: "start", message: "Next phase" }));
+  assert.match(output, /0:00 elapsed \| Total 1:37 \| Next phase/);
   renderer.finish();
 });
 
@@ -193,7 +195,7 @@ test("build animation preserves ordinary output across resize and stops before p
     columns = 40;
     rows = 10;
     t.mock.timers.tick(1000);
-    assert.match(output, /0:01 elapsed/);
+    assert.match(output, /Phase 0:01/);
     columns = 100;
     rows = 35;
     t.mock.timers.tick(1000);

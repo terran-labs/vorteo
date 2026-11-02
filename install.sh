@@ -865,6 +865,7 @@ vp_manual_fix() {
 # END prerequisites.sh
 
 vorteo_install() {
+  export VORTEO_INSTALL_STARTED_MS="$(date +%s)000"
   local complete_marker="--vorteo-script-complete"
   if [ "$#" -eq 0 ] || [ "${!#}" != "$complete_marker" ]; then
     echo "This copy of the Vorteo installer is incomplete. Download it again." >&2
@@ -1205,7 +1206,7 @@ vorteo_install() {
   }
   trap 'trap - INT TERM; vorteo_stop_tree $$; exit 130' INT TERM
 
-  printf '%s' "$green"
+  printf '\n%s' "$green"
   cat <<'VORTEO_BANNER'
 ■   ■  ■■■  ■■■■  ■■■■■ ■■■■■  ■■■ 
 ■   ■ ■   ■ ■   ■   ■   ■     ■   ■
@@ -1472,11 +1473,15 @@ VORTEO_BANNER
   show_qr() {
     local columns="${COLUMNS-}"
     if [ -z "$columns" ]; then columns=$(tput cols 2>/dev/null || printf '80'); fi
-    local qr="$source_dir/scripts/installer/qr.mjs" qr_status=0
+    local qr="$source_dir/scripts/installer/qr.mjs" qr_status=0 qr_output=""
     [ -f "$qr" ] || return 0
     say ""
     say "  Scan to open Vorteo on your phone (it must be on your tailnet):"
-    "$node_bin" "$qr" "$1" --max-width "$columns" 3<&- || qr_status=$?
+    qr_output=$("$node_bin" "$qr" "$1" --max-width "$((columns - 2))" 3<&-) || qr_status=$?
+    if [ "$qr_status" -eq 0 ]; then
+      say ""
+      printf '%s\n' "$qr_output" | sed 's/^/  /'
+    fi
     if [ "$qr_status" -eq 5 ]; then
       say "  Widen the terminal to see a QR code, or open $1 on your phone."
     fi

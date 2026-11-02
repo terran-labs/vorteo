@@ -9,6 +9,7 @@
 // expected, see --no-result), 1 after a failed step, 2 when the stream ended early.
 import { writeFileSync } from "node:fs";
 import readline from "node:readline";
+import { stripVTControlCharacters } from "node:util";
 import { colliderFrame } from "./banner.mjs";
 import { isMainModule } from "../is-main-module.mjs";
 
@@ -28,6 +29,7 @@ export function createRenderer({
   color = false,
   intervalMs = 1000,
   banner = false,
+  installationStarted = Date.now(),
   rows = () => process.stdout.rows || 24,
   columns = () => process.stdout.columns || 120,
 }) {
@@ -51,7 +53,7 @@ export function createRenderer({
       lastOutput === null
         ? "waiting for output"
         : `last output ${duration(Date.now() - lastOutput)} ago`;
-    return `${counter}${duration(Date.now() - started)} elapsed | ${active} | ${
+    return `${counter}${duration(Date.now() - started)} elapsed | Total ${duration(Date.now() - installationStarted)} | ${active} | ${
       detail || quiet
     }${detail ? `; ${quiet}` : ""}`;
   };
@@ -103,7 +105,27 @@ export function createRenderer({
               rows: rows(),
               color,
             });
-            const lines = [...art, paint(color, 32, text.slice(0, width))];
+            const total = duration(Date.now() - installationStarted);
+            const phase = duration(Date.now() - started);
+            const timing =
+              width < 100
+                ? `Total ${total} | Phase ${phase}`
+                : `Total elapsed ${total} | Phase elapsed ${phase}`;
+            const statusLines = [
+              `${SPINNER[(frame - 1) % SPINNER.length]} ${counter}${active}`.slice(0, width),
+              `${timing}${detail ? ` | ${detail}` : ""}${quiet}`.slice(0, width),
+            ].slice(0, Math.max(1, rows()));
+            // Recompute margins every frame; small terminals retain just status.
+            const content = [...art, ...(art.length ? [""] : []), ...statusLines];
+            const top = art.length ? Math.max(0, Math.floor((rows() - content.length) / 2)) : 0;
+            const lines = [
+              ...Array(top).fill(""),
+              ...content.map((frameLine) => {
+                const cells = [...stripVTControlCharacters(frameLine)].length;
+                const left = art.length ? Math.max(0, Math.floor((columns() - cells) / 2)) : 0;
+                return " ".repeat(left) + frameLine;
+              }),
+            ];
             if (!alternateScreen) {
               write("\u001b[?1049h");
               alternateScreen = true;
@@ -189,6 +211,7 @@ async function main(argv) {
     write: (text) => process.stdout.write(text),
     animate: interactive,
     banner: interactive,
+    installationStarted: Number(process.env.VORTEO_INSTALL_STARTED_MS) || Date.now(),
     color: interactive && !process.env.NO_COLOR,
   });
   const interrupted = (signal) => {
