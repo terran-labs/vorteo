@@ -208,3 +208,33 @@ test("build animation preserves ordinary output across resize and stops before p
     assert.equal(output, stopped);
   }
 });
+
+test("demo walks every installation step with five minutes of simulated build time", async () => {
+  const { runDemo } = await import("./demo.mjs");
+  const { planSteps, STEP_TITLES } = await import("./flow.mjs");
+  let output = "";
+  let buildWait = 0;
+  await runDemo({
+    write: (text) => {
+      output += text;
+    },
+    interactive: false,
+    wait: async (ms) => {
+      if (ms !== 250) buildWait += ms;
+    },
+  });
+  assert.equal(buildWait, 300_000);
+  for (const step of planSteps({ devContainer: true, adopt: false, remote: "tailscale" }))
+    assert.ok(output.includes(STEP_TITLES[step]), step);
+  assert.ok(output.includes("Nothing was changed"));
+  let waited = false;
+  await runDemo({
+    write: () => {},
+    interactive: false,
+    ask: async (prompt) => (prompt.startsWith("Proceed") ? "no" : ""),
+    wait: async () => {
+      waited = true;
+    },
+  });
+  assert.equal(waited, false);
+});
