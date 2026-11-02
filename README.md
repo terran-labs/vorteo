@@ -82,6 +82,8 @@ curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/instal
 
 Demo mode asks the setup questions, shows the plan, animates builds for five minutes and displays simulated completion. It uses an existing Node.js runtime and changes no files, services, credentials or settings. Press Ctrl+C to leave early. Add `--yes` to use the default answers.
 
+After installation or repair, the terminal shows the connection address, password-file location and a QR code when space allows. The owner password is copied to the clipboard when available. Rerunning the installer also shows these details for an existing installation.
+
 Allow about 15 to 60 minutes with a Dev container, or 5 to 20 minutes for Host only. These are planning estimates; cached builds can finish faster and slow machines or downloads can take longer. The installer shows elapsed time and live build activity. On interactive terminals, a green Matrix animation runs during builds and pauses for questions; redirected output stays plain text.
 
 Authenticated provider connections receive a Default profile automatically, so you can create a workspace immediately. Later connections receive the same setup; your existing profiles and deliberate deletions are preserved.

@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Connection completion: install, repair and existing-install paths share a connection summary with the installed CLI. It includes the address, local address where distinct, password-file reference and clipboard copy when available, plus a QR code in interactive terminals. Local-only codes are labeled as local. Passwords never appear in output, and `status --json` stays machine-readable.
+
 Installer demo: `install.sh --demo` embeds the production animation and shared installation step order, simulates setup and completion, and spends five minutes animating builds. It needs an existing Node runtime but never downloads source, installs prerequisites, creates temporary files, reads credentials or changes services. Node discovery now checks later PATH entries and Homebrew's installed versioned Node formula before proposing an installation.
 
 Welcome presentation: wide screens split owner sign-in and password help into two columns; compact screens stack them. The whole command field is an accessible copy target with toast feedback; hovering the block highlights its copy icon. Interactive installation completion omits agent-only result markers.
