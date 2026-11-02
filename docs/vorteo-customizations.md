@@ -4,6 +4,8 @@ Welcome presentation: wide screens split owner sign-in and password help into tw
 
 Installer presentation review: the elapsed timer is assigned before export to preserve shell failure reporting. the startup logo has a leading blank line, and the build animation centers within the current terminal dimensions on every frame. Progress remains visible below the artwork; small terminals retain the compact status display.
 
+Maintenance review (2026-11-02): coordinator update reliability, first batch. Admission ignores stale source preparation on terminal update requests, adapted from the reviewed delegated-installation fix. A dispatch that fails before its durable claim now closes its approval as canceled with a plain reason kept beside the ledger, so a rollback coordinator still parses it. Negotiating clients see dispatch blockers before approval and stalled approvals in Installation controls, the sidebar banner and `coordinator-status`. Builds is not yet notified automatically. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-02): integrated the current release branch for the keyboard regression correction. No additional runtime changes were introduced.
 
 Maintenance review (2026-11-02): the keyboard mode-isolation browser regression now advertises legacy profile capabilities so its live mode control remains mounted. Existing keyboard and agent-state assertions remain intact; production behavior is unchanged.

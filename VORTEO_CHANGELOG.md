@@ -4,6 +4,18 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Ignore stale source-preparation state on rejected, canceled or failed update requests when checking whether the coordinator is idle. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
+- Report a coordinator update that fails before it starts as failed, with a plain reason, instead of leaving it approved and waiting forever. Its approval cannot be reused, so a fresh update can be prepared.
+
+### Improvements
+
+- Show on the coordinator approval card whether the update could start now and which installation work blocks it.
+- Flag an approved coordinator update that has not started three minutes after it became eligible, in Installation controls, the sidebar banner and `coordinator-status`.
+
 ## 26.11.204 - 2026-11-02
 
 ### Improvements

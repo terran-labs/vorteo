@@ -9,6 +9,7 @@ import type {
   CoordinatorBootstrapOutbound,
   CoordinatorBootstrapRequest,
   CoordinatorBootstrapRequestView,
+  CoordinatorDispatchStatus,
   BootstrapPreclaimRecoveryInbound,
   BootstrapPreclaimObservation,
   BootstrapPreclaimRecoveryOutbound,
@@ -54,6 +55,10 @@ export type BootstrapReviewService = Pick<
   renewalContext?: { derived: string; current(): string };
   preclaimRecovery?: PreclaimRecoveryReviewService;
   claimedRecovery?: ClaimedRecoveryReviewService;
+  /** Display-only failure, readiness and stall views keyed by request id. */
+  dispatchStatuses?(
+    requests: CoordinatorBootstrapRequest[],
+  ): Map<string, CoordinatorDispatchStatus>;
 };
 
 function automaticReviewFeatures(service: BootstrapReviewService | undefined, available: boolean) {
@@ -90,6 +95,7 @@ export function bootstrapReviewFeatures(service: BootstrapReviewService | undefi
     coordinatorBootstrapBootRecovery: available,
     coordinatorBootstrapRecoveryBootPlan: preclaimAvailable || claimedAvailable,
     coordinatorBootstrapAutomaticStatus: available,
+    coordinatorBootstrapDispatchStatus: available,
     ...automaticReviewFeatures(service, available),
     ...(service?.unavailableReason
       ? { coordinatorBootstrapUnavailableReason: service.unavailableReason }
@@ -277,7 +283,12 @@ export async function handleBootstrapReview(
       assertServiceConfigurationReview(message, request);
       await service.decide(message.input, message.ownerPassword);
     }
-    const requests = service.list().map((request) => publicBootstrapReply(request, message));
+    const listed = service.list();
+    const dispatch =
+      message.dispatchStatus === true ? service.dispatchStatuses?.(listed) : undefined;
+    const requests = listed.map((request) =>
+      withDispatchStatus(publicBootstrapReply(request, message), dispatch?.get(request.id)),
+    );
     return { type, payload: { requestId, requests, error: null } };
   } catch (error) {
     // Filesystem, schema and verifier failures can carry private configuration.
@@ -289,6 +300,14 @@ export async function handleBootstrapReview(
       : "Bootstrap validation failed. Inspect the prepared Host configuration before retrying.";
     return { type, payload: { requestId, requests: null, error: description } };
   }
+}
+
+// COMPAT(coordinatorDispatchStatus): only clients that send dispatchStatus receive it.
+function withDispatchStatus(
+  visible: CoordinatorBootstrapRequestView,
+  dispatchStatus: CoordinatorDispatchStatus | undefined,
+): CoordinatorBootstrapRequestView {
+  return dispatchStatus ? { ...visible, dispatchStatus } : visible;
 }
 
 function publicBootstrapReply(

@@ -3,6 +3,8 @@ import {
   type InitializationPhase,
 } from "./coordinator-initialization-diagnostic.js";
 import { reserveEnrolledBootstrapLaunch } from "./coordinator-bootstrap-maintenance-dispatch.js";
+import { closeFailedPreclaimDispatch } from "./coordinator-bootstrap-dispatch-failure.js";
+import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { verifyCoordinatorSubmission } from "./daemon-automation.js";
 import { createHash } from "node:crypto";
 import { lstatSync, constants, readFileSync, realpathSync, readdirSync } from "node:fs";
@@ -1670,6 +1672,7 @@ export function refreshBootstrapReviewOnRenewalChange(
       if (!refreshing && needsRefresh(false)) void refresh();
       return current.list();
     },
+    dispatchStatuses: (listed) => current.dispatchStatuses?.(listed) ?? new Map(),
     prepare: (input) => operate((service) => service.prepare(input)),
     decide: (input, password) => operate((service) => service.decide(input, password)),
   };
@@ -1716,25 +1719,38 @@ export function createDispatchingBootstrapReview(options: {
   const dispatch = (request: CoordinatorBootstrapRequest, automatic: boolean) =>
     withFreshBootstrapArtifactReuse(() => dispatchVerified(request, automatic));
   const dispatchVerified = async (request: CoordinatorBootstrapRequest, automatic: boolean) => {
-    await verifyCandidate(request);
-    const source = await readBootstrapPreparedFile(setup.ownerLauncher, await verifySetup());
-    if (automatic)
-      request = requests.reserveAutomaticDispatch({
-        id: request.id,
-        revision: request.revision,
-        planSha256: request.planSha256,
-      });
-    if (request.enrollment) {
-      if (!options.enrollment || !setup.maintenance || automatic)
-        throw new BootstrapRequestConflict("Exact admitted enrollment launch required");
-      request = reserveEnrolledBootstrapLaunch(request);
+    // An owner approval, or an automatic one after its launch reservation, has no
+    // retry path of its own. A failure before the fork closes it instead of leaving
+    // it approved with nothing running. Automatic reconciliation retries earlier failures.
+    let closable = !automatic;
+    let source: Buffer;
+    let executionSetup: string;
+    try {
+      await verifyCandidate(request);
+      source = await readBootstrapPreparedFile(setup.ownerLauncher, await verifySetup());
+      if (automatic) {
+        request = requests.reserveAutomaticDispatch({
+          id: request.id,
+          revision: request.revision,
+          planSha256: request.planSha256,
+        });
+        closable = true;
+      }
+      if (request.enrollment) {
+        if (!options.enrollment || !setup.maintenance || automatic)
+          throw new BootstrapRequestConflict("Exact admitted enrollment launch required");
+        request = reserveEnrolledBootstrapLaunch(request);
+      }
+      const current = requests.list().find((item) => item.id === request.id);
+      if (!current || current.revision !== request.revision || current.execution)
+        throw new BootstrapRequestConflict("Bootstrap decision changed before launch");
+      executionSetup = setup.renewal
+        ? persistRenewalSetup(request.plan.state.directory, setup, request)
+        : setupFile;
+    } catch (error) {
+      if (closable) closeFailedPreclaimDispatch(requests, request, error);
+      throw error;
     }
-    const current = requests.list().find((item) => item.id === request.id);
-    if (!current || current.revision !== request.revision || current.execution)
-      throw new BootstrapRequestConflict("Bootstrap decision changed before launch");
-    const executionSetup = setup.renewal
-      ? persistRenewalSetup(request.plan.state.directory, setup, request)
-      : setupFile;
     const child = spawn(
       "/usr/bin/python3",
       [
@@ -1780,6 +1796,12 @@ export function createDispatchingBootstrapReview(options: {
       return dispatch(request, false);
     },
     list: () => requests.list(),
+    dispatchStatuses: (listed) =>
+      coordinatorDispatchStatuses({
+        requests: listed,
+        readLifecycle: () => requests.readLifecycle(),
+        now: Date.now(),
+      }),
     prepare: async (input) => {
       const prepared = CoordinatorBootstrapPreparationSchema.parse(input);
       await verifyCandidate(prepared);

@@ -541,6 +541,8 @@ A reviewed coordinator plan or renewal changes a registered coordinator setting 
 
 Clients negotiate review by setting name, behind `coordinatorBootstrapConfigurationChanges`. A client that does not name every listed setting sees the request without the list, with a reload reason, and cannot approve it. Cancellation stays available. Adding a setting takes one registry entry, its review text in the app and a test.
 
+A coordinator update that fails before its durable claim made no change, for example when other installation work is still unresolved. The coordinator records that approval as canceled, so it is never reused, and keeps a plain reason in `coordinator-dispatch-failure-<id>.json` beside the ledger, which an older rollback coordinator can still parse. Only the launch path before it starts the runner, or a runner that holds the exclusive execution lock, closes an approval this way. A claimed request keeps its existing recovery path. Clients that negotiate `coordinatorBootstrapDispatchStatus` also see whether a pending or approved request could start now and which jobs block it. They see an approved request as stalled when it has no claim and no live runner three minutes after it became eligible. The approval card warns but still allows approval; the claim runs the authoritative idle check. `coordinator-status` returns the same `dispatchStatus`. Builds is not yet notified automatically.
+
 The older per-setting plan fields, such as `factoryGateConfiguration` and `hostLauncherUpdateConfiguration`, still work and verify the same way until their compatibility dates. Approval policy (`hostRequestsAfter`), source update tooling, the native helper and Dev registration keep their own rules.
 
 ### Adding a reviewed restart operation
