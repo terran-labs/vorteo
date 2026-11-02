@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-02): integrated the current release branch for the keyboard regression correction. No additional runtime changes were introduced.
+
 Maintenance review (2026-11-02): the keyboard mode-isolation browser regression now advertises legacy profile capabilities so its live mode control remains mounted. Existing keyboard and agent-state assertions remain intact; production behavior is unchanged.
 
 Maintenance review (2026-11-02): release publisher formatting now matches the repository formatter; release behavior is unchanged.

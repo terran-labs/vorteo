@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Integrate the release branch before publishing the reviewed keyboard regression correction.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
 - Make the background-agent keyboard safety regression explicitly exercise legacy host mode controls, avoiding a race with the modern profile picker.
 
 ## Unreleased - 2026-11-02
