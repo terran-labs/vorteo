@@ -382,6 +382,7 @@ describe("install.sh", () => {
     assert.equal(box.answers().projectsFolder, path.join(box.home, "code"));
     assert.match(result.stdout, /Proceed with this plan\?/);
     assert.match(result.stdout, /Scan to open Vorteo on your phone/);
+    assert.doesNotMatch(result.stdout, /^VORTEO_RESULT /m);
     assert.match(result.stdout, /▀/);
     assert.equal(
       box.calls().some((call) => call.tool === "open"),

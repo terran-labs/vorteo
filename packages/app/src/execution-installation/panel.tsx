@@ -50,7 +50,7 @@ import {
   type ComponentProps,
 } from "react";
 import { Pressable, Text, View } from "react-native";
-import { CheckSquare, Square, Info, ChevronDown, ChevronUp } from "lucide-react-native";
+import { CheckSquare, Square, Info, ChevronDown, ChevronUp, Copy } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -156,12 +156,18 @@ function installationIsLocal(): boolean {
   return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(origin).hostname);
 }
 
-export function InstallationWelcome() {
+export function InstallationWelcome({ wide = false }: { wide?: boolean }) {
   const model = getInstallationPanel(useHostRegistryLoaded());
-  return model ? <InstallationWelcomeForm model={model} /> : null;
+  return model ? <InstallationWelcomeForm model={model} wide={wide} /> : null;
 }
 
-function InstallationWelcomeForm({ model }: { model: InstallationPanelModel }) {
+function InstallationWelcomeForm({
+  model,
+  wide,
+}: {
+  model: InstallationPanelModel;
+  wide: boolean;
+}) {
   // The model outlives this dialog; dismissed password drafts must not.
   useEffect(() => () => model.clearPasswordDraft(), [model]);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
@@ -182,45 +188,52 @@ function InstallationWelcomeForm({ model }: { model: InstallationPanelModel }) {
     );
   }
   return (
-    <View style={styles.welcomeForm} testID="installation-welcome">
-      <Field label="Owner password">
-        <FormTextInput
-          size="md"
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="current-password"
-          textContentType="password"
-          initialValue=""
-          onChangeText={setPassword}
-          onSubmitEditing={connect}
-          returnKeyType="go"
-          editable={!state.busy}
-          accessibilityLabel="Owner password"
-          testID="installation-password"
-        />
-      </Field>
-      {state.error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {state.error}
-        </Text>
+    <View
+      style={[styles.welcomeForm, wide && styles.welcomeFormWide]}
+      testID="installation-welcome"
+    >
+      <View style={styles.welcomeSignIn}>
+        <Field label="Owner password">
+          <FormTextInput
+            size="md"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="current-password"
+            textContentType="password"
+            initialValue=""
+            onChangeText={setPassword}
+            onSubmitEditing={connect}
+            returnKeyType="go"
+            editable={!state.busy}
+            accessibilityLabel="Owner password"
+            testID="installation-password"
+          />
+        </Field>
+        {state.error ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {state.error}
+          </Text>
+        ) : null}
+        <Button
+          size="lg"
+          disabled={state.busy || !state.password.trim()}
+          onPress={connect}
+          testID="installation-unlock"
+        >
+          {state.busy ? "Connecting..." : "Connect"}
+        </Button>
+      </View>
+      {state.passwordFile ? (
+        <PasswordFileHint passwordFile={state.passwordFile} wide={wide} />
       ) : null}
-      <Button
-        size="lg"
-        disabled={state.busy || !state.password.trim()}
-        onPress={connect}
-        testID="installation-unlock"
-      >
-        {state.busy ? "Connecting..." : "Connect"}
-      </Button>
-      {state.passwordFile ? <PasswordFileHint passwordFile={state.passwordFile} /> : null}
     </View>
   );
 }
 
 // The coordinator reports the path only when the file exists. The command runs
 // on the Host; the password itself never passes through this page.
-function PasswordFileHint({ passwordFile }: { passwordFile: string }) {
+function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: boolean }) {
   const command = passwordCopyCommand(passwordFile);
   const toast = useToast();
   const copy = useCallback(async () => {
@@ -235,24 +248,29 @@ function PasswordFileHint({ passwordFile }: { passwordFile: string }) {
     }
   }, [command, toast]);
   return (
-    <View style={styles.passwordHelp} testID="installation-password-hint">
+    <View
+      style={[styles.passwordHelp, wide && styles.passwordHelpWide]}
+      testID="installation-password-hint"
+    >
       <Text style={styles.passwordHelpTitle}>Find your password</Text>
       <Text style={styles.passwordHelpText}>
-        Run this command in Terminal on the computer hosting Vorteo. Then paste the password above.
+        Run this command in Terminal on the computer hosting Vorteo. Then paste it into the owner
+        password field.
       </Text>
       <View style={styles.passwordCommand}>
         <Text selectable style={styles.passwordCommandText} testID="installation-password-command">
           {command}
         </Text>
+        <Button
+          variant="ghost"
+          size="lg"
+          leftIcon={Copy}
+          accessibilityLabel="Copy command"
+          onPress={copy}
+          style={styles.passwordCopy}
+          testID="installation-password-copy-command"
+        />
       </View>
-      <Button
-        variant="outline"
-        size="lg"
-        onPress={copy}
-        testID="installation-password-copy-command"
-      >
-        Copy command
-      </Button>
     </View>
   );
 }
@@ -2349,6 +2367,26 @@ const styles = StyleSheet.create((theme) => ({
   textInset: { padding: theme.spacing[4] },
   cardBody: { padding: theme.spacing[4], gap: theme.spacing[2] },
   welcomeForm: { gap: theme.spacing[4] },
+  welcomeFormWide: { flexDirection: "row", gap: theme.spacing[6], alignItems: "stretch" },
+  welcomeSignIn: { flex: 1, minWidth: 0, gap: theme.spacing[4] },
+  passwordHelpWide: {
+    flex: 1,
+    minWidth: 0,
+    marginTop: 0,
+    paddingTop: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 1,
+    borderLeftColor: theme.colors.border,
+    paddingLeft: theme.spacing[6],
+  },
+  passwordCopy: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 44,
+    height: 44,
+    paddingHorizontal: 0,
+  },
   passwordHelp: {
     marginTop: theme.spacing[2],
     paddingTop: theme.spacing[6],
@@ -2367,6 +2405,8 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: theme.fontSize.base * 1.5,
   },
   passwordCommand: {
+    paddingRight: 52,
+    minHeight: 44,
     padding: theme.spacing[4],
     borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.surface0,

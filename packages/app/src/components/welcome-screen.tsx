@@ -23,6 +23,8 @@ import { readExecutionInstallation } from "@/execution-installation/policy";
 import { useInstallationName } from "@/execution-installation/installation-name";
 import { isNative } from "@/constants/platform";
 import { toErrorMessage } from "@/utils/error-messages";
+import { useWindowDimensions } from "@/appearance/interface-geometry";
+
 const SETUP_HEADER = { title: "Create New installation" };
 
 interface WelcomeAction {
@@ -64,6 +66,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
     alignItems: "center",
   },
+  installationCardWide: { maxWidth: 960 },
   plainContent: { width: "100%", alignItems: "center" },
   installationTitle: {
     fontSize: theme.fontSize["4xl"],
@@ -190,6 +193,7 @@ export interface WelcomeScreenProps {
 }
 
 export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
+  const wide = useWindowDimensions().width >= 900;
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
@@ -279,7 +283,10 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
       >
         <View style={styles.content}>
           <View
-            style={installation ? styles.installationCard : styles.plainContent}
+            style={[
+              installation ? styles.installationCard : styles.plainContent,
+              installation && wide && styles.installationCardWide,
+            ]}
             testID="welcome-card"
           >
             <VorteoLogo size={96} />
@@ -300,7 +307,7 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
 
             <View style={[styles.actions, installation && styles.installationActions]}>
               {installation ? (
-                <InstallationWelcome />
+                <InstallationWelcome wide={wide} />
               ) : (
                 actions.map((action) => <WelcomeActionButton key={action.key} action={action} />)
               )}
