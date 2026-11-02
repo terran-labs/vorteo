@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixed
 
+- Refuse automatic reconciliation of existing duplicate release pages until their assets have been compared and preserved.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
 - Remove attribution prefixes from public release notes and promote each beta release page to stable instead of publishing duplicate pages.
 
 ## 26.11.200 - 2026-11-02

@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-02): pre-existing duplicate release pages require explicit asset reconciliation before mutation; normal beta promotion preserves the original page and assets.
+
 Maintenance review (2026-11-02): public release summaries omit attribution prefixes. Publication promotes one page per version from beta to stable while preserving assets and immutable tags; agent instructions record both rules.
 
 Maintenance review (2026-11-02): release 26.11.200 combines the square-tile installer animation, welcome page and provider defaults with reviewed legacy Claude fixes. Gate migration preserves unsupported custom deployments by refusing before changes, and Dev connectivity must verify the correct coordinator before installation completes. Focused tests and a live Dev-user health check pass; final release acceptance remains pending.

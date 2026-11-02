@@ -355,6 +355,11 @@ export function createRelease(
   const beta = releases.find(
     (release) => release.tag_name === tagName("beta", plan.version)
   );
+  if (stable && beta) {
+    throw new ReleaseRefusal(
+      "Duplicate release pages already exist. Compare and preserve every asset before removing the beta page; keep both tags."
+    );
+  }
   if (plan.channel === "beta" && stable) {
     throw new ReleaseRefusal(
       "This version is already stable; do not publish a duplicate beta release."
@@ -380,8 +385,7 @@ export function createRelease(
       ],
       { input: notes }
     );
-    if (stable && beta)
-      gh(["release", "delete", beta.tag_name, "-R", repository, "--yes"]);
+
     return;
   }
   const channelFlags =

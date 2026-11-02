@@ -600,3 +600,29 @@ test("a stable version cannot acquire another beta release page", () => {
     /already stable/
   );
 });
+
+test("existing duplicate pages require asset reconciliation before any mutation", () => {
+  const calls = [];
+  assert.throws(
+    () =>
+      createRelease(
+        { channel: "stable", version: "26.11.200" },
+        {
+          repository: "example/project",
+          notes: "Ready.\n\n### Fixes\n\n- Works.",
+          gh: (args) => {
+            calls.push(args);
+            return JSON.stringify([
+              [
+                { tag_name: "release-26.11.200" },
+                { tag_name: "release-26.11.200-beta" },
+              ],
+            ]);
+          },
+        }
+      ),
+    /preserve every asset/
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "api");
+});
