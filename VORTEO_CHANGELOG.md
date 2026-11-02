@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Stop a Codex agent whose new message joined a turn Codex was already running, such as a goal continuation resumed after a restart. Stop previously failed with "active run cancellation was not acknowledged" because Vorteo waited for a turn start that never came; it now identifies the running turn from its activity and interrupts it.
+
 ## 26.11.205 - 2026-11-02
 
 ### Improvements

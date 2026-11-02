@@ -3500,6 +3500,8 @@ export class CodexAppServerAgentSession implements AgentSession {
   private resolvedSandboxPolicy: Record<string, unknown> | null = null;
   private currentThreadId: string | null = null;
   private currentTurnId: string | null = null;
+  /** The last root turn Codex finished, so late item events cannot revive it. */
+  private lastCompletedTurnId: string | null = null;
   private pendingForegroundTurnIdentification: {
     foregroundTurnId: string;
     promise: Promise<string | null>;
@@ -5961,7 +5963,26 @@ export class CodexAppServerAgentSession implements AgentSession {
       this.dispatchSubAgentNotification(parsed, route.callId);
       return;
     }
+    this.identifyForegroundTurnFromItem(parsed);
     this.dispatchParsedNotification(parsed);
+  }
+
+  /**
+   * Codex folds a turn/start into a turn it is already running, such as a goal
+   * continuation that began while the thread resumed. No turn/started follows,
+   * so the root item events are the only report of the native turn to interrupt.
+   */
+  private identifyForegroundTurnFromItem(parsed: ParsedCodexNotification): void {
+    if (parsed.kind !== "item_started" && parsed.kind !== "item_completed") return;
+    const turnId = parsed.turnId;
+    if (!turnId || this.currentTurnId || !this.activeForegroundTurnId) return;
+    if (turnId === this.lastCompletedTurnId) return;
+    this.currentTurnId = turnId;
+    const pendingIdentification = this.pendingForegroundTurnIdentification;
+    if (pendingIdentification?.foregroundTurnId === this.activeForegroundTurnId) {
+      pendingIdentification.resolve(turnId);
+      this.pendingForegroundTurnIdentification = null;
+    }
   }
 
   private dispatchSubAgentNotification(parsed: ParsedCodexNotification, callId: string): void {
@@ -6736,6 +6757,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
     this.activeForegroundTurnId = null;
     this.activeClientMessageId = null;
+    this.lastCompletedTurnId = this.currentTurnId;
     this.currentTurnId = null;
     this.pendingForegroundTurnIdentification?.resolve(null);
     this.pendingForegroundTurnIdentification = null;

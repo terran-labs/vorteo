@@ -1635,6 +1635,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 2, 2026: Codex sessions identify the running native turn from root item events when a new prompt joins a turn Codex already started, such as a goal continuation after a resume, so Stop reaches that turn instead of waiting for a turn start Codex never sends. A provider regression test covers it. No Vorteo feature or limitation changes; README overview and onboarding are unchanged.
+
 October 29, 2026: The diagnostic branch reuses four reviewed layout-settle test files from main. All responsive and disclosure assertions remain; measured test budgets accommodate the known layout-switch freeze without claiming it fixed. Runtime behavior, README overview and onboarding are unchanged.
 
 October 29, 2026: The diagnostic branch reuses the reviewed zoom-slider browser fixture correction, keeping the control visible before real pointer drags. Assertions, timeouts and runtime behavior are unchanged. README overview and onboarding are unchanged.
