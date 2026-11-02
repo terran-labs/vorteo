@@ -169,7 +169,13 @@ behavior. Local paths never enter the installation catalog or its journal.
 
 ## Install from a registry
 
-`paseo plugin add owner/slug` installs the registry's reviewed artifact by default.
+Registry access is off by default. Enable `pluginRegistryEnabled: true` in daemon config or
+set `PASEO_PLUGIN_REGISTRY_ENABLED=1`, then restart through the installation controls.
+An explicit environment value overrides the saved setting. While disabled, registry installs
+and updates make no registry requests, and bare `owner/repo` remains GitHub shorthand.
+Retained registry installations keep their identity; updating them requires enabling registry access.
+
+With registry access enabled, `paseo plugin add owner/slug` installs its reviewed artifact.
 Browse published plugins at [paseo.sh/plugins](https://paseo.sh/plugins).
 Use `git:owner/repository` or a full Git URL for a Git source. Registry installs
 keep the registry URL and ID, so update checks use its approved pin. Explicit version/ref
@@ -197,7 +203,7 @@ owns static hosting, record shapes, pins, and advisory install counts.
 ## Install a Git source
 
 GitHub repositories use `git:owner/repository` or `github:owner/repository`. Other hosts use a Git
-URL.
+URL. Bare `owner/repository` also selects GitHub while registry access is disabled.
 
 ```bash
 paseo plugin install git:owner/repository
@@ -481,9 +487,12 @@ The [public reference](../public-docs/plugins/reference.md#icons) owns the autho
 Server entries register async handlers with `server.addHook(name, handler)`, returning a cleanup
 function. Names follow `subject.operation.position`, ending in `before` or `after`. Waiting is a per-hook
 registry property, independent of position. The [hooks reference](../public-docs/plugins/hooks.md)
-owns payloads, ordering, failure behavior, and examples. `agent.create.before` edits saved
-configuration; `agent.open.before` contributes launch-only `env`, `tools`, and `mcpServers` on
-every open. Executable tool definitions stay in the plugin process; only metadata crosses the boundary.
+owns payloads, ordering, failure behavior, and examples. `agent.create.before` supplies defaults
+for saved configuration. Admitted values take precedence, and hooks cannot replace the provider,
+profile, skill snapshot or quota policy. Launch environment values and the selected provider account
+override hook environment defaults. `agent.open.before` contributes launch-only `env`, `tools`,
+and `mcpServers` on every open. Executable tool definitions stay in the plugin process; only
+metadata crosses the boundary.
 
 Worktree placement is resolved before Git source planning, so a hook can change the branch and base
 without undoing fetched refs. Restores use the recorded destination and bypass creation hooks.

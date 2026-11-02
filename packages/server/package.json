@@ -65,12 +65,12 @@
     },
     "./factory-contracts": {
       "types": "./dist/server/factory-shared/contracts.d.ts",
-      "source": "../../plugins/factory/shared/contracts.ts",
+      "source": "./source/factory-contracts.ts",
       "default": "./dist/server/factory-shared/contracts.js"
     },
     "./factory-operations": {
       "types": "./dist/server/factory-shared/operations.d.ts",
-      "source": "../../plugins/factory/shared/operations.ts",
+      "source": "./source/factory-operations.ts",
       "default": "./dist/server/factory-shared/operations.js"
     },
     "./factory-ownership": {

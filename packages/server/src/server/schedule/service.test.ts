@@ -607,7 +607,7 @@ describe("ScheduleService", () => {
   });
 
   test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-    "keeps firing future slots after an outcome could not be saved",
+    "holds future slots while a previous outcome could not be saved",
     async () => {
       const schedulesDir = join(tempDir, "schedules");
       let dispatches = 0;
@@ -639,16 +639,20 @@ describe("ScheduleService", () => {
       } finally {
         await chmod(schedulesDir, 0o755);
       }
-      expect((await service.inspect(created.id)).runs[0].status).toBe("running");
+      const retained = await service.inspect(created.id);
+      expect(retained.runs).toHaveLength(1);
+      expect(retained.runs[0]).toMatchObject({
+        status: "running",
+        scheduledFor: "2026-01-01T00:01:00.000Z",
+        endedAt: null,
+      });
+      expect(retained.nextRunAt).toBe("2026-01-01T00:02:00.000Z");
       now = new Date("2026-01-01T00:02:00.000Z");
-      await service.tick();
-      const result = await service.inspect(created.id);
-      expect(dispatches).toBe(2);
-      expect(result.runs.map((run) => run.scheduledFor)).toEqual([
-        "2026-01-01T00:01:00.000Z",
-        "2026-01-01T00:02:00.000Z",
-      ]);
-      expect(result.nextRunAt).toBe("2026-01-01T00:03:00.000Z");
+      await expect(service.tick()).rejects.toThrow("Reconcile unfinished work");
+      now = new Date("2026-01-01T00:03:00.000Z");
+      await expect(service.tick()).rejects.toThrow("Reconcile unfinished work");
+      expect(dispatches).toBe(1);
+      expect(await service.inspect(created.id)).toEqual(retained);
     },
   );
 
@@ -4184,6 +4188,8 @@ describe("ScheduleService", () => {
         quotaRunner: {
           reconcilePreparation: async () => "resume",
           prepare: async (schedule) => {
+            if (schedule.runs.some((run) => run.quotaState?.state === "reconciliation_required"))
+              return { kind: "deferred", reason: "execution_reconciliation_required" };
             if (expireDuringPrepare)
               await service.update({ id: schedule.id, expiresAt: now.toISOString() });
             return {
@@ -4223,7 +4229,7 @@ describe("ScheduleService", () => {
       const held = await service.inspect(created.id);
       expect(held).toMatchObject({
         status: "active",
-        nextRunAt: created.nextRunAt,
+        nextRunAt: null,
         runs: [{ status: "running", quotaState: { state: "frozen", reason: "weekly_floor" } }],
       });
       expect(held.runs[0]?.[bindingKey]).toEqual(binding());
@@ -4309,14 +4315,97 @@ describe("ScheduleService", () => {
           },
         ],
       });
+      const uncertainRun = (await service.inspect(created.id)).runs[0];
+      await service.start();
+      await service.stop();
       await service.tick();
-      expect(governed).toHaveBeenCalledTimes(3);
+      await service.tick();
+      expect((await service.inspect(created.id)).runs[0]).toEqual(uncertainRun);
+      expect(governed).toHaveBeenCalledTimes(2);
       expect(governed.mock.calls[0][1]).toBe(governed.mock.calls[1][1]);
       expect(ordinary).not.toHaveBeenCalled();
       expect(await service.inspect(created.id)).toMatchObject({
-        status: "completed",
-        runs: [{ status: "succeeded", output: "governed" }],
+        status: "active",
+        nextRunAt: null,
+        runs: [{ status: "running", quotaState: { state: "reconciliation_required" } }],
       });
+    },
+  );
+
+  test.each([1, 2])(
+    "reconciles a claimed run before its next scheduling slot (maxRuns=%i)",
+    async (maxRuns) => {
+      const binding = { account: heldQuotaPolicy.account, reservationId: "captured-reservation" };
+      let attempts = 0;
+      let allowResume = false;
+      const freeze = vi.fn(async () => {});
+      const run = vi.fn(
+        async (
+          _schedule: StoredSchedule,
+          _runId: string,
+        ): Promise<ScheduleExecutionResult | { state: "frozen"; reason: string }> => {
+          if (++attempts === 1) return { state: "frozen", reason: "weekly_floor" };
+          return { agentId: null, output: "reconciled" };
+        },
+      );
+      const prepare = vi.fn(async (schedule: StoredSchedule, _scheduledFor: string) => ({
+        kind: "ready" as const,
+        binding,
+        freezeBeforeDispatch: freeze,
+        resumeRunId: allowResume ? schedule.runs[0]?.id : undefined,
+        run,
+      }));
+      const ordinary = vi.fn(async () => ({ agentId: null, output: "ordinary" }));
+      const options = {
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: ordinary,
+        quotaRunner: { prepare, reconcilePreparation: async () => "resume" as const },
+      };
+      const service = createScheduleService(options);
+      const created = await service.create({
+        prompt: "Recover captured work",
+        cadence: { type: "every", everyMs: 60_000 },
+        maxRuns,
+        target: {
+          type: "new-agent",
+          config: { provider: "codex", cwd: tempDir, quotaPolicy: heldQuotaPolicy },
+        },
+      });
+      await service.tick();
+      const claimed = await service.inspect(created.id);
+      expect(claimed.nextRunAt).toBe(maxRuns === 1 ? null : "2026-01-01T00:01:00.000Z");
+      expect(claimed.runs).toHaveLength(1);
+      expect(claimed.runs[0]).toMatchObject({ status: "running", governorBinding: binding });
+      now = new Date("2026-01-01T00:00:10.000Z");
+      const restarted = createScheduleService(options);
+      await restarted.start();
+      await restarted.stop();
+      await expect(restarted.tick()).rejects.toThrow("Reconcile unfinished work");
+      expect(run).toHaveBeenCalledTimes(1);
+      expect((await restarted.inspect(created.id)).runs).toEqual(claimed.runs);
+      expect(freeze).toHaveBeenCalledWith("dispatch_not_started");
+      allowResume = true;
+      await restarted.tick();
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(run.mock.calls[1][1]).toBe(run.mock.calls[0][1]);
+      expect(prepare.mock.calls.map((call) => call[1])).toEqual([
+        created.nextRunAt,
+        created.nextRunAt,
+        created.nextRunAt,
+      ]);
+      expect(await restarted.inspect(created.id)).toMatchObject({
+        status: maxRuns === 1 ? "completed" : "active",
+        nextRunAt: claimed.nextRunAt,
+        runs: [{ id: claimed.runs[0].id, status: "succeeded", output: "reconciled" }],
+      });
+      await restarted.tick();
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(ordinary).not.toHaveBeenCalled();
     },
   );
 

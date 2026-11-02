@@ -2,17 +2,12 @@
  * Company sponsors. This file is the inventory: every page of the site shows
  * these logos above the footer, and the open spots invite the next sponsor.
  *
- * Approving a sponsor means three edits, or the site promises something it does
- * not deliver:
+ * Add each approved sponsor below and both logo inks in `public/sponsors/`.
+ * Remove the entry and assets when the subscription ends. `sponsors.test.ts`
+ * checks logo assets and placement-specific links.
  *
- * 1. Add the entry below and drop both logo inks in `public/sponsors/`.
- * 2. In the sponsors table after the intro of `README.md`, `README.zh-CN.md`,
- *    `README.ja.md` and `README.ko.md`, replace a "become a sponsor" cell with
- *    the logo and its description, in this same order, linked to `sponsorHref(sponsor, "readme")`
- *    with both inks referenced from `packages/website/public`, so the README
- *    renders from the repository and never waits on a site deploy.
- *    `sponsors.test.ts` fails until they match.
- * 3. Remove all of it when the subscription ends.
+ * The fork READMEs do not publish sponsor tables. If README placement is
+ * introduced separately, maintain it explicitly and use `sponsorHref(sponsor, "readme")`.
  *
  * The Stripe payment link caps itself at `SPONSOR_SPOT_COUNT` completed
  * checkouts, and a checkout you decline and refund still counts against that

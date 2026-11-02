@@ -168,17 +168,17 @@ const NO_REPORTS: UsageReportEntry[] = [];
  * The reports of the sidebar's usage host, which is connected and reports usage; none until they
  * load, or without a host.
  */
-export function useUsageHostReports(serverId: string | null): UsageReportEntry[] {
+export function useUsageHostReports(serverId: string | null, enabled = true): UsageReportEntry[] {
   const setting = useUsageSetting(serverId);
   const queryClient = useQueryClient();
   const query = useFetchQuery({
-    enabled: setting.enabled,
+    enabled: enabled && setting.enabled,
     queryKey: usageReportsQueryKey(serverId ?? ""),
-    queryFn: serverId ? () => listReports(queryClient, serverId) : skipToken,
+    queryFn: enabled && serverId ? () => listReports(queryClient, serverId) : skipToken,
     dataShape: "list",
     staleTimeMs: REPORTS_STALE_TIME_MS,
   });
-  return setting.enabled ? (query.data ?? NO_REPORTS) : NO_REPORTS;
+  return enabled && setting.enabled ? (query.data ?? NO_REPORTS) : NO_REPORTS;
 }
 
 /**

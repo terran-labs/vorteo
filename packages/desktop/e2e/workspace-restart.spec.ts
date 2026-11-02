@@ -122,10 +122,6 @@ test("refresh keeps one continuous splash before restoring the desktop workspace
 });
 
 function inspectChatDragExclusions(scroll: Element) {
-  const header = document.querySelector('[data-testid="composer-dock-header"]');
-  if (!header) throw new Error("Expected the workspace header");
-  const headerRect = header.getBoundingClientRect();
-  const headerY = headerRect.top + headerRect.height / 2;
   const content = scroll.firstElementChild;
   const focusScope = scroll.closest("[data-window-content]")?.parentElement?.closest("[tabindex]");
   if (!content || !focusScope) throw new Error("Expected chat content and its focus scope");
@@ -138,6 +134,30 @@ function inspectChatDragExclusions(scroll: Element) {
     },
   );
   if (!tabRow) throw new Error("Expected the chat pane's tab row");
+  // Desktop chrome is now the pane's titlebar safe area around its tab row.
+  const header = tabRow.parentElement;
+  if (!header) throw new Error("Expected the chat pane's titlebar");
+  const headerRect = header.getBoundingClientRect();
+  const headerY = headerRect.top + headerRect.height / 2;
+  if (
+    headerRect.width <= 0 ||
+    headerRect.height <= 0 ||
+    headerRect.right <= contentRect.left ||
+    headerRect.left >= contentRect.right
+  )
+    throw new Error("Expected a nonempty titlebar intersecting the chat horizontally");
+  const overlays = [...header.children].filter(
+    (element) => getComputedStyle(element).getPropertyValue("-webkit-app-region") === "drag",
+  );
+  if (overlays.length !== 1) throw new Error("Expected the pane titlebar's direct drag overlay");
+  const overlayRect = overlays[0].getBoundingClientRect();
+  if (
+    overlayRect.left > chatX ||
+    overlayRect.right < chatX ||
+    overlayRect.top > headerY ||
+    overlayRect.bottom < headerY
+  )
+    throw new Error("Expected the direct drag overlay to cover the chat's titlebar point");
   const tabRect = tabRow.getBoundingClientRect();
   const tabY = tabRect.top + tabRect.height / 2;
   const exclusions = [...scroll.querySelectorAll("*")].filter((element) => {
@@ -200,18 +220,18 @@ test("scrolled chat does not exclude the workspace titlebar from dragging", asyn
     }
 
     // Window-owned controls are siblings of workspace chrome, not descendants of it.
-    const closeMenu = page.getByRole("button", { name: "Close menu", exact: true });
+    const closeMenu = page.getByRole("button", { name: "Use compact sidebar", exact: true });
     await expect(closeMenu).toHaveCSS("-webkit-app-region", "no-drag");
     await closeMenu.click();
-    const openMenu = page.getByRole("button", { name: "Open menu", exact: true });
+    const openMenu = page.getByRole("button", { name: "Expand sidebar", exact: true });
     await expect(openMenu).toHaveCSS("-webkit-app-region", "no-drag");
     await openMenu.click();
     await expect(closeMenu).toBeVisible();
 
-    const menuTrigger = page.getByTestId("workspace-header-menu-trigger");
+    const menuTrigger = page.getByTestId("workspace-split-pane-menu");
     await expect(menuTrigger).toHaveCSS("-webkit-app-region", "no-drag");
     await menuTrigger.click();
-    const menu = page.getByTestId("workspace-header-menu");
+    const menu = page.getByTestId("workspace-split-pane-menu-content");
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitem").first()).toHaveCSS("-webkit-app-region", "no-drag");
     await page.keyboard.press("Escape");

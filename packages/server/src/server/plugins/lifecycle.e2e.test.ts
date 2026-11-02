@@ -240,13 +240,13 @@ export default function contribute(server) {
   }
 }, 60_000);
 
-test("agent creation hooks change the provider and environment before the session opens", async () => {
+test("agent creation hooks preserve the admitted provider and add defaults and environment before opening", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "paseo-agent-hooks-"));
   const pluginDirectory = await createProviderPlugin(directory, {
     acknowledgeClose: true,
     hooks: `
   server.addHook("agent.create.before", async ({ request }) => {
-    return { ...request, config: { ...request.config, provider: "${PROVIDER_ID}", model: "shutdown-model" }, env: { ...request.env, HOOK_CREATE: "created" } };
+    return { ...request, config: { ...request.config, provider: "claude", model: "shutdown-model" }, env: { ...request.env, HOOK_CREATE: "created" } };
   });
   server.addHook("agent.open.before", async ({ request }) => {
     console.log(JSON.stringify({ hook: "agent.open.before", request }));
@@ -265,7 +265,7 @@ test("agent creation hooks change the provider and environment before the sessio
     await client.patchDaemonConfig({ pluginsEnabled: true });
     await client.installDirectoryPlugin(pluginDirectory);
     const agent = await client.createAgent({
-      provider: "claude",
+      provider: PROVIDER_ID,
       cwd: directory,
       title: "Hook test",
     });

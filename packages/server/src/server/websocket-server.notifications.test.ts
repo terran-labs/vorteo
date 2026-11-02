@@ -388,6 +388,7 @@ it.each(["ready", "failed", "absent"] as const)(
     const publish = vi.fn();
     const session = {
       getPermissions: () => ({}),
+      getHostSourceId: () => "owner",
       wantsSourceEvent: () => true,
       publish,
     };
@@ -415,6 +416,8 @@ it.each(["ready", "failed", "absent"] as const)(
       type: "status",
       payload: {
         status: "server_info",
+        serverId: "srv-test",
+        sourceId: "owner",
         features: {
           coordinatorBootstrapReview: outcome === "ready",
           coordinatorBootstrapSourceUpdateTooling: outcome === "ready",

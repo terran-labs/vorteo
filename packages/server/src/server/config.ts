@@ -323,8 +323,8 @@ function resolveRelayEndpoints(input: ResolveRelayInput): {
 
 function resolveRelayConfig(input: ResolveRelayInput): ResolvedRelay {
   const environmentEnabled = parseBooleanEnv(input.env.PASEO_RELAY_ENABLED);
-  // COMPAT(relayOptInDefault): daemons whose startup config omitted this field
-  // retain relay-on removal semantics until 2027-01-31. Modern homes use false.
+  // An explicit startup fallback can preserve an existing connection across reloads.
+  // An absent setting alone never opts a home into relay access.
   const enabled =
     input.cliRelayEnabled ??
     environmentEnabled ??
@@ -654,6 +654,10 @@ export function resolveConfigFromPersisted(
     systemProjectEnabled: parseBooleanEnv(env.PASEO_SYSTEM_PROJECT),
     pluginRegistries: persisted.pluginRegistries,
     pluginRegistryUrl: env.PASEO_PLUGIN_REGISTRY,
+    pluginRegistryEnabled:
+      parseBooleanEnv(env.PASEO_PLUGIN_REGISTRY_ENABLED) ??
+      persisted.pluginRegistryEnabled ??
+      false,
     mcpDebug: env.MCP_DEBUG === "1",
     isDev: resolvePaseoNodeEnv(env) === "development",
     agentStoragePath: path.join(paseoHome, "agents"),
@@ -695,8 +699,7 @@ export function resolveReloadableConfig(
     persisted,
     cliRelayEnabled: cli?.relayEnabled,
     cliRelayUseTls: cli?.relayUseTls,
-    enabledFallback:
-      options?.relayEnabledFallback ?? persisted.daemon?.relay?.enabled === undefined,
+    enabledFallback: options?.relayEnabledFallback ?? false,
   });
   return {
     ...resolveStaticLoadConfigSettings(env, cli, persisted),

@@ -77,13 +77,19 @@ describe("ACP provider catalog", () => {
     });
     expect(buildAcpProviderConfigPatch(findProvider("hoplite"), true)).toEqual({
       providers: {
-        hoplite: { enabled: true },
+        hoplite: { enabled: true, removed: false },
       },
     });
     const ids = getAcpProviderCatalog().map((entry) => entry.id);
     expect(ids.indexOf("hermes")).toBeLessThan(ids.indexOf("hoplite"));
     expect(ids.indexOf("hoplite")).toBeLessThan(ids.indexOf("junie"));
     expect(findProvider("hoplite").iconSvg).toContain('fill="currentColor"');
+  });
+
+  it("explicit supported re-add clears a retained removal tombstone", () => {
+    const removed = { enabled: false, removed: true };
+    const patch = buildAcpProviderConfigPatch(findProvider("hoplite"), true);
+    expect({ ...removed, ...patch.providers?.hoplite }).toEqual({ enabled: true, removed: false });
   });
 
   it.each([undefined, false])(

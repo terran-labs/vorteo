@@ -31,7 +31,6 @@ import { ProviderCatalogList } from "@/components/provider-catalog-list";
 import { useProviderIcon } from "@/components/provider-icons";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Switch } from "@/components/ui/switch";
-import { Alert as InlineAlert } from "@/components/ui/alert";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { confirmDialog } from "@/utils/confirm-dialog";
@@ -368,6 +367,7 @@ export interface ProvidersSectionProps {
 }
 
 function ProviderCatalogInstallation({ serverId }: { serverId: string }) {
+  const supportsHopliteProvider = useHostFeature(serverId, "hopliteProvider");
   const shared = useInstallationSettings();
   const client = useHostRuntimeClient(serverId);
   const { patchConfig } = useDaemonConfig(serverId);
@@ -375,7 +375,7 @@ function ProviderCatalogInstallation({ serverId }: { serverId: string }) {
   const reportActionError = useReportActionError();
   const install = useMutation({
     mutationFn: async (entry: AcpProviderCatalogItem) => {
-      const patch = buildAcpProviderConfigPatch(entry);
+      const patch = buildAcpProviderConfigPatch(entry, supportsHopliteProvider);
       const managed = shared.installation?.environments.some(
         (environment) => environment.serverId === serverId,
       );
@@ -404,6 +404,13 @@ function ProviderCatalogInstallation({ serverId }: { serverId: string }) {
     },
   });
   const isRejected = install.isError && !isConnectionError(install.error);
+  const installError = useMemo(
+    () =>
+      isRejected && install.variables
+        ? { providerId: install.variables.id, message: toErrorMessage(install.error) }
+        : null,
+    [isRejected, install.variables, install.error],
+  );
   const handleInstall = useCallback(
     (entry: AcpProviderCatalogItem) => {
       if (!install.isPending) install.mutate(entry);
@@ -412,20 +419,12 @@ function ProviderCatalogInstallation({ serverId }: { serverId: string }) {
   );
   const installingProviderId = install.isPending ? install.variables.id : null;
   return (
-    <>
-      {isRejected ? (
-        <InlineAlert
-          variant="error"
-          description={toErrorMessage(install.error)}
-          testID="provider-install-error"
-        />
-      ) : null}
-      <ProviderCatalogList
-        serverId={serverId}
-        installingProviderId={installingProviderId}
-        onInstall={handleInstall}
-      />
-    </>
+    <ProviderCatalogList
+      serverId={serverId}
+      installingProviderId={installingProviderId}
+      installError={installError}
+      onInstall={handleInstall}
+    />
   );
 }
 
@@ -461,7 +460,6 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
   const { t } = useTranslation();
   const toast = useToast();
   const isConnected = useHostRuntimeIsConnected(serverId);
-  useHostFeature(serverId, "hopliteProvider");
   const supportsProviderRemoval = useHostFeature(serverId, "providerRemoval");
   const supportsCredentialRemoval = useHostFeature(serverId, "providerCredentialRemoval");
   const client = useHostRuntimeClient(serverId);

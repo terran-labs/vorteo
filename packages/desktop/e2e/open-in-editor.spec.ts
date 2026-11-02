@@ -10,6 +10,8 @@ import {
 } from "../../app/e2e/support/helpers/new-workspace";
 import type { WithWorkspace } from "../../app/e2e/support/helpers/with-workspace";
 import { selectWorkspaceInSidebar } from "../../app/e2e/support/helpers/sidebar";
+import { buildHostWorkspaceRoute } from "../../app/src/utils/host-routes";
+import { expectAppRoute } from "../../app/e2e/support/helpers/route-assertions";
 import { installDesktopRuntime } from "./support/runtime";
 import { clickSettingsBackToWorkspace } from "../../app/e2e/support/helpers/settings";
 
@@ -45,24 +47,37 @@ async function readEditorOpenRecords(recordPath: string): Promise<EditorOpenReco
 }
 
 /** Open in editor sits with the Explorer's toolbar actions, shown while the Explorer is open. */
-async function revealOpenInEditor(page: Page): Promise<void> {
-  const primary = page.getByTestId("workspace-open-in-editor-primary");
-  const toggle = page.getByTestId("workspace-explorer-toggle").first();
-  await expect(primary.or(toggle).first()).toBeVisible({ timeout: 30_000 });
+async function revealOpenInEditor(page: Page) {
+  const workspace = page.getByTestId(/^workspace-deck-entry-/).filter({ visible: true });
+  await expect(workspace).toHaveCount(1, { timeout: 30_000 });
+  const toolbar = workspace.getByTestId("workspace-shared-toolbar").filter({ visible: true });
+  await expect(toolbar).toHaveCount(1, { timeout: 30_000 });
+  const primary = toolbar.getByTestId("workspace-open-in-editor-primary");
+  const toggle = toolbar.getByTestId("workspace-explorer-toggle");
+  await expect(toolbar).toBeVisible();
   if (!(await primary.isVisible())) await toggle.click();
   await expect(primary).toBeVisible({ timeout: 30_000 });
+  return toolbar;
 }
 
 async function selectEditorTarget(page: Page, targetId: string): Promise<void> {
-  await revealOpenInEditor(page);
-  await page.getByTestId("workspace-open-in-editor-caret").click();
-  await expect(page.getByTestId("workspace-open-in-editor-menu")).toBeVisible();
-  await page.getByTestId(`workspace-open-in-editor-item-${targetId}`).click();
+  const toolbar = await revealOpenInEditor(page);
+  await toolbar.getByTestId("workspace-open-in-editor-caret").click();
+  const menu = page.getByTestId("workspace-open-in-editor-menu").filter({ visible: true });
+  await expect(menu).toHaveCount(1);
+  await expect(menu).toBeVisible();
+  await menu.getByTestId(`workspace-open-in-editor-item-${targetId}`).click();
 }
 
-async function expectPreferredEditor(page: Page, label: string): Promise<void> {
+async function expectPreferredEditor(
+  page: Page,
+  label: string,
+  workspaceId: string,
+): Promise<void> {
+  await expectAppRoute(page, buildHostWorkspaceRoute(requireE2EEnv("E2E_SERVER_ID"), workspaceId));
+  const toolbar = await revealOpenInEditor(page);
   await expect(
-    page.getByRole("button", { name: `Open workspace in ${label}`, exact: true }),
+    toolbar.getByRole("button", { name: `Open workspace in ${label}`, exact: true }),
   ).toBeVisible();
 }
 
@@ -138,26 +153,26 @@ test.describe("Workspace open in editor", () => {
     try {
       await projectA.navigateTo();
       await selectEditorTarget(page, "vscode");
-      await expectPreferredEditor(page, "VS Code");
+      await expectPreferredEditor(page, "VS Code", projectA.workspaceId);
       await projectB.navigateTo();
-      await expectPreferredEditor(page, "Cursor");
+      await expectPreferredEditor(page, "Cursor", projectB.workspaceId);
       await selectEditorTarget(page, "cursor");
       await projectA.navigateTo();
-      await expectPreferredEditor(page, "VS Code");
+      await expectPreferredEditor(page, "VS Code", projectA.workspaceId);
       await selectWorkspaceInSidebar(page, worktree.workspaceId);
-      await expectPreferredEditor(page, "VS Code");
+      await expectPreferredEditor(page, "VS Code", worktree.workspaceId);
       await selectEditorTarget(page, "cursor");
       await projectA.navigateTo();
-      await expectPreferredEditor(page, "Cursor");
+      await expectPreferredEditor(page, "Cursor", projectA.workspaceId);
       await selectEditorTarget(page, "vscode");
       await page.reload();
-      await expectPreferredEditor(page, "VS Code");
+      await expectPreferredEditor(page, "VS Code", projectA.workspaceId);
       await projectB.navigateTo();
-      await expectPreferredEditor(page, "Cursor");
+      await expectPreferredEditor(page, "Cursor", projectB.workspaceId);
       await page.reload();
-      await expectPreferredEditor(page, "Cursor");
+      await expectPreferredEditor(page, "Cursor", projectB.workspaceId);
       await projectA.navigateTo();
-      await expectPreferredEditor(page, "VS Code");
+      await expectPreferredEditor(page, "VS Code", projectA.workspaceId);
     } finally {
       await fixture.close();
     }

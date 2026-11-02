@@ -981,7 +981,7 @@ describe("PluginService", () => {
     await store.patch({ pluginsEnabled: false });
     const service = bindTestSessionHost(
       new PluginService(pino({ level: "silent" }), store, "0.4.0", {
-        managedSources: new ManagedPluginSources(home, { defaultUrl: url }),
+        managedSources: new ManagedPluginSources(home, { enabled: true, defaultUrl: url }),
       }),
     );
     try {

@@ -1,10 +1,8 @@
 import {
   closeModelPicker,
-  openModelPicker,
+  openScheduleModelPicker,
   seedAgentProfiles,
 } from "../support/helpers/agent-profiles";
-import { expectComposerVisible } from "../support/helpers/composer";
-import { clickNewChat, gotoWorkspace } from "../support/helpers/launcher";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { writeFile } from "node:fs/promises";
 import { expect, test } from "../support/fixtures";
@@ -14,12 +12,16 @@ import { getServerId } from "../support/helpers/server-id";
 import {
   expectProviderInstalledInSettings,
   findAcpCatalogProvider,
+  goBackInSettings,
   installAcpCatalogProvider,
   openAddProviderArea,
+  openCompactSettings,
   openSettingsHost,
   openSettingsHostSection,
   seedSavedSettingsHosts,
 } from "../support/helpers/settings";
+
+import { buildOpenProjectRoute } from "@/utils/host-routes";
 
 const ACP_PROVIDER = {
   id: "minimax-code",
@@ -85,7 +87,10 @@ for (const theme of ["light", "dark"] as const) {
       await installAcpCatalogProvider(page, "Hoplite");
       await expectProviderInstalledInSettings(page, "Hoplite");
       await page.screenshot({ path: testInfo.outputPath(`hoplite-installed-${theme}.png`) });
-      expect((await client.getDaemonConfig()).config.providers?.hoplite).toEqual({ enabled: true });
+      expect((await client.getDaemonConfig()).config.providers?.hoplite).toEqual({
+        enabled: true,
+        removed: false,
+      });
       await writeFile(
         testInfo.outputPath(`hoplite-added-${theme}.json`),
         JSON.stringify(await client.getProvidersSnapshot(), null, 2),
@@ -94,7 +99,14 @@ for (const theme of ["light", "dark"] as const) {
       await expect(
         page.getByRole("button", { name: "Hoplite provider details", exact: true }),
       ).toHaveCount(0);
-      expect((await client.getDaemonConfig()).config.providers?.hoplite).toBeUndefined();
+      await writeFile(
+        testInfo.outputPath(`hoplite-removal-config-${theme}.json`),
+        JSON.stringify(await client.getDaemonConfig(), null, 2),
+      );
+      expect((await client.getDaemonConfig()).config.providers?.hoplite).toEqual({
+        enabled: false,
+        removed: true,
+      });
       expect(
         (await client.getProvidersSnapshot()).entries.some((entry) => entry.provider === "hoplite"),
       ).toBe(false);
@@ -107,6 +119,23 @@ for (const theme of ["light", "dark"] as const) {
       await page.screenshot({ path: testInfo.outputPath(`hoplite-removed-${theme}.png`) });
       await installAcpCatalogProvider(page, "Hoplite");
       await expectProviderInstalledInSettings(page, "Hoplite");
+      expect((await client.getDaemonConfig()).config.providers?.hoplite).toEqual({
+        enabled: true,
+        removed: false,
+      });
+      expect(
+        (await client.getProvidersSnapshot()).entries
+          .filter((entry) => entry.provider === "hoplite")
+          .map((entry) => entry.provider),
+      ).toEqual(["hoplite"]);
+      await writeFile(
+        testInfo.outputPath(`hoplite-reinstalled-${theme}.json`),
+        JSON.stringify(
+          { config: await client.getDaemonConfig(), snapshot: await client.getProvidersSnapshot() },
+          null,
+          2,
+        ),
+      );
     } finally {
       await client.patchDaemonConfig({ removeProviders: ["hoplite"] }).catch(() => undefined);
       await client.close().catch(() => undefined);
@@ -115,7 +144,6 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 async function removeHoplite(page: import("@playwright/test").Page): Promise<void> {
-  await page.getByTestId("provider-actions-hoplite").click();
   page.once("dialog", (dialog) => {
     void dialog.accept();
   });
@@ -136,14 +164,25 @@ test("unsupported host asks for an update without writing Hoplite config", async
     const before = await client.getDaemonConfig();
     await seedSavedSettingsHosts(page, [outdatedDaemon]);
     await page.reload();
-    await openSettings(page);
+    const viewport = page.viewportSize();
+    if (!viewport) throw new Error("Expected a fixed browser viewport");
+    // Match the app compact form-factor boundary; exercise each layout through its real entry.
+    if (viewport.width < 500) {
+      await openCompactSettings(page, buildOpenProjectRoute());
+    } else {
+      await openSettings(page);
+    }
     await openSettingsHost(page, outdatedDaemon.serverId);
+    if (viewport.width < 500) {
+      await goBackInSettings(page);
+      await expect(page.getByTestId("settings-sidebar")).toBeVisible();
+    }
     await openSettingsHostSection(page, outdatedDaemon.serverId, "providers");
     await openAddProviderArea(page);
     await page.getByRole("button", { name: "Add Hoplite", exact: true }).click();
-    const errorToast = page.getByTestId("app-toast-message");
-    await expect(errorToast).toHaveText("Update the host to add Hoplite.");
-    await expect(errorToast).toBeInViewport();
+    const errorAlert = page.getByTestId("provider-install-error");
+    await expect(errorAlert).toHaveText("Update the host to add Hoplite.");
+    await expect(errorAlert).toBeInViewport();
     expect((await client.getDaemonConfig()).config).toEqual(before.config);
     await expect(
       page.getByRole("button", { name: "Hoplite provider details", exact: true }),
@@ -164,10 +203,11 @@ test("model selector excludes Hoplite before opt-in", async ({ page }, testInfo)
   const workspace = await seedWorkspace({ repoPrefix: "hoplite-picker-" });
   try {
     await client.patchDaemonConfig({ removeProviders: ["hoplite"] });
-    await gotoWorkspace(page, workspace.workspaceId);
-    await clickNewChat(page);
-    await expectComposerVisible(page);
-    await openModelPicker(page);
+    expect((await client.getDaemonConfig()).config.providers?.hoplite).toBeUndefined();
+    expect(
+      (await client.getProvidersSnapshot()).entries.filter((entry) => entry.provider === "hoplite"),
+    ).toEqual([]);
+    await openScheduleModelPicker(page, workspace.projectKey);
     await expect(page.getByTestId("model-provider-mock")).toBeVisible();
     await expect(page.getByTestId("model-provider-hoplite")).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("hoplite-model-selector-absent.png") });

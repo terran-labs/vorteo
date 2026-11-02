@@ -7,6 +7,7 @@ import { expect, type Page } from "../fixtures";
 import { gotoAppShell, openSettings } from "./app";
 import { connectNewWorkspaceDaemonClient } from "./new-workspace";
 import { copyPluginExample } from "./plugin-fixture";
+import { ensureExplorerSidebar } from "./workspace-tabs";
 
 async function chooseChinese(page: Page) {
   await openSettings(page);
@@ -141,6 +142,11 @@ export async function verifyPluginToolTranslations(page: Page, info: TestInfo) {
       .getByRole("textbox", { name: "Your draft", exact: true })
       .fill("A workspace panel draft");
     await chooseChinese(page);
+    await expect(page.getByRole("textbox", { name: "你的草稿", exact: true })).toHaveValue(
+      "A workspace panel draft",
+    );
+    // Header tools belong to the Explorer toolbar, which can be collapsed on return.
+    await ensureExplorerSidebar(page);
     await expect(page.getByRole("textbox", { name: "你的草稿", exact: true })).toHaveValue(
       "A workspace panel draft",
     );

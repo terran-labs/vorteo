@@ -451,7 +451,7 @@ describe("OpenCodeBridge", () => {
       await expect(
         tools.get("paseo_echo_context")!.execute({ value: "blocked" }, { sessionID: "disabled" }),
       ).rejects.toMatchObject({
-        message: "Paseo tools are disabled for this session",
+        message: "Vorteo tools are disabled for this session",
         status: 403,
       });
       await dispose();

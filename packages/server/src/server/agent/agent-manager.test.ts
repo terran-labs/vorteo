@@ -14484,6 +14484,19 @@ test("reads the last durable assistant response without loading a stored-only ch
 });
 
 function runtimeCleanup(manager: AgentManager) {
+  const messageQueueControl = {
+    queueRestartContinuation: async () => {},
+    wake() {},
+    pause: async () => {},
+    acceptedHistory: async () => [],
+    reconcileHistory: async () => {},
+    recordProviderMessageId: async () => {},
+    suppressHistoryRestoration: async () => {},
+    read: async (agentId: string) => ({ agentId, revision: 0, paused: false, items: [] }),
+    restartContinuationHeld: async () => false,
+  } satisfies Parameters<AgentManager["setMessageQueueControl"]>[0] &
+    Pick<MessageQueueService, "read" | "restartContinuationHeld">;
+  manager.setMessageQueueControl(messageQueueControl);
   let now = Date.now();
   let protectedCaller = (_agentId: string) => false;
   const cleanup = createIdleRuntimeCleanup({

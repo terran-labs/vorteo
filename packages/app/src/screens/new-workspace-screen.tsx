@@ -1517,7 +1517,6 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput) {
         onPress={project.open}
         disabled={isPending}
         badgePressableStyle={isCompact ? styles.compactProjectTrigger : badgePressableStyle}
-        heading={isCompact ? t("newWorkspace.title") : undefined}
         label={project.triggerLabel}
         tooltipLabel={t("newWorkspace.tooltips.project")}
         projectViewKey={project.selectedProject?.viewKey ?? null}
@@ -1620,6 +1619,7 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput) {
 
   const fields = isCompact ? (
     <View testID="new-workspace-ref-picker-row" style={styles.formStack} pointerEvents="box-none">
+      <FormRow>{projectControl}</FormRow>
       {isolationControl ? <FormRow>{isolationControl}</FormRow> : null}
       {baseControl ? <FormRow>{baseControl}</FormRow> : null}
       <FormRow>{launchControl}</FormRow>

@@ -846,7 +846,11 @@ export class ScheduleService {
     const schedules = await this.store.list();
     for (const schedule of schedules) {
       if (!this.canStartWork()) return;
-      if (schedule.status !== "active" || !schedule.nextRunAt) {
+      // A claimed run owns its occurrence even after the future cursor advances or clears.
+      const retainedCustody =
+        Boolean(schedule.governorPreparation) ||
+        (isProtectedSchedule(schedule) && schedule.runs.some((run) => run.status === "running"));
+      if (schedule.status !== "active" || (!retainedCustody && !schedule.nextRunAt)) {
         continue;
       }
       if (this.runningScheduleIds.has(schedule.id)) {
@@ -856,7 +860,11 @@ export class ScheduleService {
         await this.completeScheduleIfDue(schedule.id, now);
         continue;
       }
-      if (new Date(schedule.nextRunAt).getTime() > now.getTime()) {
+      if (
+        !retainedCustody &&
+        schedule.nextRunAt &&
+        new Date(schedule.nextRunAt).getTime() > now.getTime()
+      ) {
         continue;
       }
       try {
@@ -1088,11 +1096,12 @@ export class ScheduleService {
     let resumeRunId: string | undefined;
     let executionBinding: ScheduleExecutionBinding | undefined;
     if (isProtectedSchedule(schedule)) {
+      const scheduledFor =
+        schedule.governorPreparation?.scheduledFor ??
+        schedule.runs.find((run) => run.status === "running")?.scheduledFor ??
+        (manual ? now.toISOString() : (schedule.nextRunAt ?? now.toISOString()));
       const marked = this.quotaRunner
-        ? await this.prepareScheduleAttempt(
-            schedule,
-            manual ? now.toISOString() : (schedule.nextRunAt ?? now.toISOString()),
-          )
+        ? await this.prepareScheduleAttempt(schedule, scheduledFor)
         : schedule;
       if (!marked) return;
       const retainedPreparation = Boolean(
@@ -1102,8 +1111,7 @@ export class ScheduleService {
       schedule = marked;
       const prepared = await this.quotaRunner?.prepare(
         schedule,
-        schedule.governorPreparation?.scheduledFor ??
-          (manual ? now.toISOString() : (schedule.nextRunAt ?? now.toISOString())),
+        schedule.governorPreparation?.scheduledFor ?? scheduledFor,
       );
       if (prepared?.kind === "ready") custody.prepared = prepared;
       const expired = isScheduleExpired(schedule, this.now());

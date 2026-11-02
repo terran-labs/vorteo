@@ -152,10 +152,10 @@ export async function expectPinnedUsage(page: Page, windows: string[]): Promise<
   await expect(pinned).toHaveText(windows);
 }
 
-/** Without a summary window with data the footer has no Usage item, only the Usage icon. */
+/** The retained fork policy renders neither a Usage summary nor the retired Usage icon. */
 export async function expectNoUsageItem(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="sidebar-usage"]:visible')).toHaveCount(0);
-  await expect(page.locator('[data-testid="sidebar-usage-icon"]:visible')).toBeVisible();
+  await expect(page.locator('[data-testid="sidebar-usage-icon"]:visible')).toHaveCount(0);
 }
 
 /** A window row, which is itself the pin toggle: "Claude", "Session". */
@@ -227,7 +227,6 @@ export async function closeUsage(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/\/usage$/);
 }
 
-/** A tap on the backdrop above the bottom sheet. */
 /** Usage is a route; browser Back replaces the retired modal backdrop. */
 export async function closeUsageFromBackdrop(page: Page): Promise<void> {
   await closeUsage(page);

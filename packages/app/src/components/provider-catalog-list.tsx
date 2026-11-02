@@ -4,6 +4,7 @@ import { Text, View, type LayoutChangeEvent } from "react-native";
 import { SvgXml } from "react-native-svg";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { PackagePlus } from "lucide-react-native";
+import { Alert as InlineAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExternalLink } from "@/components/ui/external-link";
 import { SearchField } from "@/components/ui/search-field";
@@ -24,6 +25,7 @@ import { settingsStyles } from "@/styles/settings";
 interface ProviderCatalogListProps {
   serverId: string;
   installingProviderId: string | null;
+  installError?: { providerId: string; message: string } | null;
   onInstall: (entry: AcpProviderCatalogItem) => Promise<void> | void;
 }
 
@@ -51,61 +53,72 @@ interface CatalogTileProps {
   /** `undefined` until the grid is measured, or in a single column; the tile fills the row. */
   width: number | undefined;
   installing: boolean;
+  error?: string;
   onInstall: (entry: AcpProviderCatalogItem) => void;
 }
 
-function CatalogTile({ entry, width, installing, onInstall }: CatalogTileProps) {
+function CatalogTile({ entry, width, installing, error, onInstall }: CatalogTileProps) {
   const { t } = useTranslation();
   const handleInstall = useCallback(() => {
     onInstall(entry);
   }, [entry, onInstall]);
   const tileStyle = useMemo(
-    () => [settingsStyles.card, styles.tile, width === undefined ? styles.tileFull : { width }],
+    () => [settingsStyles.card, width === undefined ? styles.tileFull : { width }],
     [width],
   );
 
   return (
     <View style={tileStyle} testID={`provider-catalog-tile-${entry.id}`}>
-      <View style={styles.iconFrame}>
-        {entry.iconSvg ? (
-          <ThemedSvgXml
-            xml={entry.iconSvg}
-            width={PROVIDER_REMOTE_ICON_SIZE}
-            height={PROVIDER_REMOTE_ICON_SIZE}
-            uniProps={foregroundColorMapping}
-          />
-        ) : (
-          <ThemedPackagePlus size={PROVIDER_FALLBACK_ICON_SIZE} uniProps={foregroundColorMapping} />
-        )}
-      </View>
-      <View style={styles.details}>
-        <Text style={styles.name} numberOfLines={1}>
-          {entry.title}
-        </Text>
-        <View style={styles.metaRow}>
-          {/* The catalog is the ACP registry, so every entry it offers is an ACP provider. */}
-          <StatusBadge label={t("providerCatalog.types.acp")} size="xs" />
-          <ExternalLink
-            href={entry.installLink}
-            label={t("providerCatalog.actions.installInstructions")}
-            accessibilityLabel={t("providerCatalog.actions.installInstructionsFor", {
-              provider: entry.title,
-            })}
-          />
+      <View style={styles.tile}>
+        <View style={styles.iconFrame}>
+          {entry.iconSvg ? (
+            <ThemedSvgXml
+              xml={entry.iconSvg}
+              width={PROVIDER_REMOTE_ICON_SIZE}
+              height={PROVIDER_REMOTE_ICON_SIZE}
+              uniProps={foregroundColorMapping}
+            />
+          ) : (
+            <ThemedPackagePlus
+              size={PROVIDER_FALLBACK_ICON_SIZE}
+              uniProps={foregroundColorMapping}
+            />
+          )}
         </View>
+        <View style={styles.details}>
+          <Text style={styles.name} numberOfLines={1}>
+            {entry.title}
+          </Text>
+          <View style={styles.metaRow}>
+            {/* The catalog is the ACP registry, so every entry it offers is an ACP provider. */}
+            <StatusBadge label={t("providerCatalog.types.acp")} size="xs" />
+            <ExternalLink
+              href={entry.installLink}
+              label={t("providerCatalog.actions.installInstructions")}
+              accessibilityLabel={t("providerCatalog.actions.installInstructionsFor", {
+                provider: entry.title,
+              })}
+            />
+          </View>
+        </View>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={installing}
+          loading={installing}
+          onPress={handleInstall}
+          accessibilityLabel={t("providerCatalog.actions.addProvider", { provider: entry.title })}
+          style={styles.addButton}
+          testID={`install-provider-${entry.id}`}
+        >
+          {installing ? t("providerCatalog.actions.adding") : t("providerCatalog.actions.add")}
+        </Button>
       </View>
-      <Button
-        size="xs"
-        variant="outline"
-        disabled={installing}
-        loading={installing}
-        onPress={handleInstall}
-        accessibilityLabel={t("providerCatalog.actions.addProvider", { provider: entry.title })}
-        style={styles.addButton}
-        testID={`install-provider-${entry.id}`}
-      >
-        {installing ? t("providerCatalog.actions.adding") : t("providerCatalog.actions.add")}
-      </Button>
+      {error ? (
+        <View style={styles.tileError}>
+          <InlineAlert variant="error" description={error} testID="provider-install-error" />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -113,6 +126,7 @@ function CatalogTile({ entry, width, installing, onInstall }: CatalogTileProps) 
 export function ProviderCatalogList({
   serverId,
   installingProviderId,
+  installError,
   onInstall,
 }: ProviderCatalogListProps) {
   const { t } = useTranslation();
@@ -207,6 +221,7 @@ export function ProviderCatalogList({
               entry={entry}
               width={tileWidth}
               installing={installingProviderId === entry.id}
+              error={installError?.providerId === entry.id ? installError.message : undefined}
               onInstall={onInstall}
             />
           ))}
@@ -234,6 +249,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[3],
     padding: theme.spacing[3],
   },
+  tileError: { paddingHorizontal: SPACING[3], paddingBottom: SPACING[3] },
   tileFull: {
     width: "100%",
   },

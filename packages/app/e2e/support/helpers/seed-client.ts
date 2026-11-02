@@ -33,7 +33,7 @@ interface SeedProjectDescriptor {
  */
 export interface SeedDaemonClient extends Pick<
   DaemonClient,
-  "getProvidersSnapshot" | "setWorkspaceLifecycle" | "readSidebarState"
+  "getProvidersSnapshot" | "setWorkspaceLifecycle" | "readSidebarState" | "fetchAgent"
 > {
   patchDaemonConfig(
     config: import("@getpaseo/protocol/messages").MutableDaemonConfigPatch,
@@ -173,9 +173,6 @@ export interface SeedDaemonClient extends Pick<
   ): Promise<{ status: string; final?: { lastError?: string | null } | null }>;
   archiveAgent(agentId: string): Promise<{ archivedAt: string }>;
   refreshAgent(agentId: string): Promise<unknown>;
-  fetchAgent(options: {
-    agentId: string;
-  }): Promise<{ agent: { id: string; archivedAt?: string | null } } | null>;
   getLastServerInfoMessage(): {
     features?: {
       projectAdd?: boolean;

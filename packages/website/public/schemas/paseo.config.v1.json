@@ -83,7 +83,8 @@
           "properties": {
             "enabled": {
               "type": "boolean"
-            }
+            },
+            "headlessHost": {}
           },
           "additionalProperties": {}
         },
@@ -140,6 +141,100 @@
             "additionalProperties": {}
           }
         },
+        "installationResourceBindings": {
+          "type": "object",
+          "properties": {
+            "terminalProfiles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "icon": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "name", "command"],
+                "additionalProperties": {}
+              }
+            },
+            "metadataProviders": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "thinkingOptionId": {
+                    "type": "string"
+                  }
+                },
+                "required": ["provider"],
+                "additionalProperties": {}
+              }
+            }
+          },
+          "required": ["terminalProfiles", "metadataProviders"],
+          "additionalProperties": false
+        },
+        "installationProjectPolicies": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "excludedEnvironments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["host", "container"]
+                }
+              },
+              "providerIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "profileIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "skillIdentities": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "additionalProperties": {}
+          }
+        },
         "agentProfiles": {
           "type": "array",
           "items": {
@@ -150,6 +245,50 @@
               },
               "name": {
                 "type": "string"
+              },
+              "excludedEnvironments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["host", "container"]
+                }
+              },
+              "nickname": {
+                "type": "string"
+              },
+              "quotaReservePolicy": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "off"
+                      }
+                    },
+                    "required": ["kind"]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "protected"
+                      },
+                      "cruisePct": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "redlinePct": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      }
+                    },
+                    "required": ["kind", "cruisePct", "redlinePct"]
+                  }
+                ]
               },
               "icon": {
                 "type": "string"
@@ -178,11 +317,535 @@
               },
               "notes": {
                 "type": "string"
+              },
+              "instructions": {
+                "type": "string"
+              },
+              "skillPolicy": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "const": "inherit"
+                      },
+                      "include": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "exclude": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": ["mode", "include", "exclude"]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "const": "selected"
+                      },
+                      "skills": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": ["mode", "skills"]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "const": "none"
+                      }
+                    },
+                    "required": ["mode"]
+                  }
+                ]
+              },
+              "isDefault": {
+                "type": "boolean"
+              },
+              "workerProfileId": {
+                "type": "string"
+              },
+              "workerAccount": {
+                "type": "string"
+              },
+              "uncappedWorkers": {
+                "type": "boolean"
+              },
+              "maxWorkers": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8
               }
             },
             "required": ["id", "name", "provider"],
             "additionalProperties": {}
           }
+        },
+        "sharedProviderPreferences": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "number",
+              "const": 1
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "defaultProvider": {
+              "type": "string"
+            },
+            "installation": {
+              "type": "object",
+              "properties": {
+                "installationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "environment": {
+                  "type": "string",
+                  "enum": ["host", "container"]
+                },
+                "serverId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["installationId", "environment", "serverId", "revision"]
+            },
+            "workflowAliases": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "workflowWorkerBindings": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "providers": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "defaults": {
+                    "type": "object",
+                    "properties": {
+                      "nickname": {
+                        "type": "string"
+                      },
+                      "quotaReservePolicy": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "off"
+                              }
+                            },
+                            "required": ["kind"]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "protected"
+                              },
+                              "cruisePct": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 100
+                              },
+                              "redlinePct": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 100
+                              }
+                            },
+                            "required": ["kind", "cruisePct", "redlinePct"]
+                          }
+                        ]
+                      },
+                      "icon": {
+                        "type": "string"
+                      },
+                      "color": {
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "modeId": {
+                        "type": "string"
+                      },
+                      "thinkingOptionId": {
+                        "type": "string"
+                      },
+                      "featureValues": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {}
+                      },
+                      "notes": {
+                        "type": "string"
+                      },
+                      "instructions": {
+                        "type": "string"
+                      },
+                      "skillPolicy": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "mode": {
+                                "type": "string",
+                                "const": "inherit"
+                              },
+                              "include": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "exclude": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": ["mode", "include", "exclude"]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "mode": {
+                                "type": "string",
+                                "const": "selected"
+                              },
+                              "skills": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": ["mode", "skills"]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "mode": {
+                                "type": "string",
+                                "const": "none"
+                              }
+                            },
+                            "required": ["mode"]
+                          }
+                        ]
+                      },
+                      "workerProfileId": {
+                        "type": "string"
+                      },
+                      "workerAccount": {
+                        "type": "string"
+                      },
+                      "uncappedWorkers": {
+                        "type": "boolean"
+                      },
+                      "maxWorkers": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8
+                      }
+                    }
+                  },
+                  "preferredModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "preferredThinkingOptions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "workflows": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "excludedEnvironments": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": ["host", "container"]
+                          }
+                        },
+                        "nickname": {
+                          "type": "string"
+                        },
+                        "quotaReservePolicy": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "off"
+                                }
+                              },
+                              "required": ["kind"]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "protected"
+                                },
+                                "cruisePct": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 100
+                                },
+                                "redlinePct": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 100
+                                }
+                              },
+                              "required": ["kind", "cruisePct", "redlinePct"]
+                            }
+                          ]
+                        },
+                        "icon": {
+                          "type": "string"
+                        },
+                        "color": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "modeId": {
+                          "type": "string"
+                        },
+                        "thinkingOptionId": {
+                          "type": "string"
+                        },
+                        "featureValues": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
+                        "notes": {
+                          "type": "string"
+                        },
+                        "instructions": {
+                          "type": "string"
+                        },
+                        "skillPolicy": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "mode": {
+                                  "type": "string",
+                                  "const": "inherit"
+                                },
+                                "include": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "exclude": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": ["mode", "include", "exclude"]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "mode": {
+                                  "type": "string",
+                                  "const": "selected"
+                                },
+                                "skills": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": ["mode", "skills"]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "mode": {
+                                  "type": "string",
+                                  "const": "none"
+                                }
+                              },
+                              "required": ["mode"]
+                            }
+                          ]
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "workerProfileId": {
+                          "type": "string"
+                        },
+                        "workerAccount": {
+                          "type": "string"
+                        },
+                        "uncappedWorkers": {
+                          "type": "boolean"
+                        },
+                        "maxWorkers": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 8
+                        }
+                      },
+                      "required": ["id", "name", "provider"],
+                      "additionalProperties": {}
+                    }
+                  },
+                  "defaultWorkflowId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "defaults",
+                  "preferredModels",
+                  "preferredThinkingOptions",
+                  "workflows",
+                  "defaultWorkflowId"
+                ]
+              }
+            },
+            "legacyProfiles": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "providerType": {
+                    "type": "string"
+                  },
+                  "workflowId": {
+                    "type": "string"
+                  },
+                  "workerProfileId": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "thinkingOptionId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["provider", "providerType", "workflowId"]
+              }
+            }
+          },
+          "required": ["version", "revision", "providers", "legacyProfiles"]
         },
         "cors": {
           "type": "object",
@@ -294,6 +957,9 @@
         "required": ["authorization"]
       }
     },
+    "pluginRegistryEnabled": {
+      "type": "boolean"
+    },
     "pluginsEnabled": {
       "type": "boolean"
     },
@@ -363,6 +1029,11 @@
             "properties": {
               "extends": {
                 "type": "string"
+              },
+              "installationAccountId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
               },
               "label": {
                 "type": "string"
@@ -512,8 +1183,14 @@
               "enabled": {
                 "type": "boolean"
               },
+              "autoResumeAfterUsageLimit": {
+                "type": "boolean"
+              },
               "order": {
                 "type": "number"
+              },
+              "removed": {
+                "type": "boolean"
               }
             }
           }

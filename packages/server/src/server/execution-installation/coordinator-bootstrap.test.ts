@@ -142,6 +142,19 @@ test("frozen handoff refuses active jobs, preparations, unresolved holds and chi
       [],
     ),
   ).not.toThrow();
+  for (const target of ["host", "container-daemon"]) {
+    const canceledBatch = {
+      ...pending,
+      target,
+      status: "rejected",
+      sourceBatch: { status: "preparing", contributions: [] },
+    };
+    expect(() => assertFrozenCoordinatorIdle([canceledBatch], [])).not.toThrow();
+    expect(() => assertFrozenCoordinatorIdle([canceledBatch], [123])).toThrow("children");
+    expect(() =>
+      assertFrozenCoordinatorIdle([{ ...canceledBatch, finishCurrentTurns: true }], []),
+    ).toThrow("unresolved");
+  }
   expect(() => assertFrozenCoordinatorIdle([{ ...pending, status: "unknown" }], [])).toThrow();
   expect(() => assertFrozenCoordinatorIdle(null, [])).toThrow();
 });

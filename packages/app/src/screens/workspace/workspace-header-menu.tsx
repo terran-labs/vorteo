@@ -1,3 +1,4 @@
+import { usePluginWorkspaceMenu } from "@/plugins";
 import { WorkspaceMenuItems } from "@/components/sidebar/sidebar-workspace-menu";
 import { WorkspaceRenameModal } from "@/components/workspace-rename-modal";
 import { createSidebarWorkspaceEntry } from "@/hooks/sidebar-workspaces-view-model";
@@ -50,6 +51,7 @@ export const WorkspaceOverflowItemsContext = createContext<{
 interface WorkspaceMenuPresentation {
   children?: ReactNode;
   extraItems?: ReactNode;
+  includeCompactPluginButtons?: boolean;
   overflow?: boolean;
   enabled?: boolean;
 }
@@ -100,6 +102,7 @@ function WorkspaceHeaderActionsMenu({
   normalizedWorkspaceId,
   children,
   extraItems,
+  includeCompactPluginButtons = false,
   overflow = false,
   enabled = true,
 }: WorkspaceHeaderWorkspaceActions & WorkspaceMenuPresentation) {
@@ -123,6 +126,7 @@ function WorkspaceHeaderActionsMenu({
       overflow={overflow}
       enabled={enabled}
       extraItems={extraItems}
+      includeCompactPluginButtons={includeCompactPluginButtons}
     >
       {children}
     </WorkspaceHeaderActionsMenuLoaded>
@@ -133,6 +137,7 @@ function WorkspaceHeaderActionsMenuLoaded({
   workspace,
   children,
   extraItems,
+  includeCompactPluginButtons,
   overflow,
   enabled,
 }: WorkspaceMenuPresentation & {
@@ -156,7 +161,12 @@ function WorkspaceHeaderActionsMenuLoaded({
     }),
     [workspace.serverId, workspace.workspaceId, workspace.labels],
   );
-  const pages = useWorkspaceLabelMenuPages(target);
+  const labelPages = useWorkspaceLabelMenuPages(target);
+  const pluginMenu = usePluginWorkspaceMenu(workspace.serverId, workspace.workspaceId);
+  const pages = useMemo(
+    () => (includeCompactPluginButtons ? [...labelPages, ...pluginMenu.pages] : labelPages),
+    [includeCompactPluginButtons, labelPages, pluginMenu.pages],
+  );
   const items = useMemo(
     () => (
       <WorkspaceMenuItems
@@ -226,6 +236,12 @@ function WorkspaceHeaderActionsMenuLoaded({
           pages={pages}
           sheetTitle={t("workspace.header.actions.workspaceActions")}
         >
+          {includeCompactPluginButtons && pluginMenu.rows.length > 0 ? (
+            <>
+              {pluginMenu.rows}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {items}
           {children}
         </DropdownMenuContent>
@@ -340,6 +356,7 @@ export function WorkspaceHeaderMenuMobile({
     <WorkspaceHeaderActionsMenu
       normalizedServerId={normalizedServerId}
       normalizedWorkspaceId={normalizedWorkspaceId}
+      includeCompactPluginButtons
     >
       {children}
       <DropdownMenuSeparator />

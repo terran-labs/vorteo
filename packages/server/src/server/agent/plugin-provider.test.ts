@@ -19,6 +19,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentClient, AgentStreamEvent } from "./agent-sdk-types.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
 import { AgentManager } from "./agent-manager.js";
+import type { MessageQueueService } from "../message-queue/service.js";
 import { buildProviderRegistry } from "./provider-registry.js";
 import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import { PluginAgentClientRegistry } from "./plugin-provider.js";
@@ -2125,6 +2126,20 @@ test("plugin without a runtime safety capability uses baseline collection withou
   const registry = new PluginAgentClientRegistry(logger);
   registry.replace([harness.registration]);
   const manager = new AgentManager({ clients: registry.clients(), registry: storage, logger });
+  const messageQueueControl = {
+    queueRestartContinuation: async () => {},
+    wake() {},
+    pause: async () => {},
+    acceptedHistory: async () => [],
+    reconcileHistory: async () => {},
+    recordProviderMessageId: async () => {},
+    suppressHistoryRestoration: async () => {},
+    read: async (agentId: string) => ({ agentId, revision: 0, paused: false, items: [] }),
+    restartContinuationHeld: async () => false,
+  } satisfies Parameters<AgentManager["setMessageQueueControl"]>[0] &
+    Pick<MessageQueueService, "read" | "restartContinuationHeld">;
+  manager.setMessageQueueControl(messageQueueControl);
+
   const agent = await manager.createAgent(
     { provider: harness.registration.id, cwd: home },
     undefined,

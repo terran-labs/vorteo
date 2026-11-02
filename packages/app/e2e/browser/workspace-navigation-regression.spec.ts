@@ -224,13 +224,19 @@ test.describe("Workspace navigation regression", () => {
       );
     }, target);
 
-    await expectAppRoute(
-      page,
-      buildHostWorkspaceOpenRoute(target.serverId, target.workspaceId, `agent:${target.agentId}`),
-      { timeout: 30_000 },
-    );
-    await expectWorkspaceHostUnreachable(page, "Notification Host");
-    await expect(page.getByText("Add a project", { exact: true })).toHaveCount(0);
+    await expectAppRoute(page, buildHostAgentDetailRoute(target.serverId, target.agentId), {
+      timeout: 30_000,
+    });
+    const waiting = page.getByTestId("agent-route-waiting-for-host");
+    await expect(waiting).toBeVisible();
+    await expect(
+      waiting.getByText(
+        /^(Connecting to Notification Host\.\.\.|Notification Host is offline|Cannot reach Notification Host)$/,
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Add a project", { exact: true }).filter({ visible: true }),
+    ).toHaveCount(0);
   });
 
   test("cold agent targets hydrate their workspace without opening the compact sidebar", async ({

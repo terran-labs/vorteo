@@ -6,6 +6,7 @@ import { createWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import {
   buildWorkspaceTabSnapshot,
   deriveEnvironmentWorkspaceAgentVisibility,
+  createEnvironmentWorkspaceVisibilitySelector,
   createWorkspaceAgentVisibilitySelector,
   deriveWorkspaceAgentVisibility,
   shouldPruneWorkspaceAgentTab,
@@ -879,4 +880,215 @@ it("does not prune saved destination tabs before the owning workspace hydrates",
     },
   });
   expect(visibility.hydratedEnvironmentIds).toEqual(new Set());
+});
+
+it("carries known foreign ownership into environment workspace reconciliation", () => {
+  const local = makeAgent({ id: "local", workspaceId: "current", cwd: "/current" });
+  const foreign = makeAgent({ id: "foreign", workspaceId: "other", cwd: "/other" });
+  const companion = makeAgent({
+    id: "companion-agent",
+    workspaceId: "companion",
+    cwd: "/companion",
+  });
+  const current: WorkspaceDescriptor = {
+    id: "current",
+    createdAt: null,
+    lastUserMessageAt: null,
+    projectId: "project",
+    projectDisplayName: "Repo",
+    projectRootPath: "/repo",
+    workspaceDirectory: "/current",
+    projectKind: "git",
+    workspaceKind: "local_checkout",
+    name: "Current",
+    status: "done",
+    statusEnteredAt: null,
+    diffStat: null,
+    archivingAt: null,
+    scripts: [],
+  };
+  const member: WorkspaceDescriptor = {
+    ...current,
+    id: "companion",
+    workspaceDirectory: "/companion",
+    projectMembership: {
+      key: "project",
+      name: "Project",
+      environmentOwner: { serverId: "host", workspaceId: "current" },
+    },
+  };
+  const visibility = deriveEnvironmentWorkspaceAgentVisibility({
+    serverId: "host",
+    workspaceId: "current",
+    sessions: {
+      host: {
+        agents: new Map([
+          [local.id, local],
+          [companion.id, companion],
+          [foreign.id, foreign],
+        ]),
+        agentDetails: new Map(),
+        workspaces: new Map([
+          [current.id, current],
+          [member.id, member],
+        ]),
+        hasHydratedAgents: true,
+        hasHydratedWorkspaces: true,
+      },
+    },
+  });
+  expect(visibility.activeAgentIds).toEqual(new Set([local.id, companion.id]));
+  expect(visibility.foreignAgentIds).toEqual(new Set([foreign.id]));
+});
+
+it("refreshes environment foreign ownership when agent details arrive", () => {
+  const serverId = "foreign-details-cache";
+  useSessionStore.getState().initializeSession(serverId, null, 1);
+  try {
+    const initial = useSessionStore.getState().sessions[serverId]!;
+    const current: WorkspaceDescriptor = {
+      id: "current",
+      createdAt: null,
+      lastUserMessageAt: null,
+      projectId: "project",
+      projectDisplayName: "Repo",
+      projectRootPath: "/repo",
+      workspaceDirectory: "/current",
+      projectKind: "git",
+      workspaceKind: "local_checkout",
+      name: "Current",
+      status: "done",
+      statusEnteredAt: null,
+      diffStat: null,
+      archivingAt: null,
+      scripts: [],
+    };
+    const session = {
+      ...initial,
+      workspaces: new Map([[current.id, current]]),
+      hasHydratedAgents: true,
+      hasHydratedWorkspaces: true,
+    };
+    const select = createEnvironmentWorkspaceVisibilitySelector({
+      serverId,
+      workspaceId: "current",
+    });
+    const before = select({ sessions: { [serverId]: session } });
+    expect(before.foreignAgentIds).toEqual(new Set());
+    const foreign = makeAgent({ id: "foreign", workspaceId: "other", cwd: "/other" });
+    const next = { ...session, agentDetails: new Map([[foreign.id, foreign]]) };
+    const after = select({ sessions: { [serverId]: next } });
+    expect(after.foreignAgentIds).toEqual(new Set([foreign.id]));
+    expect(select({ sessions: { [serverId]: next } })).toBe(after);
+    const loading = { ...next, hasHydratedWorkspaces: false };
+    expect(select({ sessions: { [serverId]: loading } }).foreignAgentIds).toEqual(new Set());
+    expect(select({ sessions: { [serverId]: next } }).foreignAgentIds).toEqual(
+      new Set([foreign.id]),
+    );
+  } finally {
+    useSessionStore.getState().clearSession(serverId);
+  }
+});
+
+function visibilityWorkspace(
+  id: string,
+  owner?: { serverId: string; workspaceId: string },
+): WorkspaceDescriptor {
+  return {
+    id,
+    createdAt: null,
+    lastUserMessageAt: null,
+    projectId: "project",
+    projectDisplayName: "Repo",
+    projectRootPath: "/repo",
+    workspaceDirectory: `/${id}`,
+    projectKind: "git",
+    workspaceKind: "local_checkout",
+    name: id,
+    status: "done",
+    statusEnteredAt: null,
+    diffStat: null,
+    archivingAt: null,
+    scripts: [],
+    ...(owner
+      ? { projectMembership: { key: "project", name: "Project", environmentOwner: owner } }
+      : {}),
+  };
+}
+
+it.each(["missing-owner", "undiscovered-companion"] as const)(
+  "preserves unknown group membership during %s",
+  (scenario) => {
+    const current = visibilityWorkspace("current");
+    const destination = visibilityWorkspace("destination", {
+      serverId: "host",
+      workspaceId: current.id,
+    });
+    const foreign = makeAgent({
+      id: "unknown-owner",
+      workspaceId: "not-yet-loaded",
+      cwd: "/other",
+    });
+    const ready = {
+      agents: new Map([[foreign.id, foreign]]),
+      agentDetails: new Map<string, Agent>(),
+      workspaces: new Map([
+        [current.id, current],
+        [destination.id, destination],
+      ]),
+      hasHydratedAgents: true,
+      hasHydratedWorkspaces: true,
+    };
+    const sessions: Parameters<typeof deriveEnvironmentWorkspaceAgentVisibility>[0]["sessions"] =
+      scenario === "missing-owner"
+        ? { destination: { ...ready, workspaces: new Map([[destination.id, destination]]) } }
+        : {
+            host: ready,
+            destination: {
+              ...ready,
+              workspaces: new Map<string, WorkspaceDescriptor>(),
+              hasHydratedWorkspaces: false,
+            },
+          };
+    const visibility = deriveEnvironmentWorkspaceAgentVisibility({
+      serverId: scenario === "missing-owner" ? "destination" : "host",
+      workspaceId: scenario === "missing-owner" ? destination.id : current.id,
+      sessions,
+    });
+    expect(visibility.foreignAgentIds).toEqual(new Set());
+  },
+);
+
+it("does not classify archived or detail-only group members as foreign", () => {
+  const current = visibilityWorkspace("current");
+  const member = visibilityWorkspace("member", { serverId: "host", workspaceId: current.id });
+  const archived = makeAgent({
+    id: "archived-member",
+    workspaceId: member.id,
+    cwd: "/member",
+    archivedAt: new Date(1),
+  });
+  const detailed = makeAgent({ id: "detail-member", workspaceId: member.id, cwd: "/member" });
+  const foreign = makeAgent({ id: "foreign", workspaceId: "other", cwd: "/other" });
+  const visibility = deriveEnvironmentWorkspaceAgentVisibility({
+    serverId: "host",
+    workspaceId: current.id,
+    sessions: {
+      host: {
+        agents: new Map([
+          [archived.id, archived],
+          [foreign.id, foreign],
+        ]),
+        agentDetails: new Map([[detailed.id, detailed]]),
+        workspaces: new Map([
+          [current.id, current],
+          [member.id, member],
+        ]),
+        hasHydratedAgents: true,
+        hasHydratedWorkspaces: true,
+      },
+    },
+  });
+  expect(visibility.foreignAgentIds).toEqual(new Set([foreign.id]));
+  expect(visibility.activeAgentIds.has(archived.id)).toBe(false);
 });

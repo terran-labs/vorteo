@@ -8,6 +8,7 @@ import {
 } from "../execution-installation/delegation.js";
 import { TaskOwnerEvidenceStore } from "../authorization/task-owner-evidence.js";
 import { execFileSync } from "node:child_process";
+import { once } from "node:events";
 import type { z } from "zod";
 import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
 import { WebSocket } from "ws";
@@ -180,6 +181,12 @@ async function connectCreationPeer(port: number) {
     .toBe(true);
   return {
     close: () => socket.close(),
+    closeAndWait: async () => {
+      if (socket.readyState === WebSocket.CLOSED) return;
+      const closed = once(socket, "close", { signal: AbortSignal.timeout(5_000) });
+      socket.close();
+      await closed;
+    },
     request: async (
       message: z.input<typeof SessionInboundMessageSchema> & { requestId: string },
     ) => {
@@ -850,13 +857,60 @@ test("delegated exact profiles use native identity, account checks and idempoten
   }
 }, 60000);
 
+interface PlacementDiagnostic {
+  phase: string;
+  cwd: string;
+  state: "started" | "completed" | "failed";
+  elapsedMs: number;
+}
+
 test.each(["create_agent_request", "agent.create.request"] as const)(
   "%s preserves legacy worktree-name and git base-ref placement",
   async (type) => {
     const directory = await mkdtemp(join(tmpdir(), "legacy-agent-placement-"));
     const daemon = await createCreationDaemon();
     const peer = await connectCreationPeer(daemon.port);
+    const failures: unknown[] = [];
+    const diagnostics: PlacementDiagnostic[] = [];
+    const startedAt = Date.now();
+    let omittedRecords = 0;
+    function recordDiagnostic(phase: string, cwd: string, state: PlacementDiagnostic["state"]) {
+      if (diagnostics.length === 64) {
+        omittedRecords++;
+        return;
+      }
+      diagnostics.push({ phase, cwd, state, elapsedMs: Date.now() - startedAt });
+    }
+    const originalStop = daemon.daemon.stop;
+    daemon.daemon.stop = async (options) => {
+      recordDiagnostic("daemon.stop", directory, "started");
+      try {
+        await originalStop({
+          ...options,
+          onStep(step) {
+            recordDiagnostic(`daemon.stop.${step}`, directory, "started");
+            options?.onStep?.(step);
+          },
+        });
+        recordDiagnostic("daemon.stop", directory, "completed");
+      } catch (error) {
+        failures.push(error);
+        recordDiagnostic("daemon.stop", directory, "failed");
+        throw error;
+      }
+    };
+    async function cleanup(phase: string, operation: () => Promise<void>) {
+      recordDiagnostic(phase, directory, "started");
+      try {
+        await operation();
+        recordDiagnostic(phase, directory, "completed");
+      } catch (error) {
+        if (!failures.includes(error)) failures.push(error);
+        recordDiagnostic(phase, directory, "failed");
+      }
+    }
     try {
+      recordDiagnostic("repository.initialize", directory, "started");
       await initializeSetupRepository(directory);
       execFileSync("git", ["checkout", "-b", "release-base"], { cwd: directory });
       await writeFile(join(directory, "base-marker"), "Selected release base");
@@ -877,6 +931,7 @@ test.each(["create_agent_request", "agent.create.request"] as const)(
         { cwd: directory },
       );
       execFileSync("git", ["checkout", "main"], { cwd: directory });
+      recordDiagnostic("repository.initialize", directory, "completed");
       for (const { placement, expectedBase, expectedBranch } of [
         {
           placement: { worktreeName: "legacy-worktree" },
@@ -896,12 +951,14 @@ test.each(["create_agent_request", "agent.create.request"] as const)(
           expectedBranch: "legacy-git",
         },
       ]) {
+        recordDiagnostic(`placement.${expectedBranch}`, directory, "started");
         const response = await peer.request({
           type,
           requestId: randomUUID(),
           config: { provider: "codex", cwd: directory },
           ...placement,
         });
+        recordDiagnostic(`placement.${expectedBranch}`, directory, "completed");
         let agentId: string;
         if (response.type === "agent.create.response") {
           expect(response.payload.error).toBeNull();
@@ -919,6 +976,7 @@ test.each(["create_agent_request", "agent.create.request"] as const)(
         }
         const record = await daemon.daemon.agentStorage.get(agentId);
         if (!record) throw new Error("Missing persisted legacy agent");
+        recordDiagnostic(`placement.${expectedBranch}.git-checks`, record.cwd, "started");
         expect(record.cwd).not.toBe(directory);
         expect(
           execFileSync("git", ["branch", "--show-current"], {
@@ -937,11 +995,27 @@ test.each(["create_agent_request", "agent.create.request"] as const)(
             encoding: "utf8",
           }).trim(),
         );
+        recordDiagnostic(`placement.${expectedBranch}.git-checks`, record.cwd, "completed");
       }
+    } catch (error) {
+      failures.push(error);
+      recordDiagnostic("test.body", directory, "failed");
     } finally {
-      peer.close();
-      await daemon.close();
-      await rm(directory, { recursive: true, force: true });
+      await cleanup("peer.close", () => peer.closeAndWait());
+      await cleanup("daemon.close", () => daemon.close());
+      await cleanup("repository.remove", () => rm(directory, { recursive: true, force: true }));
+      daemon.daemon.stop = originalStop;
+      if (failures.length > 0 || process.env.PASEO_TEST_PLACEMENT_DIAGNOSTICS === "1") {
+        console.info(
+          "LEGACY_PLACEMENT_DIAGNOSTICS",
+          JSON.stringify({ type, diagnostics, omittedRecords }),
+        );
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Legacy placement or fixture cleanup failed", {
+        cause: failures[0],
+      });
     }
   },
 );

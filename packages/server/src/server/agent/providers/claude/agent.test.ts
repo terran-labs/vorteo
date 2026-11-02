@@ -4120,14 +4120,14 @@ describe("ClaudeAgentSession context window usage", () => {
   test("a rejected usage window ends the turn as a usage limit with its reset time", async () => {
     const session = await createSessionForTest();
 
-    session.translateMessageToEvents({
+    await session.translateMessageToEvents({
       type: "rate_limit_event",
       rate_limit_info: { status: "rejected", resetsAt: 1_792_000_000, rateLimitType: "five_hour" },
       uuid: "rate-limit-1",
       session_id: "session-1",
     } as unknown as SDKMessage);
     // Recorded shape of a real stop: a synthetic, zero-token reply flagged as a rate limit.
-    session.translateMessageToEvents({
+    await session.translateMessageToEvents({
       type: "assistant",
       error: "rate_limit",
       message: {
@@ -4141,7 +4141,7 @@ describe("ClaudeAgentSession context window usage", () => {
       uuid: "assistant-limit-1",
       session_id: "session-1",
     } as unknown as SDKMessage);
-    const events = session.translateMessageToEvents(limitResult());
+    const events = await session.translateMessageToEvents(limitResult());
 
     expect(events.some((event) => event.type === "turn_completed")).toBe(false);
     expect(events).toContainEqual(
@@ -4157,7 +4157,7 @@ describe("ClaudeAgentSession context window usage", () => {
   test("an assistant rate-limit error alone stops the turn even when the result reports success", async () => {
     const session = await createSessionForTest();
 
-    session.translateMessageToEvents({
+    await session.translateMessageToEvents({
       type: "assistant",
       error: "rate_limit",
       message: { id: "synthetic-2", role: "assistant", content: [], usage: {} },
@@ -4165,7 +4165,7 @@ describe("ClaudeAgentSession context window usage", () => {
       uuid: "assistant-limit-2",
       session_id: "session-1",
     } as unknown as SDKMessage);
-    const events = session.translateMessageToEvents(
+    const events = await session.translateMessageToEvents(
       limitResult({ is_error: false, usage: { input_tokens: 10, output_tokens: 20 } }),
     );
 
@@ -4178,13 +4178,13 @@ describe("ClaudeAgentSession context window usage", () => {
     const session = await createSessionForTest();
 
     for (const status of ["allowed", "allowed_warning"])
-      session.translateMessageToEvents({
+      await session.translateMessageToEvents({
         type: "rate_limit_event",
         rate_limit_info: { status, resetsAt: 1_792_000_000 },
         uuid: `rate-limit-${status}`,
         session_id: "session-1",
       } as unknown as SDKMessage);
-    const events = session.translateMessageToEvents(
+    const events = await session.translateMessageToEvents(
       limitResult({ is_error: false, result: "Done.", usage: { output_tokens: 12 } }),
     );
 

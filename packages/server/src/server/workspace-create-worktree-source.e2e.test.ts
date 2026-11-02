@@ -903,16 +903,21 @@ const timer = setInterval(() => {
   }
 }, 180000);
 
-test("agent creation rejects legacy worktree intent without provisioning or executing setup", async () => {
+test("agent creation rejects mixed canonical and legacy worktree intent without provisioning or executing setup", async () => {
   const daemon = await createTestPaseoDaemon();
   const { repoDir, tempRoot } = createGitRepoWithBranch();
   const client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
   try {
     await client.connect();
+    const worktreesBefore = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
     await expect(
       client.createAgent({
         provider: "codex",
         cwd: repoDir,
+        worktree: { mode: "branch-off", newBranch: "canonical-setup" },
         git: {
           createWorktree: true,
           createNewBranch: true,
@@ -921,8 +926,15 @@ test("agent creation rejects legacy worktree intent without provisioning or exec
           worktreeSlug: "legacy-setup",
         },
       }),
-    ).rejects.toThrow("createWorkspace");
+    ).rejects.toThrow("create_agent_request worktree cannot be combined with git options");
     expect((await client.fetchWorkspaces()).entries).toEqual([]);
+    expect(daemon.daemon.agentManager.listAgents()).toEqual([]);
+    expect(
+      execFileSync("git", ["worktree", "list", "--porcelain"], {
+        cwd: repoDir,
+        encoding: "utf8",
+      }),
+    ).toBe(worktreesBefore);
   } finally {
     await client.close();
     await daemon.close();

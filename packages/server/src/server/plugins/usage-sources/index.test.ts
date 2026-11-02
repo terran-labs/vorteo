@@ -239,6 +239,38 @@ test("a failed fetch is logged as well as reported", async () => {
   expect(warnings).toEqual([[{ sourceId: "claude", err }, "Usage fetch failed"]]);
 });
 
+test("legacy conversion preserves available status and expired-login guidance", async () => {
+  const now = Date.parse("2026-01-01T01:00:00.000Z");
+  const registry = new UsageSourceRegistry(() => now);
+  registry.register({
+    id: "fixture",
+    label: "Fixture",
+    discover: async () => [
+      { key: "one", input: "one" },
+      { key: "expired", input: "expired" },
+    ],
+    fetch: async (input) =>
+      input === "expired"
+        ? {
+            status: "unavailable",
+            problem: {
+              kind: "expired",
+              expiresAt: "2026-01-01T00:00:00.000Z",
+              refreshedBy: "claude",
+            },
+          }
+        : { status: "available", windows: [] },
+  });
+  const legacy = await registry.listLegacyUsage();
+  expect(legacy.providers).toHaveLength(2);
+  expect(legacy.providers.find((provider) => provider.displayName === "Fixture")?.status).toBe(
+    "available",
+  );
+  expect(legacy.providers.find((provider) => provider.status === "unavailable")?.error).toBe(
+    "Login expired 1h ago. Run claude to refresh it.",
+  );
+});
+
 test("legacy listing distinguishes labeled accounts and preserves unlabeled names", async () => {
   const registry = new UsageSourceRegistry(() => 1000);
   registry.register(

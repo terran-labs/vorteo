@@ -476,7 +476,7 @@ export async function withButtonShowcase(
           );
         }),
       openCompactSheets: () =>
-        test.step("compact icon-only header and composer triggers stay reachable with sheet actions", async () => {
+        test.step("compact workspace menu and composer triggers stay reachable with sheet actions", async () => {
           await page.setViewportSize(COMPACT);
           await expect(page.getByTestId("plugin-button-chevron")).toHaveCount(0);
           await expect(
@@ -498,13 +498,13 @@ export async function withButtonShowcase(
             name: "Workspace actions",
             exact: true,
           });
-          await expect(headerActions).toBeVisible();
-          await expect(
-            headerActions.getByRole("button", { name: "Header checks", exact: true }),
-          ).toHaveText("");
-          await expect(
-            headerActions.getByRole("button", { name: "Header status", exact: true }),
-          ).toHaveText("");
+          // Compact workspace actions live in the menu rather than a separate toolbar.
+          await expect(headerActions).toHaveCount(0);
+          await expect(page.getByTestId("workspace-header-menu-trigger")).toBeInViewport();
+          await openCompactWorkspaceMenu(page);
+          await expect(workspaceMenuRow(page, "Header checks")).toBeVisible();
+          await expect(workspaceMenuRow(page, "Header status")).toBeVisible();
+          await closeCompactWorkspaceMenu(page);
           await expect(
             page.getByRole("button", { name: "Open menu", exact: true }),
           ).toBeInViewport();
@@ -532,8 +532,24 @@ export async function withButtonShowcase(
             "Header status",
             "Open deployment logs",
             "Production locked",
-            "Copy workspace path",
           ]);
+          const copyPath = compactWorkspaceMenu(page).getByTestId("workspace-header-copy-path");
+          await expect(copyPath).toHaveAccessibleName("Copy path");
+          await expect(copyPath).toBeVisible();
+          await expect(copyPath).toBeEnabled();
+          const lastPluginRow = await workspaceMenuRow(page, "Production locked").elementHandle();
+          expect(lastPluginRow).not.toBeNull();
+          expect(
+            await copyPath.evaluate(
+              (node, previous) =>
+                Boolean(
+                  previous &&
+                  previous.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING,
+                ),
+              lastPluginRow,
+            ),
+          ).toBe(true);
+          await lastPluginRow?.dispose();
           await expect(workspaceMenuRow(page, "Production locked")).toBeDisabled();
           // Deploy lost its label to "Use icon-only header" and logs never had one; rows read titles.
           await expect(workspaceMenuRow(page, "Deploy application")).toHaveText(

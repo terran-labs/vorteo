@@ -1,17 +1,14 @@
 import type { UsageReportEntry } from "@getpaseo/protocol/messages";
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { openUsage } from "../support/helpers/usage-login";
 import { getServerId } from "../support/helpers/server-id";
 import { openSettingsHostSection } from "../support/helpers/settings";
 import {
   installUsageReportsFixture,
   type UsageReportsFixture,
 } from "../support/helpers/usage-reports";
-import {
-  openUsageFromIcon,
-  refreshAllUsage,
-  showUsageAs,
-} from "../support/helpers/usage-sidebar-item";
+import { refreshAllUsage, showUsageAs } from "../support/helpers/usage-sidebar-item";
 
 const ICON = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"/></svg>';
 
@@ -100,10 +97,10 @@ test.describe("usage settings", () => {
     await expect(card.getByText("Gamma auth expired", { exact: true })).toBeVisible();
 
     // The shared percentages setting applies to the host section.
-    await expect(page.getByTestId("usage-options-menu")).toBeVisible();
     const hostUsageUrl = page.url();
     await gotoAppShell(page);
-    await openUsageFromIcon(page);
+    await openUsage(page);
+    await expect(page.getByTestId("usage-options-toggle")).toBeVisible();
     await showUsageAs(page, "remaining");
     await page.goto(hostUsageUrl);
     await expect(card.getByText("30% left")).toBeVisible();

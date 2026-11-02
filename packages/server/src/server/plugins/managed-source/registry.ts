@@ -14,14 +14,24 @@ const RegistryInstallDocumentSchema = z.object({
 });
 
 export interface RegistryOptions {
+  /** Opt-in only: otherwise bare owner/repo remains GitHub shorthand. */
+  enabled?: boolean;
   defaultUrl?: string;
   registries?: PluginRegistries;
 }
+export function assertRegistryEnabled(options: RegistryOptions): void {
+  if (options.enabled !== true)
+    throw new Error(
+      "Plugin registry sources are disabled; enable pluginRegistryEnabled or PASEO_PLUGIN_REGISTRY_ENABLED to use their reviewed pins",
+    );
+}
+
 export async function resolveRegistryPlugin(
   identity: PluginRegistryIdentity,
   options: RegistryOptions,
   install: boolean,
 ) {
+  assertRegistryEnabled(options);
   const base = new URL(identity.url);
   if (!["http:", "https:"].includes(base.protocol) || base.username || base.password)
     throw new Error("Registry base must be an HTTP(S) URL without credentials");

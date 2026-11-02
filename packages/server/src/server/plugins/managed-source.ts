@@ -2,7 +2,11 @@ import {
   PluginRegistryIdentitySchema,
   parsePluginRegistryReference,
 } from "@getpaseo/protocol/plugin-registry";
-import { resolveRegistryPlugin, type RegistryOptions } from "./managed-source/registry.js";
+import {
+  assertRegistryEnabled,
+  resolveRegistryPlugin,
+  type RegistryOptions,
+} from "./managed-source/registry.js";
 import type { ResolvedPluginSource } from "@getpaseo/protocol/plugin-installation";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -178,7 +182,10 @@ export class ManagedPluginSources {
     input: InstallInput,
     target?: PluginUpdateTarget,
   ): Promise<ManagedPluginCandidate> {
-    const registry = parsePluginRegistryReference(input.source, this.registryOptions.defaultUrl);
+    const registry =
+      this.registryOptions.enabled === true
+        ? parsePluginRegistryReference(input.source, this.registryOptions.defaultUrl)
+        : null;
     if (registry) {
       if (input.ref)
         throw new Error(
@@ -195,7 +202,9 @@ export class ManagedPluginSources {
       };
     }
     if (input.source.startsWith("registry:")) {
-      throw new Error("Enable plugin registry sources and provide a valid registry reference");
+      throw new Error(
+        "Enable plugin registry sources and provide a valid registry reference; set pluginRegistryEnabled or PASEO_PLUGIN_REGISTRY_ENABLED",
+      );
     }
     const pluginPath = normalizePluginPath(input.pluginPath);
     const versionRoot = await this.createStagingRoot();
@@ -224,7 +233,7 @@ export class ManagedPluginSources {
           integrity: artifact.integrity,
         };
       } else {
-        const remote = normalizeGitSource(input.source);
+        const remote = normalizeGitSource(input.source, this.registryOptions.enabled !== true);
         sourceRoot = path.join(versionRoot, "checkout");
         await clone(remote, sourceRoot);
         const commit = await resolveRequestedRef(sourceRoot, input.ref);
@@ -271,6 +280,7 @@ export class ManagedPluginSources {
   }
 
   async prepareResolvedInstall(resolved: ResolvedPluginSource): Promise<ManagedPluginCandidate> {
+    if (resolved.identity.registry) assertRegistryEnabled(this.registryOptions);
     let input: InstallInput;
     if (resolved.kind === "git") {
       input = {
@@ -538,9 +548,10 @@ function reviewLinks(current: PluginInstallation, target: PluginUpdateTarget): s
   }
   return [];
 }
-/** Only explicit Git prefixes expand GitHub shorthand. */
-function normalizeGitSource(source: string): string {
-  const expandsShorthand = source.startsWith("github:") || source.startsWith("git:");
+/** Bare GitHub shorthand is available only while registry lookup is disabled. */
+function normalizeGitSource(source: string, bareGitHubShorthand: boolean): string {
+  const expandsShorthand =
+    bareGitHubShorthand || source.startsWith("github:") || source.startsWith("git:");
   if (source.startsWith("github:")) {
     const shorthand = source.slice(7);
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(shorthand)) {

@@ -83,11 +83,15 @@ interface CreatePaseoWorktreeWorkflowDependencies extends CreatePaseoWorktreeInB
   assertWorkspaceAutomationAllowed?: (workspaceId: string) => Promise<void>;
 }
 
-export type CreatePaseoWorktreeWorkflowResult = CreatePaseoWorktreeResult;
+export type CreatePaseoWorktreeWorkflowResult = CreatePaseoWorktreeResult & {
+  /** Schedules workspace setup once after the caller has bound its agent. */
+  startSetup?: () => void;
+};
 
 export type CreatePaseoWorktreeWorkflowFn = (
   input: CreatePaseoWorktreeInput,
   options?: {
+    deferSetup?: boolean;
     resolveDefaultBranch?: (repoRoot: string) => Promise<string>;
   },
 ) => Promise<CreatePaseoWorktreeWorkflowResult>;
@@ -344,6 +348,7 @@ export async function createPaseoWorktreeWorkflow(
   dependencies: CreatePaseoWorktreeWorkflowDependencies,
   input: CreatePaseoWorktreeInput,
   options?: {
+    deferSetup?: boolean;
     resolveDefaultBranch?: (repoRoot: string) => Promise<string>;
   },
 ): Promise<CreatePaseoWorktreeWorkflowResult> {
@@ -379,41 +384,48 @@ export async function createPaseoWorktreeWorkflow(
     return createdWorktree;
   }
 
-  setTimeout(() => {
-    if (input.firstAgentContext) {
-      dependencies.autoNameWorkspaceBranchForFirstAgent({
-        workspace,
-        firstAgentContext: input.firstAgentContext,
+  let setupScheduled = false;
+  const startSetup = () => {
+    if (setupScheduled) return;
+    setupScheduled = true;
+    setTimeout(() => {
+      if (input.firstAgentContext) {
+        dependencies.autoNameWorkspaceBranchForFirstAgent({
+          workspace,
+          firstAgentContext: input.firstAgentContext,
+        });
+      }
+      void dependencies.warmWorkspaceGitData(workspace).catch((error) => {
+        dependencies.sessionLogger.warn(
+          { err: error, workspaceId: workspace.workspaceId },
+          "Failed to warm workspace git data after creating worktree",
+        );
       });
-    }
-    void dependencies.warmWorkspaceGitData(workspace).catch((error) => {
-      dependencies.sessionLogger.warn(
-        { err: error, workspaceId: workspace.workspaceId },
-        "Failed to warm workspace git data after creating worktree",
-      );
-    });
-    const runSetup = (signal: AbortSignal) =>
-      runWorktreeSetupInBackground(
-        dependencies,
-        {
-          requestCwd: input.cwd,
-          repoRoot: createdWorktree.repoRoot,
-          workspaceId: workspace.workspaceId,
-          worktree: createdWorktree.worktree,
-          shouldBootstrap: createdWorktree.created,
-          slug,
-          worktreePath: createdWorktree.worktree.worktreePath,
-          workspaceCwd: workspace.cwd,
-        },
-        signal,
-      );
-    if (dependencies.startWorkspaceSetup) {
-      dependencies.startWorkspaceSetup(workspace.workspaceId, runSetup);
-    } else {
-      void runSetup(new AbortController().signal);
-    }
-  }, 0);
+      const runSetup = (signal: AbortSignal) =>
+        runWorktreeSetupInBackground(
+          dependencies,
+          {
+            requestCwd: input.cwd,
+            repoRoot: createdWorktree.repoRoot,
+            workspaceId: workspace.workspaceId,
+            worktree: createdWorktree.worktree,
+            shouldBootstrap: createdWorktree.created,
+            slug,
+            worktreePath: createdWorktree.worktree.worktreePath,
+            workspaceCwd: workspace.cwd,
+          },
+          signal,
+        );
+      if (dependencies.startWorkspaceSetup) {
+        dependencies.startWorkspaceSetup(workspace.workspaceId, runSetup);
+      } else {
+        void runSetup(new AbortController().signal);
+      }
+    }, 0);
+  };
 
+  if (options?.deferSetup) return { ...createdWorktree, startSetup };
+  startSetup();
   return createdWorktree;
 }
 

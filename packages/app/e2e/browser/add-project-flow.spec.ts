@@ -593,10 +593,7 @@ test.describe("Compact Add project context", () => {
     await openAddProjectFlow(page);
     await page.keyboard.press("Escape");
     await expect(addProjectFlow(page)).not.toBeVisible();
-    await expect(page.getByRole("button", { name: "Close menu", exact: true })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
+    await expect(page.getByTestId("sidebar-collapse")).toHaveAttribute("aria-expanded", "true");
     await expect(page.getByTestId("sidebar-search")).toBeVisible();
   });
   test("successful Add project reveals the new workspace page", async ({

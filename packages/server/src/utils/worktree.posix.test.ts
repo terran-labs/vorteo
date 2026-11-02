@@ -745,7 +745,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
 
         expect(readFileSync(join(result.worktreePath, "file.txt"), "utf8")).toBe("from-origin\n");
         expect(
-          JSON.parse(readFileSync(getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
+          JSON.parse(readFileSync(await getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
         ).toMatchObject({ baseRefName: "main", baseRef: "refs/remotes/origin/main" });
       });
 
@@ -767,7 +767,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
 
         expect(readFileSync(join(result.worktreePath, "local.txt"), "utf8")).toBe("unpushed\n");
         expect(
-          JSON.parse(readFileSync(getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
+          JSON.parse(readFileSync(await getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
         ).toMatchObject({ baseRef: "refs/heads/main" });
       });
     });

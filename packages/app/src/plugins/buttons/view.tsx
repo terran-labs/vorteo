@@ -93,6 +93,7 @@ function ButtonIcon({ view, icon }: { view: ButtonView; icon: PluginButtonIcon }
       accessible={false}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
+      aria-hidden
     >
       <Icon {...view.props} size={size} color={color} />
     </View>

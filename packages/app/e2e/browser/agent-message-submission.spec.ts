@@ -122,7 +122,7 @@ const test = baseTest.extend<{
       await expect
         .poll(async () => {
           await scrollTimelineToNewestLoadedEdge(page);
-          return page.getByRole("img", { name: image.alt }).count();
+          return page.getByRole("button", { name: image.alt }).count();
         })
         .toBeGreaterThan(0);
       await expectAssistantImageRendered(page, image);
@@ -1324,22 +1324,22 @@ test.describe("Agent message submission", () => {
     }
   });
 
-  test("queues a draft by holding Send while a tap still steers", async ({ page }, testInfo) => {
+  test("queues a draft with a tap while holding the button steers", async ({ page }, testInfo) => {
     test.setTimeout(120_000);
     const gate = await gateNextAgentMessage(page);
     const agent = await startRunningMockAgent(page, {
-      prefix: `hold-send-queue-${testInfo.workerIndex}-`,
+      prefix: `queue-first-send-${testInfo.workerIndex}-`,
       model: "one-minute-stream",
-      prompt: "Keep this turn active while the user holds Send.",
+      prompt: "Keep this turn active while the user queues and steers.",
     });
     try {
       await expectComposerVisible(page);
       await expectAgentReadyToInterrupt(page);
 
-      const queuedPrompt = "Queue this follow-up by holding Send.";
-      await test.step("holding Send queues the draft", async () => {
+      const queuedPrompt = "Queue this follow-up with a tap.";
+      await test.step("tapping the default action queues the draft", async () => {
         await fillComposerDraft(page, queuedPrompt);
-        await holdSendButton(page, "Send and steer");
+        await page.getByRole("button", { name: "Queue message", exact: true }).click();
         await expectQueuedMessageButton(page);
         await expectComposerDraft(page, "");
         await expectAgentReadyToInterrupt(page);
@@ -1348,10 +1348,10 @@ test.describe("Agent message submission", () => {
         ).toHaveCount(0);
       });
 
-      await test.step("tapping Send still steers", async () => {
-        const steeredPrompt = "Steer this turn with a tap.";
+      await test.step("holding the alternate action immediately steers", async () => {
+        const steeredPrompt = "Steer this turn by holding the button.";
         await fillComposerDraft(page, steeredPrompt);
-        await page.getByRole("button", { name: "Send and steer", exact: true }).click();
+        await holdSendButton(page, "Queue message");
 
         const request = await gate.waitForRequest();
         expect(request.text).toBe(steeredPrompt);

@@ -13,7 +13,7 @@ async function scrollToHomeFooter(page: Page) {
 
 async function expectHomeActionsReachable(page: Page) {
   const providers = page.getByTestId("open-project-setup-providers");
-  const community = page.getByRole("button", { name: "Community", exact: true });
+  const community = page.getByRole("button", { name: "GitHub", exact: true });
   await expect(providers).toBeInViewport({ ratio: 1 });
   await expect(community).toBeInViewport({ ratio: 1 });
   const providerBounds = await providers.boundingBox();
@@ -37,6 +37,6 @@ test("home actions fit on a desktop screen without overlap", async ({ page }) =>
   await expectHomeActionsReachable(page);
   await expect(page.getByTestId("open-project-setup-providers")).toHaveCSS(
     "-webkit-app-region",
-    "none",
+    "no-drag",
   );
 });

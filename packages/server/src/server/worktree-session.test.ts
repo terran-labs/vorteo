@@ -421,61 +421,127 @@ describe("handlePaseoWorktreeListRequest", () => {
 });
 
 describe("create-agent worktree setup boundary", () => {
-  test("blocked worktrees keep their workspace but skip setup and automatic terminals", async () => {
+  const cleanupPaths: string[] = [];
+  afterEach(() => {
+    for (const cleanupPath of cleanupPaths.splice(0))
+      rmSync(cleanupPath, { recursive: true, force: true });
+  });
+  test.each([false, true])("schedules setup once with deferred=%s", async (deferSetup) => {
     const { tempDir, repoDir } = createGitRepo();
     const paseoHome = path.join(tempDir, ".paseo");
-    const setupMarker = path.join(tempDir, "setup-ran");
-    const emitted: SessionOutboundMessage[] = [];
-    writeFileSync(
-      path.join(repoDir, "paseo.json"),
-      JSON.stringify({
-        worktree: {
-          setup: [`node -e "require('fs').writeFileSync('${setupMarker}', 'ran')"`],
-          terminals: [{ command: "unsafe-terminal" }],
-        },
-      }),
-    );
-
+    cleanupPaths.push(tempDir);
+    const created = await createPaseoWorktreeForTest({ paseoHome })({
+      cwd: repoDir,
+      worktreeSlug: "deferred-setup",
+      paseoHome,
+    });
+    const startWorkspaceSetup = vi.fn();
+    vi.useFakeTimers();
     try {
-      await createPaseoWorktreeWorkflow(
+      const result = await createPaseoWorktreeWorkflow(
         {
           paseoHome,
-          createPaseoWorktree: createPaseoWorktreeForTest({ paseoHome }),
+          createPaseoWorktree: async () => created,
           warmWorkspaceGitData: async () => {},
           autoNameWorkspaceBranchForFirstAgent: () => {},
-          assertWorkspaceAutomationAllowed: async () => {
-            throw new WorkspaceAutomationBlockedError({
-              kind: "change_request",
-              forge: "github",
-              number: 42,
-              headRepository: "contributor/paseo",
-            });
-          },
+          startWorkspaceSetup,
           emitWorkspaceUpdateForWorkspaceId: async () => {},
           cacheWorkspaceSetupSnapshot: () => {},
-          emit: (message) => emitted.push(message),
+          emit: () => {},
           sessionLogger: createLogger(),
-          terminalManager: createTerminalManagerStub().manager,
+          terminalManager: null,
           serviceProxy: null,
           scriptRuntimeStore: null,
           getDaemonTcpPort: null,
           getDaemonTcpHost: null,
           onScriptsChanged: null,
         },
-        { cwd: repoDir, worktreeSlug: "blocked-fork", paseoHome },
+        { cwd: repoDir, worktreeSlug: "deferred-setup", paseoHome },
+        { deferSetup },
       );
-
-      expect(existsSync(setupMarker)).toBe(false);
-      expect(emitted).toContainEqual(
-        expect.objectContaining({
-          type: "workspace_setup_progress",
-          payload: expect.objectContaining({ status: "blocked" }),
-        }),
+      expect(startWorkspaceSetup).not.toHaveBeenCalled();
+      if (deferSetup) {
+        await vi.runAllTimersAsync();
+        expect(startWorkspaceSetup).not.toHaveBeenCalled();
+        expect(result.startSetup).toBeTypeOf("function");
+        result.startSetup!();
+        result.startSetup!();
+      } else {
+        expect(result.startSetup).toBeUndefined();
+      }
+      await vi.runAllTimersAsync();
+      expect(startWorkspaceSetup).toHaveBeenCalledExactlyOnceWith(
+        created.workspace.workspaceId,
+        expect.any(Function),
       );
+      result.startSetup?.();
+      await vi.runAllTimersAsync();
+      expect(startWorkspaceSetup).toHaveBeenCalledTimes(1);
     } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+      vi.useRealTimers();
     }
   });
+
+  test.each([false, true])(
+    "blocked worktrees keep their workspace but skip setup and automatic terminals (deferred=%s)",
+    async (deferSetup) => {
+      const { tempDir, repoDir } = createGitRepo();
+      const paseoHome = path.join(tempDir, ".paseo");
+      const setupMarker = path.join(tempDir, "setup-ran");
+      const emitted: SessionOutboundMessage[] = [];
+      writeFileSync(
+        path.join(repoDir, "paseo.json"),
+        JSON.stringify({
+          worktree: {
+            setup: [`node -e "require('fs').writeFileSync('${setupMarker}', 'ran')"`],
+            terminals: [{ command: "unsafe-terminal" }],
+          },
+        }),
+      );
+
+      try {
+        const result = await createPaseoWorktreeWorkflow(
+          {
+            paseoHome,
+            createPaseoWorktree: createPaseoWorktreeForTest({ paseoHome }),
+            warmWorkspaceGitData: async () => {},
+            autoNameWorkspaceBranchForFirstAgent: () => {},
+            assertWorkspaceAutomationAllowed: async () => {
+              throw new WorkspaceAutomationBlockedError({
+                kind: "change_request",
+                forge: "github",
+                number: 42,
+                headRepository: "contributor/paseo",
+              });
+            },
+            emitWorkspaceUpdateForWorkspaceId: async () => {},
+            cacheWorkspaceSetupSnapshot: () => {},
+            emit: (message) => emitted.push(message),
+            sessionLogger: createLogger(),
+            terminalManager: createTerminalManagerStub().manager,
+            serviceProxy: null,
+            scriptRuntimeStore: null,
+            getDaemonTcpPort: null,
+            getDaemonTcpHost: null,
+            onScriptsChanged: null,
+          },
+          { cwd: repoDir, worktreeSlug: "blocked-fork", paseoHome },
+          { deferSetup },
+        );
+        expect(result.startSetup).toBeUndefined();
+
+        expect(existsSync(setupMarker)).toBe(false);
+        expect(emitted).toContainEqual(
+          expect.objectContaining({
+            type: "workspace_setup_progress",
+            payload: expect.objectContaining({ status: "blocked" }),
+          }),
+        );
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 function createAgentStorageStub(): Pick<AgentStorage, "list"> {

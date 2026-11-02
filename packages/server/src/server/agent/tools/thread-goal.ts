@@ -6,7 +6,7 @@ import type { PaseoToolDefinition } from "./types.js";
 
 export function createThreadGoalTools(
   manager: Pick<AgentManager, "readAgentGoal" | "editOwnGoal">,
-  callerAgentId: string,
+  callerAgentId?: string,
 ): PaseoToolDefinition[] {
   return [
     {
@@ -16,10 +16,15 @@ export function createThreadGoalTools(
         "Read this thread's existing goal before editing it. Returns the native objective, status, usage, budget, edit revision and restart or queue hold. Does not create or replace a goal.",
       inputSchema: z.object({}).strict(),
       outputSchema: { state: AgentGoalStateSchema },
-      handler: async () => ({
-        content: [],
-        structuredContent: { state: await manager.readAgentGoal(callerAgentId) },
-      }),
+      handler: async () => {
+        if (!callerAgentId?.trim()) {
+          throw new Error("An agent-scoped caller identity is required");
+        }
+        return {
+          content: [],
+          structuredContent: { state: await manager.readAgentGoal(callerAgentId) },
+        };
+      },
     },
     {
       name: "update_thread_goal",
@@ -28,12 +33,17 @@ export function createThreadGoalTools(
         "Edit this thread's existing objective or status while preserving usage and budget. First read get_thread_goal; copy its threadId, objective, status, createdAt, updatedAt and tokenBudget into expectedGoal, and copy state.editRevision into expectedRevision when present. The edit revision tolerates usage accounting while rejecting goal mutations. Revise objectives only within the user's authorized task. Write objectives and status explanations in plain, concise language for the owner; keep IDs, hashes, raw paths and logs in journal machineContext instead of visible prose. Resume with status active when a blocker is resolved or the user requests continuation; never undo an explicit user pause without permission to resume. Mark complete only when achieved. Cannot edit another thread, raise a budget, bypass a usage limit or restart hold, or revive completed goals. On a conflict, read again and reconcile rather than retrying blindly.",
       inputSchema: ThreadGoalEditSchema,
       outputSchema: { state: AgentGoalStateSchema },
-      handler: async (input) => ({
-        content: [],
-        structuredContent: {
-          state: await manager.editOwnGoal(callerAgentId, ThreadGoalEditSchema.parse(input)),
-        },
-      }),
+      handler: async (input) => {
+        if (!callerAgentId?.trim()) {
+          throw new Error("An agent-scoped caller identity is required");
+        }
+        return {
+          content: [],
+          structuredContent: {
+            state: await manager.editOwnGoal(callerAgentId, ThreadGoalEditSchema.parse(input)),
+          },
+        };
+      },
     },
   ];
 }

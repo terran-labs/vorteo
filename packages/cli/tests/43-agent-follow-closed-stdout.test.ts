@@ -9,16 +9,34 @@
  */
 
 import assert from "node:assert";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { connectToDaemon } from "../src/utils/client.ts";
-import { runPaseoCli, startTestDaemon } from "./helpers/test-daemon.ts";
+import { createTempDirs, runPaseoCli, startTestDaemon } from "./helpers/test-daemon.ts";
 
 console.log("=== Follow Commands With Closed Stdout Tests ===\n");
 
-const daemon = await startTestDaemon();
+const fixtureDirs = await createTempDirs();
+const authCommand = join(fixtureDirs.paseoHome, "connected-claude.cjs");
+await writeFile(
+  authCommand,
+  `const command = process.argv.slice(2).join(" ");
+if (command === "auth status") console.log(JSON.stringify({ loggedIn: true }));
+else if (command === "--version") console.log("2.1.293 (Claude Code)");
+else process.exit(1);`,
+);
+await writeFile(
+  join(fixtureDirs.paseoHome, "config.json"),
+  JSON.stringify({
+    version: 1,
+    agents: { providers: { claude: { command: [process.execPath, authCommand] } } },
+  }),
+);
+const daemon = await startTestDaemon(fixtureDirs);
 const host = `127.0.0.1:${daemon.port}`;
 
 try {
-  // An agent created without a prompt stays idle, so no provider is called.
+  // Admission checks the connected fake; no prompt is sent to the provider.
   const client = await connectToDaemon({ target: { kind: "endpoint", host } });
   const agent = await client.createAgent({
     provider: "claude",

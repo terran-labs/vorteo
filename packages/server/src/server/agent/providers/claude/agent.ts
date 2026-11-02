@@ -3132,26 +3132,44 @@ class ClaudeAgentSession implements AgentSession {
       "provider.claude.session_close.start",
     );
     this.closed = true;
-    await this.ensureHistoryReady();
-    this.rejectAllPendingPermissions(new Error("Claude session closed"));
-    this.cancelCurrentTurn?.();
-    this.subscribers.clear();
-    this.activeForegroundTurnId = null;
-    this.activeForegroundQuery = null;
-    this.activeForegroundInput = null;
-    this.autonomousTurn = null;
-    this.cancelCurrentTurn = null;
-    this.turnState = "idle";
-    this.sidechainTracker.clear();
-    this.settledSubagentToolCalls.clear();
-    this.taskProtocolSource.reset();
-    runtime.input?.end();
-    runtime.query?.close?.();
-    await this.awaitWithTimeout(runtime.query?.interrupt?.(), "close query interrupt");
-    await this.awaitWithTimeout(runtime.query?.return?.(), "close query return");
-    if (this.query === runtime.query) this.query = null;
-    if (this.input === runtime.input) this.input = null;
-    await this.closeChildProcess(runtime.child);
+    // Observe native failure immediately, even when history never settles. History
+    // still gates replay-state cleanup, so close can remain pending after child exit.
+    await Promise.all([
+      this.closeChildProcess(runtime.child),
+      (async () => {
+        await this.ensureHistoryReady();
+        this.rejectAllPendingPermissions(new Error("Claude session closed"));
+        this.cancelCurrentTurn?.();
+        this.subscribers.clear();
+        this.activeForegroundTurnId = null;
+        this.activeForegroundQuery = null;
+        this.activeForegroundInput = null;
+        this.autonomousTurn = null;
+        this.cancelCurrentTurn = null;
+        this.turnState = "idle";
+        this.sidechainTracker.clear();
+        this.settledSubagentToolCalls.clear();
+        this.taskProtocolSource.reset();
+        runtime.input?.end();
+        await this.awaitWithTimeout(
+          Promise.resolve().then(() => runtime.query?.close?.()),
+          "close query close",
+          1_000,
+        );
+        await this.awaitWithTimeout(
+          Promise.resolve().then(() => runtime.query?.interrupt?.()),
+          "close query interrupt",
+          1_000,
+        );
+        await this.awaitWithTimeout(
+          Promise.resolve().then(() => runtime.query?.return?.()),
+          "close query return",
+          1_000,
+        );
+        if (this.query === runtime.query) this.query = null;
+        if (this.input === runtime.input) this.input = null;
+      })(),
+    ]);
     if (this.persistSession === false && this.claudeSessionId) {
       // Claude Code currently ignores --no-session-persistence outside --print mode
       // (see `claude --help`), so the SDK's persistSession=false is silently dropped
@@ -3728,6 +3746,7 @@ class ClaudeAgentSession implements AgentSession {
   private async awaitWithTimeout(
     promise: Promise<unknown> | undefined,
     label: string,
+    timeoutMs = 3_000,
   ): Promise<void> {
     if (!promise) {
       this.logger.trace(
@@ -3754,7 +3773,7 @@ class ClaudeAgentSession implements AgentSession {
       "provider.claude.query_operation.start",
     );
     try {
-      await withTimeout(promise, 3_000, "timeout");
+      await withTimeout(promise, timeoutMs, "timeout");
       this.logger.trace(
         {
           agentId: this.agentId,
@@ -4089,6 +4108,7 @@ class ClaudeAgentSession implements AgentSession {
   private appendUsageLimitStop(
     message: Extract<SDKMessage, { type: "result" }>,
     events: AgentStreamEvent[],
+    usage: AgentUsage | undefined,
   ): boolean {
     const limit = this.activeTurnUsageLimit;
     this.activeTurnUsageLimit = null;
@@ -4100,6 +4120,8 @@ class ClaudeAgentSession implements AgentSession {
       message.subtype === "success" && typeof message.result === "string"
         ? message.result.trim()
         : "";
+    // Final accounting must precede the terminal event, including quota-stopped turns.
+    if (usage) events.push({ type: "usage_updated", provider: "claude", usage });
     events.push(...this.sidechainTracker.finishAll("failed"));
     events.push({
       ...this.buildTurnFailedEvent(resultText || "Claude usage limit reached"),
@@ -5263,8 +5285,8 @@ class ClaudeAgentSession implements AgentSession {
     message: Extract<SDKMessage, { type: "result" }>,
     events: AgentStreamEvent[],
   ): void {
-    if (this.appendUsageLimitStop(message, events)) return;
     const usage = this.convertUsage(message);
+    if (this.appendUsageLimitStop(message, events, usage)) return;
     // Claude Code reports a turn that stopped on an API error (a usage limit, an overloaded or
     // rejected request) as `success` with `is_error`, carrying the error text in `result`.
     if (message.subtype === "success" && message.is_error) {

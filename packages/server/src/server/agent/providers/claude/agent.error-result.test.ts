@@ -9,6 +9,7 @@ const LIMIT = "You've hit your session limit · resets 5:20pm (Asia/Singapore)";
 interface ScriptedTurn {
   // An API error reply as Claude Code writes it: a synthetic assistant message with `error`.
   errorReply?: string;
+  errorCode?: "rate_limit" | "server_error";
   // Assistant text the model wrote before or after it.
   before?: string;
   after?: string;
@@ -53,7 +54,8 @@ function scriptedQuery(turns: ScriptedTurn[]): ClaudeQueryFactory {
           model: "claude-opus-5-5",
         };
         if (turn.before) yield assistant(`before-${index}`, turn.before);
-        if (turn.errorReply) yield assistant(`error-${index}`, turn.errorReply, "rate_limit");
+        if (turn.errorReply)
+          yield assistant(`error-${index}`, turn.errorReply, turn.errorCode ?? "rate_limit");
         if (turn.after) yield assistant(`after-${index}`, turn.after);
         yield {
           type: "result",
@@ -132,6 +134,7 @@ test("a turn Claude Code ends on an API error fails with the error, shown once",
     {
       before: "Checking the deploy doc.",
       errorReply: "API Error: 529 Overloaded",
+      errorCode: "server_error",
       isError: true,
     },
     { after: "Done.", isError: false },
@@ -168,23 +171,45 @@ test("a failed turn retains its final token counts and cost", async () => {
   expect(failed).toContainEqual(
     expect.objectContaining({ type: "usage_updated", usage: expect.objectContaining(usage) }),
   );
-  expect(terminal(failed)).toMatchObject({ type: "turn_failed", error: LIMIT });
+  expect(terminal(failed)).toMatchObject({
+    type: "turn_failed",
+    error: LIMIT,
+    code: "quota_exhausted",
+  });
+  const accounting = failed.filter((event) => event.type === "usage_updated");
+  expect(accounting).toHaveLength(1);
+  expect(failed.indexOf(accounting[0])).toBeLessThan(
+    failed.findIndex((event) => event.type === "turn_failed"),
+  );
   expect(assistantTexts(failed)).toEqual(["Checking the deploy doc."]);
 });
 
-test("an error reply the turn moves past is still shown", async () => {
-  const [recovered, completed] = await runTurns([
+test("an overload reply the turn moves past is still shown", async () => {
+  const [recovered] = await runTurns([
     {
       errorReply: "API Error: 529 Overloaded",
+      errorCode: "server_error",
       after: "Recovered.",
       isError: false,
     },
-    { errorReply: LIMIT, isError: false },
   ]);
 
   expect(terminal(recovered)).toMatchObject({ type: "turn_completed" });
   expect(assistantTexts(recovered)).toEqual(["API Error: 529 Overloaded", "Recovered."]);
+});
 
-  expect(terminal(completed)).toMatchObject({ type: "turn_completed" });
-  expect(assistantTexts(completed)).toEqual([LIMIT]);
+test("a stopped usage limit remains a quota failure even when the result reports success", async () => {
+  const usage = { inputTokens: 120, cachedInputTokens: 80, outputTokens: 30, totalCostUsd: 0.012 };
+  const [limited] = await runTurns([{ errorReply: LIMIT, isError: false, usage }]);
+
+  expect(terminal(limited)).toMatchObject({
+    type: "turn_failed",
+    error: LIMIT,
+    code: "quota_exhausted",
+  });
+  expect(limited.some((event) => event.type === "turn_completed")).toBe(false);
+  expect(assistantTexts(limited)).toEqual([]);
+  expect(limited.filter((event) => event.type === "usage_updated")).toEqual([
+    expect.objectContaining({ usage: expect.objectContaining(usage) }),
+  ]);
 });

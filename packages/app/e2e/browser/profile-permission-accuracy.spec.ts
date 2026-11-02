@@ -6,6 +6,8 @@ import { openAgentRoute } from "../support/helpers/mock-agent";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { expectWorkspaceAgentConfiguration } from "../support/helpers/command-center-agent-controls";
 import { resizeAndSettle } from "../support/helpers/viewport";
+import { getServerId } from "../support/helpers/server-id";
+import { buildHostWorkspaceRoute } from "../../src/utils/host-routes";
 
 test("profile edits warn legacy chats and recreation uses the updated permissions", async ({
   page,
@@ -53,7 +55,6 @@ test("profile edits warn legacy chats and recreation uses the updated permission
         .fill("Continue the existing task with the updated profile permissions.");
       await page.getByTestId("preset-handoff-confirm").click();
       await expect(page.getByTestId("preset-handoff-modal")).toHaveCount(0);
-      await expect(warning).toHaveCount(0);
       await expect
         .poll(
           async () =>
@@ -66,6 +67,31 @@ test("profile edits warn legacy chats and recreation uses the updated permission
         (entry) => entry.agent.id !== agent.id,
       );
       expect(successor).toBeDefined();
+      const successorDetail = await seeded.client.fetchAgent({ agentId: successor!.agent.id });
+      expect(successorDetail).not.toBeNull();
+      expect(successorDetail!.agent.id).toBe(successor!.agent.id);
+      expect(successorDetail!.agent.labels?.["paseo:continued-from"]).toBe(agent.id);
+      expect(successor!.agent.workspaceId).toBe(seeded.workspaceId);
+      await expect
+        .poll(() => new URL(page.url()).pathname)
+        .toBe(buildHostWorkspaceRoute(getServerId(), seeded.workspaceId));
+      const successorTab = page
+        .getByTestId(`workspace-tab-agent_${successor!.agent.id}`)
+        .filter({ visible: true });
+      await expect(successorTab).toHaveCount(1);
+      await expect(successorTab).toHaveAttribute("aria-selected", "true");
+      const activeContent = page.getByTestId("thread-content-region").filter({ visible: true });
+      await expect(activeContent).toHaveCount(1);
+      await expect(activeContent).toContainText(
+        `Continue task ${agent.id} using the selected preset.`,
+      );
+      await expect(activeContent).toContainText(
+        "Continue the existing task with the updated profile permissions.",
+      );
+      await expect(activeContent.getByTestId("profile-permission-warning")).toHaveCount(0);
+      // Old chats remain mounted with their valid mismatch warnings, but are not active.
+      await expect.poll(() => warning.count()).toBeGreaterThan(0);
+      await expect(warning.filter({ visible: true })).toHaveCount(0);
       await expectWorkspaceAgentConfiguration(workspace, {
         id: successor!.agent.id,
         provider: "mock",

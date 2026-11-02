@@ -861,26 +861,37 @@ function SendButtonTooltip({
   );
   const enabledAction = canPressLoadingButton ? onSubmitLoadingPress : onDefaultSendAction;
   if (!shouldShow) return null;
+  const buttonProps = {
+    onPress: isSendButtonDisabled ? undefined : enabledAction,
+    disabled: isSendButtonDisabled,
+    accessibilityState,
+    onLongPress: isSendButtonDisabled || canPressLoadingButton ? undefined : onLongPressSend,
+    accessibilityLabel: submitAccessibilityLabel,
+    accessibilityHint: submitAccessibilityHint,
+    accessibilityRole: "button" as const,
+    testID: submitButtonTestID,
+    style: sendButtonCombinedStyle,
+  };
+  const content = (
+    <SendButtonContent
+      isSubmitLoading={isSubmitLoading}
+      submitIcon={submitIcon}
+      submitLabel={submitLabel}
+      buttonIconSize={buttonIconSize}
+    />
+  );
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-      <TooltipTrigger
-        onPress={isSendButtonDisabled ? undefined : enabledAction}
-        disabled={isSendButtonDisabled && !allowDisabledTooltip}
-        accessibilityState={accessibilityState}
-        onLongPress={canPressLoadingButton ? undefined : onLongPressSend}
-        accessibilityLabel={submitAccessibilityLabel}
-        accessibilityHint={submitAccessibilityHint}
-        accessibilityRole="button"
-        testID={submitButtonTestID}
-        style={sendButtonCombinedStyle}
-      >
-        <SendButtonContent
-          isSubmitLoading={isSubmitLoading}
-          submitIcon={submitIcon}
-          submitLabel={submitLabel}
-          buttonIconSize={buttonIconSize}
-        />
-      </TooltipTrigger>
+      {isWeb && isSendButtonDisabled && allowDisabledTooltip ? (
+        // Keep Send disabled; a non-actionable wrapper exposes its explanation.
+        <TooltipTrigger asChild passive>
+          <View focusable accessibilityLabel={sendTooltipLabel}>
+            <Pressable {...buttonProps}>{content}</Pressable>
+          </View>
+        </TooltipTrigger>
+      ) : (
+        <TooltipTrigger {...buttonProps}>{content}</TooltipTrigger>
+      )}
       <TooltipContent side="top" align="center" offset={8}>
         <SendTooltipBody label={sendTooltipLabel} sendKeys={sendKeys} />
       </TooltipContent>

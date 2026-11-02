@@ -3,7 +3,7 @@ import { useImportSession } from "@/hooks/use-import-session";
 import { useHosts, useHostRuntimeLastError } from "@/runtime/host-runtime";
 import { useCallback, useEffect, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, ScrollView } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useRouter } from "expo-router";
 import { FolderOpen, Plug } from "lucide-react-native";
@@ -65,42 +65,44 @@ export function OpenProjectScreen() {
       <MenuHeader borderless />
       {/* After the owner's first sign-in, connect accounts before the usual home tiles. */}
       <AccountsFirstGate>
-        <View style={styles.content}>
-          <TitlebarDragRegion />
-          <View style={styles.logo}>
-            <VorteoLogo size={96} />
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+          <View style={styles.content}>
+            <TitlebarDragRegion />
+            <View style={styles.logo}>
+              <VorteoLogo size={96} />
+            </View>
+            {hosts.map((host) => (
+              <HostError key={host.serverId} serverId={host.serverId} label={host.label} />
+            ))}
+            <View style={styles.tiles}>
+              <HomeTile
+                icon={FolderOpen}
+                title={t("openProject.tiles.addProject.title")}
+                description={t("openProject.tiles.addProject.description")}
+                onPress={handleOpenPicker}
+                testID="open-project-submit"
+                accent
+              />
+              <HomeTile
+                icon={Inbox}
+                title={t("openProject.tiles.importSession.title")}
+                description={t("openProject.tiles.importSession.description")}
+                onPress={importSession.open}
+                testID="open-project-import-session"
+              />
+              <HomeTile
+                icon={Plug}
+                title={t("openProject.tiles.setupProviders.title")}
+                description={t("openProject.tiles.setupProviders.description")}
+                onPress={handleOpenProviders}
+                testID="open-project-setup-providers"
+              />
+            </View>
           </View>
-          {hosts.map((host) => (
-            <HostError key={host.serverId} serverId={host.serverId} label={host.label} />
-          ))}
-          <View style={styles.tiles}>
-            <HomeTile
-              icon={FolderOpen}
-              title={t("openProject.tiles.addProject.title")}
-              description={t("openProject.tiles.addProject.description")}
-              onPress={handleOpenPicker}
-              testID="open-project-submit"
-              accent
-            />
-            <HomeTile
-              icon={Inbox}
-              title={t("openProject.tiles.importSession.title")}
-              description={t("openProject.tiles.importSession.description")}
-              onPress={importSession.open}
-              testID="open-project-import-session"
-            />
-            <HomeTile
-              icon={Plug}
-              title={t("openProject.tiles.setupProviders.title")}
-              description={t("openProject.tiles.setupProviders.description")}
-              onPress={handleOpenProviders}
-              testID="open-project-setup-providers"
-            />
+          <View style={styles.communityRow}>
+            <CommunityLinks />
           </View>
-        </View>
-        <View style={styles.communityRow}>
-          <CommunityLinks />
-        </View>
+        </ScrollView>
       </AccountsFirstGate>
       {importSession.sheet}
     </View>

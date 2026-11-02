@@ -82,7 +82,7 @@ async function loadConfig(repoRoot: string): Promise<PaseoConfig | null> {
 }
 
 describe("script-status-projection", () => {
-  it("projects broker URLs only for running services and preserves the local route", () => {
+  it("projects broker URLs only for running services and preserves the local route", async () => {
     const origin = vi
       .spyOn(previewOrigins, "readWorkspacePreviewOrigin")
       .mockReturnValue("https://preview.example.ts.net:32780");
@@ -103,7 +103,7 @@ describe("script-status-projection", () => {
       daemonPort: 6767,
     };
     try {
-      const running = buildPayloads(input)[0];
+      const running = (await buildPayloads(input))[0];
       expect(running.publicProxyUrl).toBe("https://preview.example.ts.net:32780");
       expect(running.proxyUrl).toBe(running.publicProxyUrl);
       expect(running.localProxyUrl).toBe("http://web--repo.localhost:6767");
@@ -116,7 +116,7 @@ describe("script-status-projection", () => {
         terminalId: null,
         exitCode: 0,
       });
-      expect(buildPayloads(input)[0].publicProxyUrl).toBeNull();
+      expect((await buildPayloads(input))[0].publicProxyUrl).toBeNull();
     } finally {
       origin.mockRestore();
     }

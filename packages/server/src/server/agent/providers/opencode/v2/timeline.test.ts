@@ -58,10 +58,10 @@ test("a completed edit carries the replaced and replacement text", async () => {
   ]);
 });
 
-test("keeps the saved OpenCode summary and compaction identity through completion and replay", () => {
+test("keeps the saved OpenCode summary and compaction identity through completion and replay", async () => {
   const timeline = new V2Timeline();
   expect(
-    timeline.messages([
+    await collectTimelineSnapshot(timeline, [
       {
         id: "compact-1",
         type: "compaction",
@@ -93,9 +93,9 @@ test("keeps the saved OpenCode summary and compaction identity through completio
       },
     },
   ];
-  expect(timeline.messages([completed])).toMatchObject(expected);
-  expect(timeline.messages([completed])).toEqual([]);
-  expect(new V2Timeline().messages([completed])).toMatchObject(expected);
+  expect(await collectTimelineSnapshot(timeline, [completed])).toMatchObject(expected);
+  expect(await collectTimelineSnapshot(timeline, [completed])).toEqual([]);
+  expect(await collectTimelineSnapshot(new V2Timeline(), [completed])).toMatchObject(expected);
 });
 test("a tool's image output is shown as an image, not as base64 in the tool output", async () => {
   const png =

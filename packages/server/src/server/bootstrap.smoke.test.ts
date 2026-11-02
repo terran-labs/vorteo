@@ -9,7 +9,7 @@ import http from "node:http";
 import path from "node:path";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import pino from "pino";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { WebSocket } from "ws";
 
 import { createPaseoDaemon, parseListenString, type PaseoDaemonConfig } from "./bootstrap.js";
@@ -1185,16 +1185,30 @@ test.each(["reject", "stall"] as const)(
       finishStream = resolve;
     });
     const never = new Promise<never>(() => {});
+    const authDirectory = await mkdtemp(path.join(os.tmpdir(), "shutdown-claude-auth-"));
+    onTestFinished(() => rm(authDirectory, { recursive: true, force: true }));
+    const authCommand = path.join(authDirectory, "connected.cjs");
+    await writeFile(
+      authCommand,
+      `const command = process.argv.slice(2).join(" ");
+if (command === "auth status") console.log(JSON.stringify({ loggedIn: true }));
+else if (command === "stalled-process") {
+  process.on("SIGTERM", () => {});
+  console.log("ready");
+  setInterval(() => {}, 1000);
+} else process.exit(2);`,
+    );
     const claude = new ClaudeAgentClient({
+      runtimeSettings: {
+        command: { mode: "replace", argv: [process.execPath, authCommand] },
+        env: { CLAUDE_CONFIG_DIR: authDirectory },
+      },
       logger: pino({ level: "silent" }),
       resolveBinary: async () => process.execPath,
       queryFactory: ({ options }) => {
         child = options.spawnClaudeCodeProcess!({
           command: process.execPath,
-          args: [
-            "-e",
-            "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)",
-          ],
+          args: ["stalled-process"],
           cwd: process.cwd(),
           env: process.env,
           signal: new AbortController().signal,

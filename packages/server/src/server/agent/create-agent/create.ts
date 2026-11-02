@@ -313,6 +313,8 @@ export async function createAgentCommand(
     createdWorktree: resolved.createdWorktree ?? null,
   });
 
+  if (input.kind === "mcp") resolved.createdWorktree?.startSetup?.();
+
   if (input.kind === "session") await input.onAgentReady?.(snapshot);
 
   let liveSnapshot = snapshot;
@@ -774,10 +776,12 @@ async function createMcpWorktree(
     if (!options.createPaseoWorktree) {
       throw new Error("Paseo worktree service is not configured");
     }
-    return await options.createPaseoWorktree(
-      options.input,
-      options.resolveDefaultBranch ? { resolveDefaultBranch: options.resolveDefaultBranch } : {},
-    );
+    return await options.createPaseoWorktree(options.input, {
+      deferSetup: true,
+      ...(options.resolveDefaultBranch
+        ? { resolveDefaultBranch: options.resolveDefaultBranch }
+        : {}),
+    });
   } catch (error) {
     throw toWorktreeRequestError(error);
   }

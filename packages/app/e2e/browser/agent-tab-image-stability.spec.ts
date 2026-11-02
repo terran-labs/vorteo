@@ -114,7 +114,7 @@ test("opens a timeline image in a zoomable lightbox", async ({
   const lightboxImage = page.getByTestId("attachment-lightbox-image");
   const canvas = page.getByTestId("attachment-lightbox-canvas");
   await expect(lightboxImage).toBeVisible();
-  await page.getByTestId("zoomable-viewport-toolbar").hover();
+  await canvas.hover();
   const transformedContent = canvas.locator(":scope > div").first();
   const initialBox = await transformedContent.boundingBox();
   const canvasBox = await canvas.boundingBox();
@@ -122,6 +122,22 @@ test("opens a timeline image in a zoomable lightbox", async ({
   expect(canvasBox).not.toBeNull();
   expect(initialBox!.width).toBeLessThan(canvasBox!.width);
   const zoomIn = page.getByRole("button", { name: "Zoom in", exact: true });
+  await expect(zoomIn).toHaveCSS("opacity", "1");
+  await zoomIn.hover();
+  await expect(zoomIn).toHaveCSS("opacity", "1");
+  const toolbar = page.getByTestId("zoomable-viewport-toolbar");
+  const emptyOverlayPoint = await toolbar.evaluate((element) => {
+    const overlay = element.parentElement!.getBoundingClientRect();
+    return { x: overlay.left + 1, y: overlay.top + 1 };
+  });
+  await page.mouse.move(emptyOverlayPoint.x, emptyOverlayPoint.y);
+  expect(
+    await canvas.evaluate(
+      (element, point) => element.contains(document.elementFromPoint(point.x, point.y)),
+      emptyOverlayPoint,
+    ),
+  ).toBe(true);
+  await expect(zoomIn).toHaveCSS("opacity", "1");
   await zoomIn.click();
   await zoomIn.click();
   await zoomIn.click();
@@ -134,6 +150,11 @@ test("opens a timeline image in a zoomable lightbox", async ({
   await expect
     .poll(async () => Math.round((await transformedContent.boundingBox())?.width ?? 0))
     .toBe(Math.round(initialBox!.width));
+
+  await zoomIn.focus();
+  await expect(zoomIn).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("attachment-lightbox-close")).toBeFocused();
 
   await workspace.client.sendAgentMessage(
     imageAgent.id,

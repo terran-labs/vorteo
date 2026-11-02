@@ -4,6 +4,7 @@ import path from "node:path";
 import { expect, test, onTestFinished } from "vitest";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
 import { DaemonConfigStore } from "./daemon-config-store.js";
+import { ConfigWriterError } from "./config-writer.js";
 import { loadPersistedConfig } from "./persisted-config.js";
 import {
   createIdleRuntimeCleanup,
@@ -175,12 +176,25 @@ test.each([false, true])(
     const host = liveCleanupHost();
     await host.store.patch({ idleRuntimeCleanup: previous });
     const persistedBefore = loadPersistedConfig(host.home);
+    const refusal = new Error("Another live owner refused");
+    let applyCalls = 0;
     const refuse = host.store.onApply(() => {
-      throw new Error("Another live owner refused");
+      applyCalls++;
+      throw refusal;
     });
-    await expect(host.store.patch({ idleRuntimeCleanup: !previous })).rejects.toThrow(
-      "Another live owner refused",
-    );
+    let failure: unknown;
+    try {
+      host.store.patch({ idleRuntimeCleanup: !previous });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ConfigWriterError);
+    expect(failure).toMatchObject({
+      code: "uncertain",
+      writeAttempted: true,
+      cause: refusal,
+    });
+    expect(applyCalls).toBe(1);
     expect(host.store.get().idleRuntimeCleanup).toBe(previous);
     expect(loadPersistedConfig(host.home)).toEqual(persistedBefore);
     expect((await host.sweep()).collected).toHaveLength(previous ? 1 : 0);

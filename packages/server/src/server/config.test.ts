@@ -11,7 +11,7 @@ import {
   resolveConfigFromPersisted,
   resolveReloadableConfig,
 } from "./config.js";
-import { loadPersistedConfig } from "./persisted-config.js";
+import { loadPersistedConfig, PersistedConfigSchema } from "./persisted-config.js";
 
 const roots: string[] = [];
 
@@ -284,4 +284,40 @@ test("loads private plugin registry settings through the configuration boundary"
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test.each([
+  { persisted: undefined, environment: undefined, enabled: false },
+  { persisted: false, environment: undefined, enabled: false },
+  { persisted: true, environment: undefined, enabled: true },
+  { persisted: true, environment: "false", enabled: false },
+  { persisted: false, environment: "true", enabled: true },
+  { persisted: undefined, environment: "1", enabled: true },
+  { persisted: true, environment: "off", enabled: false },
+])(
+  "resolves plugin registry opt-in: $persisted / $environment => $enabled",
+  async ({ persisted, environment, enabled }) => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paseo-registry-opt-in-"));
+    try {
+      await writeFile(
+        path.join(home, "config.json"),
+        JSON.stringify({ pluginRegistryEnabled: persisted }),
+      );
+      const config = loadConfig(home, { env: { PASEO_PLUGIN_REGISTRY_ENABLED: environment } });
+      expect(config.pluginRegistryEnabled).toBe(enabled);
+      expect(loadPersistedConfig(home).pluginRegistryEnabled).toBe(persisted);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+);
+
+test("plugin registry opt-in accepts only a persisted boolean", () => {
+  expect(PersistedConfigSchema.parse({ pluginRegistryEnabled: true }).pluginRegistryEnabled).toBe(
+    true,
+  );
+  expect(PersistedConfigSchema.parse({ pluginRegistryEnabled: false }).pluginRegistryEnabled).toBe(
+    false,
+  );
+  expect(PersistedConfigSchema.safeParse({ pluginRegistryEnabled: "true" }).success).toBe(false);
 });

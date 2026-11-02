@@ -4,6 +4,16 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+- Ignore stale source-preparation state on terminal update requests when checking coordinator idleness. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
+- Preserve the current workspace route when restoring unrelated saved tabs. Remove foreign pins only after workspace ownership is known, retaining archived and detail-only members of the workspace group.
+- Gate sidebar Usage queries on resolved item visibility while preserving direct Usage access and host settings. Reconcile script-toolbar fixtures with command-level setup output.
+- Respect the target Host capability when adding bundled providers, clear removal markers on explicit re-add, and show installation errors beside the selected catalog entry. Managed bundled enrollment remains unsupported.
+- Start owned Claude child teardown before SDK and history waits, preserving native cleanup failures and the existing daemon shutdown deadline. History can still delay session cleanup after child exit.
+- Preserve explicit relay and plugin-registry opt-in, quota failure accounting, and recovery of captured schedule runs without replaying uncertain execution.
+- Restore thread-tool declarations and legacy worktree setup after agent binding. Fix package-local Factory source exports and reconcile asynchronous and retained-contract fixtures.
+
 ## Unreleased - 2026-11-01
 
 - Preserve complete task checklist fields and stopped-thread queue actions after upstream integration. Restore searchable settings and legacy terminal translations, and translate new pull-request merge states.

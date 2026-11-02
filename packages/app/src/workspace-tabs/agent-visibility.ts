@@ -1,4 +1,4 @@
-import { workspaceEnvironmentMembers } from "@/task-environments/workspaces";
+import { workspaceEnvironmentMembers, workspaceOwner } from "@/task-environments/workspaces";
 import type { SessionState } from "@/stores/session-store";
 import type { WorkspaceTabTarget } from "./model";
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
@@ -169,7 +169,7 @@ export function shouldPruneWorkspaceAgentTab(input: {
   return !input.activeAgentIds.has(input.agentId);
 }
 
-export function deriveEnvironmentWorkspaceAgentVisibility(input: {
+interface EnvironmentVisibilityInput {
   sessions: Record<
     string,
     Pick<
@@ -179,22 +179,37 @@ export function deriveEnvironmentWorkspaceAgentVisibility(input: {
   >;
   serverId: string;
   workspaceId: string;
-}): WorkspaceAgentVisibility {
+}
+
+export function deriveEnvironmentWorkspaceAgentVisibility(
+  input: EnvironmentVisibilityInput,
+): WorkspaceAgentVisibility {
   const members = workspaceEnvironmentMembers(input.sessions, input);
+  const foreignAgentIds = new Set<string>();
   const combined: WorkspaceAgentVisibility = {
     activeAgentIds: new Set(),
     autoOpenAgentIds: new Set(),
     agentTargets: {},
+    foreignAgentIds,
   };
   const targets: Record<string, WorkspaceTabTarget> = {};
+  const groupOwnedAgentIds = new Set<string>();
   for (const member of members) {
     const session = input.sessions[member.serverId];
+    for (const agent of [
+      ...(session?.agents.values() ?? []),
+      ...(session?.agentDetails.values() ?? []),
+    ]) {
+      if (normalizeWorkspaceOpaqueId(agent.workspaceId) === member.workspaceId)
+        groupOwnedAgentIds.add(agent.id);
+    }
     const visibility = deriveWorkspaceAgentVisibility({
       sessionAgents: session?.agents,
       agentDetails: session?.agentDetails,
       workspaceId: member.workspaceId,
       workspaces: session?.workspaces,
     });
+    for (const agentId of visibility.foreignAgentIds ?? []) foreignAgentIds.add(agentId);
     for (const agentId of visibility.activeAgentIds) combined.activeAgentIds.add(agentId);
     for (const agentId of visibility.autoOpenAgentIds) {
       combined.autoOpenAgentIds.add(agentId);
@@ -204,19 +219,48 @@ export function deriveEnvironmentWorkspaceAgentVisibility(input: {
         : { kind: "agent", agentId };
     }
   }
-  // A destination may hydrate first. Preserve its saved tabs until the owner can
-  // establish the complete workspace group.
-  const owner = input.sessions[input.serverId];
-  const ownerReady = owner?.hasHydratedWorkspaces && owner.workspaces.has(input.workspaceId);
-  combined.hydratedEnvironmentIds = new Set(
+  // A member can own an agent considered foreign by another member in the same group.
+  for (const agentId of [...combined.activeAgentIds, ...groupOwnedAgentIds])
+    foreignAgentIds.delete(agentId);
+  const { membershipReady, hydratedEnvironmentIds } = workspaceGroupReadiness(input, members);
+  // Unknown members may still own a saved tab. Pin removal precedes environment pruning.
+  if (!membershipReady) foreignAgentIds.clear();
+  combined.hydratedEnvironmentIds = hydratedEnvironmentIds;
+  combined.agentTargets = targets;
+  return combined;
+}
+
+// A destination may hydrate first. Its declared owner and known directories must
+// establish group membership before saved foreign pins can be removed.
+function workspaceGroupReadiness(
+  input: EnvironmentVisibilityInput,
+  members: ReturnType<typeof workspaceEnvironmentMembers>,
+) {
+  const ownerReference = workspaceOwner(
+    input,
+    input.sessions[input.serverId]?.workspaces.get(input.workspaceId),
+  );
+  const owner = input.sessions[ownerReference.serverId];
+  const ownerWorkspace = owner?.workspaces.get(ownerReference.workspaceId);
+  const ownerReady =
+    owner?.hasHydratedWorkspaces &&
+    ownerWorkspace &&
+    !ownerWorkspace.projectMembership?.environmentOwner;
+  const membershipReady =
+    ownerReady &&
+    Object.values(input.sessions).every((session) => session.hasHydratedWorkspaces) &&
+    members.every((member) => {
+      const session = input.sessions[member.serverId];
+      return session?.hasHydratedAgents && session.hasHydratedWorkspaces;
+    });
+  const hydratedEnvironmentIds = new Set(
     Object.entries(input.sessions)
       .filter(
         ([, session]) => ownerReady && session.hasHydratedAgents && session.hasHydratedWorkspaces,
       )
       .map(([serverId]) => serverId),
   );
-  combined.agentTargets = targets;
-  return combined;
+  return { membershipReady, hydratedEnvironmentIds };
 }
 
 /** Timeline updates retain these maps; avoid rescanning workspaces on every streamed token. */
@@ -237,6 +281,7 @@ export function createEnvironmentWorkspaceVisibilitySelector(reference: {
           session.serverId === old.serverId &&
           session.workspaces === old.workspaces &&
           session.agents === old.agents &&
+          session.agentDetails === old.agentDetails &&
           session.hasHydratedAgents === old.hasHydratedAgents &&
           session.hasHydratedWorkspaces === old.hasHydratedWorkspaces
         );

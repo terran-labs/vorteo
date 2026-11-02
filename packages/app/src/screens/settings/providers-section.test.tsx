@@ -9,8 +9,32 @@ import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
 import { ToastApiProvider } from "@/contexts/toast-api-context";
 
-const { snapshotState, configState, patchConfigMock, openProviderSettingsMock } = vi.hoisted(
-  () => ({
+const {
+  snapshotState,
+  configState,
+  patchConfigMock,
+  openProviderSettingsMock,
+  catalogState,
+  sharedSave,
+  localPatch,
+  refreshMock,
+} = vi.hoisted(() => {
+  const initialCatalogState: {
+    capability: boolean | undefined;
+    managed: boolean;
+    connected: boolean;
+    settings: ReturnType<typeof useInstallationSettings>["data"];
+  } = {
+    capability: undefined,
+    managed: false,
+    connected: true,
+    settings: undefined,
+  };
+  return {
+    catalogState: initialCatalogState,
+    sharedSave: vi.fn(async (): Promise<void> => undefined),
+    localPatch: vi.fn(async () => undefined),
+    refreshMock: vi.fn(async () => undefined),
     snapshotState: {
       entries: undefined as ProviderSnapshotEntry[] | undefined,
       isLoading: false,
@@ -21,8 +45,8 @@ const { snapshotState, configState, patchConfigMock, openProviderSettingsMock } 
     },
     patchConfigMock: vi.fn(async () => undefined),
     openProviderSettingsMock: vi.fn(),
-  }),
-);
+  };
+});
 
 vi.mock("react-native", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-native")>()),
@@ -224,7 +248,38 @@ vi.mock("@/stores/provider-settings-store", () => ({
 }));
 
 vi.mock("@/components/provider-catalog-list", () => ({
-  ProviderCatalogList: () => null,
+  ProviderCatalogList: ({
+    onInstall,
+    installError,
+  }: React.ComponentProps<
+    typeof import("@/components/provider-catalog-list").ProviderCatalogList
+  >) =>
+    React.createElement(
+      "div",
+      null,
+      ...ACP_PROVIDER_CATALOG.map((entry) =>
+        React.createElement(
+          "div",
+          { key: entry.id },
+          React.createElement(
+            "button",
+            {
+              type: "button",
+              "data-testid": `install-${entry.id}`,
+              onClick: () => onInstall(entry),
+            },
+            entry.title,
+          ),
+          installError?.providerId === entry.id
+            ? React.createElement(
+                "div",
+                { "data-testid": `catalog-error-${entry.id}` },
+                installError.message,
+              )
+            : null,
+        ),
+      ),
+    ),
 }));
 
 vi.mock("@/hooks/use-providers-snapshot", () => ({
@@ -235,7 +290,7 @@ vi.mock("@/hooks/use-providers-snapshot", () => ({
     isRefreshing: snapshotState.isRefreshing,
     error: null,
     supportsSnapshot: true,
-    refresh: vi.fn(async () => {}),
+    refresh: refreshMock,
     refetchIfStale: vi.fn(),
   }),
 }));
@@ -250,18 +305,30 @@ vi.mock("@/hooks/use-daemon-config", () => ({
 
 vi.mock("@/runtime/host-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/runtime/host-runtime")>()),
-  useHostRuntimeClient: () => null,
+  useHostRuntimeClient: () => (catalogState.connected ? { patchDaemonConfig: localPatch } : null),
   useHostRuntimeIsConnected: () => true,
 }));
 
 vi.mock("@/runtime/host-features", () => ({
-  useHostFeature: () => false,
+  useHostFeature: (_serverId: string, feature: string) =>
+    feature === "hopliteProvider" ? catalogState.capability : false,
+}));
+
+vi.mock("@/execution-installation/settings", () => ({
+  useInstallationSettings: () => ({
+    installation: catalogState.managed ? { environments: [{ serverId: "server-1" }] } : null,
+    data: catalogState.settings,
+    save: sharedSave,
+  }),
 }));
 
 vi.mock("@/utils/confirm-dialog", () => ({
   confirmDialog: vi.fn(async () => true),
 }));
 
+import { ACP_PROVIDER_CATALOG } from "@/data/acp-provider-catalog";
+import { InstallationSettingsSchema } from "@getpaseo/protocol/installation-settings";
+import type { useInstallationSettings } from "@/execution-installation/settings";
 import { ProvidersSection } from "./providers-section";
 
 function unexpectedToast(): never {
@@ -334,6 +401,13 @@ describe("ProvidersSection", () => {
     document.body.appendChild(container);
     root = createRoot(container);
 
+    catalogState.capability = undefined;
+    catalogState.managed = false;
+    catalogState.connected = true;
+    catalogState.settings = undefined;
+    sharedSave.mockReset();
+    localPatch.mockReset();
+    refreshMock.mockReset();
     snapshotState.entries = undefined;
     snapshotState.isLoading = false;
     snapshotState.isRefreshing = false;
@@ -375,6 +449,174 @@ describe("ProvidersSection", () => {
     if (!row) throw new Error(`Expected row with aria-label "${accessibilityLabel}"`);
     return row;
   }
+
+  async function installCatalog(id: string): Promise<void> {
+    snapshotState.entries = [];
+    configState.config = makeConfig();
+    render();
+    const button = container?.querySelector<HTMLButtonElement>(`[data-testid="install-${id}"]`);
+    if (!button) throw new Error("Missing catalog button");
+    await act(async () => {
+      button.click();
+    });
+  }
+
+  it("installs bundled Hoplite when the target advertises support", async () => {
+    catalogState.capability = true;
+    await installCatalog("hoplite");
+    await vi.waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledExactlyOnceWith({
+        providers: { hoplite: { enabled: true, removed: false } },
+      }),
+    );
+    expect(sharedSave).not.toHaveBeenCalled();
+    expect(localPatch).not.toHaveBeenCalled();
+    expect(refreshMock).toHaveBeenCalledExactlyOnceWith(["hoplite"]);
+  });
+
+  it.each([false, undefined])(
+    "refuses bundled Hoplite without writes when capability is %s",
+    async (capability) => {
+      catalogState.capability = capability;
+      await installCatalog("hoplite");
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(container?.textContent).toContain("Update the host to add Hoplite.");
+      expect(patchConfigMock).not.toHaveBeenCalled();
+      expect(sharedSave).not.toHaveBeenCalled();
+      expect(localPatch).not.toHaveBeenCalled();
+      expect(refreshMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("associates a refusal with its entry and clears it on a new attempt and retry", async () => {
+    catalogState.capability = false;
+    await installCatalog("hoplite");
+    await vi.waitFor(() =>
+      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')?.textContent).toBe(
+        "Update the host to add Hoplite.",
+      ),
+    );
+    expect(container?.querySelector('[data-testid="catalog-error-minimax-code"]')).toBeNull();
+    await installCatalog("minimax-code");
+    await vi.waitFor(() =>
+      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')).toBeNull(),
+    );
+    await installCatalog("hoplite");
+    await vi.waitFor(() =>
+      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')?.textContent).toBe(
+        "Update the host to add Hoplite.",
+      ),
+    );
+    catalogState.capability = true;
+    await installCatalog("hoplite");
+    await vi.waitFor(() =>
+      expect(container?.querySelector('[data-testid="catalog-error-hoplite"]')).toBeNull(),
+    );
+    expect(patchConfigMock).toHaveBeenLastCalledWith({
+      providers: { hoplite: { enabled: true, removed: false } },
+    });
+  });
+
+  function managedSettings() {
+    catalogState.managed = true;
+    const settings = InstallationSettingsSchema.parse({
+      mcp: { injectIntoAgents: false },
+      appendSystemPrompt: "",
+      autoArchiveAfterMerge: false,
+      enableTerminalAgentHooks: false,
+      pluginsEnabled: false,
+      terminalProfiles: [],
+      metadataGeneration: { providers: [] },
+      resourceExclusions: {},
+      providerDefinitions: [],
+    });
+    catalogState.settings = { version: 1, revision: 7, sources: {}, settings };
+    return settings;
+  }
+
+  it("saves managed ACP enrollment at the observed revision before patching the Host", async () => {
+    managedSettings();
+    let finishSave: (() => void) | undefined;
+    sharedSave.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    await installCatalog("minimax-code");
+    expect(sharedSave).toHaveBeenCalledExactlyOnceWith({
+      expectedRevision: 7,
+      settings: {
+        providerDefinitions: [
+          {
+            id: "catalog/acp/minimax-code",
+            providerType: "minimax-code",
+            bindings: { "server-1": "minimax-code" },
+            policy: {
+              label: "MiniMax Code",
+              description: "MiniMax's coding agent for the terminal",
+            },
+          },
+        ],
+      },
+    });
+    expect(localPatch).not.toHaveBeenCalled();
+    expect(refreshMock).not.toHaveBeenCalled();
+    if (!finishSave) throw new Error("Shared save did not start");
+    const resolveSave = finishSave;
+    await act(async () => {
+      resolveSave();
+    });
+    expect(localPatch).toHaveBeenCalledExactlyOnceWith({
+      providers: {
+        "minimax-code": {
+          extends: "acp",
+          label: "MiniMax Code",
+          description: "MiniMax's coding agent for the terminal",
+          command: ["npx", "-y", "-p", "@minimax-ai/code@0.6.13", "mcode", "acp"],
+          env: {},
+        },
+      },
+    });
+    expect(patchConfigMock).not.toHaveBeenCalled();
+    expect(refreshMock).toHaveBeenCalledExactlyOnceWith(["minimax-code"]);
+  });
+
+  it.each(["missing settings", "disconnected", "conflicts", "save rejected", "bundled"])(
+    "refuses managed enrollment without local writes: %s",
+    async (reason) => {
+      const settings = managedSettings();
+      catalogState.capability = true;
+      if (reason === "missing settings") catalogState.settings = undefined;
+      if (reason === "disconnected") catalogState.connected = false;
+      if (reason === "conflicts")
+        catalogState.settings = {
+          version: 1,
+          revision: 7,
+          sources: {},
+          settings: null,
+          conflicts: { candidates: { "server-1": settings }, fields: ["providerDefinitions"] },
+        };
+      if (reason === "save rejected")
+        sharedSave.mockRejectedValue(new Error("Shared revision refused"));
+      await installCatalog(reason === "bundled" ? "hoplite" : "minimax-code");
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      let expected =
+        "Connect this environment and resolve shared settings migration before installing a runtime.";
+      if (reason === "bundled")
+        expected = "Catalog enrollment requires an ACP runtime without an account identity.";
+      if (reason === "save rejected") expected = "Shared revision refused";
+      expect(container?.textContent).toContain(expected);
+      expect(localPatch).not.toHaveBeenCalled();
+      expect(patchConfigMock).not.toHaveBeenCalled();
+      expect(refreshMock).not.toHaveBeenCalled();
+      expect(sharedSave).toHaveBeenCalledTimes(reason === "save rejected" ? 1 : 0);
+    },
+  );
 
   it("renders the disabled provider with its server-provided label in snapshot order", () => {
     snapshotState.entries = [claudeEntry, disabledCodexEntry];

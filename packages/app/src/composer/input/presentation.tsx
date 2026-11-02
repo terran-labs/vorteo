@@ -102,6 +102,7 @@ export function ComposerInputPresentation({
       <ComposerFullscreenBody fullscreen={fullscreen}>
         <View
           ref={inputWrapperRef}
+          testID="message-input-surface"
           style={fullscreen ? styles.fullscreenInputWrapper : inputWrapperStyle}
           pointerEvents={inputPointerEvents}
         >

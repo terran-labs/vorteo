@@ -790,7 +790,10 @@ function SidebarToolbar({
 
 function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const { items } = useSidebarNavItems("footer");
-  const usageSummary = useUsageSummary();
+  const usageVisible = items.some(
+    (item) => item.kind === "builtin" && item.id === "usage" && item.visible,
+  );
+  const usageSummary = useUsageSummary(usageVisible);
   const rowsRef = useRef<View | null>(null);
   const visibleItems = items.filter(
     (item) => item.visible && (item.kind === "plugin" || usageSummary.length > 0),

@@ -348,10 +348,14 @@ test("shows a disconnected search failure and recovers with Retry", async ({ pag
         exact: true,
       }),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+    const searchRetry = page
+      .locator('[data-chat-find-widget="true"]')
+      .filter({ visible: true })
+      .getByRole("button", { name: "Retry", exact: true });
+    await expect(searchRetry).toBeVisible();
     gate.restore();
     await expectReconnectingToastGone(page);
-    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await searchRetry.click();
     await expectHighlight(page, "hello world");
   } finally {
     await agent.cleanup();

@@ -691,7 +691,12 @@ function ResultContent({
       <View style={styles.rowContent}>
         <View style={styles.rowMain}>
           {Icon ? (
-            <View style={styles.iconSlot}>
+            <View
+              style={styles.iconSlot}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              aria-hidden
+            >
               <Icon size={16} />
             </View>
           ) : null}

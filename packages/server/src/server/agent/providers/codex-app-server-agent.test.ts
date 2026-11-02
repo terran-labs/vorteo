@@ -1252,47 +1252,71 @@ test("failed governed cleanup retains custody and fences another client until cl
   }
 });
 
-test("a configured account alias retains governed construction and execution telemetry", async () => {
-  const appServer = createGovernedAppServer();
-  const nativeProvider = createProviderWithFakeAppServer(appServer);
-  const open = CodexAppServerAgentClient.prototype.openQuotaGovernedSession;
-  const spy = vi
-    .spyOn(CodexAppServerAgentClient.prototype, "openQuotaGovernedSession")
-    .mockImplementation((input) => open.call(nativeProvider, input));
-  let session: AgentSession | undefined;
-  try {
-    const registry = buildProviderRegistry(createTestLogger(), {
-      providerOverrides: {
-        "worker-account": {
-          extends: "codex",
-          label: "Worker account",
-          env: { CODEX_HOME: "/tmp/unused-fixture-home" },
+test.each([false, true])(
+  "a configured account alias retains governed construction and execution telemetry (allowed=%s)",
+  async (allowed) => {
+    const appServer = createGovernedAppServer();
+    const nativeProvider = createProviderWithFakeAppServer(appServer);
+    const open = CodexAppServerAgentClient.prototype.openQuotaGovernedSession;
+    const spy = vi
+      .spyOn(CodexAppServerAgentClient.prototype, "openQuotaGovernedSession")
+      .mockImplementation((input) => open.call(nativeProvider, input));
+    let session: AgentSession | undefined;
+    try {
+      const registry = buildProviderRegistry(createTestLogger(), {
+        providerOverrides: {
+          "worker-account": {
+            extends: "codex",
+            label: "Worker account",
+            env: { CODEX_HOME: "/tmp/unused-fixture-home" },
+          },
         },
-      },
-    });
-    const client = registry["worker-account"].createClient(createTestLogger());
-    const guard = vi.fn(async () => {
-      throw new Error("Reserved quota held");
-    });
-    session = await client.openQuotaGovernedSession!({
-      config: createConfig({ provider: "worker-account" }),
-      account: { issuer: "openai", accountId: "reserved-account" },
-      guard,
-    });
-    expect(session.provider).toBe("worker-account");
-    await expect(session.readQuotaObservation!()).resolves.toMatchObject({
-      status: "available",
-      account: { issuer: "openai", accountId: "reserved-account" },
-    });
-    await expect(session.startTurn("implement")).rejects.toThrow("Reserved quota held");
-    expect(session.describePersistence()).toMatchObject({ provider: "worker-account" });
-    expect(guard).toHaveBeenCalledOnce();
-  } finally {
-    await session?.close();
-    spy.mockRestore();
-    appServer.assertNoErrors();
-  }
-});
+      });
+      const client = registry["worker-account"].createClient(createTestLogger());
+      const guard = vi.fn(async () => {
+        if (!allowed) throw new Error("Reserved quota held");
+        return { assertValidForDispatch() {} };
+      });
+      session = await client.openQuotaGovernedSession!({
+        config: createConfig({ provider: "worker-account" }),
+        account: { issuer: "openai", accountId: "reserved-account" },
+        guard,
+      });
+      expect(session.provider).toBe("worker-account");
+      await expect(session.readQuotaObservation!()).resolves.toMatchObject({
+        status: "available",
+        account: { issuer: "openai", accountId: "reserved-account" },
+      });
+      if (allowed) {
+        await session.startTurn("implement");
+        expect(session.describePersistence()).toBeNull();
+        const saved = waitForNextEvent(session, "thread_started");
+        appServer.startsTurn({ threadId: "thread-1" });
+        await saved;
+        expect(session.describePersistence()).toMatchObject({
+          provider: "worker-account",
+          sessionId: "thread-1",
+        });
+      } else {
+        await expect(session.startTurn("implement")).rejects.toThrow("Reserved quota held");
+        expect(session.describePersistence()).toBeNull();
+      }
+      expect(
+        appServer
+          .requests()
+          .map(({ method }) => method)
+          .filter((method) =>
+            ["thread/start", "thread/resume", "thread/unarchive", "turn/start"].includes(method),
+          ),
+      ).toEqual(allowed ? ["thread/start", "turn/start"] : ["thread/start"]);
+      expect(guard).toHaveBeenCalledOnce();
+    } finally {
+      await session?.close();
+      spy.mockRestore();
+      appServer.assertNoErrors();
+    }
+  },
+);
 
 test.each([false, true])(
   "governed construction verifies controls and account before execution (resume=%s)",
@@ -7340,7 +7364,13 @@ describe("Codex app-server provider", () => {
       { method: "thread/loaded/list", params: {} },
       {
         method: "thread/resume",
-        params: { threadId: "archived-thread-id", excludeTurns: true },
+        params: {
+          threadId: "archived-thread-id",
+          excludeTurns: true,
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandbox: "workspace-write",
+        },
       },
     ]);
   });

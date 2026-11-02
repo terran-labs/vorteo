@@ -1,8 +1,9 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
-import type { FormInfo } from "@opencode/client";
+import type { FormInfo, SessionInstructionsEntryPutInput } from "@opencode/client";
 import { expect, test } from "vitest";
 
+import { AGENT_LAUNCH_GUIDANCE } from "../agent/system-prompt.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { OpenCodeV2AgentClient } from "../agent/providers/opencode/v2/agent.js";
 import { V2Harness } from "../agent/providers/opencode/test-utils/v2-harness.js";
@@ -16,6 +17,10 @@ async function createQuestionHarness() {
   const root = await mkdtemp(path.join(artifacts, "peer-permissions-"));
   const runtime = new V2Harness();
   runtime.autoComplete = false;
+  const instructions: SessionInstructionsEntryPutInput[] = [];
+  runtime.api.session.instructions.entry.put = async (input) => {
+    instructions.push(input);
+  };
   runtime.api.model.list = async () => ({ location: runtime.info.location, data: [] });
   runtime.api.provider.list = async () => ({
     location: runtime.info.location,
@@ -57,6 +62,10 @@ async function createQuestionHarness() {
       cwd: root,
       title: "Waiting for a human answer",
     });
+    expect(AGENT_LAUNCH_GUIDANCE.trim().length).toBeGreaterThan(0);
+    expect(instructions).toEqual([
+      { sessionID: runtime.info.id, key: "paseo", value: AGENT_LAUNCH_GUIDANCE },
+    ]);
     const sender = await client.createAgent({ provider: "claude", cwd: root });
     await client.sendMessage(recipient.id, "Ask which color to use");
     await expect.poll(() => runtime.prompts).toHaveLength(1);

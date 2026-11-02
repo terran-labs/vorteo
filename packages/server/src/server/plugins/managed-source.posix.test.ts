@@ -4,9 +4,10 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runGitCommand } from "../../utils/run-git-command.js";
 import { ManagedPluginSources } from "./managed-source.js";
+import { resolveRegistryPlugin } from "./managed-source/registry.js";
 import { formatPluginIdentity } from "@getpaseo/protocol/plugin-source-reference";
 
 const roots: string[] = [];
@@ -348,7 +349,7 @@ describe("registry plugin sources", () => {
   it("explains how to choose a revision when --ref is used with a registry id", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "paseo-registry-ref-home-"));
     roots.push(home);
-    const sources = new ManagedPluginSources(home);
+    const sources = new ManagedPluginSources(home, { enabled: true });
     await expect(
       sources.prepareInstall({ source: "fixture/example", ref: "main" }),
     ).rejects.toThrow(
@@ -365,7 +366,7 @@ describe("registry plugin sources", () => {
     if (!address || typeof address === "string") throw new Error("Missing registry address");
     const url = `http://127.0.0.1:${address.port}`;
     try {
-      const sources = new ManagedPluginSources(home, { defaultUrl: url });
+      const sources = new ManagedPluginSources(home, { enabled: true, defaultUrl: url });
       await expect(sources.prepareInstall({ source: "fixture/example" })).rejects.toThrow(
         `Could not reach plugin registry ${url}/plugins/fixture/example.json. Plugin fixture/example was not installed. Retry or use an explicit npm: or github: source.`,
       );
@@ -387,6 +388,7 @@ describe("registry plugin sources", () => {
     if (!address || typeof address === "string") throw new Error("Missing registry address");
     try {
       const sources = new ManagedPluginSources(home, {
+        enabled: true,
         defaultUrl: `http://127.0.0.1:${address.port}`,
       });
       await expect(sources.prepareInstall({ source: "fixture/missing" })).rejects.toThrow(
@@ -476,6 +478,7 @@ describe("registry plugin sources", () => {
     await commitAll(repository, "move plugin into monorepo");
     const revision = await runGitCommand(["rev-parse", "HEAD"], { cwd: repository });
     const commit = revision.stdout.trim();
+    let registryCommit = commit;
     const home = await mkdtemp(path.join(tmpdir(), "paseo-registry-home-"));
     roots.push(home);
     const requests: Array<{
@@ -506,7 +509,7 @@ describe("registry plugin sources", () => {
           artifact: {
             kind: "git",
             remote: pathToFileURL(repository).href,
-            commit,
+            commit: registryCommit,
             pluginPath: "packages/example",
           },
           media: [],
@@ -525,6 +528,7 @@ describe("registry plugin sources", () => {
     const url = `http://${host}/internal`;
     try {
       const sources = new ManagedPluginSources(home, {
+        enabled: true,
         defaultUrl: url,
         registries: { [host]: { authorization: "Bearer test" } },
       });
@@ -536,6 +540,7 @@ describe("registry plugin sources", () => {
       await sources.verifyCandidate("managed-example", candidate);
       sources.commit("managed-example", candidate.record);
       const restarted = new ManagedPluginSources(home, {
+        enabled: true,
         defaultUrl: "http://127.0.0.1:1/changed",
         registries: { [host]: { authorization: "Bearer test" } },
       });
@@ -567,6 +572,39 @@ describe("registry plugin sources", () => {
         },
         { path: "/internal/plugins/acme/example.json", intent: "1", authorization: "Bearer test" },
       ]);
+      await writeFile(
+        path.join(repository, "packages/example/index.server.ts"),
+        "export default () => () => { /* update */ };\n",
+      );
+      registryCommit = await commitAll(repository, "update plugin");
+      const update = await restarted.preview("managed-example", candidate.directory);
+      expect(update.outcome).toBe("update");
+      if (!update.proposal) throw new Error("Missing reviewed update");
+      const disabled = new ManagedPluginSources(home, { enabled: false, defaultUrl: url });
+      const beforeRefusal = [...requests];
+      await expect(disabled.prepareResolvedInstall(reviewed)).rejects.toThrow(
+        "Plugin registry sources are disabled",
+      );
+      await expect(disabled.preview("managed-example", candidate.directory)).rejects.toThrow(
+        "Plugin registry sources are disabled",
+      );
+      await expect(disabled.prepareUpdate(update.proposal, candidate.directory)).rejects.toThrow(
+        "Plugin registry sources are disabled",
+      );
+      expect(requests).toEqual(beforeRefusal);
+      expect((await disabled.describe("managed-example", candidate.directory)).identity).toEqual(
+        preview.current.identity,
+      );
+      const reviewedCommit = registryCommit;
+      registryCommit = commit;
+      await expect(restarted.prepareUpdate(update.proposal, candidate.directory)).rejects.toThrow(
+        "Registry pin changed since review; check again",
+      );
+      registryCommit = reviewedCommit;
+      const updated = await restarted.prepareUpdate(update.proposal, candidate.directory);
+      expect(updated.target).toEqual({ kind: "git", commit: reviewedCommit });
+      expect(updated.record.registry).toEqual({ url, id: "acme/example" });
+      await restarted.discard(updated);
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => {
@@ -605,7 +643,7 @@ it("installs and updates only the npm artifacts pinned by the plugin registry", 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Missing registry address");
-  const options = { defaultUrl: `http://127.0.0.1:${address.port}` };
+  const options = { enabled: true, defaultUrl: `http://127.0.0.1:${address.port}` };
   try {
     const sources = new ManagedPluginSources(home, options);
     const resolved = await sources.resolveInstall({ source: "acme/example" });
@@ -676,5 +714,81 @@ it("resolves an npm recipe with its acquired integrity and removes staging files
     if (previous === undefined) delete process.env.npm_config_userconfig;
     else process.env.npm_config_userconfig = previous;
     await registry.close();
+  }
+});
+
+it.each([undefined, false])(
+  "refuses direct registry resolution without opt-in (%s) before network access",
+  async (enabled) => {
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Unexpected network access"));
+    try {
+      await expect(
+        resolveRegistryPlugin(
+          { url: "https://registry.example.test", id: "fixture/example" },
+          { enabled },
+          true,
+        ),
+      ).rejects.toThrow("Plugin registry sources are disabled");
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  },
+);
+
+it("preserves registry artifact validation and credential transport restrictions when enabled", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  const identity = { url: "https://registry.example.test", id: "fixture/example" };
+  const options = {
+    enabled: true,
+    registries: { "registry.example.test": { authorization: "Bearer fixture" } },
+  };
+  const artifact = {
+    kind: "git",
+    remote: "https://github.com/fixture/example.git",
+    commit: "a".repeat(40),
+  };
+  try {
+    await expect(
+      resolveRegistryPlugin({ ...identity, url: "http://registry.example.test" }, options, true),
+    ).rejects.toThrow("Registry credentials require HTTPS");
+    await expect(
+      resolveRegistryPlugin(
+        { ...identity, url: "https://user:password@registry.example.test" },
+        options,
+        true,
+      ),
+    ).rejects.toThrow("Registry base must be an HTTP(S) URL without credentials");
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ id: identity.id, artifact })));
+    expect(await resolveRegistryPlugin(identity, options, true)).toEqual({
+      input: { source: `git:${artifact.remote}`, ref: artifact.commit, pluginPath: undefined },
+      target: { kind: "git", commit: artifact.commit },
+      artifact,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://registry.example.test/plugins/fixture/example.json",
+      {
+        headers: { Authorization: "Bearer fixture", "X-Paseo-Install": "1" },
+        redirect: "error",
+        signal: expect.any(AbortSignal),
+      },
+    );
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ id: "different/plugin", artifact })));
+    await expect(resolveRegistryPlugin(identity, options, false)).rejects.toThrow(
+      "Registry returned a different plugin ID",
+    );
+    fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ id: identity.id, artifact: { ...artifact, commit: "unreviewed" } }),
+      ),
+    );
+    await expect(resolveRegistryPlugin(identity, options, false)).rejects.toMatchObject({
+      name: "ZodError",
+    });
+  } finally {
+    fetch.mockRestore();
   }
 });

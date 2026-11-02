@@ -38,7 +38,11 @@ for (const single of [true, false]) {
       const completed = waitForWorkspaceSetupProgress(
         client,
         (payload) =>
-          payload.status === "completed" && payload.detail.log.includes("setup complete"),
+          payload.status === "completed" &&
+          (payload.detail.commands?.some(
+            (command) => command.exitCode === 0 && command.log.includes("setup complete"),
+          ) ??
+            false),
       );
       const workspace = await createWorkspaceThroughDaemon(client, {
         cwd: repo.path,
