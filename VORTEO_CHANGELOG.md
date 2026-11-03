@@ -4,6 +4,18 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Move the rule for waiting on Builds into the task delivery guide and keep a one-line pointer in the agent instructions, within their size budget.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Ask threads whose delivery Builds owns to keep a Review checklist item owned by Builds, mirror Builds' reported steps as checks and verify `main` and the published interface before completing it.
+
 ## 26.11.206 - 2026-11-02
 
 ### Improvements
