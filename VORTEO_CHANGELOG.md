@@ -6,6 +6,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Stop rate-limiting Claude account usage checks. The sidebar quota fetcher now waits out Claude's requested delay for each account and keeps showing its last good reading, and the Context window details no longer force a provider usage refresh each time they open.
+- Keep each account's last good usage reading across daemon restarts. While Claude limits checks, the account card shows that reading with its age and a muted note instead of a red error.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
