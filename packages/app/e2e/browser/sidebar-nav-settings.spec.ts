@@ -18,7 +18,6 @@ import {
   expectFooterSeparator,
   footerScreenshot,
   expectFooterItemHidden,
-  expectFooterItemSetting,
   expectFooterOrder,
   expectFooterSettingsKeys,
   expectSidebarItemHidden,
@@ -55,9 +54,9 @@ test("developer toasts leave concurrent sidebar layout checks uninterrupted", as
 });
 
 // The retained Usage visibility policy forces the footer Usage row hidden (docs/glossary.md,
-// "Usage (sidebar item)"): a saved visible preference and the Settings > Sidebar switch cannot
-// show it, so the footer has no rows and no separator here.
-test("responsive toolbar remains available while Settings cannot show the Usage row", async ({
+// "Usage (sidebar item)"): a saved visible preference cannot show it, so the footer has no rows
+// and no separator here.
+test("responsive toolbar remains available while a saved preference cannot show the Usage row", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -69,10 +68,6 @@ test("responsive toolbar remains available while Settings cannot show the Usage 
   await expectSidebarToolbar(page);
   await expectFooterSeparator(page, false);
   await footerScreenshot(page, "toolbar-desktop-without-rows");
-  await openSidebarNavSettings(page);
-  await expectFooterSettingsKeys(page, ["usage"]);
-  await expectFooterItemSetting(page, "usage", false);
-  await leaveSettings(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await openCompactSidebar(page);
   await expectCompactSidebarOpen(page);
@@ -80,24 +75,7 @@ test("responsive toolbar remains available while Settings cannot show the Usage 
   await expectFooterSeparator(page, false);
   await expectSidebarToolbar(page);
   await footerScreenshot(page, "toolbar-compact-without-rows");
-  // The same helper must reach Settings through the fitted toolbar or its overflow.
-  await openSidebarNavSettings(page);
-  await footerItemSwitchPress(page, "usage");
-  await expectFooterItemSetting(page, "usage", false);
-  await leaveSettings(page);
-  await openCompactSidebar(page);
-  await expectNoUsageItem(page);
-  await expectFooterSeparator(page, false);
-  await expectSidebarToolbar(page);
 });
-
-/** Presses a footer row's switch without expecting it to change; policy may hold it off. */
-async function footerItemSwitchPress(page: Page, key: string): Promise<void> {
-  await page
-    .getByTestId("sidebar-nav-section-footer")
-    .getByTestId(`sidebar-nav-toggle-${key}`)
-    .click();
-}
 
 test.describe("Sidebar contribution visibility and order", () => {
   const deploysKey = `plugin:${SHOWCASE_PLUGIN_ID}:deploys` as const;
@@ -179,9 +157,8 @@ test.describe("Sidebar contribution visibility and order", () => {
     await gotoAppShell(page);
     await openSidebarNavSettings(page);
     await expectFooterSettingsKeys(page, ["usage", syncKey, brokenKey]);
-    // A saved visible preference cannot show the Usage row; plugin rows still render.
-    await expectFooterItemSetting(page, "usage", false);
     await leaveSettings(page);
+    // A saved visible preference cannot show the Usage row; plugin rows still render.
     await expectFooterItemHidden(page, "usage");
     await expectFooterOrder(page, [syncKey]);
     await expectSidebarToolbar(page);

@@ -396,9 +396,9 @@ test("expired login refreshes directly to unpinnable windows", async ({ page }) 
     ).toHaveCount(0);
     const card = page.getByTestId("usage-report-login-journey:account");
     await expect(card.getByText("Session", { exact: true })).toBeVisible();
-    await expect(card.getByText("31%", { exact: true })).toBeVisible();
+    await expect(card.getByText("31% used", { exact: true })).toBeVisible();
     await expect(card.getByText("Weekly", { exact: true })).toBeVisible();
-    await expect(card.getByText("54%", { exact: true })).toBeVisible();
+    await expect(card.getByText("54% used", { exact: true })).toBeVisible();
     // Rows pin only for the sidebar summary, which the retained policy does not show.
     await expectUnpinnableRows(card);
   } finally {
@@ -668,7 +668,8 @@ test("direct-route usage percentages state their meaning and follow the selected
     await openUsage(page);
     await expect(page.getByText("70% 使用済み", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "すべて更新", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "設定", exact: true }).last().click();
+    // The Usage screen's Settings disclosure, not the app's Settings navigation.
+    await openUsageOptions(page);
     await expect(page.getByText("割合", { exact: true })).toBeVisible();
     await expect(page.getByText("使用済み", { exact: true })).toBeVisible();
     await expect(page.getByText("残り", { exact: true })).toBeVisible();

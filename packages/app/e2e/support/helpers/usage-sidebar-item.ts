@@ -256,8 +256,8 @@ export async function openCompactSidebar(page: Page): Promise<void> {
 }
 
 export async function expectCompactSidebarOpen(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "Close menu", exact: true })).toHaveAttribute(
-    "aria-expanded",
-    "true",
-  );
+  // The menu button and the sidebar's collapse control share the "Close menu" name.
+  await expect(
+    page.getByRole("button", { name: "Close menu", exact: true }).filter({ visible: true }).first(),
+  ).toHaveAttribute("aria-expanded", "true");
 }
