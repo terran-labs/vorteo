@@ -1,4 +1,3 @@
-import { catalogRecoveryAction } from "./catalog-recovery";
 import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { ChooserReveal } from "./chooser-reveal";
@@ -608,11 +607,9 @@ function AccountChoices(props: AccountChoicesProps) {
           <Text style={styles.summary} testID="preset-catalog-error">
             {toErrorMessage(catalogError)}
           </Text>
-          <CatalogRecoveryAction
+          <CatalogRecoveryActions
             serverId={props.serverId}
             provider={props.account.provider}
-            entry={entry}
-            discoveryError={props.error}
             retrying={props.retrying}
             onRetry={props.onRetry}
           />
@@ -622,41 +619,45 @@ function AccountChoices(props: AccountChoicesProps) {
   );
 }
 
-function CatalogRecoveryAction({
+function CatalogRecoveryActions({
   serverId,
   provider,
-  entry,
-  discoveryError,
   retrying,
   onRetry,
 }: {
   serverId: string | null;
   provider: string;
-  entry: ProviderSnapshotEntry | undefined;
-  discoveryError?: string | null;
   retrying: boolean;
   onRetry(): void;
 }) {
   const router = useRouter();
   const { config } = useDaemonConfig(serverId);
-  const signIn = useCallback(() => {
+  const openSettings = useCallback(() => {
     const type = resolveProviderType(provider, config?.providers ?? {});
     Keyboard.dismiss();
     router.push(buildProviderSettingsRoute(type));
   }, [provider, config?.providers, router]);
-  const needsSignIn = catalogRecoveryAction(entry, discoveryError) === "sign-in";
-  let label = retrying ? "Retrying…" : "Retry";
-  if (needsSignIn) label = "Sign in";
   return (
-    <Button
-      variant="ghost"
-      size="md"
-      onPress={needsSignIn ? signIn : onRetry}
-      disabled={!needsSignIn && retrying}
-      testID={needsSignIn ? "preset-sign-in" : "preset-retry-profiles"}
-    >
-      {label}
-    </Button>
+    <View style={styles.recoveryActions}>
+      <Button
+        variant="outline"
+        size="md"
+        onPress={onRetry}
+        disabled={retrying}
+        testID="preset-retry-profiles"
+      >
+        {retrying ? "Retrying…" : "Retry"}
+      </Button>
+      <Button
+        variant="ghost"
+        size="md"
+        accessibilityRole="link"
+        onPress={openSettings}
+        testID="preset-provider-settings"
+      >
+        Provider settings
+      </Button>
+    </View>
   );
 }
 
@@ -942,6 +943,12 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing[1],
   },
   detailScroll: { flex: 1, minHeight: 0 },
+  recoveryActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    flexWrap: "wrap",
+  },
   choices: { padding: theme.spacing[2], gap: theme.spacing[3] },
   heading: {
     fontSize: theme.fontSize.lg,
