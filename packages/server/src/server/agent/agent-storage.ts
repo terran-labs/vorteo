@@ -139,6 +139,11 @@ const STORED_AGENT_SCHEMA = z.object({
   features: z.array(AgentFeatureSchema).optional(),
   persistence: PERSISTENCE_HANDLE_SCHEMA,
   lastError: z.string().nullable().optional(),
+  /**
+   * The last reported usage, kept so the Context window card survives a daemon restart. Written
+   * with the record's other changes, not on every streamed update, so it can trail the live value.
+   */
+  lastUsage: z.record(z.string(), z.number()).optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),

@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Keep the Context window card after a daemon restart. Agents now save their last reported usage, so the card no longer disappears until each agent runs another turn.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
 
 ## Unreleased - 2026-11-03
