@@ -6,6 +6,24 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Added
+
+- Show an hourglass in the working blue in place of the sidebar's ready or idle dot while an idle workspace has an unfinished Review checklist item, such as a delivery waiting on Builds. Its tooltip names the owner and each item's title and description. Running, needs-input and failed states still take precedence.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Move the rule for waiting on Builds into the task delivery guide and keep a one-line pointer in the agent instructions, within their size budget.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Ask threads whose delivery Builds owns to keep a Review checklist item owned by Builds, mirror Builds' reported steps as checks and verify `main` and the published interface before completing it.
+
+## Unreleased - 2026-11-02
+
 ### Fixes
 
 - Show the full Context window breakdown for Claude sessions running in the durable session host. They previously showed "This provider reports totals only" because the host never forwarded Claude's context data.
