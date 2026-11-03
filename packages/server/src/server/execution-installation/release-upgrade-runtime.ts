@@ -421,6 +421,8 @@ export function createReleaseUpgradeRuntime(input: {
       ? null
       : "The installer did not record the coordinator release link. Restart the coordinator with the vorteo update command.",
     currentCommit,
+    // `updates` is created below from these ports; it exists before any upgrade runs.
+    automaticAllowed: () => updates?.policy().mode === "automatic",
     directHost: directHostUpgrades(config),
     async busy(target) {
       try {

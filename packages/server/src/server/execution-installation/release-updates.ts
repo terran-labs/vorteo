@@ -269,7 +269,8 @@ export class ReleaseUpdates {
   }
 
   private async runCheck(): Promise<UpdateCheck> {
-    const policy = await this.load();
+    // After the first read, memory is current: a reload could undo a concurrent change.
+    const policy = this.current ?? (await this.load());
     const checkedAt = this.ports.now().toISOString();
     let installedVersion: string | null = null;
     try {
@@ -292,7 +293,8 @@ export class ReleaseUpdates {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       this.logger?.warn({ err: error }, "Installation update check failed");
-      this.last = { ...this.last, checkedAt, error: detail, installedVersion };
+      // A failed check offers nothing, so an earlier result cannot be offered from Settings.
+      this.last = { checkedAt, error: detail, installedVersion, latest: null };
     }
     return this.last;
   }

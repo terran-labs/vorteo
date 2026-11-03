@@ -17,7 +17,7 @@ import { useVortonTouch } from "@/vorton-touch";
 import type { InstallationClient } from "./client";
 import {
   activeUpgrade,
-  pendingUpgradeDecisions,
+  upgradeDecisions,
   releaseVersionLabel,
   supportsUpdatePolicy,
   upgradeApprovalText,
@@ -159,8 +159,9 @@ const DECISION_LABELS: Partial<Record<UpgradeDecision["decision"], string>> = {
 };
 
 /**
- * Install after current work, Install now and Skip this release for a pending upgrade. Coordinators without an
- * update policy accept only an immediate approval, offered as Install.
+ * Install after current work, Install now and Skip this release for a pending upgrade, and
+ * Install now for one waiting on current work. Coordinators without an update policy accept
+ * only an immediate approval of a pending upgrade, offered as Install.
  */
 export function UpgradeDecisionButtons({
   client,
@@ -173,8 +174,9 @@ export function UpgradeDecisionButtons({
 }) {
   const controlSize = useVortonTouch() ? "md" : "sm";
   const { decide } = useInstallationUpgradeActions(client);
-  const decisions = pendingUpgradeDecisions(status);
-  const canWait = decisions.includes("approve-after-work");
+  const decisions = upgradeDecisions(status, upgrade);
+  // With an update policy, Install now always means "do not wait", which interrupts agents.
+  const canWait = supportsUpdatePolicy(status);
   const choose = useCallback(
     async (decision: UpgradeDecision["decision"]) => {
       if (decision === "approve" && canWait) {
@@ -190,6 +192,7 @@ export function UpgradeDecisionButtons({
     },
     [canWait, decide, status.container, upgrade],
   );
+  if (decisions.length === 0) return null;
   return (
     <View style={styles.decisions}>
       <View style={styles.actions}>

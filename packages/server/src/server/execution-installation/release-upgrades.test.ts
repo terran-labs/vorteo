@@ -43,6 +43,7 @@ function fakePorts(changes: Partial<UpgradePorts> = {}) {
     hasContainer: true,
     coordinatorReplacement: null,
     currentCommit: () => INSTALLED_COMMIT,
+    automaticAllowed: () => true,
     directHost: false,
     busy: async () => null,
     resolveRelease: async () => RELEASE_COMMIT,
@@ -160,13 +161,29 @@ test("after current work, the Dev step waits for Dev agents until the owner inst
   expect(upgrades.list()[0].steps[4]?.detail).toBe(
     "Waiting for current Dev work: 1 agent still working.",
   );
-  // Install now stops the wait without another approval.
+  // Waiting rewrites nothing, so the revision the owner decides on stays valid.
   const waiting = upgrades.list()[0];
+  await upgrades.drain();
+  expect(upgrades.list()[0].revision).toBe(waiting.revision);
+  // Install now stops the wait without another approval.
   upgrades.decide(waiting.id, waiting.revision, "approve");
   devBusy = "still busy";
   await upgrades.drain();
   expect(fake.calls.slice(-2)).toEqual(["dev-replace sha256:new", "dev-verify"]);
   expect(statuses(upgrades).status).toBe("succeeded");
+});
+
+test("turning automatic updates off stops an automatic upgrade before the Host restart", async () => {
+  const fake = fakePorts({ automaticAllowed: () => false });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  const offer = await upgrades.request("release-26.10.3000", {
+    origin: "update-check",
+    notes: { summary: "", security: false, charterChanges: [], url: "https://github.com/x" },
+  });
+  upgrades.approveAutomatically(offer.id);
+  await upgrades.drain();
+  expect(fake.calls).not.toContain("host-request");
+  expect(statuses(upgrades).status).toBe("failed");
 });
 
 test("a restarted coordinator resumes from the journal without repeating finished effects", async () => {

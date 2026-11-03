@@ -10,6 +10,7 @@ import {
   installationUpdateEntry,
   latestFinishedUpgrade,
   pendingUpgradeDecisions,
+  upgradeDecisions,
   restoreProgress,
   snapshotPartsSummary,
   snapshotReasonLabel,
@@ -172,6 +173,13 @@ describe("release upgrades", () => {
     );
     expect(pendingUpgradeDecisions(status)).toEqual(["approve-after-work", "approve", "reject"]);
     expect(pendingUpgradeDecisions(upgrades([]))).toEqual(["approve", "reject"]);
+    // An upgrade waiting for current work offers only Install now.
+    const waiting = {
+      ...upgrade("running", "2026-10-30T00:00:00.000Z"),
+      restart: "after-work" as const,
+    };
+    expect(upgradeDecisions(status, waiting)).toEqual(["approve"]);
+    expect(upgradeDecisions(status, { ...waiting, restart: "now" as const })).toEqual([]);
   });
 
   it("asks about a pending upgrade and notices an unacknowledged automatic one", () => {

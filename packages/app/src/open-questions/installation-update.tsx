@@ -64,7 +64,10 @@ export function InstallationUpdateItem({ client, status, entry }: InstallationUp
         </>
       ) : null}
       {entry.kind === "progress" ? (
-        <Text style={styles.muted}>{progressText(entry, version)}</Text>
+        <>
+          <Text style={styles.muted}>{progressText(entry, version)}</Text>
+          <UpgradeDecisionButtons client={client} upgrade={upgrade} status={status} />
+        </>
       ) : null}
     </View>
   );
@@ -73,7 +76,7 @@ export function InstallationUpdateItem({ client, status, entry }: InstallationUp
 function progressText(entry: InstallationUpdateEntry, version: string): string {
   const { upgrade } = entry;
   const step = upgradeStepRows(upgrade).find((row) => row.status === "running");
-  if (step) return `Installing Vorteo ${version}: ${step.label}`;
+  if (step) return `Installing Vorteo ${version}: ${step.detail || step.label}`;
   if (upgrade.status === "approved" && upgrade.restart === "after-work")
     return `Vorteo ${version} installs once current work finishes.`;
   return `Installing Vorteo ${version}`;

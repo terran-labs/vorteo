@@ -150,6 +150,21 @@ export function pendingUpgradeDecisions(
     : ["approve", "reject"];
 }
 
+/**
+ * What the owner can decide on an upgrade. Pending ones offer the install choices; one waiting
+ * for current work offers Install now, which ends the wait on coordinators with update policies.
+ */
+export function upgradeDecisions(
+  status: UpgradeStatus | null | undefined,
+  upgrade: InstallationUpgrade,
+): UpgradeDecision["decision"][] {
+  if (upgrade.status === "pending") return pendingUpgradeDecisions(status);
+  const waiting =
+    (upgrade.status === "approved" || upgrade.status === "running") &&
+    upgrade.restart === "after-work";
+  return waiting && supportsUpdatePolicy(status) ? ["approve"] : [];
+}
+
 /** "release-26.10.3001-beta" reads as "26.10.3001 beta". */
 export function releaseVersionLabel(release: string): string {
   return release.replace(/^release-/, "").replace(/-beta$/, " beta");

@@ -97,6 +97,8 @@ export interface UpgradePorts {
   snapshot(upgrade: InstallationUpgrade): Promise<string>;
   /** Fetches the tag into the source directory and checks it still names sourceCommit. */
   fetchRelease(upgrade: InstallationUpgrade): Promise<void>;
+  /** False once the owner has turned automatic updates off. */
+  automaticAllowed(): boolean;
   /** True when the installer engine, not a restart-queue source update, restarts the Host. */
   directHost: boolean;
   /** Null when no agent on the target is working or starting; otherwise what still runs. */
@@ -424,6 +426,13 @@ export class InstallationUpgrades {
     if (!jobId) {
       if (this.ports.currentCommit() === record.sourceCommit)
         return { status: "skipped", detail: "The Host already runs this release." };
+      // Turning automatic updates off stops an automatic upgrade that has not restarted anything.
+      if (record.automatic && !this.ports.automaticAllowed())
+        return {
+          status: "failed",
+          detail:
+            "Automatic updates were turned off before the Host restart. Nothing was restarted.",
+        };
       // The restart queue holds new work and waits on its own; the installer engine does not.
       if (record.restart === "after-work" && this.ports.directHost) {
         const busy = await this.ports.busy("host");
@@ -482,10 +491,17 @@ export class InstallationUpgrades {
     if (!this.ports.hasContainer)
       return { status: "skipped", detail: "This installation has no Dev container." };
     let state = record.private;
+    // Saves only real changes, so a Dev wait leaves the revision the owner decides on intact.
     const persist = (changes: Partial<UpgradePrivate>) => {
       const latest = this.records.find((item) => item.id === record.id) ?? record;
-      state = { ...latest.private, ...changes };
-      this.save(latest, { private: state });
+      const next = { ...latest.private, ...changes };
+      state = next;
+      if (
+        Object.entries(changes).some(
+          ([key, value]) => latest.private[key as keyof UpgradePrivate] !== value,
+        )
+      )
+        this.save(latest, { private: next });
     };
     const previous = state.devPreviousImage ?? (await this.ports.devImage());
     persist({ devPreviousImage: previous });
