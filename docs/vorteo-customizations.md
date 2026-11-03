@@ -2,7 +2,11 @@
 
 Maintenance review (2026-11-03): a finished thread in a Vorteo System workspace can now be archived on its own. Thread archive uses its own admission: the system workspace keeps refusing archive, removal and every other change, and thread deletion stays refused. A running thread, one a standing schedule targets, or a Factory binding blocks it. Every other workspace keeps refusing thread archive exactly as before. Source only; not installed. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-03): Settings round 3, batch 1. Settings no longer shifts layout: transient results show as toasts, ongoing sync shows in a fixed status line and loading panes keep their space. Provider lists group uninstalled providers under Available to install, profiles open on a dedicated page, and owner-password controls stay grouped and disabled until unlocked. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): installation lead notices now go through the lead's message queue, which delivers only between turns, and are skipped for an archived or missing lead, so a notice never interrupts or unarchives it. Each connection lease is closed, and the check stops on coordinator shutdown. Reviewed by Builds. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): the sidebar merges an empty, hidden Dev System project with the Host's again, so the System project keeps one row, its folder placement, its ordering and the workspaces recorded under its merged key. App-only change; README overview and onboarding are unchanged.
 
@@ -19,6 +23,8 @@ Installer demo: `install.sh --demo` embeds the production animation and shared i
 Welcome presentation: wide screens split owner sign-in and password help into two columns; compact screens stack them. The whole command field is an accessible copy target with toast feedback; hovering the block highlights its copy icon. Interactive installation completion omits agent-only result markers.
 
 Installer presentation review: the elapsed timer is assigned before export to preserve shell failure reporting. the startup logo has a leading blank line, and the build animation centers within the current terminal dimensions on every frame. Progress remains visible below the artwork; small terminals retain the compact status display.
+
+Maintenance review (2026-11-02): the reviewed `installationLead` coordinator setting names the agent thread to notify about coordinator updates that fail before starting or stall after approval. The coordinator sends each notice once, only while that thread is idle, under a stable message identity; a notice grants no approval or installation authority. The setting changes only through a reviewed coordinator update. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): Claude sessions in the durable session host now show the full Context window breakdown instead of totals only, because the session host forwards the provider's breakdown. README overview and onboarding are unchanged.
 
