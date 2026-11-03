@@ -1998,6 +1998,7 @@ export const ko: TranslationResources = {
     used: "{{percentage}}% 사용됨",
     tokens: "{{used}} / {{max}} 토큰",
     sessionCost: "세션 비용 {{cost}}",
+    sessionCostEstimated: "예상 세션 비용 ~{{cost}}",
     accessibility: "컨텍스트 윈도우 {{percentage}}% 사용됨",
     breakdown: {
       used: "사용됨",

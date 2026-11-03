@@ -1,11 +1,13 @@
 import { useMemo } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { quotaReading } from "@/provider-usage/quota-reading";
-import { formatPct, formatResetLabel } from "@/provider-usage/format";
+import { quotaReading, resetDescription } from "@/provider-usage/quota-reading";
+import { formatPct } from "@/provider-usage/format";
 import { ProviderResetControl } from "@/provider-usage/reset-control";
 import type { ProviderUsageView } from "@/provider-usage/types";
 import { ProfileLoadingSpinner, profileTileStyles } from "./profile-selector-tile";
+
+const OBSERVED_NOTE = "From last limit message";
 
 interface UsageProps {
   view: ProviderUsageView;
@@ -82,18 +84,21 @@ export function AccountUsageDetails({
   resetLoading: boolean;
   localStatus?: string;
 }) {
-  const { window, statusLabel, authRecovery, prepaidLabel } = quotaReading(view, providerId, now);
-  let reset = formatResetLabel(window?.resetsAt)
-    ?.replace(/^resets /, "Resets in ")
-    .replace(/(\d+)d$/, (_, days) => `${days} ${days === "1" ? "day" : "days"}`);
-  if (reset === "resetting now") reset = "Resetting now";
-  const description = localStatus ?? (window ? (reset ?? "Reset time unavailable") : statusLabel);
+  const { window, usage, statusLabel, authRecovery, prepaidLabel, observed } = quotaReading(
+    view,
+    providerId,
+    now,
+  );
+  const reset = window ? resetDescription(usage, window) : null;
+  const description = localStatus ?? reset ?? statusLabel;
+  const observedNote = observed && !localStatus ? OBSERVED_NOTE : null;
   const prepaidStatus = Boolean(prepaidLabel && !localStatus);
   let prepaidDescription = "Using prepaid";
   if (statusLabel) prepaidDescription = "Prepaid (last known)";
   const accessibleDescription = [
     prepaidStatus && prepaidDescription,
     description,
+    observedNote,
     window && statusLabel,
   ]
     .filter(Boolean)
@@ -108,6 +113,7 @@ export function AccountUsageDetails({
         {prepaidStatus ? <Text style={styles.prepaid}>● {prepaidDescription}</Text> : null}
         {prepaidStatus && description ? " · " : null}
         {description}
+        {observedNote ? ` · ${observedNote}` : null}
       </Text>
       {resetLoading ? <ProfileLoadingSpinner /> : null}
       {!localStatus && !authRecovery ? (

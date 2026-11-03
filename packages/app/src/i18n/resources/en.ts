@@ -2071,6 +2071,7 @@ export const en = {
     used: "{{percentage}}% used",
     tokens: "{{used}} / {{max}} tokens",
     sessionCost: "Session cost {{cost}}",
+    sessionCostEstimated: "Estimated session cost ~{{cost}}",
     accessibility: "Context window {{percentage}}% used",
     breakdown: {
       used: "Used",

@@ -916,6 +916,15 @@ export class AgentManager {
     this.quotaReserveObservationReader = reader;
   }
 
+  private usageLimitObserver:
+    | ((provider: AgentProvider, stop: Extract<AgentStreamEvent, { type: "turn_failed" }>) => void)
+    | null = null;
+
+  /** Receives each live usage-limit stop, including internal and structured-generation runs. */
+  setUsageLimitObserver(observer: NonNullable<AgentManager["usageLimitObserver"]>): void {
+    this.usageLimitObserver = observer;
+  }
+
   private async readQuotaReserveObservation(provider: AgentProvider) {
     if (!this.quotaReserveObservationReader)
       throw new QuotaReserveAdmissionError("usage_unavailable");
@@ -7019,7 +7028,7 @@ export class AgentManager {
         flags.shouldDispatchEvent = false;
         return undefined;
       case "usage_updated":
-        agent.lastUsage = event.usage;
+        agent.lastUsage = withReportedCost(event.usage, agent.lastUsage);
         this.emitState(agent);
         return undefined;
       case "mode_changed":
@@ -7233,6 +7242,7 @@ export class AgentManager {
     );
     if (terminalDisposition === "stale") return;
     if (event.code === "quota_exhausted" && !options?.fromHistory) {
+      this.usageLimitObserver?.(agent.provider, event);
       this.holdForUsageLimit(agent, event.usageLimit);
       await this.pauseQuotaTeam(agent);
     }
@@ -8188,4 +8198,15 @@ export function commandMayHaveChangedExternalState(command: string): boolean {
     // ahead/behind counts can drift stale until the next refresh.
     /\bgit\s+fetch\b/.test(normalized)
   );
+}
+
+/**
+ * A streamed usage update replaces the last one, so a field it omits is cleared, as compaction
+ * clears the used context. The provider's reported cost is the exception: Claude reports it only
+ * when a turn completes, so it carries over until the next report. An estimate does not carry
+ * over, since a provider that estimates sends one with every update it can price.
+ */
+function withReportedCost(usage: AgentUsage, previous: AgentUsage | undefined): AgentUsage {
+  if (usage.totalCostUsd !== undefined || previous?.totalCostUsd === undefined) return usage;
+  return { ...usage, totalCostUsd: previous.totalCostUsd };
 }

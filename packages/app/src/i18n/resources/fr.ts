@@ -2041,6 +2041,7 @@ export const fr: TranslationResources = {
     used: "{{percentage}}% utilisé",
     tokens: "Jetons{{used}}/{{max}}",
     sessionCost: "Coût de la séance{{cost}}",
+    sessionCostEstimated: "Coût estimé de la séance ~{{cost}}",
     accessibility: "Fenêtre contextuelle{{percentage}}% utilisé",
     breakdown: {
       used: "Utilisé",

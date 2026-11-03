@@ -426,3 +426,69 @@ test("full maintenance delegation shows its scope and revokes on desktop and com
     vi.unstubAllGlobals();
   }
 });
+
+test("installation management is a separate explicit owner choice", async () => {
+  vi.stubGlobal("React", React);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const managementClient: ConstructorParameters<typeof InstallationPanelModel>[0] = {
+    ...client,
+    daemonAutomation: async () => ({
+      revision: null,
+      enabled: false,
+      enabledAfter: null,
+      legacyHostOnly: false,
+    }),
+  };
+  let managementPreference = {
+    available: true,
+    revision: "a".repeat(64),
+    activatedAt: "2026-11-01T00:00:00Z",
+    enabled: true,
+    managementAvailable: true,
+    managementEnabled: false,
+  };
+  const decisions: unknown[] = [];
+  managementClient.maintenanceDelegation = async () => managementPreference;
+  managementClient.changeMaintenanceDelegation = async (_status, enabled, management) => {
+    decisions.push({ enabled, management });
+    managementPreference = {
+      ...managementPreference,
+      enabled,
+      managementEnabled: management === true,
+    };
+    return managementPreference;
+  };
+  const model = new InstallationPanelModel(managementClient);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(() => model.initialize());
+    const render = () =>
+      act(() => root.render(<DaemonAutomationControl model={model} state={model.getState()} />));
+    render();
+    await expect
+      .element(page.getByTestId("installation-management-change"))
+      .toHaveTextContent("Delegate installation management");
+    await act(async () => {
+      await page.getByTestId("installation-management-change").click();
+    });
+    render();
+    expect(decisions).toEqual([{ enabled: true, management: true }]);
+    await expect
+      .element(page.getByTestId("installation-management-change"))
+      .toHaveTextContent("Revoke installation management");
+    await act(async () => {
+      await page.getByTestId("installation-management-change").click();
+    });
+    render();
+    expect(decisions).toEqual([
+      { enabled: true, management: true },
+      { enabled: true, management: false },
+    ]);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});

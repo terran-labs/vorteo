@@ -1,3 +1,5 @@
+import { useToast } from "@/contexts/toast-context";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { ActionFooter } from "@/components/ui/action-footer";
 import { useMaintenanceTask } from "@/execution-installation/use-maintenance-task";
 import { useCallback, useEffect, useState } from "react";
@@ -7,16 +9,12 @@ import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
-import { useFormPreferences } from "@/hooks/use-form-preferences";
 
 import { UPSTREAM_SYNC, UPSTREAM_UPDATE_PROMPT, upstreamSyncStatus } from "./upstream";
 
 export function UpstreamUpdatesSection() {
-  const { isLoading } = useFormPreferences();
-  if (isLoading) return null;
   return <UpstreamUpdatesContent />;
 }
 
@@ -31,7 +29,10 @@ function UpstreamUpdatesContent() {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
+  const toast = useToast();
   const copy = useMutation({
+    onSuccess: () => toast.show(t("settings.about.upstreamUpdates.copied")),
+    onError: () => toast.error(t("settings.about.upstreamUpdates.copyFailed")),
     mutationFn: async () => {
       const copied = await Clipboard.setStringAsync(UPSTREAM_UPDATE_PROMPT);
       if (!copied) throw new Error("Clipboard write was declined");
@@ -67,11 +68,10 @@ function UpstreamUpdatesContent() {
             </Text>
           </View>
         </View>
-        {overdue && (
-          <View style={styles.notice} testID="upstream-update-overdue">
-            <StatusBadge variant="warning" label={t("settings.about.upstreamUpdates.overdue")} />
-          </View>
-        )}
+        <SettingsStatusLine
+          testID="upstream-update-overdue"
+          message={overdue ? t("settings.about.upstreamUpdates.overdue") : null}
+        />
         <View style={styles.content}>
           <Text style={settingsStyles.rowHint}>
             Review and edit the suggested host task before sending it. Preparing a draft does not
@@ -99,16 +99,6 @@ function UpstreamUpdatesContent() {
               {t(`settings.about.upstreamUpdates.${showPrompt ? "hidePrompt" : "showPrompt"}`)}
             </Button>
           </ActionFooter>
-          {copy.isSuccess && (
-            <Text style={settingsStyles.rowHint} accessibilityLiveRegion="polite">
-              {t("settings.about.upstreamUpdates.copied")}
-            </Text>
-          )}
-          {copy.isError && (
-            <Text style={styles.error} accessibilityLiveRegion="polite">
-              {t("settings.about.upstreamUpdates.copyFailed")}
-            </Text>
-          )}
           {showPrompt && (
             <Text selectable style={styles.prompt} testID="upstream-host-prompt">
               {UPSTREAM_UPDATE_PROMPT}
@@ -122,11 +112,6 @@ function UpstreamUpdatesContent() {
 
 const styles = StyleSheet.create((theme) => ({
   overdue: { borderColor: theme.colors.statusWarning },
-  notice: {
-    alignItems: "flex-start",
-    paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[3],
-  },
   content: {
     paddingHorizontal: theme.spacing[4],
     paddingBottom: theme.spacing[4],
@@ -134,5 +119,4 @@ const styles = StyleSheet.create((theme) => ({
   },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   prompt: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
-  error: { fontSize: theme.fontSize.sm, color: theme.colors.statusDanger },
 }));

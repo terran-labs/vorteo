@@ -145,7 +145,7 @@ if (
     },
   });
   // Vorteo :: Builds is the only writer of shared state (AGENTS.md, "Builds coordinator").
-  if (positionals[0]?.startsWith("request-"))
+  if (positionals[0]?.startsWith("request-") || positionals[0] === "management-cancel")
     assertBuildsCoordinator(`installation-agent ${positionals[0]}`);
   if (
     values["supervisor-plan"] &&
@@ -469,6 +469,35 @@ if (
         ...(values["require-owner-approval"] ? { requireOwnerApproval: true } : {}),
       };
       process.stderr.write(`Coordinator request: ${preparation.id}\n`);
+      break;
+    }
+    case "management-status":
+    case "management-receipt":
+    case "management-cancel": {
+      if (config.kind !== "host-agent")
+        throw new Error("Installation management requires Host access");
+      const response = await fetch(new URL("/api/installation/capabilities", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      const capability = response.ok ? (await response.json()).installationManagement : null;
+      if (!capability?.available || !capability.enabled || !capability.cancellation)
+        throw new Error(
+          "Explicit installation management is unavailable or disabled. No decision sent.",
+        );
+      resource = "/api/installation/management/requests";
+      if (positionals[0] === "management-receipt") {
+        if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+          throw new Error("A receipt ID is required");
+        resource = `/api/installation/management/receipts/${positionals[1]}`;
+      }
+      if (positionals[0] === "management-cancel") {
+        if (!values["request-file"])
+          throw new Error("Use --request-file with the exact management cancellation");
+        body = JSON.parse(readFileSync(values["request-file"], "utf8"));
+        resource = "/api/installation/management/cancel";
+      }
       break;
     }
     case "coordinator-status":
