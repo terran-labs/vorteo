@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { managementDelegationAuthority } from "./owner-delegation.js";
+import { managementDelegationAuthority, type ManagementCredentials } from "./owner-delegation.js";
 import { DaemonAutomation } from "./daemon-automation.js";
 import { InstallationRestarts, RestartRequestError } from "./restarts.js";
 import type { BootstrapReconciliationLedger } from "./coordinator-bootstrap.js";
@@ -47,6 +47,7 @@ export class InstallationManagement {
     private readonly stateDir: string,
     private readonly restarts: InstallationRestarts,
     private readonly coordinator: BootstrapReconciliationLedger | undefined,
+    private readonly credentials: () => ManagementCredentials,
   ) {}
 
   available() {
@@ -59,7 +60,7 @@ export class InstallationManagement {
   authority() {
     if (!this.available()) return null;
     try {
-      return managementDelegationAuthority(this.stateDir);
+      return managementDelegationAuthority(this.stateDir, this.credentials());
     } catch {
       // Unreadable protected authority never advertises or enables management.
       return null;
@@ -168,7 +169,7 @@ export class InstallationManagement {
     const job = queue.list().find((item) => item.id === input.id);
     if (!job || job.revision !== input.revision || digest(job) !== input.jobSha256)
       throw new RestartRequestError(
-        "Exact installation request changed; refresh before cancellation",
+        "Exact installation request changed; read management-status and use its revision and jobSha256",
       );
     const intent = {
       version: 1,

@@ -18,6 +18,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Changes
+
+- Full maintenance delegation now includes installation management, so trusted Host agents can cancel pending or queued requests whenever the full grant is active, and revoking the grant removes it. Existing full grants gain this automatically, and Installation controls no longer show a separate management switch. Management still cannot approve requests that need the owner, stop claimed work, or change credentials or settings. Enrolled installations do not gain management. Its authority revision now binds the grant epoch and installation credentials. An older client's separate switch is accepted and ignored. A rollback to an older runtime keeps management only where its earlier separate opt-in is still recorded.
+- Explain that a management cancellation must use the `jobSha256` from `management-status`; a digest taken from a `request-*` submission response is refused.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
