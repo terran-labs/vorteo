@@ -22,6 +22,14 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - A coordinator update blocked by other installation work now waits up to eight minutes for that work to finish and then starts, within the same approval, instead of failing at once. Only that busy refusal is retried; a canceled or changed approval, or any other error, stops it.
 
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - The Claude sign-in upgrade keeps Dev working while it switches: Dev keeps its setup token until its own account has moved to full sign-in, instead of giving it up during the seconds before settings reach it, and a fenced Dev no longer risks being left with no credential.
@@ -41,7 +49,11 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The upgrade needs Host-owned refresh and every daemon advertising the capability. Unmanaged daemons have no upgrade. Live acceptance on the installation is pending.
 
-## Unreleased - 2026-11-02
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
 
 ## Unreleased - 2026-11-03
 
