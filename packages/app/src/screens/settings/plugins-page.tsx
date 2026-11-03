@@ -1,3 +1,5 @@
+import { useToast } from "@/contexts/toast-context";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { formatPluginInstallation } from "@getpaseo/protocol/plugin-source-reference";
 import { PluginSettingsMenuItems } from "@/plugins/settings";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -292,9 +294,8 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
     [t],
   );
   const [logsPluginId, setLogsPluginId] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; message: string } | null>(
-    null,
-  );
+  const toast = useToast();
+  const [feedback, setFeedback] = useState<string | null>(null);
   const plugins = useFetchQuery({
     queryKey,
     queryFn: async () => {
@@ -341,18 +342,21 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
       run: () => Promise<string>;
     }) => operation.run(),
     onSuccess: async (message) => {
-      setFeedback({ kind: "success", message });
+      toast.show(message);
+      setFeedback(message);
       await refresh();
     },
     onError: (error) => {
       if (isConnectionError(error)) reportActionError(error);
-      else setFeedback({ kind: "error", message: toErrorMessage(error) });
+      else {
+        toast.error(toErrorMessage(error));
+        setFeedback(toErrorMessage(error));
+      }
     },
   });
   const install = useCallback(() => {
     if (!client || !sourceInstallSupported || !installState.canSubmit) return;
     const input = installForm.getSubmission();
-    setFeedback(null);
     mutation.mutate({
       action: "install",
       run: async () => {
@@ -380,14 +384,12 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
         }
         return t(`settings.plugins.feedback.${name}`, { id: plugin.id });
       };
-      setFeedback(null);
       mutation.mutate({ action: name, pluginId: plugin.id, run });
     },
     [client, mutation, t],
   );
   const toggleGlobal = useCallback(
     (enabled: boolean) => {
-      setFeedback(null);
       mutation.mutate({
         action: enabled ? "global-enable" : "global-disable",
         run: async () => {
@@ -426,7 +428,11 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
     return <Alert size="md" variant="warning" title={t("settings.plugins.states.updateTitle")} />;
   }
 
-  let catalogContent = <Alert size="sm" title={t("settings.plugins.states.loading")} />;
+  let catalogContent = (
+    <View style={reservedLayout1}>
+      <SettingsStatusLine message={t("settings.plugins.states.loading")} />
+    </View>
+  );
   if (pageState === "error") {
     catalogContent = (
       <Alert
@@ -472,13 +478,11 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
 
   return (
     <View>
-      <SettingsSection title={t("settings.plugins.title")}>
-        <Alert
-          size="sm"
-          variant="warning"
-          title={t("settings.plugins.trustedTitle")}
-          description={t("settings.plugins.trustedDescription")}
-        />
+      <SettingsSection
+        title={t("settings.plugins.title")}
+        info={`${t("settings.plugins.trustedTitle")}: ${t("settings.plugins.trustedDescription")}`}
+      >
+        <SettingsStatusLine testID="plugin-management-feedback" message={feedback} />
         <View style={settingsStyles.card}>
           <View style={settingsStyles.row}>
             <View style={settingsStyles.rowContent}>
@@ -514,20 +518,8 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
             </Button>
           </View>
         ) : (
-          <Alert
-            size="sm"
-            variant="warning"
-            title={t("settings.plugins.states.sourceUpdateTitle")}
-          />
+          <SettingsStatusLine message={t("settings.plugins.states.sourceUpdateTitle")} />
         )}
-        {feedback ? (
-          <Alert
-            size="sm"
-            variant={feedback.kind}
-            title={feedback.message}
-            testID="plugin-management-feedback"
-          />
-        ) : null}
         {catalogContent}
       </SettingsSection>
       {client && logsPluginId ? (
@@ -588,3 +580,5 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
   },
 }));
+
+const reservedLayout1 = { minHeight: 160 } as const;

@@ -1,9 +1,16 @@
 import { clampPct } from "./format";
-import { displayBalanceUnit, quotaReading } from "./quota-reading";
+import {
+  displayBalanceUnit,
+  nextReset,
+  prepaidBalance,
+  PROVIDER_USAGE_DISPLAY_STALE_MS,
+  quotaReading,
+} from "./quota-reading";
 import type {
   ProviderUsage,
   ProviderUsageBalanceUnit,
   ProviderUsageDetail,
+  ProviderUsageTone,
   ProviderUsageView,
   ProviderUsageWindow,
 } from "./types";
@@ -12,8 +19,6 @@ import type {
 export interface QuotaWindowRow {
   id: string;
   label: string;
-  /** A few characters for the collapsed account line, e.g. "5h" or "Opus". */
-  summaryLabel: string;
   /** Percent left, or null when the provider omitted it. */
   remaining: number | null;
   resetsAt: string | null;
@@ -23,6 +28,8 @@ export interface QuotaWindowRow {
   separate: boolean;
   /** The window that will stop work first, marked only when there is a choice. */
   limiting: boolean;
+  /** The provider's own tone for the window, when it sends one. */
+  tone: ProviderUsageTone | null;
 }
 
 export interface QuotaBalanceRow {
@@ -48,13 +55,17 @@ export interface QuotaAccount {
   details: ProviderUsageDetail[];
   /** The limiting window's remaining percent, else a capped balance's, else null. */
   remaining: number | null;
+  /** When the limiting window resets, else the account's next known reset. */
+  resetsAt: string | null;
+  /** Prepaid credit that keeps work going once the plan is spent. */
+  credits: number | null;
+  /** The reading comes from the account's last limit message, not a live usage source. */
+  observed: boolean;
   /** Why usage is missing or old; null when the reading is current. */
   status: string | null;
   failing: boolean;
   disconnected: boolean;
   fetchedAt: string | null;
-  /** The earliest reset still ahead, for the collapsed line. */
-  nextResetAt: string | null;
   /** Failing, nearly out, or on pace to run out before a reset. */
   attention: boolean;
 }
@@ -102,14 +113,26 @@ function quotaAccount(
     balances,
     details: provider.details ?? [],
     remaining,
+    ...runwayInputs(reading, provider),
     status: failing
       ? (reading.statusLabel ?? provider.error ?? "Usage unavailable")
       : healthyStatus(reading, remaining),
     failing,
     disconnected,
     fetchedAt: provider.fetchedAt ?? null,
-    nextResetAt: nextReset(windows, now),
     attention: failing || pacing || (remaining !== null && remaining < LOW_QUOTA_PCT),
+  };
+}
+
+/** What the runway lane needs from the shared reading, so the card follows its rules. */
+function runwayInputs(
+  reading: ReturnType<typeof quotaReading>,
+  provider: ProviderUsage,
+): Pick<QuotaAccount, "resetsAt" | "credits" | "observed"> {
+  return {
+    resetsAt: reading.window?.resetsAt ?? nextReset(provider)?.resetsAt ?? null,
+    credits: prepaidBalance(provider)?.remaining ?? null,
+    observed: reading.observed,
   };
 }
 
@@ -143,13 +166,13 @@ function windowRows(usage: ProviderUsage, now: number): QuotaWindowRow[] {
     return {
       id: window.id,
       label: window.label,
-      summaryLabel: summaryLabel(window),
       remaining: windowRemaining(window),
       resetsAt: window.resetsAt ?? null,
       // A projection that has already passed is stale, not a warning.
       runsOutAt: runsOutAt && Date.parse(runsOutAt) > now ? runsOutAt : null,
       separate: window.id === "code_review",
       limiting: false,
+      tone: window.tone ?? null,
     };
   });
   const enforced = rows.filter((row) => !row.separate && row.remaining !== null);
@@ -177,17 +200,6 @@ function balanceRows(usage: ProviderUsage): QuotaBalanceRow[] {
   });
 }
 
-/** "5-hour" becomes "5h", "Weekly · Opus" becomes "Opus"; a provider's short label wins. */
-export function summaryLabel(window: Pick<ProviderUsageWindow, "label" | "shortLabel">): string {
-  if (window.shortLabel) return window.shortLabel;
-  const duration = /^(\d+)-(hour|day|minute|second)$/.exec(window.label);
-  if (duration) return `${duration[1]}${duration[2]![0]}`;
-  const scoped = /^Weekly · (.+)$/.exec(window.label);
-  if (scoped) return scoped[1]!;
-  if (window.label === "Weekly") return "Week";
-  return window.label;
-}
-
 function limitingRemaining(
   windows: readonly QuotaWindowRow[],
   balances: readonly QuotaBalanceRow[],
@@ -198,16 +210,6 @@ function limitingRemaining(
   return capped ? clampPct((100 * capped.remaining!) / capped.limit!) : null;
 }
 
-function nextReset(windows: readonly QuotaWindowRow[], now: number): string | null {
-  let next: string | null = null;
-  for (const window of windows) {
-    if (window.separate || !window.resetsAt) continue;
-    const at = Date.parse(window.resetsAt);
-    if (at > now && (next === null || at < Date.parse(next))) next = window.resetsAt;
-  }
-  return next;
-}
-
 function compareAccounts(left: QuotaAccount, right: QuotaAccount): number {
   if (left.failing !== right.failing) return left.failing ? -1 : 1;
   if (left.attention !== right.attention) return left.attention ? -1 : 1;
@@ -215,4 +217,31 @@ function compareAccounts(left: QuotaAccount, right: QuotaAccount): number {
   const rightRemaining = right.remaining ?? Number.POSITIVE_INFINITY;
   if (leftRemaining !== rightRemaining) return leftRemaining - rightRemaining;
   return left.name.localeCompare(right.name);
+}
+
+export interface QuotaFreshness {
+  stale: boolean;
+  label: string;
+}
+
+/**
+ * "Live · 40s ago" while readings are current, "Stale · 12m ago" once they pass the shared
+ * display threshold or the last refresh failed.
+ */
+export function quotaFreshness(view: ProviderUsageView, now: number): QuotaFreshness | null {
+  if (view.kind !== "ready") return null;
+  const age = now - Date.parse(view.payload.fetchedAt);
+  if (!Number.isFinite(age)) return null;
+  const stale = age > PROVIDER_USAGE_DISPLAY_STALE_MS || Boolean(view.refreshError);
+  return { stale, label: `${stale ? "Stale" : "Live"} · ${formatAge(age)}` };
+}
+
+function formatAge(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }

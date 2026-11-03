@@ -13,6 +13,10 @@ import type {
 } from "../../../server/messages.js";
 import type { ProviderApiFetch, ProviderUsageFetcher } from "../provider.js";
 import type { ClaudeSignInMode } from "../../../server/agent/providers/claude/sign-in-mode.js";
+import type {
+  ClaudeLimitObservation,
+  ClaudeLimitObservationReader,
+} from "../../../server/agent/providers/claude/limit-observation.js";
 import {
   ApiNumberSchema,
   fetchProviderApi,
@@ -103,6 +107,8 @@ interface ClaudeQuotaProviderOptions {
   fetch?: ProviderApiFetch;
   /** Clock for access-token expiry. Injected by tests. */
   now?: () => number;
+  /** Last usage-limit stops, shown when a setup-token credential cannot read usage. */
+  limitObservations?: ClaudeLimitObservationReader;
 }
 
 function buildClaudePlan(
@@ -312,6 +318,22 @@ function scopedWindows(limits: ScopedLimit[]): ProviderUsageWindow[] {
   });
 }
 
+const OBSERVED_WINDOWS = {
+  weekly: { id: "weekly", label: "Weekly" },
+  session: { id: "five_hour", label: "Session" },
+  unknown: { id: "usage_limit", label: "Usage limit" },
+} as const;
+
+function observedLimitWindow(observation: ClaudeLimitObservation): ProviderUsageWindow {
+  return {
+    ...OBSERVED_WINDOWS[observation.window ?? "unknown"],
+    usedPct: 100,
+    remainingPct: 0,
+    resetsAt: observation.resetsAt,
+    tone: "danger",
+  };
+}
+
 type ClaudeKeychainCommandRunner = (args: string[]) => Promise<string | null>;
 
 // Keep this in sync with Claude Code's Keychain account derivation.
@@ -404,6 +426,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   private readonly platform: typeof process.platform;
   private readonly fetchApi: ProviderApiFetch;
   private readonly now: () => number;
+  private readonly limitObservations: ClaudeLimitObservationReader | undefined;
 
   constructor(options: ClaudeQuotaProviderOptions) {
     this.logger = options.logger.child({ module: "claude-quota-provider" });
@@ -424,6 +447,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     this.platform = options.platform ?? process.platform;
     this.fetchApi = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
+    this.limitObservations = options.limitObservations;
   }
 
   async fetchUsage(): Promise<ProviderUsage> {
@@ -440,24 +464,41 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
           managed = !(error instanceof Error && "code" in error && error.code === "ENOENT");
         }
       }
-      if (managed)
-        return {
-          ...unavailableUsage(this),
-          details: [
-            {
-              id: "claude-setup-token",
-              label: "Subscription",
-              value:
-                "Setup-token connection. Usage and reset credits are unavailable with this credential.",
-            },
-          ],
-        };
+      if (managed) return this.setupTokenUsage();
     }
     const credentials = await this.readCredentials();
     if (!credentials) {
       return unavailableUsage(this);
     }
     return this.usageFromCredentials(credentials, CLAUDE_NATIVE_RECOVERY);
+  }
+
+  /**
+   * A setup-token credential cannot read the usage API. The account's last usage-limit stop is
+   * the one reading it has, so show that window as exhausted until the stop's reset.
+   */
+  private setupTokenUsage(): ProviderUsage {
+    const setupToken: ProviderUsageDetail = {
+      id: "claude-setup-token",
+      label: "Subscription",
+      value:
+        "Setup-token connection. Usage and reset credits are unavailable with this credential.",
+    };
+    const observation = this.limitObservations?.read(this.providerId);
+    if (!observation) return { ...unavailableUsage(this), details: [setupToken] };
+    return {
+      providerId: this.providerId,
+      displayName: this.displayName,
+      status: "available",
+      planLabel: null,
+      windows: [observedLimitWindow(observation)],
+      balances: [],
+      details: [
+        setupToken,
+        { id: "claude-limit-observation", label: "Source", value: "From last limit message" },
+      ],
+      error: null,
+    };
   }
 
   /**

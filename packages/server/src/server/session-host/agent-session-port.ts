@@ -80,10 +80,12 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
       goals: session.goals
         ? (toHostedJson(session.goals.state) as HostedSessionSnapshot["goals"])
         : null,
-      // This adapter ships with the host that implements atomic conditional close.
+      // This adapter ships with the host that implements atomic conditional close and answers
+      // context breakdown calls.
       capabilities: {
         ...(toHostedJson(session.capabilities) as HostedSessionSnapshot["capabilities"]),
         conditionalIdleClose: true,
+        contextBreakdown: true,
       },
     };
   }
@@ -186,6 +188,9 @@ export async function createAgentSessionPort(session: AgentSession): Promise<Hos
     getCurrentMode: () => session.getCurrentMode(),
     async listCommands() {
       return (await session.listCommands?.()) ?? [];
+    },
+    async getContextBreakdown() {
+      return (await session.getContextBreakdown?.()) ?? null;
     },
     async streamHistory(call) {
       return historyPage(call.cursor);
