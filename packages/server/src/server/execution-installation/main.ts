@@ -185,6 +185,7 @@ if (!host) throw new Error("Installation Host identity is missing");
 const coordinatorRequests = createHostReconciliationLedger(config, configFile, host.serverId);
 // Off unless a reviewed coordinator update set the installation lead.
 const installationLead = config.installationLead;
+let installationLeadTimer: NodeJS.Timeout | undefined;
 if (installationLead && coordinatorRequests) {
   const ledger = coordinatorRequests;
   const notifier = createCoordinatorDispatchNotifier({
@@ -196,25 +197,38 @@ if (installationLead && coordinatorRequests) {
         if (!ledger.readLifecycle) throw new Error("Installation journal is unavailable");
         return ledger.readLifecycle();
       },
-      leadIdle: async (agentId) => {
+      leadAvailable: async (agentId) => {
         const client = await daemonConnections.connect("host");
-        return (await client.fetchAgent({ agentId }))?.agent.status === "idle";
+        try {
+          const lead = await client.fetchAgent({ agentId });
+          return lead !== null && !lead.agent.archivedAt;
+        } finally {
+          await client.close();
+        }
       },
-      send: async ({ agentId, text, messageId }) => {
+      enqueue: async ({ agentId, text, messageId }) => {
         const client = await daemonConnections.connect("host");
-        // Steer covers the moment between the idle check and delivery.
-        await client.sendAgentMessage(agentId, text, {
-          messageId,
-          origin: "agent",
-          activeTurnBehavior: "steer",
-        });
+        try {
+          // The queue delivers only while the lead is idle and skips an archived thread.
+          const result = await client.mutateMessageQueue(agentId, {
+            kind: "enqueue",
+            operationId: messageId,
+            messageId,
+            attachments: [],
+            text,
+          });
+          if (result.error) throw new Error(result.error.message);
+        } finally {
+          await client.close();
+        }
       },
       now: Date.now,
     },
   });
-  setInterval(() => {
+  installationLeadTimer = setInterval(() => {
     void notifier.check().catch(() => logger.warn("Installation lead notification is pending"));
-  }, 60_000).unref();
+  }, 60_000);
+  installationLeadTimer.unref();
 }
 const claudeSetupTimer = setInterval(() => {
   if (!synchronizing) return;
@@ -331,6 +345,7 @@ gateServer?.on("error", (error) => {
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
     telemetry.stop();
+    clearInterval(installationLeadTimer);
     clearInterval(restartTimer);
     clearInterval(claudeSetupTimer);
     clearInterval(providerSecretsTimer);

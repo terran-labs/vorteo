@@ -6,7 +6,8 @@ import type { CoordinatorBootstrapRequest } from "@getpaseo/protocol/coordinator
 import { writePrivateFileAtomicSync } from "../private-files.js";
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 
-/** Failures older than this when notification is first enabled are history, not news. */
+/** Failures older than this when notification is first enabled are history, not news.
+ * `failedAt` is when the coordinator closed the failed approval, not when it was approved. */
 const FAILURE_NOTICE_WINDOW_MS = 24 * 60 * 60_000;
 const RETAINED_NOTICES = 128;
 const NoticesSchema = z.strictObject({ version: z.literal(1), sent: z.array(z.string()) });
@@ -15,9 +16,11 @@ export interface CoordinatorDispatchNotifierPorts {
   /** Open coordinator requests from the ledger. */
   list(): CoordinatorBootstrapRequest[];
   readLifecycle(): unknown;
-  /** Whether the lead thread is idle; a busy or missing thread is retried later. */
-  leadIdle(agentId: string): Promise<boolean>;
-  send(input: { agentId: string; text: string; messageId: string }): Promise<void>;
+  /** Whether the lead thread exists and is not archived; otherwise nothing is queued. */
+  leadAvailable(agentId: string): Promise<boolean>;
+  /** Queue the notice for the lead. The message queue delivers only while the thread is
+   * idle and never unarchives it; the stable identity makes a retry enqueue at most once. */
+  enqueue(input: { agentId: string; text: string; messageId: string }): Promise<void>;
   now(): number;
 }
 
@@ -31,8 +34,8 @@ function noticeMessageId(key: string): string {
 /**
  * Tells the reviewed installation lead once about each coordinator update that failed
  * before it started or stalled after approval. A message carries no authority: it
- * never approves, cancels or relaunches anything. The lead is messaged only while
- * idle, so a notice never interrupts its running turn; delivery retries next check.
+ * never approves, cancels or relaunches anything. Notices go through the lead's message
+ * queue, which waits for an idle turn, so a notice never interrupts running work.
  */
 export function createCoordinatorDispatchNotifier(input: {
   agentId: string;
@@ -79,8 +82,8 @@ export function createCoordinatorDispatchNotifier(input: {
       const sent = readSent();
       // One notice per check: delivery starts a turn, so the next waits for idle again.
       const notice = pending.find((item) => !sent.includes(item.key));
-      if (!notice || !(await input.ports.leadIdle(input.agentId))) return;
-      await input.ports.send({
+      if (!notice || !(await input.ports.leadAvailable(input.agentId))) return;
+      await input.ports.enqueue({
         agentId: input.agentId,
         text: notice.text,
         messageId: noticeMessageId(notice.key),

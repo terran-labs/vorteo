@@ -1205,31 +1205,49 @@ test("a busy pre-claim dispatch closes its exact approval with a reason and is n
   expect(status?.failure?.category).toBe("busy");
   expect(status?.failure?.reason).toContain("before changing anything");
   expect(status?.readiness).toBeUndefined();
-  // The reviewed installation lead hears about it once, and never mid-turn.
-  const sent: { agentId: string; text: string; messageId: string }[] = [];
-  let idle = false;
+  // The reviewed installation lead hears about it once, only while it exists and is
+  // not archived, through its queue; a new request revision is a new notice.
+  const queued: { agentId: string; text: string; messageId: string }[] = [];
+  let available = false;
+  let listed = () => f.service().list();
   const lead = randomUUID();
   const notifier = createCoordinatorDispatchNotifier({
     agentId: lead,
     stateDirectory: f.root,
     ports: {
-      list: () => f.service().list(),
+      list: () => listed(),
       readLifecycle: () => f.service().readLifecycle(),
-      leadIdle: async () => idle,
-      send: async (message) => {
-        sent.push(message);
+      leadAvailable: async () => available,
+      enqueue: async (message) => {
+        queued.push(message);
       },
       now: Date.now,
     },
   });
   await notifier.check();
-  expect(sent).toEqual([]);
-  idle = true;
+  expect(queued).toEqual([]);
+  available = true;
   await notifier.check();
   await notifier.check();
-  expect(sent).toHaveLength(1);
-  expect(sent[0]).toMatchObject({ agentId: lead });
-  expect(sent[0]!.text).toContain(`Coordinator update ${closed.id} failed before it started`);
+  expect(queued).toHaveLength(1);
+  expect(queued[0]).toMatchObject({ agentId: lead });
+  expect(queued[0]!.text).toContain(`Coordinator update ${closed.id} failed before it started`);
+  const stalled = {
+    ...closed,
+    status: "approved" as const,
+    decisionAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+  };
+  for (const revision of [randomUUID(), randomUUID()]) {
+    listed = () => [{ ...stalled, revision }];
+    await notifier.check();
+    await notifier.check();
+  }
+  expect(queued.map((notice) => notice.text.includes("has not started"))).toEqual([
+    false,
+    true,
+    true,
+  ]);
+  expect(new Set(queued.map((notice) => notice.messageId)).size).toBe(3);
   // A record that no longer explains the ledger's current revision is hidden.
   expect(
     coordinatorDispatchStatuses({
