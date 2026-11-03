@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Fixes
+
+- Show the full Context window breakdown for Claude sessions running in the durable session host. They previously showed "This provider reports totals only" because the host never forwarded Claude's context data.
+
+## Unreleased - 2026-11-02
+
 ### Fixed
 
 - Keep a Codex turn that finished before Vorteo identified it from becoming the next Stop target. Completion events now carry their turn id, so a late event from that turn is ignored and Stop interrupts the turn actually running.

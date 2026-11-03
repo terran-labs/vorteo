@@ -539,3 +539,36 @@ test("an old host without conditional close capability keeps its session until e
   await session.close();
   expect(fixture.hosted[0]!.closed).toBe(true);
 });
+
+test("the provider's context breakdown crosses the host, and an old host reports none", async () => {
+  const fixture = await hostedFixture();
+  const session = await fixture.client.createSession(config, { agentId: "breakdown" });
+  const breakdown = {
+    totalTokens: 40_000,
+    maxTokens: 1_000_000,
+    categories: [{ name: "Messages", tokens: 30_000, kind: "used" }],
+    groups: [{ id: "skills", items: [{ name: "docs", detail: "plugin", tokens: 500 }] }],
+    observedAt: "2026-11-02T00:00:00.000Z",
+  };
+  const provider: AgentSession = fixture.hosted[0]!;
+  provider.getContextBreakdown = async () => breakdown;
+  expect(await session.getContextBreakdown?.()).toEqual(breakdown);
+
+  const connection = await connectSessionHost({
+    socketPath: fixture.socketPath,
+    token: fixture.token,
+  });
+  cleanups.push(() => connection.close());
+  const channel = await connection.attach({ sessionId: "breakdown", afterSeq: null });
+  const snapshot = HostedSessionSnapshotSchema.parse(channel.attach.snapshot);
+  delete snapshot.capabilities?.contextBreakdown;
+  const legacy = new HostedAgentSession({
+    provider: "claude",
+    capabilities: CONTROLLED_SESSION_CAPABILITIES,
+    channel: { ...channel, attach: { ...channel.attach, snapshot } },
+    reconnect: async () => null,
+    usage: { env: {} },
+    logger,
+  });
+  expect(await legacy.getContextBreakdown()).toBeNull();
+});
