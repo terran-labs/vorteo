@@ -12,6 +12,12 @@ import {
 } from "./execution-installation.js";
 import { PreviewMonitorConfigurationSchema } from "./preview-monitor-maintenance.js";
 
+/** The agent thread the coordinator notifies when a coordinator update fails before
+ * it starts or stalls after approval. Notification grants that thread no authority. */
+export const InstallationLeadConfigurationSchema = z.strictObject({
+  agentId: z.string().uuid(),
+});
+
 export interface ReviewedConfigurationSettingDefinition {
   /** Location in the coordinator's installation configuration. */
   path: readonly [string] | readonly [string, string];
@@ -39,6 +45,11 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
   operationalTelemetryEnabled: {
     path: ["operationalTelemetryEnabled"],
     value: z.literal(true),
+    renewal: true,
+  },
+  installationLead: {
+    path: ["installationLead"],
+    value: InstallationLeadConfigurationSchema,
     renewal: true,
   },
   containerSourceUpdateNode: {

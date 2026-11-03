@@ -8,7 +8,28 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Merge `main` after the fourth Host delivery so the fifth installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
 - Merge `main` after the second Host delivery so the third and fourth installed Host updates can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Settings no longer jumps. Pop-in warning and saved cards are gone: transient results show as toasts, ongoing sync shows in a fixed two-line status line, and loading panes hold their space. The page relies on browser scroll anchoring, with a small fallback for browsers without it, and the three-second snap-back after a jump is gone.
+- The top of General shows one stable Status row: Checking, All clear, the single item that needs you, or a folded list of every item with its own Review action.
+- Provider details open inside each provider card. Installed providers come first, providers that are not installed fold into an Available to install group with a copyable install command, and trailing controls stay aligned. Plugin providers use their own names, such as Antigravity and Muse Code.
+- The profile switcher and new-agent menus no longer list providers that are not installed. Installed providers that are not signed in stay listed.
+- Editing a profile from a provider page opens a full profile page with grouped sections and a save bar that appears only when something changed, instead of a panel docked to the right edge. Profiles outside a provider page open in a centered window.
+
+### Added
+
+- Settings status lines keep their full message readable to assistive technology without duplicating it as a label, so error text never collides with nearby field labels.
+- Building blocks for a single System view of Host and Dev status, an owner lock with an unlock window, and collapsed Locked groups. They are not connected to Settings yet.
 
 ## Unreleased - 2026-11-03
 
@@ -31,6 +52,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Show on the coordinator approval card whether the update could start now and which installation work blocks it.
 - Flag an approved coordinator update that has not started three minutes after it became eligible, in Installation controls, the sidebar banner and `coordinator-status`.
+- Add the reviewed `installationLead` coordinator setting. When set, the coordinator messages that agent thread once about each coordinator update that fails before starting or stalls after approval, and only while the thread is idle.
+- Deliver installation lead notices through the lead's message queue, so they wait for its turn to end and never unarchive an archived lead.
 
 ## Unreleased - 2026-11-03
 
