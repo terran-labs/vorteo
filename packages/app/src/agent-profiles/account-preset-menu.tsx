@@ -1,3 +1,6 @@
+import { catalogRecoveryAction } from "./catalog-recovery";
+import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { ChooserReveal } from "./chooser-reveal";
 import { ExecutionEnvironmentIcon } from "@/execution-installation/environment-icon";
 import { CliUpdateWarning } from "@/provider-selection/cli-update-warning";
@@ -8,7 +11,7 @@ import { profileCatalogState, sharedChoiceState, type LaunchChoices } from "./sh
 import { useCallback, useMemo, useReducer, useState, type ReactNode } from "react";
 import { Keyboard, ScrollView, Text, View, type LayoutChangeEvent } from "react-native";
 import { useRouter } from "expo-router";
-import { buildSettingsSectionRoute } from "@/utils/host-routes";
+import { buildProviderSettingsRoute, buildSettingsSectionRoute } from "@/utils/host-routes";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
@@ -605,18 +608,55 @@ function AccountChoices(props: AccountChoicesProps) {
           <Text style={styles.summary} testID="preset-catalog-error">
             {toErrorMessage(catalogError)}
           </Text>
-          <Button
-            variant="ghost"
-            size="md"
-            onPress={props.onRetry}
-            disabled={props.retrying}
-            testID="preset-retry-profiles"
-          >
-            {props.retrying ? "Retrying…" : "Retry"}
-          </Button>
+          <CatalogRecoveryAction
+            serverId={props.serverId}
+            provider={props.account.provider}
+            entry={entry}
+            discoveryError={props.error}
+            retrying={props.retrying}
+            onRetry={props.onRetry}
+          />
         </View>
       )}
     </View>
+  );
+}
+
+function CatalogRecoveryAction({
+  serverId,
+  provider,
+  entry,
+  discoveryError,
+  retrying,
+  onRetry,
+}: {
+  serverId: string | null;
+  provider: string;
+  entry: ProviderSnapshotEntry | undefined;
+  discoveryError?: string | null;
+  retrying: boolean;
+  onRetry(): void;
+}) {
+  const router = useRouter();
+  const { config } = useDaemonConfig(serverId);
+  const signIn = useCallback(() => {
+    const type = resolveProviderType(provider, config?.providers ?? {});
+    Keyboard.dismiss();
+    router.push(buildProviderSettingsRoute(type));
+  }, [provider, config?.providers, router]);
+  const needsSignIn = catalogRecoveryAction(entry, discoveryError) === "sign-in";
+  let label = retrying ? "Retrying…" : "Retry";
+  if (needsSignIn) label = "Sign in";
+  return (
+    <Button
+      variant="ghost"
+      size="md"
+      onPress={needsSignIn ? signIn : onRetry}
+      disabled={!needsSignIn && retrying}
+      testID={needsSignIn ? "preset-sign-in" : "preset-retry-profiles"}
+    >
+      {label}
+    </Button>
   );
 }
 

@@ -3373,7 +3373,38 @@ for (const width of [1280, 390]) {
     const before = await read();
     const originals = before.settings?.providerDefinitions;
     if (!originals) throw new Error("Missing provider definitions");
+    const reorderClient = await connectReadyInstallationDaemon("host");
+    const originalCodex = (await reorderClient.getDaemonConfig()).config.providers.codex;
     try {
+      // Give the disabled group a second installed CLI instead of dragging between groups.
+      await reorderClient.patchDaemonConfig({
+        providers: {
+          codex: {
+            command: [process.execPath, path.resolve(__dirname, "../fixtures/catalog-codex.mjs")],
+          },
+        },
+      });
+      await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
+      const prepared = await read();
+      const setup = await page.request.patch(`${origin}/api/installation/owner/settings`, {
+        headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
+        data: {
+          expectedRevision: prepared.revision,
+          settings: {
+            providerDefinitions: originals.map((entry, index) => ({
+              ...entry,
+              policy: {
+                ...entry.policy,
+                order:
+                  ({ mock: 0, codex: 1 } as Record<string, number>)[entry.providerType] ??
+                  index + 2,
+                ...(entry.providerType === "codex" ? { enabled: false } : {}),
+              },
+            })),
+          },
+        },
+      });
+      expect(setup.ok()).toBe(true);
       await page.goto(`${origin}/settings/providers`);
       const family = page.getByTestId("provider-family-mock");
       await expect(family).toHaveCount(1);
@@ -3414,7 +3445,7 @@ for (const width of [1280, 390]) {
         await expect(handle).toHaveAttribute("aria-pressed", "true");
         await page.keyboard.press("ArrowDown");
         await expect(page.locator('[id^="DndLiveRegion-"]')).toContainText(
-          "over droppable area antigravity",
+          "over droppable area codex",
         );
         await page.keyboard.press("Space");
         await expect
@@ -3472,6 +3503,11 @@ for (const width of [1280, 390]) {
         headers: { Origin: origin, "X-Vorteo-Provider-Removal": "1" },
         data: { expectedRevision: latest.revision, settings: { providerDefinitions: originals } },
       });
+      await reorderClient.patchDaemonConfig({
+        providers: { codex: { command: originalCodex?.command ?? ["codex"] } },
+      });
+      await reorderClient.refreshProvidersSnapshot({ providers: ["codex"] });
+      await reorderClient.close();
     }
   });
 }
@@ -3565,6 +3601,7 @@ test("catalog runtime enrollment reuses one disabled shared provider across both
   });
   expect(created.ok()).toBe(true);
   await page.goto(`${origin}/settings/providers`);
+  await page.getByTestId("shared-providers-available-toggle").click();
   await expect(page.getByTestId("provider-family-auggie")).toBeVisible();
   await page.getByRole("button", { name: "Add provider", exact: true }).click();
   for (const kind of ["host", "container"] as const) {

@@ -8,6 +8,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Open provider sign-in settings from failed account choices, keep provider and metadata settings steady through loading and reconnects, and report install and save failures with toasts. Update packaged provider tests for grouped installation rows and ordering.
+
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
 
 ## Unreleased - 2026-11-03
