@@ -148,3 +148,38 @@ test("needs attention skips failing providers that are off by default", () => {
       .length,
   ).toBe(4);
 });
+
+test("provider names use the manifest, then the plugin label, then a readable ID", () => {
+  function name(id: string, providerType: string, label?: string) {
+    return groupInstallationProviders([
+      { id, providerType, policy: { label }, bindings: { host: providerType } },
+    ])[0].name;
+  }
+  expect(name("plugin/antigravity/antigravity", "antigravity", "Antigravity")).toBe("Antigravity");
+  expect(name("plugin/muse/muse", "muse", "Muse Code")).toBe("Muse Code");
+  // An account's label names one connection, never the provider.
+  expect(name("claude-account-1", "claude", "Claude 1")).toBe("Claude");
+  expect(name("codex", "codex")).toBe("Codex");
+  expect(name("custom-provider", "custom-provider")).toBe("Custom Provider");
+});
+
+test("plugin family names do not depend on account order", () => {
+  const account: InstallationProvider = {
+    id: "account/first",
+    providerType: "custom-provider",
+    bindings: {},
+    policy: { label: "Personal account" },
+  };
+  const plugin: InstallationProvider = {
+    id: "plugin/custom-provider",
+    providerType: "custom-provider",
+    bindings: {},
+    policy: { label: "Custom CLI" },
+  };
+  for (const definitions of [
+    [account, plugin],
+    [plugin, account],
+  ]) {
+    expect(groupInstallationProviders(definitions)[0].name).toBe("Custom CLI");
+  }
+});

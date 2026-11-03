@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): Settings round 3, batch 1. Settings no longer shifts layout: transient results show as toasts, ongoing sync shows in a fixed status line and loading panes keep their space. Provider lists group uninstalled providers under Available to install, profiles open on a dedicated page, and owner-password controls stay grouped and disabled until unlocked. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): the sidebar merges an empty, hidden Dev System project with the Host's again, so the System project keeps one row, its folder placement, its ordering and the workspaces recorded under its merged key. App-only change; README overview and onboarding are unchanged.
