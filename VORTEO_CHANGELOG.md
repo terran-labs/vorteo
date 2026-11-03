@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Added
+
+- Add a standalone GitHub fingerprint gate for Factory heartbeats, with conservative wake decisions when evidence is unavailable.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Add the standing charters for the four per-project Factory roles: Foreman, Builds, Releases and Mechanic. Nothing uses them yet.
