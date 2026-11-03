@@ -159,3 +159,14 @@ it("keeps the reason separate from the fixed approval label", () => {
     }),
   ).toMatchObject({ reason, action: { label: "Approve restart" } });
 });
+
+it("keeps a standalone update in progress ahead of its old version and lost connection", () => {
+  expect(
+    derive({
+      ...base,
+      reconnectingAfterAction: true,
+      availableVersion: "v2",
+      connection: { connectionStatus: "offline", lastError: "Updating" },
+    }),
+  ).toEqual({ status: "updating", action: null });
+});

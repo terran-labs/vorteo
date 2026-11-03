@@ -8,10 +8,20 @@ import type {
 } from "@getpaseo/protocol/session-host-maintenance";
 import type { InstallationPanelModel } from "./panel-model";
 import type { RestartSummary } from "@getpaseo/protocol/execution-installation";
-import { InstallationControls, InstallationRestartBanner } from "./panel";
+import {
+  InstallationControls,
+  InstallationRestartBanner,
+  InstallationSystemDetails,
+} from "./panel";
 import { sessionHostJobFixture, sessionHostStatusFixture } from "./session-host-review.fixture";
 import type { SessionHostAction, SessionHostOverview } from "./session-host-review";
 
+vi.mock("./use-installation-upgrades", () => ({
+  useInstallationUpgradeStatus: () => ({ data: null }),
+}));
+vi.mock("@/contexts/toast-api-context", () => ({
+  useToast: () => ({ error: vi.fn(), show: vi.fn() }),
+}));
 vi.mock("@/utils/copy-to-clipboard", () => ({ copyToClipboard: vi.fn() }));
 
 const capture = vi.hoisted(() => ({
@@ -144,7 +154,15 @@ test("the session host card requests, reviews and decides exact plans at 390px",
   document.body.style.margin = "0";
   document.body.append(container);
   const root = createRoot(container);
-  const render = (width: number) => act(() => root.render(<InstallationControls key={width} />));
+  const render = (width: number) =>
+    act(() =>
+      root.render(
+        <>
+          <InstallationControls key={width} />
+          <InstallationSystemDetails target="host" />
+        </>,
+      ),
+    );
   const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
   const disabled = (id: string) => byTestId(id)?.getAttribute("aria-disabled") === "true";
   const press = async (id: string) => {
@@ -257,7 +275,14 @@ test("removal is refused in the card while durable sessions are on or sessions r
   };
   overview = { jobs: [], status: { supported: true, installed: true, detail: installed } };
   try {
-    act(() => root.render(<InstallationControls key="removal" />));
+    act(() =>
+      root.render(
+        <>
+          <InstallationControls key="removal" />
+          <InstallationSystemDetails target="host" />
+        </>,
+      ),
+    );
     const model = await vi.waitFor(() => {
       expect(capture.model).toBeDefined();
       return capture.model!;
@@ -289,7 +314,14 @@ test("an uninspectable session host keeps its jobs reviewable and blocks new req
   const job = sessionHostJobFixture;
   overview = { jobs: [job], status: null };
   try {
-    act(() => root.render(<InstallationControls key="unavailable" />));
+    act(() =>
+      root.render(
+        <>
+          <InstallationControls key="unavailable" />
+          <InstallationSystemDetails target="host" />
+        </>,
+      ),
+    );
     const model = await vi.waitFor(() => {
       expect(capture.model).toBeDefined();
       return capture.model!;
@@ -314,7 +346,7 @@ test("an uninspectable session host keeps its jobs reviewable and blocks new req
 });
 
 // Last: it locks the shared panel model.
-test("a pending session host request raises the floating notice while controls are locked", async () => {
+test("a pending session host request raises one System notice while controls are locked", async () => {
   vi.stubGlobal("React", React);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
@@ -322,30 +354,36 @@ test("a pending session host request raises the floating notice while controls a
   const root = createRoot(container);
   const idle = { requested: 0, queued: 0, running: 0 };
   try {
-    act(() => root.render(<InstallationControls key="banner" />));
+    act(() =>
+      root.render(
+        <>
+          <InstallationControls key="banner" />
+          <InstallationSystemDetails target="host" />
+        </>,
+      ),
+    );
     const model = await vi.waitFor(() => {
       expect(capture.model).toBeDefined();
       return capture.model!;
     });
     await act(() => model.initialize());
     await act(() => model.lock());
-    act(() => root.render(<InstallationRestartBanner placement="floating" />));
+    act(() => root.render(<InstallationRestartBanner placement="sidebar" />));
     const banner = () =>
       container.querySelector<HTMLElement>('[data-testid="installation-restart-banner"]');
 
     summary = { ...idle, sessionHost: { requested: 1, queued: 0, running: 0 } };
     await act(() => model.refresh());
-    expect(banner()?.textContent).toContain("1 session host requests need attention.");
-    expect(banner()?.textContent).toContain("Review restart");
+    expect(banner()?.textContent).toBe("System needs attention (1)");
 
-    // Queued or running work is reported in the sidebar row, not as a floating call to action.
+    // Queued work does not need another approval notice.
     summary = { ...idle, sessionHost: { requested: 0, queued: 1, running: 0 } };
     await act(() => model.refresh());
-    expect(banner()?.textContent ?? "").not.toContain("session host requests");
+    expect(banner()).toBeNull();
 
     summary = { ...idle, sessionHost: { requested: 0, queued: 0, running: 0 } };
     await act(() => model.refresh());
-    expect(banner()?.textContent ?? "").not.toContain("session host requests");
+    expect(banner()).toBeNull();
   } finally {
     summary = null;
     act(() => root.unmount());

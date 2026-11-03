@@ -2,6 +2,9 @@ import { useCallback } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
+import { useToast } from "@/contexts/toast-context";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import { settingsStyles } from "@/styles/settings";
@@ -67,10 +70,23 @@ export function InstallationUpgradeDetails({
 }) {
   const controlSize = useVortonTouch() ? "md" : "sm";
   const { decide } = useInstallationUpgradeActions(client);
-  const approve = useCallback(
-    () => decide.mutate({ upgrade, decision: "approve" }),
-    [decide, upgrade],
-  );
+  const toast = useToast();
+  const approve = useCallback(async () => {
+    try {
+      if (
+        await confirmDialog({
+          title: "Approve update?",
+          message: upgradeApprovalText(hasDev),
+          confirmLabel: "Approve update",
+          destructive: true,
+        })
+      ) {
+        await decide.mutateAsync({ upgrade, decision: "approve" });
+      }
+    } catch (error) {
+      toast.error(toErrorMessage(error));
+    }
+  }, [decide, upgrade, hasDev, toast]);
   const reject = useCallback(
     () => decide.mutate({ upgrade, decision: "reject" }),
     [decide, upgrade],
@@ -79,7 +95,7 @@ export function InstallationUpgradeDetails({
   return (
     <View style={styles.item} testID={`installation-upgrade-${upgrade.id}`}>
       <View style={styles.header}>
-        <Text style={settingsStyles.rowTitle}>Upgrade to {upgrade.release}</Text>
+        <Text style={settingsStyles.rowTitle}>Update to {upgrade.release}</Text>
         <StatusBadge
           label={upgradeStatusLabel(upgrade)}
           variant={STATUS_VARIANTS[upgrade.status]}
@@ -100,7 +116,7 @@ export function InstallationUpgradeDetails({
             disabled={decide.isPending}
             testID="installation-upgrade-approve"
           >
-            Approve upgrade
+            Approve update
           </Button>
           <Button
             variant="outline"
@@ -113,11 +129,7 @@ export function InstallationUpgradeDetails({
           </Button>
         </View>
       ) : null}
-      {decide.error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {toErrorMessage(decide.error)}
-        </Text>
-      ) : null}
+      <SettingsStatusLine message={decide.error ? toErrorMessage(decide.error) : null} />
     </View>
   );
 }
@@ -134,5 +146,4 @@ const styles = StyleSheet.create((theme) => ({
   item: { gap: theme.spacing[2] },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
-  error: { color: theme.colors.destructive, fontSize: theme.fontSize.base },
 }));

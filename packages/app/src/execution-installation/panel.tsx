@@ -1,3 +1,7 @@
+import { toErrorMessage } from "@/utils/error-messages";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
+import { useInstallationUpgradeStatus } from "./use-installation-upgrades";
+import { systemAttentionCount } from "@/screens/settings/system/system-adapter-model";
 import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
@@ -21,7 +25,6 @@ import type { NativeHelperJob } from "@getpaseo/protocol/native-helper-maintenan
 import {
   helperActionDisabledReason,
   helperReviewSummary,
-  lockedMaintenanceSummary,
   helperRollbackSummary,
   type HelperReviewAction,
 } from "./helper-review";
@@ -59,7 +62,7 @@ import { usePathname, useRouter } from "expo-router";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
-import { MaintenanceNotice, MaintenanceNoticePlacement } from "./maintenance-notice";
+
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -74,25 +77,18 @@ import {
   CoordinatorRecoveryHistory,
   HistoryGroup,
   useCoordinatorHistoryCount,
-  BootstrapBanner,
   getPreclaimRecoveryPanel,
   getClaimedRecoveryPanel,
   ClaimedRecoveryReview,
-  ClaimedRecoveryBanner,
   PreclaimRecoveryReview,
-  PreclaimRecoveryBanner,
 } from "./bootstrap-panel";
 import { installationHasDev, readExecutionInstallation } from "./policy";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
-import { InstallationUpgradeCard } from "./installation-upgrade-card";
+
 import {
   InstallationPanelModel,
   restartRequestSummary,
-  restartBannerTitle,
-  restartCancellable,
-  delegationOverdueNote,
-  restartNoticeVisible,
   restartBlockingReason,
   restartRepairGuidance,
   restartActionDisabledReason,
@@ -103,7 +99,6 @@ import type {
   MaintenanceService,
   ProfileSharingStatus,
   RestartJob,
-  RestartSummary,
 } from "@getpaseo/protocol/execution-installation";
 import { restartOperationView } from "./restart-operations";
 
@@ -441,15 +436,63 @@ function InstallationHistory({
   );
 }
 
-function InstallationPanel({
+function InstallationPanel({ model }: { model: InstallationPanelModel; requestId: string | null }) {
+  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+  return (
+    <SettingsSection title="Installation" testID="installation-panel">
+      <View style={settingsStyles.card} testID="installation-card">
+        <InstallationOwnerAccess model={model} state={state} />
+      </View>
+    </SettingsSection>
+  );
+}
+
+/** System adapters share the installation session and its retained polling snapshot. */
+export function useInstallationSystemModel(): InstallationPanelModel | null {
+  return getInstallationPanel(useHostRegistryLoaded());
+}
+export function InstallationSystemDetails({ target }: { target: "host" | "container-daemon" }) {
+  const model = useInstallationSystemModel();
+  return model ? (
+    <InstallationSystemDetailsBody model={model} target={target} requestId={null} />
+  ) : null;
+}
+export function InstallationSystemAdvanced() {
+  const model = useInstallationSystemModel();
+  return model ? <InstallationSystemAdvancedBody model={model} /> : null;
+}
+function InstallationSystemAdvancedBody({ model }: { model: InstallationPanelModel }) {
+  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+  return state.unlocked ? <DaemonAutomationControl model={model} state={state} /> : null;
+}
+
+function InstallationActionStatus({
+  state,
+}: {
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  return <SettingsStatusLine message={state.error ?? state.helperError} />;
+}
+
+function InstallationSystemDetailsBody({
   model,
   requestId,
+  target,
 }: {
   model: InstallationPanelModel;
   requestId: string | null;
+  target: "host" | "container-daemon";
 }) {
   const controlSize = useVortonTouch() ? "md" : "sm";
-  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+  const snapshot = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+  const state = useMemo(
+    () => ({
+      ...snapshot,
+      jobs: snapshot.jobs.filter((job) => job.target === target),
+      pendingJobs: snapshot.pendingJobs.filter((job) => job.target === target),
+    }),
+    [snapshot, target],
+  );
   const [historyVisible, setHistoryVisible] = useState(false);
   const [sharingVisible, setSharingVisible] = useState(false);
   const pendingIds = new Set(state.pendingJobs.map((job) => job.id));
@@ -488,16 +531,10 @@ function InstallationPanel({
     sharingVariant = "warning";
   }
   return (
-    <SettingsSection title="Installation" testID="installation-panel">
+    <View testID={`system-installation-details-${target}`}>
       <View style={settingsStyles.card} testID="installation-card">
-        <InstallationOwnerAccess model={model} state={state} />
-        <CoordinatorMaintenanceReviews />
-        <HelperActionError model={model} />
-        {state.error ? (
-          <Text accessibilityRole="alert" style={[styles.textInset, styles.error]}>
-            {state.error}
-          </Text>
-        ) : null}
+        <InstallationActionStatus state={state} />
+        {target === "host" ? <CoordinatorMaintenanceReviews /> : null}
         {state.unlocked ? (
           <>
             <MaintenanceDashboard
@@ -521,39 +558,15 @@ function InstallationPanel({
               onRefresh={model.refreshServiceQueue}
               onCancel={model.cancelMaintenanceService}
             />
-            <DaemonAutomationControl model={model} state={state} />
-            {state.brokerJobs.map((job) => (
-              <BrokerRequest
-                key={`${job.id}:${job.revision}`}
-                job={job}
-                model={model}
-                busy={state.busy}
-              />
-            ))}
-            {state.monitorJobs.map((job) => (
-              <MonitorRequest
-                key={`${job.id}:${job.revision}`}
-                job={job}
-                model={model}
-                busy={state.busy}
-              />
-            ))}
-            {state.helperJobs.map((job) => (
-              <HelperRequest
-                key={`${job.id}:${job.revision}`}
-                job={job}
-                model={model}
-                busy={state.busy}
-              />
-            ))}
-            <SessionHostCard model={model} state={state} />
-            <InstructionRequestsCard model={model} state={state} />
+
+            {target === "host" ? <InstallationServiceRequests model={model} state={state} /> : null}
             {active.map((job) => (
               <RestartRequest
-                key={`${job.id}:${job.revision}`}
+                key={job.id}
                 job={job}
                 model={model}
                 busy={state.busy}
+                showActions={false}
                 linked={job.id === requestId}
               />
             ))}
@@ -562,12 +575,8 @@ function InstallationPanel({
                 This restart request is no longer available.
               </Text>
             ) : null}
-            {state.lastUpdatedAt && active.length === 0 ? (
-              <Text style={[styles.textInset, styles.text]}>No pending restart requests</Text>
-            ) : null}
-            <SafetySnapshotsCard client={panelClient} />
-            <InstallationUpgradeCard client={panelClient} />
-            {hasDev ? (
+            {target === "host" ? <SafetySnapshotsCard client={panelClient} /> : null}
+            {hasDev && target === "host" ? (
               <View style={[styles.cardBody, settingsStyles.rowBorder]}>
                 <View style={styles.requestHeader}>
                   <Button
@@ -604,7 +613,47 @@ function InstallationPanel({
           </>
         ) : null}
       </View>
-    </SettingsSection>
+    </View>
+  );
+}
+
+function InstallationServiceRequests({
+  model,
+  state,
+}: {
+  model: InstallationPanelModel;
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  return (
+    <>
+      {" "}
+      {state.brokerJobs.map((job) => (
+        <BrokerRequest
+          key={`${job.id}:${job.revision}`}
+          job={job}
+          model={model}
+          busy={state.busy}
+        />
+      ))}
+      {state.monitorJobs.map((job) => (
+        <MonitorRequest
+          key={`${job.id}:${job.revision}`}
+          job={job}
+          model={model}
+          busy={state.busy}
+        />
+      ))}
+      {state.helperJobs.map((job) => (
+        <HelperRequest
+          key={`${job.id}:${job.revision}`}
+          job={job}
+          model={model}
+          busy={state.busy}
+        />
+      ))}
+      <SessionHostCard model={model} state={state} />
+      <InstructionRequestsCard model={model} state={state} />
+    </>
   );
 }
 
@@ -795,21 +844,21 @@ const MAINTENANCE_PERMISSIONS = [
   [
     "host",
     "Host",
-    "Allows routine Host updates, build scripts and daemon restarts without another approval. Current turns finish before replacement; Host connections may briefly disconnect.",
+    "Allows routine Host updates, build scripts and Host or Dev restarts without another approval. Current turns finish before replacement; Host connections may briefly disconnect.",
   ],
   [
     "container-daemon",
     "Dev",
-    "Allows routine Dev updates, build scripts and daemon restarts without another approval. Current turns finish before replacement; Dev connections may briefly disconnect.",
+    "Allows routine Dev updates, build scripts and Host or Dev restarts without another approval. Current turns finish before replacement; Dev connections may briefly disconnect.",
   ],
   [
     "coordinator",
-    "Coordinator",
+    "System services",
     "Allows maintenance of the service that manages installation requests. Maintenance controls may briefly be unavailable. Execution requires verified independent recovery and an exact compatible rollback plan.",
   ],
   [
     "supervisor",
-    "Supervisor",
+    "System services for Dev",
     "Allows maintenance of the process manager that keeps daemons running. Its managed daemon may also be interrupted. Execution requires supported admission, process preservation and verified recovery.",
   ],
 ] as const;
@@ -829,10 +878,10 @@ export function DaemonAutomationControl({
         style={[styles.cardBody, settingsStyles.rowBorder]}
         testID="daemon-automation-unavailable"
       >
-        <Text style={settingsStyles.rowTitle}>Automatic daemon updates and restarts</Text>
+        <Text style={settingsStyles.rowTitle}>Automatic updates and restarts</Text>
         <Text style={styles.text}>
-          The selected coordinator does not support this preference. Update the coordinator through
-          Installation controls. Existing approval rules remain in effect.
+          Update System services before changing this preference. Existing approval rules remain in
+          effect.
         </Text>
       </View>
     );
@@ -867,32 +916,20 @@ export function DaemonAutomationControl({
       )}
       {!state.daemonAutomation.services ? (
         <Text style={styles.text}>
-          Update the coordinator to configure separate service permissions. Existing permissions
-          remain in effect.
+          Update System services to configure separate permissions. Existing permissions remain in
+          effect.
         </Text>
       ) : null}
       {state.daemonAutomation.legacyHostOnly && !state.maintenanceDelegation?.enabled ? (
         <Text style={styles.text}>
-          Existing Host-only daemon permissions are retained. Coordinator and supervisor permissions
-          require their own opt-in.
+          Existing Host-only permissions are retained. System services require separate
+          authorization.
         </Text>
       ) : null}
       <RequestReadiness status={state.maintenanceStatus} />
-      {state.maintenanceDelegationError ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {state.maintenanceDelegationError}
-        </Text>
-      ) : null}
-      {state.daemonAutomationError ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {state.daemonAutomationError}
-        </Text>
-      ) : null}
-      {state.notice ? (
-        <Text accessibilityLiveRegion="polite" style={styles.text}>
-          {state.notice}
-        </Text>
-      ) : null}
+      <SettingsStatusLine
+        message={state.maintenanceDelegationError ?? state.daemonAutomationError ?? state.notice}
+      />
     </View>
   );
 }
@@ -1109,12 +1146,14 @@ function RestartRequest({
   busy,
   historical = false,
   linked = false,
+  showActions = true,
 }: {
   job: RestartJob;
   model: InstallationPanelModel;
   busy: boolean;
   historical?: boolean;
   linked?: boolean;
+  showActions?: boolean;
 }) {
   const status = restartStatus(job, historical);
   const source = Boolean(job.update || job.sourceBatch);
@@ -1146,24 +1185,10 @@ function RestartRequest({
             : null}
         </Text>
         <RestartDetails job={job} />
-        <RestartActions job={job} model={model} busy={busy} historical={historical} />
+        {showActions ? (
+          <RestartActions job={job} model={model} busy={busy} historical={historical} />
+        ) : null}
       </View>
-    </View>
-  );
-}
-
-function HelperActionError({ model }: { model: InstallationPanelModel }) {
-  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
-  const dismiss = useCallback(() => model.dismissHelperError(), [model]);
-  if (!state.helperError) return null;
-  return (
-    <View style={styles.cardBody}>
-      <Text accessibilityRole="alert" style={styles.error}>
-        {state.helperError}
-      </Text>
-      <Button variant="ghost" onPress={dismiss}>
-        Dismiss
-      </Button>
     </View>
   );
 }
@@ -1867,7 +1892,7 @@ function isPlanBound(job: RestartJob): boolean {
 }
 
 function isPlainHostRestart(job: RestartJob): boolean {
-  return job.target === "host" && !isPlanBound(job);
+  return job.target === "host" && !job.update && !job.sourceBatch && !isPlanBound(job);
 }
 
 function finishLabel(job: RestartJob): string {
@@ -1886,19 +1911,32 @@ export function RestartActions({
   historical: boolean;
 }) {
   const installation = readExecutionInstallation();
+  const toast = useToast();
   const pending = job.status === "pending";
   const queued = job.status === "approved" && job.whenIdle;
   const source = Boolean(job.update || job.sourceBatch);
-  const plainHostRestart = isPlainHostRestart(job);
   const install = useCallback(() => {
-    void model.decide(job, "approve");
-  }, [job, model]);
+    void confirmDialog({
+      title: "Approve restart?",
+      message: job.reason,
+      confirmLabel: "Approve restart",
+      destructive: true,
+    })
+      .then((confirmed) => (confirmed ? model.decide(job, "approve") : undefined))
+      .catch((error) => toast.error(toErrorMessage(error)));
+  }, [job, model, toast]);
   const queue = useCallback(() => {
     void model.decide(job, "approve-when-idle");
   }, [job, model]);
   const finish = useCallback(() => {
-    void model.decide(job, "finish-current-turns");
-  }, [job, model]);
+    void confirmDialog({
+      title: "Finish turns and restart?",
+      message: "Current turns can finish before this environment restarts. New work waits.",
+      confirmLabel: "Finish turns and restart",
+    })
+      .then((confirmed) => (confirmed ? model.decide(job, "finish-current-turns") : undefined))
+      .catch((error) => toast.error(toErrorMessage(error)));
+  }, [job, model, toast]);
   const cancel = useCallback(() => {
     void model.decide(job, pending ? "reject" : "cancel");
   }, [job, model, pending]);
@@ -1962,7 +2000,6 @@ export function RestartActions({
               {finishLabel(job)}
             </RestartActionButton>
           )}
-          {plainHostRestart ? <ForceRestartButton job={job} model={model} busy={busy} /> : null}
           <Button variant="ghost" disabled={busy} onPress={cancel}>
             Cancel
           </Button>
@@ -1973,9 +2010,9 @@ export function RestartActions({
           <Button variant="ghost" disabled={busy} onPress={cancel}>
             Cancel
           </Button>
-          <RestartEscalation job={job} model={model} busy={busy} />
         </ActionFooter>
       ) : null}
+      <RestartEscalation job={job} model={model} busy={busy} />
     </>
   );
 }
@@ -2112,19 +2149,22 @@ function RestartEscalation({
   model: InstallationPanelModel;
   busy: boolean;
 }) {
-  const [appearsStuck, setAppearsStuck] = useState(false);
-  const reportStuck = useCallback(() => setAppearsStuck(true), []);
-  if (appearsStuck) return <ForceRestartButton job={job} model={model} busy={busy} />;
-  return (
-    <Button
-      variant="outline"
-      disabled={busy}
-      onPress={reportStuck}
-      testID={`restart-stuck-${job.id}`}
-    >
-      Restart appears stuck
-    </Button>
-  );
+  const [timedOut, setTimedOut] = useState(false);
+  useEffect(() => {
+    setTimedOut(false);
+    if (
+      !isPlainHostRestart(job) ||
+      !job.approvedAt ||
+      !["approved", "running"].includes(job.status)
+    )
+      return;
+    const deadline = Date.parse(job.approvedAt) + 60_000;
+    if (!Number.isFinite(deadline)) return;
+    const delay = Math.max(0, deadline - Date.now());
+    const timer = setTimeout(() => setTimedOut(true), delay);
+    return () => clearTimeout(timer);
+  }, [job]);
+  return timedOut ? <ForceRestartButton job={job} model={model} busy={busy} /> : null;
 }
 
 function ForceRestartButton({
@@ -2208,198 +2248,28 @@ export function useRestartsAwaitingApproval(): number {
 }
 
 export function InstallationRestartBanner({
-  placement = "floating",
+  placement = "sidebar",
 }: {
   placement?: "floating" | "sidebar" | "rail";
 }) {
-  const model = getInstallationPanel(useHostRegistryLoaded());
-  const bootstrap = getBootstrapPanel();
-  const recovery = getPreclaimRecoveryPanel();
-  const claimedRecovery = getClaimedRecoveryPanel();
-  return (
-    <MaintenanceNoticePlacement.Provider value={placement}>
-      {placement !== "floating" ? <MaintenanceProvisioning banner /> : null}
-      {placement !== "floating" ? <ClaimedRepairProvisioning banner /> : null}
-      {placement !== "floating" && claimedRecovery ? (
-        <ClaimedRecoveryBanner model={claimedRecovery} />
-      ) : null}
-      {placement !== "floating" && recovery ? <PreclaimRecoveryBanner model={recovery} /> : null}
-      {bootstrap ? <BootstrapBanner model={bootstrap} /> : null}
-      {model ? <RestartBanner model={model} /> : null}
-    </MaintenanceNoticePlacement.Provider>
-  );
+  const model = useInstallationSystemModel();
+  return model && placement !== "floating" ? <SystemAttentionNoticeBody model={model} /> : null;
 }
-
-function restartSummaryNeedsAction(summary: RestartSummary) {
-  return [
-    summary.requested,
-    summary.serviceMaintenance?.requested,
-    summary.serviceMaintenance?.attention,
-    summary.nativeHelper?.requested,
-    summary.nativeHelper?.recovery,
-    summary.sessionHost?.requested,
-    summary.previewBrokerDeployment?.requested,
-    summary.previewBrokerDeployment?.recovery,
-    summary.previewBroker?.requested,
-    summary.previewBroker?.recovery,
-    summary.previewMonitor?.requested,
-    summary.previewMonitor?.recovery,
-  ].some((count) => (count ?? 0) > 0);
-}
-
-function RestartBanner({ model }: { model: InstallationPanelModel }) {
+export const SystemAttentionNotice = InstallationRestartBanner;
+function SystemAttentionNoticeBody({ model }: { model: InstallationPanelModel }) {
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const router = useRouter();
-  const open = useCallback(() => router.push("/settings/general?installation=1"), [router]);
-  const pendingIds = new Set(state.pendingJobs.map((job) => job.id));
-  const jobs = state.jobs.filter((job) => {
-    const active = pendingIds.has(job.id) || job.status === "approved" || job.status === "running";
-    return active && restartNoticeVisible(job);
-  });
-  if (!state.unlocked && state.restartSummary) {
-    const summary = state.restartSummary;
-    const serviceCount = summary.serviceMaintenance
-      ? summary.serviceMaintenance.requested +
-        summary.serviceMaintenance.queued +
-        summary.serviceMaintenance.unverified
-      : 0;
-    const description = lockedMaintenanceSummary(summary);
-    if (!description) return null;
-    return (
-      <View testID="installation-restart-banner">
-        <MaintenanceNotice
-          sidebarOnly={serviceCount > 0}
-          needsAction={restartSummaryNeedsAction(summary)}
-          revision={description}
-          title="Installation maintenance"
-          description={description}
-          reviewLabel="Review restart"
-          onReview={open}
-        />
-      </View>
-    );
-  }
-  const helpers = state.helperJobs.filter(
-    (job) =>
-      ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
-  );
-  const brokers = state.brokerJobs.filter(
-    (job) =>
-      ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
-  );
-  const monitors = state.monitorJobs.filter(
-    (job) =>
-      ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
-  );
-  const services = (state.serviceQueue?.jobs ?? []).filter((job) =>
-    ["pending", "approved", "running", "failed"].includes(job.status),
-  );
-  if (!jobs.length && !helpers.length && !monitors.length && !brokers.length && !services.length)
-    return null;
-  return (
-    <View testID="installation-restart-banner">
-      {state.error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {state.error}
-        </Text>
-      ) : null}
-      {services.map((job) => (
-        <MaintenanceNotice
-          sidebarOnly
-          testID={`maintenance-service-notice-${job.id}`}
-          key={job.id}
-          needsAction={job.status === "pending" || job.status === "failed"}
-          revision={`${job.id}:${job.revision}:${job.status}`}
-          title={
-            job.target === "maintenance-controller"
-              ? "Controller maintenance"
-              : "Recovery launcher maintenance"
-          }
-          description={job.status === "running" ? `Outcome unverified. ${job.detail}` : job.detail}
-          reviewLabel="Review maintenance"
-          onReview={open}
-        />
-      ))}
-      {brokers.map((job) => (
-        <View key={job.id}>
-          <MaintenanceNotice
-            needsAction={job.status === "pending" || job.stage === "recovery_required"}
-            revision={`${job.id}:${job.revision}:${job.status}:${job.stage}`}
-            title={
-              job.target === "preview-broker-deployment"
-                ? "Preview broker consumer deployment"
-                : "Preview broker trust migration"
-            }
-            description={brokerReviewSummary(job)}
-            reviewLabel="Review broker"
-            onReview={open}
-          />
-        </View>
-      ))}
-      {monitors.map((job) => (
-        <View key={job.id}>
-          <MaintenanceNotice
-            needsAction={job.status === "pending" || job.stage === "recovery_required"}
-            revision={`${job.id}:${job.revision}:${job.status}:${job.stage}`}
-            title="Preview monitor maintenance"
-            description={monitorReviewSummary(job)}
-            reviewLabel="Review monitor"
-            onReview={open}
-          />
-        </View>
-      ))}
-      {helpers.map((job) => (
-        <View key={job.id}>
-          <MaintenanceNotice
-            needsAction={job.status === "pending" || job.stage === "recovery_required"}
-            revision={`${job.id}:${job.revision}:${job.status}:${job.stage}`}
-            title="Native helper maintenance"
-            description={helperReviewSummary(job)}
-            reviewLabel="Review helper"
-            onReview={open}
-          />
-        </View>
-      ))}
-      {jobs.map((job) => (
-        <RestartBannerItem key={job.id} job={job} model={model} />
-      ))}
-    </View>
-  );
-}
-
-function RestartBannerItem({ job, model }: { job: RestartJob; model: InstallationPanelModel }) {
-  const router = useRouter();
-  const delegated = Boolean(job.delegatedTo);
-  const cancel = useCallback(() => {
-    void model.decide(job, job.status === "pending" ? "reject" : "cancel");
-  }, [job, model]);
-  const open = useCallback(
-    () =>
-      router.push({
-        pathname: "/settings/[section]",
-        params: { section: "general", installation: "1", restart: job.id },
-      }),
-    [router, job.id],
-  );
-  return (
-    <MaintenanceNotice
-      title={restartBannerTitle(job)}
-      description={
-        delegated
-          ? job.reason
-          : [delegationOverdueNote(job), restartRepairGuidance(job) ?? restartRequestSummary(job)]
-              .filter(Boolean)
-              .join(" ")
-      }
-      // A delegate is handling it, so it is status rather than a request for approval.
-      needsAction={job.status === "pending" && !delegated}
-      onCancel={delegated && restartCancellable(job) ? cancel : undefined}
-      revision={`${job.id}:${job.revision}:${job.status}:${job.sourceBatch?.status ?? ""}`}
-      reviewLabel={job.update || job.sourceBatch ? "Review update" : "Review restart"}
-      onReview={open}
-      testID={`restart-notice-${job.id}`}
-    />
-  );
+  const open = useCallback(() => router.push("/settings/system"), [router]);
+  const client = useInstallationOwnerClient();
+  const upgrades = useInstallationUpgradeStatus(client);
+  const count = systemAttentionCount(state, upgrades.data?.upgrades);
+  return count ? (
+    <Button
+      variant="ghost"
+      onPress={open}
+      testID="installation-restart-banner"
+    >{`System needs attention (${count})`}</Button>
+  ) : null;
 }
 
 const styles = StyleSheet.create((theme) => ({
