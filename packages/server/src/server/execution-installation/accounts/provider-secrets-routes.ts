@@ -1,3 +1,4 @@
+import { ProviderSecretsConflictError } from "./provider-secrets-authority.js";
 import { SPEECH_SECRETS_IMPORT_ROUTE } from "./speech-secrets-adoption.js";
 import type { ErrorRequestHandler, Express, Request } from "express";
 import {
@@ -16,7 +17,7 @@ export const PROVIDER_SECRETS_OWNER_ROOT = "/api/installation/owner/provider-sec
 export function mountProviderSecretsRoutes(
   app: Express,
   runtime: ProviderSecretsRuntime,
-  agent?: (req: Request) => "host" | "container" | null,
+  agent?: (req: Request) => { kind: "host" | "container"; serverId: string } | null,
 ): void {
   const root = PROVIDER_SECRETS_OWNER_ROOT;
   app.post(SPEECH_SECRETS_IMPORT_ROUTE, (req, res) => {
@@ -50,13 +51,19 @@ export function mountProviderSecretsRoutes(
       if (!input.success) return null;
       const value = input.data;
       return value.kind === "speech"
-        ? () => runtime.setSpeech(value.definitionId, value.values)
+        ? () => runtime.setSpeech(value.sites)
         : () => runtime.set(value.definitionId, value.name, value.value);
     },
     clear: (body: unknown) => {
       const input = ProviderSecretClearRequestSchema.safeParse(body);
       return input.success
-        ? () => runtime.clear(input.data.definitionId, input.data.name, input.data.kind)
+        ? () =>
+            runtime.clear(
+              input.data.definitionId,
+              input.data.name,
+              input.data.kind,
+              input.data.kind === "speech" ? input.data.expectedRevision : undefined,
+            )
         : null;
     },
   };
@@ -75,6 +82,10 @@ export function mountProviderSecretsRoutes(
       run().then(
         (definitions) => res.json({ definitions }),
         (error: unknown) => {
+          if (error instanceof ProviderSecretsConflictError) {
+            res.status(409).json({ error: error.message });
+            return;
+          }
           if (error instanceof ProviderSecretsDefinitionMissing) {
             res.status(404).json({ error: "This connection no longer exists. Reload Settings." });
             return;

@@ -46,7 +46,9 @@ export function mountProviderSecretsConsumer(app: Express, options: ConsumerOpti
       !authority ||
       authority.installationId !== delivery.installationId ||
       authority.serverId !== delivery.serverId ||
-      authority.revision !== delivery.policyRevision
+      (delivery.kind === "speech"
+        ? delivery.policyRevision !== delivery.revision
+        : authority.revision !== delivery.policyRevision)
     )
       throw new ProviderSecretsDeliveryError();
     if (delivery.kind === "speech") {
@@ -135,13 +137,21 @@ export function mountProviderSecretsConsumer(app: Express, options: ConsumerOpti
             },
             persist: (value) => writeClaudeSetupFile(journal, value),
             readEnv: () => {
-              if (kind === "speech") return options.store.readSpeechSecrets()[providerId] ?? {};
+              if (kind === "speech")
+                return options.store.readSpeechSecrets(false)[providerId] ?? {};
               const provider = options.store.get().providers[providerId];
               if (!provider || provider.removed) return null;
               const env = EnvSchema.safeParse(provider.env ?? {});
               if (!env.success) throw new ProviderSecretsDeliveryError();
               return { ...env.data };
             },
+            release:
+              kind === "speech"
+                ? () =>
+                    options.store.releaseSpeechSecretManagement(
+                      SpeechSecretSiteSchema.parse(providerId),
+                    )
+                : undefined,
             writeEnv: (env) => {
               if (kind === "speech") {
                 options.store.replaceSpeechSecrets(SpeechSecretSiteSchema.parse(providerId), env);

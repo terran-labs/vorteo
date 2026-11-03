@@ -146,10 +146,24 @@ describe("resolveOpenAiSpeechConfig", () => {
   });
 });
 
+const binding = {
+  version: 1 as const,
+  revision: 1,
+  providers: {},
+  legacyProfiles: {},
+  installation: {
+    installationId: "11111111-1111-4111-8111-111111111111",
+    serverId: "host",
+    environment: "host" as const,
+    revision: 1,
+  },
+};
+
 test("a cleared installation key never falls back to a different environment credential", () => {
   expect(
     resolve(
       {
+        daemon: { sharedProviderPreferences: binding },
         features: {
           dictation: { stt: { provider: "openai", credentialsManaged: true } },
           voiceMode: {
@@ -161,4 +175,13 @@ test("a cleared installation key never falls back to a different environment cre
       { OPENAI_API_KEY: "synthetic-process-key" },
     ),
   ).toBeUndefined();
+});
+
+test("standalone speech ignores a stale shared marker", () => {
+  expect(
+    resolve(
+      { features: { dictation: { stt: { provider: "openai", credentialsManaged: true } } } },
+      { OPENAI_STT_API_KEY: "synthetic-standalone" },
+    )?.dictationStt?.apiKey,
+  ).toBe("synthetic-standalone");
 });

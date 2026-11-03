@@ -78,9 +78,12 @@ export function resolveOpenAiSpeechConfig(params: {
   providers: RequestedSpeechProviders;
 }): OpenAiSpeechProviderConfig | undefined {
   const { env, persisted } = params;
-  const dictationStt = resolveStt(persisted.features?.dictation?.stt, env);
-  const stt = resolveStt(persisted.features?.voiceMode?.stt, env);
-  const tts = resolveTts(persisted.features?.voiceMode?.tts, env);
+  const bound = Boolean(persisted.daemon?.sharedProviderPreferences?.installation);
+  const active = <T extends { credentialsManaged?: boolean }>(site: T | undefined) =>
+    site ? { ...site, credentialsManaged: bound && site.credentialsManaged } : undefined;
+  const dictationStt = resolveStt(active(persisted.features?.dictation?.stt), env);
+  const stt = resolveStt(active(persisted.features?.voiceMode?.stt), env);
+  const tts = resolveTts(active(persisted.features?.voiceMode?.tts), env);
   if (!dictationStt && !stt && !tts) return undefined;
   return {
     ...(dictationStt ? { dictationStt } : {}),

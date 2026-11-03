@@ -41,6 +41,7 @@ interface OpenSheet {
   siteId: SpeechSiteId;
   visible: boolean;
   openCount: number;
+  secretRevisions: ReadonlyMap<string, number | undefined>;
 }
 
 function errorMessage(error: unknown): string {
@@ -65,13 +66,15 @@ export function HostVoicePage({ serverId }: { serverId: string }) {
     async (patch) => {
       await saveVoiceSettings(patch, {
         shared,
-        current: config?.features,
+        revisions:
+          sheet?.secretRevisions ??
+          new Map([...secrets.byDefinition].map(([id, status]) => [id, status.revision])),
         local: (features) => patchConfig({ features }),
         credentials: saveSpeechSecrets,
       });
       refreshModels();
     },
-    [patchConfig, refreshModels, shared, config?.features, saveSpeechSecrets],
+    [patchConfig, refreshModels, shared, secrets.byDefinition, saveSpeechSecrets, sheet],
   );
   const saveSwitch = useCallback(
     (patch: SpeechSettingsPatch) => {
@@ -89,13 +92,21 @@ export function HostVoicePage({ serverId }: { serverId: string }) {
     (enabled: boolean) => saveSwitch({ voiceMode: { enabled } }),
     [saveSwitch],
   );
-  const openSheet = useCallback((siteId: SpeechSiteId) => {
-    setSheet((current) => ({
-      siteId,
-      visible: true,
-      openCount: (current?.openCount ?? 0) + 1,
-    }));
-  }, []);
+  const openSheet = useCallback(
+    (siteId: SpeechSiteId) => {
+      // Keep the version the editor opened against, even when background status polls advance.
+      const secretRevisions = new Map(
+        [...secrets.byDefinition].map(([id, status]) => [id, status.revision]),
+      );
+      setSheet((current) => ({
+        siteId,
+        visible: true,
+        openCount: (current?.openCount ?? 0) + 1,
+        secretRevisions,
+      }));
+    },
+    [secrets.byDefinition],
+  );
   const closeSheet = useCallback(() => {
     setSheet((current) => (current ? { ...current, visible: false } : null));
   }, []);

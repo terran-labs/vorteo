@@ -1,4 +1,8 @@
-import { SPEECH_SECRET_SITES, SPEECH_DEFAULT_BASE_URL } from "@getpaseo/protocol/provider-secrets";
+import {
+  SPEECH_SECRET_SITES,
+  SPEECH_DEFAULT_BASE_URL,
+  SpeechBaseUrlSchema,
+} from "@getpaseo/protocol/provider-secrets";
 import type { SpeechSettings, SpeechSettingsPatch } from "@getpaseo/protocol/speech/rpc-schemas";
 
 import {
@@ -81,7 +85,8 @@ export function readSpeechSettings(persisted: PersistedConfig, env: NodeJS.Proce
         ["apiKey", "API_KEY"],
         ["baseUrl", "BASE_URL"],
       ] as const) {
-        if (credentialsManaged) continue;
+        if (credentialsManaged && persisted.daemon?.sharedProviderPreferences?.installation)
+          continue;
         recordOverride(
           `${path}.${field}`,
           [`OPENAI_${kind.toUpperCase()}_${suffix}`, `OPENAI_${suffix}`],
@@ -159,9 +164,10 @@ export function readSpeechSecretSettings(
   const sites = [features?.dictation?.stt, features?.voiceMode?.stt, features?.voiceMode?.tts];
   const text = (...values: (string | undefined)[]) => values.find((value) => value?.trim())?.trim();
   return Object.fromEntries(
-    SPEECH_SECRET_SITES.map((id, index) => {
+    SPEECH_SECRET_SITES.map((id, index): [string, Record<string, string>] => {
       const site = sites[index];
-      const fallback = !site?.credentialsManaged;
+      const fallback =
+        !persisted.daemon?.sharedProviderPreferences?.installation || !site?.credentialsManaged;
       const kind = index === 2 ? "TTS" : "STT";
       const apiKey = text(
         site?.apiKey,
@@ -175,10 +181,9 @@ export function readSpeechSecretSettings(
       );
       return [
         id,
-        {
-          ...(apiKey ? { apiKey } : {}),
-          ...(apiKey || baseUrl ? { baseUrl: baseUrl ?? SPEECH_DEFAULT_BASE_URL } : {}),
-        },
+        apiKey && SpeechBaseUrlSchema.safeParse(baseUrl ?? SPEECH_DEFAULT_BASE_URL).success
+          ? { apiKey, baseUrl: baseUrl ?? SPEECH_DEFAULT_BASE_URL }
+          : {},
       ];
     }),
   );
@@ -247,4 +252,38 @@ export function mergeSpeechSettingsPatch(
     features.voiceMode = PersistedConfigSchema.shape.features.unwrap().shape.voiceMode.parse(next);
   }
   return { ...persisted, features };
+}
+
+/** Raw persisted fields only. Delivery must never materialize process-environment fallbacks. */
+export function readPersistedSpeechSecrets(
+  persisted: PersistedConfig,
+): Record<string, Record<string, string>> {
+  const sites = [
+    persisted.features?.dictation?.stt,
+    persisted.features?.voiceMode?.stt,
+    persisted.features?.voiceMode?.tts,
+  ];
+  return Object.fromEntries(
+    SPEECH_SECRET_SITES.map((id, index) => {
+      const site = sites[index];
+      return [
+        id,
+        {
+          ...(site?.apiKey ? { apiKey: site.apiKey } : {}),
+          ...(site?.baseUrl ? { baseUrl: site.baseUrl } : {}),
+        },
+      ];
+    }),
+  );
+}
+
+export function releaseSpeechCredentials(persisted: PersistedConfig): PersistedConfig {
+  const next = structuredClone(persisted);
+  for (const site of [
+    next.features?.dictation?.stt,
+    next.features?.voiceMode?.stt,
+    next.features?.voiceMode?.tts,
+  ])
+    if (site) delete site.credentialsManaged;
+  return next;
 }

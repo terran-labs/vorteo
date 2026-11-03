@@ -50,6 +50,8 @@ import { planProviderPreferencesMigration } from "./agent/provider-preferences/m
 import type { SpeechSettingsPatch } from "@getpaseo/protocol/speech/rpc-schemas";
 import {
   readSpeechSecretSettings,
+  readPersistedSpeechSecrets,
+  releaseSpeechCredentials,
   mergeSpeechSettingsPatch,
   type SpeechSettingsOwner,
 } from "./speech/speech-settings.js";
@@ -526,10 +528,24 @@ export class DaemonConfigStore {
     this.speechOwner = options.speech;
     this.startupPersisted = options.startupPersisted ?? loadPersistedConfig(paseoHome, this.logger);
     this.lastKnownPersisted = this.startupPersisted;
+    if (!this.startupPersisted.daemon?.sharedProviderPreferences?.installation) {
+      const released = releaseSpeechCredentials(this.startupPersisted);
+      if (!isEqualValue(released, this.startupPersisted)) {
+        withPersistedConfigWriter(
+          this.paseoHome,
+          (writer) => {
+            // Startup may have an injected snapshot. Never replace unrelated pending disk edits.
+            if (isEqualValue(writer.read(), this.startupPersisted)) writer.save(released);
+          },
+          this.logger,
+        );
+        this.lastKnownPersisted = released;
+      }
+    }
     this.current = MutableDaemonConfigSchema.parse({
       ...initial,
       relay: initial.relay ?? { enabled: true },
-      ...this.readSpeech(this.startupPersisted),
+      ...this.readSpeech(this.lastKnownPersisted),
     });
   }
 
@@ -741,7 +757,8 @@ export class DaemonConfigStore {
   }
 
   /** Installation transport only. Ordinary config reads always redact speech keys. */
-  public readSpeechSecrets(): Record<string, Record<string, string>> {
+  public readSpeechSecrets(adopt = true): Record<string, Record<string, string>> {
+    if (!adopt) return readPersistedSpeechSecrets(this.lastKnownPersisted);
     return (
       this.speechOwner?.readSecrets?.(this.lastKnownPersisted) ??
       readSpeechSecretSettings(this.lastKnownPersisted, {})
@@ -755,6 +772,15 @@ export class DaemonConfigStore {
       credentialsManaged: true,
     };
     let features: SpeechSettingsPatch;
+    if (site === "dictation.stt") features = { dictation: { stt: fields } };
+    else if (site === "voiceMode.stt") features = { voiceMode: { stt: fields } };
+    else features = { voiceMode: { tts: fields } };
+    this.applySupportedPatch({ features });
+  }
+
+  public releaseSpeechSecretManagement(site: SpeechSecretSite): void {
+    let features: SpeechSettingsPatch;
+    const fields = { credentialsManaged: null };
     if (site === "dictation.stt") features = { dictation: { stt: fields } };
     else if (site === "voiceMode.stt") features = { voiceMode: { stt: fields } };
     else features = { voiceMode: { tts: fields } };
@@ -1043,6 +1069,7 @@ export class DaemonConfigStore {
           { ...configPatch, ...(speechPatch !== undefined ? { features: speechPatch } : {}) },
           removedProviders,
         );
+        Object.assign(next, this.readSpeech(knownNext));
         const speechChanged = this.speechPersistedChanged(this.lastKnownPersisted, knownNext);
         try {
           this.applyReplacement(
@@ -1338,13 +1365,16 @@ function mergeMutablePatchIntoPersistedConfig(params: {
   const withSpeech = patch.features
     ? mergeSpeechSettingsPatch(persisted, patch.features)
     : persisted;
-  return {
+  const result = {
     ...withSpeech,
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
     ...(daemon ? { daemon } : { daemon: undefined }),
     ...(agents ? { agents } : { agents: undefined }),
   } as PersistedConfig;
+  return daemon?.sharedProviderPreferences?.installation
+    ? result
+    : releaseSpeechCredentials(result);
 }
 
 function rollbackLiveConfigChanges(

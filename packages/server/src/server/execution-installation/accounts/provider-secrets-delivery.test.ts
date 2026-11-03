@@ -155,3 +155,53 @@ test("speech delivery protects changed local values, applies owner clears and re
     service.apply({ ...input, revision: 4, values: { OPENAI_API_KEY: KEY } }),
   ).rejects.toThrow("Provider key synchronization");
 });
+
+test("empty and withheld speech deliveries never write local values", async () => {
+  let env = { apiKey: "synthetic-local-key", baseUrl: "https://local.example/v1" };
+  let writes = 0;
+  let journal: import("./provider-secrets-delivery.js").ProviderSecretsJournal | null = null;
+  let released = false;
+  const service = new ProviderSecretsDeliveryService({
+    read: () => journal,
+    persist: (value) => {
+      journal = value;
+    },
+    readEnv: () => env,
+    writeEnv: (value) => {
+      writes += 1;
+      env = value as typeof env;
+    },
+    release: () => {
+      released = true;
+    },
+    authorize: async () => {},
+  });
+  const input = {
+    ...delivery,
+    kind: "speech",
+    definitionId: "dictation.stt",
+    providerId: "dictation.stt",
+    values: {},
+    overwrite: [],
+  };
+  await service.apply(input);
+  expect(writes).toBe(0);
+  expect(released).toBe(false);
+  const result = await service.apply({
+    ...input,
+    revision: 2,
+    values: { apiKey: KEY, baseUrl: "https://shared.example/v1" },
+  });
+  expect(result.conflicts).toEqual(["apiKey", "baseUrl"]);
+  expect(writes).toBe(0);
+  await service.apply({
+    ...input,
+    revision: 3,
+    values: { apiKey: KEY, baseUrl: "https://shared.example/v1" },
+    overwrite: ["apiKey", "baseUrl"],
+  });
+  expect(writes).toBe(1);
+  await service.apply({ ...input, revision: 4 });
+  expect(writes).toBe(1);
+  expect(released).toBe(true);
+});

@@ -8,6 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Harden shared Voice credentials: reject endpoint-only adoption, validate endpoint URLs, require revision-checked atomic saves before provider switches, and keep empty or conflicted delivery from persisting local fallbacks. Expire adoption nonces, bind pushes to authenticated server identity, and release stale shared markers on unbinding.
 - Share Voice OpenAI keys and endpoints across every installation environment through the existing secret authority. Adopt existing values once, hold conflicting key and endpoint pairs for owner resolution, and keep standalone Voice saves local.
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
 

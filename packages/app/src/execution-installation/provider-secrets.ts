@@ -4,6 +4,7 @@ import {
   ProviderSecretsReadResponseSchema,
   type ProviderSecretsReadResponse,
   type ProviderSecretsStatus,
+  type SpeechSecretUpdate,
 } from "@getpaseo/protocol/provider-secrets";
 import { useFetchQuery } from "@/data/query";
 import { readExecutionInstallation } from "./policy";
@@ -12,7 +13,7 @@ import { OwnerAccessExpired } from "./client";
 type SecretsAction = "read" | "set" | "clear";
 
 /** Calls the coordinator's owner routes for shared provider keys. Values are never returned. */
-async function requestProviderSecrets(
+export async function requestProviderSecrets(
   action: SecretsAction,
   body: Record<string, unknown> = {},
 ): Promise<ProviderSecretsReadResponse> {
@@ -30,6 +31,8 @@ async function requestProviderSecrets(
   if (response.status === 404)
     throw new Error("Shared keys are not available. Update the installation and try again.");
   if (!response.ok) {
+    if (body.kind === "speech" && response.status === 400)
+      throw new Error("Update the coordinator to share Voice keys");
     const detail = await response.json().catch(() => null);
     const message =
       detail && typeof detail === "object" && "error" in detail && typeof detail.error === "string"
@@ -82,28 +85,41 @@ export function useProviderSecrets(enabled = true, kind?: "speech") {
     },
     [queryClient, key],
   );
-  const setSecret = useCallback(
-    async (definitionId: string, name: string, value: string) =>
-      merge(
-        await requestProviderSecrets(
-          "set",
-          kind ? { kind, definitionId, values: { [name]: value } } : { definitionId, name, value },
-        ),
-      ),
-    [merge, kind],
-  );
-  const clearSecret = useCallback(
-    async (definitionId: string, name: string) =>
-      merge(
-        await requestProviderSecrets("clear", { definitionId, name, ...(kind ? { kind } : {}) }),
-      ),
-    [merge, kind],
-  );
   const saveSpeechSecrets = useCallback(
-    async (definitionId: string, values: { apiKey?: string | null; baseUrl?: string | null }) => {
-      merge(await requestProviderSecrets("set", { kind: "speech", definitionId, values }));
+    async (sites: SpeechSecretUpdate[]) => {
+      merge(await requestProviderSecrets("set", { kind: "speech", sites }));
     },
     [merge],
+  );
+  const setSecret = useCallback(
+    async (definitionId: string, name: string, value: string) => {
+      if (kind) {
+        const expectedRevision = byDefinition.get(definitionId)?.revision;
+        if (expectedRevision === undefined)
+          throw new Error("Refresh shared Voice settings before saving.");
+        await saveSpeechSecrets([
+          {
+            definitionId: definitionId as SpeechSecretUpdate["definitionId"],
+            expectedRevision,
+            values: { [name]: value },
+          },
+        ]);
+      } else merge(await requestProviderSecrets("set", { definitionId, name, value }));
+    },
+    [merge, kind, byDefinition, saveSpeechSecrets],
+  );
+  const clearSecret = useCallback(
+    async (definitionId: string, name: string) => {
+      const body: Record<string, unknown> = { definitionId, name };
+      if (kind) {
+        const expectedRevision = byDefinition.get(definitionId)?.revision;
+        if (expectedRevision === undefined)
+          throw new Error("Refresh shared Voice settings before saving.");
+        Object.assign(body, { kind, expectedRevision });
+      }
+      merge(await requestProviderSecrets("clear", body));
+    },
+    [merge, kind, byDefinition],
   );
   return { ...query, byDefinition, setSecret, clearSecret, saveSpeechSecrets };
 }

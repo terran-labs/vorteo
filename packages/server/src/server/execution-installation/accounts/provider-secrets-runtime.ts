@@ -12,6 +12,8 @@ import {
   SPEECH_SECRET_SITES,
   SpeechSecretSiteSchema,
   SpeechSecretFieldSchema,
+  SpeechSecretUpdatesSchema,
+  type SpeechSecretUpdate,
   type ProviderSecretsStatus,
 } from "@getpaseo/protocol/provider-secrets";
 import {
@@ -78,7 +80,13 @@ export function createProviderSecretsRuntime(
   const supported = new Map<string, number>();
   const imports = new Map<
     string,
-    { serverId: string; kind: "host" | "container"; revision: number; sites?: SpeechSecretsSites }
+    {
+      serverId: string;
+      kind: "host" | "container";
+      revision: number;
+      expiresAt: number;
+      sites?: SpeechSecretsSites;
+    }
   >();
   const readiness = (kind: "host" | "container") =>
     assertReady(kind === "host" ? "host" : "container-daemon");
@@ -188,7 +196,8 @@ export function createProviderSecretsRuntime(
       const snapshot = settings.snapshot();
       if (!snapshot.settings || snapshot.conflicts) throw new ProviderSecretsDeliveryError();
       return {
-        revision: Math.max(1, snapshot.revision),
+        // Speech delivery generations belong to the credential records, not general settings.
+        revision: 1,
         removed: false,
         targets: config.public.environments.map((item) => ({
           serverId: item.serverId,
@@ -211,6 +220,7 @@ export function createProviderSecretsRuntime(
         serverId,
         kind: target.kind,
         revision,
+        expiresAt: (overrides.now?.() ?? new Date()).getTime() + 10_000,
         sites: undefined as SpeechSecretsSites | undefined,
       };
       imports.set(nonce, pending);
@@ -275,14 +285,19 @@ export function createProviderSecretsRuntime(
     void Promise.all([authority.reconcile(), speech.reconcile()]).catch(() => {});
   };
   return {
-    acceptSpeechAdoption: (body: unknown, kind: "host" | "container") => {
+    acceptSpeechAdoption: (
+      body: unknown,
+      identity: { kind: "host" | "container"; serverId: string },
+    ) => {
       const input = SpeechSecretsAdoptionSchema.safeParse(body);
       if (!input.success) throw new ProviderSecretsDeliveryError();
       const pending = imports.get(input.data.nonce);
       if (
         !pending ||
         pending.sites ||
-        pending.kind !== kind ||
+        pending.expiresAt <= (overrides.now?.() ?? new Date()).getTime() ||
+        pending.kind !== identity.kind ||
+        pending.serverId !== identity.serverId ||
         pending.serverId !== input.data.serverId ||
         pending.revision !== input.data.policyRevision ||
         input.data.installationId !== config.public.installationId
@@ -305,26 +320,46 @@ export function createProviderSecretsRuntime(
       kick();
       return [withAccountSignIn(authority.status(definitionId))];
     },
-    setSpeech: async (definitionId: string, values: Record<string, string | null | undefined>) => {
-      SpeechSecretSiteSchema.parse(definitionId);
-      const changes = Object.fromEntries(
-        Object.entries(values).filter(
-          (entry): entry is [string, string | null] => entry[1] !== undefined,
-        ),
+    setSpeech: async (sites: SpeechSecretUpdate[]) => {
+      const updates = SpeechSecretUpdatesSchema.parse(sites).map(
+        ({ definitionId, expectedRevision, values }) => {
+          const changes = Object.fromEntries(
+            Object.entries(values).filter(
+              (entry): entry is [string, string | null] => entry[1] !== undefined,
+            ),
+          );
+          if (
+            changes.baseUrl === null ||
+            (Object.hasOwn(changes, "apiKey") && !Object.hasOwn(changes, "baseUrl"))
+          )
+            changes.baseUrl = SPEECH_DEFAULT_BASE_URL;
+          return { definitionId, expectedRevision, changes };
+        },
       );
-      if (changes.baseUrl === null) changes.baseUrl = SPEECH_DEFAULT_BASE_URL;
-      if (changes.apiKey && !Object.hasOwn(changes, "baseUrl"))
-        changes.baseUrl = SPEECH_DEFAULT_BASE_URL;
-      await speech.update(definitionId, changes);
+      await speech.updateMany(updates);
       kick();
-      return [speech.status(definitionId)];
+      return updates.map(({ definitionId }) => speech.status(definitionId));
     },
-    clear: async (definitionId: string, name: string, kind?: "speech") => {
+    clear: async (
+      definitionId: string,
+      name: string,
+      kind?: "speech",
+      expectedRevision?: number,
+    ) => {
       if (kind === "speech") {
         SpeechSecretSiteSchema.parse(definitionId);
         SpeechSecretFieldSchema.parse(name);
-        if (name === "baseUrl") await speech.set(definitionId, name, SPEECH_DEFAULT_BASE_URL);
-        else await speech.clear(definitionId, name);
+        if (expectedRevision === undefined) throw new ProviderSecretsDeliveryError();
+        await speech.updateMany([
+          {
+            definitionId,
+            expectedRevision,
+            changes:
+              name === "baseUrl"
+                ? { baseUrl: SPEECH_DEFAULT_BASE_URL }
+                : { apiKey: null, baseUrl: SPEECH_DEFAULT_BASE_URL },
+          },
+        ]);
         kick();
         return [speech.status(definitionId)];
       }

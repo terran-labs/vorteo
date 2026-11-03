@@ -269,3 +269,37 @@ test("a speech clear before initial adoption never imports the old key again", a
   await f.authority.reconcile();
   expect(f.authority.status("openai").secrets).toEqual([]);
 });
+
+test("speech refuses endpoint-only observations and does not deliver never-configured sites", async () => {
+  const f = fixture(
+    { host: { openai: {} }, dev: { openai: { baseUrl: "https://evil.example" } } },
+    "speech",
+  );
+  await f.authority.reconcile();
+  expect(f.authority.status("openai").secrets).toEqual([]);
+  expect(f.state.deliveries).toEqual([]);
+});
+
+test("speech does not adopt a shared endpoint when the keys conflict", async () => {
+  const f = fixture(
+    {
+      host: { openai: { apiKey: KEY, baseUrl: "https://shared.example/v1" } },
+      dev: { openai: { apiKey: OTHER, baseUrl: "https://shared.example/v1" } },
+    },
+    "speech",
+  );
+  await f.authority.reconcile();
+  expect(f.authority.status("openai").secrets).toEqual([]);
+  expect(f.authority.status("openai").conflicts.map((item) => item.name)).toEqual(["apiKey"]);
+  expect(f.state.deliveries).toEqual([]);
+});
+
+test("adoption preserves an endpoint explicitly saved by the owner before any key", async () => {
+  const f = fixture({ host: { openai: {} }, dev: { openai: {} } }, "speech");
+  await f.authority.set("openai", "baseUrl", "https://chosen.example/v1");
+  await f.authority.reconcile();
+  expect(f.authority.status("openai").secrets.map((item) => [item.name, item.source])).toEqual([
+    ["baseUrl", "owner"],
+  ]);
+  expect(f.state.deliveries[0]!.values).toEqual({ baseUrl: "https://chosen.example/v1" });
+});

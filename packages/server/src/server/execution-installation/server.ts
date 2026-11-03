@@ -2039,7 +2039,13 @@ export function createInstallationServer(
   if (claudeSetup) mountClaudeSetupRoutes(app, claudeSetup);
   if (claudeOAuth) mountClaudeOAuthRoutes(app, claudeOAuth);
   if (codexSignIn) mountCodexSignInRoutes(app, codexSignIn);
-  if (providerSecrets) mountProviderSecretsRoutes(app, providerSecrets, instructionRequester);
+  if (providerSecrets)
+    mountProviderSecretsRoutes(app, providerSecrets, (req) => {
+      const kind = instructionRequester(req);
+      // Each role token belongs to one configured environment. Never trust the pushed serverId.
+      const environment = config.public.environments.find((item) => item.kind === kind);
+      return kind && environment ? { kind, serverId: environment.serverId } : null;
+    });
   app.post("/api/installation/owner/lock", (req, res) => {
     sessions.revoke(sessionToken(req), sessionOrigin(req));
     res.clearCookie(cookieName(req), cookieOptions(req));

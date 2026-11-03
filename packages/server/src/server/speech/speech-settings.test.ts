@@ -2,6 +2,19 @@ import { expect, test } from "vitest";
 import { PersistedConfigSchema } from "../persisted-config.js";
 import { readSpeechSecretSettings, readSpeechSettings } from "./speech-settings.js";
 
+const binding = {
+  version: 1 as const,
+  revision: 1,
+  providers: {},
+  legacyProfiles: {},
+  installation: {
+    installationId: "11111111-1111-4111-8111-111111111111",
+    serverId: "host",
+    environment: "host" as const,
+    revision: 1,
+  },
+};
+
 const KEY = "synthetic-speech-settings-key";
 
 test("private adoption captures effective credentials for all sites, including dormant local sites", () => {
@@ -23,6 +36,7 @@ test("private adoption captures effective credentials for all sites, including d
 
 test("ordinary speech settings never reveal credentials or the internal delivery marker", () => {
   const persisted = PersistedConfigSchema.parse({
+    daemon: { sharedProviderPreferences: binding },
     features: {
       dictation: { stt: { provider: "openai", apiKey: KEY, credentialsManaged: true } },
       voiceMode: { tts: { provider: "local", apiKey: KEY, credentialsManaged: true } },
@@ -37,6 +51,7 @@ test("ordinary speech settings never reveal credentials or the internal delivery
 
 test("cleared shared sites cannot re-adopt credentials from process environment", () => {
   const persisted = PersistedConfigSchema.parse({
+    daemon: { sharedProviderPreferences: binding },
     features: {
       dictation: { stt: { provider: "openai", credentialsManaged: true } },
       voiceMode: {
@@ -49,5 +64,26 @@ test("cleared shared sites cannot re-adopt credentials from process environment"
     "dictation.stt": {},
     "voiceMode.stt": {},
     "voiceMode.tts": {},
+  });
+});
+
+test("baseUrl without a key is never adopted from persisted fields or process env", () => {
+  const persisted = PersistedConfigSchema.parse({
+    features: { dictation: { stt: { provider: "openai", baseUrl: "https://evil.example" } } },
+  });
+  expect(readSpeechSecretSettings(persisted, { OPENAI_BASE_URL: "https://evil.example" })).toEqual({
+    "dictation.stt": {},
+    "voiceMode.stt": {},
+    "voiceMode.tts": {},
+  });
+});
+
+test("a standalone stale marker does not suppress environment credentials", () => {
+  const persisted = PersistedConfigSchema.parse({
+    features: { dictation: { stt: { provider: "openai", credentialsManaged: true } } },
+  });
+  expect(readSpeechSecretSettings(persisted, { OPENAI_API_KEY: KEY })["dictation.stt"]).toEqual({
+    apiKey: KEY,
+    baseUrl: "https://api.openai.com/v1",
   });
 });

@@ -1,4 +1,5 @@
 import express from "express";
+import { hashSync } from "bcryptjs";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile, readFile, readdir, rm, stat } from "node:fs/promises";
@@ -8,7 +9,7 @@ import { expect, test } from "vitest";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
 import { SPEECH_SECRET_SITES } from "@getpaseo/protocol/provider-secrets";
 import { DaemonConfigStore } from "../../daemon-config-store.js";
-import { createRequireBearerMiddleware, hashDaemonPassword } from "../../auth.js";
+import { createRequireBearerMiddleware } from "../../auth.js";
 import { PersistedConfigSchema, loadPersistedConfig } from "../../persisted-config.js";
 import { createSpeechSettingsOwner } from "../../speech/speech-settings.js";
 import { resolveSpeechConfig } from "../../speech/speech-config-resolver.js";
@@ -24,6 +25,8 @@ import {
 } from "./speech-secrets-adoption.js";
 
 const KEY = `synthetic-speech-${"a".repeat(24)}`;
+// Exercise real bearer verification without making password work factor dominate adoption timing.
+const PASSWORD_HASH = hashSync("synthetic-daemon-password", 4);
 const OTHER = `synthetic-speech-${"b".repeat(24)}`;
 
 async function listen(app: express.Express) {
@@ -51,7 +54,7 @@ async function installation(conflict = false) {
   const endpoints: Record<string, string> = {};
   const credentials: Record<string, string> = {};
   const offline = new Set<string>();
-  const revision = 7;
+  const revision = 1;
   for (const kind of ["host", "container"] as const) {
     const serverId = kind === "host" ? "host" : "dev";
     const home = await mkdtemp(join(root, `${serverId}-`));
@@ -109,7 +112,7 @@ async function installation(conflict = false) {
     const daemon = express();
     daemon.use(
       createRequireBearerMiddleware({
-        password: await hashDaemonPassword("synthetic-daemon-password"),
+        password: PASSWORD_HASH,
       }),
     );
     daemon.use(express.json());
@@ -152,8 +155,8 @@ async function installation(conflict = false) {
   });
   mountProviderSecretsRoutes(owner, runtime, (req) => {
     const token = req.header("authorization");
-    if (token === `Bearer ${credentials.host}`) return "host";
-    if (token === `Bearer ${credentials.container}`) return "container";
+    if (token === `Bearer ${credentials.host}`) return { kind: "host", serverId: "host" };
+    if (token === `Bearer ${credentials.container}`) return { kind: "container", serverId: "dev" };
     return null;
   });
   async function request(
@@ -161,12 +164,14 @@ async function installation(conflict = false) {
     body: unknown,
     origin = coordinator.origin,
     bearer?: string,
+    cookie?: string,
   ) {
     return fetch(new URL(path, origin), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        ...(cookie ? { Cookie: `vorteo-owner=${cookie}` } : {}),
       },
       body: JSON.stringify(body),
     });
@@ -218,34 +223,61 @@ async function assertDeliveredEnvironment(home: string, store: DaemonConfigStore
   }
 }
 
+async function assertUnboundMarkerCleanup(home: string, store: DaemonConfigStore) {
+  const persisted = loadPersistedConfig(home);
+  const preferences = { ...persisted.daemon!.sharedProviderPreferences! };
+  delete preferences.installation;
+  persisted.daemon!.sharedProviderPreferences = preferences;
+  await writeFile(join(home, "config.json"), JSON.stringify(persisted));
+  const initial = { ...store.get(), sharedProviderPreferences: preferences };
+  const standalone = new DaemonConfigStore(home, initial, undefined, {
+    startupPersisted: persisted,
+    speech: createSpeechSettingsOwner({
+      paseoHome: home,
+      env: { OPENAI_TTS_API_KEY: KEY },
+      speechService: { reconfigure() {} },
+    }),
+  });
+  expect(loadPersistedConfig(home).features?.voiceMode?.tts?.credentialsManaged).toBeUndefined();
+  expect(standalone.readSpeechSecrets()["voiceMode.tts"]!.apiKey).toBe(KEY);
+}
+
 test("speech adoption and atomic saves reach every environment without returning keys to clients", async () => {
   const h = await installation();
   try {
     await h.runtime.reconcile();
     for (const home of Object.values(h.homes)) {
       expect(loadPersistedConfig(home).features?.dictation?.stt?.apiKey).toBe(KEY);
-      // Empty shared sites must also stop inheriting environment-specific credentials.
-      expect(loadPersistedConfig(home).features?.voiceMode?.tts?.credentialsManaged).toBe(true);
+      // Never-configured sites do not become managed merely because they were scanned.
+      expect(
+        loadPersistedConfig(home).features?.voiceMode?.tts?.credentialsManaged,
+      ).toBeUndefined();
     }
     const ownerRead = await h.request("/api/installation/owner/provider-secrets/read", {
       kind: "speech",
     });
     expect(ownerRead.status).toBe(200);
     expect(await ownerRead.text()).not.toContain(KEY);
-    for (const site of SPEECH_SECRET_SITES) {
-      const saved = await h.request("/api/installation/owner/provider-secrets/set", {
-        kind: "speech",
-        definitionId: site,
+    const saved = await h.request("/api/installation/owner/provider-secrets/set", {
+      kind: "speech",
+      sites: SPEECH_SECRET_SITES.map((definitionId) => ({
+        definitionId,
+        expectedRevision: h.runtime.read(definitionId, "speech")[0]!.revision,
         values: { apiKey: OTHER, baseUrl: "https://chosen.example/v1" },
-      });
-      expect(saved.status).toBe(200);
-      expect(await saved.text()).not.toContain(OTHER);
-      await h.runtime.reconcile();
-    }
+      })),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.text()).not.toContain(OTHER);
+    await h.runtime.reconcile();
     for (const [id, home] of Object.entries(h.homes)) {
       await assertDeliveredEnvironment(home, h.stores[id]!);
     }
-    await h.runtime.clear("voiceMode.tts", "apiKey", "speech");
+    await h.runtime.clear(
+      "voiceMode.tts",
+      "apiKey",
+      "speech",
+      h.runtime.read("voiceMode.tts", "speech")[0]!.revision,
+    );
     await h.runtime.reconcile();
     for (const home of Object.values(h.homes)) {
       const persisted = loadPersistedConfig(home);
@@ -255,7 +287,13 @@ test("speech adoption and atomic saves reach every environment without returning
           ?.tts,
       ).toBeUndefined();
     }
-    const denied = await h.request(SPEECH_SECRETS_IMPORT_ROUTE, { apiKey: KEY });
+    const denied = await h.request(
+      SPEECH_SECRETS_IMPORT_ROUTE,
+      { apiKey: KEY },
+      undefined,
+      undefined,
+      "synthetic-owner-session",
+    );
     expect(denied.status).toBe(401);
     expect(await denied.text()).not.toContain(KEY);
     const badNonce = await h.request(
@@ -264,13 +302,14 @@ test("speech adoption and atomic saves reach every environment without returning
         nonce: randomUUID(),
         installationId: h.installationId,
         serverId: "host",
-        policyRevision: 7,
+        policyRevision: h.stores.host!.get().sharedProviderPreferences!.installation!.revision,
       },
       `http://${h.endpoints.host}`,
       "synthetic-daemon-password",
     );
     expect(badNonce.status).toBe(409);
     expect(await badNonce.text()).not.toContain(KEY);
+    await assertUnboundMarkerCleanup(h.homes.host!, h.stores.host!);
   } finally {
     await h.close();
   }
@@ -284,10 +323,13 @@ test("conflicting speech endpoints block delivery until the owner saves a single
     expect(status!.ready).toBe(false);
     expect(status!.conflicts.map((item) => item.name).sort()).toEqual(["apiKey", "baseUrl"]);
     expect(loadPersistedConfig(h.homes.dev!).features?.dictation?.stt?.apiKey).toBe(OTHER);
-    await h.runtime.setSpeech("dictation.stt", {
-      apiKey: KEY,
-      baseUrl: "https://chosen.example/v1",
-    });
+    await h.runtime.setSpeech([
+      {
+        definitionId: "dictation.stt",
+        expectedRevision: status!.revision!,
+        values: { apiKey: KEY, baseUrl: "https://chosen.example/v1" },
+      },
+    ]);
     await h.runtime.reconcile();
     expect(h.runtime.read("dictation.stt", "speech")[0]!.ready).toBe(true);
     for (const home of Object.values(h.homes))

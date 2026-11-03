@@ -2610,7 +2610,8 @@ export const en = {
       openai: {
         apiKey: "API key",
         apiKeyHint: "Saved on the host and never shown again.",
-        apiKeySharedHint: "Shared with every environment and never shown again.",
+        apiKeySharedHint:
+          "Shared with every environment and never shown again. Existing environment keys are adopted once, then the installation manages them.",
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "Saved",
         missingKey: "API key missing",
