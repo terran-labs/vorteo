@@ -5,7 +5,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { setWorkspaceLifecycle } from "../workspace-lifecycle/policy.js";
+import {
+  assertSystemThreadArchiveAllowed,
+  setWorkspaceLifecycle,
+} from "../workspace-lifecycle/policy.js";
 import {
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
@@ -485,6 +488,46 @@ describe("protection", () => {
       undefined,
     );
     expect((await workspaces.get(id))?.systemMembership).toEqual({ role: "optimization-runner" });
+  });
+
+  test("a finished system thread can be archived while its workspace stays protected", async () => {
+    await ensure();
+    const member = await runner();
+    const workspace = (await workspaces.get(member.workspaceId))!;
+    const agentId = "agent-finished";
+    const schedule = (status: string, agent = agentId) => ({
+      status,
+      expiresAt: null,
+      target: { type: "agent", agentId: agent },
+    });
+    const allowed = (input: { running?: boolean; schedules?: unknown[] }) =>
+      assertSystemThreadArchiveAllowed(
+        { schedules: { list: async () => (input.schedules ?? []) as never } },
+        { workspace, agentId, running: input.running ?? false },
+      );
+    await expect(allowed({})).resolves.toBeUndefined();
+    await expect(
+      allowed({ schedules: [schedule("completed"), schedule("active", "other")] }),
+    ).resolves.toBeUndefined();
+    await expect(allowed({ running: true })).rejects.toThrow("still running");
+    await expect(allowed({ schedules: [schedule("active")] })).rejects.toThrow("standing schedule");
+    await expect(
+      assertSystemThreadArchiveAllowed(
+        { schedules: { list: async () => [] } },
+        {
+          workspace: {
+            ...workspace,
+            factoryMembership: { serverId: "s", projectId: "p" } as never,
+          },
+          agentId,
+          running: false,
+        },
+      ),
+    ).rejects.toThrow("belongs to Factory");
+    // The workspace itself keeps refusing archive and removal.
+    await expect(workspaces.archive(member.workspaceId, T0)).rejects.toThrow(
+      "managed by Vorteo System",
+    );
   });
 
   test("pinning and labels still work on system workspaces", async () => {

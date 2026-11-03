@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): a finished thread in a Vorteo System workspace can now be archived on its own. Thread archive uses its own admission: the system workspace keeps refusing archive, removal and every other change, and thread deletion stays refused. A running thread, one a standing schedule targets, or a Factory binding blocks it. Every other workspace keeps refusing thread archive exactly as before. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): the sidebar merges an empty, hidden Dev System project with the Host's again, so the System project keeps one row, its folder placement, its ordering and the workspaces recorded under its merged key. App-only change; README overview and onboarding are unchanged.

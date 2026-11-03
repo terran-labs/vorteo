@@ -456,6 +456,12 @@ export interface AgentManagerOptions {
   getSharedProviderConfig?: () => MutableDaemonConfig;
   installationSettingsReader?: InstallationSettingsReader;
   assertWorkspaceArchiveAllowed?: (workspaceId: string) => Promise<void>;
+  /** Archive admission for one thread; falls back to the workspace check when absent. */
+  assertThreadArchiveAllowed?: (input: {
+    workspaceId: string;
+    agentId: string;
+    running: boolean;
+  }) => Promise<void>;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -1544,11 +1550,13 @@ export class AgentManager {
   private readonly installationSettingsReader?: InstallationSettingsReader;
 
   readonly assertWorkspaceArchiveAllowed?: AgentManagerOptions["assertWorkspaceArchiveAllowed"];
+  private readonly assertThreadArchiveAllowed?: AgentManagerOptions["assertThreadArchiveAllowed"];
 
   constructor(options: AgentManagerOptions) {
     this.getSharedProviderConfig = options.getSharedProviderConfig;
     this.installationSettingsReader = options.installationSettingsReader;
     this.assertWorkspaceArchiveAllowed = options.assertWorkspaceArchiveAllowed;
+    this.assertThreadArchiveAllowed = options.assertThreadArchiveAllowed;
     this.now = options.now ?? Date.now;
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.registry = options.registry;
@@ -3821,13 +3829,27 @@ export class AgentManager {
   }
 
   async assertAgentArchiveAllowed(agentId: string): Promise<void> {
-    const agent = this.getAgent(agentId) ?? (await this.registry?.get(agentId));
-    if (agent?.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    const live = this.getAgent(agentId);
+    const agent = live ?? (await this.registry?.get(agentId));
+    // Running is judged only here, before archive cancels the run, so a refusal
+    // never follows a cancellation. Later checks repeat the workspace rules.
+    const running = live ? live.lifecycle === "running" || this.runs.hasRun(agentId) : false;
+    if (agent?.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId, running);
+  }
+
+  private async assertThreadArchive(
+    workspaceId: string,
+    agentId: string,
+    running = false,
+  ): Promise<void> {
+    if (this.assertThreadArchiveAllowed)
+      return this.assertThreadArchiveAllowed({ workspaceId, agentId, running });
+    await this.assertWorkspaceArchiveAllowed?.(workspaceId);
   }
 
   async archiveAgent(agentId: string): Promise<{ archivedAt: string }> {
     const agent = this.requireAgent(agentId);
-    if (agent.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    if (agent.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId);
     await this.messageQueueControl?.pause(agentId);
     return this.runLifecycleMutation(agentId, () => this.archiveAgentUnlocked(agentId));
   }
@@ -3837,7 +3859,7 @@ export class AgentManager {
     requestedArchivedAt?: string,
   ): Promise<{ archivedAt: string }> {
     const agent = this.requireAgent(agentId);
-    if (agent.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    if (agent.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId);
     await this.assertControllerSettled(agent);
     if (!this.registry) {
       throw new Error("Agent storage is not configured");
@@ -4462,7 +4484,7 @@ export class AgentManager {
 
   async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {
     const record = await this.requireRegistry().get(agentId);
-    if (record?.workspaceId) await this.assertWorkspaceArchiveAllowed?.(record.workspaceId);
+    if (record?.workspaceId) await this.assertThreadArchive(record.workspaceId, agentId);
     await this.messageQueueControl?.pause(agentId);
     return this.runLifecycleMutation(agentId, () =>
       this.archiveSnapshotUnlocked(agentId, archivedAt),
@@ -4488,7 +4510,7 @@ export class AgentManager {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    if (record.workspaceId) await this.assertWorkspaceArchiveAllowed?.(record.workspaceId);
+    if (record.workspaceId) await this.assertThreadArchive(record.workspaceId, agentId);
     const nextRecord = await this.persistArchivedRecord(record, { archivedAt });
 
     await this.syncNativeArchiveState(record.provider, record.persistence, "archive");

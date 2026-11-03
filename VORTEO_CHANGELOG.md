@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Improvements
+
+- Archive a finished thread in a Vorteo System workspace, such as a finished Optimizer thread. The workspace stays protected, running or still-scheduled threads are refused, and deleting system threads stays refused.
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - A thread whose history failed to load after a daemon or session host restart no longer stays blank or shows only its recent messages. The next request for the thread retries the load once the thread is idle, and when newer messages arrived after the failure, it replaces the partial history with the full transcript under a new epoch so open clients reset. Concurrent requests share one retry, and a thread with a running turn waits for it to finish.
