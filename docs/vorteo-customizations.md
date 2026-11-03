@@ -8,6 +8,8 @@ Welcome presentation: wide screens split owner sign-in and password help into tw
 
 Installer presentation review: the elapsed timer is assigned before export to preserve shell failure reporting. the startup logo has a leading blank line, and the build animation centers within the current terminal dimensions on every frame. Progress remains visible below the artwork; small terminals retain the compact status display.
 
+Maintenance review (2026-11-02): agent instructions now ask threads waiting on Builds to keep a Review checklist item owned by Builds and update it after each Builds report. Instructions only; functionality, README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-02): integrated the current release branch for the keyboard regression correction. No additional runtime changes were introduced.
 
 Maintenance review (2026-11-02): the keyboard mode-isolation browser regression now advertises legacy profile capabilities so its live mode control remains mounted. Existing keyboard and agent-state assertions remain intact; production behavior is unchanged.
