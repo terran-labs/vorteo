@@ -8,9 +8,10 @@ const profile: AgentProfile = { id: "profile", name: "Profile", provider: "claud
 const owner = vi.hoisted(() => ({ status: "locked" }));
 vi.mock("@/execution-installation/owner-access", () => ({ useOwnerAccess: () => owner }));
 vi.mock("@/components/settings/owner-lock", () => ({ OwnerLockBadge: () => <span>Unlock</span> }));
-vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({ addListener: () => () => {} }),
-}));
+vi.mock("expo-router/react-navigation", async () => {
+  const { createContext } = await import("react");
+  return { NavigationContext: createContext<unknown>({ addListener: () => () => {} }) };
+});
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ show: vi.fn() }) }));
 vi.mock("@/execution-installation/policy", () => ({ readExecutionInstallation: () => ({}) }));
 vi.mock("./agent-profile-form", () => ({ AgentProfileForm: () => <div>Profile fields</div> }));
