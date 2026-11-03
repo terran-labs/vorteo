@@ -1544,7 +1544,9 @@ function ResolvedDesktopTabChip({
   showDropIndicatorAfter: boolean;
 }) {
   const sendToFactory = useSendToFactory(
-    serverId,
+    item.tab.target.kind === "agent"
+      ? (item.tab.target.environment?.serverId ?? serverId)
+      : serverId,
     workspaceId,
     item.tab.target.kind === "agent" ? item.tab.target.agentId : null,
   );

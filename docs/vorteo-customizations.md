@@ -1,6 +1,6 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-03): project menus control Factory through plugin RPCs. Factory folders order role workspaces and include the system Mechanic; role instructions support revision checks, history and charter review proposals. Triage receives threads from the tab menu; roles and workers use existing profile controls, and fresh role status appears in the sidebar. App source awaits integration with the daemon contract. README overview and onboarding are unchanged.
+Maintenance review (2026-11-03): project menus control Factory through plugin RPCs. Factory folders order role workspaces and include the system Mechanic; role instructions support revision checks, history and charter review proposals. Triage receives threads from the tab menu through each thread’s owning environment and project; roles and workers use existing profile controls, and fresh role status appears in the sidebar. App source awaits integration with the daemon contract. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): agent records now keep the last reported usage, so the Context window card no longer disappears after a daemon restart. README overview and onboarding are unchanged.
 

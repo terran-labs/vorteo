@@ -184,7 +184,9 @@ function MobileWorkspaceTabOption({
   onCloseOtherTabs: (tabId: string) => Promise<void> | void;
 }) {
   const sendToFactory = useSendToFactory(
-    normalizedServerId,
+    tab.target.kind === "agent"
+      ? (tab.target.environment?.serverId ?? normalizedServerId)
+      : normalizedServerId,
     normalizedWorkspaceId,
     tab.target.kind === "agent" ? tab.target.agentId : null,
   );

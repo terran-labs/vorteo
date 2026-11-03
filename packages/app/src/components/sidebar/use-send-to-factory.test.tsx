@@ -12,7 +12,18 @@ vi.mock("@/plugins/registry", () => ({
 vi.mock("@/stores/session-store", () => ({
   useSessionStore: (select: (state: unknown) => unknown) =>
     select({
-      sessions: { host: { workspaces: new Map([["workspace", { projectId: "project" }]]) } },
+      sessions: {
+        host: {
+          agents: new Map([
+            ["agent", { workspaceId: "workspace" }],
+            ["foreign-agent", { workspaceId: "foreign-workspace" }],
+          ]),
+          workspaces: new Map([
+            ["workspace", { projectId: "project" }],
+            ["foreign-workspace", { projectId: "foreign-project" }],
+          ]),
+        },
+      },
     }),
 }));
 vi.mock("@/contexts/toast-context", () => ({
@@ -42,4 +53,16 @@ it("sends the thread and confirms intake with a toast", async () => {
     agentId: "agent",
   });
   expect(fixture.show).toHaveBeenCalledWith("projectFactory.sent", { variant: "success" });
+});
+
+it("routes a thread opened from another workspace to its own project", async () => {
+  fixture.invoke.mockResolvedValue({ queued: true });
+  const hook = renderHook(() => useSendToFactory("host", "workspace", "foreign-agent"));
+  await act(async () => {
+    await hook.result.current?.();
+  });
+  expect(fixture.invoke).toHaveBeenCalledWith("factory.project.send_thread", {
+    projectId: "foreign-project",
+    agentId: "foreign-agent",
+  });
 });

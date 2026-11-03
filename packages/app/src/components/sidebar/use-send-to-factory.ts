@@ -6,9 +6,12 @@ import { useToast } from "@/contexts/toast-context";
 import { useProjectFactory } from "./factory-instructions";
 import { sendThreadToFactory } from "./project-factory-model";
 export function useSendToFactory(serverId: string, workspaceId: string, agentId: string | null) {
-  const projectId = useSessionStore(
-    (state) => state.sessions[serverId]?.workspaces.get(workspaceId)?.projectId ?? "",
-  );
+  const projectId = useSessionStore((state) => {
+    const session = state.sessions[serverId];
+    const agent = session?.agents.get(agentId ?? "");
+    if (!agent) return "";
+    return session?.workspaces.get(agent.workspaceId ?? workspaceId)?.projectId ?? "";
+  });
   const factory = useProjectFactory(serverId, projectId, !!projectId && !!agentId);
   const plugin = useInstalledPlugins().find((p) => p.id === "factory" && p.serverId === serverId);
   const toast = useToast();
@@ -26,5 +29,5 @@ export function useSendToFactory(serverId: string, workspaceId: string, agentId:
       setPending(false);
     }
   }, [plugin, agentId, pending, projectId, toast, t]);
-  return factory.data?.state === "on" ? send : undefined;
+  return projectId && agentId && factory.data?.state === "on" ? send : undefined;
 }
