@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Changed
+
+- Task cards are agent managed by default. Rows no longer offer completion toggles, edit pencils or dragging until you press the new Edit tasks toggle at the right end of the card header, which stays pushed in while editing. Edit mode resets when you switch threads or reload. Interface only.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.

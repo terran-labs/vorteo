@@ -8,7 +8,7 @@ import { Text } from "react-native";
 import { BrushCleaning, Check, Circle, CircleAlert, Eye, Pencil, Plus } from "lucide-react-native";
 import { useMutation } from "@tanstack/react-query";
 import { useShallow } from "zustand/shallow";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
 import type { ChecklistMutation } from "@getpaseo/protocol/task-checklist";
 import { useSessionStore } from "@/stores/session-store";
@@ -19,6 +19,8 @@ import { useToast } from "@/contexts/toast-context";
 import { isNative } from "@/constants/platform";
 import { LIST_ROW_ACTION_SIZE, LIST_ROW_TOUCH_ACTION_SIZE } from "@/styles/list-row-metrics";
 import { StatusRing } from "@/components/status-ring";
+import type { Theme } from "@/styles/theme";
+import { controlIconSize } from "@/components/ui/control-geometry";
 import { ReviewTaskBadge } from "@/task-checklist/review-badge";
 import { BlockedTaskBadge } from "@/task-checklist/blocked-badge";
 import { Button } from "@/components/ui/button";
@@ -53,6 +55,12 @@ type EditorState = { open: false } | { open: true; task: AgentTaskItem | null };
 const EMPTY_TASKS: AgentTaskItem[] = [];
 const TASK_RUNNING_ICON = <StatusRing variant="task" />;
 const COMPACT_COLUMN_DATA = { vortonRowHandle: "true" };
+const ThemedCheck = withUnistyles(Check);
+const ThemedCircle = withUnistyles(Circle);
+const ThemedCircleAlert = withUnistyles(CircleAlert);
+const ThemedEye = withUnistyles(Eye);
+const STATUS_ICON_SIZE = controlIconSize.sm;
+const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 function inactiveTaskIcon(status: AgentTaskItem["status"]) {
   if (status === "blocked") return CircleAlert;
   if (status === "review") return Eye;
@@ -68,6 +76,9 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
   const [expanded, setExpanded] = useCardDisclosure("tasks");
   const toggleExpanded = useCallback(() => setExpanded((value) => !value), [setExpanded]);
   const [editor, setEditor] = useState<EditorState>({ open: false });
+  // Agents manage the checklist; editing, completion toggles and reordering wait for this mode.
+  const [editMode, setEditMode] = useState(false);
+  const toggleEditMode = useCallback(() => setEditMode((value) => !value), []);
   const { supported, supportsBlocked, supportsReview, readOnly } = useSessionStore(
     useShallow((state) => {
       const session = state.sessions[serverId];
@@ -103,6 +114,7 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
   const { mutate: sendMutation } = mutation;
   const clearCompleted = useCallback(() => clearTasks(tasks), [clearTasks, tasks]);
   const canMutate = connected && !readOnly && !mutation.isPending && !clearMutation.isPending;
+  const editing = editMode && !readOnly;
   const progress = checklistProgress(tasks);
   const headingIcon = useMemo(
     () => (
@@ -171,6 +183,20 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
               disabled={!canMutate}
               onPress={clearCompleted}
             />
+            <TaskCardAction
+              iconOnly
+              selected={editing}
+              disabled={readOnly}
+              onPress={toggleEditMode}
+              testID="checklist-edit-mode"
+              accessibilityLabel={editing ? "Done editing tasks" : "Edit tasks"}
+              accessibilityHint={
+                editing
+                  ? "Returns the checklist to agent management."
+                  : "Shows edit buttons and completion toggles for each task."
+              }
+              leftIcon={Pencil}
+            />
           </TaskCardActions>
         </TaskCardHeader>
 
@@ -178,6 +204,7 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
           <ChecklistRows
             tasks={tasks}
             canMutate={canMutate}
+            editing={editing}
             open={open}
             sendMutation={sendMutation}
             reorder={mutation.mutateAsync}
@@ -229,12 +256,14 @@ function ClearCompletedButton({
 function ChecklistRows({
   tasks,
   canMutate,
+  editing,
   open,
   sendMutation,
   reorder,
 }: {
   tasks: AgentTaskItem[];
   canMutate: boolean;
+  editing: boolean;
   open: (task: AgentTaskItem) => void;
   sendMutation: (input: ChecklistMutation) => void;
   reorder: (input: ChecklistMutation) => Promise<unknown>;
@@ -276,12 +305,13 @@ function ChecklistRows({
       <ChecklistRow
         info={info}
         canMutate={canMutate}
-        canReorder={canMutate && managed.length > 1}
+        canReorder={editing && canMutate && managed.length > 1}
+        editing={editing}
         open={open}
         mutate={sendMutation}
       />
     ),
-    [canMutate, managed.length, open, sendMutation],
+    [canMutate, editing, managed.length, open, sendMutation],
   );
 
   return (
@@ -332,12 +362,14 @@ function ChecklistRow({
   info,
   canMutate,
   canReorder,
+  editing,
   open,
   mutate,
 }: {
   info: DraggableRenderItemInfo<AgentTaskItem>;
   canMutate: boolean;
   canReorder: boolean;
+  editing: boolean;
   open: (task: AgentTaskItem) => void;
   mutate: (input: ChecklistMutation) => void;
 }) {
@@ -356,14 +388,18 @@ function ChecklistRow({
     <ListDragRow info={info} disabled={dragDisabled} testID={`checklist-drag-${task.id}`}>
       <TaskCardRow style={info.isActive && styles.active} testID={`checklist-row-${task.id}`}>
         <TaskCardRowIcon>
-          <ChecklistCheckbox
-            task={task}
-            completed={completed}
-            running={running}
-            disabled={!managed || !canMutate}
-            mutate={mutate}
-            onLongPress={holdToDrag}
-          />
+          {editing ? (
+            <ChecklistCheckbox
+              task={task}
+              completed={completed}
+              running={running}
+              disabled={!managed || !canMutate}
+              mutate={mutate}
+              onLongPress={holdToDrag}
+            />
+          ) : (
+            <ChecklistStatusIcon task={task} completed={completed} running={running} />
+          )}
         </TaskCardRowIcon>
         <TruncatedText
           numberOfLines={1}
@@ -381,15 +417,36 @@ function ChecklistRow({
         <ChecklistRowProgress task={task} />
         {blocked ? <BlockedTaskBadge task={task} /> : null}
         {review ? <ReviewTaskBadge task={task} /> : null}
-        <TaskCardRowAction
-          accessibilityLabel={`Details for ${task.text}`}
-          onPress={details}
-          onLongPress={holdToDrag}
-          leftIcon={Pencil}
-        />
+        {editing ? (
+          <TaskCardRowAction
+            accessibilityLabel={`Details for ${task.text}`}
+            onPress={details}
+            onLongPress={holdToDrag}
+            leftIcon={Pencil}
+          />
+        ) : null}
       </TaskCardRow>
     </ListDragRow>
   );
+}
+
+/** Outside edit mode the status is passive, matching the checkbox glyph without a press target. */
+function ChecklistStatusIcon({
+  task,
+  completed,
+  running,
+}: {
+  task: AgentTaskItem;
+  completed: boolean;
+  running: boolean;
+}) {
+  if (running) return TASK_RUNNING_ICON;
+  if (completed) return <ThemedCheck size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
+  if (task.status === "blocked")
+    return <ThemedCircleAlert size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
+  if (task.status === "review")
+    return <ThemedEye size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
+  return <ThemedCircle size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
 }
 
 /** The check mark fills the leading icon column, beside its text like a sidebar status circle. */

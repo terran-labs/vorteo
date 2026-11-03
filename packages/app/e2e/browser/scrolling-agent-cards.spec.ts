@@ -789,6 +789,7 @@ test("manual checklist controls preserve drafts and report conflicts at 1400px",
       if (status === "in_progress") await expect(spinner).toBeVisible();
       else await expect(spinner).not.toBeAttached();
     }
+    await page.getByTestId("checklist-edit-mode").click();
     await firstRow.getByRole("button", { name: "Details for First agent-created task" }).click();
     await page
       .getByTestId("checklist-editor")
@@ -801,6 +802,7 @@ test("manual checklist controls preserve drafts and report conflicts at 1400px",
     await page.reload();
     await revealSupportingCards(page, 1400);
     await expect(firstRow.getByText("Blocked", { exact: true })).toBeVisible();
+    await page.getByTestId("checklist-edit-mode").click();
     const blockedControl = firstRow.getByRole("checkbox");
     const blockedIcon = blockedControl.locator("svg");
     await expect(blockedIcon.locator('circle[r="10"]')).toHaveCount(1);
@@ -890,6 +892,7 @@ test("manual checklist controls preserve drafts and report conflicts at 1400px",
     await expect(page.getByTestId("checklist-count")).toHaveText("1 / 2");
     await page.reload();
     await revealSupportingCards(page, 1400);
+    await page.getByTestId("checklist-edit-mode").click();
     await expect(
       page.getByTestId("agent-task-progress-card").getByRole("checkbox", {
         name: "Complete Agent revision",

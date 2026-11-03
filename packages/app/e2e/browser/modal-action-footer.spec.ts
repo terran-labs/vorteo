@@ -33,6 +33,7 @@ for (const width of [1440, 390]) {
       await openAgentRoute(page, agent);
       if (width > 600) await ensureExplorerSidebar(page);
       await page.getByTestId(/^worktree-setup-callout-.*-dismiss$/).click();
+      await page.getByTestId("checklist-edit-mode").click();
       await page.getByRole("button", { name: "Details for Edit this task", exact: true }).click();
       const footer = page.getByTestId("checklist-modal-footer");
       const scroll = page.getByTestId("checklist-modal-scroll");
