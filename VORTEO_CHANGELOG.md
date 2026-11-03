@@ -6,7 +6,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
-- Settings now groups eight sections by device and installation scope, keeps search in the top bar, and closes Command Center when Settings opens. Keyboard shortcuts opens from a drill-in row and owner access has a reserved location. Pane headers show the scope of their settings. Existing settings links remain valid; desktop and phone browser checks cover header search, overlay dismissal and returning from Settings.
+- Settings now groups eight sections by device and installation scope, keeps search in the top bar, and closes Command Center when Settings opens. Keyboard shortcuts opens from a drill-in row and owner access has a reserved location. Pane headers show the scope of their settings. Existing settings links remain valid; desktop and phone browser checks use visible navigation controls to cover header search, overlay dismissal and returning from Settings.
 
 ### Fixes
 

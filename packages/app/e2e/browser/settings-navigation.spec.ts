@@ -680,7 +680,9 @@ for (const width of [1280, 390]) {
   }) => {
     await page.setViewportSize({ width, height: 844 });
     await gotoAppShell(page);
-    await page.keyboard.press(process.platform === "darwin" ? "Meta+k" : "Control+k");
+    if (width === 390)
+      await page.getByTestId("menu-button").filter({ visible: true }).first().click();
+    await page.getByTestId("sidebar-search").filter({ visible: true }).first().click();
     await expect(page.getByTestId("command-center-panel")).toBeVisible();
     // Exercise navigation while the overlay still owns input, as a sidebar action can do.
     if (width === 390)
