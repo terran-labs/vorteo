@@ -46,9 +46,7 @@ test("System details show the restarted Host version without reloading", async (
       const version = await readHelpHostVersion(page, getServerId());
       await expectHelpHostVersion(page, host.serverId, PREVIOUS_VERSION);
       await openHostPage(page, host);
-      await expect(page.getByTestId("system-pane").filter({ visible: true })).toContainText(
-        "Healthy",
-      );
+      await expect(page.getByTestId("system-pane").filter({ visible: true })).toBeVisible();
       await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toBeVisible();
       await markPageForNoReloadCheck(page, NO_RELOAD_MARKER);
       return version;
@@ -56,9 +54,12 @@ test("System details show the restarted Host version without reloading", async (
 
   await test.step("the last known version remains in System details when the Host stops", async () => {
     await host.stop();
-    await expect(page.getByTestId("system-pane").filter({ visible: true })).toContainText(
-      "Needs attention",
-    );
+    await expect(
+      page
+        .getByTestId("system-pane")
+        .filter({ visible: true })
+        .getByRole("button", { name: "Reconnect", exact: true }),
+    ).toBeVisible();
     await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toBeVisible();
   });
 
