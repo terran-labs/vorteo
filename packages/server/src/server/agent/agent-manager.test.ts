@@ -8370,11 +8370,30 @@ test("keeps reported cost when a streamed usage update omits it", async () => {
     expect(manager.getAgent(snapshot.id)?.lastUsage?.contextWindowUsedTokens).toBe(2_000),
   );
   expect(manager.getAgent(snapshot.id)?.lastUsage).toEqual({
-    outputTokens: 40,
     totalCostUsd: 1.25,
     contextWindowMaxTokens: 200_000,
     contextWindowUsedTokens: 2_000,
   });
+
+  // Compaction reports no used context, which clears it; an estimate is never carried over.
+  capturedSession!.pushEvent({
+    type: "usage_updated",
+    provider: "codex",
+    usage: { estimatedCostUsd: 0.5, contextWindowUsedTokens: 3_000 },
+    turnId: "turn-2",
+  });
+  capturedSession!.pushEvent({
+    type: "usage_updated",
+    provider: "codex",
+    usage: { contextWindowMaxTokens: 200_000 },
+    turnId: "turn-2",
+  });
+  await vi.waitFor(() =>
+    expect(manager.getAgent(snapshot.id)?.lastUsage).toEqual({
+      totalCostUsd: 1.25,
+      contextWindowMaxTokens: 200_000,
+    }),
+  );
 });
 
 test("ignores stale autonomous terminals without lowering the active turn lifecycle", async () => {

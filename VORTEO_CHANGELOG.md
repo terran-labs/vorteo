@@ -9,7 +9,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Fixes
 
 - Show only the agent's own account in the Context window details instead of repeating its quotas from the provider-level plan card.
-- Keep Claude's session cost visible while a turn runs; streamed usage updates no longer erase it until the turn finishes.
+- Keep Claude's session cost visible while a turn runs; streamed usage updates no longer erase it until the turn finishes. Other fields still follow each update, so compaction clears the used context and a model without a known price drops a stale estimate.
 
 ### Improvements
 
