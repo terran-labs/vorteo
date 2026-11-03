@@ -4149,6 +4149,8 @@ export const ServerInfoStatusPayloadSchema = z
         coordinatorBootstrapRecoveryBootPlan: z.boolean().optional(),
         coordinatorBootstrapAutomaticReconciliation: z.boolean().optional(),
         coordinatorBootstrapAutomaticStatus: z.boolean().optional(),
+        // COMPAT(coordinatorDispatchStatus): added 2026-11-02; failure, readiness and stall views.
+        coordinatorBootstrapDispatchStatus: z.boolean().optional(),
         coordinatorBootstrapAuthenticatedSubmission: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
         agentThinkingUpdate: z.boolean().optional(),

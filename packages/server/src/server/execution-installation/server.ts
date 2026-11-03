@@ -1,5 +1,6 @@
 import { InstallationManagement } from "./management.js";
 import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js";
+import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
   SnapshotRestoreRequestSchema,
@@ -1713,6 +1714,14 @@ export function createInstallationServer(
         decisionAt: request.decisionAt,
         execution: request.execution,
         automaticStatus: coordinatorAutomaticStatus(request, Date.now()),
+        dispatchStatus: coordinatorDispatchStatuses({
+          requests: [request],
+          readLifecycle: () => {
+            if (!coordinatorRequests.readLifecycle) throw new Error("Lifecycle unavailable");
+            return coordinatorRequests.readLifecycle();
+          },
+          now: Date.now(),
+        }).get(request.id),
         approvalUrl: approvalUrl.toString(),
       });
     } catch {

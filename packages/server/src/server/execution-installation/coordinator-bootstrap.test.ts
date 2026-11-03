@@ -49,6 +49,9 @@ import {
   type CoordinatorBootstrapStage,
 } from "@getpaseo/protocol/coordinator-bootstrap";
 import { handleBootstrapReview } from "./coordinator-bootstrap-session.js";
+import { closeFailedPreclaimDispatch } from "./coordinator-bootstrap-dispatch-failure.js";
+import { BootstrapCoordinatorBusy } from "./coordinator-bootstrap-errors.js";
+import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import {
   CoordinatorBootstrapRequests,
   coordinatorPlanDigest,
@@ -142,6 +145,19 @@ test("frozen handoff refuses active jobs, preparations, unresolved holds and chi
       [],
     ),
   ).not.toThrow();
+  for (const target of ["host", "container-daemon"]) {
+    const canceledBatch = {
+      ...pending,
+      target,
+      status: "rejected",
+      sourceBatch: { status: "preparing", contributions: [] },
+    };
+    expect(() => assertFrozenCoordinatorIdle([canceledBatch], [])).not.toThrow();
+    expect(() => assertFrozenCoordinatorIdle([canceledBatch], [123])).toThrow("children");
+    expect(() =>
+      assertFrozenCoordinatorIdle([{ ...canceledBatch, finishCurrentTurns: true }], []),
+    ).toThrow("unresolved");
+  }
   expect(() => assertFrozenCoordinatorIdle([{ ...pending, status: "unknown" }], [])).toThrow();
   expect(() => assertFrozenCoordinatorIdle(null, [])).toThrow();
 });
@@ -1118,6 +1134,84 @@ test("dispatch claims exact approval once and preserves its generation across re
   expect(() =>
     f.service().advanceDispatch({ ...progress, revision: uncertain.revision }, "freeze_pending"),
   ).toThrow("Invalid");
+});
+
+test("a busy pre-claim dispatch closes its exact approval with a reason and is never reused", async () => {
+  const f = fixture();
+  f.plan.state.directory = f.root;
+  const blocking = {
+    id: randomUUID(),
+    revision: randomUUID(),
+    target: "host",
+    reason: "fixture",
+    requestedBy: "host-agent",
+    createdAt: "2026-11-01T00:00:00.000Z",
+    expiresAt: "2026-11-02T00:00:00.000Z",
+    status: "approved",
+    detail: "fixture",
+  };
+  writeFileSync(path.join(f.root, "restart-jobs.json"), JSON.stringify([blocking]), {
+    mode: 0o600,
+  });
+  const pending = await f.prepare();
+  const service = {
+    list: () => f.service().list(),
+    prepare: (input: unknown) => f.service().prepare(input),
+    decide: (input: unknown, password: string) => f.service().decide(input, password),
+    dispatchStatuses: (listed: CoordinatorBootstrapRequest[]) =>
+      coordinatorDispatchStatuses({
+        requests: listed,
+        readLifecycle: () => f.service().readLifecycle(),
+        now: Date.now(),
+      }),
+  };
+  const list = { type: "installation.bootstrap.list_requests.request", requestId: "1" } as const;
+  // Readiness is visible before approval, and only to clients that ask for it.
+  const legacy = await handleBootstrapReview(list, service);
+  expect(legacy.payload.requests?.[0]).not.toHaveProperty("dispatchStatus");
+  const review = await handleBootstrapReview({ ...list, dispatchStatus: true }, service);
+  expect(review.payload.requests?.[0]?.dispatchStatus?.readiness).toMatchObject({
+    state: "blocked",
+    blockers: ["A Host restart or source update is approved"],
+  });
+  const approved = await f.service().decide(
+    {
+      id: pending.id,
+      revision: pending.revision,
+      planSha256: pending.planSha256,
+      decision: "approve",
+    },
+    ownerPassword,
+  );
+  const identity = {
+    id: approved.id,
+    revision: approved.revision,
+    planSha256: approved.planSha256,
+  };
+  const error = await f
+    .service()
+    .claimDispatch(identity)
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(BootstrapCoordinatorBusy);
+  expect(f.service().closeFailedDispatch({ ...identity, revision: randomUUID() })).toBeNull();
+  closeFailedPreclaimDispatch(f.service(), approved, error);
+  const closed = f.service().list()[0]!;
+  expect(closed).toMatchObject({ status: "canceled" });
+  expect(closed.execution).toBeUndefined();
+  await expect(f.service().claimDispatch(identity)).rejects.toThrow("approval required");
+  const failed = await handleBootstrapReview({ ...list, dispatchStatus: true }, service);
+  const status = failed.payload.requests?.[0]?.dispatchStatus;
+  expect(status?.failure?.category).toBe("busy");
+  expect(status?.failure?.reason).toContain("before changing anything");
+  expect(status?.readiness).toBeUndefined();
+  // A record that no longer explains the ledger's current revision is hidden.
+  expect(
+    coordinatorDispatchStatuses({
+      requests: [{ ...closed, revision: randomUUID() }],
+      readLifecycle: () => [],
+      now: Date.now(),
+    }).size,
+  ).toBe(0);
 });
 
 test("cancellation during dispatch validation wins without a stored claim", async () => {

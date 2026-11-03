@@ -28,6 +28,10 @@ Maintenance review (2026-11-02): rebuilt the sidebar Quotas card as per-account 
 
 Maintenance review (2026-11-02): usage display fixes for account tiles: tie-breaks and reset fallbacks, a 10-minute last-known threshold, a 2-minute daemon cache, forced refresh after sign-in, and limit-message readings for Claude setup-token accounts. Wire messages are unchanged; the observed reading reuses existing usage details. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-02): the coordinator launch path also closes an approval when its runner never starts or exits before claiming the update, using the same exact compare-and-swap and a generic reason. A still-running runner keeps its approval and appears as stalled; nothing is signaled or relaunched, and the runner's own ownership gate is unchanged. Builds reviewed it. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-02): coordinator update reliability, first batch. Admission ignores stale source preparation on terminal update requests, adapted from the reviewed delegated-installation fix. A dispatch that fails before its durable claim now closes its approval as canceled with a plain reason kept beside the ledger, so a rollback coordinator still parses it. Negotiating clients see dispatch blockers before approval and stalled approvals in Installation controls, the sidebar banner and `coordinator-status`. Builds is not yet notified automatically. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-02): integrated the current release branch for the keyboard regression correction. No additional runtime changes were introduced.
 
 Maintenance review (2026-11-02): the keyboard mode-isolation browser regression now advertises legacy profile capabilities so its live mode control remains mounted. Existing keyboard and agent-state assertions remain intact; production behavior is unchanged.

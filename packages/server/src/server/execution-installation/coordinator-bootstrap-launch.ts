@@ -3,12 +3,14 @@ import {
   type InitializationPhase,
 } from "./coordinator-initialization-diagnostic.js";
 import { reserveEnrolledBootstrapLaunch } from "./coordinator-bootstrap-maintenance-dispatch.js";
+import { closeFailedPreclaimDispatch } from "./coordinator-bootstrap-dispatch-failure.js";
+import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { verifyCoordinatorSubmission } from "./daemon-automation.js";
 import { createHash } from "node:crypto";
 import { lstatSync, constants, readFileSync, realpathSync, readdirSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { z } from "zod";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -1670,9 +1672,18 @@ export function refreshBootstrapReviewOnRenewalChange(
       if (!refreshing && needsRefresh(false)) void refresh();
       return current.list();
     },
+    dispatchStatuses: (listed) => current.dispatchStatuses?.(listed) ?? new Map(),
     prepare: (input) => operate((service) => service.prepare(input)),
     decide: (input, password) => operate((service) => service.decide(input, password)),
   };
+}
+
+/** True only on proof the child is not running: Node 24 leaves `pid` undefined from
+ * the synchronous return of a failed spawn and later emits "error" with `exitCode`
+ * set to the negative errno and no "exit"; a started child sets `exitCode` or
+ * `signalCode` before it emits "exit". */
+function childNeverRanOrEnded(child: ChildProcess): boolean {
+  return child.pid === undefined || child.exitCode !== null || child.signalCode !== null;
 }
 
 /** Shared exact-plan launch path. Independent maintenance omits automatic
@@ -1716,41 +1727,76 @@ export function createDispatchingBootstrapReview(options: {
   const dispatch = (request: CoordinatorBootstrapRequest, automatic: boolean) =>
     withFreshBootstrapArtifactReuse(() => dispatchVerified(request, automatic));
   const dispatchVerified = async (request: CoordinatorBootstrapRequest, automatic: boolean) => {
-    await verifyCandidate(request);
-    const source = await readBootstrapPreparedFile(setup.ownerLauncher, await verifySetup());
-    if (automatic)
-      request = requests.reserveAutomaticDispatch({
-        id: request.id,
-        revision: request.revision,
-        planSha256: request.planSha256,
-      });
-    if (request.enrollment) {
-      if (!options.enrollment || !setup.maintenance || automatic)
-        throw new BootstrapRequestConflict("Exact admitted enrollment launch required");
-      request = reserveEnrolledBootstrapLaunch(request);
+    // An owner approval, or an automatic one after its launch reservation, has no
+    // retry path of its own. A failure before the fork closes it instead of leaving
+    // it approved with nothing running. Automatic reconciliation retries earlier failures.
+    let closable = !automatic;
+    let source: Buffer;
+    let executionSetup: string;
+    try {
+      await verifyCandidate(request);
+      source = await readBootstrapPreparedFile(setup.ownerLauncher, await verifySetup());
+      if (automatic) {
+        request = requests.reserveAutomaticDispatch({
+          id: request.id,
+          revision: request.revision,
+          planSha256: request.planSha256,
+        });
+        closable = true;
+      }
+      if (request.enrollment) {
+        if (!options.enrollment || !setup.maintenance || automatic)
+          throw new BootstrapRequestConflict("Exact admitted enrollment launch required");
+        request = reserveEnrolledBootstrapLaunch(request);
+      }
+      const current = requests.list().find((item) => item.id === request.id);
+      if (!current || current.revision !== request.revision || current.execution)
+        throw new BootstrapRequestConflict("Bootstrap decision changed before launch");
+      executionSetup = setup.renewal
+        ? persistRenewalSetup(request.plan.state.directory, setup, request)
+        : setupFile;
+    } catch (error) {
+      if (closable) closeFailedPreclaimDispatch(requests, request, error);
+      throw error;
     }
-    const current = requests.list().find((item) => item.id === request.id);
-    if (!current || current.revision !== request.revision || current.execution)
-      throw new BootstrapRequestConflict("Bootstrap decision changed before launch");
-    const executionSetup = setup.renewal
-      ? persistRenewalSetup(request.plan.state.directory, setup, request)
-      : setupFile;
-    const child = spawn(
-      "/usr/bin/python3",
-      [
-        "-I",
-        "-B",
-        "-c",
-        source.toString("utf8"),
-        path.join(request.plan.state.directory, "coordinator-bootstrap-execution.lock"),
-        setup.node.path,
-        setup.entrypoint.path,
-        executionSetup,
-        "executor",
-        request.id,
-      ],
-      { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { PATH: "/usr/bin:/bin" } },
-    );
+    // Close only on proof that no executor can still claim this revision: the
+    // process never started, or it ended. The launcher execs the runner in the same
+    // process and no watchdog exists before the claim, so a terminal child leaves
+    // nothing to claim. A runner that claimed before ending holds an execution
+    // record, and the exact CAS in closeFailedDispatch then changes nothing.
+    const stoppedBeforeClaim = () => {
+      if (closable)
+        closeFailedPreclaimDispatch(
+          requests,
+          request,
+          new BootstrapRequestConflict(
+            "The coordinator runner stopped before it claimed the update",
+          ),
+        );
+    };
+    let child: ChildProcess;
+    try {
+      child = spawn(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-B",
+          "-c",
+          source.toString("utf8"),
+          path.join(request.plan.state.directory, "coordinator-bootstrap-execution.lock"),
+          setup.node.path,
+          setup.entrypoint.path,
+          executionSetup,
+          "executor",
+          request.id,
+        ],
+        { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { PATH: "/usr/bin:/bin" } },
+      );
+    } catch (error) {
+      // A synchronous spawn throw starts no process.
+      stoppedBeforeClaim();
+      throw error;
+    }
     child.on("error", () => {});
     try {
       await waitForBootstrapWatchdog(
@@ -1760,7 +1806,9 @@ export function createDispatchingBootstrapReview(options: {
           : { role: "executor", timeoutMs: options.dispatchWaitTimeoutMs },
       );
     } catch {
-      // An observation failure is not permission to signal or relaunch a child.
+      // A started child's "error", malformed output or a timeout proves neither, so
+      // the approval stays open for the stall view. Observation never signals or relaunches.
+      if (childNeverRanOrEnded(child)) stoppedBeforeClaim();
       throw new BootstrapRequestConflict(
         "Bootstrap dispatch is unconfirmed. Refresh its recorded status before recovery.",
       );
@@ -1780,6 +1828,12 @@ export function createDispatchingBootstrapReview(options: {
       return dispatch(request, false);
     },
     list: () => requests.list(),
+    dispatchStatuses: (listed) =>
+      coordinatorDispatchStatuses({
+        requests: listed,
+        readLifecycle: () => requests.readLifecycle(),
+        now: Date.now(),
+      }),
     prepare: async (input) => {
       const prepared = CoordinatorBootstrapPreparationSchema.parse(input);
       await verifyCandidate(prepared);

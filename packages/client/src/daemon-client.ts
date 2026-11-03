@@ -1312,6 +1312,7 @@ export function supportsUsageReports(features: ServerInfoStatusPayload["features
 /** Daemon features a client negotiates before reviewing coordinator plans that use them. */
 const BOOTSTRAP_REVIEW_FEATURES = [
   ["coordinatorBootstrapAutomaticStatus", "automaticStatus"],
+  ["coordinatorBootstrapDispatchStatus", "dispatchStatus"],
   ["coordinatorBootstrapFactoryAdoption", "factoryRuntimeAdoption"],
   ["coordinatorBootstrapCompatibleRecovery", "compatibleRecovery"],
   ["coordinatorBootstrapPreviewMonitor", "previewMonitor"],

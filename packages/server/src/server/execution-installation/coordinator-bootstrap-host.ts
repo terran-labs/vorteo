@@ -126,6 +126,7 @@ export function createBootstrapReconciliationLedger(
       requests.cancelForReplacedHostRelease(selected, releaseRoot),
     reserveAutomaticReconciliation: (value) => requests.reserveAutomaticReconciliation(value),
     finishAutomaticReconciliation: (id, value) => requests.finishAutomaticReconciliation(id, value),
+    readLifecycle: () => requests.readLifecycle(),
   };
 }
 
