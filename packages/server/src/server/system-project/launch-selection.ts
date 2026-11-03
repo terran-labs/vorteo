@@ -2,6 +2,7 @@ import type { MutableDaemonConfig, ProviderUsage } from "@getpaseo/protocol/mess
 import { resolveProviderType, sharedProfileId } from "@getpaseo/protocol/provider-preferences";
 
 import type { ProviderSnapshotEntry } from "../agent/agent-sdk-types.js";
+import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 
 /** A provider and, when one applies, the profile a daemon-created agent launches with. */
 export interface Launch {
@@ -59,4 +60,22 @@ function safeProviderType(provider: string, settings: MutableDaemonConfig): stri
   } catch {
     return provider;
   }
+}
+
+/**
+ * The launch a daemon-created agent would use right now, or null when no provider is usable.
+ * Reads cached usage; the Optimizer's own seeding refreshes it when connections change.
+ */
+export async function resolveDefaultLaunch(input: {
+  providers: Pick<ProviderSnapshotManager, "listProviders">;
+  readUsage: (options: { forceRefresh: boolean }) => Promise<{ providers: ProviderUsage[] }>;
+  getSettings: () => MutableDaemonConfig;
+}): Promise<Launch | null> {
+  const entries = await input.providers.listProviders({ wait: false });
+  const ready = entries.filter((entry) => entry.enabled && entry.status === "ready");
+  if (ready.length === 0) return null;
+  const usage = await input.readUsage({ forceRefresh: false });
+  const settings = input.getSettings();
+  const [best] = usableProviders(ready, usage.providers, settings);
+  return best ? selectLaunch(best, settings) : null;
 }

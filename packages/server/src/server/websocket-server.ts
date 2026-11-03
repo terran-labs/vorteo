@@ -2373,6 +2373,7 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.
         workspacePinning: true,
         workspaceLifecycle: true,
+        factoryWorkspaceMembership: true,
         systemProject: true,
         systemProjectSource: true,
         // COMPAT(workspaceMarkUnread): added in v0.5.0, remove after 2027-08-20.
