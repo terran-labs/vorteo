@@ -183,13 +183,34 @@ async function inspectContainer(
       "--type",
       "container",
       "--format",
-      "{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+      // Read State as JSON: Docker's template map lookups fail outright on a container
+      // without a healthcheck ("map has no entry for key Health"), even inside {{if}}.
+      "{{.Id}}|{{json .State}}",
       id,
     ]),
     COMMAND_TIMEOUT_MS,
   );
-  const [observed = "", running = "", startedAt = "", health = ""] = stdout.trim().split("|");
-  return { id: observed, running: running === "true", startedAt, health };
+  const line = stdout.trim();
+  const separator = line.indexOf("|");
+  const state = JSON.parse(line.slice(separator + 1)) as {
+    Running?: unknown;
+    StartedAt?: unknown;
+    Health?: { Status?: unknown } | null;
+  };
+  return {
+    id: line.slice(0, separator),
+    running: state.Running === true,
+    startedAt: typeof state.StartedAt === "string" ? state.StartedAt : "",
+    health: typeof state.Health?.Status === "string" ? state.Health.Status : "",
+  };
+}
+
+/** The first line of a failed command's stderr or message, bounded for a refusal detail. */
+function commandError(error: unknown): string {
+  const stderr = (error as { stderr?: unknown })?.stderr;
+  let text = error instanceof Error ? error.message : String(error);
+  if (typeof stderr === "string" && stderr.trim()) text = stderr;
+  return text.trim().split("\n")[0]!.slice(0, 200);
 }
 
 async function engineAnswers(plan: EngineRestartConfiguration, run: EngineCommand) {
@@ -231,8 +252,8 @@ export async function engineRestartPreflight(
     let state: ContainerState;
     try {
       state = await inspectContainer(plan, run, plan.containers[key]);
-    } catch {
-      return refuse(`the ${CONTAINER_LABELS[key]} was not found`);
+    } catch (error) {
+      return refuse(`the ${CONTAINER_LABELS[key]} could not be inspected (${commandError(error)})`);
     }
     if (state.id !== plan.containers[key]) refuse(`the ${CONTAINER_LABELS[key]} ID changed`);
     if (!state.running) refuse(`the ${CONTAINER_LABELS[key]} is not running`);

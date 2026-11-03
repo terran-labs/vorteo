@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Restore keyboard entry into the collapsed sidebar's project preview: non-trapping overlays get first refusal for each key, with fallback to the focused surface. Reconcile the idle agent release browser checks with Vorteo's installation-wide Agents settings and its read error text.
