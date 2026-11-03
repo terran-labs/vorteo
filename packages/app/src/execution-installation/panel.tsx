@@ -466,6 +466,14 @@ function InstallationSystemAdvancedBody({ model }: { model: InstallationPanelMod
   return state.unlocked ? <DaemonAutomationControl model={model} state={state} /> : null;
 }
 
+function InstallationActionStatus({
+  state,
+}: {
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  return <SettingsStatusLine message={state.error ?? state.helperError} />;
+}
+
 function InstallationSystemDetailsBody({
   model,
   requestId,
@@ -525,6 +533,7 @@ function InstallationSystemDetailsBody({
   return (
     <View testID={`system-installation-details-${target}`}>
       <View style={settingsStyles.card} testID="installation-card">
+        <InstallationActionStatus state={state} />
         {target === "host" ? <CoordinatorMaintenanceReviews /> : null}
         {state.unlocked ? (
           <>

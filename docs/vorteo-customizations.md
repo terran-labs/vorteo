@@ -60,7 +60,7 @@ Maintenance review (2026-11-03): a finished thread in a Vorteo System workspace 
 
 Maintenance review (2026-11-03): merged `main` after the fifth Host delivery into the installed Host source for its pull request; functionality is unchanged.
 
-Maintenance review (2026-11-03): the System pane consolidates Host and Dev status, restart reviews, updates and maintenance details for catalog integration. Composer profile edits use a centered form and preserve the reviewed shared-preference revision; update actions disable while a request is running. Focused unit and browser component checks pass; catalog wiring and integrated browser acceptance remain pending. README overview and onboarding are unchanged.
+Maintenance review (2026-11-03): the System pane consolidates Host and Dev status, restart reviews, updates and maintenance details for catalog integration. Composer profile edits use a centered form and preserve the reviewed shared-preference revision; update actions disable while a request is running. Focused unit and browser component checks, including session-host reviews and locked attention counts, pass; catalog wiring and integrated browser acceptance remain pending. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): Settings round 3, batch 1. Settings no longer shifts layout: transient results show as toasts, ongoing sync shows in a fixed status line and loading panes keep their space. Provider lists group uninstalled providers under Available to install, profiles open on a dedicated page, and owner-password controls stay grouped and disabled until unlocked. README overview and onboarding are unchanged.
 
