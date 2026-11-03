@@ -6,6 +6,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Features
+
+- Ask typed questions. Agents can offer Yes and No, a choice of options or checkboxes, and you answer in one click, with an optional note or your own answer when none fit. Free-text questions now show one editable field pre-filled with the recommendation.
+- Make every line in the Open questions cards the same size as normal sidebar text.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.

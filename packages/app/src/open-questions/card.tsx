@@ -12,22 +12,20 @@ import { taskCardStyles } from "@/agent-stream/task-card-styles";
 import { useCardDisclosure } from "@/agent-stream/use-card-disclosure";
 import { Button } from "@/components/ui/button";
 import { CountBadge } from "@/components/ui/count-badge";
-import { FormTextInput } from "@/components/ui/form-field";
 import { useReportActionError } from "@/hooks/use-action-error";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
 import { formatMessageTimestamp, formatTimeAgo } from "@/utils/time";
-import { useVortonTouch } from "@/vorton-touch";
-import { answeredFrom, blockedTasks, groupQuestions } from "./model";
+import { QuestionAnswerControls } from "./answer-controls";
+import { answeredFrom, blockedTasks, groupQuestions, type ComposedAnswer } from "./model";
 
 const EMPTY_QUESTIONS: AgentQuestion[] = [];
 const EMPTY_TASKS: TodoEntry[] = [];
 const HEADING_ICON = <TaskCardIcon kind="question" />;
 
-export interface AnswerInput {
+export interface AnswerInput extends ComposedAnswer {
   questionId: string;
-  answer: string;
 }
 
 export function OpenQuestionsCard({ serverId, agentId }: { serverId: string; agentId: string }) {
@@ -140,10 +138,10 @@ export function useQuestionAnswer(serverId: string, agentId: string, readOnly: b
   const connected = useHostRuntimeIsConnected(serverId);
   const reportError = useReportActionError();
   const mutation = useMutation({
-    mutationFn: async ({ questionId, answer }: AnswerInput) => {
+    mutationFn: async ({ questionId, answer, ...details }: AnswerInput) => {
       if (!client || !connected || readOnly)
         throw new Error("Reconnect to an active thread before answering.");
-      return client.answerAgentQuestion(agentId, questionId, answer);
+      return client.answerAgentQuestion(agentId, questionId, answer, details);
     },
     onError: reportError,
     retry: false,
@@ -179,18 +177,11 @@ export function OpenQuestion({
   /** Keeps test IDs unique when the same question also shows in its thread's card. */
   testIDPrefix?: string;
 }) {
-  const touch = useVortonTouch();
-  const size = touch ? "md" : "sm";
-  const [draft, setDraft] = useState("");
   const blocks = useMemo(() => blockedTasks(question, tasks), [question, tasks]);
-  const useRecommended = useCallback(
-    () => onAnswer({ questionId: question.id, answer: question.recommendedDefault }),
-    [onAnswer, question.id, question.recommendedDefault],
+  const answer = useCallback(
+    (composed: ComposedAnswer) => onAnswer({ questionId: question.id, ...composed }),
+    [onAnswer, question.id],
   );
-  const answer = draft.trim();
-  const send = useCallback(() => {
-    if (answer) onAnswer({ questionId: question.id, answer });
-  }, [answer, onAnswer, question.id]);
   const askedAt = new Date(question.askedAt);
   const defaultAt = question.defaultAppliesAfter
     ? formatMessageTimestamp(new Date(question.defaultAppliesAfter))
@@ -210,49 +201,13 @@ export function OpenQuestion({
         {`Asked ${formatTimeAgo(askedAt)}`}
         {defaultAt ? ` · Recommended default applies after ${defaultAt}` : ""}
       </Text>
-      <View style={styles.answerRow}>
-        <View style={styles.recommendation}>
-          <Text style={styles.recommendationText}>
-            <Text style={styles.label}>Recommended: </Text>
-            {question.recommendedDefault}
-          </Text>
-        </View>
-        <Button
-          variant="default"
-          size={size}
-          disabled={!canAnswer}
-          loading={pending}
-          onPress={useRecommended}
-          accessibilityLabel={`Use recommended answer: ${question.recommendedDefault}`}
-          testID={`${testIDPrefix}-use-recommended-${question.id}`}
-        >
-          Yes
-        </Button>
-      </View>
-      <View style={styles.answerRow}>
-        <View style={styles.answerInput}>
-          <FormTextInput
-            size={size}
-            initialValue=""
-            onChangeText={setDraft}
-            onSubmitEditing={send}
-            editable={canAnswer}
-            maxLength={4000}
-            placeholder="Or type your answer"
-            accessibilityLabel={`Answer: ${question.question}`}
-            testID={`${testIDPrefix}-answer-${question.id}`}
-          />
-        </View>
-        <Button
-          variant="secondary"
-          size={size}
-          disabled={!canAnswer || !answer}
-          onPress={send}
-          testID={`${testIDPrefix}-send-${question.id}`}
-        >
-          Answer
-        </Button>
-      </View>
+      <QuestionAnswerControls
+        question={question}
+        canAnswer={canAnswer}
+        pending={pending}
+        onAnswer={answer}
+        testIDPrefix={testIDPrefix}
+      />
     </View>
   );
 }
@@ -276,7 +231,7 @@ function BlockedTasks({
         <Button
           key={task.id}
           variant="outline"
-          size="sm"
+          size="md"
           leftIcon={ListTodo}
           onPress={showTasks}
           accessibilityHint={onShowTasks ? "Opens the thread" : "Opens the Tasks card"}
@@ -302,7 +257,7 @@ function AnsweredQuestions({
     <View style={styles.answered}>
       <Button
         variant="ghost"
-        size="sm"
+        size="md"
         leftIcon={visible ? ChevronDown : ChevronRight}
         onPress={onToggle}
         style={styles.answeredToggle}
@@ -343,12 +298,13 @@ const styles = StyleSheet.create((theme) => ({
   question: { gap: theme.spacing[1.5], paddingVertical: theme.spacing[2] },
   title: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.medium,
   },
-  answeredTitle: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
-  muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
-  meta: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.sm },
+  // Every line in this card is something the owner needs to read, so none of it is small print.
+  answeredTitle: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
+  muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
+  meta: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.base },
   label: { color: theme.colors.foregroundMuted, fontWeight: theme.fontWeight.medium },
   empty: { paddingVertical: theme.spacing[2] },
   blocks: {
@@ -357,16 +313,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
   },
-  recommendation: {
-    flex: 1,
-    minWidth: 0,
-    padding: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.surface2,
-  },
-  recommendationText: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
-  answerRow: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
-  answerInput: { flex: 1, minWidth: 0 },
   answered: { paddingTop: theme.spacing[1], alignItems: "flex-start" },
   answeredToggle: { marginLeft: theme.spacing[1] },
 }));
