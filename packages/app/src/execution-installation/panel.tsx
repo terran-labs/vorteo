@@ -36,6 +36,8 @@ import {
   sessionHostRestartWarning,
   sessionHostReviewSummary,
   sessionHostStatusLines,
+  sessionHostUpgradeHolderLines,
+  sessionHostUpgradeHolders,
   visibleSessionHostJobs,
   type SessionHostAction,
   type SessionHostOverview,
@@ -65,6 +67,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 
 import { getHostRuntimeStore, useHostRegistryLoaded } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
 import { useVortonTouch } from "@/vorton-touch";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import {
@@ -1616,6 +1619,18 @@ function SessionHostCard({
     void model.requestSessionHost("session-host-restart");
   }, [model]);
   const overview = state.sessionHost;
+  // The session host runs on Host, so only Host agents can hold its upgrade.
+  const hostServerId =
+    readExecutionInstallation()?.environments.find((environment) => environment.kind === "host")
+      ?.serverId ?? "";
+  const hostAgents = useSessionStore((store) => store.sessions[hostServerId]?.agents);
+  const holderLines = useMemo(
+    () =>
+      sessionHostUpgradeHolderLines(
+        sessionHostUpgradeHolders(overview?.status ?? null, hostAgents?.values() ?? []),
+      ),
+    [overview?.status, hostAgents],
+  );
   if (!overview) return null;
   const review = { busy: state.busy, unlocked: state.unlocked };
   return (
@@ -1631,6 +1646,11 @@ function SessionHostCard({
         <Text selectable style={styles.text} testID="session-host-status">
           {sessionHostStatusLines(overview.status).join("\n")}
         </Text>
+        {holderLines.length > 0 ? (
+          <Text selectable style={styles.text} testID="session-host-upgrade-holders">
+            {holderLines.join("\n")}
+          </Text>
+        ) : null}
         {state.sessionHostError ? (
           <>
             <Text accessibilityRole="alert" style={styles.error}>

@@ -12,6 +12,21 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Added
+
+- Name the hosted agents holding a pending session host upgrade in the Session host card: those waiting for the owner's answer first, then those running a turn or still starting. Idle hosted agents are left out because they leave after about five quiet minutes. Interface only, with no wire change; older coordinators show no list.
+- Add `install-execution-host.mjs enable-durable-sessions` for Host setup. It refuses without Host source updates or a matching session host job, installs the job through the owner-approved request, waits until the coordinator sees its host answer, then writes `{"enabled": true}` only when no setting exists. An explicit off survives reruns, a broken setting file is reported as broken, and `--request <id>` resumes waiting on an earlier request.
+
+### Changed
+
+- The installer's removal refusal and `install` output name the durable sessions steps. The docs give the order for uninstalling or rolling back below the session host and say that turning the setting off ends no hosted session.
+
+### Maintenance
+
+- Merge current `main` into the durable sessions branch, keeping both sides' new installer tests and the browser test's mocks for the upgrade and snapshot cards.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
