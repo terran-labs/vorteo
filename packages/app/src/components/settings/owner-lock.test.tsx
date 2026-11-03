@@ -108,7 +108,8 @@ describe("owner access controls", () => {
       throw new Error("Incorrect owner password");
     });
     render(wrap(value, <OwnerUnlockDialog visible onClose={vi.fn()} />));
-    const height = screen.getByRole("alert").style.height;
+    expect(screen.queryByRole("alert")).toBeNull();
+    const height = screen.getByTestId("owner-unlock-error").style.height;
     fireEvent.change(screen.getByLabelText("Owner password"), {
       target: { value: "wrong" },
     });
@@ -116,6 +117,38 @@ describe("owner access controls", () => {
     expect(value.unlock).toHaveBeenCalledWith("wrong");
     expect(screen.getByRole("alert").textContent).toBe("Incorrect owner password");
     expect(screen.getByRole("alert").style.height).toBe(height);
+  });
+  it("makes peeked inputs inert and hidden from web accessibility", () => {
+    const children = () => <input aria-label="Protected setting" />;
+    render(
+      wrap(access("locked"), <OwnerLockedGroup title="Providers">{children}</OwnerLockedGroup>),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
+    const peek = screen.getByTestId("owner-locked-peek");
+    expect(peek.hasAttribute("inert")).toBe(true);
+    expect(peek.getAttribute("aria-hidden")).toBe("true");
+    expect(peek.querySelector("input")).not.toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Protected setting" })).toBeNull();
+  });
+  it("reserves badge error space without announcing an empty alert", async () => {
+    const value = access("unlocked");
+    value.lock = vi.fn(async () => {
+      throw new Error("Could not lock");
+    });
+    render(wrap(value, <OwnerLockBadge />));
+    const slot = screen.getByTestId("owner-lock-error");
+    const height = slot.style.height;
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Lock" })));
+    expect(screen.getByRole("alert")).toBe(slot);
+    expect(slot.textContent).toBe("Could not lock");
+    expect(slot.style.height).toBe(height);
+  });
+  it("announces a source error in the dialog", () => {
+    const value = access("locked");
+    value.error = "Incorrect owner password";
+    render(wrap(value, <OwnerUnlockDialog visible onClose={vi.fn()} />));
+    expect(screen.getByRole("alert").textContent).toBe(value.error);
   });
   it("subscribes through an injectable hook source", () => {
     let update: (value: OwnerAccess) => void = () => {};
