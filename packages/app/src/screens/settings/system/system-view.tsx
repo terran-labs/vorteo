@@ -12,6 +12,7 @@ export interface SystemEnvironmentRow {
   name: "Host" | "Dev";
   status: SystemStatus;
   action: SystemAction | null;
+  reason?: string;
   onAction: (action: SystemAction) => void;
   /** Caller supplies the overflow menu containing Restart…. */
   restartMenu?: ReactNode;
@@ -27,9 +28,13 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
   return (
     <View>
       <View style={styles.row}>
-        <Text>{row.name}</Text>
+        <View style={styles.description}>
+          <Text>{row.name}</Text>
+          <Text style={styles.reason} numberOfLines={1} accessibilityLabel={row.reason}>
+            {row.reason ?? ""}
+          </Text>
+        </View>
         <Text accessibilityRole="text">{labels[row.status]}</Text>
-        <View style={styles.spacer} />
         <View style={styles.action}>
           {row.action ? <Button onPress={act}>{row.action.label}</Button> : null}
         </View>
@@ -74,7 +79,8 @@ export function SystemView({
 
 const styles = StyleSheet.create({
   row: { height: 64, flexDirection: "row", alignItems: "center", gap: 12 },
-  spacer: { flex: 1 },
+  description: { flex: 1, minWidth: 0 },
+  reason: { height: 20 },
   action: { width: 240 },
   menu: { width: 40 },
   details: { height: 40, justifyContent: "center" },

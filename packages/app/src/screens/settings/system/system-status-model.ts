@@ -29,6 +29,7 @@ export interface SystemEnvironmentInput {
 export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
   status: SystemStatus;
   action: SystemAction | null;
+  reason?: string;
 } {
   const { connection, enrollment } = input;
   const offline = ["offline", "error", "idle"].includes(connection.connectionStatus);
@@ -39,9 +40,14 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
   const waiting = jobs.find((job) => job.status === "pending");
   const upgrade = upgrades.find((job) => job.status === "pending");
   const counts = input.locked ? input.restartSummary : undefined;
+  const activeJob = jobs.find((job) => job.status === "approved" || job.status === "running");
+  // Installation upgrades cover Host and Dev; restart jobs are filtered by target above.
+  const activeUpgrade = upgrades.some(
+    (job) => job.status === "approved" || job.status === "running",
+  );
+  const activeWork = Boolean(activeJob) || activeUpgrade;
   const attention =
-    offline ||
-    Boolean(connection.lastError) ||
+    ((offline || Boolean(connection.lastError)) && !activeWork) ||
     enrollment?.activation === "recovery-required" ||
     enrollment?.services.some(
       (service) => service.target === input.target && service.readiness === "blocked",
@@ -49,35 +55,37 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     jobs.some((job) => job.status === "pending" || job.status === "failed") ||
     Boolean(upgrade) ||
     Boolean(counts?.requested) ||
-    Boolean(input.availableVersion);
+    (Boolean(input.availableVersion) && !activeWork);
   const updating =
     input.reconnectingAfterAction ||
-    jobs.some((job) => job.status === "approved" || job.status === "running") ||
-    upgrades.some((job) => job.status === "approved" || job.status === "running") ||
+    activeWork ||
     input.serviceQueue?.jobs.some((job) => job.status === "running") ||
     Boolean(counts && (counts.queued || counts.running));
   let action: SystemAction | null = null;
-  if (waiting)
+  if (activeWork) action = null;
+  else if (offline) action = { kind: "reconnect", label: "Reconnect" };
+  else if (waiting)
     action = {
       kind: "approve-restart",
       id: waiting.id,
-      label: waiting.reason || "Approve restart",
+      label: "Approve restart",
       mode: "finish-current-turns",
     };
   else if (upgrade)
     action = {
       kind: "approve-upgrade",
       id: upgrade.id,
-      label: `Approve update to ${upgrade.release}`,
+      label: "Approve update",
       mode: "finish-current-turns",
     };
-  else if (offline) action = { kind: "reconnect", label: "Reconnect" };
   else if (input.availableVersion)
     action = { kind: "update", label: `Update to ${input.availableVersion}` };
   let status: SystemStatus = "healthy";
   if (updating) status = "updating";
   if (attention) status = "attention";
-  return { status, action };
+  const reason =
+    waiting?.reason || activeJob?.reason || (upgrade ? `Update to ${upgrade.release}` : undefined);
+  return { status, action, ...(reason ? { reason } : {}) };
 }
 
 /** Hidden when ready; maintenance authority and service health remain separate. */

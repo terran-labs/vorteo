@@ -1,3 +1,4 @@
+import { reportSyncError } from "@/components/settings/sync-error-notification";
 import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { useRouter } from "expo-router";
 import { useSharedProviderProfiles } from "./use-shared-provider-profiles";
@@ -45,8 +46,12 @@ export function SharedProviderSection({
     [toast],
   );
   useEffect(() => {
-    if (installationError) toast.show(toErrorMessage(installationError));
-  }, [installationError, toast]);
+    reportSyncError(
+      `installation-profiles:${installation?.installationId ?? serverId}`,
+      installationError,
+      () => toast.show(toErrorMessage(installationError)),
+    );
+  }, [installationError, installation?.installationId, serverId, toast]);
   const openWorkflow = useCallback(
     (id = "new") => {
       if (!shared) return;
