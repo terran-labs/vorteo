@@ -1,4 +1,5 @@
 import { PreviewBrokerDeploymentConfigurationSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import { InstallationLeadConfigurationSchema } from "@getpaseo/protocol/coordinator-configuration-settings";
 import { PreviewBrokerConfigurationSchema } from "@getpaseo/protocol/preview-broker-maintenance";
 import { PreviewMonitorConfigurationSchema } from "@getpaseo/protocol/preview-monitor-maintenance";
 import { NativeHelperConfigurationSchema } from "@getpaseo/protocol/native-helper-maintenance";
@@ -147,6 +148,8 @@ export const InstallationConfigSchema = z.strictObject({
   public: ExecutionInstallationSchema,
   /** Only an explicitly reviewed private configuration enables operational sampling. */
   operationalTelemetryEnabled: z.literal(true).optional(),
+  /** Reviewed thread notified of failed or stalled coordinator updates. */
+  installationLead: InstallationLeadConfigurationSchema.optional(),
   nativeHelper: NativeHelperConfigurationSchema.optional(),
   previewMonitor: PreviewMonitorConfigurationSchema.optional(),
   previewBroker: PreviewBrokerConfigurationSchema.optional(),

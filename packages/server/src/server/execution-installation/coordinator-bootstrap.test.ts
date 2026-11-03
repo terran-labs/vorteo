@@ -52,6 +52,7 @@ import { handleBootstrapReview } from "./coordinator-bootstrap-session.js";
 import { closeFailedPreclaimDispatch } from "./coordinator-bootstrap-dispatch-failure.js";
 import { BootstrapCoordinatorBusy } from "./coordinator-bootstrap-errors.js";
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
+import { createCoordinatorDispatchNotifier } from "./coordinator-dispatch-notifier.js";
 import {
   CoordinatorBootstrapRequests,
   coordinatorPlanDigest,
@@ -1019,6 +1020,31 @@ test("a busy pre-claim dispatch closes its exact approval with a reason and is n
   expect(status?.failure?.category).toBe("busy");
   expect(status?.failure?.reason).toContain("before changing anything");
   expect(status?.readiness).toBeUndefined();
+  // The reviewed installation lead hears about it once, and never mid-turn.
+  const sent: { agentId: string; text: string; messageId: string }[] = [];
+  let idle = false;
+  const lead = randomUUID();
+  const notifier = createCoordinatorDispatchNotifier({
+    agentId: lead,
+    stateDirectory: f.root,
+    ports: {
+      list: () => f.service().list(),
+      readLifecycle: () => f.service().readLifecycle(),
+      leadIdle: async () => idle,
+      send: async (message) => {
+        sent.push(message);
+      },
+      now: Date.now,
+    },
+  });
+  await notifier.check();
+  expect(sent).toEqual([]);
+  idle = true;
+  await notifier.check();
+  await notifier.check();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({ agentId: lead });
+  expect(sent[0]!.text).toContain(`Coordinator update ${closed.id} failed before it started`);
   // A record that no longer explains the ledger's current revision is hidden.
   expect(
     coordinatorDispatchStatuses({
