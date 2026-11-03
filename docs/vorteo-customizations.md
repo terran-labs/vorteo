@@ -4,6 +4,8 @@ Maintenance review (2026-11-03): merged Dev's installed release notes into the i
 
 Maintenance review (2026-11-03): the Claude sign-in check allows 15 seconds and retries one timed-out `claude auth status`, so heavy load no longer makes a connected account report "Could not verify Claude authentication". README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-03): the shared command runner now forwards its cancel signal to the child process, so a cancelled check stops instead of running until its time limit. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): merged `main` after the sixth Host delivery into the installed Host source for its pull request; functionality is unchanged.
 
 Maintenance review (2026-11-03): coordinator dispatch latency. For an ordinary renewal executor, the launcher keeps only cheap pre-fork checks (setup identity, path protection, pinned files) because the runner repeats every byte check under its exclusive lock; other executors keep the full launch check. At the claim, the renewal derivation reuses the runtime digest this same process matched at its admission boundary instead of digesting the same tree again, while every native process and service observation still runs and custody digests the tree again at freeze. That claim-time digest had never been compared: the renewal record carries no runtime digest and the runner compares only the derived renewal, so it was full-cost work without a guarantee. Release seals remain off pending the owner's decision. Source only; not installed. README overview and onboarding are unchanged.

@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixed
+
+- Cancelling a command the daemon runs now stops it. Command checks such as the Claude sign-in check accepted a cancel signal but kept running until their time limit after the caller gave up.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Combine 1 source contributions; retain their release notes below
