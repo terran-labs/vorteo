@@ -1,4 +1,4 @@
-import { ScrollView } from "@/components/ui/scroll-view";
+import { useRetainedUsage } from "@/components/settings/use-retained-usage";
 import { useToast } from "@/contexts/toast-context";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 /**
@@ -408,7 +408,13 @@ function ConnectionRow({
   const devState = useEnvironmentState(provider, dev, snapshot.settings);
   const states = [hostState, devState].filter((state): state is EnvironmentState => !!state);
   const status = describeConnectionStatus(states);
-  const usage = states.find((state) => state.kind === "ready" && state.usage)?.usage;
+  const usage = useRetainedUsage(
+    states.find((state) => state.kind === "ready" && state.usage)?.usage,
+  );
+  const usageSpace = useMemo(
+    () => ({ minHeight: (usage?.windows.length ?? 0) * 32 }),
+    [usage?.windows.length],
+  );
   const error = states.find((state) => state.error)?.error ?? null;
   const name = account.name === "Default connection" ? providerName(provider) : account.name;
   // Sign-ins run on Host; the Dev container receives access from there.
@@ -480,7 +486,7 @@ function ConnectionRow({
           />
         </View>
       </View>
-      <ScrollView style={reservedLayout2} nestedScrollEnabled>
+      <View style={usageSpace}>
         {usage?.windows.length ? (
           <View style={styles.usage} testID={`provider-connection-usage-${account.id}`}>
             {usage.windows.map((window) => (
@@ -488,7 +494,7 @@ function ConnectionRow({
             ))}
           </View>
         ) : null}
-      </ScrollView>
+      </View>
     </View>
   );
 }
@@ -1031,31 +1037,37 @@ function ProviderConnectionActions({
   const { mutate } = removal;
   const remove = useCallback(() => mutate(), [mutate]);
   const error = hostRejection(removal.error ?? restoration.error);
-  if (!canRemove && !removed && !error && !restoration.isSuccess) return null;
+  if (!canRemove && !removed) return null;
   return (
-    <View style={styles.removal}>
-      {removed && supported ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!connected || restoration.isPending}
-          onPress={restore}
-          testID={`shared-provider-restore-${provider.id}-${environment.serverId}`}
-        >
-          {restoration.isPending ? "Restoring" : `Restore in ${location}`}
-        </Button>
-      ) : null}
-      {canRemove && supported ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!connected || removal.isPending}
-          onPress={remove}
-          testID={`shared-provider-remove-${provider.id}-${environment.serverId}`}
-        >
-          {removal.isPending ? "Removing" : `Remove from ${location}`}
-        </Button>
-      ) : null}
+    <View>
+      <SettingsStatusLine
+        testID={`shared-provider-remove-error-${provider.id}-${environment.serverId}`}
+        message={error ? toErrorMessage(error) : null}
+      />
+      <View style={styles.removal}>
+        {removed && supported ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!connected || restoration.isPending}
+            onPress={restore}
+            testID={`shared-provider-restore-${provider.id}-${environment.serverId}`}
+          >
+            {restoration.isPending ? "Restoring" : `Restore in ${location}`}
+          </Button>
+        ) : null}
+        {canRemove && supported ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!connected || removal.isPending}
+            onPress={remove}
+            testID={`shared-provider-remove-${provider.id}-${environment.serverId}`}
+          >
+            {removal.isPending ? "Removing" : `Remove from ${location}`}
+          </Button>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -1197,4 +1209,3 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const reservedLayout1 = { minHeight: 240 } as const;
-const reservedLayout2 = { height: 100, flexGrow: 0 } as const;

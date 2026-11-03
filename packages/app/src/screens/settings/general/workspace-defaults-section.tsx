@@ -32,13 +32,7 @@ export function WorkspaceDefaultsSection() {
   const { config } = useDaemonConfig(serverId);
   const { entries } = useProvidersSnapshot(serverId);
   const { profiles } = useAgentProfiles(serverId);
-  const [operation, setOperation] = useState<{
-    pending: boolean;
-    error: string | null;
-  }>({
-    pending: false,
-    error: null,
-  });
+  const [pending, setPending] = useState(false);
   const providers = config?.providers ?? {};
   // Accounts that are not installed cannot start a workspace, so they get no default row.
   const accounts = (entries ?? [])
@@ -52,20 +46,17 @@ export function WorkspaceDefaultsSection() {
   const reportActionError = useReportActionError();
   const save = useCallback(
     async (change: Partial<WorkspaceDefaults>) => {
-      setOperation({ pending: true, error: null });
+      setPending(true);
       try {
         await updateSettings((current) => ({
           workspaceDefaults: { ...current.workspaceDefaults, ...change },
         }));
-        setOperation({ pending: false, error: null });
+        setPending(false);
       } catch (error) {
         const connectionLost = isConnectionError(error);
         if (connectionLost) reportActionError(error);
         else toast.error(toErrorMessage(error));
-        setOperation({
-          pending: false,
-          error: connectionLost ? null : toErrorMessage(error),
-        });
+        setPending(false);
       }
     },
     [updateSettings, reportActionError, toast],
@@ -89,14 +80,14 @@ export function WorkspaceDefaultsSection() {
           value={defaults.environment ?? ""}
           options={[{ value: "", label: "Automatic" }, ...environments]}
           onValueChange={changeEnvironment}
-          disabled={operation.pending}
+          disabled={pending}
         />
         <SettingsSelect
           label="Default account"
           value={defaults.account ?? ""}
           options={[{ value: "", label: "Automatic" }, ...accounts]}
           onValueChange={changeAccount}
-          disabled={operation.pending}
+          disabled={pending}
         />
         {accounts.map((account) => {
           const type = resolveProviderType(account.provider, providers);
@@ -111,7 +102,7 @@ export function WorkspaceDefaultsSection() {
               choices={choices}
               defaults={defaults}
               save={save}
-              disabled={operation.pending}
+              disabled={pending}
             />
           );
         })}

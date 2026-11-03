@@ -14,13 +14,20 @@ const state = vi.hoisted(() => ({
 vi.mock("@/execution-installation/settings", () => ({ useInstallationSettings: () => state }));
 vi.mock("@/contexts/toast-context", () => ({ useToast: () => ({ error: vi.fn() }) }));
 vi.mock("@/hooks/use-action-error", () => ({ useReportActionError: () => vi.fn() }));
-vi.mock("react-native", () => ({ Text: "span", View: "div" }));
+vi.mock("react-native", () => ({
+  Text: "span",
+  View: "div",
+  useWindowDimensions: () => ({ fontScale: 1 }),
+}));
 vi.mock("react-native-unistyles", () => ({ StyleSheet: { create: () => ({}) } }));
 vi.mock("@/styles/settings", () => ({ settingsStyles: {} }));
 vi.mock("@/components/ui/alert", () => ({ Alert: () => null }));
 vi.mock("@/components/ui/button", () => ({ Button: () => null }));
 vi.mock("@/components/settings/headings/settings-section", () => ({ SettingsSection: () => null }));
-import { InstallationSettingsStatus } from "@/execution-installation/settings-status";
+import {
+  InstallationSettingsStatus,
+  InstallationSettingsSyncStatus,
+} from "@/execution-installation/settings-status";
 
 describe("InstallationSettingsStatus", () => {
   it("keeps loaded children unchanged during a background refetch", () => {
@@ -35,4 +42,19 @@ describe("InstallationSettingsStatus", () => {
     expect(render()).toBe(initial);
     expect(initial).toContain("Settings content");
   });
+});
+
+it.each([
+  "read_failed",
+  "patch_failed",
+  "verification_failed",
+  "plugin_projection_failed",
+  "skill_projection_failed",
+])("shows %s without a pending revision", (error) => {
+  state.data.sources = { host: { error, pendingRevision: null } };
+  const markup = renderToStaticMarkup(<InstallationSettingsSyncStatus />);
+  expect(markup).toContain(
+    "Some environments haven&#x27;t applied the latest shared settings yet.",
+  );
+  state.data.sources = {};
 });

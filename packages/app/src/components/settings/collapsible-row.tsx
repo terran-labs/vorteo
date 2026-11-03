@@ -12,6 +12,7 @@ const hoveredIconColorMapping = (theme: Theme) => ({ color: theme.colors.foregro
 
 interface SettingsCollapsibleRowProps {
   label: string;
+  hint?: string;
   defaultExpanded?: boolean;
   testID?: string;
   /** The rows revealed underneath, separated like the rows of a `SettingsCard`. */
@@ -25,6 +26,7 @@ interface SettingsCollapsibleRowProps {
  */
 export function SettingsCollapsibleRow({
   label,
+  hint,
   defaultExpanded = false,
   testID,
   children,
@@ -65,6 +67,7 @@ export function SettingsCollapsibleRow({
           <>
             <View style={settingsStyles.rowContent}>
               <Text style={settingsStyles.rowTitle}>{label}</Text>
+              {hint ? <Text style={settingsStyles.rowHint}>{hint}</Text> : null}
             </View>
             <View style={chevronStyle}>
               <ThemedChevron

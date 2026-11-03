@@ -69,6 +69,7 @@ function UpstreamUpdatesContent() {
           </View>
         </View>
         <SettingsStatusLine
+          testID="upstream-update-overdue"
           message={overdue ? t("settings.about.upstreamUpdates.overdue") : null}
         />
         <View style={styles.content}>
@@ -111,11 +112,6 @@ function UpstreamUpdatesContent() {
 
 const styles = StyleSheet.create((theme) => ({
   overdue: { borderColor: theme.colors.statusWarning },
-  notice: {
-    alignItems: "flex-start",
-    paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[3],
-  },
   content: {
     paddingHorizontal: theme.spacing[4],
     paddingBottom: theme.spacing[4],
@@ -123,5 +119,4 @@ const styles = StyleSheet.create((theme) => ({
   },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   prompt: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
-  error: { fontSize: theme.fontSize.sm, color: theme.colors.statusDanger },
 }));

@@ -295,6 +295,7 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
   );
   const [logsPluginId, setLogsPluginId] = useState<string | null>(null);
   const toast = useToast();
+  const [feedback, setFeedback] = useState<string | null>(null);
   const plugins = useFetchQuery({
     queryKey,
     queryFn: async () => {
@@ -342,11 +343,15 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
     }) => operation.run(),
     onSuccess: async (message) => {
       toast.show(message);
+      setFeedback(message);
       await refresh();
     },
     onError: (error) => {
       if (isConnectionError(error)) reportActionError(error);
-      else toast.error(toErrorMessage(error));
+      else {
+        toast.error(toErrorMessage(error));
+        setFeedback(toErrorMessage(error));
+      }
     },
   });
   const install = useCallback(() => {
@@ -473,8 +478,11 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
 
   return (
     <View>
-      <SettingsSection title={t("settings.plugins.title")}>
-        <SettingsStatusLine message={t("settings.plugins.trustedDescription")} />
+      <SettingsSection
+        title={t("settings.plugins.title")}
+        info={`${t("settings.plugins.trustedTitle")}: ${t("settings.plugins.trustedDescription")}`}
+      >
+        <SettingsStatusLine testID="plugin-management-feedback" message={feedback} />
         <View style={settingsStyles.card}>
           <View style={settingsStyles.row}>
             <View style={settingsStyles.rowContent}>
