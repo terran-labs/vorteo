@@ -72,7 +72,14 @@ const ProjectStateSchema = z.object({
       /** When the Foreman's drain notice was queued; unset until a send succeeds. */
       noticeSentAt: z.string().optional(),
     })
-    .transform((drain) => ({ ...drain, id: drain.id ?? `drain-${drain.pausedAt}` }))
+    // A legacy drain's notice predates ids, so its Foreman could never acknowledge it by id.
+    // Deriving the id also forgets that notice; the next pause_all sends one with the id, and
+    // the next write persists both.
+    .transform(({ id, noticeSentAt, ...drain }) =>
+      id
+        ? { ...drain, id, ...(noticeSentAt ? { noticeSentAt } : {}) }
+        : { ...drain, id: `drain-${drain.pausedAt}` },
+    )
     .optional(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;

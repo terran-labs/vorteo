@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- A Factory drain recorded before drain ids existed now gets a new drain notice carrying its id, so its Foreman can acknowledge it.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Each Factory drain now has its own id, shown by `paseo factory project list`, `pause-all`, `resume-all` and `show`. Starting a drain clears the Foreman's status line, and the drain notice and the Foreman's "Drained <id>" reply carry that id, so an earlier drain's reply cannot satisfy a new one. Drain notices skip archived or missing projects and stay pending until those are restored.
 
 ## Unreleased - 2026-11-03

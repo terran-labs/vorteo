@@ -1149,6 +1149,40 @@ describe("list, pause_all and resume_all", () => {
     ).toHaveLength(1);
   });
 
+  test("a legacy drain without an id gets the id-bearing notice once", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    factory.stop();
+    // A drain recorded before ids existed, whose old notice was already sent.
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    file.projects[PROJECT].drain = { reason: "legacy", pausedAt: T0, noticeSentAt: T0 };
+    writeFileSync(projectFactoryStatePath(home), JSON.stringify(file));
+    const notices = () =>
+      agents.prompts.filter((p) => p.agentId === foreman && p.prompt.startsWith("Drain notice"));
+    const before = notices().length;
+
+    const migrated = service();
+    agents.failing.add(foreman);
+    await migrated.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(notices()).toHaveLength(before);
+    agents.failing.clear();
+    await migrated.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      notices()
+        .slice(before)
+        .map((p) => p.prompt),
+    ).toEqual([drainNotice(`drain-${T0}`)]);
+
+    migrated.stop();
+    const restarted = service();
+    await restarted.start();
+    await restarted.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(notices().slice(before)).toHaveLength(1);
+    const saved = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(saved.projects[PROJECT].drain).toMatchObject({ id: `drain-${T0}`, noticeSentAt: T0 });
+  });
+
   test("the drain record survives a service restart", async () => {
     const factory = service();
     await threeProjects(factory);
