@@ -6,6 +6,17 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Changed
+
+- Pinned in the sidebar now looks and behaves like a root folder: a pin icon, the same title size as folders, and the whole row folds it. Pinned workspaces indent under it.
+- Pinned workspaces also stay in their project or status group, marked with a pin icon before their right-side icons, so pinning no longer moves them out of place.
+
+### Added
+
+- Focus into Pinned with its Focus button to see only pinned workspaces.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.

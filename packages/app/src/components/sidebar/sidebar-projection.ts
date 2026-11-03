@@ -70,14 +70,12 @@ export function buildSidebarProjection(input: SidebarProjectionInput): SidebarPr
     keys: input.pinnedKeys,
     pinnedWorkspaceOrder: input.pinnedWorkspaceOrder,
   });
-  const pinnedWorkspaceKeys = new Set(input.pinnedKeys.pinnedWorkspaceKeys);
-  const unpinnedWorkspaces = Array.from(input.workspaceEntriesByKey.values()).filter(
-    (workspace) => !pinnedWorkspaceKeys.has(workspace.workspaceKey),
-  );
+  // Pinned workspaces stay in their status groups too, as they stay in their projects.
+  const workspaces = Array.from(input.workspaceEntriesByKey.values());
   // One switch decides both what the list groups by and what the keyboard shortcuts walk, so the
   // two cannot disagree and a new grouping mode is a compile error here rather than a silent
   // fall-through to the project rows.
-  const workspaceGroups = buildWorkspaceGroups(input, unpinnedWorkspaces);
+  const workspaceGroups = buildWorkspaceGroups(input, workspaces);
 
   const sections: SidebarShortcutSection[] = [];
   if (!input.pinnedCollapsed) {
@@ -90,7 +88,7 @@ export function buildSidebarProjection(input: SidebarProjectionInput): SidebarPr
       buildSidebarTreeRows({
         state: folderState,
         scope: ROOT_FOLDER_SCOPE,
-        items: pinnedGroups.unpinnedProjects,
+        items: pinnedGroups.projects,
         getKey: (project) => project.viewKey,
         hideEmptyFolders: false,
       }),
@@ -145,14 +143,14 @@ export function buildSidebarProjection(input: SidebarProjectionInput): SidebarPr
 /** Project mode keeps its project headers and groups nothing; status mode groups the rows. */
 function buildWorkspaceGroups(
   input: SidebarProjectionInput,
-  unpinnedWorkspaces: SidebarWorkspaceEntry[],
+  workspaces: SidebarWorkspaceEntry[],
 ): SidebarWorkspaceGroup[] {
   switch (input.groupMode) {
     case "project":
       return [];
     case "status":
       return statusWorkspaceGroups(
-        buildStatusGroups(unpinnedWorkspaces, input.projectNamesByViewKey, input.t),
+        buildStatusGroups(workspaces, input.projectNamesByViewKey, input.t),
       );
   }
 }
