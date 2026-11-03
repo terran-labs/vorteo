@@ -1,5 +1,7 @@
+import { Text } from "react-native";
+import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 import { useToast } from "@/contexts/toast-context";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
@@ -13,6 +15,17 @@ import { readExecutionInstallation } from "@/execution-installation/policy";
 
 /** Names this installation so two open side by side, such as a lab and production, never blur. */
 export function InstallationNameSection() {
+  const name = useInstallationName();
+  const preview = useMemo(() => <Text>{name}</Text>, [name]);
+  if (!readExecutionInstallation()) return null;
+  return (
+    <OwnerSettingsGate title={`Installation name: ${name}`} preview={preview}>
+      <UnlockedInstallationNameSection />
+    </OwnerSettingsGate>
+  );
+}
+
+function UnlockedInstallationNameSection() {
   const name = useInstallationName();
   const [draft, setDraft] = useState(name);
   const [saving, setSaving] = useState(false);

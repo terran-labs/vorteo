@@ -75,6 +75,17 @@ const ownerPassword = "installation-browser-owner-password";
 const guestToken = "installation-browser-guest-request-token";
 const hostToken = "installation-browser-host-request-token";
 
+async function openOwnerUnlock(page: Page) {
+  await expect(
+    page
+      .getByTestId("installation-password")
+      .or(page.getByTestId("installation-owner-unlock"))
+      .first(),
+  ).toBeVisible();
+  if (await page.getByTestId("installation-password").isVisible()) return;
+  await page.getByTestId("installation-owner-unlock").click();
+}
+
 async function connectReadyInstallationDaemon(kind: "host" | "container") {
   let client: Awaited<ReturnType<typeof connectInstallationDaemon>> | undefined;
   await expect
@@ -461,6 +472,7 @@ test("owner maintenance queue shows cancellation failures and cancels the exact 
   await expect(page.getByTestId("installation-update-toasts")).not.toContainText(
     "controller or launcher maintenance requests",
   );
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   const queue = page.getByTestId("maintenance-request-queue");
@@ -707,11 +719,13 @@ test("owner connects two environments, prepares host drafts, and approves a veri
     path: testInfo.outputPath("installation-owner-access.png"),
     fullPage: true,
   });
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill("incorrect");
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-welcome").getByRole("alert")).toContainText(
     "Incorrect owner password",
   );
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -743,7 +757,9 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await page
     .getByTestId("installation-panel")
     .screenshot({ path: testInfo.outputPath("installation-settings.png") });
-  await expect(page.getByText("Owner unlocked", { exact: true })).toBeVisible();
+  await expect(
+    page.getByTestId("installation-panel").getByText("Unlocked", { exact: true }),
+  ).toBeVisible();
   if (testInfo.project.name === "phone") {
     const lockBox = await page.getByTestId("installation-lock").boundingBox();
     expect(lockBox?.height).toBeGreaterThanOrEqual(44);
@@ -776,15 +792,15 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await installationCard.screenshot({ path: testInfo.outputPath("installation-history.png") });
   await page.getByTestId("restart-history-toggle").click();
   await page.getByTestId("installation-lock").click();
-  await expect(page.getByText("Unlock to view approval status", { exact: false })).toBeVisible();
+  await expect(
+    page.getByTestId("installation-panel").getByText("Locked", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByTestId("installation-status-host")).toHaveCount(0);
-  await page.getByTestId("installation-password-help").click();
+  await openOwnerUnlock(page);
   await expect(page.getByTestId("installation-password-file")).toHaveText(
     path.join(root, "owner-password"),
   );
-  await expect(
-    page.getByText("Owner access is remembered in this browser", { exact: false }),
-  ).toBeVisible();
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await page.getByTestId("vorton-help-update").click();
@@ -859,8 +875,10 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await page.goto(`${origin}/settings/general`);
   await page.getByTestId("installation-lock").click();
   await page.goto(`${origin}/settings/general?installation=1&restart=${job.id}`);
+  await openOwnerUnlock(page);
   await expect(page.getByTestId("installation-password")).toBeVisible();
   await expect(page.getByTestId(`restart-queue-${job.id}`)).toHaveCount(0);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId(`restart-queue-${job.id}`)).toBeInViewport();
@@ -926,6 +944,7 @@ test("passive maintenance stays in the sidebar and actionable notices can be dis
   const width = testInfo.project.name === "phone" ? 390 : 1440;
   await page.setViewportSize({ width, height: 600 });
   await page.goto(`${origin}/settings/general?installation=1`);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   const pending = RestartJobSchema.array().parse(
@@ -1072,6 +1091,7 @@ test("delegated requests read as handled by the delegate, with Cancel instead of
     }),
   );
   await page.goto(`${origin}/settings/general?installation=1`);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   const pending = RestartJobSchema.array().parse(
@@ -1174,6 +1194,7 @@ test("force restart requires an approved queue and operator escalation", async (
       ).json(),
     );
     await page.goto(`${origin}/settings/general?installation=1&restart=${dev.id}`);
+    await openOwnerUnlock(page);
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     const card = page.getByTestId(`restart-request-${dev.id}`);
@@ -1293,6 +1314,7 @@ test("restart links keep rejected and missing requests separate from a pending a
   );
   await page.goto(`${origin}/settings/general?installation=1&restart=${historicalRestartId}`);
   await expect(page.getByTestId("settings-vorton-mode")).toHaveCount(0);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId(`restart-request-${historicalRestartId}`)).toContainText(
@@ -1340,6 +1362,7 @@ for (const kind of ["host", "container"] as const) {
     test.setTimeout(180_000);
     const restartTarget = kind === "host" ? "host" : "container-daemon";
     await page.goto(`${origin}/settings/general?installation=1`);
+    await openOwnerUnlock(page);
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     const client = await connectInstallationDaemon(config, kind);
@@ -1573,6 +1596,7 @@ for (const destinationMode of ["existing", "new"] as const) {
         .poll(async () => (await sourceClient.fetchAgent(source.id))?.agent.status)
         .toBe("idle");
       await page.goto(origin);
+      await openOwnerUnlock(page);
       await page.getByTestId("installation-password").fill(ownerPassword);
       await page.getByTestId("installation-unlock").click();
       await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -1751,6 +1775,7 @@ test("shared profile editor renders cross-environment model compatibility", asyn
     });
   });
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -1950,6 +1975,7 @@ test("profile edits remain shared while environment exclusions change availabili
   page,
 }) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2017,6 +2043,7 @@ test("shared instructions save once while daemons reject divergent edits and ret
   page,
 }) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2064,6 +2091,7 @@ test("shared skill selection reviews both environments and preserves the draft w
   page,
 }) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2134,6 +2162,7 @@ test("shared metadata save failure stays visible and retry updates both environm
   page,
 }) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2187,6 +2216,7 @@ test("shared metadata save failure stays visible and retry updates both environm
     }
   }
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2237,6 +2267,7 @@ test("shared plugins preserve source review on failure and project one catalog t
   }
   const source = pathToFileURL(repository).href;
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2414,6 +2445,7 @@ test("directory bindings stay local and preserve an excluded plugin through vali
   const directory = path.join(root, "dev-local-binding");
   await cp(path.join(root, "host-plugin"), directory, { recursive: true });
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2477,6 +2509,7 @@ test("a directory plugin is created once with separate environment paths", async
 }, info) => {
   const pluginId = "shared-directory";
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2542,6 +2575,7 @@ test("personal skill catalog reaches both real environments without exposing pac
   page,
 }) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2614,6 +2648,7 @@ test("personal skill exclusions retain files and recover from expired owner acce
   context,
 }, info) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2725,6 +2760,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
     await route.fulfill({ json: prepared });
   });
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2880,6 +2916,7 @@ test("shared provider policy projects through authenticated admission without mo
   page,
 }) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -2954,6 +2991,7 @@ test("shared account setup preserves the catalog through retries and local remov
   page,
 }, testInfo) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3175,6 +3213,7 @@ test("Add Account saves one shared definition and opens local sign-in", async ({
   page,
 }, testInfo) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3223,6 +3262,7 @@ test("provider environment exceptions disable Host access while retaining Dev an
   page,
 }, testInfo) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3285,6 +3325,7 @@ test("custom model edits from a provider sheet update both environments", async 
   page,
 }, testInfo) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3358,6 +3399,7 @@ for (const width of [1280, 390]) {
   }, testInfo) => {
     await page.setViewportSize({ width, height: 850 });
     await page.goto(origin);
+    await openOwnerUnlock(page);
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3480,6 +3522,7 @@ test("catalog enrollment failure stays visible and does not install an independe
   page,
 }, testInfo) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3532,6 +3575,7 @@ test("catalog runtime enrollment reuses one disabled shared provider across both
   page,
 }, testInfo) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3622,6 +3666,7 @@ test("browser tools share one default with explicit environment exceptions", asy
   page,
 }, info) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3698,6 +3743,7 @@ test("browser tools share one default with explicit environment exceptions", asy
 
 test("shared policy saves preserve drafts and show retryable errors", async ({ page }, info) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -3832,6 +3878,7 @@ for (const sourceKind of ["host", "container"] as const) {
         () => [] as string[],
       );
       await page.goto(origin);
+      await openOwnerUnlock(page);
       await page.getByTestId("installation-password").fill(ownerPassword);
       await page.getByTestId("installation-unlock").click();
       await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -4034,6 +4081,7 @@ for (const target of ["host", "container-daemon"]) {
       });
     });
     await page.goto(`${origin}/settings/general?installation=1&restart=${id}`);
+    await openOwnerUnlock(page);
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     const card = page.getByTestId(`restart-request-${id}`);
@@ -4089,6 +4137,7 @@ test("supervisor maintenance is visible and cancellable without offering an init
   expect(created.status).toBe(201);
   const job = RestartJobSchema.parse(await created.json());
   await page.goto(`${origin}/settings/general?installation=1&restart=${job.id}`);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   const card = page.getByTestId(`restart-request-${job.id}`);
@@ -4156,6 +4205,7 @@ test("new shared project workspace follows the existing profile environment sele
       membership: remote,
     });
     await page.goto(origin);
+    await openOwnerUnlock(page);
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -4277,6 +4327,7 @@ test("disabled restart explains the correction on hover, focus and touch without
     return route.fulfill({ status: 500, json: { error: "Unexpected approval" } });
   });
   await page.goto(`${origin}/settings/general?installation=1&restart=${id}`);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   const card = page.getByTestId(`restart-request-${id}`);
@@ -4337,6 +4388,7 @@ test("native helper review binds approval and cancellation through real owner ro
   }
   const canceled = await prepare();
   await page.goto(`${origin}/settings/general?installation=1&restart=${canceled.id}`);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   const first = page.getByTestId(`helper-request-${canceled.id}`);
@@ -4388,6 +4440,7 @@ test("native helper recovery remains visible through refresh and locked controls
   });
   expect(response.status).toBe(201);
   await page.goto(`${origin}/settings/general?installation=1&restart=${id}`);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   const card = page.getByTestId(`helper-request-${id}`);
@@ -4411,6 +4464,7 @@ test("native helper recovery remains visible through refresh and locked controls
     })
     .toBe(1);
   await expect(card).toHaveCount(0);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(card).toContainText("Needs recovery");
@@ -4434,6 +4488,7 @@ for (const width of [1280, 390]) {
   }, info) => {
     await page.setViewportSize({ width, height: 850 });
     await page.goto(origin);
+    await openOwnerUnlock(page);
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -4528,6 +4583,7 @@ test("automatic maintenance shows readiness and preserves owner opt-in across re
   page,
 }, testInfo) => {
   await page.goto(origin);
+  await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
@@ -4583,6 +4639,7 @@ for (const failed of [false, true]) {
     const job = RestartJobSchema.parse(await response.json());
     expect(job.engineRecoveryPlanSha256).toBe("e".repeat(64));
     await page.goto(`${origin}/settings/maintenance?installation=1&restart=${job.id}`);
+    await openOwnerUnlock(page);
     await page.getByTestId("installation-password").fill(ownerPassword);
     await page.getByTestId("installation-unlock").click();
     await expect(page.getByTestId("installation-lock")).toBeVisible();

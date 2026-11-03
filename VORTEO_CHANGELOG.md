@@ -8,6 +8,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Put installation owner unlock in a centered dialog and gate shared Settings, installation naming, project exclusions, provider sign-in and profile changes until owner access is unlocked. Unlocking enables controls without reloading the page. Keep Unlock reachable beside profile actions before there are unsaved edits. Keep password errors in the unlock dialog and report failed Lock actions beside the initiating control. Preserve sign-in and account creation on unrelated hosts.
+
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
 
 ## Unreleased - 2026-11-03

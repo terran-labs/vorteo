@@ -1,3 +1,4 @@
+import { PasswordFileHint } from "@/execution-installation/panel";
 import { useCallback, useMemo, useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Lock } from "lucide-react-native";
@@ -64,11 +65,20 @@ export function OwnerUnlockDialog({ visible, onClose }: { visible: boolean; onCl
             onChangeText={setPassword}
             onSubmitEditing={unlock}
             editable={!busy}
+            testID="installation-password"
             accessibilityLabel="Owner password"
           />
         </Field>
+        {access.passwordFile ? (
+          <>
+            <Text testID="installation-password-file" selectable style={settingsStyles.rowHint}>
+              {access.passwordFile}
+            </Text>
+            <PasswordFileHint passwordFile={access.passwordFile} wide={false} />
+          </>
+        ) : null}
         <OwnerErrorSlot message={message} testID="owner-unlock-error" />
-        <Button disabled={busy || !password.trim()} onPress={unlock}>
+        <Button testID="installation-unlock" disabled={busy || !password.trim()} onPress={unlock}>
           Unlock
         </Button>
       </View>
@@ -99,7 +109,7 @@ const badgeLabels = {
   locked: "Locked",
   unlocked: "Unlocked",
 };
-export function OwnerLockBadge() {
+export function OwnerLockBadge({ testIDPrefix = "owner-access" }: { testIDPrefix?: string } = {}) {
   const access = useOwnerAccess();
   const [open, setOpen] = useState(false);
   const openDialog = useCallback(() => setOpen(true), []);
@@ -121,6 +131,7 @@ export function OwnerLockBadge() {
         <LockIcon size={16} />
         <Text style={styles.badgeLabel}>{badgeLabels[access.status]}</Text>
         <Button
+          testID={unlocked ? `${testIDPrefix}-lock` : `${testIDPrefix}-owner-unlock`}
           variant="ghost"
           disabled={access.busy || access.status === "checking"}
           onPress={unlocked ? lock : openDialog}
@@ -132,6 +143,32 @@ export function OwnerLockBadge() {
       <OwnerUnlockDialog visible={open} onClose={closeDialog} />
     </View>
   );
+}
+
+/** Safe default for panes whose children start owner queries on mount. */
+export function OwnerSettingsGate({
+  title,
+  children,
+  preview,
+  required = true,
+}: {
+  required?: boolean;
+  title: string;
+  children: ReactNode;
+  preview?: ReactNode;
+}) {
+  const render = useCallback(
+    ({ disabled }: { disabled: boolean }) => {
+      if (disabled)
+        return (
+          preview ?? <Text style={settingsStyles.rowHint}>Unlock to load these settings.</Text>
+        );
+      return children;
+    },
+    [children, preview],
+  );
+  if (!required) return children;
+  return <OwnerLockedGroup title={title}>{render}</OwnerLockedGroup>;
 }
 
 interface OwnerLockedGroupProps {
