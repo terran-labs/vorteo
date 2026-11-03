@@ -104,10 +104,16 @@ import { spawnProcess } from "../../../utils/spawn.js";
 import { extractCodexTerminalSessionId, nonEmptyString } from "./tool-call-mapper-utils.js";
 import {
   buildCodexFeatures,
+  CODEX_CHROME_FEATURE_ID,
   CodexServiceTierSchema,
   readCodexServiceTier,
   type CodexServiceTier,
 } from "./codex-feature-definitions.js";
+import {
+  buildChromeDevtoolsMcpServer,
+  CODEX_CHROME_MCP_SERVER_NAME,
+  isChromeAvailableForCodex,
+} from "./codex/chrome-devtools.js";
 import {
   CodexAppServerClient,
   CodexAppServerRpcError,
@@ -3520,6 +3526,7 @@ export class CodexAppServerAgentSession implements AgentSession {
   private serviceTier: string | null = null;
   private speedModels: CodexModel[] = [];
   private planModeEnabled = false;
+  private appServerRestartNeeded = false;
   private historyPending = false;
   private persistedHistory: PersistedTimelineEntry[] = [];
   private loadingPersistedHistory = false;
@@ -3677,6 +3684,8 @@ export class CodexAppServerAgentSession implements AgentSession {
       serviceTier: this.serviceTier ?? "default",
       planModeEnabled: this.planModeEnabled,
       planModeAvailable: this.hasPlanCollaborationMode(),
+      chromeAvailable: this.chromeAllowed() && isChromeAvailableForCodex(),
+      chromeEnabled: this.chromeEnabled(),
     });
   }
 
@@ -4114,6 +4123,32 @@ export class CodexAppServerAgentSession implements AgentSession {
     this.planModeEnabled = value;
     this.refreshResolvedCollaborationMode();
     this.cachedRuntimeInfo = null;
+  }
+
+  // Codex reads MCP servers when it loads a thread, so a change takes effect when the next turn
+  // starts a fresh app-server and resumes the same thread with the new configuration.
+  private applyChromeFeature(enabled: boolean): void {
+    if (enabled && !this.chromeAllowed()) {
+      throw new Error("Chrome is not available to quota-managed workers.");
+    }
+    if (enabled && !isChromeAvailableForCodex()) {
+      throw new Error("Google Chrome is not installed on this machine.");
+    }
+    if (this.chromeEnabled() === enabled) return;
+    this.config.featureValues = {
+      ...this.config.featureValues,
+      [CODEX_CHROME_FEATURE_ID]: enabled,
+    };
+    this.appServerRestartNeeded = this.client !== null;
+    this.cachedRuntimeInfo = null;
+  }
+
+  private chromeEnabled(): boolean {
+    return this.config.featureValues?.[CODEX_CHROME_FEATURE_ID] === true;
+  }
+
+  private chromeAllowed(): boolean {
+    return !this.quotaGovernance?.processCustody;
   }
 
   private rememberPlanResult(item: ToolCallTimelineItem): void {
@@ -4707,6 +4742,10 @@ export class CodexAppServerAgentSession implements AgentSession {
     this.dismissPendingPlanApprovals("Dismissed by a new prompt");
 
     try {
+      if (this.appServerRestartNeeded) {
+        this.appServerRestartNeeded = false;
+        await this.disposeClient();
+      }
       await this.connect();
       if (!this.client) {
         throw new Error("Codex client not initialized");
@@ -5022,6 +5061,10 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
     if (featureId === "plan_mode") {
       this.applyFeatureValue("plan_mode", Boolean(value));
+      return;
+    }
+    if (featureId === CODEX_CHROME_FEATURE_ID) {
+      this.applyChromeFeature(Boolean(value));
       return;
     }
     throw new Error(`Unknown Codex feature: ${featureId}`);
@@ -5818,19 +5861,25 @@ export class CodexAppServerAgentSession implements AgentSession {
     return { params, approvalPolicy, sandbox };
   }
 
+  private buildCodexMcpServers(): Record<string, CodexMcpServerConfig> | undefined {
+    const chrome = this.chromeEnabled() && this.chromeAllowed();
+    if (!this.config.mcpServers && !chrome) return undefined;
+    const mcpServers: Record<string, CodexMcpServerConfig> = {};
+    for (const [name, serverConfig] of Object.entries(this.config.mcpServers ?? {})) {
+      mcpServers[name] = toCodexMcpConfig(serverConfig);
+    }
+    if (chrome) mcpServers[CODEX_CHROME_MCP_SERVER_NAME] = buildChromeDevtoolsMcpServer();
+    return mcpServers;
+  }
+
   private buildCodexInnerConfig(): Record<string, unknown> | null {
     const innerConfig: Record<string, unknown> = {};
     Object.assign(innerConfig, this.providerOptions);
     if (this.deps.customCodexConfig) {
       Object.assign(innerConfig, this.deps.customCodexConfig);
     }
-    if (this.config.mcpServers) {
-      const mcpServers: Record<string, CodexMcpServerConfig> = {};
-      for (const [name, serverConfig] of Object.entries(this.config.mcpServers)) {
-        mcpServers[name] = toCodexMcpConfig(serverConfig);
-      }
-      innerConfig.mcp_servers = mcpServers;
-    }
+    const mcpServers = this.buildCodexMcpServers();
+    if (mcpServers) innerConfig.mcp_servers = mcpServers;
     const configured = applyCodexToolPolicy(innerConfig, this.config.toolPolicy);
     if (this.quotaGovernance?.processCustody) {
       // Worker candidates and provider overrides cannot add native tools or

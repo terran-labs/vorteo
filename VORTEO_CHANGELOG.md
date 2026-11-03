@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Improvements
+
+- Add an owner-only Chrome toggle to Codex threads on machines with Google Chrome. Threads with it on attach a pinned Chrome DevTools MCP server to the owner's running Chrome, restarting the thread's Codex process on the next turn and keeping the conversation. It is off by default, needs remote debugging turned on once at chrome://inspect/#remote-debugging, and is never available to quota-managed workers or enabled by agents.
+
+## Unreleased - 2026-11-02
+
 ### Security
 
 - Only the owner can turn on Chrome for a thread. Agent tools now refuse to enable it when creating or updating a thread, and scheduled runs no longer inherit it from the thread that created them. Agents can still turn it off.
