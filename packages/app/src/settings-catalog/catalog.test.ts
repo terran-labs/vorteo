@@ -86,13 +86,12 @@ describe("settings catalog", () => {
     expect(new Set(paneIds).size).toBe(paneIds.length);
     for (const pane of SETTINGS_PANES) {
       expect(SETTINGS_SECTION_IDS).toContain(pane.section);
-      expect(pane.id.startsWith(`${pane.section}.`)).toBe(true);
+      expect(resolveSettingsTarget(pane.id)).toEqual({ section: pane.section, pane: pane.id });
     }
     const entryIds = SETTINGS_ENTRIES.map((entry) => entry.id);
     expect(new Set(entryIds).size).toBe(entryIds.length);
     for (const entry of SETTINGS_ENTRIES) {
       expect(paneIds, entry.id).toContain(entry.pane);
-      expect(entry.id.startsWith(entry.pane.split(".")[0]), entry.id).toBe(true);
     }
   });
 
@@ -117,14 +116,14 @@ describe("settings catalog", () => {
       expect(target.pane ?? target.section, slug).not.toBe("general");
     }
     expect(resolveSettingsTarget("providers")).toEqual({
-      section: "accounts",
-      pane: "accounts.providers",
+      section: "providers",
+      pane: null,
     });
     expect(resolveSettingsTarget("diagnostics")).toEqual({
-      section: "general",
+      section: "system",
       pane: "general.hosts",
     });
-    expect(resolveSettingsTarget("about")).toEqual({ section: "general", pane: "general.about" });
+    expect(resolveSettingsTarget("about")).toEqual({ section: "system", pane: "general.about" });
     expect(resolveSettingsTarget("unknown")).toEqual({ section: "general", pane: null });
   });
 
@@ -162,4 +161,39 @@ it("offers keyboard shortcuts for hardware keyboards independently of Electron",
   };
   expect(isAvailable(pane, context)).toBe(false);
   expect(isAvailable(pane, { ...context, hardwareKeyboardPresent: true })).toBe(true);
+});
+
+it("groups the eight sections by scope and preserves renamed section links", () => {
+  expect(SETTINGS_SECTIONS.map(({ label, group }) => [group, label])).toEqual([
+    ["This device", "Interface"],
+    ["This device", "Notifications & privacy"],
+    ["Vorteo", "General"],
+    ["Vorteo", "Providers"],
+    ["Vorteo", "Agents"],
+    ["Vorteo", "Environments"],
+    ["Vorteo", "Projects & integrations"],
+    ["Vorteo", "System"],
+  ]);
+  expect(resolveSettingsTarget("accounts")).toEqual({
+    section: "providers",
+    pane: "accounts.providers",
+  });
+  expect(resolveSettingsTarget("maintenance")).toEqual({
+    section: "system",
+    pane: "maintenance.installation",
+  });
+  expect(resolveSettingsTarget("workspaces")).toEqual({
+    section: "general",
+    pane: "workspaces.workspaces",
+  });
+  expect(resolveSettingsTarget("appearance")).toEqual({
+    section: "interface",
+    pane: "appearance.appearance",
+  });
+  expect(getPane("privacy.dataSaver")?.section).toBe("privacy");
+  expect(
+    SETTINGS_ENTRIES.filter((entry) => entry.label === "Default profile").every(
+      (entry) => entry.pane === "workspaces.newWorkspace",
+    ),
+  ).toBe(true);
 });

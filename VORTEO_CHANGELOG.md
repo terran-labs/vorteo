@@ -6,6 +6,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+- Settings now groups eight sections by device and installation scope, keeps search in the top bar, and closes Command Center when Settings opens. Existing settings links remain valid.
+
 ### Fixes
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.

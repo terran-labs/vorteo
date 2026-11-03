@@ -1,3 +1,4 @@
+import { revealSettingsLocation } from "../support/helpers/settings";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { buildHostAgentDetailRoute, buildHostWorkspaceRoute } from "@/utils/host-routes";
 import { expect, test } from "../support/fixtures";
@@ -324,6 +325,7 @@ test("send shortcut selection persists and controls the composer", async ({ page
     });
     await test.step("choose the explicit modifier shortcut and retain it after reload", async () => {
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await expect(
         page.getByRole("button", { name: "Send shortcut: Enter", exact: true }),
       ).toBeVisible();
@@ -351,6 +353,7 @@ test("send shortcut selection persists and controls the composer", async ({ page
     });
     await test.step("switch back to Enter without changing the default send behavior", async () => {
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await selectSendingOption(page, "Send shortcut", "Enter");
       await pressSettingsToggleShortcut(page);
       await composer.fill("Shift still edits");
@@ -375,6 +378,7 @@ for (const behavior of ["Steer", "Interrupt", "Queue"] as const) {
       await openAgentRoute(page, agent);
       await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await selectSendingOption(page, "Send shortcut", `${modifierLabel}+Enter`);
       await selectSendingOption(page, "Default send", behavior);
       await pressSettingsToggleShortcut(page);
