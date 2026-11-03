@@ -149,29 +149,16 @@ test("needs attention skips failing providers that are off by default", () => {
   ).toBe(4);
 });
 
-test("provider labels prefer policy, then snapshot, manifest and readable IDs", () => {
-  function name(providerType: string, label?: string, snapshotLabel?: string) {
-    return groupInstallationProviders(
-      [
-        {
-          id: providerType,
-          providerType,
-          policy: { label },
-          bindings: { host: providerType },
-        },
-      ],
-      "active",
-      [
-        {
-          serverId: "host",
-          kind: "host",
-          entries: [{ provider: providerType, status: "ready", label: snapshotLabel }],
-        },
-      ],
-    )[0].name;
+test("provider names use the manifest, then the plugin label, then a readable ID", () => {
+  function name(id: string, providerType: string, label?: string) {
+    return groupInstallationProviders([
+      { id, providerType, policy: { label }, bindings: { host: providerType } },
+    ])[0].name;
   }
-  expect(name("antigravity", "Antigravity")).toBe("Antigravity");
-  expect(name("muse", undefined, "Muse")).toBe("Muse");
-  expect(name("codex")).toBe("Codex");
-  expect(name("custom-provider")).toBe("Custom Provider");
+  expect(name("plugin/antigravity/antigravity", "antigravity", "Antigravity")).toBe("Antigravity");
+  expect(name("plugin/muse/muse", "muse", "Muse Code")).toBe("Muse Code");
+  // An account's label names one connection, never the provider.
+  expect(name("claude-account-1", "claude", "Claude 1")).toBe("Claude");
+  expect(name("codex", "codex")).toBe("Codex");
+  expect(name("custom-provider", "custom-provider")).toBe("Custom Provider");
 });

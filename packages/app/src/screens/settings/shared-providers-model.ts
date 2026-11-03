@@ -6,7 +6,7 @@ export interface ProviderDetectionSource {
   serverId: string;
   kind: "host" | "container";
   /** Undefined while the snapshot is still loading. */
-  entries: readonly { provider: string; status: string; label?: string }[] | undefined;
+  entries: readonly { provider: string; status: string }[] | undefined;
 }
 
 export interface ProviderAccount {
@@ -62,6 +62,22 @@ export function providerEnabled(
   return host ? detectIn(definition, host) === "ready" : false;
 }
 
+/**
+ * A provider's display name. Built-in providers use the manifest label. Plugin providers have no
+ * manifest entry, so they use the label the plugin registered (policy.label on its plugin/
+ * definition). Account definitions are skipped on purpose: their policy.label names one
+ * connection, such as "Claude 1", not the provider.
+ */
+function familyName(definition: InstallationProvider, manifestLabel: string | undefined): string {
+  if (manifestLabel) return manifestLabel;
+  if (definition.id.startsWith("plugin/") && definition.policy.label)
+    return definition.policy.label;
+  return definition.providerType.replace(
+    /(^|[-_ ])(\w)/g,
+    (_, separator: string, letter: string) => `${separator ? " " : ""}${letter.toUpperCase()}`,
+  );
+}
+
 export function groupInstallationProviders(
   definitions: readonly InstallationProvider[],
   visibility: "active" | "removed" = "active",
@@ -76,16 +92,7 @@ export function groupInstallationProviders(
     if (!family) {
       family = {
         id: type,
-        name:
-          definition.policy.label ??
-          sources
-            .flatMap((source) => source.entries ?? [])
-            .find((entry) => Object.values(definition.bindings).includes(entry.provider))?.label ??
-          manifest?.label ??
-          type.replace(
-            /(^|[-_ ])(\w)/g,
-            (_, separator, letter) => `${separator ? " " : ""}${letter.toUpperCase()}`,
-          ),
+        name: familyName(definition, manifest?.label),
         enabled: false,
         installed: false,
         accounts: [],
