@@ -27,6 +27,8 @@ import {
 } from "./settings-conflicts";
 
 const styles = StyleSheet.create((theme) => ({
+  // Holds roughly a pane's first card so content arriving later grows downward, not jumps.
+  reserved: { minHeight: 160 },
   choices: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -302,18 +304,24 @@ export function InstallationSettingsStatus({
   if (!installation) return children;
   if (error && !data)
     return (
-      <View style={reservedLayout1}>
+      <View style={styles.reserved}>
         <SettingsStatusLine message={toErrorMessage(error)} />
       </View>
     );
   if (!data)
     return (
-      <View style={reservedLayout2}>
+      <View style={styles.reserved}>
         <SettingsStatusLine message="Loading shared settings..." />
       </View>
     );
   if (data.conflicts) {
-    if (!showStatus) return null;
+    // The resolver lives once, in Environments; other panes say where to go instead of vanishing.
+    if (!showStatus)
+      return (
+        <View style={styles.reserved}>
+          <SettingsStatusLine message="Host and Dev disagree on shared settings. Choose values in Environments." />
+        </View>
+      );
     const conflicts = data.conflicts;
     return (
       <View>
@@ -333,7 +341,7 @@ export function InstallationSettingsStatus({
   }
   if (!data.settings)
     return (
-      <View style={reservedLayout3}>
+      <View style={styles.reserved}>
         <SettingsStatusLine message="Reading shared settings..." />
       </View>
     );
@@ -348,18 +356,14 @@ export function InstallationSettingsStatus({
 /** Place once in the page header, rather than once around each pane. */
 export function InstallationSettingsSyncStatus() {
   const { data } = useInstallationSettings();
-  const stuck = Object.values(data?.sources ?? {}).some(
-    (source) => source.error === "account_binding_unavailable",
-  );
-  const pending = Object.values(data?.sources ?? {}).some(
-    (source) => source.pendingRevision !== null,
-  );
+  const sources = Object.values(data?.sources ?? {});
   let message: string | null = null;
-  if (pending) message = "Syncing shared settings...";
-  if (stuck) message = "Account synchronization needs attention. Open Accounts & profiles.";
+  if (sources.some((source) => source.pendingRevision !== null))
+    message = "Syncing shared settings...";
+  if (sources.some((source) => source.error === "skill_removal_review_required"))
+    message = "Open the skill selector and save again to review pending removals.";
+  // Stuck account delivery outranks routine syncing: it will not finish on its own.
+  if (sources.some((source) => source.error === "account_binding_unavailable"))
+    message = "An account is not available in every environment yet. Check each connection.";
   return <SettingsStatusLine message={message} />;
 }
-
-const reservedLayout1 = { minHeight: 160 } as const;
-const reservedLayout2 = { minHeight: 160 } as const;
-const reservedLayout3 = { minHeight: 160 } as const;

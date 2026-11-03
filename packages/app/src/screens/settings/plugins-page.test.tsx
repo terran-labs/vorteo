@@ -30,6 +30,9 @@ vi.mock("@/hooks/use-action-error", () => ({
   useReportActionError: () => reportActionError,
 }));
 
+const toast = vi.hoisted(() => ({ show: vi.fn(), error: vi.fn(), copied: vi.fn() }));
+vi.mock("@/contexts/toast-context", () => ({ useToast: () => toast }));
+
 vi.mock("@/runtime/host-features", () => ({
   useHostFeature: (_serverId: string, feature: string) => {
     if (feature === "pluginLogs") return runtime.logsSupported;

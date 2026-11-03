@@ -1,6 +1,6 @@
-import { Text, View } from "react-native";
 import { useCallback, useRef } from "react";
-import { SettingsCard, SettingsSection } from "@/components/settings";
+import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
+import { SettingsCollapsibleRow } from "@/components/settings/collapsible-row";
 import { Button } from "@/components/ui/button";
 import { useRestartsAwaitingApproval } from "@/execution-installation/panel";
 import {
@@ -28,13 +28,14 @@ function pluralize(count: number, noun: string): string {
 }
 
 /** Failing providers that are on. One the owner never enabled and the Host cannot use is off. */
-function useProviderAttentionItems(): AttentionItem[] {
+function useProviderAttentionItems(): AttentionItem[] | null {
   const hosts = useHosts();
   const serverId = installationDefaultServerId(readExecutionInstallation()) ?? hosts[0]?.serverId;
   const { entries } = useProvidersSnapshot(serverId ?? null);
   const shared = useInstallationSettings();
   const detection = useProviderDetection(shared.installation?.environments ?? NO_ENVIRONMENTS);
-  const previous = useRef<AttentionItem[]>([]);
+  // Null until the first answer; afterwards a refetch keeps the last answer on screen.
+  const previous = useRef<AttentionItem[] | null>(null);
   if (!entries || !shared.data) return previous.current;
   const items = providersNeedingAttention({
     entries: entries ?? [],
@@ -51,7 +52,7 @@ function useProviderAttentionItems(): AttentionItem[] {
   return items;
 }
 
-function useAttentionItems(): AttentionItem[] {
+function useAttentionItems(): AttentionItem[] | null {
   const restarts = useRestartsAwaitingApproval();
   const update = useVortonUpdate();
   const providerItems = useProviderAttentionItems();
@@ -75,41 +76,50 @@ function useAttentionItems(): AttentionItem[] {
       pane: "maintenance.updates",
     });
   }
-  return [...items, ...providerItems];
+  return providerItems ? [...items, ...providerItems] : null;
 }
 
-/** A single reserved row keeps General stable while attention checks refresh. */
-export function AttentionSection({ onOpenPane }: { onOpenPane: (pane: string) => void }) {
-  const items = useAttentionItems();
-  const first = items[0];
-  const open = useCallback(() => {
-    if (first) onOpenPane(first.pane);
-  }, [first, onOpenPane]);
+function AttentionRow({
+  item,
+  onOpenPane,
+}: {
+  item: AttentionItem;
+  onOpenPane: (pane: string) => void;
+}) {
+  const open = useCallback(() => onOpenPane(item.pane), [item.pane, onOpenPane]);
   return (
-    <SettingsSection title="Status" testID="settings-attention">
-      <SettingsCard>
-        <View style={reservedLayout1}>
-          <Text numberOfLines={1} style={reservedLayout2}>
-            {items.length ? items.map((item) => item.label).join(" · ") : "All clear"}
-          </Text>
-          {first ? (
-            <Button variant="outline" size="sm" onPress={open}>
-              Review
-            </Button>
-          ) : null}
-        </View>
-      </SettingsCard>
-    </SettingsSection>
+    <SettingsRow label={item.label} hint={item.hint} testID={`settings-attention-${item.id}`}>
+      <Button variant="outline" size="sm" onPress={open}>
+        Review
+      </Button>
+    </SettingsRow>
   );
 }
 
-const reservedLayout1 = {
-  height: 72,
-  justifyContent: "center",
-  overflow: "hidden",
-  paddingHorizontal: 16,
-  flexDirection: "row",
-  alignItems: "center",
-  gap: 12,
-} as const;
-const reservedLayout2 = { flex: 1 } as const;
+/**
+ * What needs the owner's action across Settings, at the top of General. It always renders one
+ * row so General never shifts when checks finish: checking, all clear, the single item, or a
+ * folded list the owner opens themselves.
+ */
+export function AttentionSection({ onOpenPane }: { onOpenPane: (pane: string) => void }) {
+  const items = useAttentionItems();
+  let row;
+  if (items === null)
+    row = <SettingsRow label="Checking..." hint="Looking for anything that needs you." />;
+  else if (items.length === 0)
+    row = <SettingsRow label="All clear" hint="Nothing needs your attention." />;
+  else if (items.length === 1) row = <AttentionRow item={items[0]} onOpenPane={onOpenPane} />;
+  else
+    row = (
+      <SettingsCollapsibleRow label={`${items.length} things need attention`}>
+        {items.map((item) => (
+          <AttentionRow key={item.id} item={item} onOpenPane={onOpenPane} />
+        ))}
+      </SettingsCollapsibleRow>
+    );
+  return (
+    <SettingsSection title="Status" testID="settings-attention">
+      <SettingsCard>{row}</SettingsCard>
+    </SettingsSection>
+  );
+}
