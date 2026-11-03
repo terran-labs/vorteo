@@ -328,6 +328,13 @@ const restartTimer = setInterval(() => {
   void app.drainRestarts();
 }, 2000);
 restartTimer.unref();
+// The release update check: shortly after start, then hourly. GitHub's unauthenticated limit
+// is 60 requests an hour, so one request an hour leaves room for the interface's own check.
+const RELEASE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const releaseCheck = () =>
+  void app.checkReleases().catch((error) => logger.warn({ err: error }, "Update check failed"));
+setTimeout(releaseCheck, 60_000).unref();
+setInterval(releaseCheck, RELEASE_CHECK_INTERVAL_MS).unref();
 const server = app.listen(config.listenPort, "127.0.0.1", () =>
   logger.info("Installation coordinator ready"),
 );

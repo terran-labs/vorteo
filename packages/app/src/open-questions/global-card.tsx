@@ -17,6 +17,7 @@ import {
   type QuestionHostInput,
   type ThreadQuestions,
 } from "./global-model";
+import { InstallationUpdateItem, useInstallationUpdate } from "./installation-update";
 
 const HEADING_ICON = <TaskCardIcon kind="question" />;
 
@@ -44,22 +45,25 @@ function useThreadQuestions(): ThreadQuestions[] {
 
 export function GlobalOpenQuestionsCard({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const threads = useThreadQuestions();
-  const count = globalOpenQuestionCount(threads);
-  if (count === 0) return null;
+  const update = useInstallationUpdate();
+  const count = globalOpenQuestionCount(threads, update?.entry ?? null);
+  // An update in progress shows without counting, so the card can be visible at zero.
+  if (count === 0 && !update) return null;
   return (
     <GlobalCard
       kind="globalQuestions"
       title="Open questions"
       icon={HEADING_ICON}
       count={count}
-      countLabel={`${count} open ${count === 1 ? "question" : "questions"} across all threads`}
+      countLabel={`${count} open ${count === 1 ? "question" : "questions"}${update ? " including the installation update" : " across all threads"}`}
       testID="global-open-questions-card"
     >
+      {update ? <InstallationUpdateItem {...update} /> : null}
       {threads.map((thread, index) => (
         <ThreadQuestionGroup
           key={thread.key}
           thread={thread}
-          first={index === 0}
+          first={index === 0 && !update}
           onBeforeNavigate={onBeforeNavigate}
         />
       ))}

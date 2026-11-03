@@ -6,6 +6,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Added
+
+- Installations update themselves from GitHub Releases. Each installation chooses manual or automatic updates and the stable or beta channel in Settings. The coordinator checks hourly and offers each new release once in the sidebar's Open questions card, with its summary, a security marker, changed Factory charters and the rollback path. Install after current work holds new Host turns and waits for running turns and Dev agents before restarting; automatic mode installs that way without asking. Agents read the policy with `installation-agent.mjs update-status`. Older coordinators keep the previous Settings behavior.
+- The restart queue lets the owner approve a single reviewed source update to finish current turns first when the decision names its exact digest, as automatic Host updates already do. Combined batches still restart at once.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
