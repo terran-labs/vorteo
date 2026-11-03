@@ -247,12 +247,18 @@ export function SharedProvidersPage() {
         style={[settingsStyles.card, styles.skeleton]}
         testID="shared-providers-loading"
         dataSet={loadingPane}
-        accessibilityLabel="Shared provider list unavailable. Complete shared provider migration to manage the catalog."
+        accessibilityLabel={
+          data
+            ? "Shared provider list unavailable. Complete shared provider migration to manage the catalog."
+            : "Loading providers"
+        }
       >
-        <Text style={settingsStyles.rowHint}>
-          The shared provider list is not available yet. Complete shared provider migration to
-          manage the catalog.
-        </Text>
+        {data ? (
+          <Text style={settingsStyles.rowHint}>
+            The shared provider list is not available yet. Complete shared provider migration to
+            manage the catalog.
+          </Text>
+        ) : null}
       </View>
     );
   return <ProviderCatalog data={snapshot} environments={environments} save={save} />;
@@ -508,7 +514,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   chevronExpanded: { transform: [{ rotate: "90deg" }] },
   trailing: { width: 160, alignItems: "flex-end" },
-  skeleton: { minHeight: 96, padding: theme.spacing[3], justifyContent: "center" },
+  skeleton: { height: 96, padding: theme.spacing[3], justifyContent: "center" },
   command: { gap: theme.spacing[2] },
   commandText: { fontFamily: "monospace", color: theme.colors.foreground },
   detail: {
