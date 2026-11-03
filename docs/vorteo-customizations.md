@@ -2024,6 +2024,8 @@ Claude authentication status review: Connection controls use the existing accoun
 
 Maintenance review: Docker restart preflight and readiness read `{{json .State}}` instead of templating `.State.Health`, which Docker 29.8 rejects for containers without a healthcheck. A failed inspect reports the first line of the CLI error rather than "not found". Verified against the installed Dev, gateway Tailscale and gateway Caddy containers.
 
+Maintenance review: the terminal worker tolerates EINVAL, ENOTSUP and EPERM when restricting its socket mode, because Docker Desktop virtiofs homes reject chmod on sockets. The socket directory is still verified as an owner-only 0700 directory before use. Reproduced in the Dev container: chmod on the socket returned EINVAL with the directory at 700.
+
 ## Optional native macOS helper
 
 Legacy coordinator compatibility: an unavailable helper query is retried once per minute instead of every settings refresh. Owner lock checks still apply during the delay, and upgraded coordinators are discovered without reloading.
