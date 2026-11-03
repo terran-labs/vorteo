@@ -1,5 +1,9 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-02): the sidebar merges an empty, hidden Dev System project with the Host's again, so the System project keeps one row, its folder placement, its ordering and the workspaces recorded under its merged key. App-only change; README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-01): the installation panel uses the existing toast API context directly, avoiding a native viewport import in browser review tests. Toast behavior is unchanged.
 
 Maintenance review (2026-11-01): the compiled restart fixture waits for durable capture acknowledgement before asserting an empty pending-work count. Runtime behavior and restart approval requirements are unchanged.
@@ -1515,6 +1519,7 @@ Owner-controlled daemon automation: Installation controls expose a persistent ow
 - **Account reset credits.** Supported providers expose account-scoped credit availability and a reviewed reset operation. The picker loads credits for enabled account connections even when shared profiles name only the provider family. Credit details include reported expiry and refresh time; redemption requires explicit confirmation and verified provider support. A confirmed reset unlocks earlier quota-exhausted threads on that provider without automatically sending a message or clearing a reserve stop. See [reset credits](agent-presets.md#account-reset-credits).
 - **Local Pi endpoint visibility.** Profiles show configured model and reasoning details, private endpoint reachability and active managed-child counts. A reachable port does not prove a loaded model, valid authentication or inference capacity. Counts describe the configured provider in this daemon. See [local endpoint status](agent-presets.md#local-endpoint-status).
 - **Provider management and diagnostics.** Settings groups each provider family with its accounts and shared enable controls. Reorder, remove or restore providers without deleting credentials, profiles or history; Claude Manage presents one installation connection without environment tabs, with aggregate delivery status and installation-wide disconnect. Other providers retain their existing management controls. Account names use the same natural order across environments. Older Claude CLI versions show installed-version and model-compatibility warnings with update guidance. A separate unpublished refinement shows sign-in success and Done independently of background usage refresh.
+- **Owner-controlled Claude in Chrome.** Claude threads offer a per-thread Chrome toggle, off by default and listed only where the Claude in Chrome native host is installed. Turning it on restarts Claude with `--chrome` on the next turn and keeps the conversation, so the agent can use the owner's logged-in Chrome. Only the owner's thread controls can turn it on: agent tools refuse to enable it at creation or later, child threads do not inherit it, and scheduled runs drop it from the creating thread's features. Agents may still turn it off.
 
 ## Goals, queues and supervised workers
 

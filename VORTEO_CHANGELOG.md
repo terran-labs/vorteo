@@ -4,6 +4,24 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-03
+
+### Security
+
+- Only the owner can turn on Chrome for a thread. Agent tools now refuse to enable it when creating or updating a thread, and scheduled runs no longer inherit it from the thread that created them. Agents can still turn it off.
+
+## Unreleased - 2026-11-02
+
+### Improvements
+
+- Add an opt-in Chrome toggle to Claude threads on machines with the Claude in Chrome extension set up. Threads with it on start Claude with `--chrome` from the next turn, keeping the conversation, so the agent can use the owner's logged-in Chrome. It is off by default, and hidden where the extension's native host is missing.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- The Vorteo System project shows as one sidebar row again, in the folder and order you gave it. Hiding the empty Dev System project had split the Host's project into a second top-level row, leaving workspaces created before the split under the old row.
+
 ## Unreleased - 2026-11-02
 
 ### Changed
