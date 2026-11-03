@@ -216,7 +216,7 @@ describe("HostPluginsPage", () => {
   });
 
   it.each([false, true])(
-    "clears ongoing feedback and announces the result only once (%s)",
+    "announces results only inline and clears them on the next action (%s)",
     async (fails) => {
       const client = createClient();
       client.listPlugins.mockResolvedValue([plugin()]);
@@ -235,12 +235,31 @@ describe("HostPluginsPage", () => {
       );
       renderPage(client);
       fireEvent.click(await screen.findByRole("switch", { name: "example: Disable" }));
-      expect(await screen.findByText("Updating plugins...")).toBeDefined();
+      await waitFor(() => expect(client.disablePlugin).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId("plugin-management-feedback")).toBeNull();
       finish();
-      await waitFor(() => expect(screen.queryByText("Updating plugins...")).toBeNull());
-      expect(fails ? toast.error : toast.show).toHaveBeenCalledTimes(1);
-      const message = (fails ? toast.error : toast.show).mock.calls[0][0];
-      expect(screen.queryByText(message)).toBeNull();
+      const feedback = await screen.findByTestId("plugin-management-feedback");
+      expect(feedback.textContent).toBe(
+        fails
+          ? "Action failed"
+          : testI18n.t("settings.plugins.feedback.disable", { id: "example" }),
+      );
+      expect(feedback.getAttribute("aria-live")).toBe("polite");
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.show).not.toHaveBeenCalled();
+      let completeReload!: (value: PluginListItem) => void;
+      client.reloadPlugin.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completeReload = resolve;
+          }),
+      );
+      await selectPluginAction("Reload");
+      await waitFor(() => expect(client.reloadPlugin).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId("plugin-management-feedback")).toBeNull();
+      expect(feedback.getAttribute("aria-live")).toBeNull();
+      completeReload(plugin());
+      await screen.findByTestId("plugin-management-feedback");
     },
   );
 
