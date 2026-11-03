@@ -6,6 +6,30 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge `main` after the sixth Host delivery so the seventh installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge `main` after the fifth Host delivery so the sixth installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge `main` after the fourth Host delivery so the fifth installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge `main` after the second Host delivery so the third and fourth installed Host updates can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
 ### Improvements
 
 - A coordinator update reaches its claim about a minute sooner after its cancellation window. The launcher no longer re-reads the candidate before starting the runner, which re-reads every byte under its exclusive lock, and the claim reuses the runner's own runtime digest from admission; the digest it replaces was never compared. Every live process and service check at the claim stays.
@@ -29,8 +53,6 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
-## Unreleased - 2026-11-03
-
 ### Added
 
 - Upgrade a setup-token Claude account to full web sign-in in place from its connection panel. The account keeps its provider ID, directory, conversation history, profiles and Host and Dev bindings, and starts reporting usage. The app forces a usage refresh past the daemon cache as soon as the upgrade completes.
@@ -40,8 +62,6 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Known limitations
 
 - The upgrade needs Host-owned refresh and every daemon advertising the capability. Unmanaged daemons have no upgrade. Live acceptance on the installation is pending.
-
-## Unreleased - 2026-11-02
 
 ## Unreleased - 2026-11-03
 
@@ -64,8 +84,6 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - A thread whose history failed to load after a daemon or session host restart no longer stays blank or shows only its recent messages. The next request for the thread retries the load once the thread is idle, and when newer messages arrived after the failure, it replaces the partial history with the full transcript under a new epoch so open clients reset. Concurrent requests share one retry, and a thread with a running turn waits for it to finish.
 - Session host disconnects now say whether this daemon closed the connection, the host closed it, or a socket error ended it, with the error code, instead of only "Session host connection closed."
-
-## Unreleased - 2026-11-02
 
 ## Unreleased - 2026-11-02
 
