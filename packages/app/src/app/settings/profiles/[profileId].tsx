@@ -96,9 +96,9 @@ function RouteEditor({ serverId, provider, profileId, shared }: RouteEditorProps
     () =>
       router.replace({
         pathname: "/settings/accounts/[providerType]",
-        params: { providerType: provider, serverId },
+        params: { providerType, serverId },
       }),
-    [router, provider, serverId],
+    [router, providerType, serverId],
   );
   const save = useCallback(
     async (value: AgentProfileValue) => {

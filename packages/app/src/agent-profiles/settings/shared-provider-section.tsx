@@ -1,12 +1,13 @@
+import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { useRouter } from "expo-router";
 import { useSharedProviderProfiles } from "./use-shared-provider-profiles";
 import { sharedChoiceState } from "../shared-choices";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { Text, View, Pressable } from "react-native";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
-import { SettingsAction, SettingsCard, SettingsCollapsibleRow } from "@/components/settings";
+import { SettingsCard, SettingsCollapsibleRow } from "@/components/settings";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { describeCopies, groupDuplicateProfiles, type ProfileGroup } from "./profile-duplicates";
 import { settingsStyles } from "@/styles/settings";
@@ -49,6 +50,8 @@ export function SharedProviderSection({
   const openWorkflow = useCallback(
     (id = "new") => {
       if (!shared) return;
+      // Profile editing leaves the provider sheet for a full page.
+      useProviderSettingsStore.getState().close();
       router.push({
         pathname: "/settings/profiles/[profileId]",
         params: { profileId: id, providerType: provider, serverId },
@@ -198,12 +201,14 @@ export function SharedProviderSection({
         testID="shared-provider-settings"
       >
         <SettingsCard>
-          <SettingsAction
-            label="Preferred models and reasoning"
-            actionLabel="Edit"
+          <Pressable
+            accessibilityRole="button"
             onPress={openDefaults}
             disabled={!shared || pending}
-          />
+            style={settingsStyles.row}
+          >
+            <Text style={settingsStyles.rowTitle}>Preferred models and reasoning</Text>
+          </Pressable>
         </SettingsCard>
       </SettingsSection>
     </>

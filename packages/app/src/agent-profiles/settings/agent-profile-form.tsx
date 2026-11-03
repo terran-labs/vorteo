@@ -39,7 +39,11 @@ function TextField({
   onChange,
   multiline = false,
   disabled,
+  testID,
+  hint,
 }: {
+  testID?: string;
+  hint?: string;
   label: string;
   value: string;
   onChange: (value: string) => void;
@@ -47,7 +51,7 @@ function TextField({
   disabled: boolean;
 }) {
   return (
-    <Field label={label}>
+    <Field label={label} testID={testID} hint={hint}>
       <FormTextInput
         initialValue={value}
         onChangeText={onChange}
@@ -78,6 +82,8 @@ function ChoiceField({
   return (
     <SelectField
       label={label}
+      testID={`agent-profile-${label.toLowerCase()}-field`}
+      triggerTestID={`agent-profile-${label.toLowerCase()}-trigger`}
       value={value}
       selectedDisplay={display}
       options={options}
@@ -188,6 +194,7 @@ export function AgentProfileForm({
   const { profiles, legacyProfiles } = useAgentProfiles(serverId);
   const { entries } = useProvidersSnapshot(serverId);
   const { config } = useDaemonConfig(serverId);
+  const [originalWorkerId] = useState(state.workerProfileId);
   const [workersEnabled, setWorkersEnabled] = useState(Boolean(state.workerProfileId));
   const workers = useMemo(
     () =>
@@ -203,7 +210,7 @@ export function AgentProfileForm({
         providers: config?.providers ?? {},
         supervisor: { id: profileId, provider: state.provider },
         selectedWorkerId: state.workerProfileId,
-        originalWorkerId: state.workerProfileId,
+        originalWorkerId,
         accountId: state.workerAccountId,
       }),
     [
@@ -215,6 +222,7 @@ export function AgentProfileForm({
       state.provider,
       state.workerProfileId,
       state.workerAccountId,
+      originalWorkerId,
     ],
   );
   const toggleWorkers = useCallback(
@@ -314,6 +322,8 @@ export function AgentProfileForm({
         {!defaults ? (
           <TextField
             label="When to use"
+            testID="agent-profile-notes-field"
+            hint="Helps agents choose this profile when starting another agent."
             value={state.notes}
             onChange={model.setNotes}
             multiline
@@ -341,6 +351,7 @@ export function AgentProfileForm({
             <>
               <SelectField
                 label="Worker account"
+                testID="agent-profile-worker-account-field"
                 value={workers.accountId}
                 selectedDisplay={workers.accountDisplay}
                 options={workers.accountOptions}
@@ -351,6 +362,7 @@ export function AgentProfileForm({
               />
               <SelectField
                 label="Worker profile"
+                testID="agent-profile-worker-field"
                 value={state.workerProfileId}
                 selectedDisplay={workers.profileDisplay}
                 options={workers.profiles}
