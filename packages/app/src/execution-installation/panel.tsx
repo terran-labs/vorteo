@@ -2,6 +2,8 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useInstallationUpgradeStatus } from "./use-installation-upgrades";
 import { systemAttentionCount } from "@/screens/settings/system/system-adapter-model";
+import { usePanelOwnerAccess } from "./panel-owner-access";
+import { OwnerLockBadge } from "@/components/settings/owner-lock";
 import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
@@ -57,7 +59,6 @@ import { CheckSquare, Square, Info, ChevronDown, ChevronUp, Copy } from "lucide-
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { Field, FormTextInput } from "@/components/ui/form-field";
-import { EditingTextInput } from "@/components/ui/text-input";
 import { usePathname, useRouter } from "expo-router";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
@@ -143,6 +144,14 @@ export function useInstallationOwnerClient(): InstallationClient | null {
     model ? () => model.getState().unlocked : lockedState,
   );
   return model && unlocked ? panelClient : null;
+}
+
+/** Observe the existing app-wide session; every unlock affordance uses this model. */
+export function useInstallationOwnerAccess() {
+  return usePanelOwnerAccess({
+    model: getInstallationPanel(useHostRegistryLoaded()),
+    installationPresent: readExecutionInstallation() !== null,
+  });
 }
 
 /** Loopback installations are reached without Tailscale. */
@@ -231,7 +240,7 @@ const PasswordCopyIcon = withUnistyles(Copy, (theme) => ({ color: theme.colors.f
 
 // The coordinator reports the path only when the file exists. The command runs
 // on the Host; the password itself never passes through this page.
-function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: boolean }) {
+export function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: boolean }) {
   const [hovered, setHovered] = useState(false);
   const enter = useCallback(() => setHovered(true), []);
   const leave = useCallback(() => setHovered(false), []);
@@ -436,12 +445,11 @@ function InstallationHistory({
   );
 }
 
-function InstallationPanel({ model }: { model: InstallationPanelModel; requestId: string | null }) {
-  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+function InstallationPanel(_props: { model: InstallationPanelModel; requestId: string | null }) {
   return (
     <SettingsSection title="Installation" testID="installation-panel">
       <View style={settingsStyles.card} testID="installation-card">
-        <InstallationOwnerAccess model={model} state={state} />
+        <InstallationOwnerAccess />
       </View>
     </SettingsSection>
   );
@@ -934,113 +942,11 @@ export function DaemonAutomationControl({
   );
 }
 
-function InstallationOwnerAccess({
-  model,
-  state,
-}: {
-  model: InstallationPanelModel;
-  state: ReturnType<InstallationPanelModel["getState"]>;
-}) {
-  const controlSize = useVortonTouch() ? "md" : "sm";
-  const [helpVisible, setHelpVisible] = useState(false);
-  const toggleHelp = useCallback(() => setHelpVisible((value) => !value), []);
-  const ownerLabel = state.unlocked ? "Owner unlocked" : "Owner locked";
-  const setPassword = useCallback((value: string) => model.setPassword(value), [model]);
-  const lock = useCallback(() => {
-    void model.lock();
-  }, [model]);
-  const unlock = useCallback(() => {
-    setHelpVisible(false);
-    void model.unlock();
-  }, [model]);
+function InstallationOwnerAccess() {
   return (
     <View style={styles.cardBody}>
-      <View style={styles.requestHeader}>
-        <Text style={settingsStyles.rowTitle}>
-          {installationHasDev(readExecutionInstallation()) ? "Host and container" : "Host"}
-        </Text>
-        <View style={styles.actions}>
-          <StatusBadge
-            label={state.initialized ? ownerLabel : "Checking access"}
-            variant={state.unlocked ? "success" : "muted"}
-          />
-          {state.unlocked ? (
-            <Button
-              variant="ghost"
-              size={controlSize}
-              disabled={state.busy}
-              testID="installation-lock"
-              onPress={lock}
-            >
-              Lock
-            </Button>
-          ) : null}
-        </View>
-      </View>
-      {!state.initialized ? <Text style={styles.text}>Checking owner access...</Text> : null}
-      {state.initialized && !state.unlocked ? (
-        <>
-          <Text style={styles.text}>
-            Unlock to view approval status and manage restarts. Your daemon connections stay
-            available.
-          </Text>
-          <View style={styles.unlockRow}>
-            <EditingTextInput
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              initialValue=""
-              onChangeText={setPassword}
-              onSubmitEditing={unlock}
-              accessibilityLabel="Owner password"
-              placeholder="Owner password"
-              testID="installation-password"
-              style={[styles.input, styles.passwordInput]}
-            />
-            <Button
-              variant="outline"
-              disabled={state.busy || !state.password.trim()}
-              onPress={unlock}
-              testID="installation-unlock"
-            >
-              {state.busy ? "Unlocking..." : "Unlock controls"}
-            </Button>
-          </View>
-          <Button
-            variant="ghost"
-            size={controlSize}
-            onPress={toggleHelp}
-            {...disclosureProps(helpVisible)}
-            testID="installation-password-help"
-          >
-            {helpVisible ? "Hide password help" : "Find owner password"}
-          </Button>
-          {helpVisible ? (
-            <SettingsExpansion>
-              <Text style={styles.text}>
-                The host installer generates this password. Find it in the owner-password file on
-                your host:
-              </Text>
-              {state.passwordFile ? (
-                <Text selectable style={styles.text} testID="installation-password-file">
-                  {state.passwordFile}
-                </Text>
-              ) : null}
-              <Text style={styles.text}>
-                Owner access is remembered in this browser for seven days. Lock ends it sooner. Each
-                restart requires a separate approval.
-              </Text>
-            </SettingsExpansion>
-          ) : null}
-        </>
-      ) : null}
-      {state.unlocked ? (
-        <Text style={styles.text}>
-          {state.lastUpdatedAt
-            ? `Updated ${new Date(state.lastUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
-            : "Loading restart status..."}
-        </Text>
-      ) : null}
+      <Text style={settingsStyles.rowTitle}>Installation owner</Text>
+      <OwnerLockBadge testIDPrefix="installation" />
     </View>
   );
 }
