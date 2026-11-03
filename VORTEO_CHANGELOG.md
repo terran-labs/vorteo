@@ -13,6 +13,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Keep session-host review actions under System details and report their failures in a fixed status line; cover the single attention notice while owner controls are locked.
 
 - Consolidate Host and Dev status, confirmed restart reviews, updates and maintenance details into a System pane with one attention notice. Remove duplicate Host controls and Skills editor, center composer profile edits, preserve reviewed shared-profile revisions, and disable repeated update actions while a request is running.
+- Keep Retry for failed account choices and offer a separate Provider settings link, keep provider and metadata settings steady through loading and reconnects, and report install and save failures with toasts. Update packaged provider tests for grouped installation rows and ordering.
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
 
