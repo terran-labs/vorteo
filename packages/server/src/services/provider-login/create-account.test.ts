@@ -1,7 +1,7 @@
 import { readInstallationSettings } from "../../server/execution-installation/settings/projection.js";
 import type { InstallationSettingsAdmission } from "../../server/execution-installation/settings/admission.js";
 import { afterEach, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -196,4 +196,84 @@ it("does not recreate a removed account on a delayed setup retry", async () => {
     "Restore it in Settings",
   );
   expect(f.store.get()).toEqual(before);
+});
+
+it("upgrades a setup-token Claude binding in place only after the definition records full sign-in", async () => {
+  const { createClaudeAccount, upgradeClaudeAccount } = await import("./create-account.js");
+  const { claudeAccountUpgradedToFullSignIn } =
+    await import("../../server/agent/providers/claude/setup-token-runtime.js");
+  const f = fixture();
+  const binding = {
+    installationId: randomUUID(),
+    serverId: "host",
+    environment: "host" as const,
+    revision: 1,
+  };
+  const initial = MutableDaemonConfigSchema.parse({
+    ...f.store.get(),
+    sharedProviderPreferences: {
+      version: 1,
+      revision: 1,
+      providers: {},
+      legacyProfiles: {},
+      installation: binding,
+    },
+  });
+  const creationId = randomUUID();
+  const providerId = `claude-account-${creationId}`;
+  const definition = {
+    id: "claude-one",
+    providerType: "claude",
+    accountSetup: { provider: "claude" as const, creationId } as {
+      provider: "claude";
+      creationId: string;
+      signIn?: "full";
+    },
+    bindings: { host: providerId },
+    policy: { label: "Claude 1", enabled: true },
+  };
+  const admission: InstallationSettingsAdmission = {
+    ...binding,
+    installationInstructions: "",
+    settings: { ...readInstallationSettings(initial), providerDefinitions: [definition] },
+  };
+  const store = new DaemonConfigStore(f.paseoHome, initial, undefined, {
+    installationSettingsReader: { read: async () => admission },
+  });
+  const input = { paseoHome: f.paseoHome, store, creationId, name: "Claude 1" };
+  const created = await createClaudeAccount(input);
+  const home = path.join(f.paseoHome, "claude-accounts", providerId);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  // A key delivered by provider secrets must survive the switch.
+  store.replaceProviderEnv(providerId, {
+    ...(store.get().providers[providerId].env as Record<string, string>),
+    EXTRA_TOKEN: "synthetic-extra",
+  });
+  const before = store.get().providers[providerId];
+
+  await expect(upgradeClaudeAccount(input)).rejects.toThrow("sign-in controls");
+  expect(store.get().providers[providerId]).toEqual(before);
+  expect(claudeAccountUpgradedToFullSignIn(home)).toBe(false);
+
+  definition.accountSetup.signIn = "full";
+  await expect(upgradeClaudeAccount(input)).resolves.toEqual(created);
+  expect(store.get().providers[providerId]).toEqual({
+    ...before,
+    env: { ...before.env, VORTEO_CLAUDE_SIGN_IN: "full" },
+  });
+  expect(claudeAccountUpgradedToFullSignIn(home)).toBe(true);
+  await expect(upgradeClaudeAccount(input)).resolves.toEqual(created);
+  await expect(createClaudeAccount({ ...input, signIn: "full" })).resolves.toEqual(created);
+  await expect(createClaudeAccount(input)).rejects.toThrow("already in use");
+});
+
+it("creates a missing binding as a full sign-in account when upgrading", async () => {
+  const { upgradeClaudeAccount } = await import("./create-account.js");
+  const f = fixture();
+  const creationId = randomUUID();
+  const account = await upgradeClaudeAccount({ ...f, creationId, name: "Claude 2" });
+  expect(f.store.get().providers[account.providerId]?.env).toMatchObject({
+    CLAUDE_CONFIG_DIR: path.join(f.paseoHome, "claude-accounts", account.providerId),
+    VORTEO_CLAUDE_SIGN_IN: "full",
+  });
 });

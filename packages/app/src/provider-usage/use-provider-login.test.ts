@@ -77,3 +77,28 @@ it("records a failed forced refresh in the query state and keeps the last readin
   expect(queryClient.getQueryState(queryKey)?.status).toBe("error");
   expect(queryClient.getQueryData(queryKey)).toBe(previous);
 });
+
+it("refreshes usage once a setup-token account's upgrade to full sign-in completes", () => {
+  // The upgrade flow reads no synchronization, so completion alone must produce a key.
+  const pending = signInUsageRefreshKey({
+    login: { status: "verifying", attemptId: "upgrade-1" },
+    environments: undefined,
+    serverId: "host",
+  });
+  const upgraded = signInUsageRefreshKey({
+    login: { status: "succeeded", attemptId: "upgrade-1", accountLabel: null },
+    environments: undefined,
+    serverId: "host",
+  });
+  expect(pending).toBeNull();
+  expect(upgraded).toBe("upgrade-1:completed");
+  // The connection panel then reads the same attempt through the full sign-in routes, and
+  // refreshes again when Host-owned access reaches this environment.
+  expect(
+    signInUsageRefreshKey({
+      login: { status: "succeeded", attemptId: "upgrade-1", accountLabel: null },
+      environments: [{ serverId: "dev", status: "ready" }],
+      serverId: "dev",
+    }),
+  ).toBe("upgrade-1:delivered");
+});

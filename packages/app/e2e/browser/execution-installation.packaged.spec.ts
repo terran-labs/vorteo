@@ -277,6 +277,7 @@ test.beforeAll(async () => {
         throw new Error("No provider authorization in this fixture");
       },
       cancel: async () => ({ status: "idle" as const }),
+      signingIn: () => false,
       signOut: async () => {},
       reconcile: async () => {},
       dispose: async () => {},

@@ -6313,6 +6313,15 @@ export class DaemonClient {
     });
   }
 
+  /** Coordinator-only: applies a full sign-in upgrade the installation definition already records. */
+  async upgradeClaudeAccount(creationId: string, name: string) {
+    if (this.lastServerInfoMessage?.features?.claudeSignInUpgrade !== true)
+      throw new Error("Update the host to upgrade Claude accounts to full sign-in.");
+    return this.sendNamespacedCorrelatedSessionRequest<"provider.claude.upgrade_account.response">({
+      message: { type: "provider.claude.upgrade_account.request", creationId, name },
+    });
+  }
+
   async submitProviderLoginCode(providerId: string, attemptId: string, code: string) {
     return this.sendNamespacedCorrelatedSessionRequest<"provider.login.submit_code.response">({
       message: { type: "provider.login.submit_code.request", providerId, attemptId, code },

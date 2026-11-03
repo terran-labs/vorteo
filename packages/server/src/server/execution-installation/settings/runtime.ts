@@ -132,6 +132,9 @@ export function createInstallationSettings(
           const name = definition.policy.label ?? setup.provider;
           assertCurrent();
           if (setup.provider === "codex") await client.createCodexAccount(setup.creationId, name);
+          // A setup-token binding whose definition was upgraded switches to full sign-in in place.
+          else if (setup.signIn === "full" && features.claudeSignInUpgrade === true)
+            await client.upgradeClaudeAccount(setup.creationId, name);
           else await client.createClaudeAccount(setup.creationId, name, setup.signIn);
         }
       } finally {
