@@ -7,6 +7,7 @@ import type { AgentProfilePageProps } from "./agent-profile-page";
 import ProfileRoute from "@/app/settings/profiles/[profileId]";
 const mocks = vi.hoisted(() => ({
   profileId: "workflow",
+  catalogProvider: "claude",
   props: null as AgentProfilePageProps | null,
   shared: undefined as SharedProviderPreferences | undefined,
   saveWorkflow: vi.fn(),
@@ -17,7 +18,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("expo-router", () => ({
   useLocalSearchParams: () => ({
     serverId: "host",
-    providerType: "claude",
+    providerType: mocks.catalogProvider,
     profileId: mocks.profileId,
   }),
   useRouter: () => ({ replace: mocks.replace }),
@@ -59,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.props = null;
   mocks.profileId = "workflow";
+  mocks.catalogProvider = "claude";
   mocks.shared = {
     version: 1,
     revision: 7,
@@ -122,4 +124,15 @@ it("uses the defaults variant and saves preferred choices in the same revision",
     { preferredModels: ["default-model"], preferredThinkingOptions: [] },
   );
   expect(mocks.saveWorkflow).not.toHaveBeenCalled();
+});
+
+it("returns to the provider family when the editor uses an account catalog", () => {
+  mocks.catalogProvider = "claude-account";
+  render(<ProfileRoute />);
+  expect(mocks.props!.profile.provider).toBe("claude-account");
+  mocks.props!.onBack();
+  expect(mocks.replace).toHaveBeenCalledWith({
+    pathname: "/settings/accounts/[providerType]",
+    params: { providerType: "claude", serverId: "host" },
+  });
 });
