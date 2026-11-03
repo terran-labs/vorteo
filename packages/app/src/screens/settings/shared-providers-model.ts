@@ -68,11 +68,20 @@ export function providerEnabled(
  * definition). Account definitions are skipped on purpose: their policy.label names one
  * connection, such as "Claude 1", not the provider.
  */
-function familyName(definition: InstallationProvider, manifestLabel: string | undefined): string {
+function familyName(
+  type: string,
+  definitions: readonly InstallationProvider[],
+  manifestLabel: string | undefined,
+): string {
   if (manifestLabel) return manifestLabel;
-  if (definition.id.startsWith("plugin/") && definition.policy.label)
-    return definition.policy.label;
-  return definition.providerType.replace(
+  const plugin = definitions.find(
+    (definition) =>
+      definition.providerType === type &&
+      definition.id.startsWith("plugin/") &&
+      definition.policy.label,
+  );
+  if (plugin) return plugin.policy.label!;
+  return type.replace(
     /(^|[-_ ])(\w)/g,
     (_, separator: string, letter: string) => `${separator ? " " : ""}${letter.toUpperCase()}`,
   );
@@ -92,7 +101,7 @@ export function groupInstallationProviders(
     if (!family) {
       family = {
         id: type,
-        name: familyName(definition, manifest?.label),
+        name: familyName(type, definitions, manifest?.label),
         enabled: false,
         installed: false,
         accounts: [],
