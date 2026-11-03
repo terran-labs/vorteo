@@ -10,6 +10,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Restore broker and System browser checks after moving restart controls, status and notices. Standalone System views follow the selected Settings host while installation environments keep their identities, using only the host identity fields selection needs; version checks retain the last observation during reconnects.
+
 - Keep session-host review actions under System details and report their failures in a fixed status line; cover the single attention notice while owner controls are locked.
 
 - Consolidate Host and Dev status, confirmed restart reviews, updates and maintenance details into a System pane with one attention notice. Remove duplicate Host controls and Skills editor, center composer profile edits, preserve reviewed shared-profile revisions, and disable repeated update actions while a request is running.

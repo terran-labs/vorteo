@@ -3,6 +3,7 @@ import type { RestartJob } from "@getpaseo/protocol/execution-installation";
 import type { InstallationClient } from "@/execution-installation/client";
 import { InstallationPanelModel } from "@/execution-installation/panel-model";
 import {
+  selectSystemEnvironments,
   currentSystemRestarts,
   systemAttentionCount,
   systemEnvironmentState,
@@ -109,4 +110,24 @@ it("includes public System services requests and recovery in the locked notice",
       } as InstallationSystemState["restartSummary"],
     }),
   ).toBe(4);
+});
+
+it("respects explicit, installation, selected and first-host precedence", () => {
+  const hosts = [{ serverId: "first" }, { serverId: "selected" }];
+  const installation = {
+    environments: [
+      { kind: "host", serverId: "installation-host" },
+      { kind: "container", serverId: "installation-dev" },
+    ],
+  } as NonNullable<Parameters<typeof selectSystemEnvironments>[0]>;
+  expect(selectSystemEnvironments(installation, hosts, "explicit", "selected")).toEqual({
+    hostId: "explicit",
+    devId: "installation-dev",
+  });
+  expect(selectSystemEnvironments(installation, hosts, undefined, "selected")).toEqual({
+    hostId: "installation-host",
+    devId: "installation-dev",
+  });
+  expect(selectSystemEnvironments(null, hosts, undefined, "selected").hostId).toBe("selected");
+  expect(selectSystemEnvironments(null, hosts, undefined, "removed").hostId).toBe("first");
 });

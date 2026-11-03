@@ -8,7 +8,7 @@ import { page } from "vitest/browser";
 import type { PreviewBrokerJob } from "@getpaseo/protocol/preview-broker-maintenance";
 import { InstallationPanelModel } from "./panel-model";
 import { brokerReviewFixture } from "./preview-broker-review.fixture";
-import { InstallationControls } from "./panel";
+import { InstallationControls, InstallationSystemDetails } from "./panel";
 
 vi.mock("expo-clipboard", () => ({
   setStringAsync: vi.fn(async () => {
@@ -149,6 +149,7 @@ test("production broker review preserves exact evidence and manual gates at desk
       root.render(
         <QueryClientProvider client={new QueryClient()}>
           <InstallationControls key={width} />
+          <InstallationSystemDetails target="host" />
         </QueryClientProvider>,
       ),
     );
@@ -274,6 +275,7 @@ test("broker decision errors remain visible and confirmed results replace the ca
       root.render(
         <QueryClientProvider client={new QueryClient()}>
           <InstallationControls />
+          <InstallationSystemDetails target="host" />
         </QueryClientProvider>,
       ),
     );
@@ -325,6 +327,7 @@ test("consumer deployment uses its separate exact decision and retains uncertain
       root.render(
         <QueryClientProvider client={new QueryClient()}>
           <InstallationControls />
+          <InstallationSystemDetails target="host" />
         </QueryClientProvider>,
       ),
     );

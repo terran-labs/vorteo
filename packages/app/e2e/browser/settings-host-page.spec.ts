@@ -18,6 +18,7 @@ import {
   expectSettingsHeader,
   openSettingsHost,
   openHostSection,
+  revealSettingsLocation,
   expectHostLabelDisplayed,
   clickEditHostLabel,
   expectHostLabelEditMode,
@@ -70,6 +71,18 @@ test.describe("Settings host page", () => {
       await expect(page.getByTestId("host-page-remove-host-button")).toBeVisible();
       await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
     });
+    await test.step("System exposes restart controls in the Host overflow menu", async () => {
+      await selectSettingsHost(page, serverId);
+      await revealSettingsLocation(page, "system.overview");
+      const pane = page.getByTestId("system-pane").filter({ visible: true });
+      await pane.getByRole("button", { name: "Host actions", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Restart…", exact: true }).click();
+      const restart = page.getByTestId("system-restart-host");
+      await expect(restart.getByTestId("host-page-restart-card")).toBeVisible();
+      await expect(restart.getByTestId("host-page-restart-button")).toBeEnabled();
+      await page.keyboard.press("Escape");
+      await expect(restart).toHaveCount(0);
+    });
     await test.step("clicking the label pencil reveals the inline editor", async () => {
       await openHostSection(page, serverId, "host");
 
@@ -88,7 +101,7 @@ test.describe("Settings host page", () => {
     });
   });
 
-  test("remote lifecycle controls are absent from Host details", async ({
+  test("a failed remote update in System reports its error and allows retry", async ({
     page,
     outdatedDaemon,
   }) => {
@@ -97,10 +110,23 @@ test.describe("Settings host page", () => {
     await openSettings(page);
     await openSettingsHost(page, outdatedDaemon.serverId);
     await openHostSection(page, outdatedDaemon.serverId, "host");
-    // Update and restart behavior is covered on System after catalog integration.
+    // Host details keep removal and appearance, while System owns lifecycle actions.
     await expect(page.getByTestId("host-page-update-button")).toHaveCount(0);
     await expect(page.getByTestId("host-page-update-error")).toHaveCount(0);
     await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
+    await selectSettingsHost(page, outdatedDaemon.serverId);
+    await revealSettingsLocation(page, "system.overview");
+    const pane = page.getByTestId("system-pane").filter({ visible: true });
+    const updateButton = pane.getByTestId("host-page-update-button");
+    page.once("dialog", (dialog) => dialog.accept());
+    await updateButton.click();
+    await expect(updateButton).toBeDisabled();
+    await expect(pane.getByText("Updating", { exact: true })).toBeVisible();
+    const error = page
+      .getByTestId("app-toast-message")
+      .filter({ hasText: "Failed to update the daemon:" });
+    await expect(error).toBeVisible();
+    await expect(updateButton).toBeEnabled();
   });
 
   test("a host rejected for its password reconnects after being removed and added again with it", async ({

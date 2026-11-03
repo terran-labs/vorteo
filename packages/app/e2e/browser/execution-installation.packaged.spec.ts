@@ -56,6 +56,24 @@ import type { InstallationConfig } from "../../../server/src/server/execution-in
 import { pluginRequirements } from "../support/helpers/plugin-fixture";
 import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
 
+async function openSystemRestart(page: Page, environment: "Host" | "Dev") {
+  await page.goto(`${origin}/settings/system`);
+  const pane = page.getByTestId("system-pane").filter({ visible: true });
+  await expect(pane).toBeVisible();
+  await pane.getByRole("button", { name: `${environment} actions`, exact: true }).click();
+  await page.getByRole("menuitem", { name: "Restart…", exact: true }).click();
+  return page.getByTestId(`system-restart-${environment === "Host" ? "host" : "container-daemon"}`);
+}
+
+async function openSystemDetails(page: Page, environment: "Host" | "Dev") {
+  await page.goto(`${origin}/settings/system`);
+  const pane = page.getByTestId("system-pane").filter({ visible: true });
+  await pane.getByRole("button", { name: `${environment} Details`, exact: true }).click();
+  return pane.getByTestId(
+    `system-installation-details-${environment === "Host" ? "host" : "container-daemon"}`,
+  );
+}
+
 let claudeAuthorizationStarts = 0;
 const helperInstallations: string[] = [];
 const engineRecoveries: string[] = [];
@@ -473,7 +491,7 @@ test("owner maintenance queue shows cancellation failures and cancels the exact 
   );
   if (testInfo.project.name === "desktop")
     await expect(
-      page.getByTestId("settings-sidebar").getByTestId(`maintenance-service-notice-${id}`),
+      page.getByTestId("settings-sidebar").getByTestId("installation-restart-banner"),
     ).toBeVisible();
   await page.route("**/api/installation/owner/maintenance-services/cancel", async (route) =>
     route.fulfill({
@@ -888,14 +906,16 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await card.getByRole("button", { name: "Details", exact: true }).click();
   await expect(card).toContainText("Waiting 0h");
   expect((await activity.getDaemonStatus()).pid).toBe(beforePid);
+  const queuedDetails = await openSystemDetails(page, "Dev");
+  await expect(queuedDetails.getByTestId(`restart-request-${job.id}`)).toContainText(
+    "Queued until idle",
+  );
+  await expect(queuedDetails.getByTestId(`restart-request-${job.id}`)).not.toContainText(
+    blocker.id,
+  );
   const banner = page.getByTestId("installation-restart-banner").filter({ visible: true });
-  await expect(banner).toContainText("Dev daemon restart queued");
-  await expect(banner.getByTestId(`restart-progress-${job.id}`)).toBeVisible();
-  await expect(banner).toContainText("This restart activates protected workspace controls.");
-  await expect(banner).not.toContainText("The owner requested");
-  await expect(banner).not.toContainText("Finish before restart");
-  await expect(banner).toContainText("1 active tasks");
-  await banner.screenshot({ path: testInfo.outputPath("restart-queued-sidebar.png") });
+  expect(await banner.count()).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: testInfo.outputPath("restart-queued-system.png"), fullPage: true });
   await page.reload();
   await expect(page.getByTestId(`restart-request-${job.id}`)).toContainText("Queued until idle");
   await activity.cancelAgent(blocker.id);
@@ -915,7 +935,7 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await page.screenshot({ path: testInfo.outputPath("installation-controls.png"), fullPage: true });
 });
 
-test("passive maintenance stays in the sidebar and actionable notices can be dismissed", async ({
+test("one System notice links pending requests to reviews and queued work stays in System", async ({
   page,
 }, testInfo) => {
   test.skip(
@@ -988,23 +1008,23 @@ test("passive maintenance stays in the sidebar and actionable notices can be dis
       );
       jobs.push(job.id);
       if (jobs.length === 1) {
-        const floating = page
-          .getByTestId("installation-update-toasts")
-          .getByTestId(`restart-notice-${job.id}`);
-        await expect(
-          floating.getByRole("button", { name: "Review restart", exact: true }),
-        ).toBeVisible();
-        await floating.screenshot({ path: testInfo.outputPath("actionable-maintenance.png") });
-        await floating.getByTestId(`restart-notice-${job.id}-action-1`).click();
-        await expect(floating).toHaveCount(0);
-        const afterDismiss = RestartJobSchema.parse(
+        const notice = page
+          .getByTestId("settings-sidebar")
+          .filter({ visible: true })
+          .getByTestId("installation-restart-banner");
+        await expect(notice).toHaveCount(1);
+        await expect(notice).toHaveText(/^System needs attention \(\d+\)$/);
+        await expect(page.getByTestId("installation-update-toasts")).not.toContainText(job.reason);
+        await notice.click();
+        await expect(page).toHaveURL(/\/settings\/system$/);
+        const afterOpen = RestartJobSchema.parse(
           await (
             await fetch(`${origin}/api/installation/restart-requests/${job.id}`, {
               headers: { Authorization: `Bearer ${guestToken}` },
             })
           ).json(),
         );
-        expect(afterDismiss.status).toBe("pending");
+        expect(afterOpen.status).toBe("pending");
       }
       const response = await request(`owner/restarts/${job.id}/decision`, ownerPassword, {
         revision: job.revision,
@@ -1013,33 +1033,32 @@ test("passive maintenance stays in the sidebar and actionable notices can be dis
       expect(response.status).toBe(200);
     }
     const sidebar = page.getByTestId("settings-sidebar").filter({ visible: true });
-    const banner = sidebar.getByTestId("installation-restart-banner");
-    await expect(banner).toContainText("Dev daemon restart queued");
-    await expect(banner).toContainText("Host daemon restart queued");
-    const cards = banner
-      .locator('[data-testid^="restart-notice-"][role="button"]')
-      .filter({ visible: true });
-    await expect(cards).toHaveCount(2);
-    for (const card of await cards.all()) {
-      expect((await card.boundingBox())!.height).toBeLessThanOrEqual(56);
-      await expect(card.getByRole("progressbar")).toBeVisible();
-    }
-    const stack = page.getByTestId("installation-update-toasts");
-    await expect(stack.locator('[data-testid^="restart-notice-"]')).toHaveCount(0);
-    await sidebar.screenshot({ path: testInfo.outputPath("compact-passive-maintenance.png") });
-    const reviewRow = cards.filter({ hasText: "Host daemon restart queued" });
-    await expect(reviewRow).toHaveAttribute("role", "button");
-    await expect(reviewRow).not.toContainText("Review restart");
-    await expect(reviewRow.locator('[role="button"]')).toHaveCount(0);
-    await reviewRow.focus();
-    await page.keyboard.press("Enter");
-    await expect(page).toHaveURL(/installation=1.*restart=/);
-    const reviewedId = new URL(page.url()).searchParams.get("restart");
-    expect(reviewedId).toBe(jobs[1]);
-    const reviewedCard = page.getByTestId(`restart-request-${reviewedId}`);
-    await reviewedCard.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(reviewedCard).toContainText("Rejected");
-    await expect(cards).toHaveCount(1);
+    const notice = sidebar.getByTestId("installation-restart-banner");
+    expect(await notice.count()).toBeLessThanOrEqual(1);
+    await expect(sidebar.locator('[data-testid^="restart-notice-"]')).toHaveCount(0);
+    await page.goto(`${origin}/settings/system`);
+    const pane = page.getByTestId("system-pane").filter({ visible: true });
+    await expect(pane.getByText("Updating", { exact: true })).toHaveCount(2);
+    const reviewId = jobs[1]!;
+    const controls = await openSystemRestart(page, "Host");
+    await controls.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect
+      .poll(
+        async () =>
+          RestartJobSchema.parse(
+            await (
+              await fetch(`${origin}/api/installation/restart-requests/${reviewId}`, {
+                headers: { Authorization: `Bearer ${guestToken}` },
+              })
+            ).json(),
+          ).status,
+      )
+      .toMatch(/cancelled|rejected/);
+    await page.keyboard.press("Escape");
+    const details = await openSystemDetails(page, "Dev");
+    await expect(details.getByTestId(`restart-request-${jobs[0]}`)).toContainText(
+      "Queued until idle",
+    );
   } finally {
     for (const id of jobs) {
       const response = await fetch(`${origin}/api/installation/restart-requests/${id}`, {
@@ -1104,21 +1123,18 @@ test("delegated requests read as handled by the delegate, with Cancel instead of
     );
     jobId = job.id;
     const sidebar = page.getByTestId("settings-sidebar").filter({ visible: true });
-    const row = sidebar.getByTestId(`restart-notice-${job.id}`);
-    await expect(row).toContainText("Being handled by Nova integration");
-    await expect(row).toContainText("Routine Host maintenance prepared and verified by Nova.");
-    await expect(
-      page.getByTestId("installation-update-toasts").getByTestId(`restart-notice-${job.id}`),
-    ).toHaveCount(0);
-    const card = page.getByTestId(`restart-request-${job.id}`);
+    const notice = sidebar.getByTestId("installation-restart-banner");
+    await expect(notice).toHaveCount(1);
+    await expect(notice).toHaveText(/^System needs attention \(\d+\)$/);
+    await expect(page.getByTestId("installation-update-toasts")).not.toContainText(job.reason);
+    const details = await openSystemDetails(page, "Host");
+    const card = details.getByTestId(`restart-request-${job.id}`);
     await expect(card).toContainText("Being handled by Nova integration");
-    // The owner keeps every existing decision in Installation controls.
-    await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
-    await sidebar.screenshot({ path: testInfo.outputPath("delegated-sidebar.png") });
-    await card.screenshot({ path: testInfo.outputPath("delegated-settings.png") });
-    await row.getByTestId(`restart-notice-${job.id}-cancel`).click();
+    await expect(card).toContainText("Routine Host maintenance prepared and verified by Nova.");
+    const controls = await openSystemRestart(page, "Host");
+    await expect(controls.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+    await controls.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect.poll(async () => (await read(job.id)).status).toBe("rejected");
-    await expect(row).toHaveCount(0);
   } finally {
     await rm(delegation, { force: true });
     if (jobId) {
@@ -1216,9 +1232,7 @@ test("force restart requires an approved queue and operator escalation", async (
     const banner = page.getByTestId("installation-restart-banner").filter({ visible: true });
     // Compact navigation hides the sidebar until opened.
     if (await banner.count()) {
-      await expect(banner.getByRole("button", { name: "Review restart", exact: true })).toHaveCount(
-        2,
-      );
+      await expect(banner).toHaveText(/^System needs attention \(\d+\)$/);
       await expect(
         banner.getByRole("button", { name: "Force restart now", exact: true }),
       ).toHaveCount(0);
@@ -4318,7 +4332,9 @@ test("disabled restart explains the correction on hover, focus and touch without
   await page.getByTestId("installation-unlock").click();
   const card = page.getByTestId(`restart-request-${id}`);
   await expect(card).toContainText("Source repair needed");
-  await expect(page.getByTestId(`restart-notice-${id}`)).toHaveCount(0);
+  await expect(
+    page.getByTestId("settings-sidebar").getByTestId("installation-restart-banner"),
+  ).toHaveText(/^System needs attention \(\d+\)$/);
   await expect(card).toContainText("Prepare Dev repair captures the installed Host source");
   await expect(card).toContainText("your running version is unchanged");
   await expect(card.getByRole("button", { name: "Cancel update", exact: true })).toBeVisible();
@@ -4355,8 +4371,9 @@ test("disabled restart explains the correction on hover, focus and touch without
   expect(decisions).toEqual([]);
   job.sourceBatch.status = "ready";
   job.revision = randomUUID();
-  await expect(page.getByTestId(`restart-notice-${id}`)).toBeVisible();
-  await expect(page.getByTestId(`restart-notice-${id}`)).toContainText("Review update");
+  await expect(
+    page.getByTestId("settings-sidebar").getByTestId("installation-restart-banner"),
+  ).toHaveText(/^System needs attention \(\d+\)$/);
   expect(decisions).toEqual([]);
 });
 

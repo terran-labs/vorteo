@@ -1,5 +1,5 @@
 import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
-import type { HostProfile } from "@/types/host-connection";
+import { useSettingsHostSelection } from "@/navigation/settings-presentation";
 import { executeSystemAction } from "./system-actions";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -24,6 +24,7 @@ import { isVersionMismatch } from "@/desktop/updates/desktop-updates";
 import { updateDaemonFromSettings } from "../daemon-lifecycle";
 import type { SystemAction } from "./system-status-model";
 import {
+  selectSystemEnvironments,
   systemEnvironmentState,
   systemServicesState,
   type SystemTarget,
@@ -33,7 +34,8 @@ const noSubscription = () => () => {};
 export function useSystemAdapter(serverId?: string) {
   const installation = readExecutionInstallation();
   const hosts = useHosts();
-  const { hostId, devId } = selectSystemEnvironments(installation, hosts, serverId);
+  const selected = useSettingsHostSelection();
+  const { hostId, devId } = selectSystemEnvironments(installation, hosts, serverId, selected);
   const host = useHostRuntimeSnapshot(hostId ?? "");
   const dev = useHostRuntimeSnapshot(devId ?? "");
   const model = useInstallationSystemModel();
@@ -158,22 +160,6 @@ export function useSystemAdapter(serverId?: string) {
   };
 }
 
-export function selectSystemEnvironments(
-  installation: ExecutionInstallation | null,
-  hosts: readonly HostProfile[],
-  serverId?: string,
-) {
-  return {
-    hostId:
-      installation?.environments.find((environment) => environment.kind === "host")?.serverId ??
-      serverId ??
-      hosts[0]?.serverId ??
-      null,
-    devId:
-      installation?.environments.find((environment) => environment.kind === "container")
-        ?.serverId ?? null,
-  };
-}
 function buildEnvironmentStatuses({
   state,
   host,
