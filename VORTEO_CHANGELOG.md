@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Account tiles name the usage window their reset belongs to, such as Session resets in 3h or Weekly resets in 4 days, so a short session reset no longer reads as the weekly quota resetting.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
