@@ -2759,6 +2759,34 @@ export class AgentManager {
     return agent ? { ...agent } : null;
   }
 
+  /**
+   * True when a registered, idle agent's provider history never loaded. A run in flight
+   * may hold rows the provider has not written yet, so the retry waits for it to finish.
+   */
+  needsTimelineHydration(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.historyPrimed || agent.session === null) return false;
+    if (agent.config.controllerExecutionId || this.hasInFlightRun(agentId)) return false;
+    return this.timelineStore.has(agentId);
+  }
+
+  /**
+   * Retries a history load that failed after the agent was registered. Turns recorded
+   * since the failure are also in the provider's transcript, so when any exist the replay
+   * replaces the timeline under a new epoch; clients then reset instead of keeping only
+   * the recent rows.
+   */
+  async retryTimelineHydration(
+    agentId: string,
+    options: { broadcast: () => boolean },
+  ): Promise<void> {
+    const replace = this.timelineStore.getLastItem(agentId) !== null;
+    await this.hydrateTimelineFromProvider(agentId, {
+      broadcast: options.broadcast,
+      ...(replace ? { force: true } : {}),
+    });
+  }
+
   async waitForAgentClose(agentId: string): Promise<void> {
     // Loading during reload must wait for the replacement, not resume another writer.
     await this.lifecycleMutationTails.get(agentId);

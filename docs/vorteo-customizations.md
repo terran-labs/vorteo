@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-02): a registered thread whose provider history failed to load retries it on the next request while idle, replacing any partial timeline with the full replay under a new epoch, and session host disconnect errors name their cause. The existing history sync error callout and Retry are unchanged. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-01): the installation panel uses the existing toast API context directly, avoiding a native viewport import in browser review tests. Toast behavior is unchanged.
 
 Maintenance review (2026-11-01): the compiled restart fixture waits for durable capture acknowledgement before asserting an empty pending-work count. Runtime behavior and restart approval requirements are unchanged.
