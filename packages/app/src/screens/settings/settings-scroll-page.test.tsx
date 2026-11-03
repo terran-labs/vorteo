@@ -43,7 +43,11 @@ vi.mock("@/settings-catalog/row-highlight", () => ({
   rowOffsetWithin: (element: { y: number }) => element.y,
   markSettingRows: () => () => {},
 }));
-import { SettingsScrollPage, type ResolvedSettingsEntry } from "./settings-scroll-page";
+import {
+  SettingsScrollPage,
+  type ResolvedSettingsEntry,
+  type SettingsPageSection,
+} from "./settings-scroll-page";
 import { flashSettingRow } from "@/settings-catalog/row-highlight";
 const entry = {
   id: "row",
@@ -52,8 +56,9 @@ const entry = {
   label: "Test",
 } as ResolvedSettingsEntry;
 function props() {
+  const sections: SettingsPageSection[] = [{ id: "general", label: "General", panes: [] }];
   return {
-    sections: [{ id: "general" as const, label: "General", panes: [] }],
+    sections,
     renderPane: () => null,
     request: {
       section: "general" as const,
@@ -123,7 +128,7 @@ it("preserves a search-result request submitted with a query clear until restore
 it("waits for a web row skeleton to resolve, flashes once, and never re-pins", () => {
   hooks.web = true;
   vi.stubGlobal("CSS", { supports: () => true });
-  vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200 }) });
+  vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200, style: {} }) });
   const input = props();
   input.request = { ...input.request, pane: entry.pane, entry };
   const { section } = render(input);
@@ -158,7 +163,7 @@ it.each([true, false])(
   (supported) => {
     hooks.web = true;
     vi.stubGlobal("CSS", { supports: () => supported });
-    vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200 }) });
+    vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200, style: {} }) });
     const input = props();
     const { page, section } = render(input);
     const scrollTo = vi.fn();
@@ -177,7 +182,7 @@ it.each([true, false])(
 it.each([false, true])("bounds delayed row jumps and respects reader gestures (%s)", (cancel) => {
   hooks.web = true;
   vi.stubGlobal("CSS", { supports: () => true });
-  vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200 }) });
+  vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200, style: {} }) });
   const input = props();
   input.request = { ...input.request, pane: entry.pane, entry };
   const { page, section } = render(input);
@@ -203,4 +208,21 @@ it("expires a row request even when its pane never reports layout", () => {
   section.props.onSectionLayout("general", { y: 200, height: 300 });
   section.props.onPaneLayout(entry.pane, { y: 0, height: 100 });
   expect(scrollTo).not.toHaveBeenCalled();
+});
+
+it("excludes neighboring sections from browser anchoring after a jump", () => {
+  hooks.web = true;
+  vi.stubGlobal("CSS", { supports: () => true });
+  const general = { offsetHeight: 100, y: 200, style: { overflowAnchor: "" } };
+  const accounts = { offsetHeight: 100, y: 400, style: { overflowAnchor: "" } };
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id.endsWith("accounts") ? accounts : general),
+  });
+  const input = props();
+  input.sections.push({ id: "accounts", label: "Accounts", panes: [] });
+  const { section } = render(input);
+  hooks.refs[0].current = { scrollTo: vi.fn(), getScrollableNode: () => ({}) };
+  section.props.onSectionLayout("general", { y: 200, height: 100 });
+  expect(general.style.overflowAnchor).toBe("auto");
+  expect(accounts.style.overflowAnchor).toBe("none");
 });
