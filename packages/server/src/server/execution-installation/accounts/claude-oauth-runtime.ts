@@ -2,8 +2,10 @@ import pino from "pino";
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { z } from "zod";
+import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
 import {
   CLAUDE_START_FAILURE,
+  ProviderLoginRefusal,
   ProviderLoginService,
 } from "../../../services/provider-login/service.js";
 import { requireEnvironmentDaemon, type InstallationConfig } from "../config.js";
@@ -29,6 +31,22 @@ const logger = pino({ name: "vorteo-installation" });
 interface DaemonFeatures {
   installationSettingsAuthority?: boolean;
   claudeFullSignIn?: boolean;
+  claudeSignInUpgrade?: boolean;
+}
+
+/** How long an upgrade availability answer is reused before the daemons are asked again. */
+const UPGRADE_SUPPORT_TTL_MS = 60_000;
+
+function isActive(
+  state: ProviderLoginState,
+): state is Extract<ProviderLoginState, { status: "starting" | "waiting" | "verifying" }> {
+  return state.status === "starting" || state.status === "waiting" || state.status === "verifying";
+}
+
+/** A setup-token account being upgraded in place: its Host directory and binding. */
+interface PendingUpgrade {
+  providerId: string;
+  configDir: string;
 }
 
 interface RuntimeOverrides {
@@ -38,6 +56,8 @@ interface RuntimeOverrides {
   readGrant?: typeof readClaudeOAuthGrant;
   fetch?: typeof fetch;
   now?: () => number;
+  /** The setup-token side of the same accounts, so the two sign-ins never overlap. */
+  setup?: { signingIn(definitionId: string): boolean; reconcile(): Promise<void> };
 }
 
 /**
@@ -57,6 +77,7 @@ export function createClaudeOAuthRuntime(
   const cli = overrides.cli ?? createClaudeHostCli();
   const readGrant = overrides.readGrant ?? readClaudeOAuthGrant;
   const request = overrides.fetch ?? fetch;
+  const now = overrides.now ?? Date.now;
   const host = config.public.environments.find((environment) => environment.kind === "host");
   if (!host) throw new ClaudeOAuthDeliveryError();
   const daemonFeatures =
@@ -177,20 +198,36 @@ export function createClaudeOAuthRuntime(
         await post("container", "/api/installation/claude/oauth/projection", delivery),
       );
     },
-    now: overrides.now ?? Date.now,
+    now,
   });
+
+  const upgrades = new Map<string, PendingUpgrade>();
+  /** The attempt that started each upgrade, so upgrade status never reports an ordinary sign-in. */
+  const upgradeAttempts = new Map<string, string>();
+  const upgraded = new Set<string>();
 
   const login = new ProviderLoginService({
     startFailureMessage: () => CLAUDE_START_FAILURE,
     logger,
     getClient: (definitionId) => ({
       openAccountLoginSession: async () => {
+        const upgrade = upgrades.get(definitionId);
+        if (upgrade) {
+          upgradeCandidate(definitionId);
+          return cli.loginSession(upgrade.configDir);
+        }
         const { selected } = fullDefinition(definitionId);
         if (selected.removed) throw new ClaudeOAuthDeliveryError();
         return cli.loginSession(await hostConfigDir(definitionId));
       },
     }),
+    verify: async (definitionId) => {
+      const upgrade = upgrades.get(definitionId);
+      if (upgrade) await finishUpgrade(definitionId, upgrade);
+    },
     onConnected: (definitionId) => {
+      // An upgrade already recorded its identity while verifying.
+      if (upgraded.delete(definitionId)) return;
       void (async () => {
         const identity = await cli.identity(await hostConfigDir(definitionId));
         await refresher.connected(definitionId, identity);
@@ -198,6 +235,144 @@ export function createClaudeOAuthRuntime(
       })().catch(() => {});
     },
   });
+
+  /**
+   * A setup-token account that can move to full sign-in in place: managed, not removed, bound to
+   * its deterministic provider ID in every environment.
+   */
+  function upgradeCandidate(definitionId: string) {
+    const { snapshot, selected } = definition(definitionId);
+    const setup = selected.accountSetup;
+    if (selected.removed || selected.accountId || setup?.provider !== "claude" || setup.signIn)
+      throw new ClaudeOAuthDeliveryError();
+    const providerId = `claude-account-${setup.creationId}`;
+    const complete = config.public.environments.every(
+      (environment) => selected.bindings[environment.serverId] === providerId,
+    );
+    if (!complete || Object.values(selected.bindings).some((id) => id !== providerId))
+      throw new ClaudeOAuthDeliveryError();
+    return { snapshot, providerId, creationId: setup.creationId };
+  }
+
+  /** Every daemon must apply the switch, accept the token withdrawal and report the Host path. */
+  async function assertUpgradeSupported() {
+    for (const environment of config.public.environments) {
+      assertReady(environment.kind === "host" ? "host" : "container-daemon");
+      const features = await daemonFeatures(environment.kind);
+      if (
+        features?.installationSettingsAuthority !== true ||
+        features.claudeFullSignIn !== true ||
+        features.claudeSignInUpgrade !== true
+      )
+        throw new ClaudeOAuthDeliveryError();
+    }
+  }
+  let upgradeSupport: { checkedAt: number; supported: boolean } | null = null;
+  async function upgradeSupported(): Promise<boolean> {
+    const checkedAt = now();
+    if (upgradeSupport && checkedAt - upgradeSupport.checkedAt < UPGRADE_SUPPORT_TTL_MS)
+      return upgradeSupport.supported;
+    const supported = await assertUpgradeSupported().then(
+      () => true,
+      () => false,
+    );
+    upgradeSupport = { checkedAt, supported };
+    return supported;
+  }
+
+  /**
+   * Runs while the attempt is verifying. Before the definition changes, any failure signs the
+   * new grant out again and leaves the setup token in use. After it changes, offline environments
+   * catch up through the settings, setup-token and refresh reconcilers.
+   */
+  /** The label of another Claude definition whose recorded sign-in is this email, if any. */
+  function duplicateIdentity(
+    definitionId: string,
+    email: string | null,
+    snapshot: ReturnType<typeof definition>["snapshot"],
+  ): string | null {
+    if (!email) return null;
+    for (const other of snapshot.settings?.providerDefinitions ?? []) {
+      if (other.id === definitionId || other.removed || other.providerType !== "claude") continue;
+      const recorded = refresher.status(other.id).identity?.email;
+      if (recorded?.toLowerCase() === email.toLowerCase()) return other.policy.label ?? other.id;
+    }
+    return null;
+  }
+
+  async function finishUpgrade(definitionId: string, upgrade: PendingUpgrade) {
+    try {
+      const identity = await cli.identity(upgrade.configDir);
+      if (!identity)
+        throw new ProviderLoginRefusal(
+          "Claude did not report a signed-in account. Nothing changed. Start the upgrade again.",
+        );
+      // A setup token has no verifiable identity; one recorded by an earlier full sign-in binds.
+      const recorded = refresher.status(definitionId).identity?.email ?? null;
+      if (recorded && identity.email?.toLowerCase() !== recorded.toLowerCase())
+        throw new ProviderLoginRefusal(
+          `This account belongs to ${recorded}, but Claude signed in as ${identity.email ?? "a different account"}. Nothing changed. Sign in as ${recorded} instead.`,
+        );
+      const { snapshot, providerId, creationId } = upgradeCandidate(definitionId);
+      if (providerId !== upgrade.providerId || login.read(definitionId).status !== "verifying")
+        throw new ClaudeOAuthDeliveryError();
+      // With nothing recorded for this account, refuse a login another account already uses.
+      const duplicate = duplicateIdentity(definitionId, identity.email, snapshot);
+      if (duplicate)
+        throw new ProviderLoginRefusal(
+          `Claude signed in as ${identity.email}, which ${duplicate} already uses. Nothing changed. Sign in with this account's own Claude login.`,
+        );
+      // A daemon may have been replaced by an older release since the upgrade started.
+      await assertUpgradeSupported();
+      const definitions = structuredClone(snapshot.settings!.providerDefinitions!);
+      definitions.find((item) => item.id === definitionId)!.accountSetup = {
+        provider: "claude",
+        creationId,
+        signIn: "full",
+      };
+      await settings.update({
+        expectedRevision: snapshot.revision,
+        settings: { providerDefinitions: definitions },
+      });
+      upgrades.delete(definitionId);
+      upgraded.add(definitionId);
+      await refresher.connected(definitionId, identity).catch(() => {
+        // Status then asks for sign-in again; the definition already uses full sign-in.
+      });
+    } catch (error) {
+      if (upgrades.has(definitionId)) await cli.logout(upgrade.configDir).catch(() => {});
+      upgrades.delete(definitionId);
+      throw error;
+    }
+    // Bindings switch, the setup token is withdrawn everywhere, then Dev receives access.
+    void (async () => {
+      await settings.reconcile();
+      await overrides.setup?.reconcile();
+      await refresher.reconcile();
+    })().catch(() => {});
+  }
+
+  async function upgradeConfigDir(definitionId: string, providerId: string, revision: number) {
+    assertReady("host");
+    const binding = ClaudeOAuthBindingResponseSchema.parse(
+      await post("host", "/api/installation/claude/oauth/upgrade-binding", {
+        installationId: config.public.installationId,
+        serverId: host!.serverId,
+        definitionId,
+        providerId,
+        policyRevision: revision,
+      }),
+    );
+    if (binding.providerId !== providerId) throw new ClaudeOAuthDeliveryError();
+    return binding.configDir;
+  }
+
+  function upgradeState(definitionId: string): ProviderLoginState {
+    const state = login.read(definitionId);
+    return state.status !== "idle" && upgradeAttempts.get(definitionId) === state.attemptId
+      ? state
+      : { status: "idle" };
+  }
 
   /** Mark the definition full sign-in and bind it on every environment, as setup-token does. */
   async function prepare(definitionId: string) {
@@ -248,7 +423,45 @@ export function createClaudeOAuthRuntime(
     },
     submit: (definitionId: string, attemptId: string, code: string) =>
       login.submitCode(definitionId, attemptId, code),
-    cancel: (definitionId: string, attemptId: string) => login.cancel(definitionId, attemptId),
+    cancel: async (definitionId: string, attemptId: string) => {
+      // Verifying an upgrade may already be switching the account; let it finish.
+      if (upgrades.has(definitionId) && login.read(definitionId).status === "verifying")
+        return login.read(definitionId);
+      const state = await login.cancel(definitionId, attemptId);
+      if (!isActive(state)) upgrades.delete(definitionId);
+      return state;
+    },
+    /** Whether the account can be upgraded, and the state of the upgrade sign-in. */
+    upgradeRead: async (definitionId: string) => {
+      definition(definitionId);
+      let available = false;
+      try {
+        upgradeCandidate(definitionId);
+        available = await upgradeSupported();
+      } catch {
+        // Not a setup-token account that can be upgraded.
+      }
+      return { available, login: upgradeState(definitionId) };
+    },
+    /** Signs the account in on the Host in its own directory; see finishUpgrade. */
+    upgradeStart: async (definitionId: string) => {
+      const { snapshot, providerId } = upgradeCandidate(definitionId);
+      const current = login.read(definitionId);
+      if (isActive(current)) {
+        if (upgradeAttempts.get(definitionId) === current.attemptId) return current;
+        throw new ClaudeOAuthDeliveryError();
+      }
+      if (overrides.setup?.signingIn(definitionId)) throw new ClaudeOAuthDeliveryError();
+      await assertUpgradeSupported();
+      const configDir = await upgradeConfigDir(definitionId, providerId, snapshot.revision);
+      upgrades.set(definitionId, { providerId, configDir });
+      const state = login.start(definitionId);
+      if (state.status !== "idle") upgradeAttempts.set(definitionId, state.attemptId);
+      return state;
+    },
+    /** True while an upgrade sign-in runs, so the setup-token flow stays out of the way. */
+    upgrading: (definitionId: string) =>
+      upgrades.has(definitionId) && isActive(login.read(definitionId)),
     /** Signs the Host account out with its own CLI, then withdraws Dev. Returns a warning. */
     signOut: async (definitionId: string): Promise<string | null> => {
       fullDefinition(definitionId);

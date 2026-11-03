@@ -235,3 +235,7 @@ Native helper, preview monitor and session host journal schemas accept optional 
 ## Unavailable-provider thread recovery
 
 The optional `agentProviderRecovery` feature advertises recovery through the existing `agent.profile.switch.request`. The client shows recovery in the load error only with this capability; older hosts retain Retry. The request shape and switch marker are unchanged, and the existing `profile_switch_timeline` client gate still applies. Older clients ignore the optional feature and continue using ordinary switching.
+
+## Claude sign-in upgrade
+
+Daemons advertise optional `features.claudeSignInUpgrade` when they accept `provider.claude.upgrade_account.request`, report a setup-token account's directory through the Host upgrade-binding route, accept setup-token withdrawals for full sign-in definitions and move running setup-token sessions to full sign-in. The request and response are new namespaced messages; older daemons never receive them because the coordinator's settings reconcile calls them only on daemons that advertise the capability, and the client method refuses otherwise. Older daemons keep calling `provider.claude.create_account` with `signIn: "full"`, which refuses an existing setup-token binding, so a coordinator never upgrades an account until every environment advertises the capability. The coordinator offers the upgrade only after checking every daemon, and the app asks the coordinator rather than reading daemon features itself. No existing field changes meaning, and older apps never see the upgrade routes.

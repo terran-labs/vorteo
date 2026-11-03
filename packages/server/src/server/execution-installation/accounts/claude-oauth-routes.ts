@@ -13,15 +13,31 @@ export function mountClaudeOAuthRoutes(app: Express, runtime: ClaudeOAuthRuntime
     res.sendStatus(400);
   };
   app.use(root, parseFailure);
-  for (const operation of ["read", "start", "submit", "cancel", "sign-out"] as const) {
+  // Upgrading a setup-token account in place shares the sign-in attempt with submit and cancel.
+  const operations = [
+    "read",
+    "start",
+    "submit",
+    "cancel",
+    "sign-out",
+    "upgrade/read",
+    "upgrade/start",
+    "upgrade/submit",
+    "upgrade/cancel",
+  ] as const;
+  for (const operation of operations) {
     app.post(`${root}/${operation}`, (req, res) => {
       res.setHeader("Cache-Control", "no-store");
       void (async () => {
         try {
-          if (operation === "submit") {
+          if (operation === "upgrade/read") {
+            res.json(await runtime.upgradeRead(Definition.parse(req.body).definitionId));
+          } else if (operation === "upgrade/start") {
+            res.json(await runtime.upgradeStart(Definition.parse(req.body).definitionId));
+          } else if (operation === "submit" || operation === "upgrade/submit") {
             const input = Submission.parse(req.body);
             res.json(await runtime.submit(input.definitionId, input.attemptId, input.code));
-          } else if (operation === "cancel") {
+          } else if (operation === "cancel" || operation === "upgrade/cancel") {
             const input = Attempt.parse(req.body);
             res.json(await runtime.cancel(input.definitionId, input.attemptId));
           } else {

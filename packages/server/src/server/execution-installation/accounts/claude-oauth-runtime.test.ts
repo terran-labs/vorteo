@@ -8,6 +8,7 @@ import type { InstallationConfig } from "../config.js";
 import type { InstallationSettingsService } from "../settings/service.js";
 import type { ProviderLoginSession } from "../../../services/provider-login/session.js";
 import { createClaudeOAuthRuntime } from "./claude-oauth-runtime.js";
+import { writeClaudeSetupFile } from "./claude-setup-file.js";
 import {
   accessProjectionDigest,
   type ClaudeOAuthProjectionDelivery,
@@ -20,15 +21,37 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
-const SUPPORTED = { installationSettingsAuthority: true, claudeFullSignIn: true };
+const SUPPORTED = {
+  installationSettingsAuthority: true,
+  claudeFullSignIn: true,
+  claudeSignInUpgrade: true,
+};
+
+interface HarnessOptions {
+  /** Bind the definition in every environment, as a connected setup-token account is. */
+  everywhere?: boolean;
+  /** Coordinator refresh state present before the runtime starts. */
+  state?: (definitionId: string) => unknown;
+  setupSigningIn?: boolean;
+  /** Other definitions in the installation, such as an account already on full sign-in. */
+  others?: InstallationProvider[];
+}
 
 function harness(
-  accountSetup?: InstallationProvider["accountSetup"],
-  devFeatures: { installationSettingsAuthority?: boolean; claudeFullSignIn?: boolean } = SUPPORTED,
+  accountSetup?:
+    | InstallationProvider["accountSetup"]
+    | ((creationId: string) => InstallationProvider["accountSetup"]),
+  devFeatures: {
+    installationSettingsAuthority?: boolean;
+    claudeFullSignIn?: boolean;
+    claudeSignInUpgrade?: boolean;
+  } = SUPPORTED,
+  options: HarnessOptions = {},
 ) {
   const stateDir = mkdtempSync(join(tmpdir(), "claude-oauth-runtime-"));
   directories.push(stateDir);
   const creationId = randomUUID();
+  const setup = typeof accountSetup === "function" ? accountSetup(creationId) : accountSetup;
   const providerId = `claude-account-${creationId}`;
   const installationId = randomUUID();
   const config = {
@@ -48,10 +71,11 @@ function harness(
     {
       id: "one",
       providerType: "claude",
-      ...(accountSetup ? { accountSetup } : {}),
-      bindings: { host: providerId },
+      ...(setup ? { accountSetup: setup } : {}),
+      bindings: options.everywhere ? { host: providerId, dev: providerId } : { host: providerId },
       policy: { enabled: true, label: "Max" },
     },
+    ...(options.others ?? []),
   ];
   const snapshot = () => ({
     revision,
@@ -73,7 +97,10 @@ function harness(
     const headers = new Headers(init?.headers);
     authorizations.push(`${String(url)} ${headers.get("Authorization")}`);
     const body = JSON.parse(String(init?.body));
-    if (String(url).endsWith("/api/installation/claude/oauth/binding"))
+    if (
+      String(url).endsWith("/api/installation/claude/oauth/binding") ||
+      String(url).endsWith("/api/installation/claude/oauth/upgrade-binding")
+    )
       return Response.json({ providerId: body.providerId, configDir });
     deliveries.push(body);
     const { access, ...slot } = body as ClaudeOAuthProjectionDelivery;
@@ -116,15 +143,24 @@ function harness(
   const daemonFeatures = vi.fn(async (kind: "host" | "container") =>
     kind === "container" ? devFeatures : SUPPORTED,
   );
+  if (options.state)
+    writeClaudeSetupFile(join(stateDir, "claude-oauth", "state.json"), options.state("one"));
+  const setupRuntime = {
+    signingIn: vi.fn(() => options.setupSigningIn === true),
+    reconcile: vi.fn(async () => {}),
+  };
   const runtime = createClaudeOAuthRuntime(config, settings, undefined, {
     daemonFeatures,
     cli: cli as unknown as ClaudeHostCli,
     readGrant,
     fetch: fetchFake as unknown as typeof fetch,
+    setup: setupRuntime,
   });
   return {
     runtime,
     settings,
+    setupRuntime,
+    complete: (success: boolean) => complete?.(success),
     cli,
     readGrant,
     deliveries,
@@ -210,4 +246,216 @@ it("refuses to mark a definition full sign-in until every daemon advertises supp
   expect(h.settings.update).not.toHaveBeenCalled();
   expect(h.definitions()[0]?.accountSetup).toBeUndefined();
   expect(h.cli.loginSession).not.toHaveBeenCalled();
+});
+
+const setupToken = (creationId: string) => ({ provider: "claude" as const, creationId });
+
+it("upgrades a setup-token account in place after a verified Host sign-in", async () => {
+  const h = harness(setupToken, SUPPORTED, { everywhere: true });
+  const original = structuredClone(h.definitions()[0]);
+  await expect(h.runtime.upgradeRead("one")).resolves.toEqual({
+    available: true,
+    login: { status: "idle" },
+  });
+  const started = await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  expect(h.authorizations[0]).toBe(
+    "http://127.0.0.1:1/api/installation/claude/oauth/upgrade-binding Bearer synthetic-host-password",
+  );
+  expect(h.cli.loginSession).toHaveBeenCalledWith(h.configDir);
+  // Nothing changes while the sign-in is pending.
+  expect(h.definitions()[0]).toEqual(original);
+  expect(h.settings.update).not.toHaveBeenCalled();
+  const attemptId = "attemptId" in started ? started.attemptId : "";
+  await h.runtime.submit("one", attemptId, "synthetic-code#synthetic-state");
+  await until(() => h.runtime.read("one").login.status === "succeeded");
+  expect(h.definitions()[0]).toEqual({
+    ...original,
+    accountSetup: { provider: "claude", creationId: h.creationId, signIn: "full" },
+  });
+  expect(h.settings.update).toHaveBeenCalledTimes(1);
+  expect(h.settings.update).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1 }));
+  expect(h.cli.logout).not.toHaveBeenCalled();
+  await until(() => h.setupRuntime.reconcile.mock.calls.length > 0);
+  await until(() => h.deliveries.length === 1);
+  expect(h.deliveries[0]).toMatchObject({ serverId: "dev", providerId: h.providerId });
+  expect(h.runtime.read("one").connection).toMatchObject({
+    signedIn: true,
+    identity: { email: "owner@example.com", orgId: "org-1" },
+  });
+  await expect(h.runtime.upgradeRead("one")).resolves.toMatchObject({
+    available: false,
+    login: { status: "succeeded", attemptId },
+  });
+});
+
+it("leaves the setup-token account unchanged when the upgrade is cancelled or fails", async () => {
+  const h = harness(setupToken, SUPPORTED, { everywhere: true });
+  const original = structuredClone(h.definitions()[0]);
+  const first = await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  const firstId = "attemptId" in first ? first.attemptId : "";
+  await expect(h.runtime.cancel("one", firstId)).resolves.toMatchObject({ status: "cancelled" });
+
+  await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(false);
+  await until(() => h.runtime.read("one").login.status === "failed");
+
+  expect(h.definitions()[0]).toEqual(original);
+  expect(h.settings.update).not.toHaveBeenCalled();
+  expect(h.setupRuntime.reconcile).not.toHaveBeenCalled();
+  expect(h.cli.logout).not.toHaveBeenCalled();
+  expect(h.deliveries).toEqual([]);
+  await expect(h.runtime.upgradeRead("one")).resolves.toMatchObject({ available: true });
+});
+
+it("refuses a sign-in to a different account than the one recorded and signs it out", async () => {
+  const h = harness(setupToken, SUPPORTED, {
+    everywhere: true,
+    state: (definitionId) => [
+      {
+        definitionId,
+        generation: 1,
+        rotation: 0,
+        signedIn: false,
+        hostGrant: null,
+        policyRevision: 1,
+        digest: null,
+        expiresAt: null,
+        identity: { email: "Owner@Example.com", orgId: "org-1" },
+        checkedAt: null,
+        refresh: null,
+        targets: [],
+      },
+    ],
+  });
+  const original = structuredClone(h.definitions()[0]);
+  h.cli.identity.mockResolvedValueOnce({ email: "someone@example.com", orgId: "org-2" });
+  await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.runtime.read("one").login.status === "failed");
+  expect(h.runtime.read("one").login).toMatchObject({
+    message: expect.stringContaining("belongs to Owner@Example.com"),
+  });
+  expect(h.cli.logout).toHaveBeenCalledWith(h.configDir);
+  expect(h.definitions()[0]).toEqual(original);
+  expect(h.settings.update).not.toHaveBeenCalled();
+});
+
+it("refuses a first upgrade into a Claude login another account already uses", async () => {
+  const otherCreation = randomUUID();
+  const h = harness(setupToken, SUPPORTED, {
+    everywhere: true,
+    others: [
+      {
+        id: "two",
+        providerType: "claude",
+        accountSetup: { provider: "claude", creationId: otherCreation, signIn: "full" },
+        bindings: { host: `claude-account-${otherCreation}` },
+        policy: { enabled: true, label: "Claude 2" },
+      },
+    ],
+    state: () => [
+      {
+        definitionId: "two",
+        generation: 1,
+        rotation: 0,
+        signedIn: true,
+        hostGrant: "present",
+        policyRevision: 1,
+        digest: null,
+        expiresAt: null,
+        identity: { email: "Shared@Example.com", orgId: "org-1" },
+        checkedAt: null,
+        refresh: null,
+        targets: [],
+      },
+    ],
+  });
+  const original = structuredClone(h.definitions()[0]);
+  h.cli.identity.mockResolvedValueOnce({ email: "shared@example.com", orgId: "org-1" });
+  await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.runtime.read("one").login.status === "failed");
+  expect(h.runtime.read("one").login).toMatchObject({
+    message: expect.stringContaining("Claude 2 already uses"),
+  });
+  expect(h.cli.logout).toHaveBeenCalledWith(h.configDir);
+  expect(h.definitions()[0]).toEqual(original);
+  expect(h.settings.update).not.toHaveBeenCalled();
+});
+
+it("signs the new grant out when the definition changed during the upgrade", async () => {
+  const h = harness(setupToken, SUPPORTED, { everywhere: true });
+  const original = structuredClone(h.definitions()[0]);
+  vi.mocked(h.settings.update).mockRejectedValueOnce(new Error("Settings revision is stale"));
+  await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.runtime.read("one").login.status === "failed");
+  expect(h.cli.logout).toHaveBeenCalledWith(h.configDir);
+  expect(h.definitions()[0]).toEqual(original);
+  await expect(h.runtime.upgradeRead("one")).resolves.toMatchObject({ available: true });
+});
+
+it("accepts the recorded account regardless of email case", async () => {
+  const h = harness(setupToken, SUPPORTED, {
+    everywhere: true,
+    state: (definitionId) => [
+      {
+        definitionId,
+        generation: 1,
+        rotation: 0,
+        signedIn: false,
+        hostGrant: null,
+        policyRevision: 1,
+        digest: null,
+        expiresAt: null,
+        identity: { email: "OWNER@example.com", orgId: null },
+        checkedAt: null,
+        refresh: null,
+        targets: [],
+      },
+    ],
+  });
+  await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.runtime.read("one").login.status === "succeeded");
+  expect(h.definitions()[0]?.accountSetup?.signIn).toBe("full");
+});
+
+it("offers and starts an upgrade only when every daemon advertises support", async () => {
+  const h = harness(
+    setupToken,
+    { installationSettingsAuthority: true, claudeFullSignIn: true },
+    {
+      everywhere: true,
+    },
+  );
+  await expect(h.runtime.upgradeRead("one")).resolves.toEqual({
+    available: false,
+    login: { status: "idle" },
+  });
+  await expect(h.runtime.upgradeStart("one")).rejects.toThrow();
+  expect(h.cli.loginSession).not.toHaveBeenCalled();
+  expect(h.settings.update).not.toHaveBeenCalled();
+});
+
+it("does not upgrade while a setup-token sign-in runs or for a full sign-in account", async () => {
+  const busy = harness(setupToken, SUPPORTED, { everywhere: true, setupSigningIn: true });
+  await expect(busy.runtime.upgradeStart("one")).rejects.toThrow();
+  expect(busy.cli.loginSession).not.toHaveBeenCalled();
+  const full = harness(
+    (creationId) => ({ provider: "claude", creationId, signIn: "full" }),
+    SUPPORTED,
+    {
+      everywhere: true,
+    },
+  );
+  await expect(full.runtime.upgradeRead("one")).resolves.toMatchObject({ available: false });
+  await expect(full.runtime.upgradeStart("one")).rejects.toThrow();
 });
