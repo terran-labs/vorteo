@@ -126,6 +126,7 @@ import {
   type ProviderImageOutput,
 } from "./provider-image-output.js";
 import { normalizeProviderReplayTimestamp } from "../provider-history-timestamps.js";
+import { estimateSessionCostUsd } from "../cost-estimate.js";
 import {
   formatProviderDiagnostic,
   formatProviderDiagnosticError,
@@ -1096,10 +1097,28 @@ function filterCodexThreadsByCwd(
   );
 }
 
-export function toAgentUsage(tokenUsage: unknown): AgentUsage | undefined {
+function finiteCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/** Codex reports no cost, so the session's cumulative tokens are priced for an estimate. */
+function estimateFromTotals(
+  total: Record<string, unknown> | undefined,
+  model: string | null | undefined,
+) {
+  if (!total) return undefined;
+  const inputTokens = finiteCount(total.inputTokens ?? total.input_tokens);
+  const outputTokens = finiteCount(total.outputTokens ?? total.output_tokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  const cachedInputTokens = finiteCount(total.cachedInputTokens ?? total.cached_input_tokens) ?? 0;
+  return estimateSessionCostUsd(model, { inputTokens, cachedInputTokens, outputTokens });
+}
+
+export function toAgentUsage(tokenUsage: unknown, model?: string | null): AgentUsage | undefined {
   const usage = toObjectRecord(tokenUsage);
   if (!usage) return undefined;
   const last = toObjectRecord(usage.last);
+  const estimatedCostUsd = estimateFromTotals(toObjectRecord(usage.total), model);
   const contextWindowMaxTokens = firstPositiveFiniteNumber(
     usage.model_context_window,
     usage.modelContextWindow,
@@ -1110,6 +1129,7 @@ export function toAgentUsage(tokenUsage: unknown): AgentUsage | undefined {
     cachedInputTokens:
       typeof last?.cachedInputTokens === "number" ? last.cachedInputTokens : undefined,
     outputTokens: typeof last?.outputTokens === "number" ? last.outputTokens : undefined,
+    ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
     ...(contextWindowMaxTokens !== undefined ? { contextWindowMaxTokens } : {}),
     ...(contextWindowUsedTokens !== undefined ? { contextWindowUsedTokens } : {}),
   };
@@ -6824,7 +6844,7 @@ export class CodexAppServerAgentSession implements AgentSession {
   private handleTokenUsageUpdatedNotification(
     parsed: Extract<ParsedCodexNotification, { kind: "token_usage_updated" }>,
   ): void {
-    this.latestUsage = toAgentUsage(parsed.tokenUsage);
+    this.latestUsage = toAgentUsage(parsed.tokenUsage, this.config.model);
     if (this.latestUsage) {
       this.notifySubscribers({
         type: "usage_updated",
