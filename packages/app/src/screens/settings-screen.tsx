@@ -1616,6 +1616,8 @@ const sidebarStyles = StyleSheet.create((theme) => ({
   },
   scrollBody: {
     flex: 1,
+    // Font changes must preserve the sidebar offset, not anchor its group headings.
+    ...(isWeb ? { overflowAnchor: "none" as const } : {}),
   },
   search: { flex: 1, minWidth: 0, flexDirection: "row" },
   ownerSlot: { minHeight: 84, paddingHorizontal: theme.spacing[2] },
