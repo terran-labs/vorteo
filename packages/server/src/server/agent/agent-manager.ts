@@ -7019,9 +7019,7 @@ export class AgentManager {
         flags.shouldDispatchEvent = false;
         return undefined;
       case "usage_updated":
-        // Streamed updates can carry only the context window (Claude's do), so merge them: a
-        // replacement would drop the session cost and token totals until the turn completes.
-        agent.lastUsage = { ...agent.lastUsage, ...event.usage };
+        agent.lastUsage = withReportedCost(event.usage, agent.lastUsage);
         this.emitState(agent);
         return undefined;
       case "mode_changed":
@@ -8190,4 +8188,15 @@ export function commandMayHaveChangedExternalState(command: string): boolean {
     // ahead/behind counts can drift stale until the next refresh.
     /\bgit\s+fetch\b/.test(normalized)
   );
+}
+
+/**
+ * A streamed usage update replaces the last one, so a field it omits is cleared, as compaction
+ * clears the used context. The provider's reported cost is the exception: Claude reports it only
+ * when a turn completes, so it carries over until the next report. An estimate does not carry
+ * over, since a provider that estimates sends one with every update it can price.
+ */
+function withReportedCost(usage: AgentUsage, previous: AgentUsage | undefined): AgentUsage {
+  if (usage.totalCostUsd !== undefined || previous?.totalCostUsd === undefined) return usage;
+  return { ...usage, totalCostUsd: previous.totalCostUsd };
 }
