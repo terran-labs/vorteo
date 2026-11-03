@@ -3791,6 +3791,28 @@ describe("Codex app-server provider", () => {
     });
   });
 
+  test("estimates session cost from cumulative tokens for a priced model", () => {
+    const usage = toAgentUsage(
+      {
+        total: { inputTokens: 1_000_000, cachedInputTokens: 800_000, outputTokens: 100_000 },
+        last: { inputTokens: 30000, cachedInputTokens: 5000, outputTokens: 15000 },
+      },
+      "gpt-6.1-sol",
+    );
+    // 200K uncached at $2, 800K cached at $0.10 and 100K output at $10 per million.
+    expect(usage?.estimatedCostUsd).toBeCloseTo(0.4 + 0.08 + 1, 10);
+    expect(usage?.totalCostUsd).toBeUndefined();
+  });
+
+  test("leaves cost unestimated for a model without a known price", () => {
+    expect(
+      toAgentUsage(
+        { total: { inputTokens: 1000, cachedInputTokens: 0, outputTokens: 1000 } },
+        "unpriced-model",
+      ),
+    ).not.toHaveProperty("estimatedCostUsd");
+  });
+
   test("normalizes raw output schemas for Codex structured outputs", () => {
     const input = {
       type: "object",

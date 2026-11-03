@@ -16,6 +16,17 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Ask threads whose delivery Builds owns to keep a Review checklist item owned by Builds, mirror Builds' reported steps as checks and verify `main` and the published interface before completing it.
 
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Show only the agent's own account in the Context window details instead of repeating its quotas from the provider-level plan card.
+- Keep Claude's session cost visible while a turn runs; streamed usage updates no longer erase it until the turn finishes.
+
+### Improvements
+
+- Estimate session cost for Codex sessions on `gpt-6-astra` and `gpt-6.1-sol` from cumulative tokens and OpenAI's list prices, labeled as an estimate.
+
 ## 26.11.206 - 2026-11-02
 
 ### Improvements

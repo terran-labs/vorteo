@@ -7019,7 +7019,9 @@ export class AgentManager {
         flags.shouldDispatchEvent = false;
         return undefined;
       case "usage_updated":
-        agent.lastUsage = event.usage;
+        // Streamed updates can carry only the context window (Claude's do), so merge them: a
+        // replacement would drop the session cost and token totals until the turn completes.
+        agent.lastUsage = { ...agent.lastUsage, ...event.usage };
         this.emitState(agent);
         return undefined;
       case "mode_changed":
