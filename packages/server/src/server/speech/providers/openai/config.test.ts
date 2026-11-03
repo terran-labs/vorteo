@@ -145,3 +145,20 @@ describe("resolveOpenAiSpeechConfig", () => {
     expect(result?.stt).toEqual({ apiKey: "voice-only" });
   });
 });
+
+test("a cleared installation key never falls back to a different environment credential", () => {
+  expect(
+    resolve(
+      {
+        features: {
+          dictation: { stt: { provider: "openai", credentialsManaged: true } },
+          voiceMode: {
+            stt: { provider: "openai", credentialsManaged: true },
+            tts: { provider: "openai", credentialsManaged: true },
+          },
+        },
+      },
+      { OPENAI_API_KEY: "synthetic-process-key" },
+    ),
+  ).toBeUndefined();
+});

@@ -41,6 +41,8 @@ function candidatePolicy(current: MutableDaemonConfig, patch: MutableDaemonConfi
       ...patch,
       // Account bindings are environment-owned. Compare policy in the current binding context.
       providers: current.providers,
+      // Speech has its own redacted read and partial-write boundary, outside shared policy.
+      features: current.features,
       mcp: { ...current.mcp, ...patch.mcp },
       metadataGeneration: { ...current.metadataGeneration, ...patch.metadataGeneration },
     }),
@@ -107,9 +109,8 @@ const ClientConfigSchema = z.object({
   kind: z.enum(["host-agent", "container-agent"]),
 });
 
-export function createInstallationSettingsReader(
-  configFile: string | undefined,
-): InstallationSettingsReader {
+/** Internal installation transport credentials, never an RPC response. */
+export function readInstallationClientConfig(configFile: string | undefined) {
   const config = configFile
     ? ClientConfigSchema.parse(JSON.parse(readFileSync(configFile, "utf8")))
     : null;
@@ -124,6 +125,13 @@ export function createInstallationSettingsReader(
         "Installation admission requires a fixed HTTPS or loopback origin.",
       );
   }
+  return config;
+}
+
+export function createInstallationSettingsReader(
+  configFile: string | undefined,
+): InstallationSettingsReader {
+  const config = readInstallationClientConfig(configFile);
   return {
     async read(binding) {
       if (!config)

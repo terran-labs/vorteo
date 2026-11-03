@@ -19,32 +19,63 @@ export const ProviderSecretNameSchema = z
     isProviderSecretName,
     "Use an environment variable name ending in _KEY, _TOKEN, _SECRET or _PASSWORD",
   );
+export const SPEECH_DEFAULT_BASE_URL = "https://api.openai.com/v1";
+export const SpeechSecretSiteSchema = z.enum(["dictation.stt", "voiceMode.stt", "voiceMode.tts"]);
+export type SpeechSecretSite = z.infer<typeof SpeechSecretSiteSchema>;
+export const SPEECH_SECRET_SITES = SpeechSecretSiteSchema.options;
+export const SpeechSecretFieldSchema = z.enum(["apiKey", "baseUrl"]);
+export type SpeechSecretField = z.infer<typeof SpeechSecretFieldSchema>;
+export function isSpeechSecretField(name: string): name is SpeechSecretField {
+  return SpeechSecretFieldSchema.safeParse(name).success;
+}
+export function isInstallationSecretName(name: string): boolean {
+  return isProviderSecretName(name) || isSpeechSecretField(name);
+}
 const DefinitionIdSchema = z.string().min(1).max(512);
 
 /** POST /api/installation/owner/provider-secrets/read */
 export const ProviderSecretsReadRequestSchema = z.strictObject({
   definitionId: DefinitionIdSchema.optional(),
+  kind: z.literal("speech").optional(),
 });
 /** POST /api/installation/owner/provider-secrets/set. The value is never returned. */
-export const ProviderSecretSetRequestSchema = z.strictObject({
-  definitionId: DefinitionIdSchema,
-  name: ProviderSecretNameSchema,
-  value: z
-    .string()
-    .min(1)
-    .max(16 * 1024)
-    .refine(
-      (value) =>
-        value.trim() === value &&
-        !["\0", "\r", "\n"].some((character) => value.includes(character)),
-      "Remove surrounding spaces and line breaks",
-    ),
-});
-/** POST /api/installation/owner/provider-secrets/clear */
-export const ProviderSecretClearRequestSchema = z.strictObject({
+const SecretValueSchema = z
+  .string()
+  .min(1)
+  .max(16 * 1024)
+  .refine(
+    (value) =>
+      value.trim() === value && !["\0", "\r", "\n"].some((character) => value.includes(character)),
+    "Remove surrounding spaces and line breaks",
+  );
+const ProviderSecretTargetSchema = z.strictObject({
+  kind: z.undefined().optional(),
   definitionId: DefinitionIdSchema,
   name: ProviderSecretNameSchema,
 });
+const SpeechSecretTargetSchema = z.strictObject({
+  kind: z.literal("speech"),
+  definitionId: SpeechSecretSiteSchema,
+  name: SpeechSecretFieldSchema,
+});
+export const ProviderSecretSetRequestSchema = z.discriminatedUnion("kind", [
+  ProviderSecretTargetSchema.extend({ value: SecretValueSchema }),
+  z.strictObject({
+    kind: z.literal("speech"),
+    definitionId: SpeechSecretSiteSchema,
+    values: z
+      .strictObject({
+        apiKey: SecretValueSchema.nullable().optional(),
+        baseUrl: SecretValueSchema.nullable().optional(),
+      })
+      .refine((values) => Object.keys(values).length > 0),
+  }),
+]);
+/** Speech credentials use the same owner-only routes, with an explicit separate scope. */
+export const ProviderSecretClearRequestSchema = z.discriminatedUnion("kind", [
+  ProviderSecretTargetSchema,
+  SpeechSecretTargetSchema,
+]);
 
 export const ProviderSecretSummarySchema = z.strictObject({
   name: z.string(),

@@ -2458,6 +2458,7 @@ export const ar: TranslationResources = {
       openai: {
         apiKey: "مفتاح API",
         apiKeyHint: "يُحفظ على المضيف ولا يُعرض مرة أخرى.",
+        apiKeySharedHint: en.settings.voice.openai.apiKeySharedHint,
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "محفوظ",
         missingKey: "مفتاح API مفقود",

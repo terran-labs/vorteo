@@ -2472,6 +2472,7 @@ export const es: TranslationResources = {
       openai: {
         apiKey: "Clave de API",
         apiKeyHint: "Se guarda en el host y no se vuelve a mostrar.",
+        apiKeySharedHint: en.settings.voice.openai.apiKeySharedHint,
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "Guardada",
         missingKey: "Falta la clave de API",

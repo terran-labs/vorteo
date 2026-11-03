@@ -23,6 +23,7 @@ function fixture(
     host: { openai: { OPENAI_API_KEY: KEY, OPENAI_BASE_URL: "https://local" } },
     dev: { openai: {} },
   },
+  kind?: "speech",
 ) {
   const state = {
     persisted: [] as ProviderSecretsState,
@@ -41,6 +42,7 @@ function fixture(
     conflicts: {} as Record<string, string[]>,
   };
   const authority = new ProviderSecretsAuthority({
+    kind,
     installationId: INSTALLATION,
     read: () => state.persisted,
     persist: (next) => {
@@ -211,4 +213,59 @@ test("saves complete while a slow environment holds a delivery, then deliver the
   await f.authority.reconcile();
   expect(f.authority.status("openai").ready).toBe(true);
   expect(f.state.deliveries.at(-1)!.values).toEqual({ OPENAI_API_KEY: OTHER });
+});
+
+test("speech adopts a key and endpoint once, without exposing either value in status", async () => {
+  const f = fixture(
+    {
+      host: { openai: { apiKey: KEY, baseUrl: "https://speech.example/v1" } },
+      dev: { openai: {} },
+    },
+    "speech",
+  );
+  await f.authority.reconcile();
+  expect(f.state.deliveries).toHaveLength(2);
+  expect(f.state.deliveries[0]).toMatchObject({
+    kind: "speech",
+    values: { apiKey: KEY, baseUrl: "https://speech.example/v1" },
+  });
+  expect(JSON.stringify(f.authority.status("openai"))).not.toContain(KEY);
+  expect(f.authority.status("openai").ready).toBe(true);
+});
+
+test("speech withholds keys while endpoint adoption conflicts and resolves the pair atomically", async () => {
+  const f = fixture(
+    {
+      host: { openai: { apiKey: KEY, baseUrl: "https://one.example/v1" } },
+      dev: { openai: { apiKey: KEY, baseUrl: "https://two.example/v1" } },
+    },
+    "speech",
+  );
+  await f.authority.reconcile();
+  expect(f.state.deliveries).toHaveLength(0);
+  expect(f.authority.status("openai").ready).toBe(false);
+  expect(f.authority.status("openai").conflicts).toEqual([
+    { name: "baseUrl", serverIds: ["dev", "host"] },
+  ]);
+  await f.authority.update("openai", { apiKey: OTHER, baseUrl: "https://chosen.example/v1" });
+  await f.authority.reconcile();
+  expect(f.state.deliveries).toHaveLength(2);
+  expect(
+    f.state.deliveries.every(
+      (delivery) =>
+        delivery.values.apiKey === OTHER && delivery.values.baseUrl === "https://chosen.example/v1",
+    ),
+  ).toBe(true);
+  expect(f.authority.status("openai").conflicts).toEqual([]);
+});
+
+test("a speech clear before initial adoption never imports the old key again", async () => {
+  const f = fixture({ host: { openai: { apiKey: KEY } }, dev: { openai: {} } }, "speech");
+  await f.authority.clear("openai", "apiKey");
+  await f.authority.reconcile();
+  expect(f.authority.status("openai").secrets).toEqual([]);
+  expect(f.state.deliveries).toHaveLength(2);
+  expect(f.state.deliveries[0]).toMatchObject({ values: {}, overwrite: ["apiKey"] });
+  await f.authority.reconcile();
+  expect(f.authority.status("openai").secrets).toEqual([]);
 });

@@ -2039,7 +2039,7 @@ export function createInstallationServer(
   if (claudeSetup) mountClaudeSetupRoutes(app, claudeSetup);
   if (claudeOAuth) mountClaudeOAuthRoutes(app, claudeOAuth);
   if (codexSignIn) mountCodexSignInRoutes(app, codexSignIn);
-  if (providerSecrets) mountProviderSecretsRoutes(app, providerSecrets);
+  if (providerSecrets) mountProviderSecretsRoutes(app, providerSecrets, instructionRequester);
   app.post("/api/installation/owner/lock", (req, res) => {
     sessions.revoke(sessionToken(req), sessionOrigin(req));
     res.clearCookie(cookieName(req), cookieOptions(req));

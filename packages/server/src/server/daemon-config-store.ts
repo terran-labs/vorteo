@@ -1,3 +1,4 @@
+import { type SpeechSecretSite } from "@getpaseo/protocol/provider-secrets";
 import {
   changesInstallationProviders,
   assertInstallationProviderProjection,
@@ -47,7 +48,11 @@ import { join } from "node:path";
 import { validateProviderPreferences } from "./agent/provider-preferences/validation.js";
 import { planProviderPreferencesMigration } from "./agent/provider-preferences/migration.js";
 import type { SpeechSettingsPatch } from "@getpaseo/protocol/speech/rpc-schemas";
-import { mergeSpeechSettingsPatch, type SpeechSettingsOwner } from "./speech/speech-settings.js";
+import {
+  readSpeechSecretSettings,
+  mergeSpeechSettingsPatch,
+  type SpeechSettingsOwner,
+} from "./speech/speech-settings.js";
 
 export type { MutableDaemonConfig, MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
 
@@ -735,10 +740,49 @@ export class DaemonConfigStore {
     });
   }
 
+  /** Installation transport only. Ordinary config reads always redact speech keys. */
+  public readSpeechSecrets(): Record<string, Record<string, string>> {
+    return (
+      this.speechOwner?.readSecrets?.(this.lastKnownPersisted) ??
+      readSpeechSecretSettings(this.lastKnownPersisted, {})
+    );
+  }
+
+  public replaceSpeechSecrets(site: SpeechSecretSite, values: Record<string, string>): void {
+    const fields = {
+      apiKey: values.apiKey ?? null,
+      baseUrl: values.baseUrl ?? null,
+      credentialsManaged: true,
+    };
+    let features: SpeechSettingsPatch;
+    if (site === "dictation.stt") features = { dictation: { stt: fields } };
+    else if (site === "voiceMode.stt") features = { voiceMode: { stt: fields } };
+    else features = { voiceMode: { tts: fields } };
+    this.applySupportedPatch({ features });
+  }
+
   public async patchFromClient(partial: MutableDaemonConfigPatch): Promise<MutableDaemonConfig> {
     const parsed = MutableDaemonConfigPatchSchema.parse(partial);
     const before = this.current;
     const binding = before.sharedProviderPreferences?.installation;
+    const speechSites = [
+      parsed.features?.dictation?.stt,
+      parsed.features?.voiceMode?.stt,
+      parsed.features?.voiceMode?.tts,
+    ];
+    if (
+      binding &&
+      speechSites.some(
+        (site) =>
+          site &&
+          (Object.hasOwn(site, "apiKey") ||
+            Object.hasOwn(site, "baseUrl") ||
+            Object.hasOwn(site, "credentialsManaged")),
+      )
+    )
+      throw new InstallationSettingsAdmissionError(
+        "Use the shared Voice settings to change API keys and base URLs.",
+      );
     if (binding && parsed.plugins !== undefined && !isEqualValue(parsed.plugins, before.plugins))
       throw new InstallationSettingsAdmissionError(
         "Use the shared plugin controls and environment binding operations to change plugins.",

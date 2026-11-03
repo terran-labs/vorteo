@@ -1,3 +1,4 @@
+import { SPEECH_SECRET_SITES, SPEECH_DEFAULT_BASE_URL } from "@getpaseo/protocol/provider-secrets";
 import type { SpeechSettings, SpeechSettingsPatch } from "@getpaseo/protocol/speech/rpc-schemas";
 
 import {
@@ -20,6 +21,7 @@ interface SpeechRead {
 export interface SpeechSettingsOwner {
   read(persisted: PersistedConfig): SpeechRead;
   apply(persisted: PersistedConfig): void;
+  readSecrets?(persisted: PersistedConfig): Record<string, Record<string, string>>;
 }
 
 export function createSpeechSettingsOwner(params: {
@@ -30,6 +32,7 @@ export function createSpeechSettingsOwner(params: {
   const { paseoHome, env, speechService } = params;
   return {
     read: (persisted) => readSpeechSettings(persisted, env),
+    readSecrets: (persisted) => readSpeechSecretSettings(persisted, env),
     apply: (persisted) => {
       const resolved = resolveSpeechConfig({ paseoHome, env, persisted });
       speechService.reconfigure({ openaiConfig: resolved.openai, speechConfig: resolved.speech });
@@ -63,7 +66,7 @@ export function readSpeechSettings(persisted: PersistedConfig, env: NodeJS.Proce
   ) {
     recordOverride(`${path}.provider`, [providerEnv]);
     const configured = site?.provider === provider ? site : undefined;
-    const { apiKey, ...fields } = configured ?? {};
+    const { apiKey, credentialsManaged, ...fields } = configured ?? {};
     const openaiModelEnv = kind === "stt" ? "STT_MODEL" : "TTS_MODEL";
     recordOverride(`${path}.model`, [provider === "openai" ? openaiModelEnv : localModelEnv]);
     if (kind === "stt") {
@@ -78,6 +81,7 @@ export function readSpeechSettings(persisted: PersistedConfig, env: NodeJS.Proce
         ["apiKey", "API_KEY"],
         ["baseUrl", "BASE_URL"],
       ] as const) {
+        if (credentialsManaged) continue;
         recordOverride(
           `${path}.${field}`,
           [`OPENAI_${kind.toUpperCase()}_${suffix}`, `OPENAI_${suffix}`],
@@ -146,6 +150,40 @@ export function readSpeechSettings(persisted: PersistedConfig, env: NodeJS.Proce
   };
 }
 
+/** Private installation adoption view. Never use for ordinary config responses. */
+export function readSpeechSecretSettings(
+  persisted: PersistedConfig,
+  env: NodeJS.ProcessEnv,
+): Record<string, Record<string, string>> {
+  const features = persisted.features;
+  const sites = [features?.dictation?.stt, features?.voiceMode?.stt, features?.voiceMode?.tts];
+  const text = (...values: (string | undefined)[]) => values.find((value) => value?.trim())?.trim();
+  return Object.fromEntries(
+    SPEECH_SECRET_SITES.map((id, index) => {
+      const site = sites[index];
+      const fallback = !site?.credentialsManaged;
+      const kind = index === 2 ? "TTS" : "STT";
+      const apiKey = text(
+        site?.apiKey,
+        fallback ? env[`OPENAI_${kind}_API_KEY`] : undefined,
+        fallback ? env.OPENAI_API_KEY : undefined,
+      );
+      const baseUrl = text(
+        site?.baseUrl,
+        fallback ? env[`OPENAI_${kind}_BASE_URL`] : undefined,
+        fallback ? env.OPENAI_BASE_URL : undefined,
+      );
+      return [
+        id,
+        {
+          ...(apiKey ? { apiKey } : {}),
+          ...(apiKey || baseUrl ? { baseUrl: baseUrl ?? SPEECH_DEFAULT_BASE_URL } : {}),
+        },
+      ];
+    }),
+  );
+}
+
 function mergeFields(current: Record<string, unknown> | undefined, patch: Record<string, unknown>) {
   const next = { ...current };
   for (const [key, value] of Object.entries(patch)) {
@@ -160,10 +198,19 @@ function mergeSite(
   current: Record<string, unknown> | undefined,
   patch: Record<string, unknown>,
   kind: "stt" | "tts",
+  preserveCredentials: boolean,
 ) {
   const providerChanged =
     patch.provider !== undefined && patch.provider !== (current?.provider ?? "local");
-  const next = mergeFields(providerChanged ? undefined : current, patch);
+  // Shared credentials stay available even when this environment chooses a local model.
+  const retained = preserveCredentials
+    ? {
+        apiKey: current?.apiKey,
+        baseUrl: current?.baseUrl,
+        credentialsManaged: current?.credentialsManaged,
+      }
+    : undefined;
+  const next = mergeFields(providerChanged ? retained : current, patch);
   next.provider ??= "local";
   const site = (kind === "stt" ? SpeechSttConfigSchema : SpeechTtsConfigSchema).parse(next);
   if (site.provider === "local" && site.model !== undefined) {
@@ -182,17 +229,18 @@ export function mergeSpeechSettingsPatch(
   patch: SpeechSettingsPatch,
 ): PersistedConfig {
   const features = { ...persisted.features };
+  const preserveCredentials = Boolean(persisted.daemon?.sharedProviderPreferences?.installation);
   if (patch.dictation) {
     const { stt, ...rest } = patch.dictation;
     const next = mergeFields(features.dictation, rest);
-    if (stt) next.stt = mergeSite(features.dictation?.stt, stt, "stt");
+    if (stt) next.stt = mergeSite(features.dictation?.stt, stt, "stt", preserveCredentials);
     features.dictation = PersistedConfigSchema.shape.features.unwrap().shape.dictation.parse(next);
   }
   if (patch.voiceMode) {
     const { stt, tts, llm, turnDetection, ...rest } = patch.voiceMode;
     const next = mergeFields(features.voiceMode, rest);
-    if (stt) next.stt = mergeSite(features.voiceMode?.stt, stt, "stt");
-    if (tts) next.tts = mergeSite(features.voiceMode?.tts, tts, "tts");
+    if (stt) next.stt = mergeSite(features.voiceMode?.stt, stt, "stt", preserveCredentials);
+    if (tts) next.tts = mergeSite(features.voiceMode?.tts, tts, "tts", preserveCredentials);
     if (llm) next.llm = mergeFields(features.voiceMode?.llm, llm);
     if (turnDetection)
       next.turnDetection = mergeFields(features.voiceMode?.turnDetection, turnDetection);

@@ -1,12 +1,17 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { isProviderSecretName } from "@getpaseo/protocol/provider-secrets";
+import {
+  isProviderSecretName,
+  isInstallationSecretName,
+  isSpeechSecretField,
+} from "@getpaseo/protocol/provider-secrets";
 
-const NameSchema = z.string().refine(isProviderSecretName);
+const NameSchema = z.string().refine(isInstallationSecretName);
 const RevisionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const ScopeSchema = z.strictObject({
+  kind: z.literal("speech").optional(),
   installationId: z.string().uuid(),
   serverId: z.string().min(1),
   definitionId: z.string().min(1),
@@ -28,7 +33,11 @@ export const ProviderSecretsDeliverySchema = ScopeSchema.extend({
   ),
   /** Names the owner set explicitly. Only these replace a differing local value. */
   overwrite: z.array(NameSchema),
-});
+}).refine((delivery) =>
+  [...Object.keys(delivery.values), ...delivery.overwrite].every(
+    delivery.kind === "speech" ? isSpeechSecretField : isProviderSecretName,
+  ),
+);
 export type ProviderSecretsDelivery = z.infer<typeof ProviderSecretsDeliverySchema>;
 export const ProviderSecretsReceiptSchema = ScopeSchema.extend({
   revision: RevisionSchema,
@@ -41,6 +50,7 @@ export const ProviderSecretsReceiptSchema = ScopeSchema.extend({
 export type ProviderSecretsReceipt = z.infer<typeof ProviderSecretsReceiptSchema>;
 /** Daemon-local journal. Holds value digests only, never values. */
 export const ProviderSecretsJournalSchema = z.strictObject({
+  kind: z.literal("speech").optional(),
   definitionId: z.string().min(1),
   providerId: z.string().min(1),
   revision: RevisionSchema,
@@ -81,6 +91,10 @@ function mergeProviderSecrets(
   const next = { ...env };
   const managed: Record<string, string> = {};
   const conflicts: string[] = [];
+  if (delivery.kind === "speech") {
+    for (const name of delivery.overwrite)
+      if (!Object.hasOwn(delivery.values, name)) delete next[name];
+  }
   for (const [name, digest] of Object.entries(owned)) {
     if (Object.hasOwn(delivery.values, name)) continue;
     // A value changed locally after delivery is no longer ours to remove.
@@ -100,6 +114,8 @@ function mergeProviderSecrets(
     next[name] = value;
     managed[name] = providerSecretDigest(value);
   }
+  // Never install half a speech credential pair beside an unrelated local endpoint or key.
+  if (delivery.kind === "speech" && conflicts.length > 0) return { env, managed: owned, conflicts };
   return { env: next, managed, conflicts };
 }
 
@@ -133,6 +149,7 @@ export class ProviderSecretsDeliveryService {
     try {
       await this.ports.authorize(delivery);
       const previous = this.ports.read();
+      if (previous && previous.kind !== delivery.kind) throw new ProviderSecretsDeliveryError();
       const sameDefinition =
         previous?.definitionId === delivery.definitionId &&
         previous.providerId === delivery.providerId;
@@ -149,12 +166,15 @@ export class ProviderSecretsDeliveryService {
         if (Object.keys(delivery.values).length > 0) throw new ProviderSecretsDeliveryError();
       } else {
         const merged = mergeProviderSecrets(env, owned, delivery);
-        if (!isDeepStrictEqual(merged.env, env)) await this.ports.writeEnv(merged.env);
+        // Even an empty speech generation marks credentials as shared, disabling local env fallback.
+        if (delivery.kind === "speech" || !isDeepStrictEqual(merged.env, env))
+          await this.ports.writeEnv(merged.env);
         result = merged;
       }
       // A newly excluded environment cannot receive a successful receipt for values.
       await this.ports.authorize(delivery);
       this.ports.persist({
+        ...(delivery.kind ? { kind: delivery.kind } : {}),
         definitionId: delivery.definitionId,
         providerId: delivery.providerId,
         revision: delivery.revision,

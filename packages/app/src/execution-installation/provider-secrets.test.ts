@@ -53,3 +53,11 @@ describe("describeSecretDelivery", () => {
     ).toBe("Different ZAI_API_KEY values found. Set the key once to use it everywhere.");
   });
 });
+
+it("reports unresolved adoption conflicts even when no key could be adopted", () => {
+  expect(
+    describeSecretDelivery(
+      status({ secrets: [], conflicts: [{ name: "apiKey", serverIds: ["host", "dev"] }] }),
+    ),
+  ).toContain("Different apiKey values found");
+});

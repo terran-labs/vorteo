@@ -32,9 +32,13 @@ function resolveStt(
   env: NodeJS.ProcessEnv,
 ): Partial<STTConfig> | undefined {
   const config = site?.provider === "openai" ? site : undefined;
-  const apiKey = firstString(config?.apiKey, env.OPENAI_STT_API_KEY, env.OPENAI_API_KEY);
+  const apiKey = config?.credentialsManaged
+    ? config.apiKey
+    : firstString(config?.apiKey, env.OPENAI_STT_API_KEY, env.OPENAI_API_KEY);
   if (!apiKey) return undefined;
-  const baseUrl = firstString(config?.baseUrl, env.OPENAI_STT_BASE_URL, env.OPENAI_BASE_URL);
+  const baseUrl = config?.credentialsManaged
+    ? config.baseUrl
+    : firstString(config?.baseUrl, env.OPENAI_STT_BASE_URL, env.OPENAI_BASE_URL);
   const model = firstString(env.STT_MODEL, config?.model);
   const confidenceThreshold = OptionalFiniteNumberSchema.parse(
     firstString(env.STT_CONFIDENCE_THRESHOLD) ?? config?.confidenceThreshold,
@@ -52,9 +56,13 @@ function resolveTts(
   env: NodeJS.ProcessEnv,
 ): Partial<TTSConfig> | undefined {
   const config = site?.provider === "openai" ? site : undefined;
-  const apiKey = firstString(config?.apiKey, env.OPENAI_TTS_API_KEY, env.OPENAI_API_KEY);
+  const apiKey = config?.credentialsManaged
+    ? config.apiKey
+    : firstString(config?.apiKey, env.OPENAI_TTS_API_KEY, env.OPENAI_API_KEY);
   if (!apiKey) return undefined;
-  const baseUrl = firstString(config?.baseUrl, env.OPENAI_TTS_BASE_URL, env.OPENAI_BASE_URL);
+  const baseUrl = config?.credentialsManaged
+    ? config.baseUrl
+    : firstString(config?.baseUrl, env.OPENAI_TTS_BASE_URL, env.OPENAI_BASE_URL);
   return {
     apiKey,
     ...(baseUrl ? { baseUrl } : {}),
