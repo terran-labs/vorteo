@@ -682,8 +682,14 @@ for (const width of [1280, 390]) {
     await gotoAppShell(page);
     await page.keyboard.press(process.platform === "darwin" ? "Meta+k" : "Control+k");
     await expect(page.getByTestId("command-center-panel")).toBeVisible();
-    // Navigate through the existing Settings toggle while the search overlay is open.
-    await page.keyboard.press(process.platform === "darwin" ? "Meta+," : "Control+,");
+    // Exercise navigation while the overlay still owns input, as a sidebar action can do.
+    if (width === 390)
+      await page
+        .getByTestId("menu-button")
+        .filter({ visible: true })
+        .first()
+        .dispatchEvent("click");
+    await page.getByTestId("sidebar-settings").first().dispatchEvent("click");
     await expect(page.getByTestId("command-center-panel")).not.toBeVisible();
     const input = page.getByTestId("settings-search-input").filter({ visible: true });
     await expect(input).toHaveCount(1);
