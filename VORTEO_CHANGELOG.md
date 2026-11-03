@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Fixed
+
+- The Vorteo System project shows as one sidebar row again, in the folder and order you gave it. Hiding the empty Dev System project had split the Host's project into a second top-level row, leaving workspaces created before the split under the old row.
+
+## Unreleased - 2026-11-02
+
 ### Changed
 
 - Rebuild the sidebar Quotas card around a week of runway per account. A quiet Best now note names the account to use next, with a reason and a runner-up. Each account shows a thin 7-day lane on a shared day axis, marking plan capacity, running low, prepaid credits, out of quota, unknown stretches and every known reset, with one summary line beneath it.
