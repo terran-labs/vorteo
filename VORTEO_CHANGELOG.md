@@ -14,6 +14,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Teach the CI workflow contract test about the separate format and lint jobs: both stay gated and keep their commands, and quality covers the lint-rule, relay and SDK domains.
 - Keep the separate format and lint CI jobs the main ruleset requires, with upstream's remaining checks in quality. Restore the fork's theme preview padding and review panel control targets under upstream's two-size controls, and keep non-focus overlays from taking initial focus. Make the steering mock finish only after a real steer, send its browser check with the immediate-send shortcut, and repair three test fixtures.
 - Point the website browser checks at Vorteo's page titles, download thanks heading, homepage mockup and plugin demo heading. Registry fixture text and release download URLs are unchanged.
 - Align the Simplified Chinese docs with Vorteo's English sections: renamed Vorteo anchors, the installer-based getting started page and the Standing, Protected and Scheduled workspaces section. Other Chinese body text still names Paseo.

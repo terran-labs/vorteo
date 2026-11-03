@@ -17,7 +17,10 @@ const serverTsconfigPath = new URL("packages/server/tsconfig.server.json", repoR
 const desktopPackagePath = new URL("packages/desktop/package.json", repoRoot);
 
 const gatedCiJobs = new Map([
-  ["quality", { name: "quality", contracts: ["format", "quality", "relay", "sdk"] }],
+  // Vorteo's main ruleset requires format and lint by name, so they stay separate jobs.
+  ["format", { name: "format", contract: "format" }],
+  ["lint", { name: "lint", contract: "quality" }],
+  ["quality", { name: "quality", contracts: ["quality", "relay", "sdk"] }],
   ["typecheck", { name: "typecheck", contract: "quality" }],
   ["server-tests-ubuntu", { name: "server-tests (ubuntu-latest)", contracts: ["server", "hub"] }],
   ["server-tests-windows", { name: "server-tests (windows-latest)", contracts: ["server", "hub"] }],
@@ -433,7 +436,7 @@ test("stable iOS releases upload once and distribute to external testers before 
 test("eight Playwright shards share two-worker coverage", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 22);
+  assert.equal(jobs.size, 24);
   assert.ok(jobs.has("installer-tests"));
   for (let shard = 1; shard <= 8; shard++) {
     const job = jobs.get(`playwright-${shard}`).join("\n");
@@ -460,14 +463,22 @@ test("quality preserves commands and routes each domain independently after fail
   const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
   const quality = jobs.get("quality").join("\n");
   assert.doesNotMatch(quality, /^\s+continue-on-error:/m);
+  // The required format and lint jobs keep their commands; quality runs the rest.
+  const format = jobs.get("format").join("\n");
+  assert.match(format, /^        run: npm run format:check$/m);
+  const lint = jobs.get("lint").join("\n");
+  for (const command of [
+    "npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity",
+    "npm audit signatures",
+    "npm run lint",
+  ]) {
+    assert.ok(
+      lint.includes(`        run: ${command}\n`) || lint.endsWith(`        run: ${command}`),
+      command,
+    );
+  }
   const commands = {
-    format: ["npm run format:check"],
-    quality: [
-      "npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity",
-      "npm audit signatures",
-      "npm run lint",
-      "node --test scripts/oxlint/paseo-plugin.test.mjs",
-    ],
+    quality: ["node --test scripts/oxlint/paseo-plugin.test.mjs"],
     relay: ["npm run build:relay", "npm run test --workspace=@getpaseo/relay"],
     sdk: [
       "npm run build:relay && npm run build:client",
