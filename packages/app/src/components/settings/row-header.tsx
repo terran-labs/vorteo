@@ -15,6 +15,7 @@ type HoverState = PressableStateCallbackType & { hovered?: boolean };
 
 export interface SettingsRowHeaderProps {
   label: string;
+  hint?: string;
   /** A short status shown before the chevron. */
   summary?: string;
   onPress: () => void;
@@ -34,6 +35,7 @@ export interface SettingsRowHeaderProps {
  */
 export function SettingsRowHeader({
   label,
+  hint,
   summary,
   onPress,
   disabled,
@@ -71,6 +73,7 @@ export function SettingsRowHeader({
         <>
           <View style={settingsStyles.rowContent}>
             <Text style={layout.title}>{label}</Text>
+            {hint ? <Text style={settingsStyles.rowHint}>{hint}</Text> : null}
           </View>
           {summary ? (
             <Text style={styles.summary} numberOfLines={1}>

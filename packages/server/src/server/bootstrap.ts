@@ -10,7 +10,10 @@ import {
 } from "./execution-installation/coordinator-bootstrap-launch.js";
 import { mountInstallationAccountConsumers } from "./execution-installation/accounts/consumers.js";
 import { ScheduleStore } from "./schedule/store.js";
-import { assertWorkspaceArchiveAllowed } from "./workspace-lifecycle/policy.js";
+import {
+  assertSystemThreadArchiveAllowed,
+  assertWorkspaceArchiveAllowed,
+} from "./workspace-lifecycle/policy.js";
 import { assertWorkspaceUnprotected } from "./workspace-lifecycle/policy.js";
 import { createRestartRecovery } from "./agent/restart-recovery/index.js";
 import { createIdleRuntimeCleanup } from "./agent/idle-runtime-cleanup/index.js";
@@ -159,6 +162,7 @@ import { AgentStorage } from "./agent/agent-storage.js";
 import { migrateMovedPaths } from "./migrations/moved-paths.migration.js";
 import { reconcileQuotaReserveStartup } from "./agent/quota-reserve/reconcile-startup.js";
 import { QuotaReservePolling } from "./agent/quota-reserve/polling.js";
+import { ClaudeLimitObservations } from "./agent/providers/claude/limit-observation.js";
 import { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -1197,6 +1201,16 @@ export async function createPaseoDaemon(
   const agentManager = new AgentManager({
     getSharedProviderConfig: () => daemonConfigStore.get(),
     assertWorkspaceArchiveAllowed: assertArchiveAllowed,
+    assertThreadArchiveAllowed: async ({ workspaceId, agentId, running }) => {
+      const workspace = await archiveWorkspaceRegistry.get(workspaceId);
+      // Only a Vorteo System workspace narrows to per-thread rules; every other
+      // workspace keeps refusing thread archive exactly as it refuses its own.
+      if (!workspace?.systemMembership) return assertArchiveAllowed(workspaceId);
+      await assertSystemThreadArchiveAllowed(
+        { schedules: archiveScheduleStore },
+        { workspace, agentId, running },
+      );
+    },
     pluginLifecycle: pluginRuntime,
     pluginAgentTools: pluginRuntime,
     clients: initialAgentManagerState.clients,
@@ -1232,9 +1246,14 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   const reserveRecoveryStops = await reconcileQuotaReserveStartup(agentStorage);
   logger.info({ reserveRecoveryStops }, "Quota reserve startup reconciliation completed");
+  const claudeLimitObservations = new ClaudeLimitObservations();
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,
+    claudeLimitObservations,
+  });
+  agentManager.setUsageLimitObserver((provider, stop) => {
+    if (claudeLimitObservations.record(provider, stop)) providerUsageService.invalidate();
   });
   const quotaReservePolling = new QuotaReservePolling({
     agentManager,

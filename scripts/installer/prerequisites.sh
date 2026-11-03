@@ -346,17 +346,41 @@ vp_node_major() {
   version="${version#v}"
   printf '%s' "${version%%.*}"
 }
+# Reuse a compatible runtime even when an older shell default shadows it.
 vp_check_node() {
-  local candidate major
+  local candidate major prefix directory old_ifs
   vp_found="not installed" vp_state=missing
-  candidate=$(command -v node 2>/dev/null) || return 1
-  vp_found="found $("$candidate" --version 2>/dev/null)" vp_state=outdated
-  major=$(vp_node_major "$candidate") || return 1
-  [ "$major" -ge "$vp_minimum_node" ] 2>/dev/null || return 1
-  vp_state=ok
-  # shellcheck disable=SC2034 # Read by install.sh after vorteo_ensure_prerequisites.
-  VORTEO_NODE_BIN="$candidate"
+  candidate=$(command -v node 2>/dev/null) || candidate=""
+  if [ -n "$candidate" ]; then
+    vp_found="found $("$candidate" --version 2>/dev/null)" vp_state=outdated
+    if vp_use_node "$candidate"; then return 0; fi
+  fi
+  old_ifs="$IFS"
+  IFS=:
+  for directory in $PATH; do
+    IFS="$old_ifs"
+    if vp_use_node "${directory:-.}/node"; then return 0; fi
+    IFS=:
+  done
+  IFS="$old_ifs"
+  if command -v brew >/dev/null 2>&1; then
+    prefix=$(HOMEBREW_NO_AUTO_UPDATE=1 brew --prefix "node@$vp_minimum_node" 2>/dev/null) || prefix=""
+    if [ -n "$prefix" ] && vp_use_node "$prefix/bin/node"; then return 0; fi
+  fi
+  return 1
 }
+vp_use_node() {
+  local candidate="$1" major
+  [ -x "$candidate" ] || return 1
+  major=$(vp_node_major "$candidate") || return 1
+  [ "$major" -ge "${vp_minimum_node:-24}" ] 2>/dev/null || return 1
+  vp_state=ok
+  # shellcheck disable=SC2034 # Consumed by install.sh.
+  VORTEO_NODE_BIN="$candidate"
+  PATH="$(dirname "$candidate"):$PATH"
+  export PATH
+}
+
 vp_node_method() {
   if vp_has_brew; then
     printf 'Homebrew (brew install node@%s)' "$vp_minimum_node"

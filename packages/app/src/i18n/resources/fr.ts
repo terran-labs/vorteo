@@ -2165,6 +2165,7 @@ export const fr: TranslationResources = {
     title: "Fenêtre de contexte",
     used: "{{percentage}} % utilisés",
     tokens: "{{used}} / {{max}} tokens",
+    sessionCostEstimated: "Coût estimé de la session : ~{{cost}}",
     sessionCost: "Coût de la session : {{cost}}",
     accessibility: "Fenêtre de contexte : {{percentage}} % utilisés",
     breakdown: {

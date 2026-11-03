@@ -1,3 +1,5 @@
+import { planSteps } from "./flow.mjs";
+export { planSteps } from "./flow.mjs";
 // Turns the owner's answers into a complete, self-contained plan without changing
 // anything. `apply` executes exactly this plan; it never re-reads the answers.
 import { existsSync } from "node:fs";
@@ -212,25 +214,6 @@ function adoptedDeployment(existing, answers) {
   if (existing.kind === "legacy-container") return existing.deployment;
   if (existing.kind === "legacy-lab" && existing.adoptable) return existing.deployment;
   return undefined;
-}
-
-export function planSteps({ devContainer, adopt, remote }) {
-  return [
-    "prepare",
-    "identity",
-    ...(remote === "tailscale" ? ["tailscale"] : []),
-    ...(devContainer
-      ? ["dev-images", adopt ? "dev-adopt" : "dev-create", "dev-identity", "projects-access"]
-      : []),
-    "release",
-    "host-config",
-    ...(devContainer ? ["dev-pair"] : []),
-    "services",
-    "ready",
-    ...(remote === "tailscale" ? ["remote"] : []),
-    ...(devContainer ? ["guest-client"] : []),
-    "finish",
-  ];
 }
 
 export function npmPath(context) {

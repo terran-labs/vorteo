@@ -2168,6 +2168,7 @@ export const es: TranslationResources = {
     used: "{{percentage}}% utilizado",
     tokens: "Fichas{{used}}/{{max}}",
     sessionCost: "Costo de la sesión{{cost}}",
+    sessionCostEstimated: "Costo estimado de la sesión ~{{cost}}",
     accessibility: "Ventana de contexto{{percentage}}% utilizada",
     breakdown: {
       used: "Usado",

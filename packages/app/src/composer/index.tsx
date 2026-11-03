@@ -297,6 +297,7 @@ function buildAgentStateSelector(serverId: string, agentId: string) {
       contextWindowMaxTokens: agent?.lastUsage?.contextWindowMaxTokens ?? null,
       contextWindowUsedTokens: agent?.lastUsage?.contextWindowUsedTokens ?? null,
       totalCostUsd: agent?.lastUsage?.totalCostUsd ?? null,
+      estimatedCostUsd: agent?.lastUsage?.estimatedCostUsd ?? null,
       model: agent?.model ?? null,
     };
   };
@@ -308,6 +309,7 @@ function renderContextWindowMeter(
   contextWindowMaxTokens: number | null,
   contextWindowUsedTokens: number | null,
   totalCostUsd: number | null,
+  estimatedCostUsd: number | null,
   showPercentage: boolean,
   pending: boolean,
   glyphSize: number,
@@ -323,6 +325,7 @@ function renderContextWindowMeter(
       maxTokens={contextWindowMaxTokens}
       usedTokens={contextWindowUsedTokens}
       totalCostUsd={totalCostUsd}
+      estimatedCostUsd={estimatedCostUsd}
       showPercentage={showPercentage}
       pending={pending}
       glyphSize={glyphSize}
@@ -2103,6 +2106,7 @@ function ComposerContentImpl({
     agentState.contextWindowMaxTokens,
     agentState.contextWindowUsedTokens,
     agentState.totalCostUsd,
+    agentState.estimatedCostUsd,
     false,
     hasAgent,
     contextWindowMeterGlyphSize,

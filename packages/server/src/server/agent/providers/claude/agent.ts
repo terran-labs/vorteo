@@ -1,8 +1,9 @@
 import { verifySkillSnapshot } from "../../../orchestration-skills/internal/policy.js";
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
 import { ClaudeLoginSession } from "./login.js";
-import { claudeSignInMode } from "./sign-in-mode.js";
+import { CLAUDE_SIGN_IN_ENV, claudeSignInMode } from "./sign-in-mode.js";
 import {
+  claudeAccountUpgradedToFullSignIn,
   claudeSetupTokenStore,
   readClaudeSetupToken,
   claudeSetupTokenEnvironment,
@@ -77,7 +78,12 @@ import { foldSubagentObservations, type SubagentObservation } from "./subagents/
 import { observeReplayWorkflows } from "./subagents/workflow-replay-source.js";
 import { limitAgentTimelineItemContent } from "../../agent-timeline-content.js";
 import { readClaudeWorkflowResultFile } from "./subagents/workflow-output.js";
-import { buildClaudeFeatures, claudeModelSupportsFastMode } from "./feature-definitions.js";
+import { isClaudeChromeBridgeInstalled } from "./chrome-integration.js";
+import {
+  buildClaudeFeatures,
+  CLAUDE_CHROME_FEATURE_ID,
+  claudeModelSupportsFastMode,
+} from "./feature-definitions.js";
 import {
   buildBinaryDiagnosticRows,
   buildCommandResolutionDiagnosticRows,
@@ -1790,6 +1796,8 @@ export class ClaudeAgentClient implements AgentClient {
     return buildClaudeFeatures({
       modelId: claudeConfig.model,
       fastModeEnabled: claudeConfig.featureValues?.fast_mode === true,
+      chromeAvailable: isClaudeChromeBridgeInstalled(),
+      chromeEnabled: claudeConfig.featureValues?.[CLAUDE_CHROME_FEATURE_ID] === true,
     });
   }
 
@@ -2363,7 +2371,8 @@ class ClaudeAgentSession implements AgentSession {
   private readonly launchEnv?: Record<string, string>;
   private readonly agentId?: string;
   private readonly defaults?: { agents?: Record<string, AgentDefinition> };
-  private readonly runtimeSettings?: ProviderRuntimeSettings;
+  /** Changes only when the account is upgraded from a setup token to full sign-in. */
+  private runtimeSettings?: ProviderRuntimeSettings;
   private readonly persistSession?: boolean;
   private readonly logger: Logger;
   private readonly queryFactory?: ClaudeQueryFactory;
@@ -2371,7 +2380,7 @@ class ClaudeAgentSession implements AgentSession {
   private query: Query | null = null;
   private readonly runtimeSafety = new ClaudeRuntimeSafety();
   private processingSdkMessages = 0;
-  private readonly harnessEnvironment: Record<string, string>;
+  private harnessEnvironment: Record<string, string>;
   private readonly usageSessionKey = randomUUID();
   private childProcess: ChildProcess | null = null;
   private closePromise: Promise<void> | null = null;
@@ -2540,6 +2549,8 @@ class ClaudeAgentSession implements AgentSession {
     return buildClaudeFeatures({
       modelId: this.config.model,
       fastModeEnabled: this.config.featureValues?.fast_mode === true,
+      chromeAvailable: isClaudeChromeBridgeInstalled(),
+      chromeEnabled: this.chromeIntegrationEnabled(),
     });
   }
 
@@ -2911,6 +2922,10 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   async setFeature(featureId: string, value: unknown): Promise<void> {
+    if (featureId === CLAUDE_CHROME_FEATURE_ID) {
+      this.applyChromeFeature(Boolean(value));
+      return;
+    }
     if (featureId !== "fast_mode") {
       throw new Error(`Unknown Claude feature: ${featureId}`);
     }
@@ -2923,6 +2938,33 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     await this.applyFastModeFeature(enabled);
+  }
+
+  // `--chrome` is a launch flag, so the change takes effect when the next turn starts a new CLI
+  // process. The session ID is preserved, so the conversation continues.
+  private applyChromeFeature(enabled: boolean): void {
+    if (enabled && !isClaudeChromeBridgeInstalled()) {
+      throw new Error(
+        "Claude in Chrome is not set up on this machine. Install the extension and run `claude --chrome` once.",
+      );
+    }
+    if (this.chromeIntegrationEnabled() === enabled) return;
+    this.config.featureValues = {
+      ...this.config.featureValues,
+      [CLAUDE_CHROME_FEATURE_ID]: enabled,
+    };
+    this.queryRestartNeeded = true;
+    this.cachedRuntimeInfo = null;
+  }
+
+  private chromeIntegrationEnabled(): boolean {
+    return this.config.featureValues?.[CLAUDE_CHROME_FEATURE_ID] === true;
+  }
+
+  private applyChromeLaunchArg(options: ClaudeOptions): void {
+    if (!this.chromeIntegrationEnabled() || !isClaudeChromeBridgeInstalled()) return;
+    // A null value passes the bare `--chrome` flag to the Claude CLI.
+    options.extraArgs = { ...options.extraArgs, chrome: null };
   }
 
   private async applyFastModeFeature(enabled: boolean, query?: Query): Promise<void> {
@@ -3676,10 +3718,26 @@ class ClaudeAgentSession implements AgentSession {
     if (this.closed) throw new Error("Claude session is closed");
   }
 
+  /**
+   * A session started on a setup token follows its account to full sign-in once the account is
+   * upgraded. The changed credential digest below then recreates the CLI with the same session ID.
+   */
+  private adoptUpgradedSignIn(): void {
+    if (claudeSignInMode(this.harnessEnvironment) === "full") return;
+    if (!claudeAccountUpgradedToFullSignIn(claudeConfigDir(this.harnessEnvironment))) return;
+    this.runtimeSettings = {
+      ...this.runtimeSettings,
+      env: { ...this.runtimeSettings?.env, [CLAUDE_SIGN_IN_ENV]: "full" },
+    };
+    this.harnessEnvironment = this.buildSdkEnv();
+    this.logger.info("Claude account upgraded to full sign-in; the next query uses it");
+  }
+
   private async ensureQuery(launchMode: PermissionMode = this.currentMode): Promise<Query> {
     this.assertOpen();
     await this.ensureHistoryReady();
     this.assertOpen();
+    this.adoptUpgradedSignIn();
     const setupToken = await readClaudeSetupToken(this.harnessEnvironment);
     this.assertOpen();
     const credentialDigest = setupToken
@@ -3927,6 +3985,7 @@ class ClaudeAgentSession implements AgentSession {
     if (this.config.mcpServers) {
       base.mcpServers = this.normalizeMcpServers(this.config.mcpServers);
     }
+    this.applyChromeLaunchArg(base);
 
     if (this.config.model) {
       base.model = this.config.model;

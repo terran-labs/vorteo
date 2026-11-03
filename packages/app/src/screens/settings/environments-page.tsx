@@ -57,7 +57,7 @@ export function EnvironmentsPane({ onHostRemoved }: { onHostRemoved: () => void 
         testID={`settings-environment-${selected.serverId}`}
       >
         <HostSettingsPage serverId={selected.serverId} onHostRemoved={onHostRemoved} />
-        <InstallationSettingsStatus>
+        <InstallationSettingsStatus showStatus>
           <EnvironmentResourceExclusions serverId={selected.serverId} />
         </InstallationSettingsStatus>
       </SettingsSection>

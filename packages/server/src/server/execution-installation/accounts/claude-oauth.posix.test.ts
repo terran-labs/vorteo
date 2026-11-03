@@ -19,7 +19,11 @@ import { DaemonConfigStore } from "../../daemon-config-store.js";
 import { createRequireBearerMiddleware, hashDaemonPassword } from "../../auth.js";
 import { readInstallationSettings } from "../settings/projection.js";
 import type { InstallationSettingsAdmission } from "../settings/admission.js";
-import { createClaudeAccount } from "../../../services/provider-login/create-account.js";
+import {
+  createClaudeAccount,
+  upgradeClaudeAccount,
+} from "../../../services/provider-login/create-account.js";
+import { readClaudeSetupToken } from "../../agent/providers/claude/setup-token-runtime.js";
 import { CLAUDE_SIGN_IN_ENV } from "../../agent/providers/claude/sign-in-mode.js";
 import { mountClaudeOAuthConsumer } from "./claude-oauth-consumer.js";
 import { mountClaudeSetupConsumer } from "./claude-setup-consumer.js";
@@ -67,8 +71,11 @@ async function fixture(
     },
   });
   const settings = readInstallationSettings(initial);
+  let signIn = options.signIn;
+  let revision = 1;
   const authority = (excluded: boolean): InstallationSettingsAdmission => ({
     ...binding,
+    revision,
     installationInstructions: "",
     settings: {
       ...settings,
@@ -79,7 +86,7 @@ async function fixture(
           accountSetup: {
             provider: "claude",
             creationId,
-            ...(options.signIn === "setup-token" ? {} : { signIn: "full" as const }),
+            ...(signIn === "setup-token" ? {} : { signIn: "full" as const }),
           },
           bindings: { dev: providerId },
           policy: { enabled: true, label: "Max" },
@@ -130,6 +137,13 @@ async function fixture(
     post,
     exclude: (excluded: boolean) => {
       current = authority(excluded);
+    },
+    /** The coordinator switching the definition to full sign-in in a new settings revision. */
+    upgradeDefinition: () => {
+      signIn = "full";
+      revision += 1;
+      current = authority(false);
+      return revision;
     },
     project: (generation: number, rotation: number, value: unknown) =>
       post("/api/installation/claude/oauth/projection", {
@@ -212,6 +226,84 @@ it("returns only the full sign-in binding's exact path, never a credential", asy
   expect((await f.post(route, { ...f.scope, policyRevision: 2 })).status).toBe(409);
   const token = await fixture({ signIn: "setup-token" });
   expect((await token.post(route, token.scope)).status).toBe(409);
+});
+
+it("returns a setup-token binding's path only through the upgrade route", async () => {
+  const token = await fixture({ signIn: "setup-token" });
+  const route = "/api/installation/claude/oauth/upgrade-binding";
+  expect((await token.post(route, token.scope)).status).toBe(409);
+  await createClaudeAccount({
+    paseoHome: token.paseoHome,
+    store: token.store,
+    creationId: token.creationId,
+    name: "Claude 1",
+  });
+  const response = await token.post(route, token.scope);
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ providerId: token.providerId, configDir: token.home });
+  // The ordinary route still requires a full sign-in definition and binding.
+  expect((await token.post("/api/installation/claude/oauth/binding", token.scope)).status).toBe(
+    409,
+  );
+  const full = await fixture();
+  await createClaudeAccount({
+    paseoHome: full.paseoHome,
+    store: full.store,
+    creationId: full.creationId,
+    name: "Max",
+    signIn: "full",
+  });
+  expect((await full.post(route, full.scope)).status).toBe(409);
+});
+
+it("switches Dev from the delivered setup token to Host access when the definition upgrades", async () => {
+  const f = await fixture({ signIn: "setup-token" });
+  const credential = {
+    version: 1,
+    accessToken: `sk-ant-oat01-${"synthetic".repeat(8)}`,
+    createdAt: 1,
+  };
+  const setup = (revision: number, value: typeof credential | null) =>
+    f.post("/api/installation/claude/setup-token", {
+      ...f.scope,
+      revision,
+      policyRevision: revision,
+      credential: value,
+    });
+  expect((await setup(1, credential)).status).toBe(200);
+  writeFileSync(join(f.home, "history-preserved"), "history");
+  const bindingEnv = () => f.store.get().providers[f.providerId]?.env as Record<string, string>;
+  await expect(readClaudeSetupToken(bindingEnv())).resolves.toEqual(credential);
+
+  const revision = f.upgradeDefinition();
+  const scope = { ...f.scope, policyRevision: revision };
+  const project = (value: unknown) =>
+    f.post("/api/installation/claude/oauth/projection", {
+      ...scope,
+      generation: 1,
+      rotation: 1,
+      access: value,
+    });
+  // Until settings reconcile switches the local binding, Dev refuses Host access.
+  expect((await project(access("synthetic-access"))).status).toBe(409);
+  await upgradeClaudeAccount({
+    paseoHome: f.paseoHome,
+    store: f.store,
+    creationId: f.creationId,
+    name: "Claude 1",
+  });
+  expect(bindingEnv()[CLAUDE_SIGN_IN_ENV]).toBe("full");
+  expect(bindingEnv().CLAUDE_CONFIG_DIR).toBe(f.home);
+  expect((await setup(revision, credential)).status).toBe(409);
+  expect((await setup(revision, null)).status).toBe(200);
+  expect(() => readFileSync(join(f.home, ".vorteo-auth", "claude-setup-token.json"))).toThrow();
+  expect((await project(access("synthetic-access"))).status).toBe(200);
+  expect(
+    JSON.parse(readFileSync(join(f.home, ".credentials.json"), "utf8")).claudeAiOauth.accessToken,
+  ).toBe("synthetic-access");
+  // Full sign-in never injects a setup token, and history stays in the same directory.
+  await expect(readClaudeSetupToken(bindingEnv())).resolves.toBeNull();
+  expect(readFileSync(join(f.home, "history-preserved"), "utf8")).toBe("history");
 });
 
 it("never delivers a setup token to a full sign-in definition", async () => {

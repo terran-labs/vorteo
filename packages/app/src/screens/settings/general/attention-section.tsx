@@ -1,5 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
+import { SettingsCollapsibleRow } from "@/components/settings/collapsible-row";
 import { Button } from "@/components/ui/button";
 import { useRestartsAwaitingApproval } from "@/execution-installation/panel";
 import {
@@ -27,13 +28,20 @@ function pluralize(count: number, noun: string): string {
 }
 
 /** Failing providers that are on. One the owner never enabled and the Host cannot use is off. */
-function useProviderAttentionItems(): AttentionItem[] {
+function useProviderAttentionItems(): AttentionItem[] | null {
   const hosts = useHosts();
   const serverId = installationDefaultServerId(readExecutionInstallation()) ?? hosts[0]?.serverId;
-  const { entries } = useProvidersSnapshot(serverId ?? null);
+  const { entries, isLoading, error: providerError } = useProvidersSnapshot(serverId ?? null);
   const shared = useInstallationSettings();
   const detection = useProviderDetection(shared.installation?.environments ?? NO_ENVIRONMENTS);
-  return providersNeedingAttention({
+  // Null until the first answer; afterwards a refetch keeps the last answer on screen.
+  const previous = useRef<AttentionItem[] | null>(null);
+  if (!serverId) return [];
+  const waitingForSettings = shared.installation && !shared.data && !shared.error;
+  const waitingForProviders = serverId && !entries && isLoading && !providerError;
+  if (waitingForSettings || waitingForProviders) return previous.current;
+
+  const items = providersNeedingAttention({
     entries: entries ?? [],
     serverId: serverId ?? "",
     definitions: shared.data?.settings?.providerDefinitions,
@@ -44,9 +52,11 @@ function useProviderAttentionItems(): AttentionItem[] {
     hint: entry.error ?? "This account cannot start agents.",
     pane: "accounts.providers",
   }));
+  previous.current = items;
+  return items;
 }
 
-function useAttentionItems(): AttentionItem[] {
+function useAttentionItems(): AttentionItem[] | null {
   const restarts = useRestartsAwaitingApproval();
   const update = useVortonUpdate();
   const providerItems = useProviderAttentionItems();
@@ -64,11 +74,13 @@ function useAttentionItems(): AttentionItem[] {
     items.push({
       id: "update",
       label: "Vorteo update available",
-      hint: `${pluralize(update.data?.incomingCommits ?? 0, "new commit")} in ${update.data?.latestRelease ?? "main"}.`,
+      hint: `${pluralize(update.data?.incomingCommits ?? 0, "new commit")} in ${
+        update.data?.latestRelease ?? "main"
+      }.`,
       pane: "maintenance.updates",
     });
   }
-  return [...items, ...providerItems];
+  return providerItems ? [...items, ...providerItems] : null;
 }
 
 function AttentionRow({
@@ -89,19 +101,32 @@ function AttentionRow({
 }
 
 /**
- * What needs the owner's action across Settings, at the top of General. Renders
- * nothing when all is well, so General leads with everyday defaults.
+ * What needs the owner's action across Settings, at the top of General. It always renders one
+ * row so General never shifts when checks finish: checking, all clear, the single item, or a
+ * folded list the owner opens themselves.
  */
 export function AttentionSection({ onOpenPane }: { onOpenPane: (pane: string) => void }) {
   const items = useAttentionItems();
-  if (items.length === 0) return null;
-  return (
-    <SettingsSection title="Needs attention" testID="settings-attention">
-      <SettingsCard>
+  let row;
+  if (items === null)
+    row = <SettingsRow label="Checking..." hint="Looking for anything that needs you." />;
+  else if (items.length === 0)
+    row = <SettingsRow label="All clear" hint="Nothing needs your attention." />;
+  else if (items.length === 1) row = <AttentionRow item={items[0]} onOpenPane={onOpenPane} />;
+  else
+    row = (
+      <SettingsCollapsibleRow
+        label={`${items.length} things need attention`}
+        hint="Open to review each item."
+      >
         {items.map((item) => (
           <AttentionRow key={item.id} item={item} onOpenPane={onOpenPane} />
         ))}
-      </SettingsCard>
+      </SettingsCollapsibleRow>
+    );
+  return (
+    <SettingsSection title="Status" testID="settings-attention">
+      <SettingsCard>{row}</SettingsCard>
     </SettingsSection>
   );
 }

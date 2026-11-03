@@ -101,8 +101,12 @@
               // TODO: live file-change classification is a synchronous event mapper; move the probe to async event ingestion.
               "server/agent/providers/claude/agent.ts": ["existsSync"],
               // TODO: new-session construction still resolves its project directory synchronously; move preparation before construction.
+              // TODO: Chrome integration checks one native-host manifest synchronously at session setup; move the probe to async startup.
+              "server/agent/providers/claude/chrome-integration.ts": ["existsSync"],
               "server/agent/providers/claude/project-dir.ts": ["realpathSync"],
               // TODO: live subagent output is read by a synchronous event mapper; add bounded async loading at ingestion.
+              // TODO: setup-token sign-in creates its private config directory synchronously; move it to the async sign-in boundary.
+              "server/agent/providers/claude/setup-token-runtime.ts": ["mkdirSync"],
               "server/agent/providers/claude/subagents/workflow-output.ts": [
                 "closeSync",
                 "openSync",
@@ -357,6 +361,16 @@
                 "realpathSync"
               ],
               // TODO: shared bootstrap authority: bind and flush private evidence through exact descriptors before authority transitions.
+              // TODO: main's dispatch failure reader scans recorded dispatch files synchronously; move it to the async coordinator journal boundary.
+              "server/execution-installation/coordinator-bootstrap-dispatch-failure.ts": [
+                "readFileSync",
+                "readdirSync"
+              ],
+              // TODO: main's dispatch status reader scans recorded dispatch files synchronously; convert with the failure reader.
+              "server/execution-installation/coordinator-bootstrap-dispatch-status.ts": [
+                "readFileSync",
+                "readdirSync"
+              ],
               "server/execution-installation/coordinator-bootstrap-evidence.ts": [
                 "closeSync",
                 "fsyncSync",
@@ -525,6 +539,8 @@
                 "realpathSync"
               ],
               // Handoff control-process entrypoint: read its private handoff input before executing the tracked workflow.
+              // TODO: main's dispatch notifier reads one receipt synchronously; convert with the dispatch readers.
+              "server/execution-installation/coordinator-dispatch-notifier.ts": ["readFileSync"],
               "server/execution-installation/coordinator-handoff-main.ts": ["readFileSync"],
               // TODO: retained handoff authority: inspect and replace only the selected release links and owned handoff files.
               "server/execution-installation/coordinator-handoff.ts": [
@@ -1230,6 +1246,14 @@
     // 117 retained files. Future work should remove entries as contracts migrate to shared primitives.
     {
       "files": [
+        // retained feedback debt: main's shared provider section row; no standard feedback is claimed during merge lint.
+        "packages/app/src/agent-profiles/settings/shared-provider-section.tsx",
+        // retained feedback debt: main's owner lock badge keeps its fixed size in both states; no standard feedback is claimed during merge lint.
+        "packages/app/src/components/settings/owner-lock.tsx",
+        // retained feedback debt: main's Quotas card footer actions; no standard feedback is claimed during merge lint.
+        "packages/app/src/provider-usage/quota-footer.tsx",
+        // retained feedback debt: main's System view rows; the Settings redesign owns their final controls.
+        "packages/app/src/screens/settings/system/system-view.tsx",
         "packages/app/src/components/ui/**/*.{ts,tsx}",
         "packages/app/src/**/*.{test,spec}.{ts,tsx}",
         "packages/app/src/agent-profiles/settings/agent-profile-appearance-field.tsx",

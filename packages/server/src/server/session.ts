@@ -41,6 +41,7 @@ import { setAgentGoalWithContext } from "./agent/agent-goal.js";
 import {
   createCodexAccount,
   createClaudeAccount,
+  upgradeClaudeAccount,
 } from "../services/provider-login/create-account.js";
 import type { ProviderLoginService } from "../services/provider-login/service.js";
 import { WorkspaceTitleSuggestionError } from "./workspace-title-suggestions.js";
@@ -901,6 +902,7 @@ export class Session {
   private readonly workspaceUpdateTails = new Map<string, Promise<void>>();
   private readonly terminalManager: TerminalManager | null;
   private readonly providerSnapshotManager: ProviderSnapshotManager;
+  private readonly providerUsageService: ProviderUsageService;
   private readonly serviceProxy: ServiceProxySubsystem | null;
   private readonly scriptRuntimeStore: WorkspaceScriptRuntimeStore | null;
   private readonly getDaemonTcpPort: (() => number | null) | null;
@@ -1347,6 +1349,7 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.providerSnapshotManager = providerSnapshotManager;
+    this.providerUsageService = providerUsageService;
     this.serviceProxy = serviceProxy ?? null;
     this.scriptRuntimeStore = scriptRuntimeStore ?? null;
     this.workspaceSetupObservation = workspaceSetupObservation ?? new WorkspaceSetupObservation();
@@ -3298,6 +3301,28 @@ export class Session {
           });
         });
       }
+      case "provider.claude.upgrade_account.request":
+        return upgradeClaudeAccount({
+          paseoHome: this.paseoHome,
+          store: this.daemonConfigStore,
+          creationId: msg.creationId,
+          name: msg.name,
+        }).then((account) => {
+          // Usage and status now read the account's full sign-in instead of its setup token.
+          this.providerUsageService.invalidate();
+          void this.providerSnapshotManager
+            .refreshSettingsSnapshot({ providers: [account.providerId] })
+            .catch((error) => {
+              this.sessionLogger.warn(
+                { error, providerId: account.providerId },
+                "Could not refresh the provider catalog after a Claude sign-in upgrade",
+              );
+            });
+          return this.emit({
+            type: "provider.claude.upgrade_account.response",
+            payload: { requestId: msg.requestId, ...account },
+          });
+        });
       default:
         return undefined;
     }

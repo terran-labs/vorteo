@@ -53,6 +53,20 @@ describe("execCommand", () => {
     await expect(execCommand(command.command, command.args, { timeout: 100 })).rejects.toThrow();
   });
 
+  test("stops the command when its signal is aborted", async () => {
+    const command =
+      process.platform === "win32"
+        ? { command: process.execPath, args: ["-e", "setTimeout(() => {}, 10_000)"] }
+        : { command: "sleep", args: ["10"] };
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = execCommand(command.command, command.args, { signal: controller.signal });
+    setTimeout(() => controller.abort(), 50);
+
+    await expect(pending).rejects.toMatchObject({ code: "ABORT_ERR" });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   test("runs the command in the provided cwd", async () => {
     const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "spawn-test-")));
     tempDirs.push(cwd);

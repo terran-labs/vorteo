@@ -2,6 +2,7 @@ import type {
   CoordinatorBootstrapRequest,
   CoordinatorBootstrapStage,
 } from "@getpaseo/protocol/coordinator-bootstrap";
+import { BootstrapCoordinatorBusy } from "./coordinator-bootstrap-errors.js";
 import {
   assertFrozenCoordinatorIdle,
   BootstrapRequestConflict,
@@ -33,6 +34,10 @@ export interface BootstrapExecutorFailure {
 }
 
 export interface BootstrapExecutorOperations {
+  /** Called after recorded installation work refused the claim. Resolve true to try the
+   * same exact claim again, false to stop. Busy refusal mutates nothing, and the claim
+   * CAS still requires the unchanged approval, so a cancellation always wins. */
+  waitForClaimRetry?(attempt: number): Promise<boolean>;
   /** Retain only bounded categories, never exception text or command arguments. */
   recordFailure?(
     request: CoordinatorBootstrapRequest,
@@ -59,6 +64,23 @@ export interface BootstrapExecutorOperations {
   resumePrevious(request: CoordinatorBootstrapRequest): Promise<void>;
 }
 
+/** Only positive busy evidence is retried. Any other refusal, including a changed or
+ * canceled approval, ends dispatch, and a claimed request is never claimed again. */
+async function claimWhenIdle(
+  requests: CoordinatorBootstrapRequests,
+  approval: Pick<CoordinatorBootstrapRequest, "id" | "revision" | "planSha256">,
+  waitForRetry: BootstrapExecutorOperations["waitForClaimRetry"],
+): Promise<CoordinatorBootstrapRequest> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await requests.claimDispatch(approval);
+    } catch (error) {
+      if (!(error instanceof BootstrapCoordinatorBusy) || !waitForRetry) throw error;
+      if (!(await waitForRetry(attempt))) throw error;
+    }
+  }
+}
+
 /** Runs a newly claimed approval once. Recovery never calls this with an
  * existing execution record: an ambiguous side effect must not be repeated. */
 export async function executeCoordinatorBootstrap(
@@ -69,7 +91,7 @@ export async function executeCoordinatorBootstrap(
   const prepared = requests.list().find((item) => item.id === approval.id);
   if (prepared?.plan.bootRecovery && !operations.armBootRecovery)
     throw new BootstrapRequestConflict("This executor cannot arm approved startup recovery");
-  let request = await requests.claimDispatch(approval);
+  let request = await claimWhenIdle(requests, approval, operations.waitForClaimRetry);
   const advance = (stage: CoordinatorBootstrapStage) => {
     if (!request.execution) throw new BootstrapRequestConflict("Bootstrap execution is missing");
     request = requests.advanceDispatch(

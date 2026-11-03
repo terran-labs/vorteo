@@ -1,9 +1,13 @@
 import { installationConnectionStatus } from "./claude-connection-status";
 import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { useProviderLogin, useSharedInstallationSignIn } from "./use-provider-login";
+import {
+  useClaudeSignInUpgradeAvailable,
+  useProviderLogin,
+  useSharedInstallationSignIn,
+} from "./use-provider-login";
 import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -83,6 +87,8 @@ function AccountLoginContent({
   provider = "codex",
 }: LoginPanelContentProps) {
   const login = useProviderLogin(serverId, providerId, provider);
+  // While an upgrade runs, its own panel replaces the setup-token connect action.
+  const [upgrading, setUpgrading] = useState(false);
   const { state, connected } = login;
   const showRefresh = login.readFailed || login.actionFailed;
   const label = provider === "claude" ? "Claude" : "Codex";
@@ -129,7 +135,15 @@ function AccountLoginContent({
           {installationConnectionStatus(login.synchronization, label)}
         </Text>
       ) : null}
-      <LoginAction login={login} label={label} />
+      {upgrading ? null : <LoginAction login={login} label={label} />}
+      {login.sharedClaude ? (
+        <ClaudeSignInUpgrade
+          serverId={serverId}
+          providerId={providerId}
+          engaged={upgrading}
+          onEngage={setUpgrading}
+        />
+      ) : null}
       {login.shared && login.synchronization?.connected ? (
         <Button variant="outline" onPress={login.signOut} disabled={login.busy}>
           Disconnect subscription from this installation
@@ -155,16 +169,19 @@ function loginActionLabel(login: ReturnType<typeof useProviderLogin>, provider: 
 function LoginAction({
   login,
   label: provider,
+  startLabel,
 }: {
   login: ReturnType<typeof useProviderLogin>;
   label: string;
+  /** Replaces the default start label, such as for an upgrade. */
+  startLabel?: string;
 }) {
   const { state, connected, busy } = login;
   if (state?.status === "succeeded" && !login.shared) return null;
   const active =
     state?.status === "starting" || state?.status === "waiting" || state?.status === "verifying";
   const canStart = Boolean(state && !login.readFailed);
-  const label = loginActionLabel(login, provider);
+  const label = startLabel ?? loginActionLabel(login, provider);
   return active ? (
     <Button
       variant="outline"
@@ -215,6 +232,90 @@ function LoginProgress({
     <Text accessibilityLiveRegion="polite" style={styles.text}>
       {message}
     </Text>
+  );
+}
+
+/**
+ * Upgrades a setup-token Claude account to full sign-in in place. The account keeps its
+ * connection, directory, history and profiles; the setup token keeps working until it succeeds.
+ */
+function ClaudeSignInUpgrade({
+  serverId,
+  providerId,
+  engaged,
+  onEngage,
+}: {
+  serverId: string | null;
+  providerId: string;
+  engaged: boolean;
+  onEngage(engaged: boolean): void;
+}) {
+  const available = useClaudeSignInUpgradeAvailable(serverId, providerId);
+  if (!available && !engaged) return null;
+  return (
+    <ClaudeSignInUpgradeFlow serverId={serverId} providerId={providerId} onEngage={onEngage} />
+  );
+}
+
+function upgradeMessage(state: ProviderLoginState | undefined): string | null {
+  if (state?.status === "starting") return "Requesting your Claude sign-in link…";
+  if (state?.status === "verifying")
+    return "Sign-in received. Checking the account and switching it to full sign-in…";
+  if (state?.status === "succeeded")
+    return "Upgraded to full sign-in. This account kept its history and now reports usage. Dev switches over when it synchronizes.";
+  if (state?.status === "cancelled") return "Upgrade cancelled. Your setup token still works.";
+  if (state?.status === "failed") return `${state.message} Your setup token still works.`;
+  return null;
+}
+
+function ClaudeSignInUpgradeFlow({
+  serverId,
+  providerId,
+  onEngage,
+}: {
+  serverId: string | null;
+  providerId: string;
+  onEngage(engaged: boolean): void;
+}) {
+  const login = useProviderLogin(serverId, providerId, "claude", "upgrade");
+  const { state } = login;
+  const status = state?.status;
+  // A failed or cancelled upgrade hands the setup-token controls back.
+  const engaged =
+    status === "starting" ||
+    status === "waiting" ||
+    status === "verifying" ||
+    status === "succeeded";
+  useEffect(() => {
+    onEngage(engaged);
+  }, [engaged, onEngage]);
+  const message = upgradeMessage(state);
+  const retry = status === "failed" || status === "cancelled";
+  return (
+    <View style={styles.body} testID="claude-sign-in-upgrade">
+      <Text style={styles.heading}>Upgrade to full sign-in</Text>
+      <Text style={styles.text}>{"Shows your usage and keeps this account's history."}</Text>
+      {state?.status === "waiting" && state.inputRequired ? (
+        <BrowserCodeChallenge key={state.attemptId} state={state} login={login} />
+      ) : null}
+      {message ? (
+        <Text accessibilityLiveRegion="polite" style={styles.text}>
+          {message}
+        </Text>
+      ) : null}
+      {login.readFailed || login.actionFailed ? (
+        <Text style={styles.warning}>
+          The upgrade request could not be confirmed. Your setup token still works. Try again.
+        </Text>
+      ) : null}
+      {status === "succeeded" ? null : (
+        <LoginAction
+          login={login}
+          label="Claude"
+          startLabel={retry ? "Try the upgrade again" : "Upgrade to full sign-in"}
+        />
+      )}
+    </View>
   );
 }
 
@@ -354,6 +455,11 @@ const styles = StyleSheet.create((theme) => ({
   body: { gap: theme.spacing[3] },
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
+  heading: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.medium,
+  },
   warning: { color: theme.colors.destructive, fontSize: theme.fontSize.base },
   code: {
     color: theme.colors.foreground,

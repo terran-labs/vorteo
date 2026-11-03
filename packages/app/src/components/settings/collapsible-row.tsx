@@ -10,6 +10,7 @@ interface SettingsCollapsibleRowProps {
   label: string;
   /** A short status shown before the chevron, so the row says something while collapsed. */
   summary?: string;
+  hint?: string;
   defaultExpanded?: boolean;
   testID?: string;
   /** The rows revealed underneath, separated like the rows of a `SettingsCard` and laid out as nested rows. */
@@ -24,6 +25,7 @@ interface SettingsCollapsibleRowProps {
 export function SettingsCollapsibleRow({
   label,
   summary,
+  hint,
   defaultExpanded = false,
   testID,
   children,
@@ -41,6 +43,7 @@ export function SettingsCollapsibleRow({
     <View testID={testID}>
       <SettingsRowHeader
         label={label}
+        hint={hint}
         summary={summary}
         onPress={toggle}
         expanded={expanded}

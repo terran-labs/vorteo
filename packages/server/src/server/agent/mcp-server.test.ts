@@ -493,6 +493,7 @@ function buildAgentManagerSpies() {
     archiveAgent: vi.fn().mockResolvedValue({ archivedAt: new Date().toISOString() }),
     notifyAgentState: vi.fn(),
     getAgent: vi.fn(),
+    needsTimelineHydration: vi.fn().mockReturnValue(false),
     listAgents: vi.fn().mockReturnValue([]),
     getTimeline: vi.fn().mockReturnValue([]),
     resumeAgentFromPersistence: vi.fn(),
@@ -2119,6 +2120,42 @@ describe("create_agent MCP tool", () => {
       undefined,
       { workspaceId: "workspace-created" },
     );
+  });
+
+  it("refuses agent requests to turn on the owner's Chrome", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      ensureWorkspaceForCreate,
+      logger,
+    });
+
+    await expect(
+      registeredTool(server, "create_agent").handler({
+        ...detachedDirectoryWorkspace(existingCwd),
+        title: "Chrome test",
+        provider: "claude/opus",
+        initialPrompt: "Do work",
+        background: true,
+        settings: { features: { chrome: true } },
+      }),
+    ).rejects.toThrow("Agents cannot turn on chrome");
+    await expect(
+      registeredTool(server, "update_agent").handler({
+        agentId: "agent-1",
+        settings: { features: { chrome: true } },
+      }),
+    ).rejects.toThrow("Agents cannot turn on chrome");
+    expect(spies.agentManager.createAgent).not.toHaveBeenCalled();
+    expect(spies.agentManager.setAgentFeature).not.toHaveBeenCalled();
+
+    await registeredTool(server, "update_agent").handler({
+      agentId: "agent-1",
+      settings: { features: { chrome: false } },
+    });
+    expect(spies.agentManager.setAgentFeature).toHaveBeenCalledWith("agent-1", "chrome", false);
   });
 
   it("returns create_agent structured content with full provider modes", async () => {
@@ -6270,7 +6307,7 @@ describe("create_schedule MCP tool", () => {
     );
   });
 
-  it("inherits the caller provider, model, and features when provider is omitted", async () => {
+  it("inherits the caller provider, model, and features except Chrome when provider is omitted", async () => {
     const { agentManager, agentStorage, spies } = createTestDeps();
     spies.agentManager.getAgent.mockReturnValue({
       id: "parent-agent",
@@ -6282,7 +6319,7 @@ describe("create_schedule MCP tool", () => {
       config: {
         title: "Parent agent",
         model: "openai/gpt-5.5",
-        featureValues: { auto_accept: true },
+        featureValues: { auto_accept: true, chrome: true },
       },
     } as ManagedAgent);
     const createOrReplace = vi.fn(async (input: CreateScheduleInput) =>

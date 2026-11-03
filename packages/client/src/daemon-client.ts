@@ -1417,6 +1417,7 @@ export function supportsUsageReports(features: ServerInfoStatusPayload["features
 /** Daemon features a client negotiates before reviewing coordinator plans that use them. */
 const BOOTSTRAP_REVIEW_FEATURES = [
   ["coordinatorBootstrapAutomaticStatus", "automaticStatus"],
+  ["coordinatorBootstrapDispatchStatus", "dispatchStatus"],
   ["coordinatorBootstrapFactoryAdoption", "factoryRuntimeAdoption"],
   ["coordinatorBootstrapCompatibleRecovery", "compatibleRecovery"],
   ["coordinatorBootstrapPreviewMonitor", "previewMonitor"],
@@ -6781,6 +6782,15 @@ export class DaemonClient {
         name,
         ...(signIn ? { signIn } : {}),
       },
+    });
+  }
+
+  /** Coordinator-only: applies a full sign-in upgrade the installation definition already records. */
+  async upgradeClaudeAccount(creationId: string, name: string) {
+    if (this.lastServerInfoMessage?.features?.claudeSignInUpgrade !== true)
+      throw new Error("Update the host to upgrade Claude accounts to full sign-in.");
+    return this.sendNamespacedCorrelatedSessionRequest<"provider.claude.upgrade_account.response">({
+      message: { type: "provider.claude.upgrade_account.request", creationId, name },
     });
   }
 

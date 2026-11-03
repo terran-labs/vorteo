@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/button";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
 import { openExternalUrl } from "@/utils/open-external-url";
-import { useFormPreferences } from "@/hooks/use-form-preferences";
 
 import { buildUpdatePrompt, VORTON_REPOSITORY, type VortonUpdate } from "./check";
 import { useVortonUpdate, VORTON_BUILD_COMMIT } from "./use-update";
@@ -30,7 +29,6 @@ function statusText(update: VortonUpdate | undefined, t: TFunction): string {
 }
 
 export function VortonUpdatesSection() {
-  const { isLoading: preferencesLoading } = useFormPreferences();
   const { t } = useTranslation();
   const update = useVortonUpdate();
   const prepareTask = useMaintenanceTask();
@@ -55,14 +53,15 @@ export function VortonUpdatesSection() {
         : `${VORTON_REPOSITORY}/releases/latest`;
     void openExternalUrl(url);
   }, [update.data]);
-  if (preferencesLoading) return null;
   let message = statusText(update.data, t);
   if (!VORTON_BUILD_COMMIT) message = t("settings.about.vortonUpdates.unknown");
   // The button says "Checking GitHub..." during a check; the status keeps the
   // last result so the same words do not appear twice.
   else if (checking && !update.data) message = t("settings.about.vortonUpdates.checking");
   else if (update.isError)
-    message = t("settings.about.vortonUpdates.failed", { error: update.error.message });
+    message = t("settings.about.vortonUpdates.failed", {
+      error: update.error.message,
+    });
   return (
     <SettingsSection
       title={t("settings.about.vortonUpdates.title")}
@@ -119,7 +118,11 @@ export function VortonUpdatesSection() {
             <View style={styles.feedbackOverlay} pointerEvents="none">
               <UpdateSuccessBadge
                 label={t(
-                  `settings.about.vortonUpdates.${update.feedback.result?.status === "current" ? "confirmedCurrent" : "checkComplete"}`,
+                  `settings.about.vortonUpdates.${
+                    update.feedback.result?.status === "current"
+                      ? "confirmedCurrent"
+                      : "checkComplete"
+                  }`,
                 )}
               />
             </View>

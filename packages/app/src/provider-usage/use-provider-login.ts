@@ -1,5 +1,10 @@
 import { readExecutionInstallation } from "@/execution-installation/policy";
-import { claudeFullSignInAvailable, claudeSetupRequest } from "./claude-setup-login";
+import {
+  claudeFullSignInAvailable,
+  claudeSetupRequest,
+  claudeUpgradeAvailable,
+  claudeUpgradeRequest,
+} from "./claude-setup-login";
 import {
   codexInstallationRequest,
   codexInstallationSignInAvailable,
@@ -9,7 +14,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
 import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
-import { providerUsageQueryKey } from "./use-provider-usage";
+import { useForceProviderUsageRefresh } from "./use-provider-usage";
 
 /**
  * Whether this account signs in once for the installation through the coordinator. Claude always
@@ -69,6 +74,50 @@ export function useInstallationConnectOnce(enabled: boolean): {
   };
 }
 
+/**
+ * Whether a shared setup-token Claude account can be upgraded to full sign-in in place. False
+ * until the coordinator confirms that it and every environment's daemon support the upgrade.
+ */
+export function useClaudeSignInUpgradeAvailable(serverId: string | null, providerId: string) {
+  const installation = readExecutionInstallation();
+  const shared = useSharedInstallationSignIn(serverId, "claude");
+  const query = useFetchQuery({
+    queryKey: claudeUpgradeAvailabilityKey(installation?.installationId, serverId, providerId),
+    queryFn: () => claudeUpgradeAvailable(serverId!, providerId),
+    enabled: shared,
+    staleTimeMs: 60_000,
+    dataShape: "value",
+    retry: false,
+  });
+  return query.data === true;
+}
+
+function claudeUpgradeAvailabilityKey(
+  installationId: string | undefined,
+  serverId: string | null,
+  providerId: string,
+) {
+  return ["claude-sign-in-upgrade", installationId, serverId, providerId];
+}
+
+/** "upgrade" runs a setup-token Claude account's in-place upgrade to full sign-in. */
+export type ProviderLoginFlow = "connect" | "upgrade";
+
+async function installationLogin(
+  provider: "claude" | "codex",
+  flow: ProviderLoginFlow,
+  serverId: string,
+  providerId: string,
+  operation: "read" | "start" | "cancel" | "sign-out",
+  attempt?: { attemptId: string },
+): Promise<ProviderLoginState> {
+  if (flow === "upgrade") {
+    if (operation === "sign-out") throw new Error("An upgrade has no sign-out.");
+    return claudeUpgradeRequest(serverId, providerId, operation, attempt);
+  }
+  return (await installationRequest(provider, serverId, providerId, operation, attempt)).login;
+}
+
 function installationRequest(
   provider: "claude" | "codex",
   serverId: string,
@@ -81,10 +130,33 @@ function installationRequest(
     : codexInstallationRequest(serverId, providerId, operation, attempt);
 }
 
+interface SignInUsageRefreshInput {
+  login: ProviderLoginState | undefined;
+  environments: readonly { serverId: string; status: string }[] | undefined;
+  serverId: string | null;
+}
+
+/**
+ * Changes when a completed sign-in should show its usage: once on completion, and again when an
+ * installation sign-in reaches this host, since the credential arrives after the attempt ends.
+ */
+export function signInUsageRefreshKey({
+  login,
+  environments,
+  serverId,
+}: SignInUsageRefreshInput): string | null {
+  if (login?.status !== "succeeded") return null;
+  const delivered = environments?.some(
+    (environment) => environment.serverId === serverId && environment.status === "ready",
+  );
+  return `${login.attemptId}:${delivered ? "delivered" : "completed"}`;
+}
+
 export function useProviderLogin(
   serverId: string | null,
   providerId: string,
   provider: "claude" | "codex" = "codex",
+  flow: ProviderLoginFlow = "connect",
 ) {
   const client = useHostRuntimeClient(serverId ?? "");
   const hostConnected = useHostRuntimeIsConnected(serverId ?? "");
@@ -93,7 +165,13 @@ export function useProviderLogin(
   const sharedClaude = shared && provider === "claude";
   const connected = shared || hostConnected;
   const cache = useQueryClient();
-  const key = useMemo(() => ["providerLogin", serverId, providerId], [serverId, providerId]);
+  const key = useMemo(
+    () =>
+      flow === "upgrade"
+        ? ["providerLogin", serverId, providerId, flow]
+        : ["providerLogin", serverId, providerId],
+    [serverId, providerId, flow],
+  );
   const action = useMutation({
     gcTime: 0,
     mutationFn: async (operation: "start" | "cancel" | "sign-out" | { code: string }) => {
@@ -102,31 +180,27 @@ export function useProviderLogin(
       await cache.cancelQueries({ queryKey: key });
       if (operation === "sign-out") {
         if (!shared) throw new Error("Installation subscription connection required.");
-        return (await installationRequest(provider, serverId!, providerId, "sign-out")).login;
+        return installationLogin(provider, flow, serverId!, providerId, "sign-out");
       }
       if (operation === "start") {
-        if (shared)
-          return (await installationRequest(provider, serverId!, providerId, "start")).login;
+        if (shared) return installationLogin(provider, flow, serverId!, providerId, "start");
         return (await client!.startProviderLogin(providerId)).state;
       }
       const state = cache.getQueryData<ProviderLoginState>(key);
       if (!state || state.status === "idle")
         throw new Error("Refresh the sign-in status and try again.");
-      if (sharedClaude && typeof operation === "object")
-        return (
-          await claudeSetupRequest(serverId!, providerId, "submit", {
-            attemptId: state.attemptId,
-            code: operation.code,
-          })
-        ).login;
+      if (sharedClaude && typeof operation === "object") {
+        const submission = { attemptId: state.attemptId, code: operation.code };
+        if (flow === "upgrade")
+          return claudeUpgradeRequest(serverId!, providerId, "submit", submission);
+        return (await claudeSetupRequest(serverId!, providerId, "submit", submission)).login;
+      }
       if (shared && typeof operation === "object")
         throw new Error("Codex sign-in uses a device code and takes no pasted code.");
       if (shared)
-        return (
-          await installationRequest(provider, serverId!, providerId, "cancel", {
-            attemptId: state.attemptId,
-          })
-        ).login;
+        return installationLogin(provider, flow, serverId!, providerId, "cancel", {
+          attemptId: state.attemptId,
+        });
       if (typeof operation === "object")
         return (await client!.submitProviderLoginCode(providerId, state.attemptId, operation.code))
           .state;
@@ -138,7 +212,7 @@ export function useProviderLogin(
   const query = useFetchQuery({
     queryKey: key,
     queryFn: async () => {
-      if (shared) return (await installationRequest(provider, serverId!, providerId, "read")).login;
+      if (shared) return installationLogin(provider, flow, serverId!, providerId, "read");
       if (!client) throw new Error("Host unavailable");
       return (await client.readProviderLogin(providerId)).state;
     },
@@ -158,8 +232,8 @@ export function useProviderLogin(
     ],
     queryFn: async () =>
       (await installationRequest(provider, serverId!, providerId, "read")).connection,
-    enabled: shared,
-    refetchInterval: shared ? 2000 : false,
+    enabled: shared && flow === "connect",
+    refetchInterval: shared && flow === "connect" ? 2000 : false,
     staleTimeMs: 0,
     dataShape: "value",
     gcTime: 0,
@@ -185,12 +259,22 @@ export function useProviderLogin(
     reset();
     void refetch();
   }, [reset, refetch]);
-  const completedId = query.data?.status === "succeeded" ? query.data.attemptId : null;
+  const refreshKey = signInUsageRefreshKey({
+    login: query.data,
+    environments: synchronization.data?.environments,
+    serverId,
+  });
+  const refreshUsage = useForceProviderUsageRefresh(serverId);
   useEffect(() => {
-    if (!completedId) return;
-    void cache.invalidateQueries({ queryKey: providerUsageQueryKey(serverId) });
+    if (!refreshKey) return;
+    void refreshUsage();
     void cache.invalidateQueries({ queryKey: ["providerReset", serverId, providerId] });
-  }, [cache, completedId, serverId, providerId]);
+    // A completed upgrade is when a setup-token account starts reporting usage.
+    if (flow === "upgrade")
+      void cache.invalidateQueries({
+        queryKey: claudeUpgradeAvailabilityKey(installation?.installationId, serverId, providerId),
+      });
+  }, [cache, refreshKey, refreshUsage, serverId, providerId, flow, installation?.installationId]);
   return {
     state: query.data,
     /** One sign-in for the whole installation, through the coordinator. */

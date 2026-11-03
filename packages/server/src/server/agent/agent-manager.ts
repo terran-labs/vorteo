@@ -473,6 +473,12 @@ export interface AgentManagerOptions {
   getSharedProviderConfig?: () => MutableDaemonConfig;
   installationSettingsReader?: InstallationSettingsReader;
   assertWorkspaceArchiveAllowed?: (workspaceId: string) => Promise<void>;
+  /** Archive admission for one thread; falls back to the workspace check when absent. */
+  assertThreadArchiveAllowed?: (input: {
+    workspaceId: string;
+    agentId: string;
+    running: boolean;
+  }) => Promise<void>;
   pluginLifecycle?: PluginLifecycle;
   /** An internal workspace makes every agent created inside it internal. */
   clients?: ProviderClientMap;
@@ -950,6 +956,15 @@ export class AgentManager {
     reader: NonNullable<AgentManager["quotaReserveObservationReader"]>,
   ): void {
     this.quotaReserveObservationReader = reader;
+  }
+
+  private usageLimitObserver:
+    | ((provider: AgentProvider, stop: Extract<AgentStreamEvent, { type: "turn_failed" }>) => void)
+    | null = null;
+
+  /** Receives each live usage-limit stop, including internal and structured-generation runs. */
+  setUsageLimitObserver(observer: NonNullable<AgentManager["usageLimitObserver"]>): void {
+    this.usageLimitObserver = observer;
   }
 
   private async readQuotaReserveObservation(provider: AgentProvider) {
@@ -1581,11 +1596,13 @@ export class AgentManager {
   private readonly installationSettingsReader?: InstallationSettingsReader;
 
   readonly assertWorkspaceArchiveAllowed?: AgentManagerOptions["assertWorkspaceArchiveAllowed"];
+  private readonly assertThreadArchiveAllowed?: AgentManagerOptions["assertThreadArchiveAllowed"];
 
   constructor(options: AgentManagerOptions) {
     this.getSharedProviderConfig = options.getSharedProviderConfig;
     this.installationSettingsReader = options.installationSettingsReader;
     this.assertWorkspaceArchiveAllowed = options.assertWorkspaceArchiveAllowed;
+    this.assertThreadArchiveAllowed = options.assertThreadArchiveAllowed;
     this.now = options.now ?? Date.now;
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.registry = options.registry;
@@ -2877,6 +2894,34 @@ export class AgentManager {
     return agent ? { ...agent } : null;
   }
 
+  /**
+   * True when a registered, idle agent's provider history never loaded. A run in flight
+   * may hold rows the provider has not written yet, so the retry waits for it to finish.
+   */
+  needsTimelineHydration(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.historyPrimed || agent.session === null) return false;
+    if (agent.config.controllerExecutionId || this.hasInFlightRun(agentId)) return false;
+    return this.timelineStore.has(agentId);
+  }
+
+  /**
+   * Retries a history load that failed after the agent was registered. Turns recorded
+   * since the failure are also in the provider's transcript, so when any exist the replay
+   * replaces the timeline under a new epoch; clients then reset instead of keeping only
+   * the recent rows.
+   */
+  async retryTimelineHydration(
+    agentId: string,
+    options: { broadcast: () => boolean },
+  ): Promise<void> {
+    const replace = this.timelineStore.getLastItem(agentId) !== null;
+    await this.hydrateTimelineFromProvider(agentId, {
+      broadcast: options.broadcast,
+      ...(replace ? { force: true } : {}),
+    });
+  }
+
   async waitForAgentClose(agentId: string): Promise<void> {
     // Loading during reload must wait for the replacement, not resume another writer.
     await this.lifecycleMutationTails.get(agentId);
@@ -4065,13 +4110,27 @@ export class AgentManager {
   }
 
   async assertAgentArchiveAllowed(agentId: string): Promise<void> {
-    const agent = this.getAgent(agentId) ?? (await this.registry?.get(agentId));
-    if (agent?.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    const live = this.getAgent(agentId);
+    const agent = live ?? (await this.registry?.get(agentId));
+    // Running is judged only here, before archive cancels the run, so a refusal
+    // never follows a cancellation. Later checks repeat the workspace rules.
+    const running = live ? live.lifecycle === "running" || this.runs.hasRun(agentId) : false;
+    if (agent?.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId, running);
+  }
+
+  private async assertThreadArchive(
+    workspaceId: string,
+    agentId: string,
+    running = false,
+  ): Promise<void> {
+    if (this.assertThreadArchiveAllowed)
+      return this.assertThreadArchiveAllowed({ workspaceId, agentId, running });
+    await this.assertWorkspaceArchiveAllowed?.(workspaceId);
   }
 
   async archiveAgent(agentId: string): Promise<{ archivedAt: string }> {
     const agent = this.requireAgent(agentId);
-    if (agent.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    if (agent.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId);
     await this.messageQueueControl?.pause(agentId);
     return this.runLifecycleMutation(agentId, () => this.archiveAgentUnlocked(agentId));
   }
@@ -4081,7 +4140,7 @@ export class AgentManager {
     requestedArchivedAt?: string,
   ): Promise<{ archivedAt: string }> {
     const agent = this.requireAgent(agentId);
-    if (agent.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    if (agent.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId);
     await this.assertControllerSettled(agent);
     if (agent.internal) {
       // Nothing about an internal agent is on disk, and archiving must not put
@@ -4870,7 +4929,7 @@ export class AgentManager {
 
   async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {
     const record = await this.requireRegistry().get(agentId);
-    if (record?.workspaceId) await this.assertWorkspaceArchiveAllowed?.(record.workspaceId);
+    if (record?.workspaceId) await this.assertThreadArchive(record.workspaceId, agentId);
     await this.messageQueueControl?.pause(agentId);
     return this.runLifecycleMutation(agentId, () =>
       this.archiveSnapshotUnlocked(agentId, archivedAt),
@@ -4896,7 +4955,7 @@ export class AgentManager {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    if (record.workspaceId) await this.assertWorkspaceArchiveAllowed?.(record.workspaceId);
+    if (record.workspaceId) await this.assertThreadArchive(record.workspaceId, agentId);
     const nextRecord = await this.persistArchivedRecord(record, { archivedAt });
 
     await this.syncNativeArchiveState(record.provider, record.persistence, "archive");
@@ -7554,7 +7613,7 @@ export class AgentManager {
         flags.shouldDispatchEvent = false;
         return undefined;
       case "usage_updated":
-        agent.lastUsage = event.usage;
+        agent.lastUsage = withReportedCost(event.usage, agent.lastUsage);
         this.emitState(agent);
         return undefined;
       case "mode_changed":
@@ -7759,6 +7818,7 @@ export class AgentManager {
     );
     if (terminalDisposition === "stale") return;
     if (event.code === "quota_exhausted" && !options?.fromHistory) {
+      this.usageLimitObserver?.(agent.provider, event);
       this.holdForUsageLimit(agent, event.usageLimit);
       await this.pauseQuotaTeam(agent);
     }
@@ -8810,4 +8870,15 @@ export function commandMayHaveChangedExternalState(command: string): boolean {
     // ahead/behind counts can drift stale until the next refresh.
     /\bgit\s+fetch\b/.test(normalized)
   );
+}
+
+/**
+ * A streamed usage update replaces the last one, so a field it omits is cleared, as compaction
+ * clears the used context. The provider's reported cost is the exception: Claude reports it only
+ * when a turn completes, so it carries over until the next report. An estimate does not carry
+ * over, since a provider that estimates sends one with every update it can price.
+ */
+function withReportedCost(usage: AgentUsage, previous: AgentUsage | undefined): AgentUsage {
+  if (usage.totalCostUsd !== undefined || previous?.totalCostUsd === undefined) return usage;
+  return { ...usage, totalCostUsd: previous.totalCostUsd };
 }

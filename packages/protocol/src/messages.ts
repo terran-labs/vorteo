@@ -77,12 +77,14 @@ import {
 import {
   CodexAccountCreateRequestSchema,
   ClaudeAccountCreateRequestSchema,
+  ClaudeAccountUpgradeRequestSchema,
   ProviderLoginReadRequestSchema,
   ProviderLoginStartRequestSchema,
   ProviderLoginCancelRequestSchema,
   ProviderLoginSubmitRequestSchema,
   CodexAccountCreateResponseSchema,
   ClaudeAccountCreateResponseSchema,
+  ClaudeAccountUpgradeResponseSchema,
   ProviderLoginReadResponseSchema,
   ProviderLoginStartResponseSchema,
   ProviderLoginCancelResponseSchema,
@@ -649,6 +651,7 @@ const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
   cachedInputTokens: z.number().optional(),
   outputTokens: z.number().optional(),
   totalCostUsd: z.number().optional(),
+  estimatedCostUsd: z.number().optional(),
   contextWindowMaxTokens: z.number().optional(),
   contextWindowUsedTokens: z.number().optional(),
 });
@@ -3758,6 +3761,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderResetConfirmRequestSchema,
   CodexAccountCreateRequestSchema,
   ClaudeAccountCreateRequestSchema,
+  ClaudeAccountUpgradeRequestSchema,
   ProviderPreviewRemovalRequestSchema,
   ProviderRemoveRequestSchema,
   ProviderLoginReadRequestSchema,
@@ -4257,6 +4261,8 @@ export const ServerInfoStatusPayloadSchema = z
         codexAccountCreation: z.boolean().optional(),
         claudeAccountCreation: z.boolean().optional(),
         claudeFullSignIn: z.boolean().optional(),
+        // COMPAT(claudeSignInUpgrade): added after v26.11.206, remove gate after 2027-05-02.
+        claudeSignInUpgrade: z.boolean().optional(),
         // COMPAT(codexInstallationSignIn): receives Host-owned Codex sign-in projections.
         codexInstallationSignIn: z.boolean().optional(),
         // COMPAT(providerSecretDelivery): receives coordinator-held provider API keys and tokens.
@@ -4294,6 +4300,8 @@ export const ServerInfoStatusPayloadSchema = z
         coordinatorBootstrapRecoveryBootPlan: z.boolean().optional(),
         coordinatorBootstrapAutomaticReconciliation: z.boolean().optional(),
         coordinatorBootstrapAutomaticStatus: z.boolean().optional(),
+        // COMPAT(coordinatorDispatchStatus): added 2026-11-02; failure, readiness and stall views.
+        coordinatorBootstrapDispatchStatus: z.boolean().optional(),
         coordinatorBootstrapAuthenticatedSubmission: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
         agentThinkingUpdate: z.boolean().optional(),
@@ -7911,6 +7919,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProviderQuotaObservationResponseMessageSchema,
   CodexAccountCreateResponseSchema,
   ClaudeAccountCreateResponseSchema,
+  ClaudeAccountUpgradeResponseSchema,
   ProviderPreviewRemovalResponseSchema,
   ProviderRemoveResponseSchema,
   ProviderLoginReadResponseSchema,

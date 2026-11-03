@@ -5,7 +5,10 @@ import type { InstallationProvider } from "@getpaseo/protocol/installation-provi
 import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { createClaudeAccount } from "../../../services/provider-login/create-account.js";
-import { claudeSignInMode } from "../../agent/providers/claude/sign-in-mode.js";
+import {
+  claudeSignInMode,
+  type ClaudeSignInMode,
+} from "../../agent/providers/claude/sign-in-mode.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { secureAccountHome } from "./claude-setup-consumer.js";
 import {
@@ -27,6 +30,8 @@ interface ConsumerOptions {
 }
 
 const BINDING_ROUTE = "/api/installation/claude/oauth/binding";
+/** The same path lookup for a setup-token account the coordinator is upgrading to full sign-in. */
+const UPGRADE_BINDING_ROUTE = "/api/installation/claude/oauth/upgrade-binding";
 const PROJECTION_ROUTE = "/api/installation/claude/oauth/projection";
 
 /**
@@ -40,11 +45,13 @@ export function mountClaudeOAuthConsumer(app: Express, options: ConsumerOptions)
     res.sendStatus(400);
   };
   app.use(BINDING_ROUTE, parseFailure);
+  app.use(UPGRADE_BINDING_ROUTE, parseFailure);
   app.use(PROJECTION_ROUTE, parseFailure);
   const consumers = new Map<string, ClaudeOAuthProjectionService>();
 
   async function authorize(
     request: ClaudeOAuthBindingRequest,
+    signIn: ClaudeSignInMode = "full",
   ): Promise<{ definition: InstallationProvider; excluded: boolean }> {
     const authority = await options.store.readInstallationSettingsAuthority();
     const definition = authority?.settings.providerDefinitions?.find(
@@ -59,7 +66,7 @@ export function mountClaudeOAuthConsumer(app: Express, options: ConsumerOptions)
       definition.providerType !== "claude" ||
       definition.bindings[request.serverId] !== request.providerId ||
       definition.accountSetup?.provider !== "claude" ||
-      definition.accountSetup.signIn !== "full" ||
+      (definition.accountSetup.signIn ?? "setup-token") !== signIn ||
       request.providerId !== `claude-account-${definition.accountSetup.creationId}`
     )
       throw new ClaudeOAuthDeliveryError();
@@ -72,35 +79,40 @@ export function mountClaudeOAuthConsumer(app: Express, options: ConsumerOptions)
     return { definition, excluded };
   }
 
-  /** The managed home, which must also be the binding's own full sign-in configuration. */
-  function accountHome(providerId: string): string {
+  /** The managed home, which must also be the binding's own configuration of that type. */
+  function accountHome(providerId: string, signIn: ClaudeSignInMode = "full"): string {
     const home = join(options.paseoHome, "claude-accounts", providerId);
     const configured = ProviderOverrideSchema.safeParse(options.store.get().providers[providerId]);
     const env = configured.success ? configured.data.env : undefined;
-    if (claudeSignInMode(env) !== "full" || env?.CLAUDE_CONFIG_DIR !== home)
+    if (claudeSignInMode(env) !== signIn || env?.CLAUDE_CONFIG_DIR !== home)
       throw new ClaudeOAuthDeliveryError();
     return home;
   }
 
-  app.post(BINDING_ROUTE, (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    void (async () => {
-      try {
-        const parsed = ClaudeOAuthBindingRequestSchema.safeParse(req.body);
-        if (!parsed.success) {
-          res.sendStatus(400);
-          return;
+  for (const [route, signIn] of [
+    [BINDING_ROUTE, "full"],
+    [UPGRADE_BINDING_ROUTE, "setup-token"],
+  ] as const) {
+    app.post(route, (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      void (async () => {
+        try {
+          const parsed = ClaudeOAuthBindingRequestSchema.safeParse(req.body);
+          if (!parsed.success) {
+            res.sendStatus(400);
+            return;
+          }
+          // The Host grant stays the refresh source even when Host use is excluded.
+          await authorize(parsed.data, signIn);
+          const configDir = accountHome(parsed.data.providerId, signIn);
+          if (!isAbsolute(configDir)) throw new ClaudeOAuthDeliveryError();
+          res.json({ providerId: parsed.data.providerId, configDir });
+        } catch {
+          res.status(409).json({ error: "Claude sign-in synchronization is pending." });
         }
-        // The Host grant stays the refresh source even when Host use is excluded.
-        await authorize(parsed.data);
-        const configDir = accountHome(parsed.data.providerId);
-        if (!isAbsolute(configDir)) throw new ClaudeOAuthDeliveryError();
-        res.json({ providerId: parsed.data.providerId, configDir });
-      } catch {
-        res.status(409).json({ error: "Claude sign-in synchronization is pending." });
-      }
-    })();
-  });
+      })();
+    });
+  }
 
   app.post(PROJECTION_ROUTE, (req, res) => {
     res.setHeader("Cache-Control", "no-store");

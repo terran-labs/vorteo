@@ -54,20 +54,15 @@ interface ProjectDraft {
   workspaces: WorkspaceSortItem[];
 }
 
-/** The single app boundary that turns host-local projects into grouped display projects. */
 /**
  * A daemon's Vorteo System project (key `system:<serverId>`) can be empty, as in a Dev
  * container the Host's runner covers. It stays for source setup but gets no sidebar row.
  */
-function listedProjects(session: {
-  projects: Iterable<ProjectDescriptor>;
-  workspaces: readonly WorkspaceDescriptor[];
-}): ProjectDescriptor[] {
-  const occupied = new Set(session.workspaces.map((workspace) => workspace.projectId));
-  return Array.from(session.projects).filter(
-    (project) => !project.projectKey?.startsWith("system:") || occupied.has(project.projectId),
-  );
+function isListedProject(project: ProjectDescriptor, occupied: ReadonlySet<string>): boolean {
+  return !project.projectKey?.startsWith("system:") || occupied.has(project.projectId);
 }
+
+/** The single app boundary that turns host-local projects into grouped display projects. */
 
 export function buildWorkspaceStructureProjects(input: {
   sessions: WorkspaceStructureSession[];
@@ -78,17 +73,24 @@ export function buildWorkspaceStructureProjects(input: {
     workspaces: Array.from(session.workspaces),
   }));
   const byProject = new Map<string, ProjectDraft>();
+  // Every project, hidden ones included, takes part in shared-folder merging, so hiding
+  // an empty System project never changes the merged row's key. That key holds the
+  // owner's folder placement, ordering and the memberships recorded under it.
+  const allEntries: ProjectEntry[] = [];
   const projectEntries: ProjectEntry[] = [];
   const keyCountsByServer = new Map<string, Map<string, number>>();
   const viewKeyByServerProjectId = new Map<string, Map<string, string>>();
 
   for (const session of sessions) {
-    for (const project of listedProjects(session)) {
-      projectEntries.push({
+    const occupied = new Set(session.workspaces.map((workspace) => workspace.projectId));
+    for (const project of session.projects) {
+      const entry = {
         serverId: session.serverId,
         projectsRoot: session.projectsRoot ?? null,
         project,
-      });
+      };
+      allEntries.push(entry);
+      if (isListedProject(project, occupied)) projectEntries.push(entry);
       const sharedKey = project.projectKey ?? null;
       if (sharedKey) {
         const counts = getOrCreate(keyCountsByServer, session.serverId, () => new Map());
@@ -100,7 +102,7 @@ export function buildWorkspaceStructureProjects(input: {
   const allocatedViewKeys = new Set(
     projectEntries.flatMap(({ project }) => (project.projectKey ? [project.projectKey] : [])),
   );
-  const sharedFolderKeys = mergeSharedFolderProjectKeys(projectEntries, keyCountsByServer);
+  const sharedFolderKeys = mergeSharedFolderProjectKeys(allEntries, keyCountsByServer);
 
   for (const { serverId, project } of projectEntries) {
     const viewKey = addProjectToView({

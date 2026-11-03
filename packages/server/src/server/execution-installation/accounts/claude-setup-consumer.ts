@@ -10,10 +10,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { ErrorRequestHandler, Express } from "express";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { createClaudeAccount } from "../../../services/provider-login/create-account.js";
 import { claudeSetupTokenStore } from "../../agent/providers/claude/setup-token-runtime.js";
+import { claudeSignInMode } from "../../agent/providers/claude/sign-in-mode.js";
+import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import {
   ClaudeSetupDeliverySchema,
   ClaudeSetupDeliveryReceiptSchema,
@@ -28,6 +31,19 @@ interface ConsumerOptions {
   onApplied?(providerId: string): void;
 }
 
+/**
+ * Managed accounts only. Full sign-in accounts never receive setup tokens; one upgraded from a
+ * setup token still accepts the withdrawal that deletes its old one.
+ */
+function acceptsDelivery(definition: InstallationProvider, delivery: ClaudeSetupDelivery): boolean {
+  const setup = definition.accountSetup;
+  return (
+    setup?.provider === "claude" &&
+    (setup.signIn !== "full" || delivery.credential === null) &&
+    delivery.providerId === `claude-account-${setup.creationId}`
+  );
+}
+
 /** Mounted behind daemon bearer authentication. Returns metadata only, never credentials. */
 export function mountClaudeSetupConsumer(app: Express, options: ConsumerOptions): void {
   const parseFailure: ErrorRequestHandler = (_error, _req, res, _next) => {
@@ -35,6 +51,21 @@ export function mountClaudeSetupConsumer(app: Express, options: ConsumerOptions)
   };
   app.use("/api/installation/claude/setup-token", parseFailure);
   const consumers = new Map<string, ClaudeSetupDeliveryService>();
+  /**
+   * An upgraded account's setup token is the only credential this environment holds until its
+   * own binding switches to full sign-in, because access tokens are refused until then. Refusing
+   * the withdrawal earlier keeps the account working; the authority retries it.
+   */
+  function localBindingReady(
+    definition: InstallationProvider,
+    delivery: ClaudeSetupDelivery,
+  ): boolean {
+    if (definition.accountSetup?.signIn !== "full" || delivery.credential !== null) return true;
+    const configured = ProviderOverrideSchema.safeParse(
+      options.store.get().providers[delivery.providerId],
+    );
+    return configured.success && claudeSignInMode(configured.data.env) === "full";
+  }
   async function authorize(delivery: ClaudeSetupDelivery) {
     const authority = await options.store.readInstallationSettingsAuthority();
     const definition = authority?.settings.providerDefinitions?.find(
@@ -48,10 +79,8 @@ export function mountClaudeSetupConsumer(app: Express, options: ConsumerOptions)
       authority.revision !== delivery.policyRevision ||
       definition.providerType !== "claude" ||
       definition.bindings[delivery.serverId] !== delivery.providerId ||
-      definition.accountSetup?.provider !== "claude" ||
-      // Full sign-in accounts never receive setup tokens.
-      definition.accountSetup.signIn === "full" ||
-      delivery.providerId !== `claude-account-${definition.accountSetup.creationId}`
+      !acceptsDelivery(definition, delivery) ||
+      !localBindingReady(definition, delivery)
     )
       throw new ClaudeSetupDeliveryError();
     const excluded =
