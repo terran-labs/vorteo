@@ -225,7 +225,8 @@ export async function openAddHostFlow(page: Page): Promise<void> {
     await revealSettingsLocation(page, "connections");
   }
   await page.getByTestId("settings-add-host").click();
-  await expect(page.getByRole("dialog").filter({ hasText: "Add connection" })).toBeVisible();
+  // Phones present the same controls in a bottom sheet rather than a dialog.
+  await expect(page.getByRole("button", { name: "Direct connection", exact: true })).toBeVisible();
 }
 
 export async function selectHostConnectionType(
@@ -248,9 +249,7 @@ export async function addDirectHostFromSettings(
     await page.getByTestId("direct-password-input").fill(input.password);
   }
   await page.getByTestId("direct-host-submit").click();
-  await expect(page.getByRole("dialog").filter({ hasText: "Add connection" })).toHaveCount(0, {
-    timeout: 30_000,
-  });
+  await expect(page.getByTestId("direct-host-submit")).toBeHidden({ timeout: 30_000 });
 }
 
 export async function toggleHostAdvanced(page: Page): Promise<void> {
