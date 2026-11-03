@@ -358,7 +358,13 @@ export async function expectSettingsBackButton(page: Page): Promise<void> {
 }
 
 export async function clickSettingsBackToWorkspace(page: Page): Promise<void> {
-  await page.getByTestId("settings-back-to-workspace").click();
+  const desktopBack = page.getByTestId("settings-back-to-workspace");
+  if (await desktopBack.isVisible()) {
+    await desktopBack.click();
+    return;
+  }
+  await goBackInSettings(page);
+  if (new URL(page.url()).pathname.startsWith("/settings")) await goBackInSettings(page);
 }
 
 /**

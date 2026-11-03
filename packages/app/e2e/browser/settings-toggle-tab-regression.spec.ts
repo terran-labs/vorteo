@@ -9,7 +9,16 @@ import { getServerId } from "../support/helpers/server-id";
 
 async function pressSettingsToggleShortcut(page: import("@playwright/test").Page) {
   const modifier = process.platform === "darwin" ? "Meta" : "Control";
+  const before = page.url();
   await page.keyboard.press(`${modifier}+Comma`);
+  if (
+    (page.viewportSize()?.width ?? 1280) < 600 &&
+    new URL(before).pathname.startsWith("/settings")
+  ) {
+    await expect(page).not.toHaveURL(before);
+    if (new URL(page.url()).pathname.startsWith("/settings"))
+      await page.keyboard.press(`${modifier}+Comma`);
+  }
 }
 
 async function openComposerTab(page: import("@playwright/test").Page, agentId: string) {
@@ -134,8 +143,9 @@ test.describe("Settings toggle tab regression", () => {
       await expectAgentTabActive(page, secondAgent.id);
 
       await pressSettingsToggleShortcut(page);
-      await expect(page).toHaveURL(/\/settings\/general$/);
+      await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
 
+      await revealSettingsLocation(page, "chat.sending");
       const defaultSendTrigger = page.getByRole("button", {
         name: "Default send: Steer",
         exact: true,
@@ -202,7 +212,7 @@ test.describe("Settings toggle tab regression", () => {
 
       await startComposerFrameCapture(page);
       await pressSettingsToggleShortcut(page);
-      await expect(page).toHaveURL(/\/settings\/general$/);
+      await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
       await pressSettingsToggleShortcut(page);
       await expect(page).not.toHaveURL(/\/settings(\/|$)/);
       await expect(input).toHaveValue("Keep this short draft in the composer");
