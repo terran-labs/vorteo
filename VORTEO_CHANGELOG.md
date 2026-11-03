@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Tooling
+
+- Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
