@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixed
+
+- Add profile and Edit on a provider page no longer crash Settings with "Couldn't find a navigation object". The profile page now reads navigation from the expo-router copy the app runs on, and still guards unsaved edits; opened outside a navigator, as the chat composer's centered window will be, it simply skips that guard.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
