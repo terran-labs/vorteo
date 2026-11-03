@@ -7048,3 +7048,16 @@ test("explicit maintenance delegation approves exact coordinator settings and st
   f.disable();
   await expect(f.service().claimDispatch(automaticCoordinatorIdentity(approved))).rejects.toThrow();
 });
+
+test("maintenance delegation never approves broker configuration", async () => {
+  for (const setting of ["previewBrokerDeployment", "previewBroker"]) {
+    const f = automaticCoordinatorFixture(true);
+    f.plan.configurationChanges = [{ setting, value: null }];
+    f.plan.candidate.configuration.sha256 = "f".repeat(64);
+    const submitted = await f.submit();
+    await expect(
+      f.service().approveAutomatic(automaticCoordinatorIdentity(submitted)),
+      setting,
+    ).rejects.toThrow("require exact owner review");
+  }
+});

@@ -2030,6 +2030,8 @@ Maintenance review: Docker restart preflight and readiness read `{{json .State}}
 
 Maintenance review: the terminal worker tolerates EINVAL, ENOTSUP and EPERM when restricting its socket mode, because Docker Desktop virtiofs homes reject chmod on sockets. The socket directory is still verified as an owner-only 0700 directory before use. Reproduced in the Dev container: chmod on the socket returned EINVAL with the directory at 700.
 
+Maintenance review: an owner-reviewed runner renewal may attach `previewBrokerDeployment` or `previewBroker` as its single configuration change, so installations with renewal evidence can restore the managed preview broker. Admission reuses the existing Docker and recovery reader binding plus each executor's protected-file, hash-pin, scope and recovery reader checks, and the rollback reader keeps the live configuration. Maintenance delegation never approves either section; consumer deployment and channel rebind stay owner-only. Policy, helper and monitor changes are still refused in renewals. Source change only; nothing is installed and README overview and onboarding are unchanged. See [broker maintenance](preview-broker-maintenance.md#restore-the-broker-on-an-installation-with-renewal-evidence).
+
 ## Optional native macOS helper
 
 Legacy coordinator compatibility: an unavailable helper query is retried once per minute instead of every settings refresh. Owner lock checks still apply during the delay, and upgraded coordinators are discovered without reloading.

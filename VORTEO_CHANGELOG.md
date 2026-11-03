@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Let an owner-reviewed coordinator renewal attach the preview broker deployment or broker channel configuration, one section per renewal, so installations that update through renewals can restore the managed preview broker. Each section passes its existing protected file, scope and recovery reader checks before admission, rollback keeps the live configuration, and maintenance delegation cannot approve it. Consumer deployment and channel rebind remain separate owner decisions.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
 
 ## Unreleased - 2026-11-03
