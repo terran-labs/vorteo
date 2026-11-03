@@ -175,5 +175,8 @@ describe("sidebar folder state", () => {
     // Containers without a saved order follow the flat order, so none is invented for them.
     expect(next.childOrder).toEqual({ "project:p": ["s:3", "s:1", "s:2"] });
     expect(next).not.toHaveProperty("placeFirst");
+    // A later whole-list replacement in the same outbox wins; the placement cannot restore "c".
+    const replaced = mergeSidebarStatePatch(fromDevice, { projectOrder: ["a", "b"] });
+    expect(applySidebarStatePatch(state, replaced).projectOrder).toEqual(["a", "b"]);
   });
 });

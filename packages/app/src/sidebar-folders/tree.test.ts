@@ -9,6 +9,7 @@ import { EMPTY_SIDEBAR_FOLDER_STATE, type SidebarFolderState } from "./store";
 import {
   buildSidebarTreeRows,
   createSidebarFolderPatch,
+  savedSidebarAnchor,
   flattenSidebarScope,
   listSidebarFolderDestinations,
   moveSidebarEntryPatch,
@@ -62,27 +63,14 @@ function rowsFor(
 }
 
 describe("sidebar folder tree", () => {
-  // Regression: a new row was inserted before its flat-order successor, which a dragged
-  // folder order had moved mid-list, so new workspaces appeared in the middle.
-  test("new rows go first even when the saved order differs from the flat order", () => {
+  test("time-based sorts order rows around saved folder slots, and drops map back", () => {
     const state = folderState([folder("f", null)], {
       childOrder: { root: ["c", "folder:f", "a", "b"] },
     });
-    expect(describeRows(rowsFor(state, ["new", "a", "b", "c"]))).toEqual([
-      "new",
-      "c",
-      "F",
-      "a",
-      "b",
-    ]);
-    // A time-based sort orders the rows; the folder keeps its saved slot.
-    expect(describeRows(rowsFor(state, ["new", "a", "b", "c"], false, "given"))).toEqual([
-      "new",
-      "a",
-      "F",
-      "b",
-      "c",
-    ]);
+    const keys = ["a", "b", "c"];
+    expect(describeRows(rowsFor(state, keys, false, "given"))).toEqual(["a", "F", "b", "c"]);
+    // On screen the folder dropped before "b"; in the saved order that slot holds "a".
+    expect(savedSidebarAnchor({ state, scope: ROOT, keys, anchor: "b" })).toBe("a");
   });
 
   test("renders folders nested more than three levels with their items", () => {
@@ -110,6 +98,19 @@ describe("sidebar folder tree", () => {
     const rows = rowsFor(state, ["one", "two", "three"]);
     expect(describeRows(rows)).toEqual(["three", "A"]);
     expect(rows[1]).toMatchObject({ kind: "folder", collapsed: true, itemCount: 2 });
+  });
+
+  test("items missing from the stored order keep their flat position", () => {
+    const state = folderState([folder("a", null)], {
+      childOrder: { root: ["y", "folder:a", "z"] },
+    });
+    expect(describeRows(rowsFor(state, ["new", "y", "z", "last"]))).toEqual([
+      "new",
+      "y",
+      "A",
+      "z",
+      "last",
+    ]);
   });
 
   test("filters hide folders that contain no visible item", () => {

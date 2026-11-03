@@ -114,8 +114,40 @@ export function mergeSidebarStatePatch(
   if (right.childOrder) result.childOrder = { ...left.childOrder, ...right.childOrder };
   if (right.collapsedFolders)
     result.collapsedFolders = { ...left.collapsedFolders, ...right.collapsedFolders };
-  if (right.placeFirst) result.placeFirst = mergePlaceFirst(left.placeFirst, right.placeFirst);
+  const earlierPlacement = left.placeFirst && withoutReplacedLists(left.placeFirst, right);
+  if (right.placeFirst) result.placeFirst = mergePlaceFirst(earlierPlacement, right.placeFirst);
+  else if (earlierPlacement) result.placeFirst = earlierPlacement;
+  else delete result.placeFirst;
   return result;
+}
+
+/**
+ * A later whole-list replacement already decided where every key goes, so earlier placements
+ * for that list must not run after it and restore keys it removed.
+ */
+function withoutReplacedLists(
+  placement: SidebarPlaceFirst,
+  later: SidebarStatePatch,
+): SidebarPlaceFirst | undefined {
+  const result: SidebarPlaceFirst = { ...placement };
+  if (later.projectOrder) delete result.projectOrder;
+  result.workspaceOrderByProject = withoutKeys(
+    placement.workspaceOrderByProject,
+    later.workspaceOrderByProject,
+  );
+  result.childOrder = withoutKeys(placement.childOrder, later.childOrder);
+  for (const key of ["workspaceOrderByProject", "childOrder"] as const)
+    if (!result[key]) delete result[key];
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function withoutKeys(
+  record: Record<string, string[]> | undefined,
+  replaced: Record<string, unknown> | undefined,
+): Record<string, string[]> | undefined {
+  if (!record) return undefined;
+  const kept = Object.fromEntries(Object.entries(record).filter(([key]) => !replaced?.[key]));
+  return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
 /** Later keys go first, matching what applying the two patches in sequence would produce. */

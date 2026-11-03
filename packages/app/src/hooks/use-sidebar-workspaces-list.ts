@@ -28,6 +28,7 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { commitSidebarPatch } from "@/sidebar-state/local";
 import { computeSidebarPlacement, sidebarPlacementPatch } from "@/sidebar-state/placement";
 import { useSidebarSyncStatus } from "@/sidebar-state/use-sidebar-sync";
+import { useSidebarFolderStore } from "@/sidebar-folders/store";
 
 export {
   appendMissingOrderKeys,
@@ -196,24 +197,45 @@ export function useSidebarWorkspacesList(options?: {
   const persistedWorkspaceOrder = useSidebarOrderStore(
     (state) => state.workspaceOrderByProject ?? EMPTY_WORKSPACE_ORDER,
   );
-  const placementSupported = useSidebarSyncStatus((state) => state.placementSupported);
+  // Wait for a Host snapshot so placement never replays this device's stale order over newer
+  // drags from another device. Without a sidebar authority, placement stays local.
+  const placementReady = useSidebarSyncStatus(
+    (state) =>
+      state.status === "local" ||
+      (state.hostSnapshotApplied && state.placementSupport !== "unknown"),
+  );
+  const placementSupported = useSidebarSyncStatus(
+    (state) => state.placementSupport === "supported",
+  );
   useEffect(() => {
-    if (projects.length === 0) return;
+    if (!placementReady || projects.length === 0) return;
     const placement = computeSidebarPlacement({
       projects,
       projectOrder: persistedProjectOrder,
       workspaceOrderByProject: persistedWorkspaceOrder,
     });
     if (!placement) return;
-    commitSidebarPatch(
-      sidebarPlacementPatch({
-        placement,
-        supported: placementSupported,
-        projectOrder: persistedProjectOrder,
-        workspaceOrderByProject: persistedWorkspaceOrder,
-      }),
-    );
-  }, [persistedProjectOrder, persistedWorkspaceOrder, placementSupported, projects]);
+    try {
+      commitSidebarPatch(
+        sidebarPlacementPatch({
+          placement,
+          supported: placementSupported,
+          projectOrder: persistedProjectOrder,
+          workspaceOrderByProject: persistedWorkspaceOrder,
+          childOrder: useSidebarFolderStore.getState().childOrder,
+        }),
+      );
+    } catch (error) {
+      // An order past the schema's limits must not take the sidebar down with it.
+      console.error("[Sidebar] could not record new row placement", error);
+    }
+  }, [
+    persistedProjectOrder,
+    persistedWorkspaceOrder,
+    placementReady,
+    placementSupported,
+    projects,
+  ]);
 
   const refreshAll = useCallback(() => {
     if (!isActive) return;

@@ -60,6 +60,7 @@ export function sidebarPlacementPatch(input: {
   supported: boolean;
   projectOrder: readonly string[];
   workspaceOrderByProject: Readonly<Record<string, readonly string[]>>;
+  childOrder: Readonly<Record<string, readonly string[]>>;
 }): SidebarStatePatch {
   if (input.supported) return { placeFirst: input.placement };
   const patch: SidebarStatePatch = {};
@@ -72,6 +73,14 @@ export function sidebarPlacementPatch(input: {
         input.workspaceOrderByProject[projectKey] ?? [],
         keys,
       );
+  }
+  if (input.placement.childOrder) {
+    const childOrder: Record<string, string[]> = {};
+    for (const [container, keys] of Object.entries(input.placement.childOrder)) {
+      const saved = input.childOrder[container];
+      if (saved) childOrder[container] = placeKeysFirst(saved, keys);
+    }
+    if (Object.keys(childOrder).length > 0) patch.childOrder = childOrder;
   }
   return patch;
 }
