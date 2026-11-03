@@ -159,7 +159,9 @@ test("production monitor review preserves exact evidence and manual gates at 390
       await page.viewport(width, 900);
       expect(window.innerWidth).toBe(width);
       render(width);
-      expect(container.textContent).toContain("Checking owner access...");
+      expect(container.querySelector('[data-testid="owner-lock-badge"]')?.textContent).toContain(
+        "Checking",
+      );
       expect(button("approve")).toBeNull();
       expect(button("cancel")).toBeNull();
       await page.screenshot({
@@ -232,12 +234,24 @@ test("production monitor review preserves exact evidence and manual gates at 390
         assertUnclipped(card, width);
       }
     }
+    const systemDetails = container.querySelector<HTMLElement>(
+      '[data-testid="system-installation-details-host"]',
+    )!;
+    const heightBeforeError = systemDetails.getBoundingClientRect().height;
+    await act(() => model.decideMonitor({ ...current, revision: current.revision + 1 }, "approve"));
+    const helperError = model.getState().helperError!;
+    expect(helperError).toContain("request changed");
+    await expect.element(page.getByText(helperError, { exact: true })).toBeVisible();
+    expect(systemDetails.textContent).toContain(helperError);
+    expect(systemDetails.getBoundingClientRect().height).toBe(heightBeforeError);
     await act(() => model.lock());
     for (const width of [390]) {
       await page.viewport(width, 900);
       expect(window.innerWidth).toBe(width);
       render(width);
-      expect(container.textContent).toContain("Owner locked");
+      expect(container.querySelector('[data-testid="owner-lock-badge"]')?.textContent).toContain(
+        "Locked",
+      );
       expect(container.querySelector('[data-testid^="monitor-request-"]')).toBeNull();
       expect(button("approve")).toBeNull();
       expect(button("cancel")).toBeNull();

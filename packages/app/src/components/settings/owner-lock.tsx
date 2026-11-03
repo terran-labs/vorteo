@@ -182,9 +182,19 @@ export function OwnerLockedGroup({ title, children }: OwnerLockedGroupProps) {
   const [open, setOpen] = useState(false);
   const openDialog = useCallback(() => setOpen(true), []);
   const closeDialog = useCallback(() => setOpen(false), []);
+  // Unlock removes the dialog subtree before its close effect can run.
+  // Reset local presentation state here so a later Lock starts collapsed.
+  useEffect(() => {
+    setOpen(false);
+    setExpanded(false);
+  }, [access.status]);
   const toggle = useCallback(() => setExpanded((value) => !value), []);
   const checking = access.status === "checking";
   const disclosureState = useMemo(() => ({ expanded, disabled: checking }), [expanded, checking]);
+  const webDisclosureProps = useMemo(
+    () => (isWeb ? ({ "aria-expanded": expanded } as const) : null),
+    [expanded],
+  );
   if (access.status === "none" || access.status === "unlocked")
     return children({ disabled: false });
   return (
@@ -200,6 +210,7 @@ export function OwnerLockedGroup({ title, children }: OwnerLockedGroupProps) {
             </Button>
           </SettingsRow>
           <Pressable
+            {...webDisclosureProps}
             accessibilityRole="button"
             accessibilityLabel={`Peek at ${title}`}
             accessibilityState={disclosureState}

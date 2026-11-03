@@ -10,6 +10,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Align owner-session fixtures and Settings search with the integrated owner controls. Keep broker and monitor review checks tied to the persistent badge, and verify helper failures use the reserved System status line.
+
 - Restore broker and System browser checks after moving restart controls, status and notices. Standalone System views follow the selected Settings host while installation environments keep their identities, using only the host identity fields selection needs; version checks retain the last observation during reconnects.
 
 - Keep session-host review actions under System details and report their failures in a fixed status line; cover the single attention notice while owner controls are locked.
@@ -20,6 +22,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Voice is its own Settings section, after Agents: dictation, voice mode and the speech models for listening and speaking, configured on the Host. Search finds each of them.
 - Settings opens the System section on its System page: Host and Dev status with one action each, restarts, updates, the release channel and the connection check. The separate update pages and the duplicate app update row in About are gone, and old links to them open System.
 - Keep Retry for failed account choices and offer a separate Provider settings link, keep provider and metadata settings steady through loading and reconnects, and report install and save failures with toasts. Update packaged provider tests for grouped installation rows and ordering.
+- Reset the owner unlock dialog and peek state when access changes, so locking controls again keeps their groups collapsed instead of reopening the password prompt. Expose the disclosure state on web.
+
 - Put installation owner unlock in a centered dialog and gate shared Settings, installation naming, project exclusions, provider sign-in and profile changes until owner access is unlocked. Unlocking enables controls without reloading the page. Keep Unlock reachable beside profile actions before there are unsaved edits. Keep password errors in the unlock dialog and report failed Lock actions beside the initiating control. Preserve sign-in and account creation on unrelated hosts.
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.

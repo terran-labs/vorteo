@@ -270,6 +270,25 @@ describe("owner access controls", () => {
     expect(screen.getByText("Local sign-in")).toBeTruthy();
     expect(screen.queryByText("Local account · Locked")).toBeNull();
   });
+  it("collapses peek and closes the dialog before the next lock", () => {
+    const pane = (
+      <OwnerSettingsGate title="Providers">
+        <div>Loaded settings</div>
+      </OwnerSettingsGate>
+    );
+    const result = render(wrap(access("locked"), pane));
+    fireEvent.click(screen.getByRole("button", { name: "Peek at Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    result.rerender(wrap(access("unlocked"), pane));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    result.rerender(wrap(access("locked"), pane));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Unlock to load these settings.")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Peek at Providers" }).getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
   it("subscribes through an injectable hook source", () => {
     let update: (value: OwnerAccess) => void = () => {};
     function useFakeSource() {

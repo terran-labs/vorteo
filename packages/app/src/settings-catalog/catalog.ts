@@ -1037,6 +1037,13 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     scope: environment,
   },
   {
+    id: "maintenance.installation.access",
+    pane: "maintenance.installation",
+    label: "Installation owner",
+    keywords: ["owner password", "unlock", "lock controls"],
+    scope: installation,
+  },
+  {
     id: "maintenance.installation.owner",
     pane: "maintenance.installation",
     label: "Owner password",

@@ -20,6 +20,16 @@ const runtime = vi.hoisted(() => ({
   client: null as DaemonClient | null,
 }));
 
+// These cases exercise a standalone host, which has no installation owner session.
+vi.mock("@/execution-installation/owner-access", () => ({
+  useOwnerAccess: () => ({
+    status: "none",
+    busy: false,
+    error: null,
+    unlock: vi.fn(),
+    lock: vi.fn(),
+  }),
+}));
 vi.mock("@/runtime/host-runtime", () => ({
   useHostRuntimeClient: () => runtime.client,
   useHostRuntimeIsConnected: () => runtime.connected,
