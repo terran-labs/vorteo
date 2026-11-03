@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import {
   PROJECT_FACTORY_INSTRUCTION_CONFLICTS,
@@ -69,8 +70,9 @@ import {
 import { computeFingerprint, defaultGhRunner, shouldWake, type GatedRole } from "./tick-gate.js";
 
 /** Sent to a paused project's Foreman by pause_all, and its counterpart from resume_all. */
-export const DRAIN_NOTICE =
-  "Drain notice: admit no new Factory work until this project is resumed. Let running workers finish and push, then set your status line to 'Drained: <n> workers still finishing'.";
+export function drainNotice(id: string): string {
+  return `Drain notice ${id}: admit no new Factory work until this project is resumed. Let running workers finish and push, then set your status line to 'Drained ${id}: <n> workers still finishing'.`;
+}
 export const DRAIN_ENDED = "Drain ended: resume normal intake.";
 
 const GATED_ROLES: ReadonlySet<string> = new Set([
@@ -337,7 +339,7 @@ export class ProjectFactoryService {
         repository: project.repository || null,
         paused: project.paused,
         drain: project.drain
-          ? { reason: project.drain.reason, pausedAt: project.drain.pausedAt }
+          ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
           : null,
       });
     }
@@ -349,7 +351,9 @@ export class ProjectFactoryService {
    * ones it paused. Projects already paused, off or unavailable are left alone, so a rerun
    * records nothing new. Stopping heartbeats does not reach a Foreman already mid-turn, so each
    * paused project's Foreman also gets one drain notice, steered into its turn when busy. A
-   * notice that fails is retried by the next pause_all.
+   * notice that fails is retried by the next pause_all. Each drain gets a new id and clears the
+   * Foreman's status line, so an acknowledgment of an earlier drain cannot satisfy this one.
+   * Unavailable projects keep their pending notice until they are restored.
    */
   private pauseAll(reason: string): Promise<ProjectFactoryList> {
     return this.serialize(async () => {
@@ -358,11 +362,13 @@ export class ProjectFactoryService {
         if (entry.state === "on") {
           await this.mutateProject(entry.projectId, (project) => {
             project.paused = true;
-            project.drain = { reason, pausedAt };
+            project.drain = { id: `drain-${randomUUID()}`, reason, pausedAt };
+            const foreman = project.roles["factory-intake"];
+            if (foreman) foreman.status = null;
           });
           this.stopTimers(entry.projectId);
         }
-        await this.sendDrainNotice(entry.projectId);
+        if (entry.state !== "unavailable") await this.sendDrainNotice(entry.projectId);
       }
       return this.list();
     });
@@ -372,7 +378,7 @@ export class ProjectFactoryService {
     const project = await this.readProject(projectId);
     const foreman = project?.roles["factory-intake"]?.agentId;
     if (!project?.drain || project.drain.noticeSentAt || !foreman) return;
-    if (!(await this.notifyForeman(projectId, foreman, DRAIN_NOTICE))) return;
+    if (!(await this.notifyForeman(projectId, foreman, drainNotice(project.drain.id)))) return;
     await this.mutateProject(projectId, (current) => {
       if (current.drain) current.drain.noticeSentAt = this.now().toISOString();
     });
@@ -1142,6 +1148,9 @@ export class ProjectFactoryService {
       repository: project?.repository || null,
       reason: unavailable,
       workers: project?.workers ?? { workerProfileId: null, reviewerProfileId: null },
+      drain: project?.drain
+        ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
+        : null,
       roles: PROJECT_FACTORY_ROLES.map((role) => {
         const roleState = project?.roles[role.id] ?? emptyRoleState();
         return {

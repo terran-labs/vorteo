@@ -21,7 +21,7 @@ import {
 } from "../../workspace-registry.js";
 import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
-import { DRAIN_ENDED, DRAIN_NOTICE, ProjectFactoryService, type PromptOutcome } from "./service.js";
+import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { projectFactoryStatePath } from "./state.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
@@ -981,7 +981,7 @@ describe("list, pause_all and resume_all", () => {
     );
     expect(paused[PROJECT]).toMatchObject({
       state: "paused",
-      drain: { reason: "upgrade to 26.11.300", pausedAt: T0 },
+      drain: { id: expect.stringMatching(/^drain-/), reason: "upgrade to 26.11.300", pausedAt: T0 },
     });
     expect(paused.prj_paused).toMatchObject({ state: "paused", drain: null });
     expect(paused.prj_off).toMatchObject({ state: "off", drain: null });
@@ -1004,7 +1004,7 @@ describe("list, pause_all and resume_all", () => {
     await factory.invoke("factory.project.pause_all", { reason: "first" });
     clock = new Date(Date.parse(T0) + 60_000);
     const again = byId(await factory.invoke("factory.project.pause_all", { reason: "second" }));
-    expect(again[PROJECT]?.drain).toEqual({ reason: "first", pausedAt: T0 });
+    expect(again[PROJECT]?.drain).toMatchObject({ reason: "first", pausedAt: T0 });
     expect(again.prj_paused?.drain).toBeNull();
 
     await factory.invoke("factory.project.resume_all", {});
@@ -1051,16 +1051,22 @@ describe("list, pause_all and resume_all", () => {
       agents.prompts.filter((prompt) => prompt.agentId === agentId).map((prompt) => prompt.prompt);
     const before = sentTo(foremen[PROJECT]!).length;
 
+    const drained = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    );
     await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
-    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
-    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([DRAIN_NOTICE]);
+    const notice = drainNotice(drained[PROJECT]!.drain!.id);
+    expect(notice).toContain(`Drained ${drained[PROJECT]!.drain!.id}: <n> workers`);
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([notice]);
     expect(agents.prompts.at(-1)).toMatchObject({ agentId: foremen[PROJECT], steer: true });
-    expect(sentTo(foremen.prj_paused!)).not.toContain(DRAIN_NOTICE);
+    expect(sentTo(foremen.prj_paused!).some((prompt) => prompt.startsWith("Drain notice"))).toBe(
+      false,
+    );
     const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
     expect(file.projects[PROJECT].drain.noticeSentAt).toBe(T0);
 
     await factory.invoke("factory.project.resume_all", {});
-    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([DRAIN_NOTICE, DRAIN_ENDED]);
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([notice, DRAIN_ENDED]);
     expect(sentTo(foremen.prj_paused!)).not.toContain(DRAIN_ENDED);
   });
 
@@ -1074,8 +1080,72 @@ describe("list, pause_all and resume_all", () => {
     await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
     expect(
       agents.prompts.filter(
-        (prompt) => prompt.agentId === foreman && prompt.prompt === DRAIN_NOTICE,
+        (prompt) => prompt.agentId === foreman && prompt.prompt.startsWith("Drain notice"),
       ),
+    ).toHaveLength(1);
+  });
+
+  test("a new drain gets a new id and clears an old acknowledgment", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    const setForemanStatus = (line: string) =>
+      factory.invoke("factory.project.status.set", {
+        projectId: PROJECT,
+        role: "factory-intake",
+        line,
+      });
+    const first = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    )[PROJECT]!.drain!;
+    await setForemanStatus(`Drained ${first.id}: 0 workers still finishing`);
+    await factory.invoke("factory.project.resume_all", {});
+
+    agents.failing.add(foreman);
+    const second = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    )[PROJECT]!.drain!;
+
+    expect(second.id).not.toBe(first.id);
+    const shown = await factory.get(PROJECT);
+    expect(shown.drain?.id).toBe(second.id);
+    expect(shown.roles.find((role) => role.role === "factory-intake")?.status).toBeNull();
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBeUndefined();
+  });
+
+  test("notices skip archived and missing projects and stay pending for them", async () => {
+    const factory = service();
+    await addProject("prj_gone");
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    const gone = roleAgent(
+      (await factory.invoke("factory.project.enable", {
+        projectId: "prj_gone",
+        repository: "acme/gone",
+      })) as Awaited<ReturnType<typeof enable>>,
+      "factory-intake",
+    );
+    agents.failing.add(foreman);
+    agents.failing.add(gone);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    agents.failing.clear();
+    const record = (await projects.get(PROJECT))!;
+    await projects.upsert({ ...record, archivedAt: T0 });
+    await projects.remove("prj_gone");
+    const before = agents.prompts.length;
+
+    const listed = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "drain before restart" }),
+    );
+    expect(listed[PROJECT]).toMatchObject({ state: "unavailable" });
+    expect(listed.prj_gone).toMatchObject({ state: "unavailable" });
+    expect(agents.prompts.length).toBe(before);
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBeUndefined();
+
+    await projects.upsert({ ...record, archivedAt: null });
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      agents.prompts.filter((p) => p.agentId === foreman && p.prompt.startsWith("Drain notice")),
     ).toHaveLength(1);
   });
 
@@ -1088,7 +1158,7 @@ describe("list, pause_all and resume_all", () => {
     const restarted = service();
     await restarted.start();
     expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(false);
-    expect(byId(await restarted.invoke("factory.project.list", {}))[PROJECT]?.drain).toEqual({
+    expect(byId(await restarted.invoke("factory.project.list", {}))[PROJECT]?.drain).toMatchObject({
       reason: "drain before restart",
       pausedAt: T0,
     });

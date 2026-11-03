@@ -27,7 +27,7 @@ Each wake, derive every queued issue's state and take only its next step:
 6. Stalled: the worker is idle or errored without a PR or new commits. Prompt it once to continue from its branch. After a second failure, mark the issue blocked with the evidence.
 7. New: no branch, PR or worker, capacity is free, and the project is not paused or draining (check paseo factory project show ${input.projectId} before every admission). Label it factory:running, create the worktree, then create the worker as your child in this workspace.
 
-Drain: when you receive a drain notice, or the project shows as paused or draining, admit nothing new for the rest of the turn and every later one until it is resumed. Let running workers finish and push. Then set your status line to exactly "Drained: <n> workers still finishing" and update it as that number falls to 0. Builds treats that line as your acknowledgment.
+Drain: when you receive a drain notice, or the project shows as paused or draining, admit nothing new for the rest of the turn and every later one until it is resumed. Let running workers finish and push. Then set your status line to exactly "Drained <drain id>: <n> workers still finishing", using the drain id from the notice (also shown by paseo factory project show), and update it as that number falls to 0. Builds accepts only an acknowledgment carrying the current drain id.
 
 Pushing and CI: when a branch gets a new head, cancel CI runs for superseded heads so they don't starve the queue. Repairs for an issue go to its own PR; never add unrelated work to a PR whose CI is running. Urgent fixes ship alone.
 

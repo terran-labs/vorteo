@@ -82,6 +82,7 @@ describe("paseo factory project", () => {
     expect(invoke).toHaveBeenCalledWith("factory", "factory.project.get", { projectId: "prj_app" });
     expect(stdout.join("")).toContain("Worker profile: worker-p");
     expect(stdout.join("")).toContain("Reviewer profile: default");
+    expect(stdout.join("")).toContain("Drain: none");
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -183,7 +184,11 @@ describe("paseo factory project drain", () => {
         state: "paused",
         repository: "acme/app",
         paused: true,
-        drain: { reason: "drain before restart", pausedAt: "2026-11-03T12:00:00.000Z" },
+        drain: {
+          id: "drain-7f3a",
+          reason: "drain before restart",
+          pausedAt: "2026-11-03T12:00:00.000Z",
+        },
       },
     ],
   };
@@ -192,7 +197,16 @@ describe("paseo factory project drain", () => {
     invoke.mockResolvedValue(listed);
     await run("list");
     expect(invoke).toHaveBeenCalledWith("factory", "factory.project.list", {});
-    expect(stdout.join("")).toContain("drain before restart");
+    expect(stdout.join("")).toContain("drain-7f3a: drain before restart");
+  });
+
+  it("show prints the current drain id", async () => {
+    invoke.mockResolvedValue({
+      ...state,
+      drain: { id: "drain-7f3a", reason: "drain before restart", pausedAt: "now" },
+    });
+    await run("show", "prj_app");
+    expect(stdout.join("")).toContain("Drain: drain-7f3a (drain before restart, now)");
   });
 
   it("pause-all defaults its reason and accepts one", async () => {

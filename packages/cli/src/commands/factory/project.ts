@@ -64,6 +64,7 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Repository: ${state.repository ?? "none"}`,
       `Worker profile: ${state.workers.workerProfileId ?? "default"}`,
       `Reviewer profile: ${state.workers.reviewerProfileId ?? "default"}`,
+      `Drain: ${state.drain ? `${state.drain.id} (${state.drain.reason}, ${state.drain.pausedAt})` : "none"}`,
       "",
       ["ROLE", "ID", "AGENT", "WORKSPACE", "HEARTBEAT", "LAUNCH", "INSTRUCTIONS", "STATUS"].join(
         "\t",
@@ -84,7 +85,8 @@ const listSchema: OutputSchema<ListedProject> = {
     { header: "PAUSED", field: "paused" },
     {
       header: "DRAIN",
-      field: (value) => (value.drain ? `${value.drain.reason} (${value.drain.pausedAt})` : "-"),
+      field: (value) =>
+        value.drain ? `${value.drain.id}: ${value.drain.reason} (${value.drain.pausedAt})` : "-",
     },
   ],
 };

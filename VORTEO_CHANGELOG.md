@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Each Factory drain now has its own id, shown by `paseo factory project list`, `pause-all`, `resume-all` and `show`. Starting a drain clears the Foreman's status line, and the drain notice and the Foreman's "Drained <id>" reply carry that id, so an earlier drain's reply cannot satisfy a new one. Drain notices skip archived or missing projects and stay pending until those are restored.
+
+## Unreleased - 2026-11-03
+
 ### Changed
 
 - Pause-all now sends each paused project's Foreman a drain notice, steered into its current turn, and resume-all tells it the drain ended. A damaged Factory state file makes list, pause-all and resume-all refuse instead of reporting success. The Foreman checks the drain before every admission and reports "Drained: <n>", Builds waits for that report, and the Mechanic reads the update-status fields and copes while update status does not exist yet.

@@ -36,6 +36,16 @@ export const PROJECT_FACTORY_INSTRUCTION_CONFLICTS = {
 /** Longest role status line, after trimming. */
 export const PROJECT_FACTORY_STATUS_LINE_MAX = 120;
 
+/**
+ * A pause_all drain. Each drain gets a new id; the Foreman's "Drained <id>" status line
+ * acknowledges exactly that drain, so a stale acknowledgment never satisfies a new one.
+ */
+export const ProjectFactoryDrainSchema = z.object({
+  id: z.string().min(1),
+  reason: z.string(),
+  pausedAt: z.string(),
+});
+
 export const ProjectFactoryStateSchema = z.object({
   schemaVersion: z.literal(1),
   serverId: z.string().min(1),
@@ -45,6 +55,8 @@ export const ProjectFactoryStateSchema = z.object({
   /** Human-readable; set for "unavailable". */
   reason: z.string().nullable(),
   workers: z.object({ workerProfileId: nullableId, reviewerProfileId: nullableId }),
+  /** The current pause_all drain, if any. Optional so older daemons still parse. */
+  drain: ProjectFactoryDrainSchema.nullable().optional(),
   roles: z.array(
     z.object({
       role: ProjectFactoryRoleIdSchema,
@@ -136,7 +148,7 @@ export const ProjectFactoryListSchema = z.object({
       repository: ProjectFactoryRepositorySchema.nullable(),
       paused: z.boolean(),
       /** Set while pause_all holds this project; resume_all releases exactly these. */
-      drain: z.object({ reason: z.string(), pausedAt: z.string() }).nullable(),
+      drain: ProjectFactoryDrainSchema.nullable(),
     }),
   ),
 });

@@ -65,11 +65,14 @@ const ProjectStateSchema = z.object({
    */
   drain: z
     .object({
+      /** New for every drain. A drain recorded before ids existed takes one from its time. */
+      id: z.string().min(1).optional(),
       reason: z.string(),
       pausedAt: z.string(),
       /** When the Foreman's drain notice was queued; unset until a send succeeds. */
       noticeSentAt: z.string().optional(),
     })
+    .transform((drain) => ({ ...drain, id: drain.id ?? `drain-${drain.pausedAt}` }))
     .optional(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
