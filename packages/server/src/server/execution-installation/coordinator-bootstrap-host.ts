@@ -119,6 +119,8 @@ export function createBootstrapReconciliationLedger(
   );
   return {
     list: () => requests.list(),
+    cancelUnderManagement: (value, assertAuthority) =>
+      requests.cancelUnderManagement(value, assertAuthority),
     revokeAutomatic: () => requests.revokeAutomatic(),
     cancelForReplacedHostRelease: (selected, releaseRoot) =>
       requests.cancelForReplacedHostRelease(selected, releaseRoot),

@@ -6,6 +6,42 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Changed
+
+- Rebuild the sidebar Quotas card around a week of runway per account. A quiet Best now note names the account to use next, with a reason and a runner-up. Each account shows a thin 7-day lane on a shared day axis, marking plan capacity, running low, prepaid credits, out of quota, unknown stretches and every known reset, with one summary line beneath it.
+- Keep the card mostly monochrome: amber marks running low at 30% left or less, matching the usage tiles, red marks out, and credits show as a fainter capacity tone. Provider dots and most badges are gone; a row shows one status label only when it is out or on credits.
+- Open an account in place to see every window with its bar, remaining percent and exact reset, plus plan, balances, details, source, the pace warning and reset credits. Reconnect stays visible on the collapsed row for signed-out accounts, which list first. Accounts now start collapsed unless only one reports.
+- A setup-token Claude account at its observed limit shows out until the reset, then unknown, and its detail says From last limit message.
+- Show reading freshness in the footer, Live or Stale after the 10-minute display threshold, with the reading's age, beside a Key that explains the lane styles and names the time zone, and the Open Usage link.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Account tiles name a reset time when allowances tie, fall back to another window's next reset, and show Session not started for an unused Claude session instead of Reset time unavailable.
+- Healthy usage no longer flips to Last known usage between refreshes: the label waits 10 minutes, and the daemon caches usage for 2 minutes instead of 5.
+- New accounts show usage within seconds of signing in. The app refreshes past the daemon cache on completion and again when the credential reaches the host.
+- Claude setup-token accounts at their limit show 0% left with the reset time from their last limit message, noted as From last limit message, instead of Usage not provided. The reading lasts until the reset, or 7 days when the message gave none, and does not survive a daemon restart.
+
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Show only the agent's own account in the Context window details instead of repeating its quotas from the provider-level plan card.
+- Keep Claude's session cost visible while a turn runs; streamed usage updates no longer erase it until the turn finishes. Other fields still follow each update, so compaction clears the used context and a model without a known price drops a stale estimate.
+
+### Improvements
+
+- Estimate session cost for Codex sessions on `gpt-6-astra` and `gpt-6.1-sol` from cumulative tokens and OpenAI's list prices, labeled as an estimate.
+
+## Unreleased - 2026-11-02
+
+### Added
+
+- Show an hourglass in the working blue in place of the sidebar's ready or idle dot while an idle workspace has an unfinished Review checklist item, such as a delivery waiting on Builds. Its tooltip names the owner and each item's title and description. Running, needs-input and failed states still take precedence.
+
+## Unreleased - 2026-11-02
+
 ### Maintenance
 
 - Move the rule for waiting on Builds into the task delivery guide and keep a one-line pointer in the agent instructions, within their size budget.
@@ -15,6 +51,36 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Maintenance
 
 - Ask threads whose delivery Builds owns to keep a Review checklist item owned by Builds, mirror Builds' reported steps as checks and verify `main` and the published interface before completing it.
+
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Show the full Context window breakdown for Claude sessions running in the durable session host. They previously showed "This provider reports totals only" because the host never forwarded Claude's context data.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Keep a Codex turn that finished before Vorteo identified it from becoming the next Stop target. Completion events now carry their turn id, so a late event from that turn is ignored and Stop interrupts the turn actually running.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Stop a Codex agent whose new message joined a turn Codex was already running, such as a goal continuation resumed after a restart. Stop previously failed with "active run cancellation was not acknowledged" because Vorteo waited for a turn start that never came; it now identifies the running turn from its activity and interrupts it.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Merge `main` through 26.11.206 into the installed Host source, and drop the Host-only 26.11.105 heading whose entries `main` released as 26.11.106.
+
+## Unreleased - 2026-11-01
+
+- Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.
+- Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.
+- Wait for durable restart capture acknowledgement in the compiled restart fixture before checking that no work remains pending. Keep the worker replacement and no-replay assertions unchanged.
 
 ## 26.11.206 - 2026-11-02
 

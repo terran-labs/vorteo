@@ -631,7 +631,7 @@ export class InstallationClient {
   async maintenanceDelegation(): Promise<MaintenanceDelegationStatus | null> {
     try {
       const status = MaintenanceDelegationStatusSchema.parse(
-        await this.request("maintenance-delegation/query", {}),
+        await this.request("maintenance-delegation/query?management=1", {}),
       );
       this.maintenanceDelegationSupported = true;
       return status;
@@ -646,13 +646,17 @@ export class InstallationClient {
   async changeMaintenanceDelegation(
     status: MaintenanceDelegationStatus,
     enabled: boolean,
+    management?: boolean,
   ): Promise<MaintenanceDelegationStatus> {
     if (!this.maintenanceDelegationSupported || !status.available)
       throw new InstallationRouteUnavailable("Full maintenance delegation is unavailable");
+    if (management !== undefined && !status.managementAvailable)
+      throw new InstallationRouteUnavailable("Installation management is unavailable");
     return MaintenanceDelegationStatusSchema.parse(
-      await this.request("maintenance-delegation/change", {
+      await this.request("maintenance-delegation/change?management=1", {
         expectedRevision: status.revision,
         enabled,
+        ...(management !== undefined ? { management } : {}),
       }),
     );
   }

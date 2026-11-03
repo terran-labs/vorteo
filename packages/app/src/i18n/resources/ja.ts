@@ -2008,6 +2008,7 @@ export const ja: TranslationResources = {
     used: "{{percentage}}%使用",
     tokens: "{{used}} / {{max}}トークン",
     sessionCost: "セッションコスト: {{cost}}",
+    sessionCostEstimated: "推定セッションコスト: ~{{cost}}",
     accessibility: "コンテキストウィンドウ{{percentage}}%使用",
     breakdown: {
       used: "使用中",
