@@ -1347,6 +1347,100 @@ test("bootstrap executor persists intent before each operation and never replays
   expect(calls).toHaveLength(9);
 });
 
+test("a busy claim waits within the same approval, and cancellation or exhaustion never claims", async () => {
+  const journalFile = (f: ReturnType<typeof fixture>, jobs: unknown[]) =>
+    writeFileSync(path.join(f.root, "restart-jobs.json"), JSON.stringify(jobs), { mode: 0o600 });
+  const busy = {
+    id: randomUUID(),
+    revision: randomUUID(),
+    target: "host",
+    reason: "fixture",
+    requestedBy: "host-agent",
+    createdAt: "2026-11-03T00:00:00.000Z",
+    expiresAt: "2026-11-04T00:00:00.000Z",
+    status: "running",
+    detail: "fixture",
+  };
+  const approve = async (f: ReturnType<typeof fixture>) => {
+    const pending = await f.prepare();
+    const approved = await f.service().decide(
+      {
+        id: pending.id,
+        revision: pending.revision,
+        planSha256: pending.planSha256,
+        decision: "approve",
+      },
+      ownerPassword,
+    );
+    return { id: approved.id, revision: approved.revision, planSha256: approved.planSha256 };
+  };
+  const steps = (waitForClaimRetry: BootstrapExecutorOperations["waitForClaimRetry"]) =>
+    ({
+      withOwnership: async (_request, operation) => operation(),
+      armWatchdog: async () => {},
+      freeze: async () => {},
+      inspectFrozen: async () => ({ restartJournal: [], childPids: [] }),
+      preserveTransfer: async () => {},
+      unload: async () => {},
+      select: async () => {},
+      start: async () => {},
+      verifyReplacement: async () => {},
+      releaseReplacement: async () => {},
+      resumePrevious: async () => {
+        throw new Error("Unexpected resume");
+      },
+      waitForClaimRetry,
+    }) satisfies BootstrapExecutorOperations;
+
+  // The blocker clears during the wait: the same approval claims and completes.
+  const cleared = fixture();
+  journalFile(cleared, [busy]);
+  const clearedIdentity = await approve(cleared);
+  const attempts: number[] = [];
+  const result = await executeCoordinatorBootstrap(
+    cleared.service(),
+    clearedIdentity,
+    steps(async (attempt) => {
+      attempts.push(attempt);
+      if (attempt === 2) journalFile(cleared, [{ ...busy, status: "succeeded" }]);
+      return true;
+    }),
+  );
+  expect(attempts).toEqual([1, 2]);
+  expect(result.execution?.stage).toBe("succeeded");
+
+  // Cancellation during the wait wins: the retried claim refuses and nothing is claimed.
+  const canceled = fixture();
+  journalFile(canceled, [busy]);
+  const canceledIdentity = await approve(canceled);
+  await expect(
+    executeCoordinatorBootstrap(
+      canceled.service(),
+      canceledIdentity,
+      steps(async () => {
+        await canceled.service().decide({ ...canceledIdentity, decision: "cancel" }, ownerPassword);
+        journalFile(canceled, []);
+        return true;
+      }),
+    ),
+  ).rejects.toThrow("undispatched");
+  expect(canceled.service().list()[0]).toMatchObject({ status: "canceled" });
+  expect(canceled.service().list()[0]?.execution).toBeUndefined();
+
+  // An exhausted wait keeps the busy refusal and leaves the approval unclaimed.
+  const exhausted = fixture();
+  journalFile(exhausted, [busy]);
+  const exhaustedIdentity = await approve(exhausted);
+  await expect(
+    executeCoordinatorBootstrap(
+      exhausted.service(),
+      exhaustedIdentity,
+      steps(async () => false),
+    ),
+  ).rejects.toBeInstanceOf(BootstrapCoordinatorBusy);
+  expect(exhausted.service().list()[0]?.execution).toBeUndefined();
+});
+
 test.each([
   "freeze",
   "inspectFrozen",

@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): a coordinator claim refused because other installation work is busy now retries inside the same approval and execution lock for up to eight minutes. A cheap journal check gates each retry, so the full claim and its byte verification run only once the work looks finished. Cancellation, a changed approval, any other error or an existing claim ends it; nothing replays. Exhaustion still closes the approval as failed with its reason. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): Settings round 3, batch 1. Settings no longer shifts layout: transient results show as toasts, ongoing sync shows in a fixed status line and loading panes keep their space. Provider lists group uninstalled providers under Available to install, profiles open on a dedicated page, and owner-password controls stay grouped and disabled until unlocked. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.

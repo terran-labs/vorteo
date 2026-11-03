@@ -6,6 +6,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Improvements
+
+- A coordinator update blocked by other installation work now waits up to eight minutes for that work to finish and then starts, within the same approval, instead of failing at once. Only that busy refusal is retried; a canceled or changed approval, or any other error, stops it.
+
 ### Changed
 
 - Settings no longer jumps. Pop-in warning and saved cards are gone: transient results show as toasts, ongoing sync shows in a fixed two-line status line, and loading panes hold their space. The page relies on browser scroll anchoring, with a small fallback for browsers without it, and the three-second snap-back after a jump is gone.
