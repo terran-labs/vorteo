@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): the browser message queue now reopens its local storage when the browser closes the connection, instead of failing every read, including Retry, until reload. A browser regression test covers it. The replica cache, project icon cache and plugin bundle cache keep the same single-connection pattern and are not changed here. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): agent records now keep the last reported usage, so the Context window card no longer disappears after a daemon restart. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): full maintenance delegation now includes installation management, as the owner decided. Existing full grants gain cancellation automatically; Installation controls no longer show a separate management switch, and the owner route ignores an older client's switch while reporting the derived state. Management still only cancels: owner-only and explicit-review requests stay owner-approved, and claimed work, credentials and settings stay out of reach. The authority revision binds the grant epoch and installation credentials. A retained legacy opt-in is read and ignored, and is cleared on the next grant write, so a rollback can only narrow management. Documentation now says to take `jobSha256` from `management-status`, not from a submission response. This source is not installed. README overview and onboarding are unchanged.

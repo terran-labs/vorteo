@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- The message queue reopens its saved-queue storage after the browser closes the connection. It used to show "The database connection is closing" until the page reloaded, and Retry failed the same way.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
 
 ## Unreleased - 2026-11-03
