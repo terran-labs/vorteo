@@ -95,7 +95,7 @@ it("tooltip Escape leaves dialog focus and other keys with the dialog", async ()
     expect(document.activeElement).toBe(input);
     overlays.dispatch(event("Escape"));
     overlays.dispatch(event("Enter"));
-    expect(calls).toEqual(["tooltip:Escape", "dialog:Enter"]);
+    expect(calls).toEqual(["tooltip:Escape", "tooltip:Enter", "dialog:Enter"]);
     act(() => tooltipRoot.unmount());
     tooltipUnmounted = true;
     expect(document.activeElement).toBe(input);

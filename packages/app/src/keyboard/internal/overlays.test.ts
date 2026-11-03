@@ -94,7 +94,7 @@ describe("overlay registration lifecycle", () => {
 });
 
 describe("non-interactive overlay custody", () => {
-  it("dismisses a tooltip first but leaves other keys and interactive ownership with its dialog", () => {
+  it("offers painted previews every key and preserves tooltip dismissal and dialog ownership", () => {
     const registry = createOverlayRegistry();
     const calls: string[] = [];
     const dialog = registry.register({
@@ -105,6 +105,19 @@ describe("non-interactive overlay custody", () => {
         return true;
       },
     });
+    const preview = registry.register({
+      getLayer: () => 10_000,
+      getFocusBehavior: () => "none",
+      getKeys: () => ["ArrowRight", "Escape"],
+      onKeyDown: (event) => {
+        calls.push(`preview:${event.key}`);
+        return event.key === "ArrowRight";
+      },
+    });
+    expect(registry.dispatch(keyEvent("ArrowRight"))).toBe(true);
+    expect(calls).toEqual(["preview:ArrowRight"]);
+    expect(registry.getTop(true)?.getLayer()).toBe(20);
+    calls.length = 0;
     const tooltip = registry.register({
       getLayer: () => 20_000,
       getFocusBehavior: () => "none",
@@ -115,12 +128,19 @@ describe("non-interactive overlay custody", () => {
       },
     });
     expect(registry.hasActive()).toBe(true);
-    registry.dispatch(keyEvent("Escape"));
-    registry.dispatch(keyEvent("Enter"));
-    expect(calls).toEqual(["tooltip:Escape", "dialog:Enter"]);
+    expect(registry.dispatch(keyEvent("Escape"))).toBe(true);
+    expect(calls).toEqual(["tooltip:Escape"]);
+    calls.length = 0;
+    expect(registry.dispatch(keyEvent("Enter"))).toBe(true);
+    expect(calls).toEqual(["tooltip:Enter", "dialog:Enter"]);
+    calls.length = 0;
+    expect(registry.dispatch(keyEvent("Tab"))).toBe(true);
+    expect(calls).toEqual(["tooltip:Tab", "dialog:Tab"]);
+    expect(registry.getTop(true)?.getLayer()).toBe(20);
     dialog();
     expect(registry.hasActive()).toBe(false);
     expect(registry.dispatch(keyEvent("Tab"))).toBe(false);
     tooltip();
+    preview();
   });
 });

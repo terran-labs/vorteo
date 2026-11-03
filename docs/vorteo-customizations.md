@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): after the cutoff merge, ArrowRight again enters a collapsed sidebar project preview's workspace list; a workspace hover card takes the first Escape and the preview the second. Idle agent release checks follow the installation-wide Agents settings. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): the synchronization ends at Paseo `eb8b5b8f9`. Hardware keyboard shortcuts, two-size controls and the moved keyboard overlay registry carry the fork's theme-preview Escape, sortable reorder, slider exclusion and tooltip focus behavior. Upstream's first-run walkthrough is compiled but disabled by one owner-decision flag, and its browser spec is routed out of CI while disabled. The [upstream comparison](#upstream-comparison) records the overlap. Installation of this source is pending. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the upstream integration merges `main` with the installed Host deliveries, including the Codex Stop fix, Claude context breakdown, usage fixes, owner-only Chrome and command cancellation. Coordinator admission keeps the canceled-update repair inside main's blocker descriptions. Installation of this combined source is pending. README overview and onboarding are unchanged.

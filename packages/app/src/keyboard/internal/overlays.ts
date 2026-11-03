@@ -51,8 +51,12 @@ export function createOverlayRegistry() {
     },
     dispatch(event: KeyboardInputEvent): boolean {
       if (event.isComposing || event.key === "Process") return false;
-      const top = getTop(event.key !== "Escape");
-      if (!top?.onKeyDown(event)) return false;
+      const top = getTop();
+      let handled = top?.onKeyDown(event) ?? false;
+      if (!handled && top?.getFocusBehavior?.() === "none") {
+        handled = getTop(true)?.onKeyDown(event) ?? false;
+      }
+      if (!handled) return false;
       event.stopPropagation();
       return true;
     },

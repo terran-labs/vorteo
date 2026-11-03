@@ -162,6 +162,10 @@ test.describe("Settings host page", () => {
       clientIdPrefix: "idle-release-settings",
       port: daemon.port,
     });
+    const otherClient = await connectDaemonClient<DaemonClient>({
+      clientIdPrefix: "idle-release-other-host",
+      port: Number(getE2EDaemonPort()),
+    });
     const originalPid = (await client.getDaemonStatus()).pid;
     const expectLiveSavedSetting = async (enabled: boolean) => {
       const saved = JSON.parse(await readFile(path.join(daemon.paseoHome, "config.json"), "utf8"));
@@ -170,16 +174,18 @@ test.describe("Settings host page", () => {
       expect((await client.reloadDaemonConfig()).restartRequiredPaths).toEqual([]);
       expect((await client.getDaemonStatus()).pid).toBe(originalPid);
     };
+    // Vorteo's Agents pane uses the installation authority, or the first host in an
+    // unmanaged fixture. Environment tabs do not retarget installation-wide controls.
     const hosts = [
-      {
-        serverId: primaryServerId,
-        label: TEST_HOST_LABEL,
-        endpoint: `127.0.0.1:${getE2EDaemonPort()}`,
-      },
       {
         serverId: daemon.serverId,
         label: "Idle release host",
         endpoint: `127.0.0.1:${daemon.port}`,
+      },
+      {
+        serverId: primaryServerId,
+        label: TEST_HOST_LABEL,
+        endpoint: `127.0.0.1:${getE2EDaemonPort()}`,
       },
     ];
     const openHostAgentsInFreshApp = async (serverId: string) => {
@@ -209,10 +215,12 @@ test.describe("Settings host page", () => {
       await test.step("other hosts keep their own setting", async () => {
         await selectSettingsHost(page, primaryServerId);
         await openHostSection(page, primaryServerId, "agents");
-        await expectIdleAgentRelease(page, true);
+        await expectIdleAgentRelease(page, false);
+        expect((await otherClient.getDaemonConfig()).config.idleRuntimeCleanup).toBe(true);
         await expectLiveSavedSetting(false);
       });
     } finally {
+      await otherClient.close();
       await client.close();
       await daemon.close();
     }
@@ -233,9 +241,10 @@ test.describe("Settings host page", () => {
       await rename(configPath, `${configPath}.saved`);
       await mkdir(configPath);
       await page.getByRole("switch", { name: "Release idle agents" }).click();
-      await expect(page.getByTestId("host-page-idle-runtime-cleanup-error")).toContainText(
-        "Failed to read",
-      );
+      // The transactional writer preserves the filesystem error rather than upstream's prefix.
+      const saveError = page.getByTestId("host-page-idle-runtime-cleanup-error");
+      await expect(saveError).toBeVisible();
+      await expect(saveError).toHaveText(/\S/);
       await expectIdleAgentRelease(page, true);
       await rm(configPath, { recursive: true });
       await rename(`${configPath}.saved`, configPath);

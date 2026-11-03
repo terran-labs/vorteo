@@ -132,7 +132,7 @@ export function ProjectRailPreview({
     layer: OVERLAY_Z.tooltip,
     onKeyDown: handleOverlayKey,
     focusBehavior: "none",
-    keys: ["Escape"],
+    keys: ["Escape", "ArrowRight"],
   });
 
   useEffect(() => {
