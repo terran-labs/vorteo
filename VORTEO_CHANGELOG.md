@@ -40,6 +40,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Show on the coordinator approval card whether the update could start now and which installation work blocks it.
 - Flag an approved coordinator update that has not started three minutes after it became eligible, in Installation controls, the sidebar banner and `coordinator-status`.
+- Add the reviewed `installationLead` coordinator setting. When set, the coordinator messages that agent thread once about each coordinator update that fails before starting or stalls after approval, and only while the thread is idle.
+- Deliver installation lead notices through the lead's message queue, so they wait for its turn to end and never unarchive an archived lead.
 
 ## Unreleased - 2026-11-03
 

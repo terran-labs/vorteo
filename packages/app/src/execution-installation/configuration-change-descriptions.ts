@@ -19,6 +19,10 @@ const DESCRIPTIONS: Descriptions = {
     config === null
       ? "Turn off future coordinator performance samples. Keep retained private logs."
       : "Turn on private minute-by-minute coordinator performance logging, up to 12 MiB. Records process CPU and memory, cached queue and connection health, and fixed operation status labels; no prompts or account content.",
+  installationLead: (lead) =>
+    lead === null
+      ? "Stop notifying an installation lead thread about failed or stalled coordinator updates."
+      : `Notify agent thread ${lead.agentId} once when a coordinator update fails before it starts or stalls after approval. The thread receives a message only; it gains no approval or installation authority.`,
   containerSourceUpdateNode: (node) =>
     node === null
       ? "This plan cannot remove the Node executable required by Dev source updates."

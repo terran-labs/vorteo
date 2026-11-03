@@ -14,6 +14,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { resolveDaemonVersion } from "../daemon-version.js";
 import { createOperationalTelemetry } from "./operational-telemetry.js";
+import { createCoordinatorDispatchNotifier } from "./coordinator-dispatch-notifier.js";
 import { createOperationalStore } from "./operational-telemetry-store.js";
 import { createNativeHelperExecutor } from "./native-helper-executor.js";
 import { createSessionHostExecutor } from "./session-host-job.js";
@@ -182,6 +183,53 @@ const claudeSetup = createClaudeSetupRuntime(config, settings, assertRegistratio
 const host = config.public.environments.find((environment) => environment.kind === "host");
 if (!host) throw new Error("Installation Host identity is missing");
 const coordinatorRequests = createHostReconciliationLedger(config, configFile, host.serverId);
+// Off unless a reviewed coordinator update set the installation lead.
+const installationLead = config.installationLead;
+let installationLeadTimer: NodeJS.Timeout | undefined;
+if (installationLead && coordinatorRequests) {
+  const ledger = coordinatorRequests;
+  const notifier = createCoordinatorDispatchNotifier({
+    agentId: installationLead.agentId,
+    stateDirectory: config.stateDir,
+    ports: {
+      list: () => ledger.list(),
+      readLifecycle: () => {
+        if (!ledger.readLifecycle) throw new Error("Installation journal is unavailable");
+        return ledger.readLifecycle();
+      },
+      leadAvailable: async (agentId) => {
+        const client = await daemonConnections.connect("host");
+        try {
+          const lead = await client.fetchAgent({ agentId });
+          return lead !== null && !lead.agent.archivedAt;
+        } finally {
+          await client.close();
+        }
+      },
+      enqueue: async ({ agentId, text, messageId }) => {
+        const client = await daemonConnections.connect("host");
+        try {
+          // The queue delivers only while the lead is idle and skips an archived thread.
+          const result = await client.mutateMessageQueue(agentId, {
+            kind: "enqueue",
+            operationId: messageId,
+            messageId,
+            attachments: [],
+            text,
+          });
+          if (result.error) throw new Error(result.error.message);
+        } finally {
+          await client.close();
+        }
+      },
+      now: Date.now,
+    },
+  });
+  installationLeadTimer = setInterval(() => {
+    void notifier.check().catch(() => logger.warn("Installation lead notification is pending"));
+  }, 60_000);
+  installationLeadTimer.unref();
+}
 const claudeSetupTimer = setInterval(() => {
   if (!synchronizing) return;
   void claudeSetup
@@ -297,6 +345,7 @@ gateServer?.on("error", (error) => {
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
     telemetry.stop();
+    clearInterval(installationLeadTimer);
     clearInterval(restartTimer);
     clearInterval(claudeSetupTimer);
     clearInterval(providerSecretsTimer);
