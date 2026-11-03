@@ -9723,6 +9723,37 @@ test("workspace protection rejects live and stored chat archives while allowing 
   }
 });
 
+test("a thread archive guard replaces the workspace guard for thread archives", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-thread-archive-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const checks: { workspaceId: string; agentId: string; running: boolean }[] = [];
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    assertWorkspaceArchiveAllowed: async () => {
+      throw new Error("Workspace is protected");
+    },
+    assertThreadArchiveAllowed: async (input) => {
+      checks.push(input);
+    },
+  });
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "system",
+    });
+    await manager.assertAgentArchiveAllowed(agent.id);
+    await manager.archiveAgent(agent.id);
+    expect((await storage.get(agent.id))?.archivedAt).toEqual(expect.any(String));
+    expect(checks[0]).toEqual({ workspaceId: "system", agentId: agent.id, running: false });
+    expect(checks.every((check) => check.agentId === agent.id && !check.running)).toBe(true);
+  } finally {
+    await manager.flush();
+    await storage.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("archiveAgent persists archivedAt and updatedAt before emitting closed state", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-archive-"));
   const storagePath = join(workdir, "agents");

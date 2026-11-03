@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Merge `main` after the sixth Host delivery so the seventh installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
 - Merge `main` after the fifth Host delivery so the sixth installed Host update can follow it to `main`. No source changes.
 
 ## Unreleased - 2026-11-03
@@ -23,6 +29,22 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Merge `main` after the second Host delivery so the third and fourth installed Host updates can follow it to `main`. No source changes.
 
 ## Unreleased - 2026-11-03
+
+### Improvements
+
+- A coordinator update reaches its claim about a minute sooner after its cancellation window. The launcher no longer re-reads the candidate before starting the runner, which re-reads every byte under its exclusive lock, and the claim reuses the runner's own runtime digest from admission; the digest it replaces was never compared. Every live process and service check at the claim stays.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- Archive a finished thread in a Vorteo System workspace, such as a finished Optimizer thread. The workspace stays protected, running or still-scheduled threads are refused, and deleting system threads stays refused.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- A coordinator update blocked by other installation work now waits up to eight minutes for that work to finish and then starts, within the same approval, instead of failing at once. Only that busy refusal is retried; a canceled or changed approval, or any other error, stops it.
 
 ### Fixed
 

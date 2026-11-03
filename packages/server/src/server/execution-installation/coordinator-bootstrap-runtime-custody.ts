@@ -32,14 +32,24 @@ export interface RuntimeCustody {
 export function createRuntimeCustody(input: {
   custody: RuntimeCustody;
   digest(directory: string): Promise<string>;
-}): RequireRuntimeCustody {
+}): RequireRuntimeCustody & {
+  /** The runtime this process digested and matched at its admission boundary, or
+   * undefined before admission passes. In memory only: it never crosses a process,
+   * so another runner's digest can never stand in for this one's. */
+  admitted(): RuntimeCustody | undefined;
+} {
   const custody: Readonly<RuntimeCustody> = Object.freeze({ ...input.custody });
-  return async (boundary) => {
+  let admitted = false;
+  const require: RequireRuntimeCustody = async (boundary) => {
     if ((await input.digest(custody.runtimeDirectory)) !== custody.runtimeSha256)
       throw new BootstrapRequestConflict(
         `Coordinator runtime changed after admission; refused before ${boundary}`,
       );
+    if (boundary === "admission") admitted = true;
   };
+  return Object.assign(require, {
+    admitted: () => (admitted ? { ...custody } : undefined),
+  });
 }
 
 /** The release boundary: after every check releaseReplacement makes, the digest is
