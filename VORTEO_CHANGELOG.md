@@ -8,27 +8,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Added
 
-- Add `paseo factory project show|enable|pause|resume|disable|configure`, `paseo factory project status set` and `paseo factory project instructions show|set|propose|acknowledge|resolve`. The daemon now serves the per-project Factory RPCs through the bundled Factory plugin and advertises Factory workspace membership, so clients can group role workspaces.
+- Add per-project Factory. Turning Factory on for a project creates, or adopts, five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a heartbeat; reruns, restarts and a lost state file never create a second. Pause, resume and turn off control the heartbeats, and turning off releases the workspaces while keeping agents and history. On Vorteo System the Mechanic adopts the existing Optimizer agent.
+- Add the project menu's Factory controls: turn on with a GitHub repository, pause, resume and turn off. Role workspaces group in the sidebar's Factory folder in role order, and fresh role status lines appear beneath them.
+- Add editable per-role project instructions with revision checks, history and charter review: when a Vorteo update changes a role's shipped charter, the Mechanic reviews it and the operator accepts or dismisses its proposal.
+- Choose each role's provider and profile, and the profiles the Foreman gives workers and reviewers, with the existing profile controls.
+- Send a thread to Factory from the tab menu. Triage turns it into one issue, routed through the thread's owning environment and project.
+- Gate Triage, Foreman and Builds heartbeats on a GitHub fingerprint, so an unchanged repository does not wake them; missing evidence always wakes.
+- Add `paseo factory project show|enable|pause|resume|disable|configure`, `paseo factory project status set` and `paseo factory project instructions show|set|propose|acknowledge|resolve`. The daemon serves these RPCs natively through the bundled Factory plugin and advertises Factory workspace membership.
 - `VORTEO_RELEASES=1` admits only `scripts/vorteo-release.mjs tag` and its release tag push, so a Factory Releases thread can tag without Builds rights.
 
-## Unreleased - 2026-11-03
+### Changed
 
-### Added
-
-- Add the per-project Factory service. Turning Factory on for a project creates, or adopts, five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a heartbeat; reruns and restarts never create a second. Pause, resume and turn off control the heartbeats, and turning off releases the workspaces while keeping agents and history. Operators can add per-role project instructions, which are reviewed when a Vorteo update changes the shipped charter. Gated heartbeats skip ticks when the project's GitHub state has not changed.
-- Rename the Optimizer's display title to Mechanic; its stored role and label are unchanged.
-
-## Unreleased - 2026-11-03
-
-### Added
-
-- Add a standalone GitHub fingerprint gate for Factory heartbeats, with conservative wake decisions when evidence is unavailable.
-
-## Unreleased - 2026-11-03
-
-### Maintenance
-
-- Add the standing charters for the four per-project Factory roles: Foreman, Builds, Releases and Mechanic. Nothing uses them yet.
+- The Vorteo :: Optimizer workspace and newly created Optimizer agents are now titled Mechanic; the stored role and label are unchanged.
 
 ## Unreleased - 2026-11-03
 

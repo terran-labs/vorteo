@@ -23,12 +23,37 @@ export function splitFactoryWorkspaces(
 ) {
   const factory: SidebarWorkspacePlacement[] = [];
   const remaining: SidebarWorkspacePlacement[] = [];
+  const projectHosts = new Set(
+    workspaces.flatMap((workspace) => {
+      const entry = entries.get(workspace.workspaceKey);
+      return supportedHosts.get(workspace.serverId) &&
+        entry?.factoryMembership?.installationId.startsWith("project-factory:")
+        ? [JSON.stringify([entry.serverId, entry.projectId])]
+        : [];
+    }),
+  );
   for (const workspace of workspaces) {
     const entry = entries.get(workspace.workspaceKey);
+    const mechanic =
+      entry?.systemMembership?.role === "optimization-runner" &&
+      projectHosts.has(JSON.stringify([entry.serverId, entry.projectId]));
     const supported = supportedHosts.get(workspace.serverId) === true;
-    if (supported && entry?.factoryMembership) factory.push(workspace);
+    if (
+      (supported && entry?.factoryMembership?.installationId.startsWith("project-factory:")) ||
+      mechanic
+    )
+      factory.push(workspace);
     else remaining.push(workspace);
   }
+  const roles = ["Triage", "Foreman", "Builds", "Releases", "Mechanic"];
+  const rank = (workspace: SidebarWorkspacePlacement) => {
+    const entry = entries.get(workspace.workspaceKey);
+    if (entry?.systemMembership?.role === "optimization-runner") return 4;
+    const title = entry?.title ?? entry?.name ?? "";
+    const index = roles.findIndex((role) => title.endsWith(`:: ${role}`));
+    return index < 0 ? roles.length : index;
+  };
+  factory.sort((a, b) => rank(a) - rank(b));
   return { ...splitStandingWorkspaces(remaining, entries), factory };
 }
 

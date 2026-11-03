@@ -416,6 +416,7 @@ export class ProjectFactoryService {
     role: ProjectFactoryRoleId;
     accept: boolean;
     expectedRevision: number;
+    proposedAt?: string;
   }): Promise<ProjectFactoryInstructions> {
     return this.changeInstructions(request.projectId, request.role, (role, charter) => {
       assertRevision(role, request.expectedRevision);
@@ -423,6 +424,10 @@ export class ProjectFactoryService {
       if (!request.accept) return rebase(role.instructions, charter);
       if (role.instructions.review.status !== "proposed" || !proposal)
         throw new ProjectFactoryError("There is no proposal to accept for this role.");
+      if (proposal.proposedAt !== request.proposedAt)
+        throw new ProjectFactoryError(
+          "The Mechanic replaced this proposal since you loaded it. Review the new proposal and try again.",
+        );
       return saveRevision(role.instructions, proposal.text, charter, this.now().toISOString());
     });
   }

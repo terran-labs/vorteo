@@ -188,12 +188,19 @@ export const factoryProjectInstructionsAcknowledge = defineRpc({
 
 export const factoryProjectInstructionsResolve = defineRpc({
   name: "factory.project.instructions.resolve",
-  input: z.strictObject({
-    projectId,
-    role: ProjectFactoryRoleIdSchema,
-    accept: z.boolean(),
-    expectedRevision: z.number().int().min(0),
-  }),
+  input: z
+    .strictObject({
+      projectId,
+      role: ProjectFactoryRoleIdSchema,
+      accept: z.boolean(),
+      expectedRevision: z.number().int().min(0),
+      /** The proposal the operator saw; accepting refuses any other. */
+      proposedAt: z.string().min(1).optional(),
+    })
+    .refine((value) => !value.accept || value.proposedAt !== undefined, {
+      message: "Accepting a proposal requires its proposedAt.",
+      path: ["proposedAt"],
+    }),
   output: ProjectFactoryInstructionsSchema,
 });
 

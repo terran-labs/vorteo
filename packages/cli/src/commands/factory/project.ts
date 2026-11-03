@@ -356,10 +356,13 @@ function createInstructionsCommand(): Command {
       async (client, target, options) => {
         if (Boolean(options.accept) === Boolean(options.dismiss))
           throw { code: "INVALID_RESOLVE", message: "Pass exactly one of --accept or --dismiss." };
+        const fresh = await current(client, target);
+        const proposedAt = fresh.review.proposal?.proposedAt;
         return call(client, factoryProjectInstructionsResolve, {
           ...target,
           accept: Boolean(options.accept),
-          expectedRevision: (await current(client, target)).revision,
+          expectedRevision: fresh.revision,
+          ...(options.accept && proposedAt ? { proposedAt } : {}),
         });
       },
       (command) =>

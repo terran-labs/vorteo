@@ -156,6 +156,14 @@ describe("paseo factory project", () => {
       accept: false,
       expectedRevision: 3,
     });
+    await run("instructions", "resolve", "prj_app", "factory-builds", "--accept");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.instructions.resolve", {
+      projectId: "prj_app",
+      role: "factory-builds",
+      accept: true,
+      expectedRevision: 3,
+      proposedAt: "now",
+    });
     await expect(run("instructions", "resolve", "prj_app", "factory-builds")).rejects.toThrow(
       "exit 1",
     );

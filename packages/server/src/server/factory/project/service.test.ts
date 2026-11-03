@@ -3,7 +3,10 @@ import path from "node:path";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { ProjectFactoryRoleId } from "@getpaseo/server/factory-project";
+import type {
+  ProjectFactoryInstructions,
+  ProjectFactoryRoleId,
+} from "@getpaseo/server/factory-project";
 
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
@@ -616,13 +619,24 @@ describe("project instructions", () => {
         rationale: "The new charter batches questions.",
       });
 
-    await expect(propose()).resolves.toMatchObject({ review: { status: "proposed" } });
-    const accepted = await factory.invoke("factory.project.instructions.resolve", {
-      projectId: PROJECT,
-      role: "factory-triage",
-      accept: true,
-      expectedRevision: 1,
-    });
+    const first = (await propose()) as ProjectFactoryInstructions;
+    expect(first.review.status).toBe("proposed");
+    // A re-proposal while the panel shows the first one must not be accepted unseen.
+    clock = new Date(Date.parse(T0) + 60_000);
+    const second = (await propose()) as ProjectFactoryInstructions;
+    const resolve = (proposedAt?: string) =>
+      factory.invoke("factory.project.instructions.resolve", {
+        projectId: PROJECT,
+        role: "factory-triage",
+        accept: true,
+        expectedRevision: 1,
+        ...(proposedAt ? { proposedAt } : {}),
+      });
+    await expect(resolve()).rejects.toThrow();
+    await expect(resolve(first.review.proposal!.proposedAt)).rejects.toThrow(
+      "replaced this proposal",
+    );
+    const accepted = await resolve(second.review.proposal!.proposedAt);
     expect(accepted).toMatchObject({
       revision: 2,
       additions: "Autonomous mode off. Batch questions weekly.",
