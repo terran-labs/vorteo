@@ -162,3 +162,24 @@ test("provider names use the manifest, then the plugin label, then a readable ID
   expect(name("codex", "codex")).toBe("Codex");
   expect(name("custom-provider", "custom-provider")).toBe("Custom Provider");
 });
+
+test("plugin family names do not depend on account order", () => {
+  const account: InstallationProvider = {
+    id: "account/first",
+    providerType: "custom-provider",
+    bindings: {},
+    policy: { label: "Personal account" },
+  };
+  const plugin: InstallationProvider = {
+    id: "plugin/custom-provider",
+    providerType: "custom-provider",
+    bindings: {},
+    policy: { label: "Custom CLI" },
+  };
+  for (const definitions of [
+    [account, plugin],
+    [plugin, account],
+  ]) {
+    expect(groupInstallationProviders(definitions)[0].name).toBe("Custom CLI");
+  }
+});

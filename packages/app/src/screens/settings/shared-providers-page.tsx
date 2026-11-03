@@ -9,7 +9,7 @@ import {
   type ProviderFamily,
 } from "./shared-providers-model";
 import { useProviderDetection } from "./use-provider-detection";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useMutation } from "@tanstack/react-query";
@@ -22,7 +22,7 @@ import type {
 } from "@getpaseo/protocol/installation-settings";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { SettingsExpansion } from "@/components/settings/settings-expansion";
-import { useToast } from "@/contexts/toast-context";
+import { useReportActionError } from "@/hooks/use-action-error";
 import * as Clipboard from "expo-clipboard";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -32,9 +32,8 @@ import { settingsStyles } from "@/styles/settings";
 import type { Theme } from "@/styles/theme";
 import { ProvidersSection } from "./providers-section";
 import { environmentLabel } from "./provider-connection-status";
-import { hostRejection, ProviderDetail, useConnectionLostReporter } from "./provider-detail-page";
+import { ProviderDetail } from "./provider-detail-page";
 import { providerRowAnchorId, useSettingsFocus } from "./settings-focus";
-import { toErrorMessage } from "@/utils/error-messages";
 
 const ThemedGrip = withUnistyles(GripVertical);
 const ThemedChevron = withUnistyles(ChevronRight);
@@ -137,6 +136,7 @@ function ProviderFamilyCard({
             </Pressable>
           </View>
         ) : null}
+        {!showDrag && family.installed !== false ? <View style={styles.dragHandle} /> : null}
         <Pressable
           {...webExpandedProps}
           onPress={toggleExpanded}
@@ -168,7 +168,7 @@ function ProviderFamilyCard({
           ) : null}
           {family.installed === false ? (
             <Button variant="outline" size="sm" onPress={toggleExpanded}>
-              Install
+              Show install command
             </Button>
           ) : null}
         </View>
@@ -243,7 +243,16 @@ export function SharedProvidersPage() {
   );
   if (!snapshot)
     return (
-      <View style={[settingsStyles.card, styles.skeleton]} testID="shared-providers-loading" />
+      <View
+        style={[settingsStyles.card, styles.skeleton]}
+        testID="shared-providers-loading"
+        accessibilityLabel="Shared provider list unavailable. Complete shared provider migration to manage the catalog."
+      >
+        <Text style={settingsStyles.rowHint}>
+          The shared provider list is not available yet. Complete shared provider migration to
+          manage the catalog.
+        </Text>
+      </View>
     );
   return <ProviderCatalog data={snapshot} environments={environments} save={save} />;
 }
@@ -259,15 +268,8 @@ function ProviderCatalog({
 }) {
   const [adding, setAdding] = useState(false);
   const [useDev, setUseDev] = useState(false);
-  const reportConnectionLost = useConnectionLostReporter();
-  const toast = useToast();
-  const change = useMutation({
-    mutationFn: save,
-    onError: (error) => {
-      reportConnectionLost(error);
-      toast.error(toErrorMessage(hostRejection(error) ?? error));
-    },
-  });
+  const reportActionError = useReportActionError();
+  const change = useMutation({ mutationFn: save, onError: reportActionError });
   const [showAvailable, setShowAvailable] = useState(false);
   const toggleAvailable = useCallback(() => setShowAvailable((value) => !value), []);
   // One provider open at a time; a provider address opens with it expanded.
@@ -345,7 +347,7 @@ function ProviderCatalog({
             ...entry,
             policy: {
               ...entry.policy,
-              order: rank.get(entry.providerType) ?? ordered.length,
+              order: rank.get(entry.providerType) ?? merged.length,
             },
           })),
         },
@@ -373,10 +375,23 @@ function ProviderCatalog({
     ),
     [data, change, expanded, toggleExpanded, families],
   );
-  const availableExpanded =
-    showAvailable ||
-    families.some((family) => family.installed === false && family.id === focusedType);
-  const availableState = useMemo(() => ({ expanded: availableExpanded }), [availableExpanded]);
+  const availableFamilies = useMemo(
+    () => families.filter((family) => family.installed === false),
+    [families],
+  );
+  const openedFocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusedType) {
+      openedFocus.current = null;
+    } else if (
+      openedFocus.current !== focusedType &&
+      availableFamilies.some((family) => family.id === focusedType)
+    ) {
+      openedFocus.current = focusedType;
+      setShowAvailable(true);
+    }
+  }, [focusedType, availableFamilies]);
+  const availableState = useMemo(() => ({ expanded: showAvailable }), [showAvailable]);
   const noDrag = useCallback(() => undefined, []);
   return (
     <View>
@@ -399,38 +414,40 @@ function ProviderCatalog({
             testID={enabled ? "shared-provider-order-list" : "shared-provider-off-list"}
           />
         ))}
-        <Pressable
-          onPress={toggleAvailable}
-          accessibilityRole="button"
-          accessibilityState={availableState}
-          style={styles.heading}
-          testID="shared-providers-available-toggle"
-        >
-          <ThemedChevron
-            size={16}
-            uniProps={gripColor}
-            style={showAvailable ? styles.chevronExpanded : undefined}
-          />
-          <Text style={settingsStyles.rowTitle}>
-            Available to install ({families.filter((family) => family.installed === false).length})
-          </Text>
-        </Pressable>
-        {(showAvailable ||
-          families.some((family) => family.installed === false && family.id === focusedType)) &&
-          families
-            .filter((family) => family.installed === false)
-            .map((family) => (
-              <ProviderFamilyCard
-                key={family.id}
-                family={family}
-                snapshot={data}
-                busy={change.isPending}
-                save={change.mutate}
-                expanded={expanded === family.id}
-                onToggleExpanded={toggleExpanded}
-                drag={noDrag}
+        {availableFamilies.length > 0 ? (
+          <View>
+            <Pressable
+              onPress={toggleAvailable}
+              accessibilityRole="button"
+              accessibilityState={availableState}
+              style={styles.heading}
+              testID="shared-providers-available-toggle"
+            >
+              <ThemedChevron
+                size={16}
+                uniProps={gripColor}
+                style={showAvailable ? styles.chevronExpanded : undefined}
               />
-            ))}
+              <Text style={settingsStyles.rowTitle}>
+                Available to install (
+                {families.filter((family) => family.installed === false).length})
+              </Text>
+            </Pressable>
+            {showAvailable &&
+              availableFamilies.map((family) => (
+                <ProviderFamilyCard
+                  key={family.id}
+                  family={family}
+                  snapshot={data}
+                  busy={change.isPending}
+                  save={change.mutate}
+                  expanded={expanded === family.id}
+                  onToggleExpanded={toggleExpanded}
+                  drag={noDrag}
+                />
+              ))}
+          </View>
+        ) : null}
         <Button variant="outline" onPress={openAdd}>
           Add provider
         </Button>
@@ -489,8 +506,8 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
   chevronExpanded: { transform: [{ rotate: "90deg" }] },
-  trailing: { width: 80, alignItems: "flex-end" },
-  skeleton: { height: 96 },
+  trailing: { width: 160, alignItems: "flex-end" },
+  skeleton: { minHeight: 96, padding: theme.spacing[3], justifyContent: "center" },
   command: { gap: theme.spacing[2] },
   commandText: { fontFamily: "monospace", color: theme.colors.foreground },
   detail: {
