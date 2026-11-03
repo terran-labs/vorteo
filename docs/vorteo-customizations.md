@@ -1,6 +1,10 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): merged `main` after the fourth Host delivery into the installed Host source for its pull request; functionality is unchanged.
+
 Maintenance review (2026-11-03): Settings round 3, batch 1. Settings no longer shifts layout: transient results show as toasts, ongoing sync shows in a fixed status line and loading panes keep their space. Provider lists group uninstalled providers under Available to install, profiles open on a dedicated page, and owner-password controls stay grouped and disabled until unlocked. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): merged `main` after the second Host delivery into the installed Host source for its pull request; functionality is unchanged.
 
 Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.
 

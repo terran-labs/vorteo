@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge `main` after the fourth Host delivery so the fifth installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge `main` after the second Host delivery so the third and fourth installed Host updates can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
 ### Changed
 
 - Settings no longer jumps. Pop-in warning and saved cards are gone: transient results show as toasts, ongoing sync shows in a fixed two-line status line, and loading panes hold their space. The page relies on browser scroll anchoring, with a small fallback for browsers without it, and the three-second snap-back after a jump is gone.
