@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, constants, readFileSync, realpathSync, readdirSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { z } from "zod";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -1678,6 +1678,14 @@ export function refreshBootstrapReviewOnRenewalChange(
   };
 }
 
+/** True only on proof the child is not running: Node 24 leaves `pid` undefined from
+ * the synchronous return of a failed spawn and later emits "error" with `exitCode`
+ * set to the negative errno and no "exit"; a started child sets `exitCode` or
+ * `signalCode` before it emits "exit". */
+function childNeverRanOrEnded(child: ChildProcess): boolean {
+  return child.pid === undefined || child.exitCode !== null || child.signalCode !== null;
+}
+
 /** Shared exact-plan launch path. Independent maintenance omits automatic
  * authority and must obtain its own owner decision before this path launches. */
 export function createDispatchingBootstrapReview(options: {
@@ -1751,22 +1759,44 @@ export function createDispatchingBootstrapReview(options: {
       if (closable) closeFailedPreclaimDispatch(requests, request, error);
       throw error;
     }
-    const child = spawn(
-      "/usr/bin/python3",
-      [
-        "-I",
-        "-B",
-        "-c",
-        source.toString("utf8"),
-        path.join(request.plan.state.directory, "coordinator-bootstrap-execution.lock"),
-        setup.node.path,
-        setup.entrypoint.path,
-        executionSetup,
-        "executor",
-        request.id,
-      ],
-      { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { PATH: "/usr/bin:/bin" } },
-    );
+    // Close only on proof that no executor can still claim this revision: the
+    // process never started, or it ended. The launcher execs the runner in the same
+    // process and no watchdog exists before the claim, so a terminal child leaves
+    // nothing to claim. A runner that claimed before ending holds an execution
+    // record, and the exact CAS in closeFailedDispatch then changes nothing.
+    const stoppedBeforeClaim = () => {
+      if (closable)
+        closeFailedPreclaimDispatch(
+          requests,
+          request,
+          new BootstrapRequestConflict(
+            "The coordinator runner stopped before it claimed the update",
+          ),
+        );
+    };
+    let child: ChildProcess;
+    try {
+      child = spawn(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-B",
+          "-c",
+          source.toString("utf8"),
+          path.join(request.plan.state.directory, "coordinator-bootstrap-execution.lock"),
+          setup.node.path,
+          setup.entrypoint.path,
+          executionSetup,
+          "executor",
+          request.id,
+        ],
+        { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { PATH: "/usr/bin:/bin" } },
+      );
+    } catch (error) {
+      // A synchronous spawn throw starts no process.
+      stoppedBeforeClaim();
+      throw error;
+    }
     child.on("error", () => {});
     try {
       await waitForBootstrapWatchdog(
@@ -1776,7 +1806,9 @@ export function createDispatchingBootstrapReview(options: {
           : { role: "executor", timeoutMs: options.dispatchWaitTimeoutMs },
       );
     } catch {
-      // An observation failure is not permission to signal or relaunch a child.
+      // A started child's "error", malformed output or a timeout proves neither, so
+      // the approval stays open for the stall view. Observation never signals or relaunches.
+      if (childNeverRanOrEnded(child)) stoppedBeforeClaim();
       throw new BootstrapRequestConflict(
         "Bootstrap dispatch is unconfirmed. Refresh its recorded status before recovery.",
       );

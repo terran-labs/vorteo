@@ -535,6 +535,7 @@ function sanitizeUsage(value: unknown): AgentUsage | undefined {
     "cachedInputTokens",
     "outputTokens",
     "totalCostUsd",
+    "estimatedCostUsd",
     "contextWindowMaxTokens",
     "contextWindowUsedTokens",
   ];

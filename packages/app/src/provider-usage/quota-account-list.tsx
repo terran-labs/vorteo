@@ -8,34 +8,38 @@ import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { usePanelStore } from "@/stores/panel-store";
 import type { Theme } from "@/styles/theme";
+import { bestChoice, rankedRows, type BestChoice, type RankedAccount } from "./best-account";
 import { providerConnectionAction } from "./connection-action";
 import { formatAmount } from "./format";
-import {
-  LOW_QUOTA_PCT,
-  type QuotaAccount,
-  type QuotaBalanceRow,
-  type QuotaWindowRow,
-} from "./global-quota";
+import type { QuotaAccount, QuotaBalanceRow, QuotaWindowRow } from "./global-quota";
+import { LIMIT_OBSERVATION_DETAIL_ID } from "./quota-reading";
 import { ProviderReconnectControl } from "./reconnect-control";
 import { ProviderResetControl } from "./reset-control";
 import { formatCountdown, formatResetMoment, formatUtcMoment } from "./reset-time";
-import type { ProviderUsageView } from "./types";
+import { dayTicks, runwayDescription, runwayLabel, runwaySummary } from "./runway";
+import { DayAxis, RunwayLane } from "./runway-lane";
+import { deriveTone } from "./tone";
+import type { ProviderUsageTone, ProviderUsageView } from "./types";
 
-const iconColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const iconColor = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 const Down = withUnistyles(ChevronDown, iconColor);
 const Right = withUnistyles(ChevronRight, iconColor);
-const CRITICAL_PCT = 5;
+const OBSERVED_NOTE = "From last limit message";
 
 type Tone = "ok" | "warning" | "danger" | "stale";
 
-function toneOf(remaining: number | null, stale: boolean): Tone {
+/** Matches the usage tiles: a provider's own tone wins, else tone.ts thresholds. */
+function toneOf(
+  remaining: number | null,
+  { stale = false, tone = null }: { stale?: boolean; tone?: ProviderUsageTone | null } = {},
+): Tone {
   if (stale) return "stale";
-  if (remaining !== null && remaining < CRITICAL_PCT) return "danger";
-  if (remaining !== null && remaining < LOW_QUOTA_PCT) return "warning";
+  const derived = tone ?? deriveTone(remaining === null ? null : 100 - remaining);
+  if (derived === "danger" || derived === "warning") return derived;
   return "ok";
 }
 
-/** The card body's accounts, separated so it renders without a live usage host. */
+/** The card body: the account to use next, a shared day axis and one runway row per account. */
 export function QuotaAccountList({
   accounts,
   serverId,
@@ -47,95 +51,55 @@ export function QuotaAccountList({
   view: ProviderUsageView;
   now: number;
 }) {
-  return accounts.map((account, index) => (
-    <AccountSection
-      key={account.providerId}
-      account={account}
-      first={index === 0}
-      only={accounts.length === 1}
-      serverId={serverId}
-      view={view}
-      now={now}
-    />
-  ));
-}
-
-function AccountSection({
-  account,
-  first,
-  only,
-  serverId,
-  view,
-  now,
-}: {
-  account: QuotaAccount;
-  first: boolean;
-  only: boolean;
-  serverId: string | null;
-  view: ProviderUsageView;
-  now: number;
-}) {
-  const choice = usePanelStore((state) => state.quotaAccountExpanded[account.providerId]);
-  // A lone account has nothing to make room for; otherwise healthy accounts start collapsed.
-  const expanded = choice ?? (only || account.attention);
-  const toggle = useCallback(() => {
-    usePanelStore.getState().setQuotaAccountExpanded(account.providerId, !expanded);
-  }, [account.providerId, expanded]);
-  const Chevron = expanded ? Down : Right;
-  const toggleState = useMemo(() => ({ expanded }), [expanded]);
+  const rows = useMemo(() => rankedRows(accounts, now), [accounts, now]);
+  const choice = useMemo(() => bestChoice(rows, now), [rows, now]);
+  const ticks = useMemo(() => dayTicks(now), [now]);
   return (
-    <View
-      style={[styles.account, taskCardStyles.proseInset, !first && taskCardStyles.separator]}
-      testID={`global-quota-account-${account.providerId}`}
-    >
-      <View style={styles.header}>
-        <Pressable
-          onPress={toggle}
-          style={styles.headerToggle}
-          accessibilityRole="button"
-          accessibilityState={toggleState}
-          accessibilityLabel={`${account.name}${account.status ? `, ${account.status}` : ""}`}
-          testID={`global-quota-toggle-${account.providerId}`}
-        >
-          <Chevron size={12} />
-          <Text style={styles.name} numberOfLines={1}>
-            {account.name}
-          </Text>
-          {account.plan ? (
-            <Text style={styles.plan} numberOfLines={1}>
-              {account.plan}
-            </Text>
-          ) : null}
-        </Pressable>
-        {account.running > 0 ? (
-          <Text
-            style={styles.running}
-            accessibilityLabel={`${account.running} ${account.running === 1 ? "agent" : "agents"} running`}
-          >
-            ● {account.running}
-          </Text>
-        ) : null}
-        <AccountAction account={account} serverId={serverId} view={view} />
+    <View style={styles.list}>
+      {choice ? <BestNow choice={choice} /> : null}
+      <View style={[taskCardStyles.proseInset, styles.axis]}>
+        <DayAxis ticks={ticks} />
       </View>
-      {expanded ? (
-        <AccountBody account={account} now={now} />
-      ) : (
-        <CollapsedSummary account={account} />
-      )}
+      {rows.map((row, index) => (
+        <AccountRow
+          key={row.account.providerId}
+          row={row}
+          first={index === 0}
+          only={rows.length === 1}
+          serverId={serverId}
+          view={view}
+          now={now}
+        />
+      ))}
     </View>
   );
 }
 
-/** The profile selector's account controls: Reconnect when signed out, else reset credits. */
-function AccountAction({
-  account,
-  serverId,
-  view,
-}: {
-  account: QuotaAccount;
-  serverId: string | null;
-  view: ProviderUsageView;
-}) {
+function BestNow({ choice }: { choice: BestChoice }) {
+  const { best, next, waiting } = choice;
+  return (
+    <View style={styles.best} testID="global-quota-best">
+      <Text style={styles.bestLabel}>{waiting ? "Next available" : "Best now"}</Text>
+      <Text style={styles.bestName} numberOfLines={1}>
+        {best.account.name}
+        {best.account.plan ? (
+          <Text style={styles.bestPlan}>{` · ${best.account.plan}`}</Text>
+        ) : null}
+      </Text>
+      <Text style={styles.bestReason} numberOfLines={2}>
+        {best.reason}
+      </Text>
+      {next ? (
+        <Text style={styles.bestThen} numberOfLines={1} testID="global-quota-best-then">
+          Then <Text style={styles.bestThenName}>{next.account.name}</Text>
+          {`, ${next.reason.charAt(0).toLowerCase()}${next.reason.slice(1)}`}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function useConnection(account: QuotaAccount, serverId: string | null, view: ProviderUsageView) {
   const { config } = useDaemonConfig(serverId);
   const { entries } = useProvidersSnapshot(serverId);
   const usage =
@@ -148,63 +112,128 @@ function AccountAction({
     usage,
     snapshot: entries?.find((entry) => entry.provider === account.providerId),
   });
-  if (action) {
-    return (
-      <ProviderReconnectControl
-        usage={usage}
-        serverId={serverId}
-        providerId={account.providerId}
-        name={account.name}
-      />
-    );
-  }
-  return (
-    <ProviderResetControl
-      serverId={serverId}
-      providerId={account.providerId}
-      name={account.name}
-      compact
-    />
-  );
+  return { action, usage };
 }
 
-function CollapsedSummary({ account }: { account: QuotaAccount }) {
-  const parts = account.windows
-    .filter((window) => !window.separate && window.remaining !== null)
-    .map((window) => `${window.summaryLabel} ${Math.round(window.remaining!)}%`);
-  for (const balance of account.balances) {
-    if (balance.limit !== null && balance.remaining !== null)
-      parts.push(`${formatAmount(balance.remaining, balance.unit)} left`);
-  }
-  const next = formatResetMoment(account.nextResetAt);
-  if (next) parts.push(`next reset ${next}`);
-  const tone = toneOf(account.remaining, false);
+function AccountRow({
+  row,
+  first,
+  only,
+  serverId,
+  view,
+  now,
+}: {
+  row: RankedAccount;
+  first: boolean;
+  only: boolean;
+  serverId: string | null;
+  view: ProviderUsageView;
+  now: number;
+}) {
+  const { account, runway } = row;
+  const choice = usePanelStore((state) => state.quotaAccountExpanded[account.providerId]);
+  // A lone account has nothing to make room for; otherwise the lane is the summary.
+  const expanded = choice ?? only;
+  const toggle = useCallback(() => {
+    usePanelStore.getState().setQuotaAccountExpanded(account.providerId, !expanded);
+  }, [account.providerId, expanded]);
+  const toggleState = useMemo(() => ({ expanded }), [expanded]);
+  const { action, usage } = useConnection(account, serverId, view);
+  const Chevron = expanded ? Down : Right;
+  const label = runwayLabel(account, runway);
+  const summary = runwaySummary(account, runway, now);
+  const description = `${account.name}, next 7 days: ${runwayDescription(runway, now)}`;
   return (
-    <Text
-      style={[
-        styles.summary,
-        tone === "warning" && styles.warning,
-        tone === "danger" && styles.danger,
-      ]}
-      testID={`global-quota-summary-${account.providerId}`}
+    <View
+      style={[styles.account, taskCardStyles.proseInset, !first && taskCardStyles.separator]}
+      testID={`global-quota-account-${account.providerId}`}
     >
-      {account.status ? (
-        <Text style={account.failing ? styles.danger : styles.warning}>{account.status} · </Text>
+      <View style={styles.header}>
+        <Pressable
+          onPress={toggle}
+          style={styles.headerToggle}
+          accessibilityRole="button"
+          accessibilityState={toggleState}
+          accessibilityLabel={`${account.name}, ${summary}`}
+          testID={`global-quota-toggle-${account.providerId}`}
+        >
+          <Chevron size={12} />
+          <Text style={styles.name} numberOfLines={1}>
+            {account.name}
+          </Text>
+          {label ? (
+            <Text
+              style={[styles.label, label.tone === "danger" && styles.danger]}
+              testID={`global-quota-label-${account.providerId}`}
+            >
+              {label.text}
+            </Text>
+          ) : null}
+          {account.running > 0 ? (
+            <Text
+              style={styles.running}
+              accessibilityLabel={`${account.running} ${account.running === 1 ? "agent" : "agents"} running`}
+            >
+              ● {account.running}
+            </Text>
+          ) : null}
+        </Pressable>
+        {action ? (
+          <ProviderReconnectControl
+            usage={usage}
+            serverId={serverId}
+            providerId={account.providerId}
+            name={account.name}
+          />
+        ) : null}
+      </View>
+      <Pressable onPress={toggle} focusable={false} style={styles.indent}>
+        <RunwayLane
+          runway={runway}
+          label={description}
+          testID={`global-quota-lane-${account.providerId}`}
+        />
+        <Text
+          style={styles.summary}
+          numberOfLines={1}
+          testID={`global-quota-summary-${account.providerId}`}
+        >
+          {summary}
+        </Text>
+      </Pressable>
+      {expanded ? (
+        <AccountDetail account={account} now={now} serverId={serverId} canReset={!action} />
       ) : null}
-      {parts.join(" · ")}
-    </Text>
+    </View>
   );
 }
 
-function AccountBody({ account, now }: { account: QuotaAccount; now: number }) {
+/** Signed-out accounts show Reconnect in their header instead of reset credits. */
+function AccountDetail({
+  account,
+  now,
+  serverId,
+  canReset,
+}: {
+  account: QuotaAccount;
+  now: number;
+  serverId: string | null;
+  canReset: boolean;
+}) {
   let status = account.status;
   if (account.disconnected && account.windows.length && account.fetchedAt) {
     status = `Account disconnected. Showing last known usage from ${formatResetMoment(account.fetchedAt)}.`;
   }
   return (
-    <View style={styles.body}>
-      {status ? (
-        <Text style={[styles.status, account.failing && styles.danger]}>{status}</Text>
+    <View
+      style={[styles.indent, styles.detail]}
+      testID={`global-quota-detail-${account.providerId}`}
+    >
+      {status ? <Text style={styles.status}>{status}</Text> : null}
+      {account.observed ? (
+        <Text style={styles.moment} testID={`global-quota-observed-${account.providerId}`}>
+          {OBSERVED_NOTE}
+        </Text>
       ) : null}
       {account.windows.map((window) => (
         <WindowRow
@@ -218,23 +247,43 @@ function AccountBody({ account, now }: { account: QuotaAccount; now: number }) {
       {account.balances.map((balance) => (
         <BalanceRow key={balance.id} balance={balance} now={now} />
       ))}
-      {account.details.map((detail) => (
-        <View key={detail.id} style={styles.detail}>
-          <Text style={styles.detailLabel} numberOfLines={1}>
-            {detail.label}
-          </Text>
-          <Text
-            style={[
-              styles.detailValue,
-              detail.tone === "warning" && styles.warning,
-              detail.tone === "danger" && styles.danger,
-            ]}
-          >
-            {detail.value}
-          </Text>
+      {account.plan ? <Fact label="Plan" value={account.plan} /> : null}
+      {/* The observation note above already says where the reading came from. */}
+      {account.details
+        .filter((detail) => detail.id !== LIMIT_OBSERVATION_DETAIL_ID)
+        .map((detail) => (
+          <Fact key={detail.id} label={detail.label} value={detail.value} tone={detail.tone} />
+        ))}
+      {account.source ? <Fact label="Source" value={account.source} /> : null}
+      {canReset ? (
+        <View style={styles.actions}>
+          <ProviderResetControl
+            serverId={serverId}
+            providerId={account.providerId}
+            name={account.name}
+            compact
+          />
         </View>
-      ))}
-      {account.source ? <Text style={styles.source}>via {account.source}</Text> : null}
+      ) : null}
+    </View>
+  );
+}
+
+function Fact({ label, value, tone }: { label: string; value: string; tone?: ProviderUsageTone }) {
+  return (
+    <View style={styles.fact}>
+      <Text style={styles.factLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text
+        style={[
+          styles.factValue,
+          tone === "warning" && styles.warning,
+          tone === "danger" && styles.danger,
+        ]}
+      >
+        {value}
+      </Text>
     </View>
   );
 }
@@ -253,7 +302,7 @@ function Meter({ remaining, tone, label }: { remaining: number; tone: Tone; labe
   const value = useMemo(() => ({ min: 0, max: 100, now: Math.round(remaining) }), [remaining]);
   return (
     <View
-      style={styles.track}
+      style={styles.meter}
       accessibilityRole="progressbar"
       accessibilityLabel={label}
       accessibilityValue={value}
@@ -274,25 +323,26 @@ function WindowRow({
   stale: boolean;
   now: number;
 }) {
-  const tone = toneOf(window.remaining, stale);
+  const tone = toneOf(window.remaining, { stale, tone: window.tone });
   const passed = window.resetsAt !== null && Date.parse(window.resetsAt) <= now;
+  const notStarted =
+    window.resetsAt === null && window.remaining !== null && window.remaining >= 99.5;
   return (
     <View testID={`global-quota-window-${account.providerId}-${window.id}`}>
       <View style={styles.windowTop}>
         <Text style={styles.windowLabel} numberOfLines={1}>
           {window.label}
+          {window.separate ? <Text style={styles.windowNote}> · separate</Text> : null}
         </Text>
-        {window.limiting ? <Text style={styles.limitingTag}>limiting</Text> : null}
-        {window.separate ? <Text style={styles.separateTag}>separate</Text> : null}
         <Text
           style={[
             styles.pct,
+            window.limiting && styles.pctLimiting,
             tone === "warning" && styles.warning,
             tone === "danger" && styles.danger,
           ]}
         >
           {window.remaining === null ? "Unknown" : `${Math.round(window.remaining)}%`}
-          <Text style={styles.pctUnit}>{window.remaining === null ? "" : " left"}</Text>
         </Text>
       </View>
       {window.remaining !== null ? (
@@ -302,18 +352,22 @@ function WindowRow({
           label={`${account.name} ${window.label} remaining`}
         />
       ) : null}
-      <MomentLine
-        prefix={passed ? "Reset" : "Resets"}
-        suffix={passed && stale ? " (awaiting refresh)" : ""}
-        iso={window.resetsAt}
-        now={now}
-      />
+      {notStarted ? (
+        <Text style={styles.moment}>Not started. Opens with the first message.</Text>
+      ) : (
+        <MomentLine
+          prefix={passed ? "Reset" : "Resets"}
+          suffix={passed && stale ? " (awaiting refresh)" : ""}
+          iso={window.resetsAt}
+          now={now}
+        />
+      )}
       {window.runsOutAt && !stale ? (
         <MomentLine
           prefix="At this pace, runs out"
           iso={window.runsOutAt}
           now={now}
-          danger
+          warning
           testID={`global-quota-pace-${account.providerId}-${window.id}`}
         />
       ) : null}
@@ -325,19 +379,14 @@ function BalanceRow({ balance, now }: { balance: QuotaBalanceRow; now: number })
   if (balance.remaining === null) return null;
   if (balance.limit === null) {
     return (
-      <View style={styles.detail}>
-        <Text style={styles.detailLabel} numberOfLines={1}>
-          {balance.label}
-        </Text>
-        <Text style={[styles.detailValue, balance.remaining <= 0 && styles.warning]}>
-          {formatAmount(balance.remaining, balance.unit)}
-          {unitSuffix(balance)} left
-        </Text>
-      </View>
+      <Fact
+        label={balance.label}
+        value={`${formatAmount(balance.remaining, balance.unit)}${unitSuffix(balance)} left`}
+      />
     );
   }
   const remainingPct = Math.max(0, Math.min(100, (100 * balance.remaining) / balance.limit));
-  const tone = toneOf(remainingPct, false);
+  const tone = toneOf(remainingPct);
   return (
     <View>
       <View style={styles.windowTop}>
@@ -353,7 +402,7 @@ function BalanceRow({ balance, now }: { balance: QuotaBalanceRow; now: number })
         >
           {formatAmount(balance.remaining, balance.unit)}
           <Text style={styles.pctUnit}>
-            {` of ${formatAmount(balance.limit, balance.unit)}${unitSuffix(balance)} left`}
+            {` of ${formatAmount(balance.limit, balance.unit)}${unitSuffix(balance)}`}
           </Text>
         </Text>
       </View>
@@ -375,14 +424,14 @@ function MomentLine({
   suffix = "",
   iso,
   now,
-  danger = false,
+  warning = false,
   testID,
 }: {
   prefix: string;
   suffix?: string;
   iso: string | null;
   now: number;
-  danger?: boolean;
+  warning?: boolean;
   testID?: string;
 }) {
   const moment = formatResetMoment(iso);
@@ -394,11 +443,11 @@ function MomentLine({
     <Tooltip delayDuration={250} enabledOnDesktop enabledOnMobile>
       <TooltipTrigger asChild>
         <View style={styles.momentRow} testID={testID}>
-          <Text style={[styles.moment, danger && styles.danger]}>
+          <Text style={[styles.moment, warning && styles.warning]}>
             {`${prefix} ${moment}${suffix}`}
             {countdown ? (
               // Non-breaking spaces keep the countdown on one line when the moment wraps.
-              <Text style={styles.countdown}>{` ·\u00a0${countdown.replace(/ /g, "\u00a0")}`}</Text>
+              <Text style={styles.countdown}>{` · ${countdown.replace(/ /g, " ")}`}</Text>
             ) : null}
           </Text>
         </View>
@@ -410,8 +459,47 @@ function MomentLine({
   );
 }
 
+const INDENT = 16;
+
 const styles = StyleSheet.create((theme) => ({
-  account: { gap: theme.spacing[1], paddingVertical: theme.spacing[2] },
+  list: { paddingTop: theme.spacing[1] },
+  best: {
+    marginHorizontal: theme.spacing[3],
+    marginBottom: theme.spacing[3],
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.divider,
+    backgroundColor: theme.colors.surface1,
+    gap: 2,
+  },
+  bestLabel: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  bestName: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+  },
+  bestPlan: { color: theme.colors.foregroundMuted, fontWeight: theme.fontWeight.normal },
+  bestReason: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm - 1,
+    fontVariant: ["tabular-nums"],
+  },
+  bestThen: {
+    marginTop: theme.spacing[1],
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.sm - 1,
+    fontVariant: ["tabular-nums"],
+  },
+  bestThenName: { color: theme.colors.foregroundMuted },
+  axis: { paddingLeft: INDENT },
+  account: { gap: theme.spacing[1], paddingVertical: theme.spacing[2] + 2 },
   header: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2], minWidth: 0 },
   headerToggle: {
     flex: 1,
@@ -423,86 +511,86 @@ const styles = StyleSheet.create((theme) => ({
   name: {
     flexShrink: 1,
     minWidth: 0,
+    marginRight: "auto",
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
   },
-  plan: {
+  label: {
     flexShrink: 0,
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm - 1,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.sm,
-    paddingHorizontal: 4,
   },
   running: {
     flexShrink: 0,
-    color: theme.colors.statusSuccess,
-    fontSize: theme.fontSize.sm,
-    fontVariant: ["tabular-nums"],
-  },
-  summary: {
-    marginLeft: 16,
+    marginLeft: theme.spacing[1],
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.sm - 1,
     fontVariant: ["tabular-nums"],
   },
-  body: { marginLeft: 16, gap: theme.spacing[2] },
-  status: { color: theme.colors.statusWarning, fontSize: theme.fontSize.sm },
+  indent: { marginLeft: INDENT },
+  summary: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm - 1,
+    fontVariant: ["tabular-nums"],
+  },
+  detail: { gap: theme.spacing[3], paddingTop: theme.spacing[2] },
+  status: { color: theme.colors.statusWarning, fontSize: theme.fontSize.sm - 1 },
   windowTop: { flexDirection: "row", alignItems: "baseline", gap: theme.spacing[1] },
   windowLabel: {
     flexShrink: 1,
     minWidth: 0,
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.sm - 1,
   },
-  limitingTag: {
-    flexShrink: 0,
-    color: theme.colors.accent,
-    fontSize: 10,
-    borderWidth: 1,
-    borderColor: theme.colors.accent,
-    borderRadius: 3,
-    paddingHorizontal: 3,
-  },
-  separateTag: { flexShrink: 0, color: theme.colors.foregroundExtraMuted, fontSize: 10 },
+  windowNote: { color: theme.colors.foregroundExtraMuted },
   pct: {
     marginLeft: "auto",
     flexShrink: 0,
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.medium,
-    fontVariant: ["tabular-nums"],
-  },
-  pctUnit: { color: theme.colors.foregroundExtraMuted, fontWeight: theme.fontWeight.normal },
-  track: {
-    height: 4,
-    borderRadius: 2,
-    overflow: "hidden",
-    backgroundColor: theme.colors.surface3,
-    marginVertical: 3,
-  },
-  fill: { height: 4, borderRadius: 2, backgroundColor: theme.colors.statusDotRunning },
-  warningFill: { backgroundColor: theme.colors.statusWarning },
-  dangerFill: { backgroundColor: theme.colors.statusDanger },
-  staleFill: { backgroundColor: theme.colors.foregroundExtraMuted },
-  momentRow: { alignSelf: "flex-start", maxWidth: "100%" },
-  moment: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm - 1,
     fontVariant: ["tabular-nums"],
   },
+  pctLimiting: { color: theme.colors.foreground, fontWeight: theme.fontWeight.medium },
+  pctUnit: { color: theme.colors.foregroundExtraMuted },
+  meter: {
+    height: 3,
+    borderRadius: 1.5,
+    overflow: "hidden",
+    backgroundColor: theme.colors.surface3,
+    marginVertical: 4,
+  },
+  fill: {
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: theme.colors.foregroundMuted,
+    opacity: 0.55,
+  },
+  warningFill: { backgroundColor: theme.colors.statusWarning, opacity: 1 },
+  dangerFill: { backgroundColor: theme.colors.destructive, opacity: 1 },
+  staleFill: { backgroundColor: theme.colors.foregroundExtraMuted },
+  momentRow: { alignSelf: "flex-start", maxWidth: "100%" },
+  moment: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.sm - 2,
+    fontVariant: ["tabular-nums"],
+  },
   countdown: { color: theme.colors.foregroundExtraMuted },
-  detail: { flexDirection: "row", gap: theme.spacing[2] },
-  detailLabel: {
+  fact: { flexDirection: "row", gap: theme.spacing[2] },
+  factLabel: {
     flex: 1,
     minWidth: 0,
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.sm - 1,
   },
-  detailValue: { flexShrink: 0, color: theme.colors.foreground, fontSize: theme.fontSize.sm },
-  source: { color: theme.colors.foregroundExtraMuted, fontSize: theme.fontSize.sm - 1 },
+  factValue: {
+    flexShrink: 0,
+    maxWidth: "65%",
+    textAlign: "right",
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm - 1,
+  },
+  actions: { flexDirection: "row", gap: theme.spacing[2] },
   warning: { color: theme.colors.statusWarning },
-  danger: { color: theme.colors.statusDanger },
+  danger: { color: theme.colors.destructive },
 }));

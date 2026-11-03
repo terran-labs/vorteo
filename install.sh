@@ -35,6 +35,7 @@
 #   --skip-prerequisites            Install no prerequisites; report each missing one with its
 #                                   fix (VORTEO_SKIP_PREREQUISITES=1).
 #   --proceed=yes|no                Approve the plan without being asked (VORTEO_PROCEED).
+#   --demo                 Preview every setup step and five minutes of animation; change nothing.
 #   --repair                        Repair an existing installation.
 #   --version=<tag>                 Install this release tag instead of the latest
 #                                   (VORTEO_VERSION).
@@ -427,17 +428,41 @@ vp_node_major() {
   version="${version#v}"
   printf '%s' "${version%%.*}"
 }
+# Reuse a compatible runtime even when an older shell default shadows it.
 vp_check_node() {
-  local candidate major
+  local candidate major prefix directory old_ifs
   vp_found="not installed" vp_state=missing
-  candidate=$(command -v node 2>/dev/null) || return 1
-  vp_found="found $("$candidate" --version 2>/dev/null)" vp_state=outdated
-  major=$(vp_node_major "$candidate") || return 1
-  [ "$major" -ge "$vp_minimum_node" ] 2>/dev/null || return 1
-  vp_state=ok
-  # shellcheck disable=SC2034 # Read by install.sh after vorteo_ensure_prerequisites.
-  VORTEO_NODE_BIN="$candidate"
+  candidate=$(command -v node 2>/dev/null) || candidate=""
+  if [ -n "$candidate" ]; then
+    vp_found="found $("$candidate" --version 2>/dev/null)" vp_state=outdated
+    if vp_use_node "$candidate"; then return 0; fi
+  fi
+  old_ifs="$IFS"
+  IFS=:
+  for directory in $PATH; do
+    IFS="$old_ifs"
+    if vp_use_node "${directory:-.}/node"; then return 0; fi
+    IFS=:
+  done
+  IFS="$old_ifs"
+  if command -v brew >/dev/null 2>&1; then
+    prefix=$(HOMEBREW_NO_AUTO_UPDATE=1 brew --prefix "node@$vp_minimum_node" 2>/dev/null) || prefix=""
+    if [ -n "$prefix" ] && vp_use_node "$prefix/bin/node"; then return 0; fi
+  fi
+  return 1
 }
+vp_use_node() {
+  local candidate="$1" major
+  [ -x "$candidate" ] || return 1
+  major=$(vp_node_major "$candidate") || return 1
+  [ "$major" -ge "${vp_minimum_node:-24}" ] 2>/dev/null || return 1
+  vp_state=ok
+  # shellcheck disable=SC2034 # Consumed by install.sh.
+  VORTEO_NODE_BIN="$candidate"
+  PATH="$(dirname "$candidate"):$PATH"
+  export PATH
+}
+
 vp_node_method() {
   if vp_has_brew; then
     printf 'Homebrew (brew install node@%s)' "$vp_minimum_node"
@@ -864,6 +889,69 @@ vp_manual_fix() {
 }
 # END prerequisites.sh
 
+# BEGIN connection.sh
+# shellcheck shell=bash
+# shellcheck disable=SC2154 # Caller supplies the documented rendering context.
+# Shared connection summary for the standalone installer and installed command.
+# Caller supplies node_bin, source_dir, platform, interactive and say().
+  # Copies the password without printing it. Returns 1 when no clipboard is available.
+  copy_password() {
+    [ -r "$1" ] || return 1
+    local copier=""
+    if [ "$platform" = macos ] && command -v pbcopy >/dev/null 2>&1; then
+      copier="pbcopy"
+    elif [ -n "${WAYLAND_DISPLAY-}" ] && command -v wl-copy >/dev/null 2>&1; then
+      copier="wl-copy"
+    elif [ -n "${DISPLAY-}" ] && command -v xclip >/dev/null 2>&1; then
+      copier="xclip -selection clipboard"
+    else
+      return 1
+    fi
+    tr -d '\r\n' <"$1" | $copier >/dev/null 2>&1 3<&-
+  }
+  show_qr() {
+    local columns="${COLUMNS-}"
+    if [ -z "$columns" ]; then columns=$(tput cols 2>/dev/null || printf '80'); fi
+    local qr="$source_dir/scripts/installer/qr.mjs" qr_status=0 qr_output=""
+    [ -f "$qr" ] || return 0
+    say ""
+    case "$1" in
+      http://localhost:* | http://127.0.0.1:* | http://\[::1\]:*)
+        say "  Connection QR code (local address; use it on this computer):" ;;
+      *) say "  Scan to open Vorteo on your phone (it must have access to this address):" ;;
+    esac
+    qr_output=$("$node_bin" "$qr" "$1" --max-width "$((columns - 2))" 3<&-) || qr_status=$?
+    if [ "$qr_status" -eq 0 ]; then
+      say ""
+      printf '%s\n' "$qr_output" | sed 's/^/  /'
+    fi
+    if [ "$qr_status" -eq 5 ]; then
+      say "  Widen the terminal to see a QR code, or open $1 on your phone."
+    fi
+  }
+
+show_connection() {
+  local origin="$1" local_origin="$2" password_file="$3" name="$4"
+    printf '\nConnect to %s\n' "${name:-Vorteo}"
+    say "  Address:          $origin"
+    if [ -n "$local_origin" ] && [ "$local_origin" != "$origin" ]; then
+      say "  On this machine:  $local_origin"
+    fi
+    if copy_password "$password_file"; then
+      say "  Owner password:   copied to your clipboard"
+    else
+      say "  Owner password:   in the file below"
+    fi
+    say "  Password file:    $password_file"
+    if [ -n "$interactive" ]; then
+      show_qr "$origin"
+    fi
+    say ""
+    say "  Sign in with the owner password. Everything else, including updates, happens in the interface."
+    say "  Commands: vorteo status, vorteo doctor, vorteo open, vorteo update, vorteo repair, vorteo uninstall"
+}
+# END connection.sh
+
 vorteo_install() {
   VORTEO_INSTALL_STARTED_MS="$(date +%s)000"
   export VORTEO_INSTALL_STARTED_MS
@@ -880,7 +968,7 @@ vorteo_install() {
   local tailscale_download="https://tailscale.com/download"
   local minimum_node=24
 
-  local assume_yes="" force_agent="" want_repair="" no_open="" pinned_version="" root=""
+  local demo="" assume_yes="" force_agent="" want_repair="" no_open="" pinned_version="" root=""
   local interactive="" skip_prerequisites="" platform="" node_bin="" source_dir="" work="" existing_kind=""
   local pending_questions="" pending_plan="" release_tag="" release_commit=""
   local original_args=("$@")
@@ -930,6 +1018,7 @@ vorteo_install() {
   usage() {
     say "Usage: curl -fsSL $install_address | bash -s -- [options]"
     say ""
+    say "  --demo                           Simulate all setup steps; animate for five minutes"
     say "  --yes, -y                         Take every default answer"
     say "  --dev-container=yes|no            Provision a Dev container (needs Docker)"
     say "  --name=<text>                     Installation name (Vorteo)"
@@ -1091,6 +1180,7 @@ vorteo_install() {
     arg="$1"
     shift
     case "$arg" in
+      --demo) demo=1 ;;
       -y | --yes) assume_yes=1 ;;
       --non-interactive) force_agent=1 ;;
       --repair) want_repair=1 ;;
@@ -1143,6 +1233,20 @@ vorteo_install() {
         ;;
     esac
   done
+
+  # Demo exits before temporary files, discovery, prerequisites or engine execution.
+  if [ -n "$demo" ]; then
+    local demo_node
+    demo_node=$(command -v node 2>/dev/null) || {
+      say "Demo needs an existing Node.js runtime. Nothing was changed." >&2
+      return 1
+    }
+    vorteo_demo "$demo_node" ${assume_yes:+--yes} ${force_agent:+--non-interactive} \
+      "--dev-container=$(get_answer dev-container)" "--name=$(get_answer name)" \
+      "--projects-folder=$(get_answer projects-folder)" "--remote=$(get_answer remote)" \
+      "--proceed=$(get_answer proceed)"
+    return $?
+  fi
 
   # Environment variables fill what flags left open.
   local env_pair id env_name
@@ -1456,37 +1560,6 @@ VORTEO_BANNER
       xdg-open "$1" >/dev/null 2>&1 3<&- </dev/null && ok "Opened $1"
     fi
   }
-  # Copies the password without printing it. Returns 1 when no clipboard is available.
-  copy_password() {
-    [ -r "$1" ] || return 1
-    local copier=""
-    if [ "$platform" = macos ] && command -v pbcopy >/dev/null 2>&1; then
-      copier="pbcopy"
-    elif [ -n "${WAYLAND_DISPLAY-}" ] && command -v wl-copy >/dev/null 2>&1; then
-      copier="wl-copy"
-    elif [ -n "${DISPLAY-}" ] && command -v xclip >/dev/null 2>&1; then
-      copier="xclip -selection clipboard"
-    else
-      return 1
-    fi
-    tr -d '\r\n' <"$1" | $copier >/dev/null 2>&1 3<&-
-  }
-  show_qr() {
-    local columns="${COLUMNS-}"
-    if [ -z "$columns" ]; then columns=$(tput cols 2>/dev/null || printf '80'); fi
-    local qr="$source_dir/scripts/installer/qr.mjs" qr_status=0 qr_output=""
-    [ -f "$qr" ] || return 0
-    say ""
-    say "  Scan to open Vorteo on your phone (it must be on your tailnet):"
-    qr_output=$("$node_bin" "$qr" "$1" --max-width "$((columns - 2))" 3<&-) || qr_status=$?
-    if [ "$qr_status" -eq 0 ]; then
-      say ""
-      printf '%s\n' "$qr_output" | sed 's/^/  /'
-    fi
-    if [ "$qr_status" -eq 5 ]; then
-      say "  Widen the terminal to see a QR code, or open $1 on your phone."
-    fi
-  }
   finish() {
     local origin="" local_origin="" password_file="" name=""
     json_vars "$work/result.json" origin='d.origin' local_origin='d.localOrigin' \
@@ -1494,23 +1567,7 @@ VORTEO_BANNER
       fail "The installer engine returned an unreadable result." "Rerun the installer."
     if [ -z "$origin" ]; then origin="$local_origin"; fi
     install_command
-    heading "${green}✓${reset}${bold} ${name:-Vorteo} is ready"
-    say "  Address:          $origin"
-    if [ -n "$local_origin" ] && [ "$local_origin" != "$origin" ]; then
-      say "  On this machine:  $local_origin"
-    fi
-    if copy_password "$password_file"; then
-      say "  Owner password:   copied to your clipboard"
-    else
-      say "  Owner password:   in the file below"
-    fi
-    say "  Password file:    $password_file"
-    if [ -n "$interactive" ] && [ "$origin" != "$local_origin" ]; then
-      case "$origin" in https://*) show_qr "$origin" ;; esac
-    fi
-    say ""
-    say "  Sign in with the owner password. Everything else, including updates, happens in the interface."
-    say "  Commands: vorteo status, vorteo doctor, vorteo open, vorteo update, vorteo repair, vorteo uninstall"
+    show_connection "$origin" "$local_origin" "$password_file" "$name"
     open_address "$origin"
     if [ -z "$interactive" ]; then
       say ""
@@ -1530,26 +1587,16 @@ VORTEO_BANNER
         resume_hint
         exit 1
       fi
-      if [ -s "$work/result.json" ]; then
-        finish
-      else
-        ok "Repaired"
-        install_command
-      fi
+      run_engine status --json >"$work/result.json" ||
+        fail "Repair completed, but connection details could not be read." "Run: vorteo status"
+      finish
       return 0
     fi
-    install_command
-    say "  Open it:    vorteo open"
+    run_engine status --json >"$work/result.json" ||
+      fail "Connection details could not be read." "Run: vorteo doctor"
+    finish
     say "  Repair it:  $(rerun_command --repair)"
-    say "VORTEO_STATUS installed $root"
-    if [ -n "$interactive" ] && [ -z "$no_open" ]; then
-      local open_now=""
-      printf '%sOpen Vorteo now?%s %s[yes]%s ' "$bold" "$reset" "$dim" "$reset"
-      read_tty open_now
-      if [ "$(normalize_bool "${open_now:-yes}")" = "yes" ]; then
-        bash "$source_dir/scripts/installer/vorteo.sh" open 3<&-
-      fi
-    fi
+    if [ -z "$interactive" ]; then say "VORTEO_STATUS installed $root"; fi
   }
 
   # A Host installation from before this installer (scripts/install-execution-host.mjs) is
@@ -1833,5 +1880,955 @@ VORTEO_BANNER
   rm -f "$work/tailscale-auth-key"
   finish
 }
+
+# BEGIN demo bundle
+vorteo_demo() {
+  local runtime="$1"
+  shift
+  "$runtime" --input-type=module - "$@" <<'VORTEO_DEMO_JS'
+// scripts/installer/demo.mjs
+import { openSync } from "node:fs";
+import { ReadStream } from "node:tty";
+import readline2 from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
+
+// scripts/installer/progress.mjs
+import { writeFileSync } from "node:fs";
+import readline from "node:readline";
+import { stripVTControlCharacters } from "node:util";
+
+// scripts/installer/banner.mjs
+var WORDMARK = [
+  "                                                                                ",
+  "8b           d8  ,ad8888ba,   88888888ba 888888888888 88888888888 ,ad8888ba,    ",
+  '`8b         d8\' d8"\'    `"8b  88      "8b     88      88         d8"\'    `"8b   ',
+  " `8b       d8' d8'        `8b 88      ,8P     88      88        d8'        `8b  ",
+  "  `8b     d8'  88          88 88aaaaaa8P'     88      88aaaaa   88          88  ",
+  `   \`8b   d8'   88          88 88""""88'       88      88"""""   88          88  `,
+  "    `8b d8'    Y8,        ,8P 88    `8b       88      88        Y8,        ,8P  ",
+  "     `888'      Y8a.    .a8P  88     `8b      88      88         Y8a.    .a8P   ",
+  '      `8\'        `"Y8888Y"\'   88      `8b     88      88888888888 `"Y8888Y"\''
+];
+var COMPACT_WORDMARK = [
+  "1   1  111  1111  11111 11111  111 ",
+  "1   1 1   1 1   1   1   1     1   1",
+  "1   1 1   1 1111    1   1111  1   1",
+  " 1 1  1   1 1 1     1   1     1   1",
+  "  1    111  1  1    1   11111  111 "
+];
+function noise(x, y) {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+  const gradient = (gx, gy, dx, dy) => {
+    const hash = Math.imul(gx, 374761393) ^ Math.imul(gy, 668265263);
+    const angle = ((hash ^ hash >>> 13) & 255) * (Math.PI / 128);
+    return Math.cos(angle) * dx + Math.sin(angle) * dy;
+  };
+  const a = gradient(ix, iy, fx, fy);
+  const b = gradient(ix + 1, iy, fx - 1, fy);
+  const c = gradient(ix, iy + 1, fx, fy - 1);
+  const d = gradient(ix + 1, iy + 1, fx - 1, fy - 1);
+  const u = fade(fx);
+  const v = fade(fy);
+  return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+}
+function colliderFrame({ seconds, columns, rows, color }) {
+  const width = Math.min(100, columns - 1);
+  const height = Math.min(27, rows - 5);
+  if (width < 60 || height < 15) return [];
+  const grid = Array.from({ length: height }, () => Array(width).fill(" "));
+  const bands = Array.from({ length: height }, () => Array(width).fill(0));
+  const put = (x, y, c, band) => {
+    x = Math.round(x);
+    y = Math.round(y);
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    grid[y][x] = c;
+    bands[y][x] = band;
+  };
+  for (let y = 0; y < height - 2; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const depth = noise(x * 0.065 + seconds * 0.025, y * 0.13 - seconds * 0.018) + 0.5 * noise(x * 0.15 - seconds * 0.016, y * 0.22 + seconds * 0.023) + 0.22 * noise(x * 0.31 + seconds * 9e-3, y * 0.32 + seconds * 0.011);
+      if (depth > 0.15) put(x, y, ".:01|"[Math.min(4, Math.floor((depth - 0.15) * 9))], 1);
+    }
+  }
+  const cy = (height - 4) / 2;
+  for (let layer = 0; layer < 2; layer++) {
+    for (let j = 0; j < 240; j++) {
+      const angle = j * Math.PI / 120;
+      const pulse = ((angle - seconds * (layer ? -0.17 : 0.23)) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+      put(
+        (width - 1) / 2 + (width / 2 - 2 - layer * 2) * Math.cos(angle),
+        cy + (cy - layer) * Math.sin(angle),
+        pulse < 0.12 ? "o" : ".",
+        pulse < 0.12 ? 3 : 2
+      );
+    }
+  }
+  for (let x = 10; x < width - 10; x += 5) {
+    const head = (seconds * (0.7 + x % 7 * 0.13) + x * 3) % (height - 3);
+    for (let trail = 0; trail < 4; trail++) {
+      const y = Math.floor((head - trail + height - 3) % (height - 3));
+      put(x, y, "01:"[(x + trail + Math.floor(seconds * 3)) % 3], 3 - Math.min(2, trail));
+    }
+  }
+  const full = width >= 90;
+  const letters = full ? WORDMARK : COMPACT_WORDMARK;
+  const wordWidth = Math.max(...letters.map((line) => line.length));
+  const left = Math.floor((width - wordWidth) / 2);
+  const top = Math.max(3, Math.floor(cy - letters.length / 2));
+  for (const [y, row] of letters.entries()) {
+    for (const [x, c] of [...row].entries()) {
+      if (c === " ") continue;
+      const drift = noise(x * 0.21 + seconds * 0.035, y * 0.37 - seconds * 0.047);
+      const shimmer = noise(x * 0.53 - seconds * 0.023 + 19, y * 0.61 + seconds * 0.031);
+      const highlight = drift + 0.35 * shimmer;
+      const glyph = highlight < -0.18 ? "\u25AA" : "\u25A0";
+      put(left + x, top + y, glyph, highlight > 0.22 ? 4 : 3);
+    }
+  }
+  const footer = "YOUR MACHINE. YOUR AGENTS. YOUR COMMAND.";
+  const footerLeft = Math.floor((width - footer.length) / 2);
+  for (const [x, c] of [...footer].entries()) put(footerLeft + x, height - 1, c, 3);
+  const colors = [
+    "\x1B[0m",
+    "\x1B[38;5;22m",
+    "\x1B[38;5;28m",
+    "\x1B[38;5;82m",
+    "\x1B[38;5;120m"
+  ];
+  return grid.map((row, y) => {
+    if (!color) return row.join("");
+    let band = -1;
+    let line = "";
+    for (const [x, c] of row.entries()) {
+      if (bands[y][x] !== band) {
+        band = bands[y][x];
+        line += colors[band];
+      }
+      line += c;
+    }
+    return line + "\x1B[0m";
+  });
+}
+
+// scripts/is-main-module.mjs
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+function isMainModule(importMetaUrl, argvPath = process.argv[1]) {
+  if (!argvPath) return false;
+  return realPath(fileURLToPath(importMetaUrl)) === realPath(path.resolve(argvPath));
+}
+function realPath(file) {
+  try {
+    return realpathSync.native(file);
+  } catch {
+    return file;
+  }
+}
+
+// scripts/installer/progress.mjs
+var SPINNER = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
+function paint(enabled, code, text) {
+  return enabled ? `\x1B[${code}m${text}\x1B[0m` : text;
+}
+function createRenderer({
+  write,
+  animate = false,
+  color = false,
+  intervalMs = 1e3,
+  banner = false,
+  installationStarted = Date.now(),
+  rows = () => process.stdout.rows || 24,
+  columns = () => process.stdout.columns || 120
+}) {
+  let active = null;
+  let showBanner = false;
+  let alternateScreen = false;
+  const animationStarted = Date.now();
+  let frame = 0;
+  let timer = null;
+  let started = 0;
+  let lastOutput = null;
+  let detail = "";
+  let counter = "";
+  let draw = null;
+  const duration = (ms) => {
+    const seconds = Math.max(0, Math.floor(ms / 1e3));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  const status = () => {
+    const quiet = lastOutput === null ? "waiting for output" : `last output ${duration(Date.now() - lastOutput)} ago`;
+    return `${counter}${duration(Date.now() - started)} elapsed | Total ${duration(Date.now() - installationStarted)} | ${active} | ${detail || quiet}${detail ? `; ${quiet}` : ""}`;
+  };
+  const state = { failed: null, result: null };
+  const clearFrame = () => {
+    if (!alternateScreen) return;
+    write("\x1B[?1049l");
+    alternateScreen = false;
+  };
+  const clearSpinner = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+    if (active && animate) {
+      if (alternateScreen) clearFrame();
+      else write("\r\x1B[K");
+    }
+    active = null;
+  };
+  const line = (text) => {
+    clearSpinner();
+    write(`${text}
+`);
+  };
+  const label = (event) => event.message || event.step || "Working";
+  const handlers = {
+    start(event) {
+      clearSpinner();
+      active = label(event);
+      showBanner = banner && ["dev-images", "release"].includes(event.step);
+      counter = event.index ? `[${event.index}/${event.total}] ` : "";
+      started = Date.now();
+      lastOutput = null;
+      detail = "";
+      draw = () => {
+        if (animate) {
+          const width = Math.max(1, columns() - 1);
+          const elapsed = `${counter}${duration(Date.now() - started)} elapsed`;
+          const activity = detail || active;
+          const quiet = lastOutput === null ? "" : ` | output ${duration(Date.now() - lastOutput)} ago`;
+          const compact = `${elapsed} | ${activity}${quiet}`;
+          const text = `  ${SPINNER[frame++ % SPINNER.length]} ${width < 100 ? compact : status()}`;
+          if (showBanner) {
+            const art = colliderFrame({
+              seconds: (Date.now() - animationStarted) / 1e3,
+              columns: columns(),
+              rows: rows(),
+              color
+            });
+            const total = duration(Date.now() - installationStarted);
+            const phase = duration(Date.now() - started);
+            const timing = width < 100 ? `Total ${total} | Phase ${phase}` : `Total elapsed ${total} | Phase elapsed ${phase}`;
+            const statusLines = [
+              `${SPINNER[(frame - 1) % SPINNER.length]} ${counter}${active}`.slice(0, width),
+              `${timing}${detail ? ` | ${detail}` : ""}${quiet}`.slice(0, width)
+            ].slice(0, Math.max(1, rows()));
+            const content = [...art, ...art.length ? [""] : [], ...statusLines];
+            const top = art.length ? Math.max(0, Math.floor((rows() - content.length) / 2)) : 0;
+            const lines = [
+              ...Array(top).fill(""),
+              ...content.map((frameLine) => {
+                const cells = [...stripVTControlCharacters(frameLine)].length;
+                const left = art.length ? Math.max(0, Math.floor((columns() - cells) / 2)) : 0;
+                return " ".repeat(left) + frameLine;
+              })
+            ];
+            if (!alternateScreen) {
+              write("\x1B[?1049h");
+              alternateScreen = true;
+            }
+            write("\x1B[H" + lines.join("\x1B[K\r\n") + "\x1B[K\x1B[J");
+          } else {
+            write(`\r${text.slice(0, width)}\x1B[K`);
+          }
+        } else {
+          write(`  \u2026 ${status()}
+`);
+        }
+      };
+      if (animate) draw();
+      else write(`  ${paint(color, 2, "\u2026")} ${active}
+`);
+      const animatedInterval = showBanner ? 150 : intervalMs;
+      timer = setInterval(draw, animate ? animatedInterval : 15e3);
+      timer.unref?.();
+    },
+    progress(event) {
+      if (!active) return;
+      if (event.outputBytes > 0) lastOutput = Date.now();
+      if (event.detail) detail = event.detail;
+      if (animate) draw();
+    },
+    done(event) {
+      line(`  ${paint(color, 32, "\u2713")} ${label(event)}`);
+      if (event.fix) line(`    ${paint(color, 1, "Note:")} ${event.fix}`);
+    },
+    skip(event) {
+      line(`  ${paint(color, 2, "\xB7")} ${label(event)} ${paint(color, 2, "(skipped)")}`);
+    },
+    fail(event) {
+      line(`  ${paint(color, 31, "\u2717")} ${label(event)}`);
+      if (event.fix) line(`    ${paint(color, 1, "Fix:")} ${event.fix}`);
+      state.failed = event;
+    }
+  };
+  return {
+    state,
+    handle(rawLine) {
+      const text = rawLine.trimEnd();
+      if (!text) return;
+      let event;
+      try {
+        event = JSON.parse(text);
+      } catch {
+        line(`    ${paint(color, 2, text)}`);
+        return;
+      }
+      if (!event || typeof event !== "object") {
+        line(`    ${paint(color, 2, text)}`);
+      } else if (event.result) {
+        clearSpinner();
+        state.result = event.result;
+      } else if (handlers[event.status]) {
+        handlers[event.status](event);
+      } else if (event.message) {
+        line(`    ${event.message}`);
+      }
+    },
+    finish() {
+      clearSpinner();
+      return state;
+    }
+  };
+}
+function exitStatus(state, { expectResult = true } = {}) {
+  if (state.failed) return 1;
+  if (expectResult && !state.result) return 2;
+  return 0;
+}
+async function main(argv) {
+  const resultIndex = argv.indexOf("--result");
+  const resultFile = resultIndex === -1 ? null : argv[resultIndex + 1];
+  const expectResult = !argv.includes("--no-result");
+  const interactive = Boolean(process.stdout.isTTY) && process.env.TERM !== "dumb";
+  const renderer = createRenderer({
+    write: (text) => process.stdout.write(text),
+    animate: interactive,
+    banner: interactive,
+    installationStarted: Number(process.env.VORTEO_INSTALL_STARTED_MS) || Date.now(),
+    color: interactive && !process.env.NO_COLOR
+  });
+  const interrupted = (signal) => {
+    renderer.finish();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
+  const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  try {
+    for await (const rawLine of input) renderer.handle(rawLine);
+  } finally {
+    renderer.finish();
+    process.removeListener("SIGINT", interrupted);
+    process.removeListener("SIGTERM", interrupted);
+  }
+  const state = renderer.state;
+  if (resultFile && state.result) {
+    writeFileSync(resultFile, `${JSON.stringify(state.result)}
+`, { mode: 384 });
+  }
+  return exitStatus(state, { expectResult });
+}
+if (isMainModule(import.meta.url, process.argv[1])) {
+  process.exitCode = await main(process.argv.slice(2));
+}
+
+// scripts/installer/qr.mjs
+var ECC = {
+  L: { index: 0, formatBits: 1 },
+  M: { index: 1, formatBits: 0 },
+  Q: { index: 2, formatBits: 3 },
+  H: { index: 3, formatBits: 2 }
+};
+var ECC_CODEWORDS_PER_BLOCK = [
+  [7, 10, 15, 20, 26, 18, 20, 24, 30, 18],
+  [10, 16, 26, 18, 24, 16, 18, 22, 22, 26],
+  [13, 22, 18, 26, 18, 24, 18, 22, 20, 24],
+  [17, 28, 22, 16, 22, 28, 26, 26, 24, 28]
+];
+var ERROR_CORRECTION_BLOCKS = [
+  [1, 1, 1, 1, 1, 2, 2, 2, 2, 4],
+  [1, 1, 1, 2, 2, 4, 4, 4, 5, 5],
+  [1, 1, 2, 2, 4, 4, 6, 6, 8, 8],
+  [1, 1, 2, 4, 4, 4, 5, 6, 8, 8]
+];
+var MAX_VERSION = 10;
+function rawDataModules(version) {
+  let result = (16 * version + 128) * version + 64;
+  if (version >= 2) {
+    const alignCount = Math.floor(version / 7) + 2;
+    result -= (25 * alignCount - 10) * alignCount - 55;
+    if (version >= 7) result -= 36;
+  }
+  return result;
+}
+function dataCodewordCapacity(version, ecc) {
+  const blocks = ERROR_CORRECTION_BLOCKS[ecc.index][version - 1];
+  const eccPerBlock = ECC_CODEWORDS_PER_BLOCK[ecc.index][version - 1];
+  return Math.floor(rawDataModules(version) / 8) - blocks * eccPerBlock;
+}
+function alignmentPositions(version) {
+  if (version === 1) return [];
+  const count = Math.floor(version / 7) + 2;
+  const size = version * 4 + 17;
+  const step = Math.ceil((version * 4 + 4) / (count * 2 - 2)) * 2;
+  const result = [6];
+  for (let position = size - 7; result.length < count; position -= step) {
+    result.splice(1, 0, position);
+  }
+  return result;
+}
+function gfMultiply(x, y) {
+  let z = 0;
+  for (let i = 7; i >= 0; i--) {
+    z = z << 1 ^ (z >>> 7) * 285;
+    z ^= (y >>> i & 1) * x;
+  }
+  return z;
+}
+function reedSolomonDivisor(degree) {
+  const result = Array.from({ length: degree }, () => 0);
+  result[degree - 1] = 1;
+  let root = 1;
+  for (let i = 0; i < degree; i++) {
+    for (let j = 0; j < result.length; j++) {
+      result[j] = gfMultiply(result[j], root);
+      if (j + 1 < result.length) result[j] ^= result[j + 1];
+    }
+    root = gfMultiply(root, 2);
+  }
+  return result;
+}
+function reedSolomonRemainder(data, divisor) {
+  const result = divisor.map(() => 0);
+  for (const byte of data) {
+    const factor = byte ^ result.shift();
+    result.push(0);
+    for (let i = 0; i < divisor.length; i++) result[i] ^= gfMultiply(divisor[i], factor);
+  }
+  return result;
+}
+function chooseVersion(byteLength, ecc) {
+  for (let version = 1; version <= MAX_VERSION; version++) {
+    const lengthBits = version < 10 ? 8 : 16;
+    const neededBits = 4 + lengthBits + byteLength * 8;
+    if (neededBits <= dataCodewordCapacity(version, ecc) * 8) return version;
+  }
+  throw new Error(`Text is too long for a version ${MAX_VERSION} QR code`);
+}
+function encodeData(bytes, version, ecc) {
+  const bits = [];
+  const append = (value, length) => {
+    for (let i = length - 1; i >= 0; i--) bits.push(value >>> i & 1);
+  };
+  append(4, 4);
+  append(bytes.length, version < 10 ? 8 : 16);
+  for (const byte of bytes) append(byte, 8);
+  const capacityBits = dataCodewordCapacity(version, ecc) * 8;
+  append(0, Math.min(4, capacityBits - bits.length));
+  append(0, (8 - bits.length % 8) % 8);
+  const codewords = [];
+  for (let i = 0; i < bits.length; i += 8) {
+    codewords.push(bits.slice(i, i + 8).reduce((value, bit) => value << 1 | bit, 0));
+  }
+  for (let pad = 236; codewords.length < capacityBits / 8; pad ^= 236 ^ 17) {
+    codewords.push(pad);
+  }
+  return codewords;
+}
+function addErrorCorrection(data, version, ecc) {
+  const blockCount = ERROR_CORRECTION_BLOCKS[ecc.index][version - 1];
+  const eccLength = ECC_CODEWORDS_PER_BLOCK[ecc.index][version - 1];
+  const rawCodewords = Math.floor(rawDataModules(version) / 8);
+  const shortBlocks = blockCount - rawCodewords % blockCount;
+  const shortBlockLength = Math.floor(rawCodewords / blockCount);
+  const divisor = reedSolomonDivisor(eccLength);
+  const blocks = [];
+  for (let i = 0, offset = 0; i < blockCount; i++) {
+    const length = shortBlockLength - eccLength + (i < shortBlocks ? 0 : 1);
+    const block = data.slice(offset, offset + length);
+    offset += length;
+    const remainder = reedSolomonRemainder(block, divisor);
+    if (i < shortBlocks) block.push(0);
+    blocks.push(block.concat(remainder));
+  }
+  const result = [];
+  for (let i = 0; i < blocks[0].length; i++) {
+    for (let j = 0; j < blocks.length; j++) {
+      if (i !== shortBlockLength - eccLength || j >= shortBlocks) result.push(blocks[j][i]);
+    }
+  }
+  return result;
+}
+var MASKS = [
+  (x, y) => (x + y) % 2 === 0,
+  (_x, y) => y % 2 === 0,
+  (x) => x % 3 === 0,
+  (x, y) => (x + y) % 3 === 0,
+  (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0,
+  (x, y) => x * y % 2 + x * y % 3 === 0,
+  (x, y) => (x * y % 2 + x * y % 3) % 2 === 0,
+  (x, y) => ((x + y) % 2 + x * y % 3) % 2 === 0
+];
+function formatBits(ecc, mask) {
+  const data = ecc.formatBits << 3 | mask;
+  let remainder = data;
+  for (let i = 0; i < 10; i++) remainder = remainder << 1 ^ (remainder >>> 9) * 1335;
+  return (data << 10 | remainder) ^ 21522;
+}
+function versionBits(version) {
+  let remainder = version;
+  for (let i = 0; i < 12; i++) remainder = remainder << 1 ^ (remainder >>> 11) * 7973;
+  return version << 12 | remainder;
+}
+var Matrix = class {
+  constructor(version) {
+    this.version = version;
+    this.size = version * 4 + 17;
+    this.modules = Array.from({ length: this.size }, () => Array(this.size).fill(false));
+    this.reserved = Array.from({ length: this.size }, () => Array(this.size).fill(false));
+  }
+  setFunction(x, y, dark) {
+    this.modules[y][x] = dark;
+    this.reserved[y][x] = true;
+  }
+  drawFunctionPatterns() {
+    const { size } = this;
+    for (let i = 0; i < size; i++) {
+      this.setFunction(6, i, i % 2 === 0);
+      this.setFunction(i, 6, i % 2 === 0);
+    }
+    for (const [cx, cy] of [
+      [3, 3],
+      [size - 4, 3],
+      [3, size - 4]
+    ]) {
+      this.drawPattern(cx, cy, 4, (distance) => distance !== 2 && distance !== 4);
+    }
+    const positions = alignmentPositions(this.version);
+    const last = positions.length - 1;
+    for (let i = 0; i <= last; i++) {
+      for (let j = 0; j <= last; j++) {
+        const nearFinder = i === 0 && j === 0 || i === 0 && j === last || i === last && j === 0;
+        if (!nearFinder) {
+          this.drawPattern(positions[i], positions[j], 2, (distance) => distance !== 1);
+        }
+      }
+    }
+    this.drawFormat(0);
+    this.drawVersion();
+  }
+  drawPattern(cx, cy, radius, isDark) {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x >= 0 && x < this.size && y >= 0 && y < this.size) {
+          this.setFunction(x, y, isDark(Math.max(Math.abs(dx), Math.abs(dy))));
+        }
+      }
+    }
+  }
+  drawFormat(bits) {
+    const { size } = this;
+    const bit = (i) => (bits >>> i & 1) !== 0;
+    for (let i = 0; i <= 5; i++) this.setFunction(8, i, bit(i));
+    this.setFunction(8, 7, bit(6));
+    this.setFunction(8, 8, bit(7));
+    this.setFunction(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) this.setFunction(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) this.setFunction(size - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) this.setFunction(8, size - 15 + i, bit(i));
+    this.setFunction(8, size - 8, true);
+  }
+  drawVersion() {
+    if (this.version < 7) return;
+    const bits = versionBits(this.version);
+    for (let i = 0; i < 18; i++) {
+      const dark = (bits >>> i & 1) !== 0;
+      const a = this.size - 11 + i % 3;
+      const b = Math.floor(i / 3);
+      this.setFunction(a, b, dark);
+      this.setFunction(b, a, dark);
+    }
+  }
+  /** Places codewords in the two-column zigzag, skipping function modules. */
+  drawCodewords(codewords) {
+    let index = 0;
+    for (let right = this.size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (let vertical = 0; vertical < this.size; vertical++) {
+        for (let j = 0; j < 2; j++) {
+          const x = right - j;
+          const upward = (right + 1 & 2) === 0;
+          const y = upward ? this.size - 1 - vertical : vertical;
+          if (!this.reserved[y][x] && index < codewords.length * 8) {
+            this.modules[y][x] = (codewords[index >>> 3] >>> 7 - (index & 7) & 1) !== 0;
+            index++;
+          }
+        }
+      }
+    }
+  }
+  applyMask(mask) {
+    const test = MASKS[mask];
+    for (let y = 0; y < this.size; y++) {
+      for (let x = 0; x < this.size; x++) {
+        if (!this.reserved[y][x] && test(x, y)) this.modules[y][x] = !this.modules[y][x];
+      }
+    }
+  }
+  penalty() {
+    const { size, modules } = this;
+    let score = 0;
+    const lines = [];
+    for (let i = 0; i < size; i++) {
+      lines.push(modules[i]);
+      lines.push(modules.map((row) => row[i]));
+    }
+    const finderLike = [true, false, true, true, true, false, true];
+    for (const line of lines) {
+      let run = 1;
+      for (let i = 1; i <= size; i++) {
+        if (i < size && line[i] === line[i - 1]) {
+          run++;
+        } else {
+          if (run >= 5) score += 3 + (run - 5);
+          run = 1;
+        }
+      }
+      for (let i = 0; i + 7 <= size; i++) {
+        if (!finderLike.every((dark2, k) => line[i + k] === dark2)) continue;
+        const lightBefore = [1, 2, 3, 4].every((k) => i - k < 0 || !line[i - k]);
+        const lightAfter = [0, 1, 2, 3].every((k) => i + 7 + k >= size || !line[i + 7 + k]);
+        if (lightBefore || lightAfter) score += 40;
+      }
+    }
+    let dark = 0;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        if (modules[y][x]) dark++;
+        if (x + 1 < size && y + 1 < size) {
+          const color = modules[y][x];
+          if (modules[y][x + 1] === color && modules[y + 1][x] === color && modules[y + 1][x + 1] === color) {
+            score += 3;
+          }
+        }
+      }
+    }
+    const total = size * size;
+    score += (Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1) * 10;
+    return score;
+  }
+};
+function encodeQr(text, { ecc = ECC.M, mask: forcedMask } = {}) {
+  const bytes = [...Buffer.from(String(text), "utf8")];
+  const version = chooseVersion(bytes.length, ecc);
+  const codewords = addErrorCorrection(encodeData(bytes, version, ecc), version, ecc);
+  const matrix = new Matrix(version);
+  matrix.drawFunctionPatterns();
+  matrix.drawCodewords(codewords);
+  let best = forcedMask;
+  if (best === void 0) {
+    let bestScore = Infinity;
+    for (let mask = 0; mask < MASKS.length; mask++) {
+      matrix.applyMask(mask);
+      matrix.drawFormat(formatBits(ecc, mask));
+      const score = matrix.penalty();
+      if (score < bestScore) {
+        bestScore = score;
+        best = mask;
+      }
+      matrix.applyMask(mask);
+    }
+  }
+  matrix.applyMask(best);
+  matrix.drawFormat(formatBits(ecc, best));
+  return {
+    version,
+    mask: best,
+    size: matrix.size,
+    modules: matrix.modules,
+    functionModules: matrix.reserved
+  };
+}
+function terminalWidth(qr, quietZone = 4) {
+  return qr.size + quietZone * 2;
+}
+function renderTerminal(qr, quietZone = 4) {
+  const span = qr.size + quietZone * 2;
+  const dark = (x, y) => {
+    const mx = x - quietZone;
+    const my = y - quietZone;
+    return mx >= 0 && my >= 0 && mx < qr.size && my < qr.size && qr.modules[my][mx];
+  };
+  const lines = [];
+  for (let y = 0; y < span; y += 2) {
+    let line = "";
+    for (let x = 0; x < span; x++) {
+      const foreground = dark(x, y) ? 30 : 97;
+      const background = dark(x, y + 1) ? 40 : 107;
+      line += `\x1B[${foreground};${background}m\u2580`;
+    }
+    lines.push(`${line}\x1B[0m`);
+  }
+  return `${lines.join("\n")}
+`;
+}
+function main2(argv) {
+  const text = argv[0];
+  if (!text) {
+    process.stderr.write("Usage: node scripts/installer/qr.mjs <text> [--max-width <columns>]\n");
+    return 2;
+  }
+  const widthIndex = argv.indexOf("--max-width");
+  const maxWidth = widthIndex === -1 ? Infinity : Number(argv[widthIndex + 1]);
+  const qr = encodeQr(text);
+  if (terminalWidth(qr) > maxWidth) return 5;
+  process.stdout.write(renderTerminal(qr));
+  return 0;
+}
+if (isMainModule(import.meta.url, process.argv[1])) {
+  process.exitCode = main2(process.argv.slice(2));
+}
+
+// scripts/installer/flow.mjs
+var STEP_TITLES = {
+  prepare: "Creating the installation folder",
+  identity: "Creating the owner password and installation name",
+  tailscale: "Checking Tailscale",
+  "dev-images": "Building the Dev and gate images",
+  "dev-create": "Creating the Dev container behind the gate",
+  "dev-adopt": "Moving the existing Dev container behind the gate",
+  "dev-identity": "Reading the Dev identity",
+  "projects-access": "Preparing shared project permissions",
+  release: "Building the Host release",
+  "host-config": "Writing the Host and coordinator configuration",
+  "dev-pair": "Pairing Dev with the installation",
+  services: "Installing the Host and coordinator services",
+  ready: "Waiting for the Host and coordinator",
+  remote: "Adding Tailscale HTTPS routes",
+  "guest-client": "Giving Dev agents the installation client",
+  finish: "Finishing"
+};
+function planSteps({ devContainer, adopt, remote }) {
+  return [
+    "prepare",
+    "identity",
+    ...remote === "tailscale" ? ["tailscale"] : [],
+    ...devContainer ? ["dev-images", adopt ? "dev-adopt" : "dev-create", "dev-identity", "projects-access"] : [],
+    "release",
+    "host-config",
+    ...devContainer ? ["dev-pair"] : [],
+    "services",
+    "ready",
+    ...remote === "tailscale" ? ["remote"] : [],
+    ...devContainer ? ["guest-client"] : [],
+    "finish"
+  ];
+}
+
+// scripts/installer/demo.mjs
+async function runDemo({
+  ask,
+  write = (text) => process.stdout.write(text),
+  wait = sleep,
+  animationMs = 3e5,
+  interactive = Boolean(process.stdout.isTTY) && process.env.TERM !== "dumb"
+} = {}) {
+  const started = Date.now();
+  const line = (text = "") => write(`${text}
+`);
+  const question = async (id, text, fallback, valid = () => true) => {
+    for (; ; ) {
+      const answer = ask ? (await ask(`${text} [${fallback}] `, id, fallback)).trim() || fallback : fallback;
+      if (!ask) line(`${text} [${fallback}]`);
+      if (valid(answer)) return answer;
+      line("Please choose one of the listed answers.");
+    }
+  };
+  write(interactive && !process.env.NO_COLOR ? "\x1B[32m" : "");
+  line(
+    "\n\u25A0   \u25A0  \u25A0\u25A0\u25A0  \u25A0\u25A0\u25A0\u25A0  \u25A0\u25A0\u25A0\u25A0\u25A0 \u25A0\u25A0\u25A0\u25A0\u25A0  \u25A0\u25A0\u25A0 \n\u25A0   \u25A0 \u25A0   \u25A0 \u25A0   \u25A0   \u25A0   \u25A0     \u25A0   \u25A0\n\u25A0   \u25A0 \u25A0   \u25A0 \u25A0\u25A0\u25A0\u25A0    \u25A0   \u25A0\u25A0\u25A0\u25A0  \u25A0   \u25A0\n \u25A0 \u25A0  \u25A0   \u25A0 \u25A0 \u25A0     \u25A0   \u25A0     \u25A0   \u25A0\n  \u25A0    \u25A0\u25A0\u25A0  \u25A0  \u25A0    \u25A0   \u25A0\u25A0\u25A0\u25A0\u25A0  \u25A0\u25A0\u25A0 \nYOUR MACHINE. YOUR AGENTS. YOUR COMMAND.\n"
+  );
+  write(interactive && !process.env.NO_COLOR ? "\x1B[0m" : "");
+  line("DEMO: every action and result below is simulated. Nothing will be installed or changed.");
+  line("Build animation runs for five minutes after approval. Ctrl+C exits at any time.");
+  line("\nPrerequisites");
+  for (const tool of ["Node.js 24", "Git"]) line(`  \u2713 ${tool} ready (simulated)`);
+  line("\nPreparing\n  \u2713 Fetching the release into ~/vorteo/source (simulated; no download)");
+  line("\nQuestions");
+  const dev = await question(
+    "dev-container",
+    "Provision a Dev container where agents work? It needs Docker.",
+    "yes",
+    (v) => ["yes", "no"].includes(v)
+  );
+  const name = await question("name", "Installation name?", "Vorteo", (v) => v.length <= 64);
+  const projects = await question(
+    "projects-folder",
+    "Projects folder?",
+    "~/dev",
+    (v) => v.startsWith("/") || v.startsWith("~/")
+  );
+  const remote = await question(
+    "remote",
+    "Remote access: tailscale or local?",
+    "tailscale",
+    (v) => ["tailscale", "local"].includes(v)
+  );
+  line("\nChecking this machine (simulated)");
+  for (const tool of [
+    "Node.js",
+    "Git",
+    ...dev === "yes" ? ["Docker"] : [],
+    ...remote === "tailscale" ? ["Tailscale"] : []
+  ])
+    line(`  \u2713 ${tool}`);
+  const steps = planSteps({ devContainer: dev === "yes", adopt: false, remote });
+  line(
+    `
+Real installation estimate: ${dev === "yes" ? "15 to 60" : "5 to 20"} minutes after approval. Slow downloads or limited resources can take longer. Demo build time: exactly five minutes.
+`
+  );
+  line(
+    `
+Plan (simulated)
+  \u2022 Create ${name} in ~/vorteo.
+  \u2022 Projects folder: ${projects}.
+  \u2022 Install the Host daemon and coordinator.
+  \u2022 ${dev === "yes" ? "Create Dev behind the network gate." : "Host only."}
+  \u2022 Access: ${remote}.
+  \u2022 Owner password: ~/vorteo/host/owner-password (not created).`
+  );
+  if (await question(
+    "proceed",
+    "Proceed with this plan?",
+    "yes",
+    (v) => ["yes", "no"].includes(v)
+  ) === "no") {
+    line("Demo canceled. Nothing was changed.");
+    return;
+  }
+  line("\nInstalling (simulated)");
+  await animateDemoSteps({ steps, write, interactive, started, animationMs, wait });
+  finishDemo({ line, write, name, remote });
+}
+function finishDemo({ line, write, name, remote }) {
+  line(
+    `
+\u2713 ${name} is ready (simulated)
+  Address: ${remote === "tailscale" ? "https://demo.example.invalid" : "http://localhost:6770"}
+  On this machine: http://localhost:6770
+  Owner password: not generated or copied in demo
+  Password file: ~/vorteo/host/owner-password (not created)`
+  );
+  if (remote === "tailscale") {
+    line("\n  Demo phone QR code (placeholder address, not a running installation):\n");
+    const qr = encodeQr("https://demo.example.invalid");
+    if (terminalWidth(qr) + 2 <= (process.stdout.columns || 80))
+      write(
+        renderTerminal(qr).split("\n").map((row) => row ? `  ${row}` : row).join("\n")
+      );
+  }
+  line(
+    "\n\n  Browser opening is simulated; no browser will open.\n  Sign in with the owner password after a real installation.\n  Commands: vorteo status, vorteo doctor, vorteo open, vorteo update, vorteo repair, vorteo uninstall\n\nDemo complete. Nothing was changed."
+  );
+}
+async function animateDemoSteps({ steps, write, interactive, started, animationMs, wait }) {
+  const renderer = createRenderer({
+    write,
+    animate: interactive,
+    banner: interactive,
+    color: interactive && !process.env.NO_COLOR,
+    installationStarted: started
+  });
+  const interrupt = (signal) => {
+    renderer.finish();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const onInt = () => interrupt("SIGINT");
+  const onTerm = () => interrupt("SIGTERM");
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
+  try {
+    const builds = steps.filter((step) => ["dev-images", "release"].includes(step));
+    for (const [index, step] of steps.entries()) {
+      const message = `${STEP_TITLES[step]} (demo)`;
+      renderer.handle(
+        JSON.stringify({ step, status: "start", message, index: index + 1, total: steps.length })
+      );
+      if (builds.includes(step)) {
+        const duration = animationMs / builds.length;
+        for (let elapsed = 0; elapsed < duration; elapsed += 1e3) {
+          renderer.handle(
+            JSON.stringify({
+              step,
+              status: "progress",
+              detail: "Simulated build; no commands are running",
+              outputBytes: 1
+            })
+          );
+          await wait(Math.min(1e3, duration - elapsed));
+        }
+      } else await wait(250);
+      renderer.handle(JSON.stringify({ step, status: "done", message }));
+    }
+  } finally {
+    renderer.finish();
+    process.removeListener("SIGINT", onInt);
+    process.removeListener("SIGTERM", onTerm);
+  }
+}
+async function demoMain(args) {
+  let input;
+  let reader;
+  try {
+    if (!args.includes("--yes") && !args.includes("-y") && (!process.env.VORTEO_YES || process.env.VORTEO_YES === "0") && !args.includes("--non-interactive") && !process.env.CLAUDECODE && (!process.env.VORTEO_NON_INTERACTIVE || process.env.VORTEO_NON_INTERACTIVE === "0") && process.stdout.isTTY) {
+      input = new ReadStream(openSync("/dev/tty", "r"));
+      reader = readline2.createInterface({ input, output: process.stdout });
+      reader.on("SIGINT", () => process.kill(process.pid, "SIGINT"));
+    }
+    const ask = (prompt, id, fallback) => {
+      const inline = args.find((arg) => arg.startsWith(`--${id}=`));
+      const index = args.indexOf(`--${id}`);
+      let answer;
+      if (inline) answer = inline.slice(id.length + 3) || void 0;
+      else if (index !== -1) answer = args[index + 1];
+      if (id === "dev-container" && args.includes("--no-dev-container")) answer = "no";
+      if (answer !== void 0 || !reader) {
+        process.stdout.write(`${prompt}${answer ?? fallback}
+`);
+        return Promise.resolve(answer ?? fallback);
+      }
+      return new Promise((resolve, reject) => {
+        const closed = () => reject(new Error("Demo canceled: terminal input closed. Nothing was changed."));
+        reader.once("close", closed);
+        reader.question(prompt, (value) => {
+          reader.removeListener("close", closed);
+          resolve(value);
+        });
+      });
+    };
+    await runDemo({ ask });
+  } finally {
+    reader?.close();
+    input?.destroy();
+  }
+}
+
+// <stdin>
+try {
+  await demoMain(process.argv.slice(2));
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+}
+VORTEO_DEMO_JS
+}
+# END demo bundle
 
 vorteo_install "$@" "--vorteo-script-complete"

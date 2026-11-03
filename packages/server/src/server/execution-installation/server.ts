@@ -1,3 +1,4 @@
+import { InstallationManagement } from "./management.js";
 import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js";
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
@@ -788,6 +789,33 @@ export function createInstallationServer(
     res.locals.updateRequester = host ? "host-agent" : "container-agent";
     next();
   }
+  const management = new InstallationManagement(config.stateDir, restarts, coordinatorRequests);
+  function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
+    if (res.locals.updateRequester !== "host-agent" || !management.authority()) {
+      res.status(403).json({ error: "Explicit Host installation management grant required" });
+      return;
+    }
+    next();
+  }
+  app.get(
+    "/api/installation/management/requests",
+    authenticateUpdate,
+    requireManagementHost,
+    (_req, res) => res.json(management.snapshot()),
+  );
+  app.get(
+    "/api/installation/management/receipts/:id",
+    authenticateUpdate,
+    requireManagementHost,
+    (req, res) => res.json(management.receipt(req.params.id)),
+  );
+  app.post(
+    "/api/installation/management/cancel",
+    authenticateUpdate,
+    requireManagementHost,
+    express.json({ limit: "16kb" }),
+    (req, res) => res.json(management.cancel(req.body)),
+  );
   async function updateCapability(target: RestartJob["target"]) {
     try {
       standingRuntime.assertRegistrationReadiness(target);
@@ -966,6 +994,12 @@ export function createInstallationServer(
       host &&
       daemonAutomation.legacyPolicyAvailable() &&
       maintenanceDelegationActivation(config.stateDir) !== null;
+    const managementCapability = {
+      available: host && management.available(),
+      enabled: host && management.authority() !== null,
+      cancellation: true,
+      approval: false,
+    };
     const automaticSupported = supportsAutomaticMaintenance(executor);
     // COMPAT(hostAutomaticRestarts): per-target permissions added v543; retain
     // the conservative aggregate until legacy capability clients retire after 2027-04-15.
@@ -1009,6 +1043,7 @@ export function createInstallationServer(
             ownerApprovalRequired: !automaticHost || !host,
             hostAutomaticRestarts: automaticHost,
             requireOwnerApproval: host,
+            installationManagement: managementCapability,
             maintenanceDelegation: {
               available: host && daemonAutomation.legacyPolicyAvailable(),
               enabled: delegatedMaintenance,
@@ -2172,7 +2207,7 @@ export function createInstallationServer(
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
     void drainRestarts();
   });
-  app.post("/api/installation/owner/maintenance-delegation/query", (_req, res) => {
+  app.post("/api/installation/owner/maintenance-delegation/query", (req, res) => {
     const available = daemonAutomation.legacyPolicyAvailable();
     const status = maintenanceDelegationStatus(config.stateDir);
     res.json({
@@ -2180,6 +2215,12 @@ export function createInstallationServer(
       available,
       enabled: available && status.enabled,
       activatedAt: available ? status.activatedAt : null,
+      ...(req.query.management === "1"
+        ? {
+            managementAvailable: available && management.available(),
+            managementEnabled: available && management.authority() !== null,
+          }
+        : {}),
     });
   });
   app.post("/api/installation/owner/maintenance-delegation/change", (req, res) => {
@@ -2190,7 +2231,16 @@ export function createInstallationServer(
     const status = changeMaintenanceDelegation(config.stateDir, req.body);
     coordinatorRequests?.revokeAutomatic();
     restarts.refreshApprovalPolicy();
-    res.json({ available: true, ...status });
+    res.json({
+      available: true,
+      ...status,
+      ...(req.query.management === "1"
+        ? {
+            managementAvailable: management.available(),
+            managementEnabled: management.authority() !== null,
+          }
+        : {}),
+    });
     void drainRestarts();
   });
   app.post("/api/installation/owner/daemon-automation/query", (_req, res) => {

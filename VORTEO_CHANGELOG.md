@@ -4,18 +4,137 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-03
+
+### Fixed
+
+- A thread whose history failed to load after a daemon or session host restart no longer stays blank or shows only its recent messages. The next request for the thread retries the load once the thread is idle, and when newer messages arrived after the failure, it replaces the partial history with the full transcript under a new epoch so open clients reset. Concurrent requests share one retry, and a thread with a running turn waits for it to finish.
+- Session host disconnects now say whether this daemon closed the connection, the host closed it, or a socket error ended it, with the error code, instead of only "Session host connection closed."
+
+## Unreleased - 2026-11-02
+
 ## Unreleased - 2026-11-02
 
 ### Fixes
 
 - Ignore stale source-preparation state on rejected, canceled or failed update requests when checking whether the coordinator is idle. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
 - Report a coordinator update that fails before it starts as failed, with a plain reason, instead of leaving it approved and waiting forever. Its approval cannot be reused, so a fresh update can be prepared.
+- Also close a coordinator update's approval when its runner never starts or exits before claiming the update. A runner that is still running, even past the observation deadline, is left alone.
 
 ### Improvements
 
 - Show on the coordinator approval card whether the update could start now and which installation work blocks it.
 - Flag an approved coordinator update that has not started three minutes after it became eligible, in Installation controls, the sidebar banner and `coordinator-status`.
 - Add the reviewed `installationLead` coordinator setting. When set, the coordinator messages that agent thread once about each coordinator update that fails before starting or stalls after approval, and only while the thread is idle.
+
+## Unreleased - 2026-11-03
+
+### Security
+
+- Only the owner can turn on Chrome for a thread. Agent tools now refuse to enable it when creating or updating a thread, and scheduled runs no longer inherit it from the thread that created them. Agents can still turn it off.
+
+## Unreleased - 2026-11-02
+
+### Improvements
+
+- Add an opt-in Chrome toggle to Claude threads on machines with the Claude in Chrome extension set up. Threads with it on start Claude with `--chrome` from the next turn, keeping the conversation, so the agent can use the owner's logged-in Chrome. It is off by default, and hidden where the extension's native host is missing.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- The Vorteo System project shows as one sidebar row again, in the folder and order you gave it. Hiding the empty Dev System project had split the Host's project into a second top-level row, leaving workspaces created before the split under the old row.
+
+## Unreleased - 2026-11-02
+
+### Changed
+
+- Rebuild the sidebar Quotas card around a week of runway per account. A quiet Best now note names the account to use next, with a reason and a runner-up. Each account shows a thin 7-day lane on a shared day axis, marking plan capacity, running low, prepaid credits, out of quota, unknown stretches and every known reset, with one summary line beneath it.
+- Keep the card mostly monochrome: amber marks running low at 30% left or less, matching the usage tiles, red marks out, and credits show as a fainter capacity tone. Provider dots and most badges are gone; a row shows one status label only when it is out or on credits.
+- Open an account in place to see every window with its bar, remaining percent and exact reset, plus plan, balances, details, source, the pace warning and reset credits. Reconnect stays visible on the collapsed row for signed-out accounts, which list first. Accounts now start collapsed unless only one reports.
+- A setup-token Claude account at its observed limit shows out until the reset, then unknown, and its detail says From last limit message.
+- Show reading freshness in the footer, Live or Stale after the 10-minute display threshold, with the reading's age, beside a Key that explains the lane styles and names the time zone, and the Open Usage link.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Account tiles name a reset time when allowances tie, fall back to another window's next reset, and show Session not started for an unused Claude session instead of Reset time unavailable.
+- Healthy usage no longer flips to Last known usage between refreshes: the label waits 10 minutes, and the daemon caches usage for 2 minutes instead of 5.
+- New accounts show usage within seconds of signing in. The app refreshes past the daemon cache on completion and again when the credential reaches the host.
+- Claude setup-token accounts at their limit show 0% left with the reset time from their last limit message, noted as From last limit message, instead of Usage not provided. The reading lasts until the reset, or 7 days when the message gave none, and does not survive a daemon restart.
+
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Show only the agent's own account in the Context window details instead of repeating its quotas from the provider-level plan card.
+- Keep Claude's session cost visible while a turn runs; streamed usage updates no longer erase it until the turn finishes. Other fields still follow each update, so compaction clears the used context and a model without a known price drops a stale estimate.
+
+### Improvements
+
+- Estimate session cost for Codex sessions on `gpt-6-astra` and `gpt-6.1-sol` from cumulative tokens and OpenAI's list prices, labeled as an estimate.
+
+## Unreleased - 2026-11-02
+
+### Added
+
+- Show an hourglass in the working blue in place of the sidebar's ready or idle dot while an idle workspace has an unfinished Review checklist item, such as a delivery waiting on Builds. Its tooltip names the owner and each item's title and description. Running, needs-input and failed states still take precedence.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Move the rule for waiting on Builds into the task delivery guide and keep a one-line pointer in the agent instructions, within their size budget.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Ask threads whose delivery Builds owns to keep a Review checklist item owned by Builds, mirror Builds' reported steps as checks and verify `main` and the published interface before completing it.
+
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Show the full Context window breakdown for Claude sessions running in the durable session host. They previously showed "This provider reports totals only" because the host never forwarded Claude's context data.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Keep a Codex turn that finished before Vorteo identified it from becoming the next Stop target. Completion events now carry their turn id, so a late event from that turn is ignored and Stop interrupts the turn actually running.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Stop a Codex agent whose new message joined a turn Codex was already running, such as a goal continuation resumed after a restart. Stop previously failed with "active run cancellation was not acknowledged" because Vorteo waited for a turn start that never came; it now identifies the running turn from its activity and interrupts it.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Merge `main` through 26.11.206 into the installed Host source, and drop the Host-only 26.11.105 heading whose entries `main` released as 26.11.106.
+
+## Unreleased - 2026-11-01
+
+- Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.
+- Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.
+- Wait for durable restart capture acknowledgement in the compiled restart fixture before checking that no work remains pending. Keep the worker replacement and no-replay assertions unchanged.
+
+## 26.11.206 - 2026-11-02
+
+### Improvements
+
+- Show connection details after repairs and existing-install checks, as well as fresh installs. Installed commands also provide the address, owner-password access, password-file reference and terminal QR code while keeping JSON status output machine-readable.
+
+## 26.11.205 - 2026-11-02
+
+### Improvements
+
+- Preview the installer with `--demo`: answer setup questions, review the simulated plan, watch five minutes of build animation, and see completion without changing the system.
+- Reuse an installed compatible Node.js runtime when an older PATH entry hides Homebrew Node 24, avoiding repeated installation prompts.
 
 ## 26.11.204 - 2026-11-02
 

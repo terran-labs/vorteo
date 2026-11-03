@@ -79,8 +79,12 @@ if (command === "detect") {
   writeFileSync(passwordFile, process.env.FAKE_PASSWORD + "\n", { mode: 0o600 });
   emit({ result: { origin: origin(answers), localOrigin: "http://localhost:6790", passwordFile, name: answers.name } });
 } else if (command === "status") {
-  emit({ origin: "https://vorteo.example.ts.net", localOrigin: "http://localhost:6790" });
+  emit({ origin: "https://vorteo.example.ts.net", localOrigin: "http://localhost:6790", name: "Vorteo", passwordFile: path.join(root, "host", "owner-password") });
 } else if (command === "repair") {
+  if (process.env.FAKE_REPAIR === "fail") {
+    emit({step: "services", status: "fail", message: "Repair failed"});
+    process.exit(1);
+  }
   emit({ step: "services", status: "done", message: "Checked the services" });
 }
 `;
@@ -113,7 +117,7 @@ case "$1" in
     mkdir -p "$target/.git" "$target/scripts/installer"
     echo "\${FAKE_CLONE_SHA:-$FAKE_SHA}" >"$target/.git/HEAD"
     echo "// fake engine placeholder" >"$target/scripts/installer/main.mjs"
-    for file in qr.mjs progress.mjs banner.mjs vorteo.sh; do cp "$FAKE_REPO/scripts/installer/$file" "$target/scripts/installer/$file"; done
+    for file in qr.mjs progress.mjs banner.mjs vorteo.sh connection.sh; do cp "$FAKE_REPO/scripts/installer/$file" "$target/scripts/installer/$file"; done
     cp "$FAKE_REPO/scripts/is-main-module.mjs" "$target/scripts/is-main-module.mjs"
     ;;
   rev-parse) cat "$dir/.git/HEAD" ;;
@@ -233,7 +237,7 @@ describe("install.sh", () => {
     }
     const result = spawnSync(
       "shellcheck",
-      ["--shell=bash", installScript, path.join(repoRoot, "scripts/installer/vorteo.sh")],
+      ["-x", "--shell=bash", installScript, path.join(repoRoot, "scripts/installer/vorteo.sh")],
       { encoding: "utf8" },
     );
     assert.equal(result.status, 0, result.stdout);
@@ -501,7 +505,35 @@ describe("install.sh", () => {
     const repaired = box.run(["--repair"], { FAKE_EXISTING: "current" });
     assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
     assert.match(repaired.stdout, /✓ Checked the services/);
+    for (const output of [result.stdout, repaired.stdout]) {
+      assert.match(output, /Address:.*https:\/\/vorteo.example.ts.net/);
+      assert.match(output, /Password file:.*owner-password/);
+      assert.ok(!output.includes(password));
+    }
     assert.ok(box.calls().some((call) => call.tool === "engine" && call.argv[0] === "repair"));
+    writeFileSync(box.tty, "");
+    const interactive = box.run(["--repair", "--no-open"], {
+      FAKE_EXISTING: "current",
+      VORTEO_TEST_TTY: box.tty,
+      COLUMNS: "100",
+    });
+    assert.equal(interactive.status, 0, interactive.stderr);
+    assert.match(interactive.stdout, /Scan to open Vorteo/);
+    assert.match(interactive.stdout, /Password file:/);
+    assert.ok(!interactive.stdout.includes(password));
+    const shim = path.join(box.home, ".local", "bin", "vorteo");
+    for (const command of ["repair", "open", "status"]) {
+      const cli = spawnSync(bash, [shim, command], { env: box.env, encoding: "utf8" });
+      assert.equal(cli.status, 0, cli.stderr);
+      assert.match(cli.stdout, /Password file:.*owner-password/);
+      assert.ok(!cli.stdout.includes(password));
+    }
+    const json = spawnSync(bash, [shim, "status", "--json"], { env: box.env, encoding: "utf8" });
+    assert.equal(json.status, 0, json.stderr);
+    assert.doesNotThrow(() => JSON.parse(json.stdout));
+    const failed = box.run(["--repair"], { FAKE_EXISTING: "current", FAKE_REPAIR: "fail" });
+    assert.equal(failed.status, 1);
+    assert.doesNotMatch(failed.stdout, /Connect to Vorteo|Password file:/);
   });
 
   test("missing Node.js 24 is a question that --yes does not answer", () => {
@@ -693,4 +725,36 @@ describe("vorteo command", () => {
       .find((entry) => entry.tool === "engine" && entry.argv[0] === "uninstall");
     assert.ok(call.argv.includes("--keep-data"));
   });
+});
+
+test("standalone demo stops before discovery, downloads and filesystem changes", () => {
+  const box = sandbox();
+  // Use the actual runtime; every installation tool remains the sandbox's recording fake.
+  writeFileSync(path.join(box.bin, "node"), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`);
+  const before = readdirSync(box.dir).sort();
+  const result = box.run(["--demo", "--dev-container", "--yes", "--proceed=no"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Demo canceled/);
+  assert.deepEqual(readdirSync(box.dir).sort(), before);
+  assert.deepEqual(readdirSync(box.home), []);
+  assert.equal(existsSync(box.log), false);
+});
+
+test("embeds the current standalone demo", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(repoRoot, "scripts/installer/embed-demo.mjs"), "--check"],
+    { encoding: "utf8", cwd: repoRoot },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("embeds the shared connection summary", () => {
+  const embedded = readFileSync(installScript, "utf8")
+    .split("# BEGIN connection.sh\n")[1]
+    .split("# END connection.sh")[0];
+  assert.equal(
+    embedded,
+    readFileSync(path.join(repoRoot, "scripts/installer/connection.sh"), "utf8"),
+  );
 });

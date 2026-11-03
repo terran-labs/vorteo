@@ -37,7 +37,7 @@ To add a device, open your installation's address on it and enter the owner pass
 
 <img width="400" alt="Server managed cross-device message queuing." src="https://github.com/user-attachments/assets/59dfdb03-e1ec-40d2-b66e-9683134e3811" />
 
-- **Reviewed updates and queued restarts.** On a configured installation, Dev agents can submit source for the Host or Dev daemon and return an exact approval link. Host updates also publish the shared interface. Plain restarts can wait for active work to finish with your browser closed. With a compatible coordinator, an owner-unlocked preference can approve routine Host and Dev updates and restarts through the same tracked controls. Coordinator and supervisor maintenance retain separate approval unless the owner explicitly delegates supported maintenance to trusted Host requests. Exact plans, cancellation and revocation remain enforced. Host-prepared Dev supervisor repairs use the same visible review and cancellation controls. Coordinator updates can include automatic restoration of the verified previous release if replacement fails or stalls. [Setup and limits](docs/execution-installation.md#reviewed-source-updates).
+- **Reviewed updates and queued restarts.** On a configured installation, Dev agents can submit source for the Host or Dev daemon and return an exact approval link. Host updates also publish the shared interface. Plain restarts can wait for active work to finish with your browser closed. With a compatible coordinator, an owner-unlocked preference can approve routine Host and Dev updates and restarts through the same tracked controls. Coordinator and supervisor maintenance retain separate approval unless the owner explicitly delegates supported maintenance to trusted Host requests. A separate management grant lets trusted Host agents cancel pending or queued installation work with exact request checks and receipts. Exact plans and revocation remain enforced. Host-prepared Dev supervisor repairs use the same visible review and cancellation controls. Coordinator updates can include automatic restoration of the verified previous release if replacement fails or stalls. [Setup and limits](docs/execution-installation.md#reviewed-source-updates).
 
 <img width="400" alt="Queued daemon upgrades" src="https://github.com/user-attachments/assets/3a1c344d-42ac-4da7-8fb0-b5059b3c280f" />
 
@@ -73,6 +73,16 @@ Run this on the Mac or Linux computer that will host Vorteo, or give it to your 
 ```sh
 curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash
 ```
+
+Preview the complete setup without installing anything:
+
+```sh
+curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash -s -- --demo
+```
+
+Demo mode asks the setup questions, shows the plan, animates builds for five minutes and displays simulated completion. It uses an existing Node.js runtime and changes no files, services, credentials or settings. Press Ctrl+C to leave early. Add `--yes` to use the default answers.
+
+After installation or repair, the terminal shows the connection address, password-file location and a QR code when space allows. The owner password is copied to the clipboard when available. Rerunning the installer also shows these details for an existing installation.
 
 Allow about 15 to 60 minutes with a Dev container, or 5 to 20 minutes for Host only. These are planning estimates; cached builds can finish faster and slow machines or downloads can take longer. The installer shows elapsed time and live build activity. On interactive terminals, a green Matrix animation runs during builds and pauses for questions; redirected output stays plain text.
 

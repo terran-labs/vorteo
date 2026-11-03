@@ -80,6 +80,10 @@ A handoff must identify the receiving owner and preserve that owner's workspace.
 
 The receiving owner reconciles the handoff with source and current evidence before continuing. Builds keeps a concise linked delivery dependency while the feature or CI owner retains implementation. Worker completion or transfer does not complete integration, publication, installation or unfinished acceptance.
 
+### While Builds owns delivery
+
+Keep the wait visible on your checklist. Hold an item such as "Builds merges and publishes the change" in Review, with owner `Vorteo :: Builds` and a short description of what you are waiting for. Mirror the steps Builds reports as checks and update them after each Builds report. Complete it only after you have verified `main` and the published interface yourself, and keep a separate pending item for that verification.
+
 ## Shared dependency installs
 
 `node scripts/install-dependencies.mjs` installs a checkout's dependencies. Task worktrees and the workspace setup in `paseo.json` use it, and web builds use its library with `--mode build`. On macOS it keeps one complete install per lockfile under `~/.cache/vorteo-dependencies` and clones it into each checkout with APFS copy-on-write (`cp -c`). Every checkout gets its own `node_modules` trees, so workspace links such as `node_modules/@getpaseo/server -> ../../packages/server` still resolve inside that checkout, and edits never reach another one. Clones share disk blocks until a file changes.

@@ -31,6 +31,13 @@ export interface BootstrapRequestJournal {
   promote?(request: CoordinatorBootstrapRequest): void;
   /** Atomically compare against expected and persist next, or refuse the edit. */
   replace(expected: CoordinatorBootstrapRequest[], next: CoordinatorBootstrapRequest[]): void;
+  /** Synchronous compare-and-swap transaction under the shared lifecycle lock. */
+  withRecoveryTransaction?<T>(
+    operation: (
+      records: CoordinatorBootstrapRequest[],
+      replace: (next: CoordinatorBootstrapRequest[]) => void,
+    ) => T,
+  ): T;
   /** Under the journal lock, prove a failed claim never reached either promotion location. */
   verifyUnpromotedFailure?(expected: CoordinatorBootstrapRequest): void;
   /** The installation lifecycle journal, for display-only dispatch readiness. */
@@ -59,7 +66,7 @@ export type BootstrapReconciliationLedger = Pick<
   | "finishAutomaticReconciliation"
   | "cancelForReplacedHostRelease"
 > &
-  Partial<Pick<CoordinatorBootstrapRequests, "readLifecycle">>;
+  Partial<Pick<CoordinatorBootstrapRequests, "cancelUnderManagement" | "readLifecycle">>;
 
 export function coordinatorAutomaticStatus(
   request: CoordinatorBootstrapRequest,
@@ -820,6 +827,44 @@ export class CoordinatorBootstrapRequests {
     return canceled;
   }
 
+  /** Cancellation grants no approval. Authority is reread under the same lock as
+   * dispatch claims; callbacks must not acquire that lock or perform async work. */
+  cancelUnderManagement(value: unknown, assertAuthority: () => void): CoordinatorBootstrapRequest {
+    const input = CoordinatorBootstrapDecisionSchema.extend({
+      decision: z.literal("cancel"),
+    }).parse(value);
+    if (!this.journal.withRecoveryTransaction)
+      throw new BootstrapRequestConflict("Atomic management cancellation is unavailable");
+    return this.journal.withRecoveryTransaction((stored, replace) => {
+      const records = this.validateRecords(stored);
+      if (assertAuthority() !== undefined)
+        throw new BootstrapRequestConflict("Management authority must be checked synchronously");
+      const request = records.find((item) => item.id === input.id);
+      if (
+        !request ||
+        request.revision !== input.revision ||
+        request.planSha256 !== input.planSha256
+      )
+        throw new BootstrapRequestConflict("Bootstrap request changed. Refresh its review.");
+      if (request.execution)
+        throw new BootstrapRequestConflict("Bootstrap dispatch has already claimed this request");
+      if (request.status !== "pending" && request.status !== "approved")
+        throw new BootstrapRequestConflict("Bootstrap request has already been decided");
+      const binding = this.readBinding(request.plan);
+      const next: CoordinatorBootstrapRequest = {
+        ...request,
+        revision: randomUUID(),
+        status: "canceled",
+        decisionAt: new Date(this.now()).toISOString(),
+      };
+      this.requireSameBinding(binding, request.plan);
+      if (assertAuthority() !== undefined)
+        throw new BootstrapRequestConflict("Management authority must be checked synchronously");
+      replace(records.map((item) => (item.id === next.id ? next : item)));
+      return structuredClone(next);
+    });
+  }
+
   async decide(value: unknown, ownerPassword: string): Promise<CoordinatorBootstrapRequest> {
     const input = CoordinatorBootstrapDecisionSchema.parse(value);
     const expected = this.read();
@@ -996,7 +1041,11 @@ export class CoordinatorBootstrapRequests {
   }
 
   private read(): CoordinatorBootstrapRequest[] {
-    const records = z.array(CoordinatorBootstrapRequestSchema).parse(this.journal.read());
+    return this.validateRecords(this.journal.read());
+  }
+
+  private validateRecords(value: unknown): CoordinatorBootstrapRequest[] {
+    const records = z.array(CoordinatorBootstrapRequestSchema).parse(value);
     if (new Set(records.map((item) => item.id)).size !== records.length)
       throw new BootstrapRequestConflict("Duplicate bootstrap request identity");
     for (const request of records) {

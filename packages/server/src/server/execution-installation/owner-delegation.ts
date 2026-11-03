@@ -29,6 +29,8 @@ const OwnerDelegationSchema = z.strictObject({
   /** Separate owner grant for exact, authenticated Host maintenance requests. */
   maintenanceApprovedAfter: z.string().datetime().nullable().optional(),
   maintenanceChangedAt: z.string().datetime().optional(),
+  /** Separate explicit consent to manage retained installation requests. */
+  managementApprovedAfter: z.string().datetime().nullable().optional(),
   /** How long an unapproved delegated request may wait before the owner is prompted. */
   graceMinutes: z.number().int().min(1).max(60).optional(),
 });
@@ -168,6 +170,7 @@ const MaintenanceDelegationChangeSchema = z.strictObject({
     .regex(/^[a-f0-9]{64}$/)
     .nullable(),
   enabled: z.boolean(),
+  management: z.boolean().optional(),
 });
 
 export function maintenanceDelegationStatus(stateDir: string) {
@@ -182,8 +185,15 @@ export function changeMaintenanceDelegation(stateDir: string, input: unknown) {
   const { revision, stored } = readMaintenanceDelegation(stateDir);
   if (change.expectedRevision !== revision)
     throw new RestartRequestError("Maintenance delegation changed. Refresh before saving.");
-  if (Boolean(stored.maintenanceApprovedAfter) === change.enabled)
+  const management =
+    change.enabled && (change.management ?? Boolean(stored.managementApprovedAfter));
+  if (
+    Boolean(stored.maintenanceApprovedAfter) === change.enabled &&
+    Boolean(stored.managementApprovedAfter) === management
+  ) {
+    if (revision) syncMaintenanceDelegation(stateDir);
     return maintenanceDelegationStatus(stateDir);
+  }
   const file = path.join(stateDir, "owner-delegation.json");
   const changedAt = new Date(
     Math.max(Date.now(), Date.parse(stored.maintenanceChangedAt ?? "1970-01-01T00:00:00Z") + 1),
@@ -193,14 +203,37 @@ export function changeMaintenanceDelegation(stateDir: string, input: unknown) {
     JSON.stringify({
       ...stored,
       maintenanceChangedAt: changedAt,
-      maintenanceApprovedAfter: change.enabled ? changedAt : null,
+      maintenanceApprovedAfter: change.enabled
+        ? (stored.maintenanceApprovedAfter ?? changedAt)
+        : null,
+      ...(change.management !== undefined || stored.managementApprovedAfter !== undefined
+        ? { managementApprovedAfter: management ? changedAt : null }
+        : {}),
     }),
   );
+  syncMaintenanceDelegation(stateDir);
+  return maintenanceDelegationStatus(stateDir);
+}
+
+function syncMaintenanceDelegation(stateDir: string) {
+  const file = path.join(stateDir, "owner-delegation.json");
   const descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
   }
-  return maintenanceDelegationStatus(stateDir);
+  const directory = openSync(stateDir, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
+  }
+}
+
+/** A full maintenance grant alone never authorizes management of retained work. */
+export function managementDelegationAuthority(stateDir: string) {
+  const { revision, stored } = readMaintenanceDelegation(stateDir);
+  if (!revision || !stored.maintenanceApprovedAfter || !stored.managementApprovedAfter) return null;
+  return { revision, activatedAt: stored.managementApprovedAfter };
 }

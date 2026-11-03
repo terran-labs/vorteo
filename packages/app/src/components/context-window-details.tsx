@@ -5,6 +5,7 @@ import { AgentUsageSection, useAgentUsage } from "@/usage";
 import { ProviderUsageTooltipSection } from "@/provider-usage/tooltip-section";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
 import { useSessionStore } from "@/stores/session-store";
+import type { SessionCost } from "./context-window-meter.utils";
 
 import { ContextBreakdown } from "./context-breakdown/view";
 import { useContextBreakdown } from "./context-breakdown/use-context-breakdown";
@@ -15,7 +16,7 @@ interface ContextWindowDetailsProps {
   percentage: number;
   usedTokens: number;
   maxTokens: number;
-  sessionCost: string | null;
+  sessionCost: SessionCost | null;
   /** The tooltip titles itself; the sheet's header carries the title instead. */
   showTitle: boolean;
   /**
@@ -27,7 +28,7 @@ interface ContextWindowDetailsProps {
 
 /**
  * What the context window meter opens and the Context details card shows: how full the window
- * is and what fills it, then the usage of the agent's account. The wide tooltip, the compact
+ * is and what fills it, then the usage of the account the agent runs under. The wide tooltip, the compact
  * sheet and the card all render it, so they always match.
  *
  * The breakdown, account usage and plan usage load independently. Until all three settle, one
@@ -51,8 +52,13 @@ export function ContextWindowDetails({
   const provider = useSessionStore(
     (state) => state.sessions[serverId]?.agents.get(agentId)?.provider,
   );
+  // The agent's own account answers for its quotas. Plan usage is matched by provider alone, so
+  // it can show another login's quotas; it stands in only when the host reports no account.
+  const showPlanUsage = accountUsage.kind === "none";
   const loading =
-    breakdown.kind === "loading" || accountUsage.kind === "loading" || planUsage.kind === "loading";
+    breakdown.kind === "loading" ||
+    accountUsage.kind === "loading" ||
+    (showPlanUsage && planUsage.kind === "loading");
 
   return (
     <>
@@ -69,7 +75,9 @@ export function ContextWindowDetails({
       {loading ? null : (
         <>
           <AgentUsageSection serverId={serverId} view={accountUsage} refreshable={refreshable} />
-          <ProviderUsageTooltipSection view={planUsage} activeProviderId={provider} />
+          {showPlanUsage ? (
+            <ProviderUsageTooltipSection view={planUsage} activeProviderId={provider} />
+          ) : null}
         </>
       )}
     </>
