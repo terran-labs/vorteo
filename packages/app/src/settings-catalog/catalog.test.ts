@@ -163,13 +163,14 @@ it("offers keyboard shortcuts for hardware keyboards independently of Electron",
   expect(isAvailable(pane, { ...context, hardwareKeyboardPresent: true })).toBe(true);
 });
 
-it("groups the eight sections by scope and preserves renamed section links", () => {
+it("groups the nine sections by scope and preserves renamed section links", () => {
   expect(SETTINGS_SECTIONS.map(({ label, group }) => [group, label])).toEqual([
     ["This device", "Interface"],
     ["This device", "Notifications & privacy"],
     ["Vorteo", "General"],
     ["Vorteo", "Providers"],
     ["Vorteo", "Agents"],
+    ["Vorteo", "Voice"],
     ["Vorteo", "Environments"],
     ["Vorteo", "Projects & integrations"],
     ["Vorteo", "System"],
@@ -191,6 +192,8 @@ it("groups the eight sections by scope and preserves renamed section links", () 
     pane: "appearance.appearance",
   });
   expect(getPane("privacy.dataSaver")?.section).toBe("privacy");
+  // Upstream's per-host voice links land on the top-level Voice section.
+  expect(resolveSettingsTarget("voice")).toEqual({ section: "voice", pane: null });
   expect(
     SETTINGS_ENTRIES.filter((entry) => entry.label === "Default profile").every(
       (entry) => entry.pane === "workspaces.newWorkspace",

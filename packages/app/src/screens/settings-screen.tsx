@@ -36,6 +36,7 @@ import {
   Plus,
   FolderGit2,
   Sparkles,
+  Mic,
   Wrench,
   ChevronRight,
   ExternalLink,
@@ -43,6 +44,7 @@ import {
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { AppearanceSection } from "@/screens/settings/appearance/appearance-section";
+import { HostVoicePage } from "@/screens/settings/voice/voice-page";
 import { OpenLocationSection } from "@/screens/settings/open-location/open-location-section";
 import { TerminalSection } from "@/screens/settings/terminal/terminal-section";
 import { ChatSection } from "@/screens/settings/chat/chat-section";
@@ -138,6 +140,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   general: Settings,
   providers: Bot,
   agents: Sparkles,
+  voice: Mic,
   environments: Server,
   projects: FolderGit2,
   system: Wrench,
@@ -881,6 +884,18 @@ interface PaneContext {
 
 type InstallationPaneSection = Parameters<typeof InstallationSettingsContent>[0]["section"];
 
+/**
+ * Voice settings live on the Host daemon: the installation's Host when there is one,
+ * otherwise the first saved host, the same rule the other host-backed panes use.
+ */
+function VoicePane() {
+  const hosts = useHosts();
+  const installation = readExecutionInstallation();
+  const authority = installation?.environments.find((environment) => environment.kind === "host");
+  const serverId = authority?.serverId ?? hosts[0]?.serverId;
+  return serverId ? <HostVoicePage serverId={serverId} /> : null;
+}
+
 function installationPane(section: InstallationPaneSection) {
   return (context: PaneContext) => (
     <InstallationSettingsContent section={section} onAddHost={context.onAddHost} />
@@ -900,6 +915,7 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "accounts.usage": installationPane("usage"),
   "agents.tools": installationPane("agents"),
   "agents.skills": () => <SkillLibraryContent />,
+  "voice.voice": () => <VoicePane />,
   "agents.metadata": installationPane("metadata"),
   "agents.browserData": () => <BrowserDataSection />,
   "agents.permissions": () => <DesktopPermissionsSection />,

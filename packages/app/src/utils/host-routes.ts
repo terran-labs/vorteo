@@ -499,6 +499,7 @@ export const SETTINGS_SECTION_SLUGS = [
   "interface",
   "privacy",
   "system",
+  "voice",
   "general",
   "accounts",
   "maintenance",
