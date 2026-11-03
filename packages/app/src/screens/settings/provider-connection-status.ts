@@ -24,6 +24,8 @@ export interface EnvironmentState {
   label: string;
   error: string | null;
   usage: ProviderUsage | undefined;
+  usageSupported: boolean;
+  usageFailed: boolean;
 }
 
 export function classifyEnvironment(input: {

@@ -246,6 +246,7 @@ export function SharedProvidersPage() {
       <View
         style={[settingsStyles.card, styles.skeleton]}
         testID="shared-providers-loading"
+        dataSet={loadingPane}
         accessibilityLabel="Shared provider list unavailable. Complete shared provider migration to manage the catalog."
       >
         <Text style={settingsStyles.rowHint}>
@@ -516,3 +517,5 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing[3],
   },
 }));
+
+const loadingPane = { settingsLoading: "true" };

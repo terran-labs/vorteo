@@ -295,7 +295,6 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
   );
   const [logsPluginId, setLogsPluginId] = useState<string | null>(null);
   const toast = useToast();
-  const [feedback, setFeedback] = useState<string | null>(null);
   const plugins = useFetchQuery({
     queryKey,
     queryFn: async () => {
@@ -343,14 +342,12 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
     }) => operation.run(),
     onSuccess: async (message) => {
       toast.show(message);
-      setFeedback(message);
       await refresh();
     },
     onError: (error) => {
       if (isConnectionError(error)) reportActionError(error);
       else {
         toast.error(toErrorMessage(error));
-        setFeedback(toErrorMessage(error));
       }
     },
   });
@@ -482,7 +479,10 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
         title={t("settings.plugins.title")}
         info={`${t("settings.plugins.trustedTitle")}: ${t("settings.plugins.trustedDescription")}`}
       >
-        <SettingsStatusLine testID="plugin-management-feedback" message={feedback} />
+        <SettingsStatusLine
+          testID="plugin-management-feedback"
+          message={mutation.isPending ? "Updating plugins..." : null}
+        />
         <View style={settingsStyles.card}>
           <View style={settingsStyles.row}>
             <View style={settingsStyles.rowContent}>

@@ -170,6 +170,7 @@ export function SettingsScrollPage({
   const programmatic = useRef(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pending = useRef<SettingsScrollRequest | null>(request);
+  const paneArrival = useRef<SettingsScrollRequest | null>(null);
   const activeSection = useRef<SettingsSectionId | null>(null);
   const [viewport, setViewport] = useState(0);
   const searching = query.trim().length > 0;
@@ -270,8 +271,8 @@ export function SettingsScrollPage({
         );
         if (!node || !element || element.offsetHeight === 0) return null;
         const row = requestRow(target);
-        // A pane skeleton is not the requested row. Wait briefly, without pinning after arrival.
-        if ((target.anchorId || target.entry) && !row && Date.now() < rowDeadline.current)
+        // Loading-only panes are not useful destinations yet.
+        if (!row && target.pane && element.querySelector('[data-settings-loading="true"]'))
           return null;
         const inset = row ? JUMP_INSET * 4 : JUMP_INSET;
         return { y: rowOffsetWithin(row ?? element, node) - inset, row };
@@ -293,7 +294,12 @@ export function SettingsScrollPage({
     if (next.pane && !paneBoxes.current.has(next.pane)) return;
     const offset = targetOffset(next);
     if (!offset) return;
-    pending.current = null;
+    const awaitingRow = isWeb && Boolean(next.anchorId || next.entry) && !offset.row;
+    if (!awaitingRow || Date.now() >= rowDeadline.current) pending.current = null;
+    // Show a ready pane immediately, then refine once if its row arrives. Layout events
+    // while waiting must not repeatedly pull the reader back to the pane top.
+    if (awaitingRow && paneArrival.current === next) return;
+    paneArrival.current = next;
     reportActive(next.section);
     scrollTo(offset.y, next.animated);
     if (offset.row) flashSettingRow(offset.row);

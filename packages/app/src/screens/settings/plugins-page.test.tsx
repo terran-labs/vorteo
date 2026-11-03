@@ -164,6 +164,7 @@ function renderPage(client: PluginClient | null): void {
 
 describe("HostPluginsPage", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.stubGlobal("React", React);
     runtime.connected = true;
     runtime.supported = true;
@@ -213,6 +214,35 @@ describe("HostPluginsPage", () => {
 
     await waitFor(() => expect(client[method]).toHaveBeenCalledTimes(1));
   });
+
+  it.each([false, true])(
+    "clears ongoing feedback and announces the result only once (%s)",
+    async (fails) => {
+      const client = createClient();
+      client.listPlugins.mockResolvedValue([plugin()]);
+      let finish!: () => void;
+      client.disablePlugin.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            finish = () => {
+              if (fails) {
+                reject(new Error("Action failed"));
+                return;
+              }
+              resolve(plugin(false));
+            };
+          }),
+      );
+      renderPage(client);
+      fireEvent.click(await screen.findByRole("switch", { name: "example: Disable" }));
+      expect(await screen.findByText("Updating plugins...")).toBeDefined();
+      finish();
+      await waitFor(() => expect(screen.queryByText("Updating plugins...")).toBeNull());
+      expect(fails ? toast.error : toast.show).toHaveBeenCalledTimes(1);
+      const message = (fails ? toast.error : toast.show).mock.calls[0][0];
+      expect(screen.queryByText(message)).toBeNull();
+    },
+  );
 
   it("reports an action lost to a dropped connection as a toast, not inline feedback", async () => {
     const client = createClient();
