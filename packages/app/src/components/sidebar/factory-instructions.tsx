@@ -52,13 +52,21 @@ export function useProjectFactory(
       })) as ProjectFactoryState,
   });
 }
+/** Loaded states only. A module-level function, so combined results keep their identity. */
+function loadedFactoryStates(results: { data?: ProjectFactoryState }[]): ProjectFactoryState[] {
+  return results.flatMap((result) => (result.data ? [result.data] : []));
+}
+/**
+ * Factory state for hosts whose project already has project-factory members. Callers pass only
+ * those targets, so ordinary projects never poll. The result is stable until a state changes.
+ */
 export function useProjectFactories(
   targets: readonly { serverId: string; projectId: string }[],
   supported: ReadonlyMap<string, boolean>,
-) {
+): ProjectFactoryState[] {
   const active = useRetainedPanelActive();
   const plugins = useInstalledPlugins();
-  return useFetchQueries<ProjectFactoryState>(
+  return useFetchQueries(
     targets.map((target) => {
       const plugin = plugins.find(
         (candidate) => candidate.id === "factory" && candidate.serverId === target.serverId,
@@ -75,6 +83,7 @@ export function useProjectFactories(
           })) as ProjectFactoryState,
       };
     }),
+    loadedFactoryStates,
   );
 }
 export function FactoryInstructionsPanel() {

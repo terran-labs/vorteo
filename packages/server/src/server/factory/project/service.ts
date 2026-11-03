@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import {
+  PROJECT_FACTORY_INSTRUCTION_CONFLICTS,
   PROJECT_FACTORY_RPCS,
   ProjectFactoryRepositorySchema,
   factoryProjectConfigure,
@@ -20,7 +21,7 @@ import {
   type ProjectFactoryState,
 } from "@getpaseo/server/factory-project";
 
-import type { AgentStorage } from "../../agent/agent-storage.js";
+import type { AgentStorage, StoredAgentRecord } from "../../agent/agent-storage.js";
 import type { BoundCreateAgentCommand } from "../../agent/create-agent/create.js";
 import { computeNextRunAt } from "../../schedule/cron.js";
 import type { ScheduleService } from "../../schedule/service.js";
@@ -42,7 +43,6 @@ import {
   charterVersion,
   effectiveInstructions,
   hasDrifted,
-  instructionsBlock,
   rebase,
   saveRevision,
 } from "./instructions.js";
@@ -103,6 +103,8 @@ export interface ProjectFactoryServiceInput {
   };
   /** The launch the Optimizer would use now, or null when no provider is usable. */
   defaultLaunch: () => Promise<Launch | null>;
+  /** The provider a profile launches with, for a launch configured by profile alone. */
+  profileProvider?: (profileId: string) => string | null;
   schedules: Pick<ScheduleService, "list" | "pause" | "resume">;
   /** Hash of the GitHub state a gated role reacts to; null wakes the agent. */
   fingerprint?: (role: GatedRole, repository: string) => Promise<string | null>;
@@ -133,6 +135,8 @@ export class ProjectFactoryService {
   private readonly store: ProjectFactoryStateStore;
   private readonly logger: Logger;
   private readonly timers = new Map<string, NodeJS.Timeout>();
+  /** Bumped by pause, disable and stop, so a callback already queued never rearms. */
+  private readonly timerGenerations = new Map<string, number>();
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
 
@@ -150,6 +154,7 @@ export class ProjectFactoryService {
     await this.serialize(async () => {
       const file = await this.store.read();
       for (const [projectId, project] of Object.entries(file.projects)) {
+        await this.reconcileOptimizerReview(projectId, project);
         if (!project.enabled) continue;
         const record = await this.input.projects.get(projectId);
         if (!record || record.archivedAt) continue;
@@ -246,6 +251,9 @@ export class ProjectFactoryService {
         if (workspaceId) changed.push(workspaceId);
       }
       if (changed.length > 0) this.input.onWorkspacesChanged?.(changed);
+      // A changed repository or other charter input reaches every agent like an instructions edit.
+      const configured = await this.requireConfiguredProject(request.projectId);
+      await this.refreshSystemPrompts(record, configured);
       await this.pauseOptimizerReview(record);
       await this.reviewDrift(record);
       this.startTimers(request.projectId);
@@ -280,18 +288,11 @@ export class ProjectFactoryService {
         changed.push(role.workspaceId);
       }
       if (changed.length > 0) this.input.onWorkspacesChanged?.(changed);
-      if (project.pausedOptimizerScheduleId) {
-        await this.input.schedules
-          .resume(project.pausedOptimizerScheduleId)
-          .catch((error) =>
-            this.logger.warn({ err: error }, "Could not resume the Optimizer review heartbeat"),
-          );
-      }
       await this.mutateProject(projectId, (current) => {
         current.enabled = false;
         current.paused = false;
-        delete current.pausedOptimizerScheduleId;
       });
+      await this.reconcileOptimizerReview(projectId, await this.readProject(projectId));
       return this.describe(record, await this.readProject(projectId), null);
     });
   }
@@ -317,6 +318,7 @@ export class ProjectFactoryService {
         const role = (current.roles[request.role] ??= emptyRoleState());
         if (request.provider !== undefined) role.launch.provider = request.provider;
         if (request.profileId !== undefined) role.launch.profileId = request.profileId;
+        role.resetLaunch = !role.launch.provider && !role.launch.profileId;
       });
       if (request.role) await this.applyLaunch(request.projectId, request.role);
       return this.describe(record, project, null);
@@ -423,10 +425,10 @@ export class ProjectFactoryService {
       const proposal = role.instructions.review.proposal;
       if (!request.accept) return rebase(role.instructions, charter);
       if (role.instructions.review.status !== "proposed" || !proposal)
-        throw new ProjectFactoryError("There is no proposal to accept for this role.");
+        throw new ProjectFactoryError(`${PROJECT_FACTORY_INSTRUCTION_CONFLICTS.noProposal}.`);
       if (proposal.proposedAt !== request.proposedAt)
         throw new ProjectFactoryError(
-          "The Mechanic replaced this proposal since you loaded it. Review the new proposal and try again.",
+          `${PROJECT_FACTORY_INSTRUCTION_CONFLICTS.proposalReplaced}. Review the new proposal and try again.`,
         );
       return saveRevision(role.instructions, proposal.text, charter, this.now().toISOString());
     });
@@ -461,6 +463,9 @@ export class ProjectFactoryService {
     await this.serialize(async () => {
       const project = await this.readProject(projectId);
       if (!project?.enabled || project.paused) return;
+      const record = await this.input.projects.get(projectId);
+      if (!record || record.archivedAt) return;
+      if (roleId === "factory-mechanic") await this.reviewDrift(record);
       const roleState = project.roles[roleId];
       const agentId = roleState?.agentId;
       if (!roleState || !agentId) return;
@@ -468,9 +473,10 @@ export class ProjectFactoryService {
       if (!agent || agent.archivedAt) return;
       const role = projectFactoryRole(roleId);
       const launchPending = await this.applyLaunch(projectId, roleId);
+      const effective = await this.syncSystemPrompt(record, project, roleId, agent);
+      const hash = charterVersion(effective);
       const undelivered =
-        roleState.delivered?.agentId !== agentId ||
-        roleState.delivered.revision < roleState.instructions.revision;
+        roleState.delivered?.agentId !== agentId || roleState.delivered.hash !== hash;
       const now = this.now();
       const current = GATED_ROLES.has(roleId)
         ? await this.readFingerprint(roleId as GatedRole, project.repository)
@@ -485,7 +491,7 @@ export class ProjectFactoryService {
       });
       if (!decision.wake) return;
       const prompt = undelivered
-        ? `${instructionsBlockOrNone(roleState.instructions)}\n\n${role.tickPrompt}`
+        ? `${changedInstructionsPrompt(effective)}\n\n${role.tickPrompt}`
         : role.tickPrompt;
       const outcome = await this.input.agents.sendPrompt(agentId, prompt, { steer: false });
       // A busy agent keeps the old gate, so the next tick still sees the change.
@@ -494,9 +500,28 @@ export class ProjectFactoryService {
         const state = next.roles[roleId];
         if (!state) return;
         state.gate = { fingerprint: current, lastWakeAt: now.toISOString() };
-        state.delivered = { agentId, revision: state.instructions.revision };
+        state.delivered = { agentId, hash };
       });
     });
+  }
+
+  /**
+   * The role's effective instructions, recomputed from every charter input and the additions,
+   * so a renamed project or a new repository lands too. Updates the stored prompt when it differs.
+   */
+  private async syncSystemPrompt(
+    record: PersistedProjectRecord,
+    project: ProjectState,
+    roleId: ProjectFactoryRoleId,
+    agent: StoredAgentRecord,
+  ): Promise<string> {
+    const effective = effectiveInstructions(
+      this.charterText(record, project, roleId),
+      project.roles[roleId]?.instructions ?? emptyRoleState().instructions,
+    );
+    if (agent.config?.systemPrompt !== effective)
+      await this.input.agents.setSystemPrompt(agent.id, effective);
+    return effective;
   }
 
   /** Binds or creates one role. Returns its workspace ID when its membership was set. */
@@ -553,7 +578,7 @@ export class ProjectFactoryService {
         agentId: agent.id,
         workspaceId,
         ...(adoptedNow
-          ? { delivered: { agentId: agent.id, revision: state.instructions.revision } }
+          ? { delivered: { agentId: agent.id, hash: charterVersion(instructions) } }
           : {}),
       });
     } else {
@@ -600,7 +625,6 @@ export class ProjectFactoryService {
       throw new ProjectFactoryError(
         "No provider is ready to run Factory agents. Connect an account, then turn Factory on again.",
       );
-    const revision = project.roles[role.id]?.instructions.revision ?? 0;
     let lastError: unknown = null;
     for (const attempt of launchAttempts(launch)) {
       const created: { id: string | null } = { id: null };
@@ -624,7 +648,7 @@ export class ProjectFactoryService {
             await this.recordRole(record.projectId, role.id, {
               agentId,
               workspaceId,
-              delivered: { agentId, revision },
+              delivered: { agentId, hash: charterVersion(systemPrompt) },
               appliedLaunch: {
                 provider: attempt.provider,
                 profileId: attempt.profileId ?? null,
@@ -720,18 +744,51 @@ export class ProjectFactoryService {
         schedule.target.agentId === mechanic,
     );
     if (!review) return;
-    await this.input.schedules.pause(review.id);
+    // Ownership first: a crash or failure after this point is finished by reconciliation.
     await this.mutateProject(record.projectId, (current) => {
       current.pausedOptimizerScheduleId = review.id;
     });
+    await this.reconcileOptimizerReview(record.projectId, await this.readProject(record.projectId));
   }
 
-  /** Flags roles whose project instructions predate the shipped charter, and tells the Mechanic once. */
+  /**
+   * Makes an owned Optimizer review match Factory: paused while Factory is on, resumed and
+   * released once it is off. A failed resume keeps the record, so the next start retries.
+   */
+  private async reconcileOptimizerReview(
+    projectId: string,
+    project: ProjectState | undefined,
+  ): Promise<void> {
+    const scheduleId = project?.pausedOptimizerScheduleId;
+    if (!project || !scheduleId) return;
+    const schedule = (await this.input.schedules.list()).find((item) => item.id === scheduleId);
+    try {
+      if (project.enabled) {
+        if (schedule?.status === "active") await this.input.schedules.pause(scheduleId);
+        return;
+      }
+      if (schedule?.status === "paused") await this.input.schedules.resume(scheduleId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, projectId, scheduleId },
+        "Could not reconcile the Optimizer review heartbeat; retrying on the next start",
+      );
+      return;
+    }
+    await this.mutateProject(projectId, (current) => {
+      delete current.pausedOptimizerScheduleId;
+    });
+  }
+
+  /**
+   * Flags roles whose project instructions predate the shipped charter, and tells the Mechanic.
+   * The notice is recorded only after it is queued, so a failure or a missing Mechanic retries on
+   * the next start or Mechanic tick. A crash between queueing and recording can repeat a notice;
+   * that rare duplicate is accepted instead of keeping an outbox.
+   */
   private async reviewDrift(record: PersistedProjectRecord): Promise<void> {
-    const project = await this.readProject(record.projectId);
-    if (!project) return;
-    const notify: ProjectFactoryRole[] = [];
-    await this.mutateProject(record.projectId, (current) => {
+    const notify: { role: ProjectFactoryRole; version: string }[] = [];
+    const project = await this.mutateProject(record.projectId, (current) => {
       for (const role of PROJECT_FACTORY_ROLES) {
         const state = current.roles[role.id];
         if (!state) continue;
@@ -740,19 +797,29 @@ export class ProjectFactoryService {
         if (state.instructions.review.status === "none")
           state.instructions.review = { status: "needed" };
         const version = charterVersion(charter);
-        if (state.instructions.notifiedCharterVersion === version) continue;
-        state.instructions.notifiedCharterVersion = version;
-        notify.push(role);
+        if (state.instructions.notifiedCharterVersion !== version) notify.push({ role, version });
       }
     });
     const mechanic = project.roles["factory-mechanic"]?.agentId;
     if (!mechanic) return;
-    for (const role of notify) {
-      await this.input.agents.sendPrompt(
-        mechanic,
-        `The shipped ${role.title} charter changed in this Vorteo update, and this project has its own instructions for that role. The old and new charter texts are available through factory.project.instructions.get (paseo factory project instructions show ${record.projectId} ${role.id}). Review them: acknowledge when nothing conflicts, or propose revised instructions for the owner.`,
-        { steer: true },
-      );
+    for (const { role, version } of notify) {
+      try {
+        await this.input.agents.sendPrompt(
+          mechanic,
+          `The shipped ${role.title} charter changed in this Vorteo update, and this project has its own instructions for that role. The old and new charter texts are available through factory.project.instructions.get (paseo factory project instructions show ${record.projectId} ${role.id}). Review them: acknowledge when nothing conflicts, or propose revised instructions for the owner.`,
+          { steer: true },
+        );
+      } catch (error) {
+        this.logger.warn(
+          { err: error, role: role.id },
+          "Could not tell the Mechanic about charter drift",
+        );
+        continue;
+      }
+      await this.mutateProject(record.projectId, (current) => {
+        const state = current.roles[role.id];
+        if (state) state.instructions.notifiedCharterVersion = version;
+      });
     }
   }
 
@@ -775,29 +842,57 @@ export class ProjectFactoryService {
     }
   }
 
-  /** Applies a configured launch that differs from the agent's. Returns true while pending. */
+  /**
+   * Applies a configured launch that differs from the agent's last applied one. A launch set by
+   * profile alone takes that profile's provider. A cleared launch switches once to the default
+   * the Optimizer would use, rather than following every later change of the default.
+   * Returns true while a switch is pending.
+   */
   private async applyLaunch(projectId: string, roleId: ProjectFactoryRoleId): Promise<boolean> {
     const state = (await this.readProject(projectId))?.roles[roleId];
-    if (!state?.agentId || !state.launch.provider) return false;
+    if (!state?.agentId) return false;
+    const target = await this.targetLaunch(state);
+    if (!target) return false;
     const applied = state.appliedLaunch;
-    if (applied?.provider === state.launch.provider && applied.profileId === state.launch.profileId)
+    const sameAsApplied =
+      applied?.provider === target.provider &&
+      (applied.profileId ?? null) === (target.profileId ?? null);
+    if (sameAsApplied) {
+      if (state.resetLaunch) await this.recordLaunch(projectId, roleId, target);
       return false;
-    const launch: Launch = {
-      provider: state.launch.provider,
-      ...(state.launch.profileId ? { profileId: state.launch.profileId } : {}),
-    };
+    }
     try {
-      await this.input.agents.switchLaunch(state.agentId, launch);
+      await this.input.agents.switchLaunch(state.agentId, target);
     } catch (error) {
       // A busy thread cannot switch; the next tick tries again.
       this.logger.info({ err: error, projectId, role: roleId }, "Factory role launch is pending");
       return true;
     }
+    await this.recordLaunch(projectId, roleId, target);
+    return false;
+  }
+
+  private async targetLaunch(state: RoleState): Promise<Launch | null> {
+    const { provider, profileId } = state.launch;
+    if (profileId) {
+      const resolved = provider ?? this.input.profileProvider?.(profileId) ?? null;
+      return resolved ? { provider: resolved, profileId } : null;
+    }
+    if (provider) return { provider };
+    return state.resetLaunch ? this.input.defaultLaunch() : null;
+  }
+
+  private async recordLaunch(
+    projectId: string,
+    roleId: ProjectFactoryRoleId,
+    launch: Launch,
+  ): Promise<void> {
     await this.mutateProject(projectId, (current) => {
       const role = current.roles[roleId];
-      if (role) role.appliedLaunch = { ...state.launch };
+      if (!role) return;
+      role.appliedLaunch = { provider: launch.provider, profileId: launch.profileId ?? null };
+      delete role.resetLaunch;
     });
-    return false;
   }
 
   private async readFingerprint(role: GatedRole, repository: string): Promise<string | null> {
@@ -819,6 +914,7 @@ export class ProjectFactoryService {
   private stopTimers(projectId: string): void {
     for (const role of PROJECT_FACTORY_ROLES) {
       const key = timerKey(projectId, role.id);
+      this.timerGenerations.set(key, (this.timerGenerations.get(key) ?? 0) + 1);
       const timer = this.timers.get(key);
       if (timer) clearTimeout(timer);
       this.timers.delete(key);
@@ -830,6 +926,7 @@ export class ProjectFactoryService {
     const key = timerKey(projectId, role.id);
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing);
+    const generation = this.timerGenerations.get(key) ?? 0;
     const now = this.now();
     const next = computeNextRunAt(
       {
@@ -847,6 +944,8 @@ export class ProjectFactoryService {
             this.logger.warn({ err: error, projectId, role: role.id }, "Factory tick failed"),
           )
           .finally(() => {
+            // Paused or turned off since this fired: stay disarmed.
+            if ((this.timerGenerations.get(key) ?? 0) !== generation) return;
             if (!this.timers.has(key)) this.scheduleTick(projectId, role);
           });
       },
@@ -1000,14 +1099,12 @@ function factoryState(
 function assertRevision(role: RoleState, expected: number): void {
   if (role.instructions.revision !== expected)
     throw new ProjectFactoryError(
-      `These instructions changed since you loaded them; they are now at revision ${role.instructions.revision}. Reload and try again.`,
+      `${PROJECT_FACTORY_INSTRUCTION_CONFLICTS.revision}; they are now at revision ${role.instructions.revision}. Reload and try again.`,
     );
 }
 
-function instructionsBlockOrNone(instructions: RoleState["instructions"]): string {
-  return instructions.additions.trim()
-    ? instructionsBlock(instructions)
-    : `Project instructions (revision ${instructions.revision}):\nNone. Follow your charter alone.`;
+function changedInstructionsPrompt(effective: string): string {
+  return `Your standing instructions changed. These replace the earlier ones:\n\n${effective}`;
 }
 
 function adoptedPrompt(instructions: string): string {

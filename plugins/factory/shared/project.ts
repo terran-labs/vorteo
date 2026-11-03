@@ -23,6 +23,16 @@ const projectId = z.string().min(1);
 const nullableId = z.string().min(1).nullable();
 const reviewStatus = z.enum(["none", "needed", "proposed"]);
 
+/**
+ * Instruction write conflicts. Plugin RPC errors reach clients as messages only, so clients
+ * recognize a conflict by these exact openings and reload instead of failing.
+ */
+export const PROJECT_FACTORY_INSTRUCTION_CONFLICTS = {
+  revision: "These instructions changed since you loaded them",
+  proposalReplaced: "The Mechanic replaced this proposal since you loaded it",
+  noProposal: "There is no proposal to accept for this role",
+} as const;
+
 /** Longest role status line, after trimming. */
 export const PROJECT_FACTORY_STATUS_LINE_MAX = 120;
 

@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Turning Factory on again with a new repository, or any other change to a role's charter inputs, now updates each role agent's instructions and sends them once with its next heartbeat. Previously the agents kept the old repository's instructions.
+- A heartbeat that fired while Factory was being paused or turned off could rearm itself; it now stays off.
+- Clearing a role's provider or profile now switches the agent back to the default launch, and a launch set by profile alone uses that profile's provider.
+- Factory now records that it owns the Optimizer review pause before pausing it, and keeps the record until a resume succeeds, so a crash or failed resume is finished at the next start.
+- A charter-change notice that fails to reach the Mechanic is retried on the next start or Mechanic heartbeat instead of being dropped.
+- Ordinary projects no longer read Factory state every minute: the sidebar asks only for projects with Factory role workspaces, and its Factory list no longer changes identity on every render.
+- Instruction conflicts are recognized by the exact daemon conflict messages, which the app and daemon now share, instead of by keywords.
+
+## Unreleased - 2026-11-03
+
 ### Added
 
 - Add per-project Factory. Turning Factory on for a project creates, or adopts, five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a heartbeat; reruns, restarts and a lost state file never create a second. Pause, resume and turn off control the heartbeats, and turning off releases the workspaces while keeping agents and history. On Vorteo System the Mechanic adopts the existing Optimizer agent.

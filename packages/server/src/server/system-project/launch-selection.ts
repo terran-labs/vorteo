@@ -79,3 +79,16 @@ export async function resolveDefaultLaunch(input: {
   const [best] = usableProviders(ready, usage.providers, settings);
   return best ? selectLaunch(best, settings) : null;
 }
+
+/**
+ * The provider a profile launches with: a local profile's own provider, or the provider a
+ * shared workflow profile ID names. Null when the profile is unknown.
+ */
+export function profileProvider(profileId: string, settings: MutableDaemonConfig): string | null {
+  const local = settings.agentProfiles?.find((candidate) => candidate.id === profileId);
+  if (local) return local.provider;
+  const [kind, provider] = profileId.split("/");
+  if ((kind === "shared-workflow" || kind === "shared-profile") && provider)
+    return decodeURIComponent(provider);
+  return null;
+}

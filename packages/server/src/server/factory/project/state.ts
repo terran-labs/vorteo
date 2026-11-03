@@ -34,8 +34,16 @@ const RoleStateSchema = z.object({
   appliedLaunch: z.object({ provider: nullableId, profileId: nullableId }).optional(),
   status: z.object({ line: z.string(), updatedAt: z.string() }).nullable(),
   instructions: InstructionsStateSchema,
-  /** Instructions revision the agent has received in a prompt, keyed to that agent. */
-  delivered: z.object({ agentId: z.string(), revision: z.number().int().min(0) }).optional(),
+  /**
+   * Hash of the effective instructions the agent last received, keyed to that agent. Any
+   * charter input or addition change alters the hash, so the next tick delivers it once.
+   */
+  delivered: z
+    .object({ agentId: z.string(), hash: z.string().optional() })
+    .passthrough()
+    .optional(),
+  /** Set when an operator clears the role's launch; the next apply switches to the default once. */
+  resetLaunch: z.boolean().optional(),
   gate: z.object({ fingerprint: z.string().nullable(), lastWakeAt: z.string().nullable() }),
 });
 export type RoleState = z.infer<typeof RoleStateSchema>;
@@ -46,7 +54,10 @@ const ProjectStateSchema = z.object({
   paused: z.boolean(),
   workers: z.object({ workerProfileId: nullableId, reviewerProfileId: nullableId }),
   roles: z.partialRecord(ProjectFactoryRoleIdSchema, RoleStateSchema),
-  /** The Optimizer review heartbeat Factory paused when its Mechanic adopted the Optimizer. */
+  /**
+   * The Optimizer review heartbeat Factory owns pausing. Recorded before the pause and kept
+   * until a resume succeeds, so startup can reconcile either half after a crash or failure.
+   */
   pausedOptimizerScheduleId: z.string().optional(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;

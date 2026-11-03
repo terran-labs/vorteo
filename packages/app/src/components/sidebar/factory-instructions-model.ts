@@ -67,8 +67,21 @@ function requireProposal(state: Instructions) {
   if (!proposal) throw new Error("The proposal changed or is no longer available.");
   return proposal;
 }
-function isInstructionsConflict(error: unknown) {
-  return error instanceof Error && /revision|proposal|proposedAt|saved first/i.test(error.message);
+/**
+ * Copies of PROJECT_FACTORY_INSTRUCTION_CONFLICTS in plugins/factory/shared/project.ts, the
+ * openings of the daemon's revision and proposal conflict errors. Plugin RPC errors carry only a
+ * message. A copy keeps plugin source out of the app bundle; a test checks it against the source.
+ */
+export const INSTRUCTION_CONFLICT_MESSAGES = [
+  "These instructions changed since you loaded them",
+  "The Mechanic replaced this proposal since you loaded it",
+  "There is no proposal to accept for this role",
+] as const;
+export function isInstructionsConflict(error: unknown) {
+  return (
+    error instanceof Error &&
+    INSTRUCTION_CONFLICT_MESSAGES.some((message) => error.message.includes(message))
+  );
 }
 
 /** One opening captures its revision. Background reads never replace an unsaved draft. */

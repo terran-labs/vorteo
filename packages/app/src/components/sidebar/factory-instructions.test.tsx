@@ -3,7 +3,17 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { FactoryInstructionsPanel, openFactoryInstructions } from "./factory-instructions";
+import { PROJECT_FACTORY_INSTRUCTION_CONFLICTS } from "../../../../../plugins/factory/shared/project";
+import {
+  FactoryInstructionsPanel,
+  openFactoryInstructions,
+  useProjectFactories,
+} from "./factory-instructions";
+import { projectFactoryTargets } from "./project-factory-model";
+import {
+  INSTRUCTION_CONFLICT_MESSAGES,
+  isInstructionsConflict,
+} from "./factory-instructions-model";
 vi.mock("./factory-model-controls", () => ({ FactoryModelControls: () => null }));
 const fixture = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/plugins/registry", () => ({
@@ -116,7 +126,9 @@ async function mount(review: object) {
 it("refreshes a conflicting revision, preserves the draft, and saves against the latest revision", async () => {
   await mount({ status: "none" });
   fixture.invoke
-    .mockRejectedValueOnce(new Error("Revision mismatch"))
+    .mockRejectedValueOnce(
+      new Error(`${PROJECT_FACTORY_INSTRUCTION_CONFLICTS.revision}; they are now at revision 5.`),
+    )
     .mockResolvedValueOnce({
       ...base,
       additions: "their new additions",
@@ -200,7 +212,9 @@ it("refreshes a replaced proposal before allowing another acceptance", async () 
     proposal: { text: "old proposal", rationale: "old reason", proposedAt: "old-time" },
   });
   fixture.invoke
-    .mockRejectedValueOnce(new Error("Proposal mismatch"))
+    .mockRejectedValueOnce(
+      new Error(`${PROJECT_FACTORY_INSTRUCTION_CONFLICTS.proposalReplaced}. Review it.`),
+    )
     .mockResolvedValueOnce({
       ...base,
       review: {
@@ -260,4 +274,61 @@ it("takes role labels and order from daemon state", async () => {
   expect(labels.indexOf("Builder supplied by daemon")).toBeLessThan(
     labels.indexOf("Intake supplied by daemon"),
   );
+});
+
+it("recognizes exactly the daemon's instruction conflict messages", () => {
+  expect([...INSTRUCTION_CONFLICT_MESSAGES]).toEqual(
+    Object.values(PROJECT_FACTORY_INSTRUCTION_CONFLICTS),
+  );
+  for (const message of Object.values(PROJECT_FACTORY_INSTRUCTION_CONFLICTS))
+    expect(isInstructionsConflict(new Error(`${message}. Reload and try again.`))).toBe(true);
+  expect(isInstructionsConflict(new Error("Factory is off for this project."))).toBe(false);
+  expect(isInstructionsConflict(new Error("Unknown revision of the network"))).toBe(false);
+});
+
+it("reads Factory state only for projects with project-factory members, with a stable result", async () => {
+  const state = { projectId: "member-project", roles: [] };
+  fixture.invoke.mockResolvedValue(state);
+  const supported = new Map([["host", true]]);
+  const entries = new Map([
+    ["host:member", { factoryMembership: { installationId: "project-factory:member-project" } }],
+    ["host:legacy", { factoryMembership: { installationId: "retained-controller" } }],
+  ]);
+  const seen: unknown[] = [];
+  function Probe({ projectId, workspaceKey }: { projectId: string; workspaceKey: string }) {
+    const targets = React.useMemo(
+      () =>
+        projectFactoryTargets(
+          [{ serverId: "host", projectId }],
+          [{ serverId: "host", workspaceKey }],
+          entries,
+        ),
+      [projectId, workspaceKey],
+    );
+    seen.push(useProjectFactories(targets, supported));
+    return null;
+  }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Probe projectId="plain-project" workspaceKey="host:plain" />
+      <Probe projectId="legacy-project" workspaceKey="host:legacy" />
+      <Probe projectId="member-project" workspaceKey="host:member" />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(seen.at(-1)).toEqual([state]));
+  expect(fixture.invoke).toHaveBeenCalledTimes(1);
+  expect(fixture.invoke).toHaveBeenCalledWith("factory.project.get", {
+    projectId: "member-project",
+  });
+
+  const before = seen.at(-1);
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <Probe projectId="plain-project" workspaceKey="host:plain" />
+      <Probe projectId="legacy-project" workspaceKey="host:legacy" />
+      <Probe projectId="member-project" workspaceKey="host:member" />
+    </QueryClientProvider>,
+  );
+  expect(seen.at(-1)).toBe(before);
 });

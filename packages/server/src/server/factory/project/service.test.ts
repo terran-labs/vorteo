@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type {
   ProjectFactoryInstructions,
   ProjectFactoryRoleId,
@@ -51,6 +51,10 @@ class FakeAgents {
   created = 0;
   busy = new Set<string>();
   switchFails = false;
+  /** Agents whose next prompts throw. */
+  failing = new Set<string>();
+  /** When set, prompts to these agents wait for this promise. */
+  hold: { agents: Set<string>; until: Promise<void> } | null = null;
 
   add(input: { id: string; workspaceId: string; title?: string; labels?: Record<string, string> }) {
     const record = {
@@ -103,6 +107,8 @@ class FakeAgents {
       prompt: string,
       options: { steer: boolean },
     ): Promise<PromptOutcome> => {
+      if (this.failing.has(agentId)) throw new Error("provider unavailable");
+      if (this.hold?.agents.has(agentId)) await this.hold.until;
       if (this.busy.has(agentId) && !options.steer) return "busy";
       this.prompts.push({ agentId, prompt, steer: options.steer });
       return "sent";
@@ -116,13 +122,17 @@ class FakeAgents {
 
 class FakeSchedules {
   readonly items: StoredSchedule[] = [];
+  failPause = false;
+  failResume = false;
   list = async () => this.items;
   pause = async (id: string) => {
+    if (this.failPause) throw new Error("schedule store busy");
     const item = this.items.find((schedule) => schedule.id === id)!;
     item.status = "paused";
     return item;
   };
   resume = async (id: string) => {
+    if (this.failResume) throw new Error("schedule store busy");
     const item = this.items.find((schedule) => schedule.id === id)!;
     item.status = "active";
     return item;
@@ -153,6 +163,7 @@ function service(): ProjectFactoryService {
     },
     agents: agents.ops,
     defaultLaunch: async () => ({ provider: "claude", profileId: "default-profile" }),
+    profileProvider: (profileId) => (profileId === "local-fast" ? "opencode" : null),
     schedules,
     fingerprint: async (role) => fingerprints.get(role) ?? null,
     logger,
@@ -189,6 +200,43 @@ async function addWorkspace(workspaceId: string, projectId = PROJECT) {
       updatedAt: T0,
     }),
   );
+}
+
+/** Vorteo System with its Optimizer agent and active review heartbeat. */
+async function seedSystemProject() {
+  rmSync(path.join(home, "projects"), { recursive: true, force: true });
+  projects = new FileBackedProjectRegistry(path.join(home, "projects", "projects.json"), logger);
+  workspaces = new FileBackedWorkspaceRegistry(
+    path.join(home, "projects", "workspaces.json"),
+    logger,
+  );
+  await addProject(PROJECT, true);
+  await workspaces.writeSystemWorkspace({
+    ...createPersistedWorkspaceRecord({
+      workspaceId: "wks_optimizer",
+      projectId: PROJECT,
+      cwd: home,
+      kind: "directory",
+      displayName: "optimization-runner",
+      title: "Vorteo :: Mechanic",
+      createdAt: T0,
+      updatedAt: T0,
+    }),
+    systemMembership: { role: "optimization-runner" },
+    standing: true,
+    protected: true,
+  });
+  agents.add({
+    id: "optimizer",
+    workspaceId: "wks_optimizer",
+    labels: { "vorteo.system-agent": "optimization-runner" },
+  });
+  schedules.items.push({
+    id: "sched-optimizer",
+    name: "Optimizer review",
+    status: "active",
+    target: { type: "agent", agentId: "optimizer" },
+  } as StoredSchedule);
 }
 
 function enable(target = service(), adopt?: Partial<Record<ProjectFactoryRoleId, string>>) {
@@ -363,39 +411,7 @@ describe("enable", () => {
   });
 
   test("on Vorteo System the Mechanic adopts the Optimizer and keeps its system workspace", async () => {
-    rmSync(path.join(home, "projects"), { recursive: true, force: true });
-    projects = new FileBackedProjectRegistry(path.join(home, "projects", "projects.json"), logger);
-    workspaces = new FileBackedWorkspaceRegistry(
-      path.join(home, "projects", "workspaces.json"),
-      logger,
-    );
-    await addProject(PROJECT, true);
-    await workspaces.writeSystemWorkspace({
-      ...createPersistedWorkspaceRecord({
-        workspaceId: "wks_optimizer",
-        projectId: PROJECT,
-        cwd: home,
-        kind: "directory",
-        displayName: "optimization-runner",
-        title: "Vorteo :: Mechanic",
-        createdAt: T0,
-        updatedAt: T0,
-      }),
-      systemMembership: { role: "optimization-runner" },
-      standing: true,
-      protected: true,
-    });
-    agents.add({
-      id: "optimizer",
-      workspaceId: "wks_optimizer",
-      labels: { "vorteo.system-agent": "optimization-runner" },
-    });
-    schedules.items.push({
-      id: "sched-optimizer",
-      name: "Optimizer review",
-      status: "active",
-      target: { type: "agent", agentId: "optimizer" },
-    } as StoredSchedule);
+    await seedSystemProject();
 
     const factory = service();
     const state = await enable(factory);
@@ -536,8 +552,9 @@ describe("project instructions", () => {
     await restarted.tick(PROJECT, "factory-releases");
     await restarted.tick(PROJECT, "factory-releases");
     const sent = agents.prompts.filter((prompt) => prompt.agentId === releases);
-    expect(sent[0]?.prompt).toMatch(/^Project instructions \(revision 1\):\nTag betas only\./);
-    expect(sent[1]?.prompt).not.toContain("Project instructions");
+    expect(sent[0]?.prompt).toMatch(/^Your standing instructions changed\./);
+    expect(sent[0]?.prompt).toContain("Project instructions (revision 1):\nTag betas only.");
+    expect(sent[1]?.prompt).not.toContain("standing instructions changed");
   });
 
   test("a stale revision is refused", async () => {
@@ -721,5 +738,129 @@ describe("configure, status and send thread", () => {
 
     await factory.invoke("factory.project.disable", { projectId: PROJECT });
     await expect(send()).rejects.toThrow("Factory is off");
+  });
+});
+
+describe("review fixes", () => {
+  test("a new repository reaches every stored prompt and the next tick once", async () => {
+    const factory = service();
+    const first = await enable(factory);
+    await factory.invoke("factory.project.enable", { projectId: PROJECT, repository: "acme/new" });
+
+    for (const role of first.roles) {
+      const prompt = agents.records.get(role.agentId!)?.config?.systemPrompt;
+      expect(prompt).toContain("acme/new");
+      expect(prompt).not.toContain(REPO);
+    }
+    const releases = roleAgent(first, "factory-releases");
+    await factory.tick(PROJECT, "factory-releases");
+    await factory.tick(PROJECT, "factory-releases");
+    const sent = agents.prompts.filter((prompt) => prompt.agentId === releases);
+    expect(sent[0]?.prompt).toMatch(/^Your standing instructions changed\./);
+    expect(sent[0]?.prompt).toContain("You are Releases for acme/new.");
+    expect(sent[1]?.prompt).not.toContain("standing instructions changed");
+  });
+
+  test("a heartbeat that fires while a pause is queued never rearms", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const factory = service();
+      const releases = roleAgent(await enable(factory), "factory-releases");
+      let release = () => {};
+      agents.hold = {
+        agents: new Set([releases]),
+        until: new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      };
+      // Occupy the queue, queue the pause, then let the hourly and faster timers fire behind it.
+      const blocker = factory.tick(PROJECT, "factory-releases");
+      const paused = factory.invoke("factory.project.pause", { projectId: PROJECT });
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      release();
+      await blocker;
+      await paused;
+      await factory.tick(PROJECT, "factory-triage");
+      await vi.advanceTimersByTimeAsync(0);
+
+      for (const role of PROJECT_FACTORY_ROLES)
+        expect(factory.hasTimer(PROJECT, role.id)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clearing a role launch switches once to the default; a profile alone takes its provider", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    const configure = (input: Record<string, unknown>) =>
+      factory.invoke("factory.project.configure", {
+        projectId: PROJECT,
+        role: "factory-intake",
+        ...input,
+      });
+
+    await configure({ provider: "codex", profileId: null });
+    await configure({ provider: null, profileId: null });
+    fingerprints.set("factory-intake", "same");
+    await factory.tick(PROJECT, "factory-intake");
+    await configure({ profileId: "local-fast" });
+
+    expect(agents.switches).toEqual([
+      { agentId: foreman, provider: "codex" },
+      { agentId: foreman, provider: "claude", profileId: "default-profile" },
+      { agentId: foreman, provider: "opencode", profileId: "local-fast" },
+    ]);
+  });
+
+  test("Optimizer review ownership survives a failed pause and a failed resume", async () => {
+    await seedSystemProject();
+    schedules.failPause = true;
+    await enable(service());
+    expect(schedules.items[0]?.status).toBe("active");
+
+    schedules.failPause = false;
+    await service().start();
+    expect(schedules.items[0]?.status).toBe("paused");
+
+    schedules.failResume = true;
+    await service().invoke("factory.project.disable", { projectId: PROJECT });
+    expect(schedules.items[0]?.status).toBe("paused");
+
+    schedules.failResume = false;
+    await service().start();
+    expect(schedules.items[0]?.status).toBe("active");
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].pausedOptimizerScheduleId).toBeUndefined();
+  });
+
+  test("a drift notice that fails to reach the Mechanic is retried, then sent once", async () => {
+    const factory = service();
+    const mechanic = roleAgent(await enable(factory), "factory-mechanic");
+    await factory.invoke("factory.project.instructions.set", {
+      projectId: PROJECT,
+      role: "factory-builds",
+      additions: "Deploy with make ship.",
+      expectedRevision: 0,
+    });
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    file.projects[PROJECT].roles["factory-builds"].instructions.basedOn = {
+      charterVersion: charterVersion("old charter"),
+      charterText: "old charter",
+    };
+    writeFileSync(projectFactoryStatePath(home), JSON.stringify(file));
+    const notices = () =>
+      agents.prompts.filter(
+        (prompt) => prompt.agentId === mechanic && prompt.prompt.includes("charter changed"),
+      );
+
+    agents.failing.add(mechanic);
+    await service().start();
+    expect(notices()).toHaveLength(0);
+
+    agents.failing.clear();
+    await service().start();
+    await service().start();
+    expect(notices()).toHaveLength(1);
   });
 });

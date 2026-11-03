@@ -3,6 +3,7 @@ import { FactoryProjectActions } from "./sidebar/factory-project-actions";
 import { FactoryFolderStatus } from "./sidebar/factory-status";
 import { FactoryInstructionsPanel, useProjectFactories } from "./sidebar/factory-instructions";
 import { ProjectFactoryDialog } from "./sidebar/project-factory";
+import { projectFactoryTargets } from "./sidebar/project-factory-model";
 import { hasActiveSidebarLabelFilter } from "@/stores/sidebar-view-store";
 import { useScrollReporter } from "./use-scroll-divider";
 import { NestableScrollDivider } from "./nestable-scroll-divider";
@@ -2242,10 +2243,11 @@ function ProjectBlock({
     [project.workspaces],
   );
   const supportsFactory = useHostFeatureMap(factoryHostIds, "factoryWorkspaceMembership");
-  const factorySnapshots = useProjectFactories(project.hosts, supportsFactory);
-  const factoryStates = factorySnapshots.flatMap((snapshot) =>
-    snapshot.data ? [snapshot.data] : [],
+  const factoryTargets = useMemo(
+    () => projectFactoryTargets(project.hosts, project.workspaces, workspaceEntriesByKey),
+    [project.hosts, project.workspaces, workspaceEntriesByKey],
   );
+  const factoryStates = useProjectFactories(factoryTargets, supportsFactory);
   const groups = useMemo(
     () =>
       splitFactoryWorkspaces(

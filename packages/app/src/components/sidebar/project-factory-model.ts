@@ -44,3 +44,27 @@ export function factoryModelConfiguration(
   if (field === "role") return { projectId, role, provider: provider ?? null, profileId };
   return { projectId, [field]: profileId };
 }
+
+/** The installation prefix the daemon gives per-project Factory members. */
+const PROJECT_FACTORY_INSTALLATION_PREFIX = "project-factory:";
+
+/**
+ * Hosts whose part of the project already has a per-project Factory member. Only these read
+ * Factory state in the sidebar; an ordinary project makes no Factory requests at all.
+ */
+export function projectFactoryTargets<Host extends { serverId: string; projectId: string }>(
+  hosts: readonly Host[],
+  workspaces: readonly { serverId: string; workspaceKey: string }[],
+  entries: ReadonlyMap<string, { factoryMembership?: { installationId: string } }>,
+): Host[] {
+  const servers = new Set(
+    workspaces
+      .filter((workspace) =>
+        entries
+          .get(workspace.workspaceKey)
+          ?.factoryMembership?.installationId.startsWith(PROJECT_FACTORY_INSTALLATION_PREFIX),
+      )
+      .map((workspace) => workspace.serverId),
+  );
+  return hosts.filter((host) => servers.has(host.serverId));
+}
