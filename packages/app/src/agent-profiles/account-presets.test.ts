@@ -3,7 +3,15 @@ import { accountPresets, intelligenceLabel } from "./account-presets";
 import type { AgentProfilePickerRow } from "./internal/use-agent-profile-picker";
 
 function row(id: string, provider: string): AgentProfilePickerRow {
-  return { id, provider, name: id, modelId: "astra", icon: "", color: "", summary: "Astra" };
+  return {
+    id,
+    provider,
+    name: id,
+    modelId: "astra",
+    icon: "",
+    color: "",
+    summary: "Astra",
+  };
 }
 
 describe("account presets", () => {
@@ -54,7 +62,14 @@ describe("account presets", () => {
     expect(accountPresets({ rows, definitions, entries: undefined, query: " DEEP " })).toEqual([
       { provider: "codex1", label: "codex1", rows: rows.slice(0, 2) },
     ]);
-    expect(accountPresets({ rows, definitions, entries: undefined, query: "missing" })).toEqual([]);
+    expect(
+      accountPresets({
+        rows,
+        definitions,
+        entries: undefined,
+        query: "missing",
+      }),
+    ).toEqual([]);
   });
 
   it("finds Pi models even when they do not have a saved profile", () => {
@@ -73,7 +88,12 @@ describe("account presets", () => {
   it("uses stored reasoning rather than guessing from the profile name", () => {
     expect(
       intelligenceLabel(
-        { id: "one", name: "Ultra", provider: "codex1", thinkingOptionId: "medium" },
+        {
+          id: "one",
+          name: "Ultra",
+          provider: "codex1",
+          thinkingOptionId: "medium",
+        },
         undefined,
       ),
     ).toBe("Medium");
@@ -124,3 +144,30 @@ it("shows an enabled account on a fresh installation with no saved profiles", ()
     }),
   ).toEqual([{ provider: "codex", label: "Codex", rows: [] }]);
 });
+
+it.each([false, true])(
+  "filters missing providers and retains loading saved profiles (shared: %s)",
+  (accountIndependent) => {
+    const entries = ["unavailable", "loading", "error", "ready"].map((status) => ({
+      provider: status,
+      enabled: true,
+      status: status as "unavailable" | "loading" | "error" | "ready",
+    }));
+    const input = { definitions: [], entries, query: "", accountIndependent };
+    expect(accountPresets({ ...input, rows: [] }).map((group) => group.provider)).toEqual([
+      "error",
+      "ready",
+    ]);
+    expect(
+      accountPresets({
+        ...input,
+        rows: [row("saved", "unavailable"), row("detecting", "loading")],
+      }).map((group) => group.provider),
+    ).toEqual(["error", "loading", "ready"]);
+    expect(
+      accountPresets({ ...input, rows: [], currentProvider: "loading" }).map(
+        (group) => group.provider,
+      ),
+    ).toEqual(["error", "loading", "ready"]);
+  },
+);

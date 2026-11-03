@@ -6,6 +6,9 @@ import {
   useHasExecutionEnvironment,
 } from "@/execution-installation/environment-icon";
 import { WorkspaceChecklistProgress } from "@/task-checklist/workspace-progress";
+import { ReviewWaitIndicator } from "@/task-checklist/review-wait-indicator";
+import { useWorkspaceReviewTasks } from "@/task-checklist/use-workspace-review-tasks";
+import { showsReviewWait } from "@/task-checklist/review-wait";
 import { WorkspaceQueueCount } from "@/message-queue/workspace-queue-count";
 import { WorkspaceOpenQuestionCount } from "@/open-questions/workspace-count";
 import { WorkspaceSubagentCount } from "@/subagents/workspace-count";
@@ -195,6 +198,8 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
           />
         ) : (
           <WorkspaceStatusIndicator
+            serverId={workspace.serverId}
+            workspaceId={workspace.workspaceId}
             bucket={workspace.statusBucket}
             workspaceKind={workspace.workspaceKind}
             loading={isLoading}
@@ -230,18 +235,23 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
 });
 
 function WorkspaceStatusIndicator({
+  serverId,
+  workspaceId,
   bucket,
   workspaceKind,
   loading = false,
   reserveIdleSpace = true,
   muted = false,
 }: {
+  serverId: string;
+  workspaceId: string;
   bucket: SidebarWorkspaceEntry["statusBucket"];
   workspaceKind: SidebarWorkspaceEntry["workspaceKind"];
   loading?: boolean;
   reserveIdleSpace?: boolean;
   muted?: boolean;
 }) {
+  const reviewTasks = useWorkspaceReviewTasks(serverId, workspaceId);
   // Busy is the only status that moves, and it is the ring rather than a dot for the same
   // reason it is a dot elsewhere: every status in the sidebar sits in this one slot, so busy
   // has to fill it without displacing anything. A row starting up and a row working are both
@@ -270,6 +280,17 @@ function WorkspaceStatusIndicator({
           uniProps={muted ? managedAlertMapping : needsInputColorMapping}
         />
       </View>
+    );
+  }
+
+  // An idle thread waiting on a Review item, such as a Builds delivery, is not ready yet.
+  if (showsReviewWait(bucket, reviewTasks.length)) {
+    return (
+      <ReviewWaitIndicator
+        tasks={reviewTasks}
+        muted={muted}
+        slotStyle={styles.workspaceStatusDot}
+      />
     );
   }
 

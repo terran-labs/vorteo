@@ -17,7 +17,7 @@ import { useReportActionError } from "@/hooks/use-action-error";
 import { useAgentProfiles } from "../internal/use-agent-profiles";
 import { generateAgentProfileId } from "../internal/profile-id";
 import type { AgentProfileValue } from "../internal/profile-form-model";
-import { AgentProfileEditModal } from "./agent-profile-edit-modal";
+import { AgentProfileCenteredModal } from "./agent-profile-page";
 import { AgentProfileRow } from "./agent-profile-row";
 import { defaultProfile } from "../internal/default-profile";
 import { SharedProviderSection } from "./shared-provider-section";
@@ -28,7 +28,7 @@ const addIcon = <ThemedPlus size={ICON_SIZE.sm} uniProps={mutedColorMapping} />;
 
 interface EditTarget {
   mode: "create" | "edit";
-  profile?: AgentProfile;
+  profile: AgentProfile;
 }
 
 export function AgentProfilesSection({
@@ -68,10 +68,16 @@ function LegacyAgentProfilesSection({
     () => (profiles ?? []).filter((profile) => !provider || profile.provider === provider),
     [profiles, provider],
   );
-  const seed = useMemo(() => (provider ? { provider } : undefined), [provider]);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
 
-  const handleAddOpen = useCallback(() => setEditTarget({ mode: "create" }), []);
+  const handleAddOpen = useCallback(
+    () =>
+      setEditTarget({
+        mode: "create",
+        profile: { id: generateAgentProfileId(), name: "", provider: provider ?? "" },
+      }),
+    [provider],
+  );
   const handleEditClose = useCallback(() => setEditTarget(null), []);
 
   const handleEditOpen = useCallback(
@@ -106,7 +112,7 @@ function LegacyAgentProfilesSection({
               ? { id: entry.id, isDefault: entry.isDefault, ...value }
               : entry,
           )
-        : [...current, { id: generateAgentProfileId(), ...value }];
+        : [...current, { id: editTarget?.profile.id ?? generateAgentProfileId(), ...value }];
       await saveProfiles(next);
     },
     [editTarget, profiles, saveProfiles],
@@ -278,15 +284,16 @@ function LegacyAgentProfilesSection({
         </View>
       </SettingsSection>
 
-      <AgentProfileEditModal
-        serverId={serverId}
-        seed={seed}
-        visible={editTarget !== null}
-        mode={editTarget?.mode ?? "create"}
-        {...(editTarget?.profile ? { profile: editTarget.profile } : {})}
-        onClose={handleEditClose}
-        onSave={handleSave}
-      />
+      {editTarget ? (
+        <AgentProfileCenteredModal
+          key={editTarget.profile.id}
+          serverId={serverId}
+          profile={editTarget.profile}
+          mode={editTarget.mode}
+          onBack={handleEditClose}
+          onSave={handleSave}
+        />
+      ) : null}
     </>
   );
 }
