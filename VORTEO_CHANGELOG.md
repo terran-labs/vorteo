@@ -52,6 +52,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Added
+
+- Upgrade a setup-token Claude account to full web sign-in in place from its connection panel. The account keeps its provider ID, directory, conversation history, profiles and Host and Dev bindings, and starts reporting usage. The app forces a usage refresh past the daemon cache as soon as the upgrade completes.
+- The coordinator signs the account in on the Host in its own directory and switches the shared definition only after the sign-in verifies. A sign-in to a different account than one already recorded is refused and signed out again.
+- Daemons advertise `claudeSignInUpgrade`, switch their binding through `provider.claude.upgrade_account` once the definition records full sign-in, accept the setup-token withdrawal that deletes the old token, and let running sessions adopt the full sign-in on their next turn with the same conversation.
+
+### Known limitations
+
+- The upgrade needs Host-owned refresh and every daemon advertising the capability. Unmanaged daemons have no upgrade. Live acceptance on the installation is pending.
+
+## Unreleased - 2026-11-02
+
 ### Changed
 
 - Rebuild the sidebar Quotas card around a week of runway per account. A quiet Best now note names the account to use next, with a reason and a runner-up. Each account shows a thin 7-day lane on a shared day axis, marking plan capacity, running low, prepaid credits, out of quota, unknown stretches and every known reset, with one summary line beneath it.

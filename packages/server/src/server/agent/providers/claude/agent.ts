@@ -1,8 +1,9 @@
 import { verifySkillSnapshot } from "../../../orchestration-skills/internal/policy.js";
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
 import { ClaudeLoginSession } from "./login.js";
-import { claudeSignInMode } from "./sign-in-mode.js";
+import { CLAUDE_SIGN_IN_ENV, claudeSignInMode } from "./sign-in-mode.js";
 import {
+  claudeAccountUpgradedToFullSignIn,
   claudeSetupTokenStore,
   readClaudeSetupToken,
   claudeSetupTokenEnvironment,
@@ -2130,13 +2131,14 @@ class ClaudeAgentSession implements AgentSession {
   private readonly launchEnv?: Record<string, string>;
   private readonly agentId?: string;
   private readonly defaults?: { agents?: Record<string, AgentDefinition> };
-  private readonly runtimeSettings?: ProviderRuntimeSettings;
+  /** Changes only when the account is upgraded from a setup token to full sign-in. */
+  private runtimeSettings?: ProviderRuntimeSettings;
   private readonly persistSession?: boolean;
   private readonly logger: Logger;
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly resolveBinary: () => Promise<string>;
   private query: Query | null = null;
-  private readonly harnessEnvironment: Record<string, string>;
+  private harnessEnvironment: Record<string, string>;
   private readonly usageSessionKey = randomUUID();
   private childProcess: ChildProcess | null = null;
   private closePromise: Promise<void> | null = null;
@@ -3306,8 +3308,24 @@ class ClaudeAgentSession implements AgentSession {
     if (this.closed) throw new Error("Claude session is closed");
   }
 
+  /**
+   * A session started on a setup token follows its account to full sign-in once the account is
+   * upgraded. The changed credential digest below then recreates the CLI with the same session ID.
+   */
+  private adoptUpgradedSignIn(): void {
+    if (claudeSignInMode(this.harnessEnvironment) === "full") return;
+    if (!claudeAccountUpgradedToFullSignIn(claudeConfigDir(this.harnessEnvironment))) return;
+    this.runtimeSettings = {
+      ...this.runtimeSettings,
+      env: { ...this.runtimeSettings?.env, [CLAUDE_SIGN_IN_ENV]: "full" },
+    };
+    this.harnessEnvironment = this.buildSdkEnv();
+    this.logger.info("Claude account upgraded to full sign-in; the next query uses it");
+  }
+
   private async ensureQuery(): Promise<Query> {
     this.assertOpen();
+    this.adoptUpgradedSignIn();
     const setupToken = await readClaudeSetupToken(this.harnessEnvironment);
     this.assertOpen();
     const credentialDigest = setupToken
