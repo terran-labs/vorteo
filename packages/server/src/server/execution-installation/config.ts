@@ -14,6 +14,7 @@ import {
   FactoryGateConfigurationSchema,
   HostLauncherUpdateConfigurationSchema,
   FactoryRuntimeAdoptionConfigurationSchema,
+  SupervisorMaintenanceConfigurationSchema,
   installationHasContainer,
   validateExecutionInstallation,
 } from "@getpaseo/protocol/execution-installation";
@@ -69,13 +70,7 @@ const ContainerDaemonSchema = DaemonConnectionSchema.extend({
   engineRestart: EngineRestartConfigurationSchema.optional(),
   engineRecovery: EngineRecoveryConfigurationSchema.optional(),
   factoryGate: FactoryGateConfigurationSchema.optional(),
-  supervisorMaintenance: z
-    .strictObject({
-      node: z.string().startsWith("/"),
-      script: z.string().startsWith("/"),
-      sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    })
-    .optional(),
+  supervisorMaintenance: SupervisorMaintenanceConfigurationSchema.optional(),
 });
 export type ContainerDaemonConfig = z.infer<typeof ContainerDaemonSchema>;
 

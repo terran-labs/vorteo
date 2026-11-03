@@ -9,6 +9,7 @@ import {
   FactoryGateConfigurationSchema,
   FactoryRuntimeAdoptionConfigurationSchema,
   HostLauncherUpdateConfigurationSchema,
+  SupervisorMaintenanceConfigurationSchema,
 } from "./execution-installation.js";
 import { PreviewMonitorConfigurationSchema } from "./preview-monitor-maintenance.js";
 
@@ -55,6 +56,12 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
   containerSourceUpdateNode: {
     path: ["containerSourceUpdates", "node"],
     value: z.string().startsWith("/"),
+    renewal: true,
+  },
+  supervisorMaintenance: {
+    path: ["container", "supervisorMaintenance"],
+    value: SupervisorMaintenanceConfigurationSchema,
+    // Configuring the plan grants no approval: each repair stays a separate tracked request.
     renewal: true,
   },
   factoryRuntimeAdoption: {
