@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useEffect, useState, type ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Lock } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
@@ -67,19 +67,30 @@ export function OwnerUnlockDialog({ visible, onClose }: { visible: boolean; onCl
             accessibilityLabel="Owner password"
           />
         </Field>
-        <Text
-          testID="owner-unlock-error"
-          accessibilityRole={message ? "alert" : undefined}
-          numberOfLines={1}
-          style={styles.error}
-        >
-          {message ?? " "}
-        </Text>
+        <OwnerErrorSlot message={message} testID="owner-unlock-error" />
         <Button disabled={busy || !password.trim()} onPress={unlock}>
           Unlock
         </Button>
       </View>
     </AdaptiveModalSheet>
+  );
+}
+
+/** Keep error space stable while allowing larger text and full screen reader output. */
+function OwnerErrorSlot({ message, testID }: { message: string | null; testID: string }) {
+  const { fontScale } = useWindowDimensions();
+  return (
+    <View style={styles.errorSlot(fontScale)} testID={`${testID}-slot`}>
+      <Text
+        testID={testID}
+        numberOfLines={2}
+        accessibilityLabel={message || undefined}
+        accessibilityLiveRegion={message ? "polite" : undefined}
+        style={styles.error}
+      >
+        {message || " "}
+      </Text>
+    </View>
   );
 }
 
@@ -118,14 +129,7 @@ export function OwnerLockBadge() {
           {unlocked ? "Lock" : "Unlock"}
         </Button>
       </View>
-      <Text
-        testID="owner-lock-error"
-        numberOfLines={1}
-        accessibilityRole={error ? "alert" : undefined}
-        style={styles.error}
-      >
-        {error ?? " "}
-      </Text>
+      <OwnerErrorSlot message={error} testID="owner-lock-error" />
       <OwnerUnlockDialog visible={open} onClose={closeDialog} />
     </View>
   );
@@ -193,9 +197,9 @@ export function OwnerLockedGroup({ title, children }: OwnerLockedGroupProps) {
 
 const styles = StyleSheet.create((theme) => ({
   dialog: { gap: theme.spacing[3] },
+  errorSlot: (fontScale: number) => ({ minHeight: theme.fontSize.sm * 1.5 * 2 * fontScale }),
   error: {
-    height: 24,
-    lineHeight: 24,
+    lineHeight: theme.fontSize.sm * 1.5,
     color: theme.colors.destructive,
     fontSize: theme.fontSize.sm,
   },
