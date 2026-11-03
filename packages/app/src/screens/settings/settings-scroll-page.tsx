@@ -243,9 +243,17 @@ export function SettingsScrollPage({
     (section: SettingsSectionId) => {
       if (activeSection.current === section) return;
       activeSection.current = section;
+      // The jump inset can leave the preceding section visible. Do not let the browser
+      // anchor one of its loading rows and push the section the reader actually opened.
+      if (isWeb) {
+        for (const candidate of sections) {
+          const element = document.getElementById(sectionDomId(candidate.id));
+          if (element) element.style.overflowAnchor = candidate.id === section ? "auto" : "none";
+        }
+      }
       onActiveSectionChange(section);
     },
-    [onActiveSectionChange],
+    [onActiveSectionChange, sections],
   );
 
   /**
