@@ -153,19 +153,53 @@ export function AgentProfilePage({
       ]);
   }, [onDelete, onBack, toast, profile.name]);
   const header = useMemo(() => ({ title: profile.name || "New profile" }), [profile.name]);
-  const content = (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Button onPress={close}>Back to provider</Button>
+  const actions = useMemo(
+    () => (
+      <View style={styles.actions}>
+        <Button testID="agent-profile-cancel-button" onPress={close} disabled={state.isSubmitting}>
+          Cancel
+        </Button>
+        <Button
+          testID="agent-profile-save-button"
+          onPress={save}
+          disabled={!dirty || !state.canSubmit}
+        >
+          Save
+        </Button>
+      </View>
+    ),
+    [close, save, dirty, state.isSubmitting, state.canSubmit],
+  );
+  const form = (
+    <AgentProfileForm
+      serverId={serverId}
+      profileId={profile.id}
+      model={model}
+      state={state}
+      sharedScope={sharedScope}
+      modelDetails={modelDetails}
+    />
+  );
+  if (centered)
+    return (
+      <AdaptiveModalSheet
+        visible
+        testID="agent-profile-edit-modal"
+        header={header}
+        onClose={close}
+        footer={actions}
+      >
+        <View style={styles.modalContent}>{form}</View>
+      </AdaptiveModalSheet>
+    );
+  return (
+    <View testID="agent-profile-page" style={styles.container}>
+      <ScrollView testID="agent-profile-page-scroll" contentContainerStyle={styles.content}>
+        <Button testID="agent-profile-back-button" onPress={close}>
+          Back to provider
+        </Button>
         <Text accessibilityRole="header">{state.name || profile.name}</Text>
-        <AgentProfileForm
-          serverId={serverId}
-          profileId={profile.id}
-          model={model}
-          state={state}
-          sharedScope={sharedScope}
-          modelDetails={modelDetails}
-        />
+        {form}
         {onDelete && sharedScope?.kind !== "defaults" ? (
           <Button variant="ghost" onPress={remove} disabled={state.isSubmitting}>
             Delete profile
@@ -174,22 +208,10 @@ export function AgentProfilePage({
       </ScrollView>
       {dirty ? (
         <View testID="profile-save-bar" style={styles.saveBar}>
-          <Button onPress={close} disabled={state.isSubmitting}>
-            Cancel
-          </Button>
-          <Button onPress={save} disabled={!state.canSubmit}>
-            Save
-          </Button>
+          {actions}
         </View>
       ) : null}
     </View>
-  );
-  return centered ? (
-    <AdaptiveModalSheet visible header={header} onClose={close}>
-      {content}
-    </AdaptiveModalSheet>
-  ) : (
-    content
   );
 }
 export function AgentProfileCenteredModal(props: Omit<AgentProfilePageProps, "centered">) {
@@ -197,6 +219,8 @@ export function AgentProfileCenteredModal(props: Omit<AgentProfilePageProps, "ce
 }
 
 const styles = StyleSheet.create({
+  actions: { flexDirection: "row", justifyContent: "flex-end", gap: 12 },
+  modalContent: { padding: 24 },
   container: { flex: 1, minHeight: 400 },
   content: { padding: 24, paddingBottom: 100 },
   saveBar: {
