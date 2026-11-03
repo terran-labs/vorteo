@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
+import type { AgentContextBreakdown } from "@getpaseo/protocol/agent-context";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import type {
   AgentCapabilityFlags,
@@ -530,6 +531,17 @@ export class HostedAgentSession implements AgentSession {
 
   async listCommands(): Promise<AgentSlashCommand[]> {
     return (await this.invoke({ method: "listCommands" })) as AgentSlashCommand[];
+  }
+
+  /**
+   * The provider's breakdown, read in the host where the provider runs. Null from a host that
+   * predates the call, which the client shows as totals only.
+   */
+  async getContextBreakdown(): Promise<AgentContextBreakdown | null> {
+    // COMPAT(hostedContextBreakdown): added in v26.11.207; remove once the host floor supports it.
+    // Never send an unknown method to an old host.
+    if (this.snapshot.capabilities?.contextBreakdown !== true) return null;
+    return await this.invoke({ method: "getContextBreakdown" });
   }
 
   async revertConversation(input: { messageId: string }): Promise<void> {

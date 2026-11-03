@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Show the full Context window breakdown for Claude sessions running in the durable session host. They previously showed "This provider reports totals only" because the host never forwarded Claude's context data.
+
 ## 26.11.206 - 2026-11-02
 
 ### Improvements
