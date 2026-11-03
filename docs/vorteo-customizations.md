@@ -1,16 +1,26 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): the Claude sign-in check allows 15 seconds and retries one timed-out `claude auth status`, so heavy load no longer makes a connected account report "Could not verify Claude authentication". README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): merged `main` after the sixth Host delivery into the installed Host source for its pull request; functionality is unchanged.
+
 Maintenance review (2026-11-03): coordinator dispatch latency. For an ordinary renewal executor, the launcher keeps only cheap pre-fork checks (setup identity, path protection, pinned files) because the runner repeats every byte check under its exclusive lock; other executors keep the full launch check. At the claim, the renewal derivation reuses the runtime digest this same process matched at its admission boundary instead of digesting the same tree again, while every native process and service observation still runs and custody digests the tree again at freeze. That claim-time digest had never been compared: the renewal record carries no runtime digest and the runner compares only the derived renewal, so it was full-cost work without a guarantee. Release seals remain off pending the owner's decision. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): a coordinator claim refused because other installation work is busy now retries inside the same approval and execution lock for up to eight minutes. A cheap journal check gates each retry, so the full claim and its byte verification run only once the work looks finished. Cancellation, a changed approval, any other error or an existing claim ends it; nothing replays. Exhaustion still closes the approval as failed with its reason. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): a finished thread in a Vorteo System workspace can now be archived on its own. Thread archive uses its own admission: the system workspace keeps refusing archive, removal and every other change, and thread deletion stays refused. A running thread, one a standing schedule targets, or a Factory binding blocks it. Every other workspace keeps refusing thread archive exactly as before. Source only; not installed. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-03): merged `main` after the fifth Host delivery into the installed Host source for its pull request; functionality is unchanged.
+
 Maintenance review (2026-11-03): Settings round 3, batch 1. Settings no longer shifts layout: transient results show as toasts, ongoing sync shows in a fixed status line and loading panes keep their space. Provider lists group uninstalled providers under Available to install, profiles open on a dedicated page, and owner-password controls stay grouped and disabled until unlocked. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): security review follow-up for the Claude sign-in upgrade. Dev refuses its setup-token withdrawal until its own binding is full, a first upgrade refuses an email another Claude definition records, the coordinator rechecks daemon support before switching, and cancelled or failed attempts clear pending state. The owner upgrade routes are covered by the owner-only credential test. README overview and onboarding are unchanged.
 
 Claude sign-in upgrade: a setup-token Claude account can switch to full web sign-in in place from its connection panel, keeping its provider ID, account directory, history, profiles and Host and Dev bindings. The coordinator runs the sign-in in the account's own Host directory and changes the shared definition only after the sign-in verifies; refusal, cancellation or failure leaves the setup token working. Daemons then switch their bindings, delete the old setup token and let running sessions adopt the full sign-in on their next turn. The app forces a usage refresh past the daemon cache when the upgrade completes and again when access reaches each environment, reusing the sign-in refresh from the usage display fixes. It requires Host-owned refresh and every daemon advertising `claudeSignInUpgrade`. Unmanaged daemons have no upgrade. Focused tests pass; live acceptance on the installation is pending. See [upgrading a setup-token account](providers.md#upgrading-a-setup-token-account-to-full-sign-in).
+
+Maintenance review (2026-11-03): merged `main` after the fourth Host delivery into the installed Host source for its pull request; functionality is unchanged.
+
+Maintenance review (2026-11-03): Settings round 3, batch 1. Settings no longer shifts layout: transient results show as toasts, ongoing sync shows in a fixed status line and loading panes keep their space. Provider lists group uninstalled providers under Available to install, profiles open on a dedicated page, and owner-password controls stay grouped and disabled until unlocked. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): merged `main` after the second Host delivery into the installed Host source for its pull request; functionality is unchanged.
 
