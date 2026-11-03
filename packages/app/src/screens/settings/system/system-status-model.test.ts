@@ -34,7 +34,7 @@ it.each(["pending", "approved", "running"] as const)("handles upgrade %s", (stat
     status === "pending" ? "attention" : "updating",
   ),
 );
-it("prioritizes approval over reconnect over update", () => {
+it("requires a connection before approval and keeps approval ahead of updates", () => {
   const input: SystemEnvironmentInput = {
     ...base,
     availableVersion: "v2",
@@ -42,12 +42,14 @@ it("prioritizes approval over reconnect over update", () => {
     restartJobs: [{ id: "j", target: "host", status: "pending", reason: "Apply changes" }],
     upgrades: [{ id: "u", status: "pending", release: "v2" }],
   };
-  expect(derive(input).action).toMatchObject({
+  expect(derive(input).action).toEqual({ kind: "reconnect", label: "Reconnect" });
+  const online = { ...input, connection: base.connection };
+  expect(derive(online).action).toMatchObject({
     kind: "approve-restart",
-    label: "Apply changes",
+    label: "Approve restart",
     mode: "finish-current-turns",
   });
-  expect(derive({ ...input, restartJobs: [] }).action?.kind).toBe("approve-upgrade");
+  expect(derive({ ...online, restartJobs: [] }).action?.label).toBe("Approve update");
   expect(derive({ ...input, restartJobs: [], upgrades: [] }).action?.kind).toBe("reconnect");
   expect(derive({ ...base, availableVersion: "v2" }).action?.label).toBe("Update to v2");
 });
@@ -115,4 +117,45 @@ it("collapses service headlines without creating a ready row", () => {
   expect(deriveSystemServices(ready)).toBe(null);
   expect(deriveSystemServices({ ...ready, activation: "recovery-required" })).toBe("attention");
   expect(deriveSystemServices({ ...ready, activation: "pending" })).toBe("updating");
+});
+
+it.each(["approved", "running"] as const)(
+  "shows offline %s work as updating without Reconnect",
+  (status) => {
+    const offline = {
+      ...base,
+      availableVersion: "v2",
+      connection: {
+        connectionStatus: "offline" as const,
+        lastError: "Connection lost during restart",
+      },
+    };
+    const job = {
+      id: "restart",
+      target: "host" as const,
+      status,
+      reason: "Apply a lengthy source update",
+    };
+    expect(derive({ ...offline, restartJobs: [job] })).toEqual({
+      status: "updating",
+      action: null,
+      reason: job.reason,
+    });
+    expect(
+      derive({ ...offline, restartJobs: [{ ...job, target: "container-daemon" }] }).action?.kind,
+    ).toBe("reconnect");
+    expect(derive({ ...offline, upgrades: [{ id: "upgrade", release: "v2", status }] })).toEqual({
+      status: "updating",
+      action: null,
+    });
+  },
+);
+it("keeps the reason separate from the fixed approval label", () => {
+  const reason = "A source change with a very long explanation that must not become a button label";
+  expect(
+    derive({
+      ...base,
+      restartJobs: [{ id: "restart", target: "host", status: "pending", reason }],
+    }),
+  ).toMatchObject({ reason, action: { label: "Approve restart" } });
 });

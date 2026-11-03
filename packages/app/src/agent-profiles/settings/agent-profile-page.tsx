@@ -133,16 +133,17 @@ export function AgentProfilePage({
   }, [state.submitValue, model, onSave, onBack, toast]);
   const remove = useCallback(() => {
     if (!onDelete) return;
-    const perform = () => {
-      void onDelete()
-        .then(() => {
-          allowLeave.current = true;
-          onBack();
-          return undefined;
-        })
-        .catch((error) =>
-          toast.show(error instanceof Error ? error.message : "Could not delete profile"),
-        );
+    const perform = async () => {
+      model.setSubmitting(true);
+      try {
+        await onDelete();
+        allowLeave.current = true;
+        onBack();
+      } catch (error) {
+        toast.show(error instanceof Error ? error.message : "Could not delete profile");
+      } finally {
+        model.setSubmitting(false);
+      }
     };
     if (Platform.OS === "web") {
       if (window.confirm(`Delete profile ${profile.name}?`)) perform();
@@ -151,7 +152,7 @@ export function AgentProfilePage({
         { text: "Cancel", style: "cancel" },
         { text: "Delete", style: "destructive", onPress: perform },
       ]);
-  }, [onDelete, onBack, toast, profile.name]);
+  }, [onDelete, onBack, toast, profile.name, model]);
   const header = useMemo(() => ({ title: profile.name || "New profile" }), [profile.name]);
   const actions = useMemo(
     () => (
@@ -170,6 +171,12 @@ export function AgentProfilePage({
     ),
     [close, save, dirty, state.isSubmitting, state.canSubmit],
   );
+  const deleteControl =
+    onDelete && sharedScope?.kind !== "defaults" ? (
+      <Button variant="ghost" onPress={remove} disabled={state.isSubmitting}>
+        Delete profile
+      </Button>
+    ) : null;
   const form = (
     <AgentProfileForm
       serverId={serverId}
@@ -189,7 +196,10 @@ export function AgentProfilePage({
         onClose={close}
         footer={actions}
       >
-        <View style={styles.modalContent}>{form}</View>
+        <View style={styles.modalContent}>
+          {form}
+          {deleteControl}
+        </View>
       </AdaptiveModalSheet>
     );
   return (
@@ -200,11 +210,7 @@ export function AgentProfilePage({
         </Button>
         <Text accessibilityRole="header">{state.name || profile.name}</Text>
         {form}
-        {onDelete && sharedScope?.kind !== "defaults" ? (
-          <Button variant="ghost" onPress={remove} disabled={state.isSubmitting}>
-            Delete profile
-          </Button>
-        ) : null}
+        {deleteControl}
       </ScrollView>
       {dirty ? (
         <View testID="profile-save-bar" style={styles.saveBar}>
