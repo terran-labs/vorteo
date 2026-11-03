@@ -74,6 +74,11 @@
       "source": "./source/factory-operations.ts",
       "default": "./dist/server/factory-shared/operations.js"
     },
+    "./factory-project": {
+      "types": "./dist/server/factory-shared/project.d.ts",
+      "source": "./source/factory-project.ts",
+      "default": "./dist/server/factory-shared/project.js"
+    },
     "./factory-ownership": {
       "types": "./dist/server/server/factory/ownership.d.ts",
       "source": "./src/server/factory/ownership.ts",

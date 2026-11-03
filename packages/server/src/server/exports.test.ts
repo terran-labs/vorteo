@@ -61,6 +61,9 @@ async function runtimeDependencies(entry: string): Promise<string[]> {
       "@getpaseo/server/factory-operations": fileURLToPath(
         new URL("../../../../plugins/factory/shared/operations.ts", import.meta.url),
       ),
+      "@getpaseo/server/factory-project": fileURLToPath(
+        new URL("../../../../plugins/factory/shared/project.ts", import.meta.url),
+      ),
     },
     format: "esm",
     logLevel: "silent",

@@ -2,16 +2,15 @@ import { promises as fs } from "node:fs";
 import type { Logger } from "pino";
 import { z } from "zod";
 import type { MutableDaemonConfig, ProviderUsage } from "@getpaseo/protocol/messages";
-import { resolveProviderType, sharedProfileId } from "@getpaseo/protocol/provider-preferences";
 import type { ScheduleCadence } from "@getpaseo/protocol/schedule/types";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
-import type { ProviderSnapshotEntry } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { BoundCreateAgentCommand } from "../agent/create-agent/create.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 import type { ScheduleService } from "../schedule/service.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
+import { launchAttempts, selectLaunch, usableProviders, type Launch } from "./launch-selection.js";
 import {
   OPTIMIZER_FIRST_REVIEW_PROMPT,
   OPTIMIZER_REVIEW_PROMPT,
@@ -26,7 +25,7 @@ import {
 
 /** Marks the agent the daemon created, so a lost state file never leads to a second one. */
 export const OPTIMIZER_AGENT_LABEL = "vorteo.system-agent";
-export const OPTIMIZER_AGENT_TITLE = "Optimizer";
+export const OPTIMIZER_AGENT_TITLE = "Mechanic";
 export const OPTIMIZER_SCHEDULE_NAME = "Optimizer review";
 /** Daily at 09:00 in the daemon's time zone. */
 export const OPTIMIZER_REVIEW_CRON = "0 9 * * *";
@@ -59,11 +58,6 @@ export interface OptimizerAgentInput {
   schedules: Pick<ScheduleService, "create">;
   logger: Logger;
   timeZone?: string;
-}
-
-interface Launch {
-  provider: string;
-  profileId?: string;
 }
 
 /**
@@ -182,53 +176,6 @@ async function ensureOptimizerAgent(
   return ensureSchedule(input, statePath, await readState(statePath, logger), logger);
 }
 
-/**
- * Providers that can run the Optimizer, best first. A Claude or Codex connection whose
- * usage reading shows a working sign in comes first; a ready provider the daemon reads no
- * usage for comes next; a ready one whose reading shows no sign in is left out. The
- * installation's default provider leads within each group.
- */
-function usableProviders(
-  ready: readonly ProviderSnapshotEntry[],
-  usage: readonly ProviderUsage[],
-  settings: MutableDaemonConfig,
-): string[] {
-  const signedIn: string[] = [];
-  const unmetered: string[] = [];
-  for (const entry of ready) {
-    const reading = usage.find((item) => item.providerId === entry.provider);
-    if (!reading) unmetered.push(entry.provider);
-    else if (reading.status === "available" && !reading.authRecovery) signedIn.push(entry.provider);
-  }
-  const preferred = settings.sharedProviderPreferences?.defaultProvider;
-  const byDefault = (left: string, right: string) =>
-    Number(right === preferred) - Number(left === preferred);
-  return [...signedIn.sort(byDefault), ...unmetered.sort(byDefault)];
-}
-
-/**
- * The account's default workflow when its provider type has one, then the default local
- * profile for that provider, then the provider's own defaults.
- */
-function selectLaunch(provider: string, settings: MutableDaemonConfig): Launch {
-  const providerType = safeProviderType(provider, settings);
-  const workflowId =
-    settings.sharedProviderPreferences?.providers[providerType]?.defaultWorkflowId ?? null;
-  if (workflowId) return { provider, profileId: sharedProfileId(providerType, workflowId) };
-  const profile = settings.agentProfiles?.find(
-    (candidate) => candidate.isDefault && candidate.provider === provider,
-  );
-  return profile ? { provider, profileId: profile.id } : { provider };
-}
-
-function safeProviderType(provider: string, settings: MutableDaemonConfig): string {
-  try {
-    return resolveProviderType(provider, settings.providers ?? {});
-  } catch {
-    return provider;
-  }
-}
-
 async function createOptimizerAgent(
   input: OptimizerAgentInput,
   logger: Logger,
@@ -239,10 +186,7 @@ async function createOptimizerAgent(
     state: OptimizerState;
   },
 ): Promise<string | null> {
-  const attempts: Launch[] = target.launch.profileId
-    ? [target.launch, { provider: target.launch.provider }]
-    : [target.launch];
-  for (const launch of attempts) {
+  for (const launch of launchAttempts(target.launch)) {
     // An object, so the narrowing after the awaited callback stays honest.
     const created: { id: string | null } = { id: null };
     try {
