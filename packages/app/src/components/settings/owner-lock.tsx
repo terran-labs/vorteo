@@ -6,11 +6,14 @@ import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { useOwnerAccess } from "@/execution-installation/owner-access";
+import { isWeb } from "@/constants/platform";
 import { settingsStyles } from "@/styles/settings";
 import { SettingsCard, SettingsRow } from ".";
 
 const dialogHeader = { title: "Unlock settings" };
 const disabledState = { disabled: true };
+// Native accessibility hiding does not remove web descendants from the tab order.
+const peekWebProps = isWeb ? ({ "aria-hidden": true, inert: true } as const) : {};
 const LockIcon = withUnistyles(Lock, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
@@ -29,6 +32,7 @@ export function OwnerUnlockDialog({ visible, onClose }: { visible: boolean; onCl
   useEffect(() => {
     if (visible && access.status === "unlocked") onClose();
   }, [visible, access.status, onClose]);
+  const message = error ?? access.error;
   const busy = pending || access.busy;
   const unlock = useCallback(async () => {
     if (busy || !password.trim()) return;
@@ -63,8 +67,13 @@ export function OwnerUnlockDialog({ visible, onClose }: { visible: boolean; onCl
             accessibilityLabel="Owner password"
           />
         </Field>
-        <Text accessibilityRole="alert" numberOfLines={1} style={styles.error}>
-          {error ?? access.error ?? " "}
+        <Text
+          testID="owner-unlock-error"
+          accessibilityRole={message ? "alert" : undefined}
+          numberOfLines={1}
+          style={styles.error}
+        >
+          {message ?? " "}
         </Text>
         <Button disabled={busy || !password.trim()} onPress={unlock}>
           Unlock
@@ -109,7 +118,12 @@ export function OwnerLockBadge() {
           {unlocked ? "Lock" : "Unlock"}
         </Button>
       </View>
-      <Text numberOfLines={1} accessibilityRole="alert" style={styles.error}>
+      <Text
+        testID="owner-lock-error"
+        numberOfLines={1}
+        accessibilityRole={error ? "alert" : undefined}
+        style={styles.error}
+      >
         {error ?? " "}
       </Text>
       <OwnerUnlockDialog visible={open} onClose={closeDialog} />
@@ -161,7 +175,10 @@ export function OwnerLockedGroup({ title, children }: OwnerLockedGroupProps) {
       </SettingsCard>
       {!checking && expanded ? (
         <View
+          {...peekWebProps}
+          testID="owner-locked-peek"
           pointerEvents="none"
+          accessibilityElementsHidden
           accessibilityState={disabledState}
           importantForAccessibility="no-hide-descendants"
           style={styles.disabled}
