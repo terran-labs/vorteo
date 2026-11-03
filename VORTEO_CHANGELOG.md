@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Added
+
+- Show an hourglass in the working blue in place of the sidebar's ready or idle dot while an idle workspace has an unfinished Review checklist item, such as a delivery waiting on Builds. Its tooltip names the owner and each item's title and description. Running, needs-input and failed states still take precedence.
+
+## Unreleased - 2026-11-02
+
 ### Maintenance
 
 - Move the rule for waiting on Builds into the task delivery guide and keep a one-line pointer in the agent instructions, within their size budget.
