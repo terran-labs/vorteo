@@ -25,6 +25,30 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Reset the owner unlock dialog and peek state when access changes, so locking controls again keeps their groups collapsed instead of reopening the password prompt. Expose the disclosure state on web.
 
 - Put installation owner unlock in a centered dialog and gate shared Settings, installation naming, project exclusions, provider sign-in and profile changes until owner access is unlocked. Unlocking enables controls without reloading the page. Keep Unlock reachable beside profile actions before there are unsaved edits. Keep password errors in the unlock dialog and report failed Lock actions beside the initiating control. Preserve sign-in and account creation on unrelated hosts.
+- Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Keep the Context window card after a daemon restart. Agents now save their last reported usage, so the card no longer disappears until each agent runs another turn.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Full maintenance delegation now includes installation management, so trusted Host agents can cancel pending or queued requests whenever the full grant is active, and revoking the grant removes it. Existing full grants gain this automatically, and Installation controls no longer show a separate management switch. Management still cannot approve requests that need the owner, stop claimed work, or change credentials or settings. Enrolled installations do not gain management. Its authority revision now binds the grant epoch and installation credentials. An older client's separate switch is accepted and ignored. A rollback to an older runtime keeps management only where its earlier separate opt-in is still recorded.
+- Explain that a management cancellation must use the `jobSha256` from `management-status`; a digest taken from a `request-*` submission response is refused.
+
+## Unreleased - 2026-11-03
+
+### Fixes
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
 
@@ -299,8 +323,6 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Make local relay regression tests exercise the local adapter instead of inheriting the deployment's external forwarding URL.
 
 ## Unreleased - 2026-11-01
-
-- Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
 - Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.
 - Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.

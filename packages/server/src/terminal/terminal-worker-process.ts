@@ -681,6 +681,21 @@ function runWorker(argv: string[]): void {
     });
   }
 
+  /**
+   * Tightens the socket's mode where the filesystem allows it. Some mounts reject chmod on a
+   * socket, such as virtiofs homes in Docker Desktop containers ("EINVAL"). The socket's
+   * directory is already verified owner-only (0700), so access stays limited to this user.
+   */
+  function restrictSocketMode(socketPath: string): void {
+    try {
+      chmodSync(socketPath, PRIVATE_FILE_MODE);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EOPNOTSUPP" && code !== "EPERM")
+        throw error;
+    }
+  }
+
   function reportReady(line: string): void {
     try {
       writeSync(READY_FD, `${line}\n`);
@@ -708,7 +723,7 @@ function runWorker(argv: string[]): void {
     });
     server = listening;
     if (process.platform !== "win32") {
-      chmodSync(socketPath, PRIVATE_FILE_MODE);
+      restrictSocketMode(socketPath);
     }
 
     const self = await inspector.inspect(process.pid);

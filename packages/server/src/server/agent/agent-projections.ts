@@ -111,6 +111,7 @@ export function toStoredAgentRecord(
     features: normalizeFeatures(agent.features),
     persistence,
     lastError: agent.lastError ?? undefined,
+    ...(agent.lastUsage ? { lastUsage: storedUsage(agent.lastUsage) } : {}),
     requiresAttention: agent.attention.requiresAttention,
     attentionReason: agent.attention.requiresAttention ? agent.attention.attentionReason : null,
     attentionTimestamp: agent.attention.requiresAttention
@@ -316,6 +317,7 @@ export function buildStoredAgentPayload(
     ...(record.internal ? { internal: true } : {}),
     labels: normalizeLabels(record.labels),
     ...(typeof record.lastError === "string" ? { lastError: record.lastError } : {}),
+    ...storedUsagePayload(record.lastUsage),
     ...(providerAvailable ? {} : { providerUnavailable: true }),
   };
 }
@@ -651,4 +653,26 @@ function sanitizeRuntimeInfo(
     sanitized.extra = extra;
   }
   return sanitized;
+}
+
+/** Usage keeps only its finite numbers on disk. */
+function storedUsage(usage: AgentUsage): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(usage).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === "number" && Number.isFinite(entry[1]),
+    ),
+  );
+}
+
+function storedUsagePayload(
+  usage: StoredAgentRecord["lastUsage"],
+): Pick<AgentSnapshotPayload, "lastUsage"> {
+  const sanitized = sanitizeUsage(usage);
+  return sanitized ? { lastUsage: sanitized } : {};
+}
+
+/** The usage a stored record carries, for an agent the daemon brings back. */
+export function restoreStoredUsage(record: StoredAgentRecord): AgentUsage | undefined {
+  return sanitizeUsage(record.lastUsage);
 }

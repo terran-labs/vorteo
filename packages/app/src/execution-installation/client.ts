@@ -646,17 +646,14 @@ export class InstallationClient {
   async changeMaintenanceDelegation(
     status: MaintenanceDelegationStatus,
     enabled: boolean,
-    management?: boolean,
   ): Promise<MaintenanceDelegationStatus> {
     if (!this.maintenanceDelegationSupported || !status.available)
       throw new InstallationRouteUnavailable("Full maintenance delegation is unavailable");
-    if (management !== undefined && !status.managementAvailable)
-      throw new InstallationRouteUnavailable("Installation management is unavailable");
+    // Management follows the full grant; there is no separate owner switch to send.
     return MaintenanceDelegationStatusSchema.parse(
       await this.request("maintenance-delegation/change?management=1", {
         expectedRevision: status.revision,
         enabled,
-        ...(management !== undefined ? { management } : {}),
       }),
     );
   }
