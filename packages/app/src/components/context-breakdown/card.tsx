@@ -9,7 +9,11 @@ import { TaskCardIcon } from "@/agent-stream/task-card-icon";
 import { CardDisclosure } from "@/agent-stream/card-disclosure";
 import { CountBadge } from "@/components/ui/count-badge";
 import { ContextWindowDetails } from "@/components/context-window-details";
-import { formatSessionCost, getUsagePercentage } from "@/components/context-window-meter.utils";
+import {
+  getUsagePercentage,
+  resolveSessionCost,
+  type SessionCost,
+} from "@/components/context-window-meter.utils";
 import { useSessionStore } from "@/stores/session-store";
 
 /**
@@ -25,6 +29,7 @@ export function ContextCard({ serverId, agentId }: { serverId: string; agentId: 
         maxTokens: agent?.lastUsage?.contextWindowMaxTokens ?? null,
         usedTokens: agent?.lastUsage?.contextWindowUsedTokens ?? null,
         totalCostUsd: agent?.lastUsage?.totalCostUsd ?? null,
+        estimatedCostUsd: agent?.lastUsage?.estimatedCostUsd ?? null,
       };
     }),
   );
@@ -38,7 +43,7 @@ export function ContextCard({ serverId, agentId }: { serverId: string; agentId: 
       percentage={Math.round(percentage)}
       usedTokens={usage.usedTokens}
       maxTokens={usage.maxTokens}
-      sessionCost={usage.totalCostUsd === null ? null : formatSessionCost(usage.totalCostUsd)}
+      sessionCost={resolveSessionCost(usage.totalCostUsd, usage.estimatedCostUsd)}
     />
   );
 }
@@ -56,7 +61,7 @@ function ContextCardContent({
   percentage: number;
   usedTokens: number;
   maxTokens: number;
-  sessionCost: string | null;
+  sessionCost: SessionCost | null;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useCardDisclosure("context");
