@@ -45,17 +45,46 @@ function describeRows(rows: SidebarTreeRow<string>[]): string[] {
   );
 }
 
-function rowsFor(state: SidebarFolderState, items: string[], hideEmptyFolders = false) {
+function rowsFor(
+  state: SidebarFolderState,
+  items: string[],
+  hideEmptyFolders = false,
+  itemOrder?: "saved" | "given",
+) {
   return buildSidebarTreeRows({
     state,
     scope: ROOT,
     items,
     getKey: (item) => item,
     hideEmptyFolders,
+    itemOrder,
   });
 }
 
 describe("sidebar folder tree", () => {
+  // Regression: a new row was inserted before its flat-order successor, which a dragged
+  // folder order had moved mid-list, so new workspaces appeared in the middle.
+  test("new rows go first even when the saved order differs from the flat order", () => {
+    const state = folderState([folder("f", null)], {
+      childOrder: { root: ["c", "folder:f", "a", "b"] },
+    });
+    expect(describeRows(rowsFor(state, ["new", "a", "b", "c"]))).toEqual([
+      "new",
+      "c",
+      "F",
+      "a",
+      "b",
+    ]);
+    // A time-based sort orders the rows; the folder keeps its saved slot.
+    expect(describeRows(rowsFor(state, ["new", "a", "b", "c"], false, "given"))).toEqual([
+      "new",
+      "a",
+      "F",
+      "b",
+      "c",
+    ]);
+  });
+
   test("renders folders nested more than three levels with their items", () => {
     const state = folderState(
       [folder("a", null), folder("b", "a"), folder("c", "b"), folder("d", "c"), folder("e", "d")],
@@ -89,19 +118,6 @@ describe("sidebar folder tree", () => {
     });
     expect(describeRows(rowsFor(state, ["one"], true))).toEqual(["A", "  one"]);
     expect(describeRows(rowsFor(state, ["one"]))).toEqual(["A", "  one", "BB"]);
-  });
-
-  test("items missing from the stored order keep their flat position", () => {
-    const state = folderState([folder("a", null)], {
-      childOrder: { root: ["y", "folder:a", "z"] },
-    });
-    expect(describeRows(rowsFor(state, ["new", "y", "z", "last"]))).toEqual([
-      "new",
-      "y",
-      "A",
-      "z",
-      "last",
-    ]);
   });
 
   test("moving a project into a folder writes the tree and the flat order older clients read", () => {
@@ -208,12 +224,12 @@ describe("sidebar folder tree", () => {
       folder: { id: "f", name: "Later", createdAt: "2026-10-22T00:00:00Z" },
       keys: ["s:1", "s:2"],
     });
-    expect(created.childOrder).toEqual({ "project:proj": ["s:1", "s:2", "folder:f"] });
+    expect(created.childOrder).toEqual({ "project:proj": ["folder:f", "s:1", "s:2"] });
     const state = folderState([folder("f", null, scope)], {
       childOrder: created.childOrder as Record<string, string[]>,
       itemFolder: { "s:1": "f" },
     });
-    expect(flattenSidebarScope({ state, scope, keys: ["s:1", "s:2"] })).toEqual(["s:2", "s:1"]);
+    expect(flattenSidebarScope({ state, scope, keys: ["s:1", "s:2"] })).toEqual(["s:1", "s:2"]);
     const patch = moveSidebarEntryPatch({
       state,
       scope,

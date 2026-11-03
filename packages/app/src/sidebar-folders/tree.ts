@@ -71,33 +71,41 @@ function itemParent(input: {
 }
 
 /**
- * Stored order first. Items it does not mention keep their place in the flat order: each sits
- * before the next item that follows it there, so new workspaces still appear at the top.
+ * `saved` keeps item rows where the user dragged them. `given` keeps the order items arrive in,
+ * for the sidebar's time-based workspace sorts, while folders keep their saved positions.
+ */
+export type SidebarTreeItemOrder = "saved" | "given";
+
+/**
+ * Items the stored order does not mention are new to this container, so they go first, in flat
+ * order (newest first, since new items are placed first there). Everything the stored order
+ * mentions follows in exactly that order, so new arrivals never move existing rows relative to
+ * each other. Creating a folder writes its place into the stored order; folders it still omits,
+ * such as those written by older clients, follow at the end, oldest first.
  */
 function orderChildren(input: {
   stored: readonly string[];
   items: readonly string[];
   folders: readonly string[];
+  itemOrder: SidebarTreeItemOrder;
 }): string[] {
   const members = new Set([...input.items, ...input.folders]);
   const sequence = [...new Set(input.stored.filter((entry) => members.has(entry)))];
   const placed = new Set(sequence);
-  for (let index = input.items.length - 1; index >= 0; index -= 1) {
-    const key = input.items[index]!;
-    if (placed.has(key)) continue;
-    const successor = input.items.slice(index + 1).find((next) => placed.has(next));
-    const position = successor === undefined ? sequence.length : sequence.indexOf(successor);
-    sequence.splice(position, 0, key);
-    placed.add(key);
-  }
-  for (const entry of input.folders) if (!placed.has(entry)) sequence.push(entry);
-  return sequence;
+  const newItems = input.items.filter((key) => !placed.has(key));
+  const unsavedFolders = input.folders.filter((entry) => !placed.has(entry));
+  const ordered = [...newItems, ...sequence, ...unsavedFolders];
+  if (input.itemOrder === "saved") return ordered;
+  // Refill the item slots in the given order; folder slots stay put.
+  const items = input.items[Symbol.iterator]();
+  return ordered.map((entry) => (folderIdOf(entry) === null ? items.next().value! : entry));
 }
 
 function buildScopeChildren(input: {
   state: SidebarFolderState;
   scope: SidebarFolderScope;
   keys: readonly string[];
+  itemOrder?: SidebarTreeItemOrder;
 }): ScopeChildren {
   const { state, scope } = input;
   const items = new Map<string | null, string[]>();
@@ -120,6 +128,7 @@ function buildScopeChildren(input: {
         stored: state.childOrder[sidebarFolderContainerKey(scope, parent)] ?? [],
         items: items.get(parent) ?? [],
         folders: folders.get(parent) ?? [],
+        itemOrder: input.itemOrder ?? "saved",
       }),
     );
   }
@@ -146,12 +155,14 @@ export function buildSidebarTreeRows<T>(input: {
   items: readonly T[];
   getKey: (item: T) => string;
   hideEmptyFolders: boolean;
+  itemOrder?: SidebarTreeItemOrder;
 }): SidebarTreeRow<T>[] {
   const itemByKey = new Map(input.items.map((item) => [input.getKey(item), item]));
   const children = buildScopeChildren({
     state: input.state,
     scope: input.scope,
     keys: [...itemByKey.keys()],
+    itemOrder: input.itemOrder,
   });
   const rows: SidebarTreeRow<T>[] = [];
   function walk(parent: string | null, depth: number) {
@@ -371,8 +382,8 @@ export function createSidebarFolderPatch(input: {
     sidebarFolders: { [folder.id]: folder },
     childOrder: {
       [sidebarFolderContainerKey(input.scope, input.parentId)]: [
-        ...(children.get(input.parentId) ?? []),
         sidebarFolderEntry(folder.id),
+        ...(children.get(input.parentId) ?? []),
       ],
     },
   };

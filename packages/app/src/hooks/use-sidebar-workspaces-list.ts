@@ -16,7 +16,6 @@ import {
   sidebarHierarchySessionsEqual,
   type ManagedWorkspacePlacement,
   type SidebarHierarchySession,
-  computeSidebarOrderUpdates,
   createSidebarWorkspaceEntry,
   deriveProjectStatusBucket,
   deriveSidebarLoadingState,
@@ -26,6 +25,9 @@ import {
   type SidebarWorkspacePlacement,
 } from "./sidebar-workspaces-view-model";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
+import { commitSidebarPatch } from "@/sidebar-state/local";
+import { computeSidebarPlacement, sidebarPlacementPatch } from "@/sidebar-state/placement";
+import { useSidebarSyncStatus } from "@/sidebar-state/use-sidebar-sync";
 
 export {
   appendMissingOrderKeys,
@@ -86,6 +88,7 @@ export function useSidebarProjectStatusBucket(input: {
 }
 
 const EMPTY_ORDER: string[] = [];
+const EMPTY_WORKSPACE_ORDER: Record<string, string[]> = {};
 const EMPTY_PROJECTS: SidebarProjectEntry[] = [];
 const EMPTY_WORKSPACES: SidebarWorkspacePlacement[] = [];
 const EMPTY_PROJECT_NAMES = new Map<string, string>();
@@ -188,21 +191,29 @@ export function useSidebarWorkspacesList(options?: {
       ? sidebarModel.projectNamesByViewKey
       : EMPTY_PROJECT_NAMES;
 
+  // Vorteo: new rows become the first row of their list, and the placement is synced so every
+  // device shows the same order. Every sort mode records it, so switching to manual is stable.
+  const persistedWorkspaceOrder = useSidebarOrderStore(
+    (state) => state.workspaceOrderByProject ?? EMPTY_WORKSPACE_ORDER,
+  );
+  const placementSupported = useSidebarSyncStatus((state) => state.placementSupported);
   useEffect(() => {
-    const orderStore = useSidebarOrderStore.getState();
-    const updates = computeSidebarOrderUpdates({
+    if (projects.length === 0) return;
+    const placement = computeSidebarPlacement({
       projects,
-      persistedProjectOrder,
-      getWorkspaceOrder: sort === "manual" ? orderStore.getWorkspaceOrder : undefined,
+      projectOrder: persistedProjectOrder,
+      workspaceOrderByProject: persistedWorkspaceOrder,
     });
-
-    if (updates.projectOrder) {
-      useSidebarOrderStore.setState({ projectOrder: updates.projectOrder });
-    }
-    for (const update of updates.workspaceOrders) {
-      orderStore.setWorkspaceOrder(update.projectViewKey, update.order);
-    }
-  }, [persistedProjectOrder, projects, sort]);
+    if (!placement) return;
+    commitSidebarPatch(
+      sidebarPlacementPatch({
+        placement,
+        supported: placementSupported,
+        projectOrder: persistedProjectOrder,
+        workspaceOrderByProject: persistedWorkspaceOrder,
+      }),
+    );
+  }, [persistedProjectOrder, persistedWorkspaceOrder, placementSupported, projects]);
 
   const refreshAll = useCallback(() => {
     if (!isActive) return;

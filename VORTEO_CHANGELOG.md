@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- New projects, workspaces and folders now appear as the first row of the list that holds them, and stay where they are on every device. Before, the sidebar saved new rows only on the device that saw them, so each sync update could move them, and a project with a saved folder order slotted new workspaces into the middle. In the Created and Last prompt sorts, workspaces inside folders follow the sort again.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.

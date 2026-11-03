@@ -22,7 +22,9 @@ export const useSidebarSyncStatus = create<{
   error?: string;
   /** Whether the sidebar authority stores folders. Folder controls appear only when it does. */
   foldersSupported: boolean;
-}>(() => ({ status: "local", foldersSupported: false }));
+  /** Whether the sidebar authority applies `placeFirst`, so new rows can be placed race-free. */
+  placementSupported: boolean;
+}>(() => ({ status: "local", foldersSupported: false, placementSupported: false }));
 
 interface PersistHydration {
   hasHydrated(): boolean;
@@ -64,9 +66,15 @@ export function useSidebarSync(): void {
       serverId !== undefined &&
       state.sessions[serverId]?.serverInfo?.features?.sidebarFolders === true,
   );
+  const placementSupported = useSessionStore(
+    (state) =>
+      !demo &&
+      serverId !== undefined &&
+      state.sessions[serverId]?.serverInfo?.features?.sidebarPlacement === true,
+  );
   useEffect(() => {
-    useSidebarSyncStatus.setState({ foldersSupported });
-  }, [foldersSupported]);
+    useSidebarSyncStatus.setState({ foldersSupported, placementSupported });
+  }, [foldersSupported, placementSupported]);
   const [sync, setSync] = useState<SidebarSync | null>(null);
   useEffect(() => {
     if (demo || !loaded || !serverId) return;

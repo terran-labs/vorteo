@@ -25,6 +25,7 @@ import { EMPTY_SIDEBAR_FOLDER_STATE, type SidebarFolderState } from "@/sidebar-f
 import {
   ROOT_FOLDER_SCOPE,
   buildSidebarTreeRows,
+  type SidebarTreeItemOrder,
   projectFolderScope,
   type SidebarTreeRow,
 } from "@/sidebar-folders/tree";
@@ -58,6 +59,8 @@ export interface SidebarProjectionInput {
   factorySupportedHosts?: ReadonlyMap<string, boolean>;
   /** Null when the sidebar host cannot store folders. */
   folderState?: SidebarFolderState | null;
+  /** `given` when a time-based workspace sort decides item order inside folders. */
+  workspaceItemOrder?: SidebarTreeItemOrder;
 }
 
 function visibleTreeItems<T>(rows: readonly SidebarTreeRow<T>[]): T[] {
@@ -110,6 +113,7 @@ export function buildSidebarProjection(input: SidebarProjectionInput): SidebarPr
             items: groups.work,
             getKey: (workspace) => workspace.workspaceKey,
             hideEmptyFolders: false,
+            itemOrder: input.workspaceItemOrder ?? "saved",
           }),
         );
         const standingCollapsed =

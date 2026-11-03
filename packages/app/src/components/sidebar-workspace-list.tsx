@@ -2243,11 +2243,13 @@ function ProjectBlock({
       items: groups.work,
       getKey: workspaceKeyExtractor,
       hideEmptyFolders,
+      // Time-based sorts order the rows; folders still keep their saved places.
+      itemOrder: manualSort ? "saved" : "given",
     });
     return focus?.kind === "folder"
       ? focusTreeRows(rows, sidebarFolderEntry(focus.folderId))
       : rows;
-  }, [focus, folderState, folderScope, groups.work, hideEmptyFolders]);
+  }, [focus, folderState, folderScope, groups.work, hideEmptyFolders, manualSort]);
   // Focused contents become the top level, so their rows lose the project's step in.
   const { showHeader, childLevel, sectionLevel, sectionItemLevel } =
     sidebarProjectBlockLevels(focus);
