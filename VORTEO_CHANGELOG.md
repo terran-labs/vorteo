@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Features
+
+- Turn release seals on or off through tracked workflows. A reviewed coordinator update with the new `releaseSeals` setting adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, and the Host launcher update does the same for the Host service once managed release selection is in place. Full maintenance delegation covers both. Any other launcher difference, value or unexpected launcher state is refused with a message naming what differed.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.

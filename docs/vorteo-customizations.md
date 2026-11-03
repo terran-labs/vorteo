@@ -2024,6 +2024,8 @@ Claude authentication status review: Connection controls use the existing accoun
 
 Maintenance review: Docker restart preflight and readiness read `{{json .State}}` instead of templating `.State.Health`, which Docker 29.8 rejects for containers without a healthcheck. A failed inspect reports the first line of the CLI error rather than "not found". Verified against the installed Dev, gateway Tailscale and gateway Caddy containers.
 
+Maintenance review: release seals now turn on and off through tracked workflows. A reviewed coordinator update with the `releaseSeals` setting may add or remove exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, while compatible recovery keeps the previous launcher environment. The Host launcher update may add or remove only that variable on a launcher that already selects managed releases, then reloads the Host service. Full maintenance delegation covers both; any other launcher difference is refused by name. Not yet installed. README overview and onboarding are unchanged.
+
 ## Optional native macOS helper
 
 Legacy coordinator compatibility: an unavailable helper query is retried once per minute instead of every settings refresh. Owner lock checks still apply during the delay, and upgraded coordinators are discovered without reloading.
