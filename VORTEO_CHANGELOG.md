@@ -7,6 +7,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ## Unreleased - 2026-11-03
 
 - Settings now groups eight sections by device and installation scope, keeps search in the top bar, and closes Command Center when Settings opens. Keyboard shortcuts opens from a drill-in row and owner access has a reserved location. Pane headers show the scope of their settings. The search shortcut ignores hidden retained pages. Sidebar scrolling stays put during font changes. Connection checks cover phone bottom sheets and the collapsed workspace menu, and phone Settings toggling preserves the conversation draft. Existing settings links remain valid; desktop and phone browser checks account for the shorter section list and use visible navigation controls to cover header search, overlay dismissal and returning from Settings.
+
 ### Fixed
 
 - Add profile and Edit on a provider page no longer crash Settings with "Couldn't find a navigation object". The profile page now reads navigation from the expo-router copy the app runs on, and still guards unsaved edits; opened outside a navigator, as the chat composer's centered window will be, it simply skips that guard.
@@ -23,6 +24,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Consolidate Host and Dev status, confirmed restart reviews, updates and maintenance details into a System pane with one attention notice. Remove duplicate Host controls and Skills editor, center composer profile edits, preserve reviewed shared-profile revisions, and disable repeated update actions while a request is running.
 - Consolidate Host and Dev status, confirmed restart reviews, updates and maintenance details into a System pane with one attention notice. Remove duplicate Host controls and Skills editor, center composer profile edits, and preserve reviewed shared-profile revisions.
+- Merge the live profile page crash fix and point the owner-lock profile test at expo-router navigation.
 - Resume agents after restart and Release idle agents move from the Host page into a When the Host restarts section on the System page, beside the Restart action. Search finds both, and the existing restart options are unchanged.
 - Voice is its own Settings section, after Agents: dictation, voice mode and the speech models for listening and speaking, configured on the Host. Search finds each of them.
 - Settings opens the System section on its System page: Host and Dev status with one action each, restarts, updates, the release channel and the connection check. The separate update pages and the duplicate app update row in About are gone, and old links to them open System.
