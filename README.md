@@ -74,7 +74,7 @@ Run this on the Mac or Linux computer that will host Vorteo, or give it to your 
 curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash
 ```
 
-Allow about 15 to 60 minutes with a Dev container, or 5 to 20 minutes for Host only. These are planning estimates; cached builds can finish faster and slow machines or downloads can take longer. The installer shows elapsed time and live build activity.
+Allow about 15 to 60 minutes with a Dev container, or 5 to 20 minutes for Host only. These are planning estimates; cached builds can finish faster and slow machines or downloads can take longer. The installer shows elapsed time and live build activity. On interactive terminals, a green Matrix animation runs during builds and pauses for questions; redirected output stays plain text.
 
 Authenticated provider connections receive a Default profile automatically, so you can create a workspace immediately. Later connections receive the same setup; your existing profiles and deliberate deletions are preserved.
 
@@ -87,7 +87,7 @@ It creates:
 
 On Windows, the installer probably won't work yet, even inside WSL. Full WSL support is planned in [#35](https://github.com/terran-labs/vorteo/issues/35).
 
-Every later change happens in the interface, from connecting accounts to updating Vorteo. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. See [host and container execution](docs/execution-installation.md) for what it installs.
+Every later change happens in the interface, from connecting accounts to updating Vorteo. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. Custom Compose overrides require review before conversion to the network gate; the installer stops before changing such a deployment. See [host and container execution](docs/execution-installation.md) for what it installs.
 
 On Linux, Host and Dev share the selected Projects folder through explicit file permissions while preserving ownership. The installer checks access in both directions and retains permission backups. See [Projects folder](docs/execution-installation.md#projects-folder) for filesystem requirements and recovery.
 

@@ -439,6 +439,9 @@ export const en = {
           "Switching moves this thread to the selected account and starts a new session there. The new model receives up to 30 recent messages as context, which uses extra tokens and loses tool results and other provider-private state, so avoid switching routinely. It is a good option when one of your accounts reaches its limit.",
         switch: "Switch in this thread",
         switching: "Switching...",
+        stopAndSwitch: "Stop turn and switch",
+        stopping: "Stopping turn...",
+        busy: "This thread is still working. Stop turn and switch works like Stop: it cancels the current turn, declines any open permission requests and pauses an active goal, then switches. Resume the goal after switching if you want it to continue.",
         newTask: "New task instead",
       },
       quota: {

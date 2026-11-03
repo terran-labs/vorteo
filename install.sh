@@ -58,7 +58,7 @@
 # do not choose for them. Never put a Tailscale auth key on the command line or in chat:
 # the owner saves it to a file and the answer is that file's path.
 #
-# On success the installer prints these lines on standard output, then exits 0:
+# In agent mode, success prints these machine-readable lines, then exits 0:
 #   VORTEO_RESULT origin <address>
 #   VORTEO_RESULT local-origin <address on this machine>
 #   VORTEO_RESULT password-file <path of the owner password file>
@@ -865,6 +865,8 @@ vp_manual_fix() {
 # END prerequisites.sh
 
 vorteo_install() {
+  VORTEO_INSTALL_STARTED_MS="$(date +%s)000"
+  export VORTEO_INSTALL_STARTED_MS
   local complete_marker="--vorteo-script-complete"
   if [ "$#" -eq 0 ] || [ "${!#}" != "$complete_marker" ]; then
     echo "This copy of the Vorteo installer is incomplete. Download it again." >&2
@@ -1205,14 +1207,15 @@ vorteo_install() {
   }
   trap 'trap - INT TERM; vorteo_stop_tree $$; exit 130' INT TERM
 
+  printf '\n%s' "$green"
   cat <<'VORTEO_BANNER'
- __     _____  ____ _____ _____ ___
- \ \   / / _ \|  _ \_   _| ____/ _ \
-  \ \ / / | | | |_) || | |  _|| | | |
-   \ V /| |_| |  _ < | | | |__| |_| |
-    \_/  \___/|_| \_\|_| |_____\___/
+■   ■  ■■■  ■■■■  ■■■■■ ■■■■■  ■■■ 
+■   ■ ■   ■ ■   ■   ■   ■     ■   ■
+■   ■ ■   ■ ■■■■    ■   ■■■■  ■   ■
+ ■ ■  ■   ■ ■ ■     ■   ■     ■   ■
+  ■    ■■■  ■  ■    ■   ■■■■■  ■■■ 
 VORTEO_BANNER
-  say "${bold}              Vorteo installer${reset}"
+  say "YOUR MACHINE. YOUR AGENTS. YOUR COMMAND.${reset}"
 
   # Prerequisites the installer itself needs --------------------------------------------
 
@@ -1471,11 +1474,15 @@ VORTEO_BANNER
   show_qr() {
     local columns="${COLUMNS-}"
     if [ -z "$columns" ]; then columns=$(tput cols 2>/dev/null || printf '80'); fi
-    local qr="$source_dir/scripts/installer/qr.mjs" qr_status=0
+    local qr="$source_dir/scripts/installer/qr.mjs" qr_status=0 qr_output=""
     [ -f "$qr" ] || return 0
     say ""
     say "  Scan to open Vorteo on your phone (it must be on your tailnet):"
-    "$node_bin" "$qr" "$1" --max-width "$columns" 3<&- || qr_status=$?
+    qr_output=$("$node_bin" "$qr" "$1" --max-width "$((columns - 2))" 3<&-) || qr_status=$?
+    if [ "$qr_status" -eq 0 ]; then
+      say ""
+      printf '%s\n' "$qr_output" | sed 's/^/  /'
+    fi
     if [ "$qr_status" -eq 5 ]; then
       say "  Widen the terminal to see a QR code, or open $1 on your phone."
     fi
@@ -1505,10 +1512,12 @@ VORTEO_BANNER
     say "  Sign in with the owner password. Everything else, including updates, happens in the interface."
     say "  Commands: vorteo status, vorteo doctor, vorteo open, vorteo update, vorteo repair, vorteo uninstall"
     open_address "$origin"
-    say ""
-    say "VORTEO_RESULT origin $origin"
-    say "VORTEO_RESULT local-origin $local_origin"
-    say "VORTEO_RESULT password-file $password_file"
+    if [ -z "$interactive" ]; then
+      say ""
+      say "VORTEO_RESULT origin $origin"
+      say "VORTEO_RESULT local-origin $local_origin"
+      say "VORTEO_RESULT password-file $password_file"
+    fi
   }
 
   # Existing installations --------------------------------------------------------------

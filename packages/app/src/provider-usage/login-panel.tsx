@@ -1,4 +1,5 @@
 import { installationConnectionStatus } from "./claude-connection-status";
+import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
 import { useCallback, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -52,17 +53,35 @@ export function ProviderLoginPanel({
   );
 }
 
-function LoginPanelContent({
-  serverId,
-  providerId,
-  name,
-  provider = "codex",
-}: {
+interface LoginPanelContentProps {
   serverId: string | null;
   providerId: string;
   name: string;
   provider?: "codex" | "claude";
-}) {
+}
+
+function LoginPanelContent(props: LoginPanelContentProps) {
+  const { provider = "codex", serverId, providerId } = props;
+  const shared = useSharedInstallationSignIn(serverId, provider);
+  if (provider === "claude" && shared && !claudeProviderConnectsToInstallation(providerId))
+    return (
+      <View style={styles.body}>
+        <Text style={styles.text}>
+          This built-in connection uses the Claude CLI login on this machine, so it cannot connect
+          here. To connect Claude once for this whole installation, add a Claude account from Add
+          provider.
+        </Text>
+      </View>
+    );
+  return <AccountLoginContent {...props} />;
+}
+
+function AccountLoginContent({
+  serverId,
+  providerId,
+  name,
+  provider = "codex",
+}: LoginPanelContentProps) {
   const login = useProviderLogin(serverId, providerId, provider);
   const { state, connected } = login;
   const showRefresh = login.readFailed || login.actionFailed;

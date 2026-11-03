@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/client",
-  "version": "26.11.105",
+  "version": "26.11.204",
   "description": "Vorteo client SDK package",
   "files": [
     "dist",
@@ -47,8 +47,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@getpaseo/protocol": "26.11.105",
-    "@getpaseo/relay": "26.11.105",
+    "@getpaseo/protocol": "26.11.204",
+    "@getpaseo/relay": "26.11.204",
     "ws": "^8.20.0",
     "zod": "^4.4.3"
   },

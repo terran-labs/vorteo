@@ -62,7 +62,12 @@ export function WelcomeRain() {
       }
     }
     function tick(now: number) {
-      if (!canvas || reduced.matches || document.hidden) return;
+      if (!canvas) return;
+      if (reduced.matches) {
+        canvas.dataset.motion = "still";
+        return;
+      }
+      if (document.hidden) return;
       if (now - last >= 65) {
         elapsed += Math.min((now - last) / 1000, 0.15);
         last = now;

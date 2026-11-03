@@ -518,6 +518,10 @@ test("welcome signs in with the owner password and restores both environments", 
   await expect(rain).toHaveAttribute("data-motion", "falling");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(rain).toHaveAttribute("data-motion", "still");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(rain).toHaveAttribute("data-motion", "falling");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(rain).toHaveAttribute("data-motion", "still");
   await page.screenshot({
     path: testInfo.outputPath("welcome-without-notices.png"),
     fullPage: true,
@@ -532,9 +536,9 @@ test("welcome signs in with the owner password and restores both environments", 
   await expect(form.getByText("Find your password", { exact: true })).toBeVisible();
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   const copyCommand = form.getByTestId("installation-password-copy-command");
-  await copyCommand.click();
+  await form.getByTestId("installation-password-command").click();
   await expect(page.getByTestId("installation-command-copied")).toContainText("Command copied");
-  await expect(copyCommand).toHaveText("Copy command");
+  await expect(copyCommand).toHaveAccessibleName("Copy command");
   await expect(form.getByTestId("installation-password-command")).toHaveText(
     `pbcopy < '${path.join(root, "owner-password")}'`,
   );

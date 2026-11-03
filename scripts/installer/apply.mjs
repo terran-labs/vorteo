@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describeServices, localOrigins } from "./coordinator-config.mjs";
-import { JOURNAL } from "./detect.mjs";
+import { JOURNAL, assertGateMigrationSupported } from "./detect.mjs";
 import { buildRelease, serveRouteTarget } from "./host-installation.mjs";
 import { createJournalHandle, openJournal, readJournal } from "./journal.mjs";
 import { createLaunchdManager } from "./launchd.mjs";
@@ -50,6 +50,7 @@ export function validatePlan(plan, context) {
       `The plan installs into ${plan.paths.root}, not ${context.root}.`,
       "Pass the plan's folder with --root, or plan again.",
     );
+  if (plan.kind === "adopt") assertGateMigrationSupported(plan.paths.container);
   const unknown = plan.steps.filter((step) => !stepFor(step));
   if (unknown.length)
     throw new InstallerError(

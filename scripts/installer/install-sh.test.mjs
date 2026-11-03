@@ -113,7 +113,7 @@ case "$1" in
     mkdir -p "$target/.git" "$target/scripts/installer"
     echo "\${FAKE_CLONE_SHA:-$FAKE_SHA}" >"$target/.git/HEAD"
     echo "// fake engine placeholder" >"$target/scripts/installer/main.mjs"
-    for file in qr.mjs progress.mjs vorteo.sh; do cp "$FAKE_REPO/scripts/installer/$file" "$target/scripts/installer/$file"; done
+    for file in qr.mjs progress.mjs banner.mjs vorteo.sh; do cp "$FAKE_REPO/scripts/installer/$file" "$target/scripts/installer/$file"; done
     cp "$FAKE_REPO/scripts/is-main-module.mjs" "$target/scripts/is-main-module.mjs"
     ;;
   rev-parse) cat "$dir/.git/HEAD" ;;
@@ -382,6 +382,7 @@ describe("install.sh", () => {
     assert.equal(box.answers().projectsFolder, path.join(box.home, "code"));
     assert.match(result.stdout, /Proceed with this plan\?/);
     assert.match(result.stdout, /Scan to open Vorteo on your phone/);
+    assert.doesNotMatch(result.stdout, /^VORTEO_RESULT /m);
     assert.match(result.stdout, /▀/);
     assert.equal(
       box.calls().some((call) => call.tool === "open"),

@@ -2,6 +2,7 @@
 // Nothing here writes files or changes services.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { InstallerError } from "./primitives.mjs";
 
 export const LAB_DIRECTORY = path.join(".local", "share", "vorteo-lab");
 export const JOURNAL = path.join("state", "install.json");
@@ -52,6 +53,22 @@ export function inspectDeployment(directory) {
     projectsFolder:
       projects?.services?.paseo?.environment?.PASEO_PROJECTS_ROOT ?? env.PASEO_PROJECTS_FOLDER,
   };
+}
+
+/** Refuse migration before a custom deployment can lose mounts or services. */
+export function assertGateMigrationSupported(directory) {
+  if (existsSync(path.join(directory, ".gate-mode"))) return;
+  const overrides = [
+    "compose.override.yaml",
+    "compose.override.yml",
+    "docker-compose.override.yaml",
+    "docker-compose.override.yml",
+  ].filter((name) => existsSync(path.join(directory, name)));
+  if (!overrides.length) return;
+  throw new InstallerError(
+    `Gate migration would ignore custom Compose overrides in ${directory}: ${overrides.join(", ")}.`,
+    "Keep this deployment running. Review its mounts, services and environment for a gate-compatible migration before retrying. Do not delete or rename an override just to pass this check.",
+  );
 }
 
 function childDirectories(directory) {
