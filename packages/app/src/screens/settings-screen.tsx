@@ -1,4 +1,5 @@
 import { selectSettingsHost } from "@/navigation/settings-presentation";
+import { useHardwareKeyboardPresent } from "@/keyboard";
 import { useAddHost } from "@/hosts/add-host";
 import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
@@ -137,6 +138,7 @@ import {
 } from "@/screens/settings/settings-scroll-page";
 import { useSettingsNavigation } from "@/screens/settings/use-settings-navigation";
 import { useSettingsSearchShortcut } from "@/screens/settings/use-settings-search-shortcut";
+import { useOpenOnboarding, UPSTREAM_SETUP_ENABLED } from "@/onboarding";
 
 // ---------------------------------------------------------------------------
 // View model
@@ -181,16 +183,18 @@ function selectedSidebarSection(
 function useAvailabilityContext(): SettingsAvailabilityContext {
   const hosts = useHosts();
   const isDesktopApp = isElectronRuntime();
+  const hardwareKeyboardPresent = useHardwareKeyboardPresent();
   const hasInstallation = readExecutionInstallation() !== null;
   return useMemo(
     () => ({
       isDesktopApp,
+      hardwareKeyboardPresent,
       isWeb,
       isNative,
       hasHosts: hosts.length > 0,
       hasInstallation,
     }),
-    [hasInstallation, hosts.length, isDesktopApp],
+    [hasInstallation, hosts.length, isDesktopApp, hardwareKeyboardPresent],
   );
 }
 
@@ -357,8 +361,25 @@ function LanguageSection({ settings, handleLanguageChange }: LanguageSectionProp
             </DropdownMenuContent>
           </DropdownMenu>
         </View>
+        {UPSTREAM_SETUP_ENABLED && !isNative ? <ShowSetupAgainRow /> : null}
       </View>
     </SettingsSection>
+  );
+}
+
+function ShowSetupAgainRow() {
+  const { t } = useTranslation();
+  const openOnboarding = useOpenOnboarding();
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("settings.general.setup.label")}</Text>
+        <Text style={settingsStyles.rowHint}>{t("settings.general.setup.description")}</Text>
+      </View>
+      <Button variant="secondary" onPress={openOnboarding ?? undefined} disabled={!openOnboarding}>
+        {t("settings.general.setup.action")}
+      </Button>
+    </View>
   );
 }
 
@@ -738,7 +759,6 @@ function DesktopAppUpdateRow() {
           </Text>
         </View>
         <SegmentedControl
-          size="sm"
           value={settings.releaseChannel}
           onValueChange={handleReleaseChannelChange}
           options={releaseChannelOptions}
@@ -766,7 +786,6 @@ function DesktopAppUpdateRow() {
         <View style={styles.aboutUpdateActions}>
           <Button
             variant="outline"
-            size="sm"
             onPress={handleCheckForUpdates}
             disabled={isChecking || isInstalling}
           >
@@ -774,7 +793,6 @@ function DesktopAppUpdateRow() {
           </Button>
           <Button
             variant="default"
-            size="sm"
             onPress={handleInstallUpdate}
             disabled={isChecking || isInstalling || !isUpdateReady}
           >

@@ -216,7 +216,7 @@ function InstallationWelcomeForm({
           </Text>
         ) : null}
         <Button
-          size="lg"
+          size="md"
           disabled={state.busy || !state.password.trim()}
           onPress={connect}
           testID="installation-unlock"

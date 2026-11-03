@@ -294,6 +294,7 @@ export function HostAgentsPage({ serverId }: { serverId: string }) {
     <View>
       {isConnected ? (
         <SettingsSection title={t("settings.hostSections.agents")}>
+          {/* Vorteo saves through installation-aware shared settings; upstream's PaseoToolsCard serves its setup walkthrough. */}
           <InjectPaseoToolsCard serverId={serverId} />
           <BrowserToolsOptInCard serverId={serverId} />
           <AppendSystemPromptCard serverId={serverId} />
@@ -603,12 +604,7 @@ function ConnectionRow({
         </Text>
       </View>
       <Text style={latencyTextStyle}>{latencyText}</Text>
-      <Button
-        variant="ghost"
-        size="sm"
-        textStyle={destructiveTextStyle}
-        onPress={handlePressRemove}
-      >
+      <Button variant="ghost" textStyle={destructiveTextStyle} onPress={handlePressRemove}>
         {t("settings.host.connections.removeAction")}
       </Button>
     </View>
@@ -731,7 +727,6 @@ function RestartDaemonCard({ host }: { host: HostProfile }) {
         </View>
         <Button
           variant="outline"
-          size="sm"
           leftIcon={restartIcon}
           onPress={handleRestart}
           disabled={isRestarting || !daemonClient || !isConnected}
@@ -751,7 +746,6 @@ function RestartDaemonCard({ host }: { host: HostProfile }) {
           </View>
           <Button
             variant="outline"
-            size="sm"
             onPress={handleRestartAndCloseTerminals}
             disabled={isRestarting || !daemonClient || !isConnected}
             testID="host-page-restart-close-terminals-button"
@@ -935,7 +929,6 @@ function UpdateDaemonCard({ host }: { host: HostProfile }) {
         </View>
         <Button
           variant="outline"
-          size="sm"
           leftIcon={updateIcon}
           onPress={handleUpdate}
           disabled={desktopManaged || isUpdating || !daemonClient || !isConnected}
@@ -1208,7 +1201,6 @@ function AppendSystemPromptCard({ serverId }: { serverId: string }) {
           </View>
           <Button
             variant="outline"
-            size="sm"
             onPress={handleOpen}
             testID="host-page-append-system-prompt-edit"
           >
@@ -1396,7 +1388,6 @@ function RemoveHostSection({
           </View>
           <Button
             variant="outline"
-            size="sm"
             leftIcon={removeIcon}
             textStyle={destructiveTextStyle}
             onPress={handleOpenConfirm}
@@ -1507,7 +1498,6 @@ function TerminalProfileRow({
       <View style={terminalProfileStyles.rowActions}>
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={moveUpIcon}
           onPress={handleMoveUp}
           disabled={isFirst}
@@ -1516,7 +1506,6 @@ function TerminalProfileRow({
         />
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={moveDownIcon}
           onPress={handleMoveDown}
           disabled={isLast}
@@ -1525,7 +1514,6 @@ function TerminalProfileRow({
         />
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={editProfileIcon}
           onPress={handleEdit}
           accessibilityLabel={t("settings.host.terminalProfiles.editProfile")}
@@ -1533,7 +1521,6 @@ function TerminalProfileRow({
         />
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={removeProfileIcon}
           onPress={handleRemove}
           accessibilityLabel={t("settings.host.terminalProfiles.remove")}
@@ -1698,7 +1685,6 @@ function TerminalProfilesSection({ serverId }: { serverId: string }) {
     () => (
       <Button
         variant="ghost"
-        size="sm"
         leftIcon={addProfileIcon}
         onPress={handleAddOpen}
         disabled={!isConnected || !profiles}

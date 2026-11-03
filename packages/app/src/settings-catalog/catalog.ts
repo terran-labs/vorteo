@@ -33,6 +33,7 @@ export type SettingScope = "device" | "installation" | "environment";
 export interface SettingsAvailability {
   /** Electron desktop app only. */
   desktopOnly?: boolean;
+  hardwareKeyboardOnly?: boolean;
   /** Browser and Electron only. */
   webOnly?: boolean;
   /** iOS and Android only. */
@@ -275,7 +276,7 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     section: "chat",
     label: "Keyboard shortcuts",
     legacySlugs: ["shortcuts"],
-    desktopOnly: true,
+    hardwareKeyboardOnly: true,
   },
 
   {
@@ -1010,6 +1011,7 @@ export function resolveSettingsTarget(slug: string): SettingsTarget {
 }
 
 export interface SettingsAvailabilityContext {
+  hardwareKeyboardPresent?: boolean;
   isDesktopApp: boolean;
   isWeb: boolean;
   isNative: boolean;
@@ -1021,6 +1023,7 @@ export function isAvailable(
   item: SettingsAvailability,
   context: SettingsAvailabilityContext,
 ): boolean {
+  if (item.hardwareKeyboardOnly && !context.hardwareKeyboardPresent) return false;
   if (item.desktopOnly && !context.isDesktopApp) return false;
   if (item.webOnly && !context.isWeb) return false;
   if (item.nativeOnly && !context.isNative) return false;

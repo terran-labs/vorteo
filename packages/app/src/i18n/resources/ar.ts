@@ -676,6 +676,7 @@ export const ar: TranslationResources = {
         renameAgent: "إعادة تسمية الوكيل",
       },
       actions: {
+        exitFocusMode: "إنهاء وضع التركيز",
         newTab: "علامة تبويب جديدة",
         newAgent: "وكيل جديد",
         newTerminal: "محطة جديدة",
@@ -1592,6 +1593,8 @@ export const ar: TranslationResources = {
       cli: {
         statusFailed: "غير قادر على التحقق من حالة تثبيت CLI.",
         installFailed: "غير قادر على تثبيت VorteoCLI.",
+        uninstallFailed: "تعذر إلغاء تثبيت Vorteo CLI.",
+        keptForeign: "تم الإبقاء على أمر paseo لم يثبته Vorteo. احذفه بنفسك لإلغاء تثبيته.",
       },
     },
   },
@@ -1693,6 +1696,60 @@ export const ar: TranslationResources = {
   },
   onboarding: {
     title: "مرحبا بكم في Vorteo",
+    setup: {
+      title: "Vorteo",
+      stepCounter: "الخطوة {{current}} من {{total}}",
+      skip: "تخطي الإعداد",
+      continue: "متابعة",
+      finish: "إنهاء",
+      steps: {
+        appearance: {
+          label: "المظهر",
+          title: "مرحبًا بك في Vorteo",
+          description: "لنبدأ باختيار المظهر",
+        },
+        providers: {
+          label: "المزوّدون",
+          title: "وكلاؤك",
+          description: "يشغّل Vorteo أدوات CLI للوكلاء المثبتة على هذا الكمبيوتر",
+        },
+        projects: {
+          label: "المشاريع",
+          title: "أضف مشاريعك",
+          description: "أين تريد أن يعمل وكلاؤك",
+          addProject: "إضافة مشروع",
+          added: "تمت الإضافة",
+          suggestions: {
+            loading: "جارٍ البحث عن المجلدات التي عملت فيها",
+            empty: "لم يتم العثور على مشاريع حديثة",
+            lastUsed: "آخر استخدام {{time}}",
+            addSelected_one: "إضافة مشروع واحد ({{count}})",
+            addSelected_other: "إضافة {{count}} مشاريع",
+            adding: "جارٍ الإضافة…",
+            addFailed: "تعذّرت إضافة هذا المجلد",
+          },
+        },
+        orchestration: {
+          label: "التنسيق",
+          title: "اسمح للوكلاء باستخدام Vorteo",
+          description: "اسمح لوكلائك بإنشاء مساحات عمل والتحدث مع وكلاء آخرين",
+        },
+        phone: {
+          label: "الجوال",
+          title: "خذ وكلاءك معك",
+          description:
+            "يتيح لك تطبيق الجوال الأصلي كامل الميزات التحكم في أي كمبيوتر يعمل عليه Vorteo من هاتفك",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "اختر طريقة الاتصال",
+          connectDocs: "الوثائق",
+          openConnectDocs: "افتح وثائق الاتصال",
+          recommended: "موصى به",
+          relay: { title: "التتابع", hint: "مشفّر من طرف إلى طرف، امسح رمز QR" },
+          tailscale: { title: "Tailscale", hint: "يتطلب بعض الإعداد" },
+        },
+      },
+    },
     subtitle: "قم بتوصيل جهاز الكمبيوتر الخاص بك للبدء",
     actions: {
       settings: "إعدادات",
@@ -1911,6 +1968,8 @@ export const ar: TranslationResources = {
       directConnectionHint:
         "بدون التتابع، اتصل مباشرة عبر TCP أو Tailscale أو شبكة VPN أخرى. لن يتم إنشاء رمز QR.",
       updateRequired: "حدّث المضيف لتمكين التتابع من Vorteo Desktop.",
+      tailscaleDocs: "إعداد Tailscale",
+      tailscaleDocsAccessibility: "اقرأ كيفية الاتصال عبر Tailscale",
       unavailable: "عرض الاقتران غير متاح.",
       hint: "قم بمسح رمز QR هذا باستخدام Vorteo على هاتفك، أو انسخ الرابط أدناه.",
       securityWarning:
@@ -2428,6 +2487,11 @@ export const ar: TranslationResources = {
     general: {
       title: "عام",
       sending: "الإرسال",
+      setup: {
+        label: "الإعداد الأولي",
+        description: "أعد المرور على المظهر والمزوّدين والمشاريع وإقران الهاتف",
+        action: "إظهار الإعداد مجددًا",
+      },
       browserData: {
         title: "بيانات المتصفح",
         siteData: "ملفات تعريف الارتباط وبيانات المواقع",
@@ -2669,6 +2733,7 @@ export const ar: TranslationResources = {
         agentInput: "إدخال Agent",
       },
       help: {
+        toggleFocusMode: "تبديل وضع التركيز",
         openProject: "مشروع مفتوح",
         newWorkspace: "مساحة عمل جديدة",
         newWorktree: "شجرة عمل جديدة",
@@ -2716,6 +2781,11 @@ export const ar: TranslationResources = {
       },
     },
     integrations: {
+      actions: {
+        install: "ثَبَّتَ",
+        installing: "جارٍ التثبيت...",
+        installed: "تم التثبيت",
+      },
       title: "التكامل",
       docs: {
         cli: "مستندات CLI",
@@ -2724,11 +2794,7 @@ export const ar: TranslationResources = {
       commandLine: {
         title: "سطر الأوامر",
         description: "وكلاء التحكم والبرنامج النصي من المحطة الطرفية الخاصة بك",
-      },
-      actions: {
-        install: "ثَبَّتَ",
-        installing: "جارٍ التثبيت...",
-        installed: "تم التثبيت",
+        accessibilityLabel: "تثبيت Vorteo CLI",
       },
     },
     permissions: {
@@ -2806,7 +2872,7 @@ export const ar: TranslationResources = {
         ...en.settings.host.skills,
         sectionTitle: "مهارات التنسيق",
         title: "مهارات التنسيق",
-        description: "قم بتعليم عملائك كيفية التنسيق من خلال CLI",
+        description: "علّم وكلاءك كيفية استخدام أدوات Vorteo",
         updateAvailable: "التحديث متاح",
         updateTitle: "تحديث مهارات Vorteo ؟",
         updateFallback: "مزامنة المهارات المجمعة لجهازك.",
@@ -2850,6 +2916,7 @@ export const ar: TranslationResources = {
           title: "تمكين أدوات Vorteo",
           hint: "سيتمكن الوكلاء من إدارة أشجار العمل والوكلاء والجداول الزمنية",
           accessibilityLabel: "حقن أدوات Vorteo",
+          updateFailed: "تعذر تحديث أدوات Vorteo.",
         },
         systemPrompt: {
           title: "موجه النظام",

@@ -1,3 +1,5 @@
+import { useContributedThemes } from "@/appearance/provider";
+import type { PluginThemeOption } from "@/plugins/themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
@@ -11,7 +13,6 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
-import { useContributedThemes } from "@/appearance/provider";
 import { Button } from "@/components/ui/button";
 import {
   EditingTextInput as TextInput,
@@ -38,7 +39,6 @@ import {
   type Theme,
 } from "@/styles/theme";
 import { isNative } from "@/constants/platform";
-import type { PluginThemeOption } from "@/plugins/themes";
 import { settingsStyles } from "@/styles/settings";
 import { ThemePreviewGrid } from "./theme-preview-grid";
 import { AppearancePreview } from "./appearance-preview";
@@ -306,7 +306,6 @@ function ContentWidthRow({ value, onChange }: ContentWidthRowProps) {
         {value === null ? null : (
           <Button
             variant="ghost"
-            size="sm"
             onPress={reset}
             accessibilityLabel={t("settings.appearance.layout.resetAccessibility")}
           >

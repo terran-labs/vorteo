@@ -8,6 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Merge Paseo through `eb8b5b8f9`, the cutoff for this synchronization: hardware keyboard shortcuts on native and desktop, Codex multi-file patch diffs, linked issue and pull request references, plugin screen progress, two-size controls, Apache-2.0 license declarations and fixes for ACP, Pi, cron days and workspaces. Shortcut settings appear wherever a hardware keyboard is available. Upstream's first-run walkthrough is merged but not shown; Vorteo keeps its own onboarding. Upstream's interrupted-agent recovery now defaults off, while Vorteo's tracked restart continuation is unaffected.
 - Merge `main` with the installed Host deliveries into the upstream integration. Coordinator admission keeps ignoring a canceled update's stale preparation within main's refactored blocker check, Claude sessions keep both runtime safety and full sign-in adoption, and settings rows show both summaries and hints.
 - Record the stop-turn account switching commit in history. Its reviewed changes and later corrections were already integrated, so the merge keeps the integrated source unchanged.
 

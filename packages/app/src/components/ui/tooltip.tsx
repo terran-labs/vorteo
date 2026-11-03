@@ -1,3 +1,4 @@
+import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
 import { interfaceRect } from "@/appearance/interface-geometry";
 import { useVortonTouch } from "@/vorton-touch";
 import { Modal } from "@/components/ui/modal";
@@ -34,7 +35,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { FloatingSurface } from "@/components/ui/floating";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { isNative, isWeb } from "@/constants/platform";
-import { getOverlayRoot, OVERLAY_Z, useWebOverlayRegistration } from "@/lib/overlay-root";
+import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
 
 type Side = "top" | "bottom" | "left" | "right";
 type Align = "start" | "center" | "end";
@@ -540,7 +541,7 @@ export function TooltipContent({
   const ctx = useTooltipContext("TooltipContent");
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const handleOverlayKey = useCallback(
-    (event: KeyboardEvent) => {
+    (event: KeyboardInputEvent) => {
       if (event.key !== "Escape") return false;
       event.preventDefault();
       ctx.setOpen(false);
@@ -548,11 +549,12 @@ export function TooltipContent({
     },
     [ctx],
   );
-  const setOverlayScope = useWebOverlayRegistration({
+  const setOverlayScope = useOverlayRegistration({
     active: isWeb && ctx.open && ctx.enabled,
     layer: OVERLAY_Z.tooltip,
     onKeyDown: handleOverlayKey,
     focusBehavior: "none",
+    keys: ["Escape"],
   });
   const [triggerRect, setTriggerRect] = useState<Rect | null>(null);
   const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null);

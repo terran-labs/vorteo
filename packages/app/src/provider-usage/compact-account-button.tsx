@@ -21,7 +21,7 @@ export function CompactAccountButton({
       {...props}
       testID={testID}
       variant="outline"
-      size="xs"
+      size="sm"
       style={[
         styles.target,
         dense && !touch && styles.denseTarget,
@@ -38,17 +38,17 @@ const styles = StyleSheet.create((theme) => ({
   dangerOutline: { borderColor: theme.colors.destructive },
   // Paint the border on the control itself so touch sizing cannot separate it from its label.
   target: {
-    height: CONTROL_HEIGHTS.field,
-    minHeight: CONTROL_HEIGHTS.field,
-    minWidth: CONTROL_HEIGHTS.field,
+    height: CONTROL_HEIGHTS.md.xs,
+    minHeight: CONTROL_HEIGHTS.md.xs,
+    minWidth: CONTROL_HEIGHTS.md.xs,
     borderWidth: 1,
     paddingHorizontal: theme.spacing[2],
     paddingVertical: 0,
     gap: theme.spacing[2],
   },
   denseTarget: {
-    height: CONTROL_HEIGHTS.tight,
-    minHeight: CONTROL_HEIGHTS.tight,
+    height: CONTROL_HEIGHTS.sm,
+    minHeight: CONTROL_HEIGHTS.sm,
     borderRadius: theme.borderRadius.md,
     paddingVertical: 0,
   },

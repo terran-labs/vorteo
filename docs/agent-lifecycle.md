@@ -20,6 +20,11 @@ Each live agent in `AgentManager` carries a `lastStatus` of `initializing`, `idl
 
 ## Daemon restart recovery
 
+Startup recovery is off by default. Enable `agents.resumeOnStartup` in host config or
+Host settings > Agents to opt in. Explicitly configured values and `agents.resumePrompt`
+remain in effect. Disabling recovery consumes pending startup intent; enabling it later
+does not revive old work.
+
 Paseo's startup recovery selects agents recorded as running and can send the configured
 `agents.resumePrompt`. Vorteo restricts this new path to an already loaded provider session
 that supports a final dispatch permit. Currently only a connected Codex session with a loaded
@@ -32,7 +37,8 @@ the permit. Recovery cannot release a usage hold or clear an explicit stop. The 
 valid through the provider's final turn dispatch, rather than relying on an earlier storage read.
 
 The existing Vorteo tracked restart continuation remains separate. Its durable queue entry,
-exact request release and cold provider loading are preserved. Hosted-session recovery and
+exact request release and cold provider loading are preserved, even when `agents.resumeOnStartup`
+is unset or false. Hosted-session recovery and
 native-goal continuation retain their own ownership checks. This setting does not approve a
 restart or bypass installation controls.
 

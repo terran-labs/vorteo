@@ -684,6 +684,7 @@ export const es: TranslationResources = {
         renameAgent: "Cambiar nombre del agente",
       },
       actions: {
+        exitFocusMode: "Salir del modo de concentración",
         newTab: "Nueva pestaña",
         newAgent: "Nuevo agente",
         newTerminal: "Nueva terminal",
@@ -1638,6 +1639,9 @@ export const es: TranslationResources = {
       cli: {
         statusFailed: "No se puede verificar el estado de instalación deCLI.",
         installFailed: "No se puede instalar elVorteoCLI.",
+        uninstallFailed: "No se pudo desinstalar la CLI de Vorteo.",
+        keptForeign:
+          "Se conservó un comando paseo que Vorteo no instaló. Elimínalo tú mismo para desinstalarlo.",
       },
     },
   },
@@ -1740,6 +1744,60 @@ export const es: TranslationResources = {
   },
   onboarding: {
     title: "Bienvenido aVorteo",
+    setup: {
+      title: "Vorteo",
+      stepCounter: "Paso {{current}} de {{total}}",
+      skip: "Omitir configuración",
+      continue: "Continuar",
+      finish: "Finalizar",
+      steps: {
+        appearance: {
+          label: "Apariencia",
+          title: "Te damos la bienvenida a Vorteo",
+          description: "Empecemos por elegir una apariencia",
+        },
+        providers: {
+          label: "Proveedores",
+          title: "Tus agentes",
+          description: "Vorteo usa las CLI de agentes que ya están en este ordenador",
+        },
+        projects: {
+          label: "Proyectos",
+          title: "Añade tus proyectos",
+          description: "Dónde quieres que trabajen tus agentes",
+          addProject: "Añadir proyecto",
+          added: "Añadido",
+          suggestions: {
+            loading: "Buscando carpetas en las que has trabajado",
+            empty: "No se encontraron proyectos recientes",
+            lastUsed: "Último uso {{time}}",
+            addSelected_one: "Añadir {{count}} proyecto",
+            addSelected_other: "Añadir {{count}} proyectos",
+            adding: "Añadiendo…",
+            addFailed: "No se pudo añadir esta carpeta",
+          },
+        },
+        orchestration: {
+          label: "Orquestación",
+          title: "Deja que los agentes usen Vorteo",
+          description: "Deja que tus agentes creen espacios de trabajo y hablen con otros agentes",
+        },
+        phone: {
+          label: "Móvil",
+          title: "Lleva tus agentes contigo",
+          description:
+            "La app móvil nativa completa te permite controlar cualquier ordenador con Vorteo desde tu teléfono",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "Elige cómo conectarte",
+          connectDocs: "Docs",
+          openConnectDocs: "Abrir la documentación de conectividad",
+          recommended: "Recomendado",
+          relay: { title: "Relé", hint: "Cifrado de extremo a extremo, escanea un código QR" },
+          tailscale: { title: "Tailscale", hint: "Requiere algo de configuración" },
+        },
+      },
+    },
     subtitle: "Conecte su computadora para comenzar",
     actions: {
       settings: "Ajustes",
@@ -1960,6 +2018,8 @@ export const es: TranslationResources = {
       directConnectionHint:
         "Sin relé, conéctese directamente por TCP, Tailscale u otra VPN. No se crea ningún código QR.",
       updateRequired: "Actualice el host para habilitar el relé desde Vorteo Desktop.",
+      tailscaleDocs: "Configurar Tailscale",
+      tailscaleDocsAccessibility: "Leer cómo conectarse con Tailscale",
       unavailable: "Oferta de maridaje no disponible.",
       hint: "Escanee este códigoQRconVorteoen su teléfono o copie el enlace a continuación.",
       securityWarning:
@@ -2441,6 +2501,12 @@ export const es: TranslationResources = {
     general: {
       title: "General",
       sending: "Envío",
+      setup: {
+        label: "Configuración inicial",
+        description:
+          "Vuelve a recorrer apariencia, proveedores, proyectos y emparejamiento del teléfono",
+        action: "Mostrar configuración de nuevo",
+      },
       browserData: {
         title: "Datos del navegador",
         siteData: "Cookies y datos de sitios",
@@ -2690,6 +2756,7 @@ export const es: TranslationResources = {
         agentInput: "EntradaAgent",
       },
       help: {
+        toggleFocusMode: "Alternar modo de enfoque",
         openProject: "Abrir proyecto",
         newWorkspace: "Nuevo espacio de trabajo",
         newWorktree: "Nuevo árbol de trabajo",
@@ -2737,6 +2804,11 @@ export const es: TranslationResources = {
       },
     },
     integrations: {
+      actions: {
+        install: "Instalar",
+        installing: "Instalando...",
+        installed: "Instalado",
+      },
       title: "Integraciones",
       docs: {
         cli: "DocumentosCLI",
@@ -2745,11 +2817,7 @@ export const es: TranslationResources = {
       commandLine: {
         title: "línea de comando",
         description: "Agentes de control y script desde tu terminal",
-      },
-      actions: {
-        install: "Instalar",
-        installing: "Instalando...",
-        installed: "Instalado",
+        accessibilityLabel: "Instalar la CLI de Vorteo",
       },
     },
     permissions: {
@@ -2827,7 +2895,7 @@ export const es: TranslationResources = {
         ...en.settings.host.skills,
         sectionTitle: "Habilidades de orquestación",
         title: "Habilidades de orquestación",
-        description: "Enseñe a sus agentes a orquestar a través delCLI",
+        description: "Enseña a tus agentes a usar las herramientas de Vorteo",
         updateAvailable: "Actualización disponible",
         updateTitle: "¿Actualizar las habilidades deVorteo?",
         updateFallback: "Sincronice las habilidades incluidas con su máquina.",
@@ -2873,6 +2941,7 @@ export const es: TranslationResources = {
           title: "Habilitar herramientasVorteo",
           hint: "Los agentes podrán gestionar árboles de trabajo, agentes y horarios.",
           accessibilityLabel: "Inyectar herramientasVorteo",
+          updateFailed: "No se pudieron actualizar las herramientas de Vorteo.",
         },
         systemPrompt: {
           title: "Aviso del sistema",

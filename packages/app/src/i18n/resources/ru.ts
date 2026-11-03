@@ -683,6 +683,7 @@ export const ru: TranslationResources = {
         renameAgent: "Переименовать агента",
       },
       actions: {
+        exitFocusMode: "Выйти из режима фокусировки",
         newTab: "Новая вкладка",
         newAgent: "Новый агент",
         newTerminal: "Новый терминал",
@@ -1619,6 +1620,9 @@ export const ru: TranslationResources = {
       cli: {
         statusFailed: "Не удалось проверить состояние установки CLI.",
         installFailed: "Не удалось установить Vorteo CLI.",
+        uninstallFailed: "Не удалось удалить Vorteo CLI.",
+        keptForeign:
+          "Команда paseo, установленная не Vorteo, оставлена. Чтобы удалить её, сделайте это вручную.",
       },
     },
   },
@@ -1722,6 +1726,61 @@ export const ru: TranslationResources = {
   },
   onboarding: {
     title: "Добро пожаловать в Vorteo",
+    setup: {
+      title: "Vorteo",
+      stepCounter: "Шаг {{current}} из {{total}}",
+      skip: "Пропустить настройку",
+      continue: "Продолжить",
+      finish: "Готово",
+      steps: {
+        appearance: {
+          label: "Оформление",
+          title: "Добро пожаловать в Vorteo",
+          description: "Начнём с выбора оформления",
+        },
+        providers: {
+          label: "Провайдеры",
+          title: "Ваши агенты",
+          description: "Vorteo использует CLI агентов, уже установленные на этом компьютере",
+        },
+        projects: {
+          label: "Проекты",
+          title: "Добавьте проекты",
+          description: "Где будут работать ваши агенты",
+          addProject: "Добавить проект",
+          added: "Добавлено",
+          suggestions: {
+            loading: "Ищем папки, в которых вы работали",
+            empty: "Недавних проектов не найдено",
+            lastUsed: "Последнее использование {{time}}",
+            addSelected_one: "Добавить {{count}} проект",
+            addSelected_other: "Добавить проекты: {{count}}",
+            adding: "Добавляем…",
+            addFailed: "Не удалось добавить эту папку",
+          },
+        },
+        orchestration: {
+          label: "Оркестрация",
+          title: "Дайте агентам доступ к Vorteo",
+          description:
+            "Разрешите агентам создавать рабочие пространства и общаться с другими агентами",
+        },
+        phone: {
+          label: "Мобильный",
+          title: "Агенты всегда под рукой",
+          description:
+            "Полнофункциональное нативное мобильное приложение позволяет управлять любым компьютером с Vorteo с телефона",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "Выберите способ подключения",
+          connectDocs: "Документация",
+          openConnectDocs: "Открыть документацию по подключению",
+          recommended: "Рекомендуется",
+          relay: { title: "Ретранслятор", hint: "Сквозное шифрование, отсканируйте QR-код" },
+          tailscale: { title: "Tailscale", hint: "Требует небольшой настройки" },
+        },
+      },
+    },
     subtitle: "Подключите компьютер, чтобы начать",
     actions: {
       settings: "Настройки",
@@ -1943,6 +2002,8 @@ export const ru: TranslationResources = {
       directConnectionHint:
         "Без ретранслятора подключайтесь напрямую через TCP, Tailscale или другую VPN. QR-код создаваться не будет.",
       updateRequired: "Обновите хост, чтобы включить ретранслятор из Vorteo Desktop.",
+      tailscaleDocs: "Настроить Tailscale",
+      tailscaleDocsAccessibility: "Узнать, как подключиться через Tailscale",
       unavailable: "Данные для сопряжения недоступны.",
       hint: "Отсканируйте этот QR-код с помощью Vorteo на телефоне или скопируйте ссылку ниже.",
       securityWarning:
@@ -2427,6 +2488,11 @@ export const ru: TranslationResources = {
     general: {
       title: "Основные",
       sending: "Отправка",
+      setup: {
+        label: "Первоначальная настройка",
+        description: "Снова пройти оформление, провайдеры, проекты и привязку телефона",
+        action: "Показать настройку снова",
+      },
       browserData: {
         title: "Данные браузера",
         siteData: "Файлы cookie и данные сайтов",
@@ -2677,6 +2743,7 @@ export const ru: TranslationResources = {
         agentInput: "Ввод для агента",
       },
       help: {
+        toggleFocusMode: "Переключить режим фокусировки",
         openProject: "Открыть проект",
         newWorkspace: "Новое рабочее пространство",
         newWorktree: "Новый worktree",
@@ -2724,6 +2791,11 @@ export const ru: TranslationResources = {
       },
     },
     integrations: {
+      actions: {
+        install: "Установить",
+        installing: "Установка...",
+        installed: "Установлено",
+      },
       title: "Интеграции",
       docs: {
         cli: "Документация CLI",
@@ -2732,11 +2804,7 @@ export const ru: TranslationResources = {
       commandLine: {
         title: "Командная строка",
         description: "Управляйте агентами и автоматизируйте их работу из терминала",
-      },
-      actions: {
-        install: "Установить",
-        installing: "Установка...",
-        installed: "Установлено",
+        accessibilityLabel: "Установить Vorteo CLI",
       },
     },
     permissions: {
@@ -2815,7 +2883,7 @@ export const ru: TranslationResources = {
       skills: {
         sectionTitle: "Навыки оркестрации",
         title: "Навыки оркестрации",
-        description: "Научите агентов координировать работу через CLI",
+        description: "Научите агентов пользоваться инструментами Vorteo",
         docs: "Навыки",
         openDocs: "Открыть документацию по навыкам",
         unavailable: "Подключитесь к этому хосту, чтобы управлять навыками оркестрации",
@@ -2864,6 +2932,7 @@ export const ru: TranslationResources = {
           title: "Включить инструменты Vorteo",
           hint: "Агенты смогут управлять worktree, агентами и расписаниями.",
           accessibilityLabel: "Добавить инструменты Vorteo",
+          updateFailed: "Не удалось обновить инструменты Vorteo.",
         },
         systemPrompt: {
           title: "Системный промпт",

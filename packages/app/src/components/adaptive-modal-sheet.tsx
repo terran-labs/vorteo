@@ -1,3 +1,4 @@
+import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -12,12 +13,7 @@ import type {
 } from "react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import {
-  getOverlayRoot,
-  OverlayLayerProvider,
-  useGlobalWebOverlayLayer,
-  useWebOverlayRegistration,
-} from "../lib/overlay-root";
+import { getOverlayRoot, OverlayLayerProvider, useGlobalOverlayLayer } from "../lib/overlay-root";
 import {
   BottomSheetHandle,
   useBottomSheetGestureHandlers,
@@ -115,7 +111,7 @@ const styles = StyleSheet.create((theme) => ({
     maxHeight: "85%",
     flexShrink: 1,
     minHeight: 0,
-    backgroundColor: theme.colors.surface1,
+    backgroundColor: theme.colors.surface0,
     borderRadius: theme.borderRadius.xl,
     borderWidth: 1,
     borderColor: theme.colors.surface2,
@@ -156,6 +152,12 @@ const styles = StyleSheet.create((theme) => ({
   closeButton: {
     padding: theme.spacing[SHEET_HEADER_CLOSE_PADDING_SCALE],
     borderRadius: theme.borderRadius.lg,
+  },
+  // Without a header the close button floats over the card's top-right corner.
+  floatingClose: {
+    position: "absolute",
+    top: theme.spacing[4],
+    right: theme.spacing[4],
   },
   searchRow: {
     flexDirection: "row",
@@ -515,8 +517,27 @@ export function InlineHeaderView({ header }: { header: SheetHeader }) {
   );
 }
 
+/**
+ * The sheet's action row: a top border, the sheet's side inset, and children spread across it.
+ * The sheet draws it for `footer`; a body that splits into panes renders it at the bottom of one.
+ */
+export function SheetFooter({
+  style,
+  children,
+}: {
+  style?: StyleProp<ViewStyle>;
+  children: ReactNode;
+}) {
+  return <View style={[styles.footer, style]}>{children}</View>;
+}
+
 export interface AdaptiveModalSheetProps {
-  header: SheetHeader;
+  /**
+   * The title row with the close button. Leave it out when the body draws its own chrome, such as
+   * a full-height side rail: the desktop card then floats the close button over its top-right
+   * corner, and the compact sheet closes from its handle.
+   */
+  header?: SheetHeader;
   visible: boolean;
   onClose: () => void;
   onDismiss?: () => void;
@@ -570,7 +591,7 @@ function CompactSheetBody({
   contentStyle,
   children,
 }: {
-  header: SheetHeader;
+  header?: SheetHeader;
   onClose: () => void;
   testID?: string;
   footer: ReactNode;
@@ -601,7 +622,7 @@ function CompactSheetBody({
   );
   return (
     <SheetVisibleFrame footer={footerView}>
-      <SheetHeaderView header={header} onClose={onClose} testID={testID} />
+      {header ? <SheetHeaderView header={header} onClose={onClose} testID={testID} /> : null}
       <View style={[styles.compactStaticContent, bodyStyle]}>
         {scrollable ? (
           <ScrollView
@@ -682,7 +703,7 @@ export function AdaptiveModalSheet({
   });
   const [shouldRenderWeb, setShouldRenderWeb] = useState(visible);
   const [isWebClosing, setIsWebClosing] = useState(false);
-  const modalLayer = useGlobalWebOverlayLayer("modal", isWeb && !isMobile && shouldRenderWeb);
+  const modalLayer = useGlobalOverlayLayer("modal", visible || shouldRenderWeb);
   const handleDismiss = useCallback(() => {
     handleSheetDismiss();
     onDismiss?.();
@@ -712,8 +733,8 @@ export function AdaptiveModalSheet({
     [desktopPlacement, isWebClosing, modalLayer],
   );
 
-  const handleWebOverlayKeyDown = useCallback(
-    (event: KeyboardEvent) => {
+  const handleOverlayKeyDown = useCallback(
+    (event: KeyboardInputEvent) => {
       if (event.key !== "Escape") return false;
       event.preventDefault();
       event.stopPropagation();
@@ -722,10 +743,11 @@ export function AdaptiveModalSheet({
     },
     [onClose],
   );
-  const setWebOverlayScope = useWebOverlayRegistration({
-    active: isWeb && !isMobile && visible,
+  const setOverlayScope = useOverlayRegistration({
+    keys: ["Escape"],
+    active: visible,
     layer: modalLayer,
-    onKeyDown: handleWebOverlayKeyDown,
+    onKeyDown: handleOverlayKeyDown,
   });
 
   useEffect(() => {
@@ -764,19 +786,21 @@ export function AdaptiveModalSheet({
         accessible={false}
         presentation={presentation}
       >
-        <CompactSheetBody
-          header={header}
-          onClose={onClose}
-          testID={testID}
-          footer={footerView}
-          isKeyboardVisible={isKeyboardVisible}
-          onScroll={onScroll}
-          scrollable={scrollable}
-          bodyStyle={bodyStyle}
-          contentStyle={contentStyle}
-        >
-          {children}
-        </CompactSheetBody>
+        <OverlayLayerProvider layer={modalLayer}>
+          <CompactSheetBody
+            header={header}
+            onClose={onClose}
+            testID={testID}
+            footer={footerView}
+            isKeyboardVisible={isKeyboardVisible}
+            onScroll={onScroll}
+            scrollable={scrollable}
+            bodyStyle={bodyStyle}
+            contentStyle={contentStyle}
+          >
+            {children}
+          </CompactSheetBody>
+        </OverlayLayerProvider>
       </IsolatedBottomSheetModal>
     );
   }
@@ -785,7 +809,7 @@ export function AdaptiveModalSheet({
     desktopHeight == null ? styles.desktopStaticContent : styles.compactStaticContent;
   const cardInner = (
     <OverlayLayerProvider layer={modalLayer}>
-      <SheetHeaderView header={header} onClose={onClose} />
+      {header ? <SheetHeaderView header={header} onClose={onClose} /> : null}
       <View style={[scrollable ? styles.desktopScrollContainer : desktopStaticStyle, bodyStyle]}>
         {scrollable ? (
           <ScrollView
@@ -804,6 +828,15 @@ export function AdaptiveModalSheet({
         )}
       </View>
       {footerView}
+      {header ? null : (
+        <View style={styles.floatingClose}>
+          <SheetHeaderIconButton
+            icon={X}
+            accessibilityLabel={t("common.actions.close")}
+            onPress={onClose}
+          />
+        </View>
+      )}
     </OverlayLayerProvider>
   );
 
@@ -814,13 +847,7 @@ export function AdaptiveModalSheet({
         style={ABSOLUTE_FILL_STYLE}
         onPress={onClose}
       />
-      <View
-        ref={setWebOverlayScope}
-        style={desktopCardStyle}
-        role="dialog"
-        aria-modal
-        tabIndex={-1}
-      >
+      <View ref={setOverlayScope} style={desktopCardStyle} role="dialog" aria-modal tabIndex={-1}>
         {cardInner}
       </View>
     </View>

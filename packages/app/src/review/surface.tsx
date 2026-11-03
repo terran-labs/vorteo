@@ -485,7 +485,7 @@ export function InlineReviewEditor({
           hitSlop={SMALL_ACTION_HIT_SLOP}
           onPress={onCancel}
           variant="ghost"
-          size="xs"
+          size="sm"
         >
           {t("review.comment.cancel")}
         </Button>
@@ -496,7 +496,7 @@ export function InlineReviewEditor({
           disabled={!canSave}
           onPress={handleSave}
           variant="default"
-          size="xs"
+          size="sm"
         >
           {t("review.comment.save")}
         </Button>

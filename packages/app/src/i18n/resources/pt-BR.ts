@@ -681,6 +681,7 @@ export const ptBR: TranslationResources = {
         renameAgent: "Renomear agente",
       },
       actions: {
+        exitFocusMode: "Sair do modo de foco",
         newTab: "Nova aba",
         newAgent: "Novo agente",
         newTerminal: "Novo terminal",
@@ -1622,6 +1623,9 @@ export const ptBR: TranslationResources = {
       cli: {
         statusFailed: "Não foi possível verificar o status de instalação da CLI.",
         installFailed: "Não foi possível instalar a CLI do Vorteo.",
+        uninstallFailed: "Não foi possível desinstalar a CLI do Vorteo.",
+        keptForeign:
+          "Um comando paseo que o Vorteo não instalou foi mantido. Remova-o manualmente para desinstalar.",
       },
     },
   },
@@ -1724,6 +1728,60 @@ export const ptBR: TranslationResources = {
   },
   onboarding: {
     title: "Bem-vindo ao Vorteo",
+    setup: {
+      title: "Vorteo",
+      stepCounter: "Etapa {{current}} de {{total}}",
+      skip: "Pular configuração",
+      continue: "Continuar",
+      finish: "Concluir",
+      steps: {
+        appearance: {
+          label: "Aparência",
+          title: "Boas-vindas ao Vorteo",
+          description: "Vamos começar escolhendo uma aparência",
+        },
+        providers: {
+          label: "Provedores",
+          title: "Seus agentes",
+          description: "O Vorteo usa as CLIs de agentes já instaladas neste computador",
+        },
+        projects: {
+          label: "Projetos",
+          title: "Adicione seus projetos",
+          description: "Onde você quer que seus agentes trabalhem",
+          addProject: "Adicionar projeto",
+          added: "Adicionado",
+          suggestions: {
+            loading: "Procurando pastas em que você trabalhou",
+            empty: "Nenhum projeto recente encontrado",
+            lastUsed: "Último uso {{time}}",
+            addSelected_one: "Adicionar {{count}} projeto",
+            addSelected_other: "Adicionar {{count}} projetos",
+            adding: "Adicionando…",
+            addFailed: "Não foi possível adicionar esta pasta",
+          },
+        },
+        orchestration: {
+          label: "Orquestração",
+          title: "Deixe os agentes usarem o Vorteo",
+          description: "Deixe seus agentes criarem workspaces e conversarem com outros agentes",
+        },
+        phone: {
+          label: "Celular",
+          title: "Leve seus agentes com você",
+          description:
+            "O app móvel nativo completo permite controlar qualquer computador com Vorteo pelo seu celular",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "Escolha como se conectar",
+          connectDocs: "Docs",
+          openConnectDocs: "Abrir documentação de conectividade",
+          recommended: "Recomendado",
+          relay: { title: "Relay", hint: "Criptografia de ponta a ponta, escaneie um código QR" },
+          tailscale: { title: "Tailscale", hint: "Requer alguma configuração" },
+        },
+      },
+    },
     subtitle: "Conecte seu computador para começar",
     actions: {
       settings: "Configurações",
@@ -1944,6 +2002,8 @@ export const ptBR: TranslationResources = {
       directConnectionHint:
         "Sem relay, conecte diretamente por TCP, Tailscale ou outra VPN. Nenhum código QR é criado.",
       updateRequired: "Atualize o host para ativar o relay pelo Vorteo Desktop.",
+      tailscaleDocs: "Configurar Tailscale",
+      tailscaleDocsAccessibility: "Ler como conectar pelo Tailscale",
       unavailable: "Oferta de pareamento indisponível.",
       hint: "Escaneie este QR code com o Vorteo no seu celular ou copie o link abaixo.",
       securityWarning:
@@ -2425,6 +2485,11 @@ export const ptBR: TranslationResources = {
     general: {
       title: "Geral",
       sending: "Envio",
+      setup: {
+        label: "Configuração inicial",
+        description: "Rever aparência, provedores, projetos e pareamento do celular",
+        action: "Mostrar configuração novamente",
+      },
       browserData: {
         title: "Dados do navegador",
         siteData: "Cookies e dados de sites",
@@ -2670,6 +2735,7 @@ export const ptBR: TranslationResources = {
         agentInput: "Entrada do agente",
       },
       help: {
+        toggleFocusMode: "Alternar modo de foco",
         openProject: "Abrir projeto",
         newWorkspace: "Novo workspace",
         newWorktree: "Novo worktree",
@@ -2718,6 +2784,11 @@ export const ptBR: TranslationResources = {
       },
     },
     integrations: {
+      actions: {
+        install: "Instalar",
+        installing: "Instalando...",
+        installed: "Instalado",
+      },
       title: "Integrações",
       docs: {
         cli: "Docs da CLI",
@@ -2726,11 +2797,7 @@ export const ptBR: TranslationResources = {
       commandLine: {
         title: "Linha de comando",
         description: "Controle agentes e execute scripts pelo terminal",
-      },
-      actions: {
-        install: "Instalar",
-        installing: "Instalando...",
-        installed: "Instalado",
+        accessibilityLabel: "Instalar a CLI do Vorteo",
       },
     },
     permissions: {
@@ -2808,7 +2875,7 @@ export const ptBR: TranslationResources = {
         ...en.settings.host.skills,
         sectionTitle: "Skills de orquestração",
         title: "Skills de orquestração",
-        description: "Ensine seus agentes a orquestrar pela CLI",
+        description: "Ensine seus agentes a usar as ferramentas do Vorteo",
         updateAvailable: "Atualização disponível",
         updateTitle: "Atualizar Vorteo skills?",
         updateFallback: "Sincronize as skills incluídas com sua máquina.",
@@ -2854,6 +2921,7 @@ export const ptBR: TranslationResources = {
           title: "Ativar ferramentas do Vorteo",
           hint: "Agentes poderão gerenciar worktrees, agentes e agendamentos",
           accessibilityLabel: "Injetar ferramentas do Vorteo",
+          updateFailed: "Não foi possível atualizar as ferramentas do Vorteo.",
         },
         systemPrompt: {
           title: "Prompt do sistema",

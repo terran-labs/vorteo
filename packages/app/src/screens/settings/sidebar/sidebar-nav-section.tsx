@@ -119,7 +119,6 @@ function SidebarNavRow({
       <View style={styles.rowActions}>
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={moveUpIcon}
           onPress={handleMoveUp}
           disabled={isFirst}
@@ -128,7 +127,6 @@ function SidebarNavRow({
         />
         <Button
           variant="ghost"
-          size="sm"
           leftIcon={moveDownIcon}
           onPress={handleMoveDown}
           disabled={isLast}

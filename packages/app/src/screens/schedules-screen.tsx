@@ -336,7 +336,6 @@ function SchedulesScreenBody({
             />
           ) : null}
           <SegmentedControl
-            size="sm"
             value={statusFilter}
             onValueChange={onStatusFilterChange}
             options={STATUS_FILTER_OPTIONS}
@@ -348,7 +347,6 @@ function SchedulesScreenBody({
           leftIcon={Plus}
           disabled={!canCreate}
           onPress={onCreate}
-          size="sm"
           testID="schedules-new"
         >
           New schedule

@@ -683,6 +683,7 @@ export const fr: TranslationResources = {
         renameAgent: "Renommer l’agent",
       },
       actions: {
+        exitFocusMode: "Quitter le mode concentration",
         newTab: "Nouvel onglet",
         newAgent: "Nouvel agent",
         newTerminal: "Nouveau terminal",
@@ -1633,6 +1634,9 @@ export const fr: TranslationResources = {
       cli: {
         statusFailed: "Impossible de vérifier l’installation de la CLI.",
         installFailed: "Impossible d’installer la CLI Vorteo.",
+        uninstallFailed: "Impossible de désinstaller la CLI Vorteo.",
+        keptForeign:
+          "Une commande paseo qui n’a pas été installée par Vorteo a été conservée. Supprimez-la vous-même pour la désinstaller.",
       },
     },
   },
@@ -1737,6 +1741,61 @@ export const fr: TranslationResources = {
   },
   onboarding: {
     title: "Bienvenue dans Vorteo",
+    setup: {
+      title: "Vorteo",
+      stepCounter: "Étape {{current}} sur {{total}}",
+      skip: "Passer la configuration",
+      continue: "Continuer",
+      finish: "Terminer",
+      steps: {
+        appearance: {
+          label: "Apparence",
+          title: "Bienvenue dans Vorteo",
+          description: "Commençons par choisir une apparence",
+        },
+        providers: {
+          label: "Fournisseurs",
+          title: "Vos agents",
+          description: "Vorteo utilise les CLI d'agents déjà installées sur cet ordinateur",
+        },
+        projects: {
+          label: "Projets",
+          title: "Ajoutez vos projets",
+          description: "Où voulez-vous que vos agents travaillent",
+          addProject: "Ajouter un projet",
+          added: "Ajouté",
+          suggestions: {
+            loading: "Recherche des dossiers dans lesquels vous avez travaillé",
+            empty: "Aucun projet récent trouvé",
+            lastUsed: "Dernière utilisation {{time}}",
+            addSelected_one: "Ajouter {{count}} projet",
+            addSelected_other: "Ajouter {{count}} projets",
+            adding: "Ajout…",
+            addFailed: "Impossible d'ajouter ce dossier",
+          },
+        },
+        orchestration: {
+          label: "Orchestration",
+          title: "Laissez les agents utiliser Vorteo",
+          description:
+            "Laissez vos agents créer des espaces de travail et parler à d'autres agents",
+        },
+        phone: {
+          label: "Mobile",
+          title: "Emportez vos agents partout",
+          description:
+            "L'application mobile native complète vous permet de contrôler n'importe quel ordinateur Vorteo depuis votre téléphone",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "Choisissez comment vous connecter",
+          connectDocs: "Docs",
+          openConnectDocs: "Ouvrir la documentation sur la connectivité",
+          recommended: "Recommandé",
+          relay: { title: "Relais", hint: "Chiffré de bout en bout, scannez un QR code" },
+          tailscale: { title: "Tailscale", hint: "Demande un peu de configuration" },
+        },
+      },
+    },
     subtitle: "Connectez votre ordinateur pour commencer",
     actions: {
       settings: "Paramètres",
@@ -1957,6 +2016,8 @@ export const fr: TranslationResources = {
       directConnectionHint:
         "Sans relais, connectez-vous directement via TCP, Tailscale ou un autre VPN. Aucun code QR n’est créé.",
       updateRequired: "Mettez à jour l’hôte pour activer le relais depuis Vorteo Desktop.",
+      tailscaleDocs: "Configurer Tailscale",
+      tailscaleDocsAccessibility: "Lire comment se connecter via Tailscale",
       unavailable: "Offre d’association indisponible.",
       hint: "Scannez ce code QR avec Vorteo sur votre téléphone, ou copiez le lien ci-dessous.",
       securityWarning:
@@ -2440,6 +2501,12 @@ export const fr: TranslationResources = {
     general: {
       title: "Général",
       sending: "Envoi",
+      setup: {
+        label: "Configuration initiale",
+        description:
+          "Reprendre l'apparence, les fournisseurs, les projets et l'appairage du téléphone",
+        action: "Afficher la configuration",
+      },
       browserData: {
         title: "Données du navigateur",
         siteData: "Cookies et données des sites",
@@ -2690,6 +2757,7 @@ export const fr: TranslationResources = {
         agentInput: "Zone de saisie",
       },
       help: {
+        toggleFocusMode: "Activer/désactiver le mode focus",
         openProject: "Ouvrir un projet",
         newWorkspace: "Nouvel espace de travail",
         newWorktree: "Nouveau worktree",
@@ -2738,6 +2806,11 @@ export const fr: TranslationResources = {
       },
     },
     integrations: {
+      actions: {
+        install: "Installer",
+        installing: "Installation…",
+        installed: "Installé",
+      },
       title: "Intégrations",
       docs: {
         cli: "Documentation CLI",
@@ -2746,11 +2819,7 @@ export const fr: TranslationResources = {
       commandLine: {
         title: "Ligne de commande",
         description: "Pilotez et scriptez vos agents depuis votre terminal",
-      },
-      actions: {
-        install: "Installer",
-        installing: "Installation…",
-        installed: "Installé",
+        accessibilityLabel: "Installer la CLI Vorteo",
       },
     },
     permissions: {
@@ -2829,7 +2898,7 @@ export const fr: TranslationResources = {
         ...en.settings.host.skills,
         sectionTitle: "Skills d’orchestration",
         title: "Skills d’orchestration",
-        description: "Apprenez à vos agents à orchestrer via la CLI",
+        description: "Apprenez à vos agents à utiliser les outils Vorteo",
         updateAvailable: "Mise à jour disponible",
         updateTitle: "Mettre à jour les skills Vorteo ?",
         updateFallback: "Synchronisez les skills fournis sur cet hôte.",
@@ -2875,6 +2944,7 @@ export const fr: TranslationResources = {
           title: "Activer les outils Vorteo",
           hint: "Les agents pourront gérer les worktrees, les agents et les planifications",
           accessibilityLabel: "Injecter les outils Vorteo",
+          updateFailed: "Impossible de mettre à jour les outils Vorteo.",
         },
         systemPrompt: {
           title: "Prompt système",

@@ -485,7 +485,7 @@ export function PullRequestPane({
           <View style={styles.toolbarActions}>
             <Button
               variant="ghost"
-              size="xs"
+              size="sm"
               leftIcon={ExternalLink}
               onPress={handleOpenPrUrl}
               style={styles.viewButton}
@@ -588,7 +588,7 @@ export function PullRequestPane({
             <View style={styles.activityToolbar}>
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 leftIcon={MessageSquarePlus}
                 onPress={handleAddAllToChat}
                 disabled={activityLoading}
@@ -883,7 +883,7 @@ function SingleActivityCard({
             <ActionFooter style={styles.cardFooter}>
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 leftIcon={MessageSquarePlus}
                 onPress={handleAddToChat}
               >
@@ -960,7 +960,7 @@ function ReviewCard({
           {collapsed && attachEnabled && canAddPullRequestActivityToChat(review) ? (
             <Button
               variant="ghost"
-              size="xs"
+              size="sm"
               leftIcon={MessageSquarePlus}
               onPress={handleAddToChat}
               style={styles.checkAddButton}
@@ -995,7 +995,7 @@ function ReviewCard({
             <ActionFooter style={styles.cardFooter}>
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 leftIcon={MessageSquarePlus}
                 onPress={handleAddToChat}
               >
@@ -1128,7 +1128,7 @@ function ThreadBlock({
             <ActionFooter style={styles.cardFooter}>
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 leftIcon={MessageSquarePlus}
                 onPress={handleAddThreadToChat}
               >

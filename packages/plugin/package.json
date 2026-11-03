@@ -2,6 +2,7 @@
   "name": "@getpaseo/plugin",
   "version": "26.11.206",
   "description": "Vorteo plugin SDK package",
+  "license": "Apache-2.0",
   "files": [
     "dist",
     "!dist/**/*.map"

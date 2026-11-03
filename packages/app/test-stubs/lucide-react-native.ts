@@ -137,3 +137,6 @@ export const Maximize2 = StubIcon;
 export const Workflow = StubIcon;
 export const ZoomIn = StubIcon;
 export const ZoomOut = StubIcon;
+export const Box = StubIcon;
+export const Gauge = StubIcon;
+export const KeyRound = StubIcon;

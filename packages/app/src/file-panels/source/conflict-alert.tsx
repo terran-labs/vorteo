@@ -33,17 +33,17 @@ export function FileConflictAlert({ state }: { state: FileConflictAlertState }) 
       {state.kind !== "deleted" ? (
         <ActionFooter style={styles.actions}>
           {state.kind === "changed" && state.canOverwrite ? (
-            <Button variant="outline" size="sm" onPress={state.onOverwrite}>
+            <Button variant="outline" onPress={state.onOverwrite}>
               {t("panels.file.editor.overwrite")}
             </Button>
           ) : null}
           {state.kind === "changed" ? (
-            <Button variant="outline" size="sm" onPress={state.onReload}>
+            <Button variant="outline" onPress={state.onReload}>
               {t("panels.file.editor.reload")}
             </Button>
           ) : null}
           {state.kind === "checkFailed" ? (
-            <Button variant="outline" size="sm" onPress={state.onRetry} loading={state.retrying}>
+            <Button variant="outline" onPress={state.onRetry} loading={state.retrying}>
               {t("common.actions.retry")}
             </Button>
           ) : null}

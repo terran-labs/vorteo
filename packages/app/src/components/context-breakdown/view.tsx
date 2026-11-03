@@ -18,7 +18,7 @@ import {
 } from "./model";
 import type { ContextBreakdownView } from "./use-context-breakdown";
 import type { SessionCost } from "@/components/context-window-meter.utils";
-import { SkeletonPulse, useSkeletonPulse } from "@/git/pull-request-panel/activity-skeleton";
+import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
 
 const DONUT_SIZE = 88;
 const DONUT_STROKE = 12;

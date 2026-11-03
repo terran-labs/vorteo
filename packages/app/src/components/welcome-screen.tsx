@@ -319,13 +319,7 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
             </View>
 
             <View style={styles.footerActions}>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={Play}
-                onPress={handleDemo}
-                testID="welcome-demo"
-              >
+              <Button variant="ghost" leftIcon={Play} onPress={handleDemo} testID="welcome-demo">
                 Demo
               </Button>
               <Text style={styles.footerSeparator} aria-hidden>
@@ -333,7 +327,6 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
               </Text>
               <Button
                 variant="ghost"
-                size="sm"
                 leftIcon={Settings}
                 onPress={handleOpenSettings}
                 testID="welcome-open-settings"

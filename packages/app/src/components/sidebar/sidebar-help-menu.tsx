@@ -1,4 +1,4 @@
-import { buttonControlHeight } from "@/components/ui/control-geometry";
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useCallback, useState } from "react";
 import { Text, View } from "react-native";
@@ -20,7 +20,7 @@ import { DensityIcon } from "@/components/ui/density-icon";
 import { SidebarFooterIconHighlight } from "./sidebar-footer-icon-highlight";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAppDiagnosticStore } from "@/diagnostics/store";
-import { useKeyboardShortcutsAvailable } from "@/keyboard/availability";
+import { useHardwareKeyboardPresent } from "@/keyboard";
 import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -90,7 +90,7 @@ export function SidebarHelpMenu({
 } = {}) {
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
-  const shortcutsAvailable = useKeyboardShortcutsAvailable();
+  const shortcutsAvailable = useHardwareKeyboardPresent();
   const openAppDiagnostic = useAppDiagnosticStore((state) => state.open);
   const setShortcutsDialogOpen = useKeyboardShortcutsStore((state) => state.setShortcutsDialogOpen);
   const [localOpen, setLocalOpen] = useState(false);
@@ -202,8 +202,8 @@ export function SidebarHelpMenu({
 const styles = StyleSheet.create((theme) => ({
   hiddenTrigger: { position: "absolute", width: 28, height: 28, opacity: 0, pointerEvents: "none" },
   trigger: (isCompact: boolean) => ({
-    width: isCompact ? buttonControlHeight.md : buttonControlHeight.xs,
-    height: isCompact ? buttonControlHeight.md : buttonControlHeight.xs,
+    width: isCompact ? CONTROL_HEIGHTS.md.xs : CONTROL_HEIGHTS.sm,
+    height: isCompact ? CONTROL_HEIGHTS.md.xs : CONTROL_HEIGHTS.sm,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: theme.spacing[1],

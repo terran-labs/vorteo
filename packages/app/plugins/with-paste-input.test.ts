@@ -138,3 +138,22 @@ class PaseoSceneDelegate: ExpoAppSceneDelegate {
     expect(configurePasteInputPodfile(configured)).toBe(configured);
   });
 });
+
+describe("hardware keyboard with Vorteo scene startup", () => {
+  it("observes the started window without changing cold notification launch options", () => {
+    const {
+      configureHardwareKeyboardAppDelegate,
+    } = require("../modules/paseo-hardware-keyboard/app.plugin.js");
+    const paste = configurePasteInputAppDelegate(sceneTemplate);
+    const configured = configureHardwareKeyboardAppDelegate(paste);
+    expect(configured.match(/factory.startReactNative\(/g)).toHaveLength(1);
+    expect(configured.indexOf("launchOptions: launchOptions")).toBeLessThan(
+      configured.indexOf("PaseoHardwareKeyboardWindow.observing(window)"),
+    );
+    expect(configured).toContain("response.notification.request.content.userInfo");
+    expect(configured).toContain("initial: appDelegate.vorteoInitialLaunchOptions");
+    expect(configured).toContain("provider.window = observedWindow");
+    expect(configured).not.toContain("super.scene(scene, willConnectTo:");
+    expect(configureHardwareKeyboardAppDelegate(configured)).toBe(configured);
+  });
+});

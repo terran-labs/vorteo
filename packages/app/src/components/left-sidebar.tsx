@@ -1211,7 +1211,7 @@ function DesktopSidebar({
                 {toolbar}
                 {hasActiveProjectFilter ? (
                   <View style={styles.sidebarModeRow}>
-                    <Button variant="ghost" size="xs" onPress={showAllProjects}>
+                    <Button variant="ghost" size="sm" onPress={showAllProjects}>
                       All projects
                     </Button>
                   </View>

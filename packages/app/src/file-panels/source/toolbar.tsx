@@ -132,7 +132,7 @@ export function TextFileToolbar({
           <View style={styles.actions}>
             {view && onViewChange ? (
               <SegmentedControl
-                size="xs"
+                size="sm"
                 value={view}
                 onValueChange={onViewChange}
                 testID="file-preview-mode"
@@ -141,7 +141,7 @@ export function TextFileToolbar({
             ) : null}
             {textContent !== undefined ? (
               <Button
-                size="xs"
+                size="sm"
                 variant="ghost"
                 leftIcon={Copy}
                 onPress={handleCopyAll}
@@ -153,7 +153,7 @@ export function TextFileToolbar({
             {/* Download sits immediately after Copy so every previewed file shares one action order. */}
             {onDownload ? (
               <Button
-                size="xs"
+                size="sm"
                 variant="ghost"
                 leftIcon={Download}
                 onPress={onDownload}

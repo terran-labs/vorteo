@@ -11,7 +11,6 @@ import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { CONTROL_HEIGHTS, createControlGeometry } from "@/components/ui/control-geometry";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
-import { useIsCompactFormFactor } from "@/constants/layout";
 import { DaemonConnectionTestError } from "@/utils/test-daemon-connection";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 
@@ -36,18 +35,10 @@ const styles = StyleSheet.create((theme) => {
       minWidth: 0,
     },
     // Boxed adornment next to the field: same height and radius as the field
-    // chrome of the active form size, and the shared interaction phases.
-    iconButtonSm: {
-      minHeight: CONTROL_HEIGHTS.compact,
-      width: CONTROL_HEIGHTS.compact,
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: theme.borderRadius.md,
-      backgroundColor: theme.colors.surface2,
-    },
-    iconButtonMd: {
-      minHeight: CONTROL_HEIGHTS.field,
-      width: CONTROL_HEIGHTS.field,
+    // chrome, and the shared interaction phases.
+    iconButton: {
+      minHeight: CONTROL_HEIGHTS.md,
+      width: CONTROL_HEIGHTS.md,
       alignItems: "center",
       justifyContent: "center",
       borderRadius: theme.borderRadius.lg,
@@ -93,7 +84,6 @@ export function AddRemoteSshHostModal({
 }: AddRemoteSshHostModalProps) {
   const { t } = useTranslation();
   const hosts = useHosts();
-  const isCompact = useIsCompactFormFactor();
   const { probeAndUpsertRemoteSshConnection } = useHostMutations();
   const targetRef = useRef("");
   const passwordRef = useRef("");
@@ -209,7 +199,6 @@ export function AddRemoteSshHostModal({
       >
         <FormTextInput
           ref={inputRef}
-          size={isCompact ? "md" : "sm"}
           testID="remote-ssh-target-input"
           accessibilityLabel={t("pairing.remoteSsh.fields.target")}
           initialValue=""

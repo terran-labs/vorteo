@@ -18,7 +18,7 @@ import {
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { HostFilter } from "@/components/hosts/host-filter";
 import { Button } from "@/components/ui/button";
-import type { FieldControlSize } from "@/components/ui/control-geometry";
+import type { ControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative } from "@/constants/platform";
@@ -158,7 +158,6 @@ export function WorkspaceLabelManagerModal({
             </Button>
           </ActionFooterLeading>
           <Button
-            size="md"
             style={styles.saveButton}
             disabled={disabled || !state.dirty}
             loading={state.pending}
@@ -317,7 +316,7 @@ function WorkspaceLabelEditView({
   onSubmit: () => void;
 }): ReactElement {
   const { t } = useTranslation();
-  const size: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
+  const size: ControlSize = "md";
   return (
     <>
       <Field label={t("workspaceLabels.manage.name")}>

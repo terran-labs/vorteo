@@ -245,7 +245,7 @@ function AgentLoadErrorView({
           <AgentLoadRecovery serverId={serverId} agentId={agentId} onRecovered={onRetry} />
         ) : null}
         <View style={styles.errorAction}>
-          <Button size="sm" variant="secondary" onPress={onRetry} testID="agent-load-error-retry">
+          <Button variant="secondary" onPress={onRetry} testID="agent-load-error-retry">
             {t("common.actions.retry")}
           </Button>
         </View>
@@ -1401,7 +1401,6 @@ function TimelineSyncErrorCallout({
             {t("agentPanel.states.timelineSyncFailed")}
           </Text>
           <Button
-            size="sm"
             variant="secondary"
             onPress={onRetry}
             disabled={isRetrying}

@@ -102,7 +102,7 @@ function CatalogTile({ entry, width, installing, error, onInstall }: CatalogTile
           </View>
         </View>
         <Button
-          size="xs"
+          size="sm"
           variant="outline"
           disabled={installing}
           loading={installing}

@@ -762,7 +762,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
   },
   actionButton: {
-    minHeight: CONTROL_HEIGHTS.field,
+    minHeight: CONTROL_HEIGHTS.md.xs,
     justifyContent: "center",
     paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[2],

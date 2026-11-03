@@ -714,6 +714,7 @@ export const en = {
         renameAgent: "Rename agent",
       },
       actions: {
+        exitFocusMode: "Exit focus mode",
         newTab: "New tab",
         newAgent: "New agent",
         newTerminal: "New terminal",
@@ -1657,6 +1658,9 @@ export const en = {
       cli: {
         statusFailed: "Unable to check CLI install status.",
         installFailed: "Unable to install the Vorteo CLI.",
+        uninstallFailed: "Unable to uninstall the Vorteo CLI.",
+        keptForeign:
+          "Kept a paseo command that Vorteo didn't install. Remove it yourself to uninstall it.",
       },
     },
   },
@@ -1759,6 +1763,60 @@ export const en = {
   },
   onboarding: {
     title: "Welcome to Vorteo",
+    setup: {
+      title: "Vorteo",
+      stepCounter: "Step {{current}} of {{total}}",
+      skip: "Skip setup",
+      continue: "Continue",
+      finish: "Finish",
+      steps: {
+        appearance: {
+          label: "Appearance",
+          title: "Welcome to Vorteo",
+          description: "Let's start by picking a look",
+        },
+        providers: {
+          label: "Providers",
+          title: "Your agents",
+          description: "Vorteo runs the agent CLIs already on this computer",
+        },
+        projects: {
+          label: "Projects",
+          title: "Add your projects",
+          description: "Where do you want your agents to work on",
+          addProject: "Add project",
+          added: "Added",
+          suggestions: {
+            loading: "Looking for folders you've worked in",
+            empty: "No recent projects found",
+            lastUsed: "Last used {{time}}",
+            addSelected_one: "Add {{count}} project",
+            addSelected_other: "Add {{count}} projects",
+            adding: "Adding…",
+            addFailed: "Couldn't add this folder",
+          },
+        },
+        orchestration: {
+          label: "Orchestration",
+          title: "Let agents use Vorteo",
+          description: "Let your agents create workspaces and talk to other agents",
+        },
+        phone: {
+          label: "Mobile",
+          title: "Take your agents with you",
+          description:
+            "The fully featured native mobile app allows you to control any Vorteo computer from your phone",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "Choose how to connect",
+          connectDocs: "Docs",
+          openConnectDocs: "Open connectivity documentation",
+          recommended: "Recommended",
+          relay: { title: "Relay", hint: "End-to-end encrypted, scan a QR code" },
+          tailscale: { title: "Tailscale", hint: "Requires some setup" },
+        },
+      },
+    },
     subtitle: "Connect your computer to get started",
     actions: {
       settings: "Settings",
@@ -1977,6 +2035,8 @@ export const en = {
       directConnectionHint:
         "Without relay, connect directly over TCP, Tailscale, or another VPN. No QR code is created.",
       updateRequired: "Update the host to enable relay from Vorteo Desktop.",
+      tailscaleDocs: "Set up Tailscale",
+      tailscaleDocsAccessibility: "Read how to connect over Tailscale",
       unavailable: "Pairing offer unavailable.",
       hint: "Scan this QR code with Vorteo on your phone, or copy the link below.",
       securityWarning:
@@ -2579,6 +2639,11 @@ export const en = {
     general: {
       title: "General",
       sending: "Sending",
+      setup: {
+        label: "First-run setup",
+        description: "Walk through appearance, providers, projects and phone pairing again",
+        action: "Show setup again",
+      },
       browserData: {
         title: "Browser data",
         siteData: "Cookies and site data",
@@ -2856,6 +2921,7 @@ export const en = {
         agentInput: "Agent Input",
       },
       help: {
+        toggleFocusMode: "Toggle focus mode",
         openProject: "Open project",
         newWorkspace: "New workspace",
         newWorktree: "New worktree",
@@ -2903,6 +2969,11 @@ export const en = {
       },
     },
     integrations: {
+      actions: {
+        install: "Install",
+        installing: "Installing...",
+        installed: "Installed",
+      },
       title: "Integrations",
       docs: {
         cli: "CLI docs",
@@ -2911,11 +2982,7 @@ export const en = {
       commandLine: {
         title: "Command line",
         description: "Control and script agents from your terminal",
-      },
-      actions: {
-        install: "Install",
-        installing: "Installing...",
-        installed: "Installed",
+        accessibilityLabel: "Install the Vorteo CLI",
       },
     },
     permissions: {
@@ -2992,7 +3059,7 @@ export const en = {
       skills: {
         sectionTitle: "Orchestration skills",
         title: "Orchestration skills",
-        description: "Teach your agents to orchestrate through the CLI",
+        description: "Teach your agents how to use Vorteo tools",
         docs: "Skills",
         openDocs: "Open skills documentation",
         unavailable: "Connect to this host to manage orchestration skills",
@@ -3041,6 +3108,7 @@ export const en = {
           title: "Enable Vorteo tools",
           hint: "Agents will be able to manage worktrees, agents and schedules",
           accessibilityLabel: "Inject Vorteo tools",
+          updateFailed: "Unable to update Vorteo tools.",
         },
         systemPrompt: {
           title: "System prompt",

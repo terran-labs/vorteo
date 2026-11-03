@@ -683,6 +683,7 @@ export const ja: TranslationResources = {
         renameAgent: "エージェントの名前を変更",
       },
       actions: {
+        exitFocusMode: "フォーカスモードを終了",
         newTab: "新しいタブ",
         newAgent: "新しいエージェント",
         newTerminal: "新しいターミナル",
@@ -1608,6 +1609,9 @@ export const ja: TranslationResources = {
       cli: {
         statusFailed: "CLIのインストール状態を確認できません。",
         installFailed: "Vorteo CLIをインストールできません。",
+        uninstallFailed: "Vorteo CLI をアンインストールできません。",
+        keptForeign:
+          "Vorteoがインストールしていないpaseoコマンドは残しました。アンインストールするには手動で削除してください。",
       },
     },
   },
@@ -1710,6 +1714,61 @@ export const ja: TranslationResources = {
   },
   onboarding: {
     title: "Vorteoへようこそ",
+    setup: {
+      title: "Vorteo",
+      stepCounter: "ステップ {{current}}/{{total}}",
+      skip: "セットアップをスキップ",
+      continue: "続ける",
+      finish: "完了",
+      steps: {
+        appearance: {
+          label: "外観",
+          title: "Vorteo へようこそ",
+          description: "まずは外観を選びましょう",
+        },
+        providers: {
+          label: "プロバイダー",
+          title: "エージェント",
+          description: "Vorteo はこのコンピューターにインストール済みのエージェント CLI を使います",
+        },
+        projects: {
+          label: "プロジェクト",
+          title: "プロジェクトを追加",
+          description: "エージェントにどこで作業させますか",
+          addProject: "プロジェクトを追加",
+          added: "追加済み",
+          suggestions: {
+            loading: "作業したフォルダーを探しています",
+            empty: "最近のプロジェクトは見つかりませんでした",
+            lastUsed: "最終使用 {{time}}",
+            addSelected_one: "{{count}} 件のプロジェクトを追加",
+            addSelected_other: "{{count}} 件のプロジェクトを追加",
+            adding: "追加しています…",
+            addFailed: "このフォルダーを追加できませんでした",
+          },
+        },
+        orchestration: {
+          label: "オーケストレーション",
+          title: "エージェントに Vorteo を使わせる",
+          description:
+            "エージェントがワークスペースを作成し、ほかのエージェントとやり取りできるようにします",
+        },
+        phone: {
+          label: "モバイル",
+          title: "エージェントを持ち歩く",
+          description:
+            "フル機能のネイティブモバイルアプリで、スマートフォンからどの Vorteo コンピューターでも操作できます",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "接続方法を選択",
+          connectDocs: "ドキュメント",
+          openConnectDocs: "接続のドキュメントを開く",
+          recommended: "おすすめ",
+          relay: { title: "リレー", hint: "エンドツーエンド暗号化、QR コードをスキャン" },
+          tailscale: { title: "Tailscale", hint: "少し設定が必要です" },
+        },
+      },
+    },
     subtitle: "始めるにはコンピューターに接続してください",
     actions: {
       settings: "設定",
@@ -1930,6 +1989,8 @@ export const ja: TranslationResources = {
       directConnectionHint:
         "リレーを使わない場合は、TCP、Tailscale、または別の VPN で直接接続してください。QR コードは作成されません。",
       updateRequired: "Vorteo Desktop からリレーを有効にするにはホストを更新してください。",
+      tailscaleDocs: "Tailscale を設定",
+      tailscaleDocsAccessibility: "Tailscale で接続する方法を読む",
       unavailable: "ペアリングオファーが利用できません。",
       hint: "スマートフォンのVorteoでこのQRコードをスキャンするか、以下のリンクをコピーしてください。",
       securityWarning:
@@ -2413,6 +2474,12 @@ export const ja: TranslationResources = {
     general: {
       title: "一般",
       sending: "送信",
+      setup: {
+        label: "初回セットアップ",
+        description:
+          "外観、プロバイダー、プロジェクト、スマートフォンのペアリングをもう一度設定します",
+        action: "セットアップを再表示",
+      },
       browserData: {
         title: "ブラウザーデータ",
         siteData: "Cookie とサイトデータ",
@@ -2653,6 +2720,7 @@ export const ja: TranslationResources = {
         agentInput: "エージェント入力",
       },
       help: {
+        toggleFocusMode: "フォーカスモードを切り替え",
         openProject: "プロジェクトを開く",
         newWorkspace: "新しいワークスペース",
         newWorktree: "新しいワークツリー",
@@ -2701,6 +2769,11 @@ export const ja: TranslationResources = {
       },
     },
     integrations: {
+      actions: {
+        install: "インストール",
+        installing: "インストール中...",
+        installed: "インストール済み",
+      },
       title: "連携",
       docs: {
         cli: "CLIドキュメント",
@@ -2709,11 +2782,7 @@ export const ja: TranslationResources = {
       commandLine: {
         title: "コマンドライン",
         description: "ターミナルからエージェントを制御し、スクリプトで操作",
-      },
-      actions: {
-        install: "インストール",
-        installing: "インストール中...",
-        installed: "インストール済み",
+        accessibilityLabel: "Vorteo CLI をインストール",
       },
     },
     permissions: {
@@ -2792,7 +2861,7 @@ export const ja: TranslationResources = {
         ...en.settings.host.skills,
         sectionTitle: "オーケストレーションスキル",
         title: "オーケストレーションスキル",
-        description: "エージェントがCLI経由でオーケストレーションできるようにします。",
+        description: "エージェントに Vorteo ツールの使い方を教えます",
         updateAvailable: "更新が利用可能",
         updateTitle: "Vorteoスキルを更新しますか？",
         updateFallback: "バンドルされたスキルをマシンに同期します。",
@@ -2838,6 +2907,7 @@ export const ja: TranslationResources = {
           title: "Vorteoツールを有効にする",
           hint: "エージェントがワークツリー、エージェント、スケジュールを管理できるようになります",
           accessibilityLabel: "Vorteoツールを有効にする",
+          updateFailed: "Vorteoツールを更新できませんでした。",
         },
         systemPrompt: {
           title: "システムプロンプト",
