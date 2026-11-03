@@ -6,7 +6,7 @@ export interface ProviderDetectionSource {
   serverId: string;
   kind: "host" | "container";
   /** Undefined while the snapshot is still loading. */
-  entries: readonly { provider: string; status: string }[] | undefined;
+  entries: readonly { provider: string; status: string; label?: string }[] | undefined;
 }
 
 export interface ProviderAccount {
@@ -76,7 +76,16 @@ export function groupInstallationProviders(
     if (!family) {
       family = {
         id: type,
-        name: manifest?.label ?? type,
+        name:
+          definition.policy.label ??
+          sources
+            .flatMap((source) => source.entries ?? [])
+            .find((entry) => Object.values(definition.bindings).includes(entry.provider))?.label ??
+          manifest?.label ??
+          type.replace(
+            /(^|[-_ ])(\w)/g,
+            (_, separator, letter) => `${separator ? " " : ""}${letter.toUpperCase()}`,
+          ),
         enabled: false,
         installed: false,
         accounts: [],
@@ -144,4 +153,9 @@ const INSTALL_HINTS: Record<string, string> = {
 
 export function providerInstallHint(providerType: string): string {
   return INSTALL_HINTS[providerType] ?? "Install its CLI on the Host, then sign in.";
+}
+
+/** Only documented shell commands are copyable as commands. */
+export function providerInstallCommand(providerType: string): string | undefined {
+  return providerInstallHint(providerType).match(/with (.+), then sign in\./)?.[1];
 }
