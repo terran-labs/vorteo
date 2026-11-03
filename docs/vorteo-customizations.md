@@ -1,6 +1,6 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-03): test and documentation change. Usage browser tests follow the retained policy that hides the sidebar Usage summary, its icon and window pins, and reach Usage through the `/usage` route or the Quota card's Open Usage link; the glossary documents the policy. Settings has no Sidebar card since the single-page Settings redesign, so those footer steps check saved preferences alone. Known gap: Usage Settings labels lost their translations in the Paseo merge, and the Japanese Usage test reports it. Functionality is unchanged. README overview and onboarding are unchanged.
+Maintenance review (2026-11-03): test and documentation change. Usage browser tests follow the retained policy that hides the sidebar Usage summary, its icon and window pins, and reach Usage through the `/usage` route, named as direct-route cases, or the Quota card's Open Usage link; the glossary documents the policy. Settings has no Sidebar card since the single-page Settings redesign, so those footer steps check saved preferences alone. Known gap: Usage Settings labels lost their translations in the Paseo merge, and the Japanese Usage test reports it. Functionality is unchanged. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): agent records now keep the last reported usage, so the Context window card no longer disappears after a daemon restart. README overview and onboarding are unchanged.
 

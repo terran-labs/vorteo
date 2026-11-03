@@ -102,12 +102,20 @@ function installReversedUsageRefresh(page: Page) {
   });
 }
 
-async function expectUsageProviderOrder(page: Page) {
+/** Cards keep their first order, and each card shows its own current percentage. */
+async function expectUsageProviderOrder(page: Page, used: { opencode: number; openai: number }) {
   const group = page.getByTestId(`usage-host-${getServerId()}`);
   await expect(group.getByText(/^(opencode|openai) plan$/)).toHaveText([
     "opencode plan",
     "openai plan",
   ]);
+  for (const [sourceId, usedPct] of Object.entries(used)) {
+    await expect(
+      group
+        .getByTestId(`usage-report-${sourceId}:a`)
+        .getByText(`${usedPct}% used`, { exact: true }),
+    ).toBeVisible();
+  }
 }
 
 async function refreshUsageAndWaitForReports(page: Page, usage: UsageReportsFixture) {
@@ -124,7 +132,7 @@ async function refreshUsageAndWaitForReports(page: Page, usage: UsageReportsFixt
 // the Quota card's Open Usage link. Tests that call openUsage() are direct-route coverage; tests
 // that call openUsageFromQuotaCard() cover the Quota card entry point.
 test.describe("usage screen", () => {
-  test("opens directly on the host's reports, with no host filter for one host", async ({
+  test("direct-route opens on the host's reports, with no host filter for one host", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -177,7 +185,7 @@ test.describe("usage screen", () => {
   });
 
   for (const width of [1440, 390]) {
-    test(`direct route keeps provider order across a reversed refresh at width ${width}`, async ({
+    test(`direct-route keeps provider order across a reversed refresh at width ${width}`, async ({
       page,
     }) => {
       const usage = await installReversedUsageRefresh(page);
@@ -185,16 +193,16 @@ test.describe("usage screen", () => {
       await gotoAppShell(page);
       await expectNoUsageItem(page);
       await openUsage(page);
-      await expectUsageProviderOrder(page);
+      await expectUsageProviderOrder(page, { opencode: 31, openai: 12 });
       await qaScreenshot(page, `usage-order-${width}-before-refresh`);
 
       await refreshUsageAndWaitForReports(page, usage);
-      await expectUsageProviderOrder(page);
+      await expectUsageProviderOrder(page, { opencode: 41, openai: 22 });
       await qaScreenshot(page, `usage-order-${width}-after-refresh`);
     });
   }
 
-  test("refreshes one report from its card", async ({ page }) => {
+  test("direct-route refreshes one report from its card", async ({ page }) => {
     test.setTimeout(120_000);
     const serverId = getServerId();
     const beta: UsageReportEntry = {
@@ -283,7 +291,7 @@ test.describe("usage screen", () => {
     await closeUsage(page);
   });
 
-  test("tells the user to update a host without usage support", async ({ page }) => {
+  test("direct-route tells the user to update a host without usage support", async ({ page }) => {
     test.setTimeout(120_000);
     const serverId = getServerId();
     const usage = await installUsageReportsFixture(page, { usageSupported: false });
@@ -372,7 +380,7 @@ const loginWindows: UsageReportEntry["report"] = {
   ],
 };
 
-test("expired login refreshes directly to unpinnable windows", async ({ page }) => {
+test("direct-route expired login refreshes to unpinnable windows", async ({ page }) => {
   const fixture = await installLoginUsage({
     status: "unavailable",
     problem: {
@@ -411,7 +419,9 @@ test("expired login refreshes directly to unpinnable windows", async ({ page }) 
 // usage-sidebar-item.spec.ts; the Quota card covers the sidebar entry and host sync above.
 
 for (const shape of ["seven-day-only", "Spark"] as const) {
-  test(`Codex ${shape} windows use provider durations on the card`, async ({ page }) => {
+  test(`direct-route Codex ${shape} windows use provider durations on the card`, async ({
+    page,
+  }) => {
     const reset = Math.floor(Date.now() / 1000) + 5 * 86400;
     const source = await installCodexWindowUsage({
       rate_limit: {
@@ -457,7 +467,7 @@ for (const theme of ["light", "dark"] as const) {
     desktop: { width: 1440, height: 900 },
     compact: { width: 390, height: 844 },
   })) {
-    test(`Usage Settings disclosure ${size} ${theme}`, async ({ page }, testInfo) => {
+    test(`direct-route Usage Settings disclosure ${size} ${theme}`, async ({ page }, testInfo) => {
       test.setTimeout(120_000);
       await page.addInitScript((value) => {
         const key = "@paseo:app-settings";
@@ -513,7 +523,7 @@ async function captureSettingsState(
   await testInfo.attach(name, { body: await page.screenshot(), contentType: "image/png" });
 }
 
-test("an account with all logins failing shows each harness and remedy, then only usage when one succeeds", async ({
+test("direct-route account with all logins failing shows each harness and remedy, then only usage when one succeeds", async ({
   page,
 }) => {
   const fixture = await installLoginUsage([
@@ -575,7 +585,7 @@ async function expectLoginUsageOnly(page: Page, percentage: string) {
 }
 
 for (const compact of [false, true]) {
-  test(`failed polls retain usage and successful freshness (${compact ? "footer" : "tooltip"})`, async ({
+  test(`direct-route failed polls retain usage and successful freshness (${compact ? "footer" : "tooltip"})`, async ({
     page,
   }) => {
     const fixture = await installLoginUsage({ status: "error", error: "Initial failure" });
@@ -678,7 +688,7 @@ test("direct-route usage percentages state their meaning and follow the selected
   }
 });
 
-test("open usage clocks advance without refreshing or reopening", async ({ page }) => {
+test("direct-route open usage clocks advance without refreshing or reopening", async ({ page }) => {
   test.setTimeout(120_000);
   const now = new Date();
   const reset = new Date(now.getTime() + 30.5 * 60_000).toISOString();
@@ -720,7 +730,9 @@ async function advanceUsageClock(page: Page, milliseconds: number) {
   await page.clock.fastForward(milliseconds);
 }
 
-test("released hosts supply source logos through the client conversion", async ({ page }) => {
+test("direct-route released hosts supply source logos through the client conversion", async ({
+  page,
+}) => {
   await installUsageReportsFixture(page, {
     lists: [() => claudeAndCodexReports()],
     providerUsageListOnly: true,
