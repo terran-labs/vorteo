@@ -35,6 +35,7 @@ import {
   addDirectHostFromSettings,
   expectHostOnlineWithoutError,
   expectIdleAgentRelease,
+  openHostRestartBehavior,
   editRestartRecoveryPrompt,
   expectRestartRecoveryEnabled,
   expectRestartRecoveryPrompt,
@@ -210,7 +211,7 @@ test.describe("Settings host page", () => {
       await page.reload();
       await openSettings(page);
       await selectSettingsHost(page, serverId);
-      await openHostSection(page, serverId, "agents");
+      await openHostRestartBehavior(page, serverId);
     };
     try {
       await test.step("idle agent release starts on and turns off", async () => {
@@ -231,7 +232,7 @@ test.describe("Settings host page", () => {
 
       await test.step("other hosts keep their own setting", async () => {
         await selectSettingsHost(page, primaryServerId);
-        await openHostSection(page, primaryServerId, "agents");
+        await openHostRestartBehavior(page, primaryServerId);
         await expectIdleAgentRelease(page, false);
         expect((await otherClient.getDaemonConfig()).config.idleRuntimeCleanup).toBe(true);
         await expectLiveSavedSetting(false);
@@ -252,7 +253,7 @@ test.describe("Settings host page", () => {
       ]);
       await page.reload();
       await openSettings(page);
-      await openHostSection(page, daemon.serverId, "agents");
+      await openHostRestartBehavior(page, daemon.serverId);
       await expectIdleAgentRelease(page, true);
       // A real filesystem failure, with the daemon and RPC path intact.
       await rename(configPath, `${configPath}.saved`);
@@ -294,7 +295,7 @@ test("restart recovery defaults off and persists opt-in and custom prompt", asyn
   await gotoAppShell(page);
   await openSettings(page);
   await openSettingsHost(page, serverId);
-  await openHostSection(page, serverId, "agents");
+  await openHostRestartBehavior(page, serverId);
   await expectRestartRecoveryEnabled(page, false);
   await setRestartRecoveryEnabled(page, true);
   await page.reload();

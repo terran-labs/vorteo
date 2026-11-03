@@ -25,6 +25,7 @@ import { InstallationConnectionCheck } from "@/execution-installation/connection
 import { UpstreamUpdatesSection } from "@/vorton-updates/upstream-section";
 import { VORTON_BUILD_COMMIT } from "@/vorton-updates/use-update";
 import { SystemView } from "./system-view";
+import { RestartBehaviorSection } from "./restart-behavior-section";
 import { SystemUpdatesRow } from "./system-updates-row";
 import { HostRestartControls } from "./host-restart-controls";
 import { useSystemAdapter } from "./use-system-adapter";
@@ -275,8 +276,10 @@ export function SystemPane({
       ) : null}
       <SystemView environments={environments} services={adapter.services} />
       <SystemUpdatesRow />
-      {/* The coordinator supplies the restart-recovery card after the owner confirms its placement. */}
-      <View testID="system-restart-recovery-slot">{restartRecovery}</View>
+      <View testID="system-restart-recovery-slot">
+        {restartRecovery ??
+          (adapter.hostId ? <RestartBehaviorSection serverId={adapter.hostId} /> : null)}
+      </View>
       <Button
         variant="ghost"
         onPress={toggleAdvanced}

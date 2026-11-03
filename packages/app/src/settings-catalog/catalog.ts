@@ -1019,6 +1019,24 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
 
   // Maintenance
   {
+    id: "system.overview.resumeOnStartup",
+    pane: "system.overview",
+    label: "Resume agents after restart",
+    labelKey: "settings.host.agents.resumeOnStartup.title",
+    hint: "Continue interrupted work automatically.",
+    keywords: ["restart", "crash", "resume prompt", "interrupted"],
+    scope: environment,
+  },
+  {
+    id: "system.overview.idleRuntimeCleanup",
+    pane: "system.overview",
+    label: "Release idle agents",
+    labelKey: "settings.host.agents.idleRuntimeCleanup.title",
+    hint: "Free up memory after an hour of inactivity.",
+    keywords: ["memory", "idle", "stop process"],
+    scope: environment,
+  },
+  {
     id: "maintenance.installation.owner",
     pane: "maintenance.installation",
     label: "Owner password",

@@ -483,6 +483,16 @@ export async function expectHostInjectMcpCard(page: Page): Promise<void> {
   await expect(card.getByRole("switch", { name: "Inject Vorteo tools" })).toBeVisible();
 }
 
+/**
+ * Selects a host, then opens the System page's "When the Host restarts" section, which holds
+ * the resume-after-restart and idle-release switches for the selected host.
+ */
+export async function openHostRestartBehavior(page: Page, serverId: string): Promise<void> {
+  await openHostSection(page, serverId, "agents");
+  await revealSettingsLocation(page, "system.overview");
+  await expect(page.getByTestId("system-restart-behavior")).toBeVisible();
+}
+
 function idleAgentReleaseSwitch(page: Page) {
   return page
     .getByTestId("host-page-idle-runtime-cleanup-card")

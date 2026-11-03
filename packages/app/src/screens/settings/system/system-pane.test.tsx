@@ -86,6 +86,11 @@ vi.mock("@/vorton-updates/upstream-section", () => ({
 }));
 vi.mock("@/vorton-updates/use-update", () => ({ VORTON_BUILD_COMMIT: "commit" }));
 vi.mock("./host-restart-controls", () => ({ HostRestartControls: () => null }));
+vi.mock("./restart-behavior-section", () => ({
+  RestartBehaviorSection: ({ serverId }: { serverId: string }) => (
+    <span>When the Host restarts for {serverId}</span>
+  ),
+}));
 vi.mock("./system-updates-row", () => ({ SystemUpdatesRow: () => <span>Combined updates</span> }));
 afterEach(() => {
   cleanup();
