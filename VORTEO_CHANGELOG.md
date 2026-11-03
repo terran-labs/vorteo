@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Changed
+
+- Pause-all now sends each paused project's Foreman a drain notice, steered into its current turn, and resume-all tells it the drain ended. A damaged Factory state file makes list, pause-all and resume-all refuse instead of reporting success. The Foreman checks the drain before every admission and reports "Drained: <n>", Builds waits for that report, and the Mechanic reads the update-status fields and copes while update status does not exist yet.
+
+## Unreleased - 2026-11-03
+
 ### Added
 
 - Add `paseo factory project list`, `pause-all` and `resume-all` for draining Factory work before a restart or upgrade. Pause-all records which projects it paused, and resume-all resumes only those, so projects an operator paused by hand stay paused. The Builds charter drains with them, and the Mechanic charter now reads update status. The shared, Foreman and Builds charters gain the operating rules Builds learned running delivery.

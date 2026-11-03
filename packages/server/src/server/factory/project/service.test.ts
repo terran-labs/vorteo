@@ -21,7 +21,7 @@ import {
 } from "../../workspace-registry.js";
 import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
-import { ProjectFactoryService, type PromptOutcome } from "./service.js";
+import { DRAIN_ENDED, DRAIN_NOTICE, ProjectFactoryService, type PromptOutcome } from "./service.js";
 import { projectFactoryStatePath } from "./state.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
@@ -941,6 +941,11 @@ describe("list, pause_all and resume_all", () => {
     await factory.invoke("factory.project.disable", { projectId: "prj_off" });
   }
 
+  async function foremanOf(factory: ProjectFactoryService, projectId: string) {
+    const state = await factory.get(projectId);
+    return roleAgent(state, "factory-intake");
+  }
+
   type Listed = Awaited<ReturnType<ProjectFactoryService["list"]>>;
   const byId = (list: unknown) =>
     Object.fromEntries((list as Listed).projects.map((entry) => [entry.projectId, entry]));
@@ -1017,6 +1022,61 @@ describe("list, pause_all and resume_all", () => {
 
     const resumed = byId(await factory.invoke("factory.project.resume_all", {}));
     expect(resumed[PROJECT]).toMatchObject({ state: "paused", drain: null });
+  });
+
+  test("a damaged state file makes list, pause_all and resume_all refuse", async () => {
+    const factory = service();
+    await enable(factory);
+    writeFileSync(projectFactoryStatePath(home), "{");
+
+    for (const [method, input] of [
+      ["factory.project.list", {}],
+      ["factory.project.pause_all", { reason: "drain before restart" }],
+      ["factory.project.resume_all", {}],
+    ] as const)
+      await expect(factory.invoke(method, input)).rejects.toThrow("damaged");
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect(readFileSync(projectFactoryStatePath(home), "utf8")).toBe("{");
+  });
+
+  test("pause_all steers one drain notice to each paused Foreman; resume_all ends it", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    const foremen = {
+      [PROJECT]: await foremanOf(factory, PROJECT),
+      prj_paused: await foremanOf(factory, "prj_paused"),
+    };
+    agents.busy.add(foremen[PROJECT]!);
+    const sentTo = (agentId: string) =>
+      agents.prompts.filter((prompt) => prompt.agentId === agentId).map((prompt) => prompt.prompt);
+    const before = sentTo(foremen[PROJECT]!).length;
+
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([DRAIN_NOTICE]);
+    expect(agents.prompts.at(-1)).toMatchObject({ agentId: foremen[PROJECT], steer: true });
+    expect(sentTo(foremen.prj_paused!)).not.toContain(DRAIN_NOTICE);
+    const file = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
+    expect(file.projects[PROJECT].drain.noticeSentAt).toBe(T0);
+
+    await factory.invoke("factory.project.resume_all", {});
+    expect(sentTo(foremen[PROJECT]!).slice(before)).toEqual([DRAIN_NOTICE, DRAIN_ENDED]);
+    expect(sentTo(foremen.prj_paused!)).not.toContain(DRAIN_ENDED);
+  });
+
+  test("a drain notice that fails is sent by the next pause_all", async () => {
+    const factory = service();
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    agents.failing.add(foreman);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    agents.failing.clear();
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    expect(
+      agents.prompts.filter(
+        (prompt) => prompt.agentId === foreman && prompt.prompt === DRAIN_NOTICE,
+      ),
+    ).toHaveLength(1);
   });
 
   test("the drain record survives a service restart", async () => {

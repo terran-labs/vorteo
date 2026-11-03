@@ -63,7 +63,14 @@ const ProjectStateSchema = z.object({
    * Set when pause_all paused this project. resume_all resumes only these, and any manual
    * pause, resume or turn off clears it, so an operator's own pause is never undone.
    */
-  drain: z.object({ reason: z.string(), pausedAt: z.string() }).optional(),
+  drain: z
+    .object({
+      reason: z.string(),
+      pausedAt: z.string(),
+      /** When the Foreman's drain notice was queued; unset until a send succeeds. */
+      noticeSentAt: z.string().optional(),
+    })
+    .optional(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
 

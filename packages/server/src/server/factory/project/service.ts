@@ -68,6 +68,11 @@ import {
 } from "./state.js";
 import { computeFingerprint, defaultGhRunner, shouldWake, type GatedRole } from "./tick-gate.js";
 
+/** Sent to a paused project's Foreman by pause_all, and its counterpart from resume_all. */
+export const DRAIN_NOTICE =
+  "Drain notice: admit no new Factory work until this project is resumed. Let running workers finish and push, then set your status line to 'Drained: <n> workers still finishing'.";
+export const DRAIN_ENDED = "Drain ended: resume normal intake.";
+
 const GATED_ROLES: ReadonlySet<string> = new Set([
   "factory-intake",
   "factory-triage",
@@ -316,15 +321,12 @@ export class ProjectFactoryService {
     });
   }
 
-  /** Every project the Factory service knows, with its state. */
+  /**
+   * Every project the Factory service knows, with its state. A damaged state file refuses
+   * rather than reporting no projects, so pause_all can never claim a drain it did not make.
+   */
   async list(): Promise<ProjectFactoryList> {
-    let file;
-    try {
-      file = await this.store.read();
-    } catch (error) {
-      if (!(error instanceof ProjectFactoryStateDamagedError)) throw error;
-      return { projects: [] };
-    }
+    const file = await this.store.read();
     const projects: ProjectFactoryList["projects"] = [];
     for (const [projectId, project] of Object.entries(file.projects)) {
       const record = await this.input.projects.get(projectId);
@@ -334,7 +336,9 @@ export class ProjectFactoryService {
         state: unavailable ?? factoryState(project, null),
         repository: project.repository || null,
         paused: project.paused,
-        drain: project.drain ?? null,
+        drain: project.drain
+          ? { reason: project.drain.reason, pausedAt: project.drain.pausedAt }
+          : null,
       });
     }
     return { projects };
@@ -343,21 +347,50 @@ export class ProjectFactoryService {
   /**
    * Pauses every project whose Factory is on, before a restart or upgrade, and records which
    * ones it paused. Projects already paused, off or unavailable are left alone, so a rerun
-   * records nothing new.
+   * records nothing new. Stopping heartbeats does not reach a Foreman already mid-turn, so each
+   * paused project's Foreman also gets one drain notice, steered into its turn when busy. A
+   * notice that fails is retried by the next pause_all.
    */
   private pauseAll(reason: string): Promise<ProjectFactoryList> {
     return this.serialize(async () => {
       const pausedAt = this.now().toISOString();
       for (const entry of (await this.list()).projects) {
-        if (entry.state !== "on") continue;
-        await this.mutateProject(entry.projectId, (project) => {
-          project.paused = true;
-          project.drain = { reason, pausedAt };
-        });
-        this.stopTimers(entry.projectId);
+        if (entry.state === "on") {
+          await this.mutateProject(entry.projectId, (project) => {
+            project.paused = true;
+            project.drain = { reason, pausedAt };
+          });
+          this.stopTimers(entry.projectId);
+        }
+        await this.sendDrainNotice(entry.projectId);
       }
       return this.list();
     });
+  }
+
+  private async sendDrainNotice(projectId: string): Promise<void> {
+    const project = await this.readProject(projectId);
+    const foreman = project?.roles["factory-intake"]?.agentId;
+    if (!project?.drain || project.drain.noticeSentAt || !foreman) return;
+    if (!(await this.notifyForeman(projectId, foreman, DRAIN_NOTICE))) return;
+    await this.mutateProject(projectId, (current) => {
+      if (current.drain) current.drain.noticeSentAt = this.now().toISOString();
+    });
+  }
+
+  /** Steers a Factory prompt into the Foreman's turn. Returns false when it could not be sent. */
+  private async notifyForeman(
+    projectId: string,
+    agentId: string,
+    prompt: string,
+  ): Promise<boolean> {
+    try {
+      await this.input.agents.sendPrompt(agentId, prompt, { steer: true });
+      return true;
+    } catch (error) {
+      this.logger.warn({ err: error, projectId }, "Could not send the Foreman a drain prompt");
+      return false;
+    }
   }
 
   /** Resumes only the projects pause_all paused; a project paused by hand stays paused. */
@@ -367,11 +400,13 @@ export class ProjectFactoryService {
         // An unavailable project keeps its drain, so restoring it leaves the record intact.
         if (!entry.drain || entry.state === "unavailable") continue;
         const resume = entry.state === "paused";
-        await this.mutateProject(entry.projectId, (project) => {
+        const drain = await this.mutateProject(entry.projectId, (project) => {
           if (resume) project.paused = false;
           delete project.drain;
         });
         if (resume) this.startTimers(entry.projectId);
+        const foreman = drain.roles["factory-intake"]?.agentId;
+        if (resume && foreman) await this.notifyForeman(entry.projectId, foreman, DRAIN_ENDED);
       }
       return this.list();
     });
