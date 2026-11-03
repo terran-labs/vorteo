@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): merged the stop-turn account switching feature commit for ancestry only; its reviewed changes and corrections were already integrated, so functionality is unchanged.
+
 Maintenance review (2026-11-02): account switching offers manual Stop only for running turns, discloses goal pausing and reads handoff context after cancellation settles. Permission-only states keep the daemon refusal without stopping. Eight focused tests, app typechecking and lint pass on Node 24.21. Integrated typechecking, lint, formatting, the web build and both complete welcome cases pass on Node 24.14.1; final commit provenance, CI and interface publication remain pending. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): integration includes the published installer, packaged Claude and release-tooling corrections. Upstream dependency changes and reviewed installation safeguards remain intact. Combined validation and installation are pending.

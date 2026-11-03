@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Record the stop-turn account switching commit in history. Its reviewed changes and later corrections were already integrated, so the merge keeps the integrated source unchanged.
+
 ## Unreleased - 2026-11-02
 
 - Offer Stop turn and switch for running turns, explain goal pausing, and wait for cancellation before capturing handoff context. Permission-only states keep the existing refusal without stopping the thread.
