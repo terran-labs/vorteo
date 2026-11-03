@@ -2,6 +2,7 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
+  projectFactory: en.projectFactory,
   paneFind: {
     connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
     historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",
@@ -1745,7 +1746,10 @@ export const ar: TranslationResources = {
           connectDocs: "الوثائق",
           openConnectDocs: "افتح وثائق الاتصال",
           recommended: "موصى به",
-          relay: { title: "التتابع", hint: "مشفّر من طرف إلى طرف، امسح رمز QR" },
+          relay: {
+            title: "التتابع",
+            hint: "مشفّر من طرف إلى طرف، امسح رمز QR",
+          },
           tailscale: { title: "Tailscale", hint: "يتطلب بعض الإعداد" },
         },
       },

@@ -1,3 +1,13 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { FactoryFolderStatus } from "./sidebar/factory-status";
+import { FactoryInstructionsPanel, openFactoryInstructions } from "./sidebar/factory-instructions";
+import { useMenuContext } from "@/components/ui/menu";
+import {
+  ProjectFactoryDialog,
+  openFactoryDialog,
+  factoryActions,
+  type ProjectFactoryState,
+} from "./sidebar/project-factory";
 import { hasActiveSidebarLabelFilter } from "@/stores/sidebar-view-store";
 import { useScrollReporter } from "./use-scroll-divider";
 import { NestableScrollDivider } from "./nestable-scroll-divider";
@@ -708,7 +718,9 @@ function ProjectMenuItem({
   children,
   ...props
 }: PropsWithChildren<
-  Omit<ComponentProps<typeof DropdownMenuItem>, "children"> & { surface: ProjectMenuSurface }
+  Omit<ComponentProps<typeof DropdownMenuItem>, "children"> & {
+    surface: ProjectMenuSurface;
+  }
 >) {
   if (surface === "context") {
     return <ContextMenuItem {...props}>{children}</ContextMenuItem>;
@@ -716,6 +728,153 @@ function ProjectMenuItem({
   return <DropdownMenuItem {...props}>{children}</DropdownMenuItem>;
 }
 
+function FactoryProjectActions({
+  surface,
+  settingsTarget,
+  projectPath,
+}: {
+  surface: ProjectMenuSurface;
+  settingsTarget: { serverId: string; projectId: string } | null;
+  projectPath: string;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const plugins = useInstalledPlugins();
+  const factoryPlugin = plugins.find(
+    (plugin) => plugin.id === "factory" && plugin.serverId === settingsTarget?.serverId,
+  );
+  const factoryScreenAvailable = !!factoryPlugin;
+  const { open: factoryMenuOpen } = useMenuContext("ProjectMenuItems");
+  const factoryQueryClient = useQueryClient();
+  const [factoryState, setFactoryState] = useState<ProjectFactoryState | null>(null);
+  const [factoryError, setFactoryError] = useState<string | null>(null);
+  const [factoryPending, setFactoryPending] = useState(false);
+  useEffect(() => {
+    if (!factoryMenuOpen || !factoryScreenAvailable || !factoryPlugin || !settingsTarget) return;
+    setFactoryError(null);
+    let active = true;
+    void factoryPlugin
+      .invoke("factory.project.get", { projectId: settingsTarget.projectId })
+      .then((state) => {
+        if (active) setFactoryState(state as ProjectFactoryState);
+        return state;
+      })
+      .catch((error) => {
+        if (active)
+          setFactoryError(error instanceof Error ? error.message : t("projectFactory.failed"));
+      });
+    return () => {
+      active = false;
+    };
+  }, [factoryMenuOpen, factoryScreenAvailable, factoryPlugin, settingsTarget, t]);
+  const applyFactoryState = useCallback(
+    (state: ProjectFactoryState) => {
+      setFactoryState(state);
+      if (settingsTarget)
+        factoryQueryClient.setQueryData(
+          ["projectFactory", settingsTarget.serverId, settingsTarget.projectId],
+          state,
+        );
+    },
+    [settingsTarget, factoryQueryClient],
+  );
+  const factoryAction = useCallback(
+    (action: "enable" | "pause" | "resume" | "disable") => {
+      if (!factoryPlugin || !settingsTarget || factoryPending) return;
+      if (action === "enable" || action === "disable") {
+        void openFactoryDialog({
+          action,
+          ...settingsTarget,
+          projectPath,
+          repository: factoryState?.repository ?? null,
+          invoke: factoryPlugin.invoke,
+          onResult: applyFactoryState,
+        });
+        return;
+      }
+      setFactoryPending(true);
+      void factoryPlugin
+        .invoke(`factory.project.${action}`, {
+          projectId: settingsTarget.projectId,
+        })
+        .then((state) => applyFactoryState(state as ProjectFactoryState))
+        .catch((error) =>
+          toast.error(error instanceof Error ? error.message : t("projectFactory.failed")),
+        )
+        .finally(() => setFactoryPending(false));
+    },
+    [
+      factoryPlugin,
+      settingsTarget,
+      factoryPending,
+      projectPath,
+      factoryState,
+      toast,
+      t,
+      applyFactoryState,
+    ],
+  );
+  const openInstructions = useCallback(() => {
+    if (settingsTarget) openFactoryInstructions(settingsTarget);
+  }, [settingsTarget]);
+  const openModels = useCallback(() => {
+    if (settingsTarget) openFactoryInstructions({ ...settingsTarget, modelsOnly: true });
+  }, [settingsTarget]);
+  return (
+    <>
+      {settingsTarget &&
+      factoryState &&
+      (factoryState.state === "on" || factoryState.state === "paused") ? (
+        <ProjectMenuItem surface={surface} onSelect={openInstructions}>
+          {t("projectFactory.instructions")}
+        </ProjectMenuItem>
+      ) : null}
+      {settingsTarget &&
+      factoryState &&
+      factoryState.state !== "off" &&
+      factoryState.state !== "unavailable" ? (
+        <ProjectMenuItem surface={surface} onSelect={openModels}>
+          {t("projectFactory.workerModels")}
+        </ProjectMenuItem>
+      ) : null}
+      {factoryState
+        ? factoryActions(factoryState.state).map((action) => (
+            <FactoryActionItem
+              key={action}
+              surface={surface}
+              action={action}
+              pending={factoryPending}
+              onAction={factoryAction}
+            />
+          ))
+        : null}
+      {factoryError || !factoryState || factoryState.state === "unavailable" ? (
+        <ProjectMenuItem surface={surface} disabled>
+          {factoryError ?? factoryState?.reason ?? t("projectFactory.loading")}
+        </ProjectMenuItem>
+      ) : null}
+    </>
+  );
+}
+function FactoryActionItem({
+  surface,
+  action,
+  pending,
+  onAction,
+}: {
+  surface: ProjectMenuSurface;
+  action: "enable" | "pause" | "resume" | "disable";
+  pending: boolean;
+  onAction: (action: "enable" | "pause" | "resume" | "disable") => void;
+}) {
+  const { t } = useTranslation();
+  const select = useCallback(() => onAction(action), [onAction, action]);
+  return (
+    <ProjectMenuItem surface={surface} disabled={pending} onSelect={select}>
+      {t(`projectFactory.${action}Menu`)}
+    </ProjectMenuItem>
+  );
+}
 function ProjectMenuItems({
   surface,
   projectViewKey,
@@ -791,15 +950,13 @@ function ProjectMenuItems({
             testID={`sidebar-project-menu-open-factory-${projectViewKey}`}
             onSelect={handleOpenFactory}
           >
-            Open Factory
+            {t("projectFactory.open")}
           </ProjectMenuItem>
-          <ProjectMenuItem
+          <FactoryProjectActions
             surface={surface}
-            testID={`sidebar-project-menu-factory-setup-unavailable-${projectViewKey}`}
-            disabled
-          >
-            Factory setup unavailable
-          </ProjectMenuItem>
+            settingsTarget={settingsTarget}
+            projectPath={projectPath}
+          />
         </>
       ) : null}
       {settingsTarget ? (
@@ -1268,7 +1425,12 @@ function ProjectHeaderRow({
         iconDataUri={iconDataUri}
         statusBucket={statusBucket}
         projectViewKey={project.viewKey}
-        backdrop={getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered })}
+        backdrop={getSidebarRowBackdrop({
+          isDragging,
+          isPressed,
+          selected,
+          isHovered,
+        })}
         chevron={chevron}
         showChevron={isHovered && chevron !== null}
         isArchiving={isArchiving}
@@ -1471,7 +1633,12 @@ function WorkspaceRowInner({
           selected,
           isHovered,
         });
-        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
+        const backdrop = getSidebarRowBackdrop({
+          isDragging,
+          isPressed,
+          selected,
+          isHovered,
+        });
         return (
           <View
             {...dragAttributes}
@@ -1614,7 +1781,12 @@ function WorkspaceRowWithMenu({
     canMarkUnread,
     handleMarkAsRead,
     handleMarkAsUnread,
-  } = useWorkspaceMenuActions({ workspace, selected, canPin, onToggleWorkspacePin });
+  } = useWorkspaceMenuActions({
+    workspace,
+    selected,
+    canPin,
+    onToggleWorkspacePin,
+  });
 
   useKeyboardActionHandler({
     handlerId: `workspace-archive-${workspace.workspaceKey}`,
@@ -1715,7 +1887,10 @@ function WorkspaceRowItem({
     if (!workspace.serverId) {
       return;
     }
-    navigateToWorkspace({ serverId: workspace.serverId, workspaceId: workspace.workspaceId });
+    navigateToWorkspace({
+      serverId: workspace.serverId,
+      workspaceId: workspace.workspaceId,
+    });
   }, [workspace.serverId, workspace.workspaceId]);
 
   return (
@@ -1928,6 +2103,7 @@ function ProjectSection({
   level,
   itemLevel,
   beforeList,
+  summary,
   renderList,
 }: {
   projectKey: string;
@@ -1940,6 +2116,7 @@ function ProjectSection({
   /** Level of the section's workspaces. */
   itemLevel: number;
   beforeList?: ReactNode;
+  summary?: ReactNode;
   renderList: (items: SidebarWorkspacePlacement[]) => ReactElement;
 }) {
   const touch = useVortonTouch();
@@ -1988,6 +2165,7 @@ function ProjectSection({
           trailing={trailing}
         />
       )}
+      {summary}
       {collapsed ? null : (
         <>
           {beforeList}
@@ -2022,7 +2200,9 @@ function useProjectRemoval(project: SidebarProjectEntry, displayName: string) {
     void (async () => {
       const confirmed = await confirmDialog({
         title: t("sidebar.project.confirmations.removeTitle"),
-        message: t("sidebar.project.confirmations.removeMessage", { projectName: displayName }),
+        message: t("sidebar.project.confirmations.removeMessage", {
+          projectName: displayName,
+        }),
         confirmLabel: t("sidebar.project.confirmations.removeConfirm"),
         cancelLabel: t("sidebar.project.confirmations.cancel"),
         destructive: true,
@@ -2088,7 +2268,11 @@ function ProjectFocusActions({
   const localDaemonServerId = useLocalDaemonServerId();
   const rowModel = useMemo(
     () =>
-      buildSidebarProjectRowModel({ project, collapsed: false, supportsMultiplicityByServerId }),
+      buildSidebarProjectRowModel({
+        project,
+        collapsed: false,
+        supportsMultiplicityByServerId,
+      }),
     [project, supportsMultiplicityByServerId],
   );
   const worktreeTarget =
@@ -2530,7 +2714,14 @@ function ProjectBlock({
           <ProjectSection
             projectKey={project.viewKey}
             section="factory"
-            title="Factory"
+            summary={overviewTargets.map((target) => (
+              <FactoryFolderStatus
+                key={`${target.serverId}:${target.projectId}`}
+                serverId={target.serverId}
+                projectId={target.projectId}
+              />
+            ))}
+            title={t("projectFactory.folder")}
             items={groups.factory}
             focus={focus}
             level={sectionLevel}
@@ -2768,7 +2959,9 @@ export function SidebarWorkspaceList({
   // One fetch, one map, every mode — project mode paints icons on its headers and status mode
   // paints them on each row, all keyed by `projectViewKey`. The targets come from the projection
   // that produced the rows, so the question "what is on screen" is answered once.
-  const projectIconByProjectViewKey = useProjectIcons({ projects: projectIconTargets });
+  const projectIconByProjectViewKey = useProjectIcons({
+    projects: projectIconTargets,
+  });
 
   // A filter that matches nothing swaps the list's body and nothing above it. It used to replace
   // this whole subtree, which unmounted the header — and the header is where the display menu's
@@ -2974,7 +3167,10 @@ function useProjectModeView(input: {
   );
   // The compact rail's single-project flyout has no room for a focused view: it never shows
   // focus itself, and its Focus buttons focus the sidebar instead.
-  const focusController = useSidebarFocusController({ world: focusWorld, enabled: rootFolders });
+  const focusController = useSidebarFocusController({
+    world: focusWorld,
+    enabled: rootFolders,
+  });
   const focusElsewhere = useMemo(() => {
     if (rootFolders || !onFocusElsewhere) return null;
     return {
@@ -2996,7 +3192,7 @@ function useProjectModeView(input: {
             labels: {
               allProjects: t("sidebar.focus.allProjects"),
               standing: "Standing",
-              factory: "Factory",
+              factory: t("projectFactory.folder"),
             },
           })
         : null,
@@ -3439,7 +3635,11 @@ function ProjectModeListContent({
           />
         );
       }
-      const block = renderProjectBlock(row.item, { drag, isDragging: isActive, dragHandleProps });
+      const block = renderProjectBlock(row.item, {
+        drag,
+        isDragging: isActive,
+        dragHandleProps,
+      });
       return row.depth > 0 ? <View style={sidebarNestingStyle(row.depth)}>{block}</View> : block;
     },
     [renderProjectBlock],
@@ -3499,7 +3699,11 @@ function ProjectModeListContent({
       isActive,
       dragHandleProps,
     }: DraggableRenderItemInfo<SidebarWorkspacePlacement>) =>
-      renderPinnedChatRow(item, { drag, isDragging: isActive, dragHandleProps }),
+      renderPinnedChatRow(item, {
+        drag,
+        isDragging: isActive,
+        dragHandleProps,
+      }),
     [renderPinnedChatRow],
   );
 
@@ -3601,6 +3805,8 @@ function ProjectModeListContent({
 
   return (
     <SidebarFocusProvider value={focusContext}>
+      <ProjectFactoryDialog />
+      <FactoryInstructionsPanel />
       <View style={styles.container}>
         {platformIsNative ? (
           <NestableScrollContainer

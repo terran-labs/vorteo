@@ -2,6 +2,7 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
+  projectFactory: en.projectFactory,
   paneFind: {
     connectionFailure:
       "No se pudo buscar en este chat. Comprueba la conexión con el host y vuelve a intentarlo.",
@@ -1793,8 +1794,14 @@ export const es: TranslationResources = {
           connectDocs: "Docs",
           openConnectDocs: "Abrir la documentación de conectividad",
           recommended: "Recomendado",
-          relay: { title: "Relé", hint: "Cifrado de extremo a extremo, escanea un código QR" },
-          tailscale: { title: "Tailscale", hint: "Requiere algo de configuración" },
+          relay: {
+            title: "Relé",
+            hint: "Cifrado de extremo a extremo, escanea un código QR",
+          },
+          tailscale: {
+            title: "Tailscale",
+            hint: "Requiere algo de configuración",
+          },
         },
       },
     },

@@ -2,6 +2,7 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
+  projectFactory: en.projectFactory,
   paneFind: {
     connectionFailure:
       "Не удалось выполнить поиск в чате. Проверьте подключение к хосту и повторите попытку.",
@@ -1144,7 +1145,10 @@ export const ru: TranslationResources = {
     creating: "Создание…",
     name: "Название метки",
     updateHostUse: "Обновите этот хост, чтобы использовать метки.",
-    errors: { update: "Не удалось обновить метку", load: "Не удалось загрузить метки" },
+    errors: {
+      update: "Не удалось обновить метку",
+      load: "Не удалось загрузить метки",
+    },
     colors: {
       violet: "Фиолетовый",
       sky: "Голубой",
@@ -1776,8 +1780,14 @@ export const ru: TranslationResources = {
           connectDocs: "Документация",
           openConnectDocs: "Открыть документацию по подключению",
           recommended: "Рекомендуется",
-          relay: { title: "Ретранслятор", hint: "Сквозное шифрование, отсканируйте QR-код" },
-          tailscale: { title: "Tailscale", hint: "Требует небольшой настройки" },
+          relay: {
+            title: "Ретранслятор",
+            hint: "Сквозное шифрование, отсканируйте QR-код",
+          },
+          tailscale: {
+            title: "Tailscale",
+            hint: "Требует небольшой настройки",
+          },
         },
       },
     },

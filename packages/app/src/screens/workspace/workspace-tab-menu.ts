@@ -77,6 +77,7 @@ interface BuildWorkspaceTabMenuEntriesInput {
   onCopyAgentId: (agentId: string) => Promise<void> | void;
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
+  onSendToFactory?: () => Promise<void> | void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
   onRenameTab: (tab: WorkspaceTabDescriptor) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
@@ -94,6 +95,7 @@ interface BuildWorkspaceDesktopTabActionsInput {
   onCopyAgentId: (agentId: string) => Promise<void> | void;
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
+  onSendToFactory?: () => Promise<void> | void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
   onRenameTab: (tab: WorkspaceTabDescriptor) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
@@ -196,6 +198,16 @@ export function buildWorkspaceTabMenuEntries(
 
   if (tab.target.kind === "agent") {
     const { agentId } = tab.target;
+    if (input.onSendToFactory)
+      entries.push({
+        kind: "item",
+        key: "send-to-factory",
+        label: i18n.t("projectFactory.send"),
+        testID: `${menuTestIDBase}-send-to-factory`,
+        onSelect: () => {
+          void input.onSendToFactory?.();
+        },
+      });
     entries.push({
       kind: "item",
       key: "copy-resume-command",
@@ -301,6 +313,16 @@ export function buildWorkspaceTabMenuEntries(
   });
   if (tab.target.kind === "agent") {
     const { agentId } = tab.target;
+    if (input.onSendToFactory)
+      entries.push({
+        kind: "item",
+        key: "send-to-factory",
+        label: i18n.t("projectFactory.send"),
+        testID: `${menuTestIDBase}-send-to-factory`,
+        onSelect: () => {
+          void input.onSendToFactory?.();
+        },
+      });
     entries.push({
       kind: "item",
       key: "reload-agent",
@@ -344,6 +366,7 @@ export function buildWorkspaceDesktopTabActions(
       onCopyTerminalId: input.onCopyTerminalId,
       onCopyFilePath: input.onCopyFilePath,
       onReloadAgent: input.onReloadAgent,
+      onSendToFactory: input.onSendToFactory,
       onRenameTab: input.onRenameTab,
       onCloseTab: input.onCloseTab,
       onCloseTabsBefore: input.onCloseTabsToLeft,
