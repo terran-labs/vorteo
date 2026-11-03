@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge `main` after the eighth Host delivery so the ninth installed Host update can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Record the eighth installed Host update and Dev's installed release notes for their pull request to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - Cancelling a command the daemon runs now stops it. Command checks such as the Claude sign-in check accepted a cancel signal but kept running until their time limit after the caller gave up.
