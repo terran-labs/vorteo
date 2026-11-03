@@ -26,31 +26,43 @@ export async function openAgent(page: Page, session: MockAgentSession): Promise<
 }
 
 export async function reloadAgent(page: Page): Promise<void> {
-  await page.reload({ waitUntil: "commit" });
+  // Reload must not reopen the card under a stationary pointer.
+  await page.mouse.move(0, 0);
+  await page.reload({ waitUntil: "domcontentloaded" });
   await expectComposerVisible(page);
 }
 
-/** Wide screens show the meter's details in a tooltip while the pointer is on it. */
-export async function hoverContextWindowMeter(page: Page): Promise<Locator> {
-  // The details card's donut carries the same name; hover the composer's meter.
-  await page
+/** Wide screens show the meter's details in a hover card while the pointer is on it. */
+export async function hoverContextWindowMeter(page: Page, name = METER_NAME): Promise<Locator> {
+  const meter = page.getByTestId("context-window-meter").filter({ visible: true }).first();
+  await expect(meter).toHaveAccessibleName(name);
+  await meter.hover({ timeout: 30000 });
+  const tooltip = page.getByTestId("context-window-meter-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toBeInViewport({ ratio: 1 });
+  return tooltip;
+}
+
+/** Walks the pointer from the meter up onto its hover card, across the gap between them. */
+export async function moveOntoContextWindowDetails(page: Page, card: Locator): Promise<void> {
+  const meter = await page
     .getByTestId("context-window-meter")
     .filter({ visible: true })
     .first()
-    .hover({ timeout: 30_000 });
-  const tooltip = page.getByRole("tooltip").filter({ hasText: "Context window" });
-  await expect(tooltip).toBeVisible();
-  return tooltip;
+    .boundingBox();
+  const box = await card.boundingBox();
+  if (!meter || !box) throw new Error("The meter and its hover card must be on screen.");
+  await page.mouse.move(meter.x + meter.width / 2, box.y + box.height / 2, { steps: 20 });
 }
 
 export async function leaveContextWindowMeter(page: Page): Promise<void> {
   await page.mouse.move(0, 0);
-  await expect(page.getByRole("tooltip").filter({ hasText: "Context window" })).toHaveCount(0);
+  await expect(contextWindowDetails(page)).toHaveCount(0);
 }
 
 /** Compact screens open the meter's details in a sheet. */
-export async function pressContextWindowMeter(page: Page): Promise<Locator> {
-  await page.getByRole("button", { name: METER_NAME }).click({ timeout: 30_000 });
+export async function pressContextWindowMeter(page: Page, name = METER_NAME): Promise<Locator> {
+  await page.getByRole("button", { name, exact: true }).click({ timeout: 30_000 });
   const sheet = contextWindowSheet(page);
   await expect(sheet).toBeVisible();
   return sheet;
@@ -62,8 +74,20 @@ export async function closeContextWindowSheet(page: Page): Promise<void> {
   await expect(sheet).toHaveCount(0);
 }
 
+/** The fork compact meter opens an accessible dialog, separate from the desktop tooltip. */
 export function contextWindowSheet(page: Page): Locator {
-  return page.getByRole("dialog", { name: "Context window" });
+  return page
+    .getByRole("dialog", { name: "Context window", exact: true })
+    .filter({ visible: true });
+}
+
+/** Details on either supported layout; scope quota assertions away from the sidebar card. */
+export function contextWindowDetails(page: Page): Locator {
+  return page
+    .getByTestId("context-window-meter-tooltip")
+    .or(contextWindowSheet(page))
+    .filter({ visible: true })
+    .first();
 }
 
 /** One report card; cards have no role of their own. */
@@ -127,8 +151,8 @@ export interface AgentUsageScript {
   stopReportingUsage(): void;
   /** The agent of each agent usage request, in order. */
   agentRequests(): string[];
-  /** Each report Refresh, by report ID. */
-  refreshedReports(): string[][];
+  /** Each scoped agent Refresh, by agent ID. */
+  refreshedAgents(): string[];
 }
 
 /**
@@ -155,8 +179,10 @@ export async function scriptAgentUsage(page: Page): Promise<AgentUsageScript> {
       supported = false;
     },
     agentRequests: () => usage.listRequests().flatMap((request) => request.agentId ?? []),
-    refreshedReports: () =>
-      usage.listRequests().flatMap((request) => (request.reportIds ? [request.reportIds] : [])),
+    refreshedAgents: () =>
+      usage
+        .listRequests()
+        .flatMap((request) => (request.forceRefresh && request.agentId ? [request.agentId] : [])),
   };
 }
 
@@ -164,7 +190,7 @@ export async function scriptAgentUsage(page: Page): Promise<AgentUsageScript> {
 export async function qaScreenshot(page: Page, name: string): Promise<void> {
   const directory = process.env.PASEO_QA_SCREENSHOT_DIR;
   if (!directory) return;
-  // Let the sheet and tooltip animations settle.
+  // Let the sheet and hover card animations settle.
   await page.waitForTimeout(600);
   await page.addStyleTag({ content: ".__expo_fast_refresh { display: none !important; }" });
   await page.screenshot({ path: path.join(directory, `${name}.png`) });

@@ -1,14 +1,14 @@
 import { Gauge } from "lucide-react-native";
 import { useMemo } from "react";
-import { Pressable, Text, View } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { taskCardStyles } from "@/agent-stream/task-card-styles";
+import { View } from "react-native";
+import { withUnistyles } from "react-native-unistyles";
 import { GlobalCard } from "@/components/sidebar/global-card-shell";
 import type { Theme } from "@/styles/theme";
 import { useUsageHostId } from "@/usage/hosts";
 import { useOpenUsageScreen } from "@/usage/sidebar-item";
 import { attentionCount, quotaAccounts } from "./global-quota";
 import { QuotaAccountList } from "./quota-account-list";
+import { QuotaFooter } from "./quota-footer";
 import { useProviderUsage } from "./use-provider-usage";
 
 const QuotaIcon = withUnistyles(Gauge);
@@ -19,7 +19,10 @@ const HEADING_ICON = (
   </View>
 );
 
-/** Every account's quotas on the usage host, one bar per enforced window or capped balance. */
+/**
+ * Every account's quotas on the usage host: the account to use next, a week-long runway lane
+ * per account, and every window, balance and action when an account is opened.
+ */
 export function GlobalQuotaCard() {
   const serverId = useUsageHostId();
   const { view } = useProviderUsage(serverId, { pollUsage: true });
@@ -43,35 +46,7 @@ export function GlobalQuotaCard() {
       testID="global-quota-card"
     >
       <QuotaAccountList accounts={accounts} serverId={serverId} view={view} now={now} />
-      <View style={[styles.footer, taskCardStyles.proseInset, taskCardStyles.separator]}>
-        <Text style={styles.footerText} numberOfLines={1}>
-          Times in {Intl.DateTimeFormat().resolvedOptions().timeZone}
-        </Text>
-        <Pressable
-          onPress={openUsage}
-          accessibilityRole="link"
-          testID="global-quota-open-usage"
-          hitSlop={6}
-        >
-          <Text style={styles.link}>Open Usage</Text>
-        </Pressable>
-      </View>
+      <QuotaFooter view={view} onOpenUsage={openUsage} />
     </GlobalCard>
   );
 }
-
-const styles = StyleSheet.create((theme) => ({
-  footer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    paddingVertical: theme.spacing[2],
-  },
-  footerText: {
-    flex: 1,
-    minWidth: 0,
-    color: theme.colors.foregroundExtraMuted,
-    fontSize: theme.fontSize.sm - 1,
-  },
-  link: { color: theme.colors.accent, fontSize: theme.fontSize.sm },
-}));

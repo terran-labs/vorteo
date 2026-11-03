@@ -5,9 +5,12 @@ from pathlib import Path
 import subprocess
 
 
-def load(path=None):
+def load(path=None, protected=False):
     path = Path(path or os.environ.get('PASEO_HOST_CONFIG', Path(__file__).with_name('host-config.json')))
-    if path.is_file():
+    if protected:
+        from channel_identity import read_file
+        value = json.loads(read_file(path, 65536, protected=True)[0])
+    elif path.is_file():
         value = json.loads(path.read_text())
     else:
         names = {'deployment': 'PASEO_DEPLOYMENT_DIR', 'container': 'PASEO_CONTAINER_NAME',

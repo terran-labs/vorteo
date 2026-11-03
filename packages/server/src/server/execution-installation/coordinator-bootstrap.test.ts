@@ -49,6 +49,10 @@ import {
   type CoordinatorBootstrapStage,
 } from "@getpaseo/protocol/coordinator-bootstrap";
 import { handleBootstrapReview } from "./coordinator-bootstrap-session.js";
+import { closeFailedPreclaimDispatch } from "./coordinator-bootstrap-dispatch-failure.js";
+import { BootstrapCoordinatorBusy } from "./coordinator-bootstrap-errors.js";
+import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
+import { createCoordinatorDispatchNotifier } from "./coordinator-dispatch-notifier.js";
 import {
   CoordinatorBootstrapRequests,
   coordinatorPlanDigest,
@@ -142,6 +146,19 @@ test("frozen handoff refuses active jobs, preparations, unresolved holds and chi
       [],
     ),
   ).not.toThrow();
+  for (const target of ["host", "container-daemon"]) {
+    const canceledBatch = {
+      ...pending,
+      target,
+      status: "rejected",
+      sourceBatch: { status: "preparing", contributions: [] },
+    };
+    expect(() => assertFrozenCoordinatorIdle([canceledBatch], [])).not.toThrow();
+    expect(() => assertFrozenCoordinatorIdle([canceledBatch], [123])).toThrow("children");
+    expect(() =>
+      assertFrozenCoordinatorIdle([{ ...canceledBatch, finishCurrentTurns: true }], []),
+    ).toThrow("unresolved");
+  }
   expect(() => assertFrozenCoordinatorIdle([{ ...pending, status: "unknown" }], [])).toThrow();
   expect(() => assertFrozenCoordinatorIdle(null, [])).toThrow();
 });
@@ -615,6 +632,191 @@ test("approval rechecks artifacts and rejects stale revision or installation sel
   expect(f.journal.read()[0]?.status).toBe("pending");
 });
 
+test.each(["pending", "approved"] as const)(
+  "management cancellation cancels an exact %s request without validating replacement bytes",
+  async (status) => {
+    const f = fixture();
+    const pending = await f.prepare();
+    const request =
+      status === "pending"
+        ? pending
+        : await f.service().decide(
+            {
+              id: pending.id,
+              revision: pending.revision,
+              planSha256: pending.planSha256,
+              decision: "approve",
+            },
+            ownerPassword,
+          );
+    f.setVerify(async () => {
+      throw new Error("Replacement bytes unavailable");
+    });
+    const authority = vi.fn(() => {});
+    const canceled = f.service().cancelUnderManagement(
+      {
+        id: request.id,
+        revision: request.revision,
+        planSha256: request.planSha256,
+        decision: "cancel",
+      },
+      authority,
+    );
+    expect(authority).toHaveBeenCalledTimes(2);
+    expect(canceled.status).toBe("canceled");
+    expect(canceled.revision).not.toBe(request.revision);
+    expect(canceled.planSha256).toBe(request.planSha256);
+    expect(canceled.execution).toBeUndefined();
+    expect(f.service().list()).toEqual([canceled]);
+  },
+);
+
+test("management cancellation requires atomic storage and checks authority under its lock", async () => {
+  const f = fixture();
+  const pending = await f.prepare();
+  const input = {
+    id: pending.id,
+    revision: pending.revision,
+    planSha256: pending.planSha256,
+    decision: "cancel",
+  };
+  const unsupported = new CoordinatorBootstrapRequests(
+    {
+      read: () => f.journal.read(),
+      replace: (previous, next) => f.journal.replace(previous, next),
+    },
+    () => f.binding,
+    async () => {},
+  );
+  expect(() => unsupported.cancelUnderManagement(input, () => {})).toThrow("unavailable");
+  const authority = () => {
+    // A concurrent journal writer cannot enter while authority is checked.
+    expect(() => f.journal.replace([pending], [pending])).toThrow("busy");
+  };
+  const canceled = f.service().cancelUnderManagement(input, authority);
+  expect(f.service().list()).toEqual([canceled]);
+});
+
+test("management cancellation refuses a tampered stored plan without changing the journal", async () => {
+  const f = fixture();
+  const pending = await f.prepare();
+  const file = path.join(f.root, "coordinator-bootstrap.json");
+  const stored = JSON.parse(readFileSync(file, "utf8"));
+  stored.requests[0].plan.candidate.sourceCommit = "f".repeat(40);
+  const tampered = JSON.stringify(stored);
+  writeFileSync(file, tampered);
+  expect(() =>
+    f.service().cancelUnderManagement(
+      {
+        id: pending.id,
+        revision: pending.revision,
+        planSha256: pending.planSha256,
+        decision: "cancel",
+      },
+      () => {},
+    ),
+  ).toThrow("digest check");
+  expect(readFileSync(file, "utf8")).toBe(tampered);
+});
+
+test("management cancellation refuses stale tuples, approval and repeat cancellation", async () => {
+  const f = fixture();
+  const pending = await f.prepare();
+  const input = {
+    id: pending.id,
+    revision: pending.revision,
+    planSha256: pending.planSha256,
+    decision: "cancel",
+  };
+  for (const change of [
+    { id: randomUUID() },
+    { revision: randomUUID() },
+    { planSha256: "0".repeat(64) },
+    { decision: "approve" },
+  ]) {
+    expect(() => f.service().cancelUnderManagement({ ...input, ...change }, () => {})).toThrow();
+    expect(f.service().list()).toEqual([pending]);
+  }
+  const canceled = f.service().cancelUnderManagement(input, () => {});
+  expect(() =>
+    f.service().cancelUnderManagement({ ...input, revision: canceled.revision }, () => {}),
+  ).toThrow("already been decided");
+  expect(f.service().list()).toEqual([canceled]);
+});
+
+test("management cancellation rechecks authority before persistence and refuses async checks", async () => {
+  const f = fixture();
+  const pending = await f.prepare();
+  const input = {
+    id: pending.id,
+    revision: pending.revision,
+    planSha256: pending.planSha256,
+    decision: "cancel",
+  };
+  const revoked = vi.fn(() => {
+    throw new Error("Management grant revoked");
+  });
+  expect(() => f.service().cancelUnderManagement(input, revoked)).toThrow("grant revoked");
+  const changed = vi
+    .fn()
+    .mockImplementationOnce(() => {})
+    .mockImplementation(() => {
+      throw new Error("Management grant changed");
+    });
+  expect(() => f.service().cancelUnderManagement(input, changed)).toThrow("grant changed");
+  expect(() => f.service().cancelUnderManagement(input, async () => {})).toThrow("synchronously");
+  expect(f.service().list()).toEqual([pending]);
+});
+
+test("management cancellation refuses changed Host binding and claimed execution", async () => {
+  const f = fixture();
+  const pending = await f.prepare();
+  const input = {
+    id: pending.id,
+    revision: pending.revision,
+    planSha256: pending.planSha256,
+    decision: "cancel",
+  };
+  f.setBinding({ ...f.binding, installationId: randomUUID() });
+  expect(() => f.service().cancelUnderManagement(input, () => {})).toThrow("does not match");
+  f.setBinding(f.binding);
+  const approved = await f.service().decide({ ...input, decision: "approve" }, ownerPassword);
+  await f.service().claimDispatch({
+    id: approved.id,
+    revision: approved.revision,
+    planSha256: approved.planSha256,
+  });
+  const claimed = f.service().list()[0]!;
+  expect(() =>
+    f.service().cancelUnderManagement({ ...input, revision: claimed.revision }, () => {}),
+  ).toThrow("already claimed");
+  expect(f.service().list()).toEqual([claimed]);
+});
+
+test("management cancellation wins against outstanding owner approval without granting approval", async () => {
+  const f = fixture();
+  const pending = await f.prepare();
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  f.setVerify(async () => {
+    entered();
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  });
+  const input = { id: pending.id, revision: pending.revision, planSha256: pending.planSha256 };
+  const approval = f.service().decide({ ...input, decision: "approve" }, ownerPassword);
+  await started;
+  const canceled = f.service().cancelUnderManagement({ ...input, decision: "cancel" }, () => {});
+  release();
+  await expect(approval).rejects.toThrow("changed");
+  expect(f.service().list()).toEqual([canceled]);
+  expect(canceled.status).toBe("canceled");
+});
+
 test("cancellation wins while asynchronous approval validation is outstanding", async () => {
   const f = fixture();
   const pending = await f.prepare();
@@ -935,6 +1137,127 @@ test("dispatch claims exact approval once and preserves its generation across re
   ).toThrow("Invalid");
 });
 
+test("a busy pre-claim dispatch closes its exact approval with a reason and is never reused", async () => {
+  const f = fixture();
+  f.plan.state.directory = f.root;
+  const blocking = {
+    id: randomUUID(),
+    revision: randomUUID(),
+    target: "host",
+    reason: "fixture",
+    requestedBy: "host-agent",
+    createdAt: "2026-11-01T00:00:00.000Z",
+    expiresAt: "2026-11-02T00:00:00.000Z",
+    status: "approved",
+    detail: "fixture",
+  };
+  writeFileSync(path.join(f.root, "restart-jobs.json"), JSON.stringify([blocking]), {
+    mode: 0o600,
+  });
+  const pending = await f.prepare();
+  const service = {
+    list: () => f.service().list(),
+    prepare: (input: unknown) => f.service().prepare(input),
+    decide: (input: unknown, password: string) => f.service().decide(input, password),
+    dispatchStatuses: (listed: CoordinatorBootstrapRequest[]) =>
+      coordinatorDispatchStatuses({
+        requests: listed,
+        readLifecycle: () => f.service().readLifecycle(),
+        now: Date.now(),
+      }),
+  };
+  const list = { type: "installation.bootstrap.list_requests.request", requestId: "1" } as const;
+  // Readiness is visible before approval, and only to clients that ask for it.
+  const legacy = await handleBootstrapReview(list, service);
+  expect(legacy.payload.requests?.[0]).not.toHaveProperty("dispatchStatus");
+  const review = await handleBootstrapReview({ ...list, dispatchStatus: true }, service);
+  expect(review.payload.requests?.[0]?.dispatchStatus?.readiness).toMatchObject({
+    state: "blocked",
+    blockers: ["A Host restart or source update is approved"],
+  });
+  const approved = await f.service().decide(
+    {
+      id: pending.id,
+      revision: pending.revision,
+      planSha256: pending.planSha256,
+      decision: "approve",
+    },
+    ownerPassword,
+  );
+  const identity = {
+    id: approved.id,
+    revision: approved.revision,
+    planSha256: approved.planSha256,
+  };
+  const error = await f
+    .service()
+    .claimDispatch(identity)
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(BootstrapCoordinatorBusy);
+  expect(f.service().closeFailedDispatch({ ...identity, revision: randomUUID() })).toBeNull();
+  closeFailedPreclaimDispatch(f.service(), approved, error);
+  const closed = f.service().list()[0]!;
+  expect(closed).toMatchObject({ status: "canceled" });
+  expect(closed.execution).toBeUndefined();
+  await expect(f.service().claimDispatch(identity)).rejects.toThrow("approval required");
+  const failed = await handleBootstrapReview({ ...list, dispatchStatus: true }, service);
+  const status = failed.payload.requests?.[0]?.dispatchStatus;
+  expect(status?.failure?.category).toBe("busy");
+  expect(status?.failure?.reason).toContain("before changing anything");
+  expect(status?.readiness).toBeUndefined();
+  // The reviewed installation lead hears about it once, only while it exists and is
+  // not archived, through its queue; a new request revision is a new notice.
+  const queued: { agentId: string; text: string; messageId: string }[] = [];
+  let available = false;
+  let listed = () => f.service().list();
+  const lead = randomUUID();
+  const notifier = createCoordinatorDispatchNotifier({
+    agentId: lead,
+    stateDirectory: f.root,
+    ports: {
+      list: () => listed(),
+      readLifecycle: () => f.service().readLifecycle(),
+      leadAvailable: async () => available,
+      enqueue: async (message) => {
+        queued.push(message);
+      },
+      now: Date.now,
+    },
+  });
+  await notifier.check();
+  expect(queued).toEqual([]);
+  available = true;
+  await notifier.check();
+  await notifier.check();
+  expect(queued).toHaveLength(1);
+  expect(queued[0]).toMatchObject({ agentId: lead });
+  expect(queued[0]!.text).toContain(`Coordinator update ${closed.id} failed before it started`);
+  const stalled = {
+    ...closed,
+    status: "approved" as const,
+    decisionAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+  };
+  for (const revision of [randomUUID(), randomUUID()]) {
+    listed = () => [{ ...stalled, revision }];
+    await notifier.check();
+    await notifier.check();
+  }
+  expect(queued.map((notice) => notice.text.includes("has not started"))).toEqual([
+    false,
+    true,
+    true,
+  ]);
+  expect(new Set(queued.map((notice) => notice.messageId)).size).toBe(3);
+  // A record that no longer explains the ledger's current revision is hidden.
+  expect(
+    coordinatorDispatchStatuses({
+      requests: [{ ...closed, revision: randomUUID() }],
+      readLifecycle: () => [],
+      now: Date.now(),
+    }).size,
+  ).toBe(0);
+});
+
 test("cancellation during dispatch validation wins without a stored claim", async () => {
   const f = fixture();
   const pending = await f.prepare();
@@ -1022,6 +1345,100 @@ test("bootstrap executor persists intent before each operation and never replays
     "undispatched",
   );
   expect(calls).toHaveLength(9);
+});
+
+test("a busy claim waits within the same approval, and cancellation or exhaustion never claims", async () => {
+  const journalFile = (f: ReturnType<typeof fixture>, jobs: unknown[]) =>
+    writeFileSync(path.join(f.root, "restart-jobs.json"), JSON.stringify(jobs), { mode: 0o600 });
+  const busy = {
+    id: randomUUID(),
+    revision: randomUUID(),
+    target: "host",
+    reason: "fixture",
+    requestedBy: "host-agent",
+    createdAt: "2026-11-03T00:00:00.000Z",
+    expiresAt: "2026-11-04T00:00:00.000Z",
+    status: "running",
+    detail: "fixture",
+  };
+  const approve = async (f: ReturnType<typeof fixture>) => {
+    const pending = await f.prepare();
+    const approved = await f.service().decide(
+      {
+        id: pending.id,
+        revision: pending.revision,
+        planSha256: pending.planSha256,
+        decision: "approve",
+      },
+      ownerPassword,
+    );
+    return { id: approved.id, revision: approved.revision, planSha256: approved.planSha256 };
+  };
+  const steps = (waitForClaimRetry: BootstrapExecutorOperations["waitForClaimRetry"]) =>
+    ({
+      withOwnership: async (_request, operation) => operation(),
+      armWatchdog: async () => {},
+      freeze: async () => {},
+      inspectFrozen: async () => ({ restartJournal: [], childPids: [] }),
+      preserveTransfer: async () => {},
+      unload: async () => {},
+      select: async () => {},
+      start: async () => {},
+      verifyReplacement: async () => {},
+      releaseReplacement: async () => {},
+      resumePrevious: async () => {
+        throw new Error("Unexpected resume");
+      },
+      waitForClaimRetry,
+    }) satisfies BootstrapExecutorOperations;
+
+  // The blocker clears during the wait: the same approval claims and completes.
+  const cleared = fixture();
+  journalFile(cleared, [busy]);
+  const clearedIdentity = await approve(cleared);
+  const attempts: number[] = [];
+  const result = await executeCoordinatorBootstrap(
+    cleared.service(),
+    clearedIdentity,
+    steps(async (attempt) => {
+      attempts.push(attempt);
+      if (attempt === 2) journalFile(cleared, [{ ...busy, status: "succeeded" }]);
+      return true;
+    }),
+  );
+  expect(attempts).toEqual([1, 2]);
+  expect(result.execution?.stage).toBe("succeeded");
+
+  // Cancellation during the wait wins: the retried claim refuses and nothing is claimed.
+  const canceled = fixture();
+  journalFile(canceled, [busy]);
+  const canceledIdentity = await approve(canceled);
+  await expect(
+    executeCoordinatorBootstrap(
+      canceled.service(),
+      canceledIdentity,
+      steps(async () => {
+        await canceled.service().decide({ ...canceledIdentity, decision: "cancel" }, ownerPassword);
+        journalFile(canceled, []);
+        return true;
+      }),
+    ),
+  ).rejects.toThrow("undispatched");
+  expect(canceled.service().list()[0]).toMatchObject({ status: "canceled" });
+  expect(canceled.service().list()[0]?.execution).toBeUndefined();
+
+  // An exhausted wait keeps the busy refusal and leaves the approval unclaimed.
+  const exhausted = fixture();
+  journalFile(exhausted, [busy]);
+  const exhaustedIdentity = await approve(exhausted);
+  await expect(
+    executeCoordinatorBootstrap(
+      exhausted.service(),
+      exhaustedIdentity,
+      steps(async () => false),
+    ),
+  ).rejects.toBeInstanceOf(BootstrapCoordinatorBusy);
+  expect(exhausted.service().list()[0]?.execution).toBeUndefined();
 });
 
 test.each([

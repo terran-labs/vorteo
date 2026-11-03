@@ -32,14 +32,17 @@ import {
   parseChangelog,
   formatChangelogDate,
   mergeChangelogReleases,
+  assignUnreleasedEntries,
   type ChangelogTimelineRelease,
   type ChangelogSection,
 } from "./parse-changelog";
 
 const customMarkdown: unknown = Constants.expoConfig?.extra?.vorteoChangelog;
-const customReleases = parseChangelog(typeof customMarkdown === "string" ? customMarkdown : "");
+const customReleases = assignUnreleasedEntries(
+  parseChangelog(typeof customMarkdown === "string" ? customMarkdown : ""),
+);
 
-const WEBSITE_CHANGELOG_URL = "https://github.com/AubreyF/vorteo/blob/main/VORTEO_CHANGELOG.md";
+const WEBSITE_CHANGELOG_URL = "https://github.com/terran-labs/vorteo/blob/main/VORTEO_CHANGELOG.md";
 
 const ThemedGift = withUnistyles(Gift);
 const ThemedExternalLink = withUnistyles(ExternalLink);
@@ -151,7 +154,7 @@ function ChangelogStatus({ state, onRetry }: ChangelogStatusProps) {
           description={t("changelog.error.description")}
           testID="changelog-error"
         >
-          <Button variant="outline" size="sm" onPress={onRetry} testID="changelog-retry">
+          <Button variant="outline" onPress={onRetry} testID="changelog-retry">
             {t("common.actions.retry")}
           </Button>
         </Alert>

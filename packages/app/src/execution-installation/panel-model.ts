@@ -1,3 +1,5 @@
+import type { BrokerReviewJob } from "./preview-broker-review";
+import { brokerActionDisabledReason, type BrokerAction } from "./preview-broker-review";
 import type { MaintenanceDelegationStatus } from "@getpaseo/protocol/maintenance-approval";
 import type { PreviewMonitorJob } from "@getpaseo/protocol/preview-monitor-maintenance";
 import type {
@@ -65,6 +67,7 @@ interface InstallationPanelState {
   jobs: RestartJob[];
   helperJobs: NativeHelperJob[];
   monitorJobs: PreviewMonitorJob[];
+  brokerJobs: BrokerReviewJob[];
   helperError: string | null;
   /** Null hides the session host card: locked, or a coordinator without session host jobs. */
   sessionHost: SessionHostOverview | null;
@@ -107,6 +110,7 @@ export class InstallationPanelModel {
     jobs: [],
     helperJobs: [],
     monitorJobs: [],
+    brokerJobs: [],
     helperError: null,
     sessionHost: null,
     sessionHostError: null,
@@ -142,6 +146,10 @@ export class InstallationPanelModel {
       Partial<
         Pick<
           InstallationClient,
+          | "listBrokerDeployments"
+          | "decideBrokerDeployment"
+          | "listBrokers"
+          | "decideBroker"
           | "listMonitors"
           | "decideMonitor"
           | "daemonAutomation"
@@ -205,6 +213,7 @@ export class InstallationPanelModel {
         jobs: [],
         helperJobs: [],
         monitorJobs: [],
+        brokerJobs: [],
         helperError: null,
         sessionHost: null,
         sessionHostError: null,
@@ -268,6 +277,14 @@ export class InstallationPanelModel {
     }
   }
 
+  private async refreshBrokerJobs(): Promise<BrokerReviewJob[]> {
+    const [rebinds, deployments] = await Promise.all([
+      this.client.listBrokers?.() ?? [],
+      this.client.listBrokerDeployments?.() ?? [],
+    ]);
+    return [...deployments, ...rebinds];
+  }
+
   async refresh(): Promise<void> {
     if (this.refreshing) return;
     this.refreshing = true;
@@ -287,6 +304,7 @@ export class InstallationPanelModel {
         profileSharing,
         helperJobs,
         monitorJobs,
+        brokerJobs,
         daemonAutomation,
         maintenanceDelegation,
         devRepair,
@@ -298,6 +316,7 @@ export class InstallationPanelModel {
         this.client.profileSharingStatus(),
         this.client.listHelpers(),
         this.client.listMonitors?.() ?? Promise.resolve([]),
+        this.refreshBrokerJobs(),
         this.client.daemonAutomation?.() ?? Promise.resolve(null),
         (this.client.maintenanceDelegation?.() ?? Promise.resolve(null))
           .then((delegation) => {
@@ -360,6 +379,7 @@ export class InstallationPanelModel {
         devRepair,
         helperJobs,
         monitorJobs,
+        brokerJobs,
         sessionHost,
         instructionRequests,
         pendingJobs: pending,
@@ -513,7 +533,7 @@ export class InstallationPanelModel {
     }
   }
 
-  async changeMaintenanceDelegation(enabled: boolean): Promise<void> {
+  async changeMaintenanceDelegation(enabled: boolean, management?: boolean): Promise<void> {
     const preference = this.state.maintenanceDelegation;
     if (
       this.state.busy ||
@@ -532,7 +552,7 @@ export class InstallationPanelModel {
       notice: "Saving full maintenance delegation...",
     });
     try {
-      const saved = await this.client.changeMaintenanceDelegation(preference, enabled);
+      const saved = await this.client.changeMaintenanceDelegation(preference, enabled, management);
       if (generation !== this.accessGeneration) return;
       this.automationGeneration++;
       this.publish({
@@ -552,6 +572,47 @@ export class InstallationPanelModel {
     }
   }
 
+  async decideBroker(job: BrokerReviewJob, action: BrokerAction): Promise<void> {
+    const current = this.state.brokerJobs.find((item) => item.id === job.id);
+    if (!current || current.revision !== job.revision || current.planSha256 !== job.planSha256) {
+      this.publish({
+        helperError: "Broker request changed. Refresh and review its current bytes.",
+      });
+      return;
+    }
+    const reason = brokerActionDisabledReason(current, action, this.state);
+    if (reason) {
+      this.publish({ helperError: reason });
+      return;
+    }
+    if (
+      current.target === "preview-broker-deployment"
+        ? !this.client.decideBrokerDeployment
+        : !this.client.decideBroker
+    ) {
+      this.publish({ helperError: "Broker controls unavailable" });
+      return;
+    }
+    this.publish({ busy: true, helperError: null });
+    try {
+      const result =
+        current.target === "preview-broker-deployment"
+          ? await this.client.decideBrokerDeployment!(current, action)
+          : await this.client.decideBroker!(current, action);
+      this.publish({
+        brokerJobs: this.state.brokerJobs.map((item) => (item.id === result.id ? result : item)),
+      });
+      await this.refresh();
+    } catch (error) {
+      this.fail(error);
+      this.publish({
+        error: null,
+        helperError: failureMessage(error, "Broker decision unconfirmed. Refresh before retrying."),
+      });
+    } finally {
+      this.publish({ busy: false });
+    }
+  }
   async decideMonitor(job: PreviewMonitorJob, action: MonitorAction): Promise<void> {
     const current = this.state.monitorJobs.find((item) => item.id === job.id);
     if (!current || current.revision !== job.revision || current.planSha256 !== job.planSha256) {
@@ -822,6 +883,7 @@ export class InstallationPanelModel {
         jobs: [],
         helperJobs: [],
         monitorJobs: [],
+        brokerJobs: [],
         helperError: null,
         sessionHost: null,
         sessionHostError: null,
@@ -983,4 +1045,10 @@ export function restartRequestSummary(job: RestartJob): string {
 
 function failureMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? toErrorMessage(error) : fallback;
+}
+
+// Hosts are macOS (LaunchAgents), so pbcopy is always present. The path comes
+// from the coordinator; single-quote it so spaces or quotes cannot break out.
+export function passwordCopyCommand(passwordFile: string): string {
+  return `pbcopy < '${passwordFile.replaceAll("'", `'\\''`)}'`;
 }

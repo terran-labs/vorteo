@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { runLsCommandWithDeps } from "./ls.js";
+import { buildWorktreeListRequest, runLsCommandWithDeps } from "./ls.js";
 
 const daemonTarget = { kind: "endpoint" as const, host: "example.test:12345" };
 
@@ -56,7 +56,7 @@ describe("runLsCommand", () => {
     ]);
   });
 
-  it("sends --cwd resolved to an absolute path", async () => {
+  it("preserves remote --cwd without resolving it on the CLI host", async () => {
     const { client, listCalls } = createRecordingClient();
 
     await runLsCommandWithDeps(
@@ -64,7 +64,7 @@ describe("runLsCommand", () => {
       { connectToDaemon: async () => client },
     );
 
-    expect(listCalls).toEqual([{ cwd: path.resolve("some/dir") }]);
+    expect(listCalls).toEqual([{ cwd: "some/dir" }]);
   });
 
   it("sends --repo as repoRoot, taking precedence over --cwd", async () => {
@@ -75,7 +75,16 @@ describe("runLsCommand", () => {
       { connectToDaemon: async () => client },
     );
 
-    expect(listCalls).toEqual([{ repoRoot: path.resolve("relative/repo") }]);
+    expect(listCalls).toEqual([{ repoRoot: "relative/repo" }]);
+  });
+
+  it("resolves local repository paths while preserving the repo override", () => {
+    expect(buildWorktreeListRequest({ cwd: "some/dir" })).toEqual({
+      cwd: path.resolve("some/dir"),
+    });
+    expect(buildWorktreeListRequest({ repo: "relative/repo", cwd: "/ignored" })).toEqual({
+      repoRoot: path.resolve("relative/repo"),
+    });
   });
 
   it("reports the daemon's list error", async () => {

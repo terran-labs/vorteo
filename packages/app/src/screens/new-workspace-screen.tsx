@@ -1,3 +1,18 @@
+import type { ReactElement } from "react";
+import { withUnistyles } from "react-native-unistyles";
+import type { TFunction } from "i18next";
+import { FolderPlus, ChevronDown } from "lucide-react-native";
+import { LaunchControl } from "@/screens/new-workspace/form/launch-control";
+import type { PressableStateCallbackType } from "react-native";
+import type { RefObject } from "react";
+import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
+import { getHostProjectSourceDirectory } from "@/projects/host-projects";
+import { useUnistyles } from "react-native-unistyles";
+import { Folder } from "lucide-react-native";
+import { projectIconPlaceholderLabelFromDisplayName } from "@/utils/project-display-name";
+import { Pressable } from "react-native";
+import { GitBranch } from "lucide-react-native";
+import { GitPullRequest } from "lucide-react-native";
 import { useNewWorkspaceProjectDirectory } from "./new-workspace/project-directory";
 import { buildWorkspaceDraftAgentConfig } from "./workspace/workspace-draft-agent-config";
 import { useAppSettings } from "@/hooks/use-settings";
@@ -18,17 +33,16 @@ import type { AgentSnapshotPayload, CreationSnapshot } from "@getpaseo/protocol/
 import { encodeImages } from "@/utils/encode-images";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { ReactElement, ReactNode, RefObject } from "react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
-import { Pressable, Text, View } from "react-native";
-import type { PressableStateCallbackType } from "react-native";
-import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
+
+import { Text, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { createNameId } from "mnemonic-id";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Folder, FolderPlus, GitBranch, GitPullRequest } from "lucide-react-native";
 import { Composer } from "@/composer";
 
+import { useComposerEditingSession, useComposerFullscreen } from "@/composer/editing-session";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import {
   resolveComposerAttachmentSubmitFormat,
@@ -40,11 +54,10 @@ import type { ComboboxOption as ComboboxOptionType, ComboboxProps } from "@/comp
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
-import { SidebarMenuToggle } from "@/components/headers/menu-header";
+
 import { isNative } from "@/constants/platform";
 import { ScreenTitle } from "@/components/headers/screen-title";
-import { ScreenHeader } from "@/components/headers/screen-header";
+
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
 import { useAgentInputDraft } from "@/composer/draft/input-draft";
@@ -54,7 +67,6 @@ import { ensureCheckoutStatus } from "@/git/checkout-status-cache";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { resolveTerminalProfiles } from "@getpaseo/protocol/terminal-profiles";
 import type { TerminalProfile } from "@getpaseo/protocol/messages";
-import { LaunchControl } from "@/new-workspace-launch/launch-control";
 import { resolveLaunchTarget, type LaunchTarget } from "@/new-workspace-launch/target";
 import { useTerminalComposerState } from "@/new-workspace-launch/composer-state";
 import { runCreateTerminalWorkspace } from "./new-workspace-terminal";
@@ -83,12 +95,10 @@ import {
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionId } from "@/keyboard/keyboard-action-dispatcher";
 import { useFormPreferences } from "@/hooks/use-form-preferences";
-import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import type { CreateAgentInitialValues } from "@/hooks/use-agent-form-state";
 import { toErrorMessage } from "@/utils/error-messages";
-import { projectIconPlaceholderLabelFromDisplayName } from "@/utils/project-display-name";
+
 import {
-  getHostProjectSourceDirectory,
   getHostProjectId,
   getWorktreeSupportForHostProject,
   hostProjectFromRoute,
@@ -135,6 +145,7 @@ import {
 } from "./new-workspace-initial-context";
 import { buildNewWorkspaceProjectIconTargets } from "./new-workspace/project-icon-targets";
 import { useNewWorkspaceProjectPicker } from "./new-workspace/project-picker";
+
 import { ImportSessionButton } from "./new-workspace/import-session-button";
 import { useImportSession } from "@/hooks/use-import-session";
 import {
@@ -144,12 +155,6 @@ import {
 } from "./workspace/terminals/state";
 import { captureWorkspaceDraftCleanup } from "./new-workspace/background-handoff";
 import { useNewWorkspaceScreenPresence } from "./new-workspace/screen-presence";
-
-const ThemedFolderPlus = withUnistyles(FolderPlus);
-const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const addProjectIcon = (
-  <ThemedFolderPlus size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
-);
 
 function useIsNewWorkspaceDraftHandoffActive(input: {
   draftId: string | undefined;
@@ -211,23 +216,6 @@ interface NewWorkspaceScreenProps {
 const NO_TERMINAL_ATTACHMENTS: UserComposerAttachment[] = [];
 function noopChangeAttachments() {}
 function noopClearDraft() {}
-
-const PROJECT_ICON_FALLBACK_FONT_SIZE = 10;
-const ThemedChevronDown = withUnistyles(ChevronDown);
-const chevronExtraMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
-
-// Every picker chip on this screen shares one chevron so they stay a single
-// visual family. Extra-muted: the chevron is an affordance, not information,
-// and it should sit behind the label it belongs to.
-function MetaChevron(): ReactElement {
-  return (
-    <View style={styles.chevronContainer}>
-      <ThemedChevronDown size={ICON_SIZE.sm} uniProps={chevronExtraMutedMapping} />
-    </View>
-  );
-}
-
-const metaChevron = <MetaChevron />;
 
 // Stable reference so the keyboard-action handler doesn't re-register each render.
 const PROJECT_PICK_ACTIONS: readonly KeyboardActionId[] = ["workspace.project.pick"];
@@ -757,12 +745,6 @@ function useWorkspaceIsolation(input: {
   };
 }
 
-function isolationLabel(t: TFunction, isolation: "local" | "worktree"): string {
-  return isolation === "worktree"
-    ? t("newWorkspace.isolation.worktree")
-    : t("newWorkspace.isolation.local");
-}
-
 function normalizeBranchDetails(
   data: { branchDetails?: BranchPickerDetail[]; branches?: string[] } | undefined,
 ): BranchPickerDetail[] {
@@ -1038,7 +1020,7 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
       provider,
       ...(composerState.selectedProfileId ? { profileId: composerState.selectedProfileId } : {}),
       cwd,
-      modeId: composerState.selectedMode || undefined,
+      modeId: composerState.effectiveModeId || undefined,
       model: composerState.effectiveModelId || undefined,
       thinkingOptionId: composerState.effectiveThinkingOptionId || undefined,
       featureValues: composerState.featureValues,
@@ -1535,7 +1517,6 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput) {
         onPress={project.open}
         disabled={isPending}
         badgePressableStyle={isCompact ? styles.compactProjectTrigger : badgePressableStyle}
-        heading={isCompact ? t("newWorkspace.title") : undefined}
         label={project.triggerLabel}
         tooltipLabel={t("newWorkspace.tooltips.project")}
         projectViewKey={project.selectedProject?.viewKey ?? null}
@@ -1627,17 +1608,18 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput) {
 
   const launchControl = (
     <LaunchControl
+      variant="badge"
       serverId={launch.serverId}
       target={launch.target}
       onChange={launch.onChange}
       profiles={launch.profiles}
       disabled={launch.disabled}
-      badgePressableStyle={badgePressableStyle}
     />
   );
 
   const fields = isCompact ? (
     <View testID="new-workspace-ref-picker-row" style={styles.formStack} pointerEvents="box-none">
+      <FormRow>{projectControl}</FormRow>
       {isolationControl ? <FormRow>{isolationControl}</FormRow> : null}
       {baseControl ? <FormRow>{baseControl}</FormRow> : null}
       <FormRow>{launchControl}</FormRow>
@@ -1666,11 +1648,13 @@ export function NewWorkspaceScreen({
   displayName: displayNameProp,
   draftId,
 }: NewWorkspaceScreenProps) {
-  const queryClient = useQueryClient();
   const { theme } = useUnistyles();
+  const queryClient = useQueryClient();
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const toast = useToast();
+  const composerEditing = useNewWorkspaceComposerEditing();
+  const { leaveFullscreen } = composerEditing;
   const mergeWorkspaces = useCallback(
     (targetServerId: string, workspaces: Iterable<WorkspaceDescriptor>) => {
       getHostRuntimeStore().acceptWorkspaceSnapshots(targetServerId, Array.from(workspaces));
@@ -1759,7 +1743,7 @@ export function NewWorkspaceScreen({
     [terminalComposerValue],
   );
   const terminalTextReplacement = useMemo(
-    () => ({ key: launchFocusKey, text: terminalComposerValue }),
+    () => ({ kind: "replace" as const, key: launchFocusKey, text: terminalComposerValue }),
     [launchFocusKey, terminalComposerValue],
   );
 
@@ -2034,50 +2018,6 @@ export function NewWorkspaceScreen({
     setIsolationPickerOpen(nextOpen);
   }, []);
 
-  // "New worktree" is omitted entirely (not disabled) when the project isn't a
-  // git checkout, since worktree isolation is impossible there.
-  const isolationOptions = useMemo<ComboboxOptionType[]>(() => {
-    const localOption = { id: "local", label: isolationLabel(t, "local") };
-    if (!canCreateWorktree) return [localOption];
-    return [localOption, { id: "worktree", label: isolationLabel(t, "worktree") }];
-  }, [canCreateWorktree, t]);
-
-  const handleSelectIsolationOption = useCallback(
-    (id: string) => {
-      setIsolation(id === "worktree" ? "worktree" : "local");
-      setIsolationPickerOpen(false);
-    },
-    [setIsolation],
-  );
-
-  const renderIsolationOption = useCallback(
-    ({
-      option,
-      selected,
-      active,
-      onPress,
-    }: {
-      option: ComboboxOptionType;
-      selected: boolean;
-      active: boolean;
-      onPress: () => void;
-    }) => {
-      return (
-        <IsolationOptionItem
-          optionId={option.id}
-          label={option.label}
-          selected={selected}
-          active={active}
-          disabled={isPending}
-          onPress={onPress}
-          iconColor={theme.colors.foregroundMuted}
-          iconSize={theme.iconSize.sm}
-        />
-      );
-    },
-    [isPending, theme.colors.foregroundMuted, theme.iconSize.sm],
-  );
-
   const handleClearDraft = useCallback(() => {
     // No-op: screen navigates away on success, text should stay for retry on error
   }, []);
@@ -2189,6 +2129,7 @@ export function NewWorkspaceScreen({
                 return;
               }
               outcome = "navigated";
+              leaveFullscreen();
               navigateToWorkspace({ serverId: targetServerId, workspaceId });
             },
           });
@@ -2238,6 +2179,7 @@ export function NewWorkspaceScreen({
       forkDraftSetup,
       isStillOnCreateScreen,
       launchTarget,
+      leaveFullscreen,
       selectedServerId,
       supportsForgeSearch,
       t,
@@ -2294,6 +2236,7 @@ export function NewWorkspaceScreen({
             return;
           }
           outcome = "navigated";
+          leaveFullscreen();
           navigateToWorkspace({ serverId: targetServerId, workspaceId, target });
         },
       });
@@ -2315,44 +2258,10 @@ export function NewWorkspaceScreen({
     t,
     terminalPromptText,
     toast,
+    leaveFullscreen,
     updateFormPreferences,
     withConnectedClient,
   ]);
-
-  const renderPickerOption = useCallback(
-    (props: {
-      option: ComboboxOptionType;
-      selected: boolean;
-      active: boolean;
-      onPress: () => void;
-    }) => <NewWorkspacePickerOption {...props} itemById={itemById} isPending={isPending} />,
-    [isPending, itemById],
-  );
-
-  const renderProjectOption = useCallback(
-    (props: {
-      option: ComboboxOptionType;
-      selected: boolean;
-      active: boolean;
-      onPress: () => void;
-    }) => (
-      <NewWorkspaceProjectPickerOption
-        {...props}
-        projectByOptionId={projectByOptionId}
-        projectIconDataByProjectViewKey={projectIconDataByProjectViewKey}
-        selectedServerId={selectedServerId}
-        isPending={isPending}
-        supportsWorkspaceMultiplicity={supportsWorkspaceMultiplicity}
-      />
-    ),
-    [
-      isPending,
-      projectByOptionId,
-      projectIconDataByProjectViewKey,
-      selectedServerId,
-      supportsWorkspaceMultiplicity,
-    ],
-  );
 
   const agentControlsWithDisabled = useMemo(
     () =>
@@ -2372,57 +2281,82 @@ export function NewWorkspaceScreen({
       ? t("newWorkspace.refPicker.searching")
       : t("newWorkspace.refPicker.noMatchingRefs");
 
-  const { fields: formStack, projectControl } = useNewWorkspaceFormStack({
+  const { fields: formStack } = useNewWorkspaceFormStack({
     isCompact,
     isPending,
     project: {
       anchorRef: projectPickerAnchorRef,
       open: openProjectPicker,
-      options: projectPickerOptions,
-      triggerLabel: projectTriggerLabel,
-      selectedProject,
-      iconDataByProjectViewKey: projectIconDataByProjectViewKey,
-      selectedOptionId: selectedProjectOptionId,
-      onSelect: handleSelectProjectOption,
-      onAddProject: handleAddProject,
       openState: projectPickerOpen,
       onOpenChange: handleProjectPickerOpenChange,
-      renderOption: renderProjectOption,
+      options: projectPickerOptions,
+      renderOption: (props) => (
+        <NewWorkspaceProjectPickerOption
+          {...props}
+          projectByOptionId={projectByOptionId}
+          projectIconDataByProjectViewKey={projectIconDataByProjectViewKey}
+          selectedServerId={selectedServerId}
+          isPending={isPending}
+          supportsWorkspaceMultiplicity={supportsWorkspaceMultiplicity}
+        />
+      ),
+      iconDataByProjectViewKey: projectIconDataByProjectViewKey,
+      selectedProject,
+      selectedOptionId: selectedProjectOptionId,
+      triggerLabel: projectTriggerLabel,
+      onSelect: handleSelectProjectOption,
+      onAddProject: handleAddProject,
     },
     host: {
+      anchorRef: hostPickerAnchorRef,
+      open: openHostPicker,
+      openState: hostPickerOpen,
+      onOpenChange: handleHostPickerOpenChange,
       allHosts,
       selectedServerId,
       onSelect: handleSelectWorkspaceHost,
-      openState: hostPickerOpen,
-      onOpenChange: handleHostPickerOpenChange,
-      anchorRef: hostPickerAnchorRef,
-      open: openHostPicker,
     },
     isolation: {
       anchorRef: isolationPickerAnchorRef,
       open: openIsolationPicker,
-      effectiveIsolation,
-      options: isolationOptions,
-      onSelect: handleSelectIsolationOption,
       openState: isolationPickerOpen,
       onOpenChange: handleIsolationPickerOpenChange,
-      renderOption: renderIsolationOption,
+      effectiveIsolation,
       canCreateWorktree,
+      options: [
+        { id: "local", label: isolationLabel(t, "local") },
+        { id: "worktree", label: isolationLabel(t, "worktree") },
+      ],
+      renderOption: ({ option, ...props }) => (
+        <IsolationOptionItem
+          {...props}
+          optionId={option.id}
+          label={option.label}
+          disabled={isPending}
+          iconColor={theme.colors.foregroundMuted}
+          iconSize={theme.iconSize.sm}
+        />
+      ),
+      onSelect: (id) => {
+        if (id === "local" || id === "worktree") setIsolation(id);
+      },
     },
     base: {
       anchorRef: pickerAnchorRef,
       open: openPicker,
+      openState: pickerOpen,
+      onOpenChange: handlePickerOpenChange,
       selectedSourceDirectory,
       selectedItem,
       triggerLabel,
       options,
+      renderOption: (props) => (
+        <NewWorkspacePickerOption {...props} itemById={itemById} isPending={isPending} />
+      ),
       selectedOptionId,
       onSelect: handleSelectOption,
-      openState: pickerOpen,
-      onOpenChange: handlePickerOpenChange,
       setSearchQuery: setPickerSearchQuery,
       emptyText: pickerEmptyText,
-      renderOption: renderPickerOption,
       showRefPicker,
     },
     launch: {
@@ -2434,17 +2368,15 @@ export function NewWorkspaceScreen({
     },
   });
 
-  const screenHeaderLeft = useMemo(
-    () => <NewWorkspaceHeaderLeft isCompact={isCompact} projectControl={projectControl} />,
-    [isCompact, projectControl],
-  );
   const importSession = useImportSession({ serverId: selectedServerId });
 
+  const isComposerFullscreen = composerEditing.isFullscreen(isTerminalLaunch);
   const composer = isTerminalLaunch ? (
     <Composer
       key="terminal"
       externalKeyboardShift={true}
       inputMode="terminal"
+      editingSession={composerEditing.terminal}
       readOnly={!terminalTakesPrompt}
       placeholder={terminalPlaceholder}
       submitLabel={terminalSubmitLabel}
@@ -2472,6 +2404,7 @@ export function NewWorkspaceScreen({
     <Composer
       key="chat"
       externalKeyboardShift={true}
+      editingSession={composerEditing.chat}
       agentId={draftKey}
       serverId={selectedServerId}
       isPaneFocused={true}
@@ -2503,38 +2436,41 @@ export function NewWorkspaceScreen({
   );
   return (
     <FileDropZone style={styles.container}>
-      <ScreenHeader left={screenHeaderLeft} borderless />
-      <View style={styles.content}>
-        <TitlebarDragRegion />
-        <NewWorkspaceLayout
-          isCompact={isCompact}
-          title={t("newWorkspace.title")}
-          formStack={formStack}
-          onImportSession={importSession.open}
-        >
-          {composer}
-          {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
-        </NewWorkspaceLayout>
-      </View>
+      <NewWorkspaceLayout
+        isCompact={isCompact}
+        fullscreen={isComposerFullscreen}
+        title={t("newWorkspace.title")}
+        formStack={formStack}
+        onImportSession={importSession.open}
+      >
+        {composer}
+        {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
+      </NewWorkspaceLayout>
       {importSession.sheet}
       {projectDirectory.sheet}
     </FileDropZone>
   );
 }
 
-function NewWorkspaceHeaderLeft({
-  isCompact,
-  projectControl,
-}: {
-  isCompact: boolean;
-  projectControl: ReactNode;
-}) {
-  return (
-    <>
-      <SidebarMenuToggle />
-      {isCompact ? <View style={styles.compactHeading}>{projectControl}</View> : null}
-    </>
-  );
+/** Terminal and chat launches edit in separate sessions; the screen follows the mounted one. */
+function useNewWorkspaceComposerEditing() {
+  const terminal = useComposerEditingSession("terminal");
+  const chat = useComposerEditingSession("chat");
+  const isTerminalFullscreen = useComposerFullscreen(terminal);
+  const isChatFullscreen = useComposerFullscreen(chat);
+  // The sessions outlive the screen (its draft keeps them), so a launch that leaves
+  // the screen also leaves fullscreen; the next draft starts inline.
+  const leaveFullscreen = useCallback(() => {
+    terminal.setFullscreen(false);
+    chat.setFullscreen(false);
+  }, [chat, terminal]);
+  return {
+    terminal,
+    chat,
+    leaveFullscreen,
+    isFullscreen: (isTerminalLaunch: boolean) =>
+      isTerminalLaunch ? isTerminalFullscreen : isChatFullscreen,
+  };
 }
 
 function NewWorkspaceLayout({
@@ -2545,6 +2481,8 @@ function NewWorkspaceLayout({
   children,
 }: {
   isCompact: boolean;
+  /** The composer covers the screen; the header leaves and the dock fills the content. */
+  fullscreen: boolean;
   title: string;
   formStack: ReactNode;
   onImportSession: () => void;
@@ -2553,7 +2491,14 @@ function NewWorkspaceLayout({
   const insets = useSafeAreaInsets();
   // At the top of the screen on compact layouts, under the composer otherwise.
   const importSessionButton = <ImportSessionButton compact={isCompact} onPress={onImportSession} />;
-  const setupFields = (
+  // Compact has no title: the fields name themselves. The free space above pushes them down onto
+  // the composer, where the thumb is.
+  const setupFields = isCompact ? (
+    <>
+      <View style={styles.compactSetupSpace} pointerEvents="none" />
+      {formStack}
+    </>
+  ) : (
     <>
       {isCompact ? <View style={styles.compactTopActions}>{importSessionButton}</View> : null}
       {!isCompact ? (
@@ -2583,7 +2528,11 @@ function NewWorkspaceLayout({
   );
 }
 
+const PROJECT_ICON_FALLBACK_FONT_SIZE = 10;
+
 const styles = StyleSheet.create((theme) => ({
+  compactSetupSpace: { flex: 1, minHeight: theme.spacing[4] },
+
   compactHeading: { flex: 1, minWidth: 0 },
   compactHeadingText: { flexShrink: 1, minWidth: 0 },
   projectLabelRow: {
@@ -2736,3 +2685,28 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 4,
   },
 }));
+
+const ThemedChevronDown = withUnistyles(ChevronDown);
+const chevronExtraMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
+const ThemedFolderPlus = withUnistyles(FolderPlus);
+
+const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+
+function MetaChevron(): ReactElement {
+  return (
+    <View style={styles.chevronContainer}>
+      <ThemedChevronDown size={ICON_SIZE.sm} uniProps={chevronExtraMutedMapping} />
+    </View>
+  );
+}
+const addProjectIcon = (
+  <ThemedFolderPlus size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+);
+
+const metaChevron = <MetaChevron />;
+
+function isolationLabel(t: TFunction, isolation: "local" | "worktree"): string {
+  return isolation === "worktree"
+    ? t("newWorkspace.isolation.worktree")
+    : t("newWorkspace.isolation.local");
+}

@@ -55,6 +55,15 @@ export const coordinatorBundleExtras = [
   ".installation-source.json",
   "scripts/run-coordinator-owner.py",
   "scripts/verify-coordinator-owner.py",
+  "docker/tailscale/broker_rebind.py",
+  "docker/tailscale/broker_deployment.py",
+  "docker/tailscale/broker_deployment_kernel.py",
+  "docker/tailscale/broker_deployment_observation.py",
+  "docker/tailscale/broker_deployment_worker.py",
+  "docker/tailscale/channel_identity.py",
+  "docker/tailscale/https_broker.py",
+  "docker/tailscale/https-preview.py",
+  "docker/tailscale/host_config.py",
 ];
 // ws loads these optional native accelerators inside try/catch; their absence is reviewed.
 const optionalModules = {

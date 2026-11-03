@@ -6,6 +6,9 @@ import {
   useHasExecutionEnvironment,
 } from "@/execution-installation/environment-icon";
 import { WorkspaceChecklistProgress } from "@/task-checklist/workspace-progress";
+import { ReviewWaitIndicator } from "@/task-checklist/review-wait-indicator";
+import { useWorkspaceReviewTasks } from "@/task-checklist/use-workspace-review-tasks";
+import { showsReviewWait } from "@/task-checklist/review-wait";
 import { WorkspaceQueueCount } from "@/message-queue/workspace-queue-count";
 import { WorkspaceOpenQuestionCount } from "@/open-questions/workspace-count";
 import { WorkspaceSubagentCount } from "@/subagents/workspace-count";
@@ -33,6 +36,7 @@ import {
   type SidebarWorkspaceTrailing,
 } from "@/components/sidebar/workspace-trailing";
 import { useAppSettings } from "@/hooks/use-settings";
+import { densityIconBox } from "@/styles/density";
 import type { Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
@@ -53,15 +57,13 @@ const managedAlertMapping = (theme: Theme) => ({
   color: theme.colors.surface0,
   fill: theme.colors.foregroundExtraMuted,
 });
+
 const needsInputColorMapping = (theme: Theme) => ({
   color: theme.colors.surface0,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
-const ThemedMonitor = withUnistyles(Monitor);
-const ThemedFolder = withUnistyles(Folder);
-const ThemedFolderGit2 = withUnistyles(FolderGit2);
 
 export function SidebarWorkspaceRowFrame({
   workspace,
@@ -195,6 +197,8 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
           />
         ) : (
           <WorkspaceStatusIndicator
+            serverId={workspace.serverId}
+            workspaceId={workspace.workspaceId}
             bucket={workspace.statusBucket}
             workspaceKind={workspace.workspaceKind}
             loading={isLoading}
@@ -230,18 +234,23 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
 });
 
 function WorkspaceStatusIndicator({
+  serverId,
+  workspaceId,
   bucket,
   workspaceKind,
   loading = false,
   reserveIdleSpace = true,
   muted = false,
 }: {
+  serverId: string;
+  workspaceId: string;
   bucket: SidebarWorkspaceEntry["statusBucket"];
   workspaceKind: SidebarWorkspaceEntry["workspaceKind"];
   loading?: boolean;
   reserveIdleSpace?: boolean;
   muted?: boolean;
 }) {
+  const reviewTasks = useWorkspaceReviewTasks(serverId, workspaceId);
   // Busy is the only status that moves, and it is the ring rather than a dot for the same
   // reason it is a dot elsewhere: every status in the sidebar sits in this one slot, so busy
   // has to fill it without displacing anything. A row starting up and a row working are both
@@ -273,6 +282,17 @@ function WorkspaceStatusIndicator({
     );
   }
 
+  // An idle thread waiting on a Review item, such as a Builds delivery, is not ready yet.
+  if (showsReviewWait(bucket, reviewTasks.length)) {
+    return (
+      <ReviewWaitIndicator
+        tasks={reviewTasks}
+        muted={muted}
+        slotStyle={styles.workspaceStatusDot}
+      />
+    );
+  }
+
   if (bucket === "attention") {
     return (
       <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-attention">
@@ -293,7 +313,7 @@ function WorkspaceStatusIndicator({
     ) : null;
   }
 
-  let KindIcon: typeof ThemedMonitor;
+  let KindIcon = ThemedMonitor;
   if (workspaceKind === "local_checkout") KindIcon = ThemedMonitor;
   else if (workspaceKind === "worktree") KindIcon = ThemedFolderGit2;
   else KindIcon = ThemedFolder;
@@ -507,6 +527,9 @@ export function SidebarWorkspaceMenuReveal({
   );
 }
 
+// The status dot centres on the title's first line, so both share its line height.
+const TITLE_LINE_HEIGHT = 20;
+
 const styles = StyleSheet.create((theme) => ({
   trailingRail: {
     position: "relative",
@@ -569,8 +592,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceStatusDot: {
     position: "relative",
-    width: theme.iconSize.md,
-    height: 20,
+    width: densityIconBox("md"),
+    height: TITLE_LINE_HEIGHT,
     borderRadius: theme.borderRadius.full,
     flexShrink: 0,
     alignItems: "center",
@@ -602,7 +625,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     fontWeight: "400",
-    lineHeight: 20,
+    lineHeight: TITLE_LINE_HEIGHT,
     opacity: 0.76,
     flex: 1,
     minWidth: theme.spacing[12],
@@ -637,3 +660,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.surface0,
   },
 }));
+
+const ThemedMonitor = withUnistyles(Monitor);
+const ThemedFolderGit2 = withUnistyles(FolderGit2);
+const ThemedFolder = withUnistyles(Folder);

@@ -1,10 +1,17 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+
 import { join } from "node:path";
+
 import { tmpdir } from "node:os";
+
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
 import { AgentManager } from "../agent/agent-manager.js";
+
 import { AgentStorage } from "../agent/agent-storage.js";
+
 import { createAgentCommand } from "../agent/create-agent/create.js";
+
 import type {
   AgentCapabilityFlags,
   AgentClient,
@@ -20,29 +27,72 @@ import type {
   AgentSessionConfig,
   AgentStreamEvent,
 } from "../agent/agent-sdk-types.js";
+
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
+
 import { createTestLogger } from "../../test-utils/test-logger.js";
+
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
+
 import { createWorkspaceProvisioningService } from "../session/workspace-provisioning/workspace-provisioning-service.js";
+
 import { resolveWorkspaceIdForPath } from "../resolve-workspace-id-for-path.js";
+
 import { createNoopWorkspaceGitService } from "../test-utils/workspace-git-service-stub.js";
+
 import {
   type PersistedWorkspaceRecord,
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
 } from "../workspace-registry.js";
+
 import { archiveByScope, type ActiveWorkspaceRef } from "../workspace-archive-service.js";
+
 import {
   ScheduleService,
   ScheduleTargetGoneError,
   type ScheduleServiceOptions,
 } from "./service.js";
+
 import { ScheduleStore } from "./store.js";
+
 import { QuotaSchedulePreflight } from "./quota-preflight.js";
+
 import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
 
 interface ScheduleServiceInternals {
   executeSchedule(schedule: StoredSchedule, runId: string): Promise<ScheduleExecutionResult>;
+}
+
+class OverlappingTickRunner {
+  private resolveFirstRunStarted: () => void = () => {};
+  private resolveFirstRunBlocked: () => void = () => {};
+  private laterScheduleRunCount = 0;
+
+  readonly firstRunStarted = new Promise<void>((resolve) => {
+    this.resolveFirstRunStarted = resolve;
+  });
+  private readonly firstRunBlocked = new Promise<void>((resolve) => {
+    this.resolveFirstRunBlocked = resolve;
+  });
+
+  async run(schedule: StoredSchedule): Promise<ScheduleExecutionResult> {
+    if (schedule.prompt === "block the first tick") {
+      this.resolveFirstRunStarted();
+      await this.firstRunBlocked;
+    } else {
+      this.laterScheduleRunCount += 1;
+    }
+    return { agentId: null, output: "ok" };
+  }
+
+  unblockFirstRun(): void {
+    this.resolveFirstRunBlocked();
+  }
+
+  get laterScheduleRuns(): number {
+    return this.laterScheduleRunCount;
+  }
 }
 
 const SCHEDULE_TEST_CAPABILITIES: AgentCapabilityFlags = {
@@ -300,7 +350,9 @@ const heldQuotaPolicy = {
 
 describe("ScheduleService", () => {
   let tempDir: string;
+
   let agentStorage: AgentStorage;
+
   let now: Date;
 
   beforeEach(async () => {
@@ -443,115 +495,10 @@ describe("ScheduleService", () => {
     expect(inspected.nextRunAt).toBe("2026-01-01T00:02:00.000Z");
   });
 
-  test("restart hold defers scheduled occurrences without consuming them", async () => {
-    let open = false;
-    let runs = 0;
-    const service = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      canStartWork: () => open,
-      runner: async () => {
-        runs++;
-        return { agentId: null, output: "done" };
-      },
-    });
-    const created = await service.create({
-      prompt: "Review PRs",
-      cadence: { type: "every", everyMs: 60_000 },
-      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
-    });
-    now = new Date("2026-01-01T00:01:00.000Z");
-    await service.tick();
-    expect(runs).toBe(0);
-    expect((await service.inspect(created.id)).runs).toHaveLength(0);
-    expect((await service.inspect(created.id)).nextRunAt).toBe(created.nextRunAt);
-    open = true;
-    await service.tick();
-    expect(runs).toBe(1);
-  });
-
-  test("protected quota deferrals preserve the occurrence and maxRuns across restart", async () => {
-    const runner = vi.fn(async () => ({ agentId: null, output: "must not run" }));
-    const createWorkspace = vi.fn(async () => {
-      throw new Error("Must not create a workspace");
-    });
-    const options = {
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner,
-      createDirectoryWorkspace: createWorkspace,
-    };
-    const service = createScheduleService(options);
-    const quotaPolicy = {
-      version: 1 as const,
-      account: { issuer: "openai", accountId: "account" },
-      requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
-      launchFloorPercent: 30,
-      freezeFloorPercent: 25,
-      maxObservationAgeSeconds: 120,
-      consumptionLimits: [],
-      recovery: "automatic_after_reconciliation" as const,
-    };
-    const created = await service.create({
-      name: "Preparation fixture",
-      prompt: "Factory",
-      cadence: { type: "every", everyMs: 60000 },
-      maxRuns: 1,
-      target: {
-        type: "new-agent",
-        config: { provider: "codex-secondary", cwd: tempDir, quotaPolicy },
-      },
-    });
-    await service.tick();
-    await service.tick();
-    expect(await service.inspect(created.id)).toMatchObject({
-      status: "active",
-      runs: [],
-      nextRunAt: created.nextRunAt,
-      quotaState: { state: "held", reason: "governor_unavailable" },
-    });
-    const readObservation = vi.fn(async () => ({
-      status: "available" as const,
-      account: quotaPolicy.account,
-      observedAt: now.toISOString(),
-      windows: [
-        {
-          ...quotaPolicy.requiredWindows[0]!,
-          usedPercent: 80,
-          resetsAt: null,
-          semantics: "unknown" as const,
-        },
-      ],
-      consumptionMeters: [],
-    }));
-    const quotaRunner = new QuotaSchedulePreflight({ readObservation, nowMs: () => now.getTime() });
-    const reopened = createScheduleService({ ...options, quotaRunner });
-    await reopened.start();
-    await reopened.stop();
-    await reopened.tick();
-    expect(readObservation).toHaveBeenCalledExactlyOnceWith("codex-secondary");
-    expect(await reopened.inspect(created.id)).toMatchObject({
-      status: "active",
-      runs: [],
-      nextRunAt: created.nextRunAt,
-      quotaState: { state: "held", reason: "freeze_floor" },
-    });
-    expect(runner).not.toHaveBeenCalled();
-    expect(createWorkspace).not.toHaveBeenCalled();
-  });
-
-  test.each(["pending", "deleted"])(
-    "does not admit a stale tick while deletion is %s",
-    async (stage) => {
-      const prepare = vi.fn(async () => ({ kind: "deferred" as const, reason: "fixture" }));
+  test.each(["new-agent", "agent", "maxRuns: 1"] as const)(
+    "dispatches a shared cron slot only once for %s after an earlier tick resumes",
+    async (targetKind) => {
+      const runner = new OverlappingTickRunner();
       const service = createScheduleService({
         paseoHome: tempDir,
         logger: createTestLogger(),
@@ -559,625 +506,231 @@ describe("ScheduleService", () => {
         agentStorage,
         providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
         now: () => now,
-        quotaRunner: { prepare },
+        runner: (schedule) => runner.run(schedule),
       });
-      const created = await service.create({
-        prompt: "Protected deletion race",
-        cadence: { type: "every", everyMs: 60000 },
-        target: {
-          type: "new-agent",
-          config: {
-            provider: "codex-secondary",
-            cwd: tempDir,
-            quotaPolicy: {
-              version: 1,
-              account: { issuer: "openai", accountId: "account" },
-              requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
-              launchFloorPercent: 30,
-              freezeFloorPercent: 25,
-              maxObservationAgeSeconds: 120,
-              consumptionLimits: [],
-              recovery: "automatic_after_reconciliation",
-            },
-          },
-        },
+      const cadence = { type: "cron" as const, expression: "0 6 * * 1", timezone: "Europe/Prague" };
+      await service.create({
+        prompt: "block the first tick",
+        cadence,
+        target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
       });
-      let releaseList!: () => void;
-      let listed!: () => void;
-      const listEntered = new Promise<void>((resolve) => {
-        listed = resolve;
+      // Give the later schedule a distinct creation time so file ordering cannot affect the race.
+      now = new Date("2026-01-01T00:00:01.000Z");
+      const agentId = "00000000-0000-0000-0000-000000000001";
+      await agentStorage.upsert(
+        buildAgentRecord({ id: agentId, cwd: tempDir, iso: now.toISOString() }),
+      );
+      const later = await service.create({
+        prompt: "later due schedule",
+        cadence,
+        target:
+          targetKind === "agent"
+            ? { type: "agent", agentId }
+            : { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+        maxRuns: targetKind === "maxRuns: 1" ? 1 : undefined,
       });
-      const listGate = new Promise<void>((resolve) => {
-        releaseList = resolve;
-      });
-      const originalList = ScheduleStore.prototype.list;
-      vi.spyOn(ScheduleStore.prototype, "list").mockImplementationOnce(async function () {
-        const snapshot = await originalList.call(this);
-        listed();
-        await listGate;
-        return snapshot;
-      });
-      const tick = service.tick();
-      await listEntered;
-      let releaseDelete!: () => void;
-      let deletionStarted!: () => void;
-      const deleteEntered = new Promise<void>((resolve) => {
-        deletionStarted = resolve;
-      });
-      const deleteGate = new Promise<void>((resolve) => {
-        releaseDelete = resolve;
-      });
-      const originalDelete = ScheduleStore.prototype.delete;
-      if (stage === "pending") {
-        vi.spyOn(ScheduleStore.prototype, "delete").mockImplementationOnce(
-          async function (id, guard) {
-            deletionStarted();
-            await deleteGate;
-            return originalDelete.call(this, id, guard);
-          },
-        );
+      now = new Date("2026-01-05T05:00:00.000Z");
+      const delayedTick = service.tick();
+      await runner.firstRunStarted;
+      try {
+        now = new Date("2026-01-05T05:00:01.000Z");
+        await service.tick();
+      } finally {
+        runner.unblockFirstRun();
+        await delayedTick;
       }
-      const deletion = service.delete(created.id);
-      if (stage === "pending") await deleteEntered;
-      else await deletion;
-      // A deleted schedule is only stale in this tick's snapshot, so the tick skips it.
-      const refused =
-        stage === "pending"
-          ? expect(tick).rejects.toThrow("deletion is pending")
-          : expect(tick).resolves.toBeUndefined();
-      releaseList();
-      await refused;
-      releaseDelete();
-      await deletion;
-      expect(prepare).not.toHaveBeenCalled();
-      expect(await new ScheduleStore(join(tempDir, "schedules")).get(created.id)).toBeNull();
+      const result = await service.inspect(later.id);
+      expect.soft(runner.laterScheduleRuns).toBe(1);
+      expect.soft(result.runs).toHaveLength(1);
+      expect.soft(result.runs.map((run) => run.scheduledFor)).toEqual(["2026-01-05T05:00:00.000Z"]);
+      expect(result.nextRunAt).toBe(
+        targetKind === "maxRuns: 1" ? null : "2026-01-12T05:00:00.000Z",
+      );
+      expect(result.status).toBe(targetKind === "maxRuns: 1" ? "completed" : "active");
     },
   );
 
-  test("skips a tick that starts while another is still admitting", async () => {
-    // Earlier tests leave ScheduleStore spies installed; start from the real store.
-    vi.restoreAllMocks();
-    let checks = 0;
-    const prepare = vi.fn(async () => ({ kind: "deferred" as const, reason: "fixture" }));
+  test("advances the next scheduled slot past a run that crosses a cadence boundary", async () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
       agentManager: new AgentManager({ logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      // Each refusal writes a fresh checkedAt, as the held protected schedule does live.
-      now: () => new Date(now.getTime() + checks++),
-      quotaRunner: { prepare },
+      now: () => now,
+      runner: async () => {
+        now = new Date("2026-01-01T00:02:00.000Z");
+        return { agentId: null, output: "ok" };
+      },
+    });
+
+    const created = await service.create({
+      prompt: "long-running task",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+    });
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+
+    expect((await service.inspect(created.id)).nextRunAt).toBe("2026-01-01T00:03:00.000Z");
+  });
+
+  test("runs the final allowed cron slot without requiring another occurrence", async () => {
+    let dispatches = 0;
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async () => {
+        dispatches += 1;
+        return { agentId: null, output: "done" };
+      },
     });
     const created = await service.create({
-      prompt: "Held protected schedule",
-      cadence: { type: "every", everyMs: 60_000 },
-      target: {
-        type: "new-agent",
-        config: { provider: "codex-secondary", cwd: tempDir, quotaPolicy: heldQuotaPolicy },
-      },
-    });
-    now = new Date("2026-01-01T00:01:00.000Z");
-    // The second tick's snapshot is taken before the first tick writes, and its
-    // admission runs after the first tick finishes, as with overlapping intervals.
-    let releaseSecondList!: () => void;
-    const secondListGate = new Promise<void>((resolve) => {
-      releaseSecondList = resolve;
-    });
-    const originalList = ScheduleStore.prototype.list;
-    const list = vi
-      .spyOn(ScheduleStore.prototype, "list")
-      .mockImplementationOnce(async function () {
-        return originalList.call(this);
-      })
-      .mockImplementationOnce(async function () {
-        const snapshot = await originalList.call(this);
-        await secondListGate;
-        return snapshot;
-      });
-    const first = service.tick().finally(() => releaseSecondList());
-    const second = service.tick();
-
-    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
-    expect(list).toHaveBeenCalledTimes(1);
-    expect(prepare).toHaveBeenCalledTimes(1);
-    expect((await service.inspect(created.id)).quotaState).toMatchObject({ state: "held" });
-    list.mockRestore();
-  });
-
-  test("releases the guard when a tick fails", async () => {
-    // Earlier tests leave ScheduleStore spies installed; start from the real store.
-    vi.restoreAllMocks();
-    const runner = vi.fn(async () => ({ agentId: null, output: "done" }));
-    const service = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner,
-    });
-    await service.create({
-      prompt: "Recovers after a failed tick",
-      cadence: { type: "every", everyMs: 60_000 },
+      prompt: "Run once on January 5 when it is Monday",
+      cadence: { type: "cron", expression: "0 6 5 1 1" },
       target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      maxRuns: 1,
     });
-    now = new Date("2026-01-01T00:01:00.000Z");
-    const list = vi
-      .spyOn(ScheduleStore.prototype, "list")
-      .mockRejectedValueOnce(new Error("list failed"));
-
-    await expect(service.tick()).rejects.toThrow("list failed");
-    list.mockRestore();
+    now = new Date("2026-01-05T06:00:00.000Z");
     await service.tick();
-
-    expect(runner).toHaveBeenCalledTimes(1);
+    const result = await service.inspect(created.id);
+    expect(dispatches).toBe(1);
+    expect(result.status).toBe("completed");
+    expect(result.nextRunAt).toBeNull();
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs[0].status).toBe("succeeded");
   });
 
-  test("a hung protected admission does not stop other schedules", async () => {
-    // Reviewer reproduction (2026-10-19): prepare never resolves. Before the admission bound,
-    // the tick guard held forever and the ordinary schedule never ran.
-    vi.restoreAllMocks();
-    const prepare = vi.fn(() => new Promise<never>(() => {}));
-    const ran: string[] = [];
-    const service = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      admissionDispatchBoundMs: 50,
-      quotaRunner: { prepare },
-      runner: async (schedule) => {
-        ran.push(schedule.prompt);
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "holds future slots while a previous outcome could not be saved",
+    async () => {
+      const schedulesDir = join(tempDir, "schedules");
+      let dispatches = 0;
+      const failOutcomeWrite = async (): Promise<ScheduleExecutionResult> => {
+        dispatches += 1;
+        if (dispatches === 1) {
+          await chmod(schedulesDir, 0o555);
+        }
         return { agentId: null, output: "done" };
-      },
-    });
-    await service.create({
-      prompt: "Hung",
-      cadence: { type: "every", everyMs: 60_000 },
-      runOnCreate: false,
-      target: {
-        type: "new-agent",
-        config: { provider: "codex-secondary", cwd: tempDir, quotaPolicy: heldQuotaPolicy },
-      },
-    });
-    now = new Date("2026-01-01T00:00:30.000Z");
-    await service.create({
-      prompt: "Plain",
-      cadence: { type: "every", everyMs: 60_000 },
-      runOnCreate: false,
-      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
-    });
-    now = new Date("2026-01-01T00:01:00.000Z");
-    void service.tick().catch(() => {});
-    await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
-    // Past the bound the first tick releases the guard while its attempt stays running.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    now = new Date("2026-01-01T00:01:30.000Z");
-    await Promise.race([service.tick(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-    expect(ran).toEqual(["Plain"]);
-    // The hung attempt stays admitted exactly once.
-    expect(prepare).toHaveBeenCalledTimes(1);
-  });
-
-  test("continues the tick after one schedule changed before admission", async () => {
-    // Earlier tests leave ScheduleStore spies installed; start from the real store.
-    vi.restoreAllMocks();
-    const ran: string[] = [];
-    const service = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner: async (schedule) => {
-        ran.push(schedule.id);
-        return { agentId: null, output: "done" };
-      },
-    });
-    const target = { type: "new-agent" as const, config: { provider: "claude", cwd: tempDir } };
-    const first = await service.create({
-      prompt: "First",
-      cadence: { type: "every", everyMs: 60_000 },
-      target,
-    });
-    const second = await service.create({
-      prompt: "Second",
-      cadence: { type: "every", everyMs: 60_000 },
-      target,
-    });
-    now = new Date("2026-01-01T00:01:00.000Z");
-    // Whichever schedule the snapshot lists first changes before its admission.
-    let changedId: string | undefined;
-    const originalList = ScheduleStore.prototype.list;
-    const list = vi.spyOn(ScheduleStore.prototype, "list");
-    list.mockImplementationOnce(async function () {
-      const snapshot = await originalList.call(this);
-      changedId = snapshot[0]?.id;
-      await service.update({ id: changedId!, name: "Renamed" });
-      return snapshot;
-    });
-
-    await service.tick();
-    list.mockRestore();
-
-    const otherId = changedId === first.id ? second.id : first.id;
-    expect(ran).toEqual([otherId]);
-    await service.tick();
-    expect(ran).toEqual([otherId, changedId]);
-  });
-
-  test("does not hold other schedules behind a dispatched run", async () => {
-    // Earlier tests leave ScheduleStore spies installed; start from the real store.
-    vi.restoreAllMocks();
-    let releaseLong!: () => void;
-    const longGate = new Promise<void>((resolve) => {
-      releaseLong = resolve;
-    });
-    const ran: string[] = [];
-    const service = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner: async (schedule) => {
-        ran.push(schedule.prompt);
-        if (schedule.prompt === "Long") await longGate;
-        return { agentId: null, output: "done" };
-      },
-    });
-    const target = { type: "new-agent" as const, config: { provider: "claude", cwd: tempDir } };
-    const cadence = { type: "every" as const, everyMs: 60_000 };
-    await service.create({ prompt: "Long", cadence, runOnCreate: false, target });
-    now = new Date("2026-01-01T00:00:30.000Z");
-    await service.create({ prompt: "Short", cadence, runOnCreate: false, target });
-
-    now = new Date("2026-01-01T00:01:00.000Z");
-    const longTick = service.tick();
-    await vi.waitFor(() => expect(ran).toEqual(["Long"]));
-    now = new Date("2026-01-01T00:01:30.000Z");
-    await service.tick();
-    expect(ran).toEqual(["Long", "Short"]);
-
-    releaseLong();
-    await longTick;
-  });
-
-  test.each(
-    [false, true].flatMap((inherited) =>
-      [false, true].map((workflow) => ({ inherited, workflow })),
-    ),
-  )(
-    "resumes governed custody after freeze and restart (inherited=$inherited, workflow=$workflow)",
-    async ({ inherited, workflow }) => {
-      const ordinary = vi.fn(async () => ({ agentId: null, output: "ordinary" }));
-      let frozen = false;
-      let executionAttempts = 0;
-      const initialBindingId = workflow ? "11111111-1111-4111-8111-111111111111" : "reservation";
-      let bindingId = initialBindingId;
-      const binding = () => ({
-        account: { issuer: "openai", accountId: "account" },
-        ...(workflow ? { workflowId: bindingId } : { reservationId: bindingId }),
-      });
-      const bindingKey = workflow ? "workflowBinding" : "governorBinding";
-      let expireDuringPrepare = false;
-      const governed = vi.fn(
-        async (
-          _schedule: StoredSchedule,
-          _runId: string,
-        ): Promise<ScheduleExecutionResult | { state: "frozen"; reason: string }> => {
-          executionAttempts++;
-          if (executionAttempts === 2) throw new Error("Execution outcome unknown");
-          if (!frozen) {
-            frozen = true;
-            return { state: "frozen", reason: "weekly_floor" };
-          }
-          return { agentId: null, output: "governed" };
-        },
-      );
-      const service: ScheduleService = createScheduleService({
+      };
+      const service = createScheduleService({
         paseoHome: tempDir,
         logger: createTestLogger(),
         agentManager: new AgentManager({ logger: createTestLogger() }),
         agentStorage,
         providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
         now: () => now,
-        runner: ordinary,
-        quotaRunner: {
-          reconcilePreparation: async () => "resume",
-          prepare: async (schedule) => {
-            if (expireDuringPrepare)
-              await service.update({ id: schedule.id, expiresAt: now.toISOString() });
-            return {
-              kind: "ready",
-              freezeBeforeDispatch: async () => {},
-              binding: binding(),
-              run: governed,
-              resumeRunId: schedule.runs.find((run) => run.status === "running")?.id,
-            };
-          },
-        },
+        runner: failOutcomeWrite,
       });
       const created = await service.create({
-        prompt: "Factory",
-        cadence: { type: "every", everyMs: 60000 },
-        maxRuns: 1,
-        target: {
-          type: "new-agent",
-          config: {
-            provider: "codex-secondary",
-            cwd: tempDir,
-            quotaPolicy: {
-              version: 1,
-              account: { issuer: "openai", accountId: "account" },
-              requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
-              launchFloorPercent: 30,
-              freezeFloorPercent: 25,
-              maxObservationAgeSeconds: 120,
-              consumptionLimits: [],
-              recovery: "automatic_after_reconciliation",
-            },
-          },
-        },
+        prompt: "Check status each minute",
+        runOnCreate: false,
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
       });
-      await service.tick();
-      expect(governed).toHaveBeenCalledTimes(1);
-      const held = await service.inspect(created.id);
-      expect(held).toMatchObject({
-        status: "active",
-        nextRunAt: created.nextRunAt,
-        runs: [{ status: "running", quotaState: { state: "frozen", reason: "weekly_floor" } }],
-      });
-      expect(held.runs[0]?.[bindingKey]).toEqual(binding());
-      expect(held.runs[0]?.[workflow ? "governorBinding" : "workflowBinding"]).toBeUndefined();
-      const store = new ScheduleStore(join(tempDir, "schedules"));
-      await store.update(created.id, (record) => {
-        const updated = structuredClone(record);
-        for (const run of updated.runs)
-          Object.assign(run, {
-            governorBinding: { account: binding().account, reservationId: "reservation" },
-            workflowBinding: {
-              account: binding().account,
-              workflowId: "11111111-1111-4111-8111-111111111111",
-            },
-          });
-        return updated;
-      });
-      await expect(service.tick()).rejects.toThrow("Ambiguous protected execution binding");
-      expect(governed).toHaveBeenCalledTimes(1);
-      await store.update(created.id, (record) => {
-        const updated = structuredClone(record);
-        for (const run of updated.runs) {
-          delete run.governorBinding;
-          delete run.workflowBinding;
-          Object.assign(run, { [bindingKey]: binding() });
-        }
-        return updated;
-      });
-      if (inherited) {
-        // Model a persisted inherited policy: protection belongs to the run,
-        // even when the editable schedule has no explicit quota policy.
-        await new ScheduleStore(join(tempDir, "schedules")).update(created.id, (record) => {
-          if (record.target.type !== "new-agent") throw new Error("Expected new-agent target");
-          const config = { ...record.target.config };
-          delete config.quotaPolicy;
-          return { ...record, target: { ...record.target, config } };
-        });
+      now = new Date("2026-01-01T00:01:00.000Z");
+      try {
+        await expect(service.tick()).rejects.toThrow();
+      } finally {
+        await chmod(schedulesDir, 0o755);
       }
-      await expect(service.delete(created.id)).rejects.toThrow("Reconcile");
-      await service.update({ id: created.id, expiresAt: now.toISOString() });
-      await service.tick();
-      expect(governed).toHaveBeenCalledTimes(1);
-      expect(await service.inspect(created.id)).toMatchObject({
-        status: "active",
-        quotaState: { state: "held", reason: "schedule_expired" },
-        runs: [{ status: "running" }],
-      });
-      await service.update({ id: created.id, expiresAt: null });
-      bindingId = workflow ? "22222222-2222-4222-8222-222222222222" : "wrong-reservation";
-      await expect(service.tick()).rejects.toThrow("execution binding");
-      expect(governed).toHaveBeenCalledTimes(1);
-      bindingId = initialBindingId;
-      expect((await service.inspect(created.id)).runs[0]?.[bindingKey]).toEqual(binding());
-      expireDuringPrepare = true;
-      await service.tick();
-      expect(governed).toHaveBeenCalledTimes(1);
-      expect((await service.inspect(created.id)).runs[0]).toMatchObject({
+      const retained = await service.inspect(created.id);
+      expect(retained.runs).toHaveLength(1);
+      expect(retained.runs[0]).toMatchObject({
         status: "running",
-        [bindingKey]: binding(),
-        quotaState: { state: "frozen", reason: "schedule_expired" },
+        scheduledFor: "2026-01-01T00:01:00.000Z",
+        endedAt: null,
       });
-      expireDuringPrepare = false;
-      await service.update({ id: created.id, expiresAt: null });
-      await expect(
-        service.update({ id: created.id, newAgentConfig: { provider: "another-account" } }),
-      ).rejects.toThrow("Reconcile");
-      await expect(service.update({ id: created.id, prompt: "Different work" })).rejects.toThrow(
-        "Reconcile",
-      );
-      await expect(
-        service.update({ id: created.id, cadence: { type: "every", everyMs: 300000 } }),
-      ).rejects.toThrow("Reconcile");
-      await service.start();
-      await service.stop();
-      await service.tick();
-      expect(governed).toHaveBeenCalledTimes(2);
-      expect(await service.inspect(created.id)).toMatchObject({
-        status: "active",
-        runs: [
-          {
-            status: "running",
-            quotaState: { state: "reconciliation_required" },
-          },
-        ],
-      });
-      await service.tick();
-      expect(governed).toHaveBeenCalledTimes(3);
-      expect(governed.mock.calls[0][1]).toBe(governed.mock.calls[1][1]);
-      expect(ordinary).not.toHaveBeenCalled();
-      expect(await service.inspect(created.id)).toMatchObject({
-        status: "completed",
-        runs: [{ status: "succeeded", output: "governed" }],
-      });
+      expect(retained.nextRunAt).toBe("2026-01-01T00:02:00.000Z");
+      now = new Date("2026-01-01T00:02:00.000Z");
+      await expect(service.tick()).rejects.toThrow("Reconcile unfinished work");
+      now = new Date("2026-01-01T00:03:00.000Z");
+      await expect(service.tick()).rejects.toThrow("Reconcile unfinished work");
+      expect(dispatches).toBe(1);
+      expect(await service.inspect(created.id)).toEqual(retained);
     },
   );
 
-  test.each(["binding", "append"])(
-    "retains failed %s preparation across restart and transfers the reconciled attempt into its run",
-    async (failureStage) => {
-      const account = { issuer: "openai", accountId: "account" };
-      const attempts: string[] = [];
-      let outcome: "held" | "resume" = "held";
-      let invalid = true;
-      let freezes = 0;
-      let runs = 0;
-      const primary = new Error("fixture cleanup failed");
-      let service!: ScheduleService;
-      const options = {
+  test("completes an interrupted final slot during restart recovery", async () => {
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async () => ({ agentId: null, output: "done" }),
+    });
+    const created = await service.create({
+      prompt: "Run once",
+      cadence: { type: "cron", expression: "0 6 5 1 1" },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      maxRuns: 1,
+    });
+    now = new Date("2026-01-05T06:00:00.000Z");
+    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+    await store.update(created.id, (schedule) => ({
+      ...schedule,
+      nextRunAt: null,
+      runs: [
+        {
+          id: "interrupted-final-slot",
+          scheduledFor: now.toISOString(),
+          startedAt: now.toISOString(),
+          endedAt: null,
+          status: "running",
+          agentId: null,
+          output: null,
+          error: null,
+        },
+      ],
+    }));
+    now = new Date("2026-01-05T06:01:00.000Z");
+    await service.start();
+    try {
+      const result = await service.inspect(created.id);
+      expect(result.status).toBe("completed");
+      expect(result.nextRunAt).toBeNull();
+      expect(result.runs).toHaveLength(1);
+      expect(result.runs[0].status).toBe("failed");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  test.each([2, null])(
+    "keeps a next slot when the final run's limit changes to %s",
+    async (maxRuns) => {
+      const service = createScheduleService({
         paseoHome: tempDir,
         logger: createTestLogger(),
         agentManager: new AgentManager({ logger: createTestLogger() }),
         agentStorage,
         providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
         now: () => now,
-        runner: async () => {
-          throw new Error("Ordinary runner forbidden");
+        runner: async (schedule) => {
+          await service.update({ id: schedule.id, maxRuns });
+          return { agentId: null, output: "done" };
         },
-        quotaRunner: {
-          reconcilePreparation: async () => outcome,
-          prepare: async (candidate: StoredSchedule, scheduledFor: string) => {
-            const marker = candidate.governorPreparation;
-            if (!marker) throw new Error("Missing durable attempt");
-            expect(
-              (await new ScheduleStore(join(tempDir, "schedules")).get(candidate.id))
-                ?.governorPreparation,
-            ).toEqual(marker);
-            expect(scheduledFor).toBe(marker.scheduledFor);
-            attempts.push(marker.id);
-            if (invalid && failureStage === "append")
-              await service.update({ id: candidate.id, expiresAt: now.toISOString() });
-            return {
-              kind: "ready" as const,
-              binding: {
-                account:
-                  invalid && failureStage === "binding"
-                    ? { ...account, accountId: "wrong" }
-                    : account,
-                reservationId: "reservation",
-              },
-              freezeBeforeDispatch: async () => {
-                freezes++;
-                throw primary;
-              },
-              run: async (current: StoredSchedule, runId: string) => {
-                runs++;
-                expect(current.governorPreparation).toBeUndefined();
-                expect(current.runs.find((run) => run.id === runId)?.governorPreparationId).toBe(
-                  marker.id,
-                );
-                return { state: "frozen" as const, reason: "fixture" };
-              },
-            };
-          },
-        },
-      };
-      service = createScheduleService(options);
+      });
       const created = await service.create({
-        name: "Preparation fixture",
-        prompt: "Factory",
-        cadence: { type: "every", everyMs: 60000 },
+        prompt: "Allow more runs during execution",
+        runOnCreate: false,
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
         maxRuns: 1,
-        target: {
-          type: "new-agent",
-          config: {
-            provider: "codex-secondary",
-            cwd: tempDir,
-            quotaPolicy: {
-              version: 1,
-              account,
-              requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
-              launchFloorPercent: 30,
-              freezeFloorPercent: 25,
-              maxObservationAgeSeconds: 120,
-              consumptionLimits: [],
-              recovery: "automatic_after_reconciliation",
-            },
-          },
-        },
       });
-      let failure: unknown;
-      try {
-        await service.tick();
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).toBeInstanceOf(AggregateError);
-      const errors = (failure as AggregateError).errors;
-      expect(errors[0].message).toBe(
-        failureStage === "binding"
-          ? "Prepared quota account does not match the schedule."
-          : "Schedule changed during admission.",
-      );
-      expect(errors[1]).toBe(primary);
-      const retained = (await service.inspect(created.id)).governorPreparation;
-      expect(retained?.id).toBe(attempts[0]);
-      expect({ freezes, runs }).toEqual({ freezes: 1, runs: 0 });
-      await expect(service.delete(created.id)).rejects.toThrow("Reconcile");
-      await expect(
-        service.update({ id: created.id, newAgentConfig: { provider: "other" } }),
-      ).rejects.toThrow("Reconcile");
-      // Persisted preparation protects even a future inherited-policy record.
-      await new ScheduleStore(join(tempDir, "schedules")).update(created.id, (current) => {
-        if (current.target.type !== "new-agent") throw new Error("Expected target");
-        const config = { ...current.target.config };
-        delete config.quotaPolicy;
-        return { ...current, target: { ...current.target, config } };
-      });
-      const restarted = createScheduleService(options);
-      await restarted.update({ id: created.id, expiresAt: now.toISOString() });
-      await restarted.tick();
-      expect(attempts).toEqual([retained?.id]);
-      expect(await restarted.inspect(created.id)).toMatchObject({
-        status: "active",
-        governorPreparation: retained,
-        quotaState: { reason: "preparation_reconciliation_required" },
-        runs: [],
-      });
-      await expect(restarted.delete(created.id)).rejects.toThrow("Reconcile");
-      const pendingRecord = await restarted.inspect(created.id);
-      await expect(
-        restarted.createOrReplace({
-          name: pendingRecord.name,
-          prompt: "Replacement",
-          cadence: pendingRecord.cadence,
-          target: pendingRecord.target,
-        }),
-      ).rejects.toThrow("Reconcile");
-      await expect(restarted.update({ id: created.id, prompt: "Different" })).rejects.toThrow(
-        "Reconcile",
-      );
-      await restarted.update({ id: created.id, expiresAt: null });
-      outcome = "resume";
-      invalid = false;
-      await restarted.tick();
-      expect(attempts).toEqual([retained?.id, retained?.id]);
-      expect({ freezes, runs }).toEqual({ freezes: 1, runs: 1 });
-      expect(await restarted.inspect(created.id)).toMatchObject({
-        runs: [
-          {
-            status: "running",
-            governorBinding: { account, reservationId: "reservation" },
-            governorPreparationId: retained?.id,
-          },
-        ],
-      });
-      expect((await restarted.inspect(created.id)).governorPreparation).toBeUndefined();
+      now = new Date("2026-01-01T00:01:30.000Z");
+      await service.tick();
+      const result = await service.inspect(created.id);
+      expect(result.status).toBe("active");
+      expect(result.nextRunAt).toBe("2026-01-01T00:02:00.000Z");
+      expect(result.runs).toHaveLength(1);
     },
   );
 
@@ -1740,7 +1293,6 @@ describe("ScheduleService", () => {
           liveSnapshot: snapshot as Awaited<
             ReturnType<ScheduleServiceOptions["createAgent"]>
           >["liveSnapshot"],
-          background: true,
           initialPromptStarted: false,
           initialPromptError: null,
         };
@@ -1818,7 +1370,6 @@ describe("ScheduleService", () => {
           liveSnapshot: snapshot as Awaited<
             ReturnType<ScheduleServiceOptions["createAgent"]>
           >["liveSnapshot"],
-          background: true,
           initialPromptStarted: false,
           initialPromptError: null,
         };
@@ -1888,7 +1439,6 @@ describe("ScheduleService", () => {
           liveSnapshot: snapshot as Awaited<
             ReturnType<ScheduleServiceOptions["createAgent"]>
           >["liveSnapshot"],
-          background: true,
           initialPromptStarted: false,
           initialPromptError: null,
         };
@@ -1948,7 +1498,6 @@ describe("ScheduleService", () => {
           liveSnapshot: snapshot as Awaited<
             ReturnType<ScheduleServiceOptions["createAgent"]>
           >["liveSnapshot"],
-          background: true,
           initialPromptStarted: false,
           initialPromptError: null,
         };
@@ -2686,6 +2235,81 @@ describe("ScheduleService", () => {
         },
       },
     });
+  });
+
+  test("rejects numeric cron steps when creating or updating a schedule", async () => {
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+    });
+    const input = {
+      prompt: "Periodic check",
+      cadence: { type: "cron" as const, expression: "*/15 * * * *" },
+      target: {
+        type: "new-agent" as const,
+        config: { provider: "claude" as const, cwd: tempDir },
+      },
+      runOnCreate: false,
+    };
+
+    await expect(
+      service.create({ ...input, cadence: { type: "cron", expression: "0/15 * * * *" } }),
+    ).rejects.toThrow("Invalid cron minute step: use * or a range before /");
+    expect(await service.list()).toEqual([]);
+
+    const created = await service.create(input);
+    await expect(
+      service.update({ id: created.id, cadence: { type: "cron", expression: "0/15 * * * *" } }),
+    ).rejects.toThrow("Invalid cron minute step: use * or a range before /");
+    expect((await service.inspect(created.id)).cadence).toEqual(input.cadence);
+  });
+
+  test("recovers and runs numeric cron steps persisted by an older daemon", async () => {
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async () => ({ agentId: null, output: "ok" }),
+    });
+    const created = await service.create({
+      prompt: "Periodic check",
+      cadence: { type: "cron", expression: "0 * * * *" },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: tempDir },
+      },
+      runOnCreate: false,
+    });
+    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+    await store.update(created.id, (schedule) => ({
+      ...schedule,
+      cadence: { type: "cron", expression: "0/15 * * * *" },
+    }));
+
+    now = new Date("2026-01-01T03:10:00.000Z");
+    try {
+      await service.start();
+      await service.stop();
+      expect((await service.inspect(created.id)).nextRunAt).toBe("2026-01-01T04:00:00.000Z");
+
+      now = new Date("2026-01-01T04:00:00.000Z");
+      await service.tick();
+      const inspected = await service.inspect(created.id);
+      expect(inspected.cadence).toEqual({ type: "cron", expression: "0/15 * * * *" });
+      expect(inspected.status).toBe("active");
+      expect(inspected.nextRunAt).toBe("2026-01-01T05:00:00.000Z");
+      expect(inspected.runs).toHaveLength(1);
+      expect(inspected.runs[0]).toMatchObject({ status: "succeeded", output: "ok" });
+    } finally {
+      await service.stop();
+    }
   });
 
   test("advances stale nextRunAt on daemon restart", async () => {
@@ -3703,6 +3327,44 @@ describe("ScheduleService", () => {
     expect(inspected.runs[0]?.error).toBe("network blip");
   });
 
+  // chmod cannot make a directory unwritable on Windows or for root.
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "fires again after a tick whose run could not be recorded",
+    async () => {
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: async () => ({ agentId: null, output: "ran" }),
+      });
+
+      const created = await service.create({
+        prompt: "ping target",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId: "88888888-8888-4888-8888-888888888888" },
+      });
+
+      const schedulesDir = join(tempDir, "schedules");
+      now = new Date("2026-01-01T00:01:00.000Z");
+      await chmod(schedulesDir, 0o555);
+      try {
+        await expect(service.tick()).rejects.toThrow();
+      } finally {
+        await chmod(schedulesDir, 0o755);
+      }
+
+      await service.tick();
+
+      const inspected = await service.inspect(created.id);
+      expect(inspected.runs).toHaveLength(1);
+      expect(inspected.runs[0]?.status).toBe("succeeded");
+      expect(inspected.nextRunAt).toBe("2026-01-01T00:02:00.000Z");
+    },
+  );
+
   test("completes the schedule when a scheduled run targets an archived agent", async () => {
     const service = createScheduleService({
       paseoHome: tempDir,
@@ -4151,4 +3813,827 @@ describe("ScheduleService", () => {
     expect(await service.completeForAgent(agentId)).toBe(1);
     expect(await service.completeForAgent(agentId)).toBe(0);
   });
+
+  test("restart hold defers scheduled occurrences without consuming them", async () => {
+    let open = false;
+    let runs = 0;
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      canStartWork: () => open,
+      runner: async () => {
+        runs++;
+        return { agentId: null, output: "done" };
+      },
+    });
+    const created = await service.create({
+      prompt: "Review PRs",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+    });
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+    expect(runs).toBe(0);
+    expect((await service.inspect(created.id)).runs).toHaveLength(0);
+    expect((await service.inspect(created.id)).nextRunAt).toBe(created.nextRunAt);
+    open = true;
+    await service.tick();
+    expect(runs).toBe(1);
+  });
+
+  test("protected quota deferrals preserve the occurrence and maxRuns across restart", async () => {
+    const runner = vi.fn(async () => ({ agentId: null, output: "must not run" }));
+    const createWorkspace = vi.fn(async () => {
+      throw new Error("Must not create a workspace");
+    });
+    const options = {
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner,
+      createDirectoryWorkspace: createWorkspace,
+    };
+    const service = createScheduleService(options);
+    const quotaPolicy = {
+      version: 1 as const,
+      account: { issuer: "openai", accountId: "account" },
+      requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
+      launchFloorPercent: 30,
+      freezeFloorPercent: 25,
+      maxObservationAgeSeconds: 120,
+      consumptionLimits: [],
+      recovery: "automatic_after_reconciliation" as const,
+    };
+    const created = await service.create({
+      name: "Preparation fixture",
+      prompt: "Factory",
+      cadence: { type: "every", everyMs: 60000 },
+      maxRuns: 1,
+      target: {
+        type: "new-agent",
+        config: { provider: "codex-secondary", cwd: tempDir, quotaPolicy },
+      },
+    });
+    await service.tick();
+    await service.tick();
+    expect(await service.inspect(created.id)).toMatchObject({
+      status: "active",
+      runs: [],
+      nextRunAt: created.nextRunAt,
+      quotaState: { state: "held", reason: "governor_unavailable" },
+    });
+    const readObservation = vi.fn(async () => ({
+      status: "available" as const,
+      account: quotaPolicy.account,
+      observedAt: now.toISOString(),
+      windows: [
+        {
+          ...quotaPolicy.requiredWindows[0]!,
+          usedPercent: 80,
+          resetsAt: null,
+          semantics: "unknown" as const,
+        },
+      ],
+      consumptionMeters: [],
+    }));
+    const quotaRunner = new QuotaSchedulePreflight({ readObservation, nowMs: () => now.getTime() });
+    const reopened = createScheduleService({ ...options, quotaRunner });
+    await reopened.start();
+    await reopened.stop();
+    await reopened.tick();
+    expect(readObservation).toHaveBeenCalledExactlyOnceWith("codex-secondary");
+    expect(await reopened.inspect(created.id)).toMatchObject({
+      status: "active",
+      runs: [],
+      nextRunAt: created.nextRunAt,
+      quotaState: { state: "held", reason: "freeze_floor" },
+    });
+    expect(runner).not.toHaveBeenCalled();
+    expect(createWorkspace).not.toHaveBeenCalled();
+  });
+
+  test.each(["pending", "deleted"])(
+    "does not admit a stale tick while deletion is %s",
+    async (stage) => {
+      const prepare = vi.fn(async () => ({ kind: "deferred" as const, reason: "fixture" }));
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        quotaRunner: { prepare },
+      });
+      const created = await service.create({
+        prompt: "Protected deletion race",
+        cadence: { type: "every", everyMs: 60000 },
+        target: {
+          type: "new-agent",
+          config: {
+            provider: "codex-secondary",
+            cwd: tempDir,
+            quotaPolicy: {
+              version: 1,
+              account: { issuer: "openai", accountId: "account" },
+              requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
+              launchFloorPercent: 30,
+              freezeFloorPercent: 25,
+              maxObservationAgeSeconds: 120,
+              consumptionLimits: [],
+              recovery: "automatic_after_reconciliation",
+            },
+          },
+        },
+      });
+      let releaseList!: () => void;
+      let listed!: () => void;
+      const listEntered = new Promise<void>((resolve) => {
+        listed = resolve;
+      });
+      const listGate = new Promise<void>((resolve) => {
+        releaseList = resolve;
+      });
+      const originalList = ScheduleStore.prototype.list;
+      vi.spyOn(ScheduleStore.prototype, "list").mockImplementationOnce(async function () {
+        const snapshot = await originalList.call(this);
+        listed();
+        await listGate;
+        return snapshot;
+      });
+      const tick = service.tick();
+      await listEntered;
+      let releaseDelete!: () => void;
+      let deletionStarted!: () => void;
+      const deleteEntered = new Promise<void>((resolve) => {
+        deletionStarted = resolve;
+      });
+      const deleteGate = new Promise<void>((resolve) => {
+        releaseDelete = resolve;
+      });
+      const originalDelete = ScheduleStore.prototype.delete;
+      if (stage === "pending") {
+        vi.spyOn(ScheduleStore.prototype, "delete").mockImplementationOnce(
+          async function (id, guard) {
+            deletionStarted();
+            await deleteGate;
+            return originalDelete.call(this, id, guard);
+          },
+        );
+      }
+      const deletion = service.delete(created.id);
+      if (stage === "pending") await deleteEntered;
+      else await deletion;
+      // A deleted schedule is only stale in this tick's snapshot, so the tick skips it.
+      const refused =
+        stage === "pending"
+          ? expect(tick).rejects.toThrow("deletion is pending")
+          : expect(tick).resolves.toBeUndefined();
+      releaseList();
+      await refused;
+      releaseDelete();
+      await deletion;
+      expect(prepare).not.toHaveBeenCalled();
+      expect(await new ScheduleStore(join(tempDir, "schedules")).get(created.id)).toBeNull();
+    },
+  );
+
+  test("skips a tick that starts while another is still admitting", async () => {
+    // Earlier tests leave ScheduleStore spies installed; start from the real store.
+    vi.restoreAllMocks();
+    let checks = 0;
+    const prepare = vi.fn(async () => ({ kind: "deferred" as const, reason: "fixture" }));
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      // Each refusal writes a fresh checkedAt, as the held protected schedule does live.
+      now: () => new Date(now.getTime() + checks++),
+      quotaRunner: { prepare },
+    });
+    const created = await service.create({
+      prompt: "Held protected schedule",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: { provider: "codex-secondary", cwd: tempDir, quotaPolicy: heldQuotaPolicy },
+      },
+    });
+    now = new Date("2026-01-01T00:01:00.000Z");
+    // The second tick's snapshot is taken before the first tick writes, and its
+    // admission runs after the first tick finishes, as with overlapping intervals.
+    let releaseSecondList!: () => void;
+    const secondListGate = new Promise<void>((resolve) => {
+      releaseSecondList = resolve;
+    });
+    const originalList = ScheduleStore.prototype.list;
+    const list = vi
+      .spyOn(ScheduleStore.prototype, "list")
+      .mockImplementationOnce(async function () {
+        return originalList.call(this);
+      })
+      .mockImplementationOnce(async function () {
+        const snapshot = await originalList.call(this);
+        await secondListGate;
+        return snapshot;
+      });
+    const first = service.tick().finally(() => releaseSecondList());
+    const second = service.tick();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect((await service.inspect(created.id)).quotaState).toMatchObject({ state: "held" });
+    list.mockRestore();
+  });
+
+  test("releases the guard when a tick fails", async () => {
+    // Earlier tests leave ScheduleStore spies installed; start from the real store.
+    vi.restoreAllMocks();
+    const runner = vi.fn(async () => ({ agentId: null, output: "done" }));
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner,
+    });
+    await service.create({
+      prompt: "Recovers after a failed tick",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+    });
+    now = new Date("2026-01-01T00:01:00.000Z");
+    const list = vi
+      .spyOn(ScheduleStore.prototype, "list")
+      .mockRejectedValueOnce(new Error("list failed"));
+
+    await expect(service.tick()).rejects.toThrow("list failed");
+    list.mockRestore();
+    await service.tick();
+
+    expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  test("a hung protected admission does not stop other schedules", async () => {
+    // Reviewer reproduction (2026-10-19): prepare never resolves. Before the admission bound,
+    // the tick guard held forever and the ordinary schedule never ran.
+    vi.restoreAllMocks();
+    const prepare = vi.fn(() => new Promise<never>(() => {}));
+    const ran: string[] = [];
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      admissionDispatchBoundMs: 50,
+      quotaRunner: { prepare },
+      runner: async (schedule) => {
+        ran.push(schedule.prompt);
+        return { agentId: null, output: "done" };
+      },
+    });
+    await service.create({
+      prompt: "Hung",
+      cadence: { type: "every", everyMs: 60_000 },
+      runOnCreate: false,
+      target: {
+        type: "new-agent",
+        config: { provider: "codex-secondary", cwd: tempDir, quotaPolicy: heldQuotaPolicy },
+      },
+    });
+    now = new Date("2026-01-01T00:00:30.000Z");
+    await service.create({
+      prompt: "Plain",
+      cadence: { type: "every", everyMs: 60_000 },
+      runOnCreate: false,
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+    });
+    now = new Date("2026-01-01T00:01:00.000Z");
+    void service.tick().catch(() => {});
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+    // Past the bound the first tick releases the guard while its attempt stays running.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    now = new Date("2026-01-01T00:01:30.000Z");
+    await Promise.race([service.tick(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+    expect(ran).toEqual(["Plain"]);
+    // The hung attempt stays admitted exactly once.
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  test("continues the tick after one schedule changed before admission", async () => {
+    // Earlier tests leave ScheduleStore spies installed; start from the real store.
+    vi.restoreAllMocks();
+    const ran: string[] = [];
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async (schedule) => {
+        ran.push(schedule.id);
+        return { agentId: null, output: "done" };
+      },
+    });
+    const target = { type: "new-agent" as const, config: { provider: "claude", cwd: tempDir } };
+    const first = await service.create({
+      prompt: "First",
+      cadence: { type: "every", everyMs: 60_000 },
+      target,
+    });
+    const second = await service.create({
+      prompt: "Second",
+      cadence: { type: "every", everyMs: 60_000 },
+      target,
+    });
+    now = new Date("2026-01-01T00:01:00.000Z");
+    // Whichever schedule the snapshot lists first changes before its admission.
+    let changedId: string | undefined;
+    const originalList = ScheduleStore.prototype.list;
+    const list = vi.spyOn(ScheduleStore.prototype, "list");
+    list.mockImplementationOnce(async function () {
+      const snapshot = await originalList.call(this);
+      changedId = snapshot[0]?.id;
+      await service.update({ id: changedId!, name: "Renamed" });
+      return snapshot;
+    });
+
+    await service.tick();
+    list.mockRestore();
+
+    const otherId = changedId === first.id ? second.id : first.id;
+    expect(ran).toEqual([otherId]);
+    await service.tick();
+    expect(ran).toEqual([otherId, changedId]);
+  });
+
+  test("does not hold other schedules behind a dispatched run", async () => {
+    // Earlier tests leave ScheduleStore spies installed; start from the real store.
+    vi.restoreAllMocks();
+    let releaseLong!: () => void;
+    const longGate = new Promise<void>((resolve) => {
+      releaseLong = resolve;
+    });
+    const ran: string[] = [];
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async (schedule) => {
+        ran.push(schedule.prompt);
+        if (schedule.prompt === "Long") await longGate;
+        return { agentId: null, output: "done" };
+      },
+    });
+    const target = { type: "new-agent" as const, config: { provider: "claude", cwd: tempDir } };
+    const cadence = { type: "every" as const, everyMs: 60_000 };
+    await service.create({ prompt: "Long", cadence, runOnCreate: false, target });
+    now = new Date("2026-01-01T00:00:30.000Z");
+    await service.create({ prompt: "Short", cadence, runOnCreate: false, target });
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    const longTick = service.tick();
+    await vi.waitFor(() => expect(ran).toEqual(["Long"]));
+    now = new Date("2026-01-01T00:01:30.000Z");
+    await service.tick();
+    expect(ran).toEqual(["Long", "Short"]);
+
+    releaseLong();
+    await longTick;
+  });
+
+  test.each(
+    [false, true].flatMap((inherited) =>
+      [false, true].map((workflow) => ({ inherited, workflow })),
+    ),
+  )(
+    "resumes governed custody after freeze and restart (inherited=$inherited, workflow=$workflow)",
+    async ({ inherited, workflow }) => {
+      const ordinary = vi.fn(async () => ({ agentId: null, output: "ordinary" }));
+      let frozen = false;
+      let executionAttempts = 0;
+      const initialBindingId = workflow ? "11111111-1111-4111-8111-111111111111" : "reservation";
+      let bindingId = initialBindingId;
+      const binding = () => ({
+        account: { issuer: "openai", accountId: "account" },
+        ...(workflow ? { workflowId: bindingId } : { reservationId: bindingId }),
+      });
+      const bindingKey = workflow ? "workflowBinding" : "governorBinding";
+      let expireDuringPrepare = false;
+      const governed = vi.fn(
+        async (
+          _schedule: StoredSchedule,
+          _runId: string,
+        ): Promise<ScheduleExecutionResult | { state: "frozen"; reason: string }> => {
+          executionAttempts++;
+          if (executionAttempts === 2) throw new Error("Execution outcome unknown");
+          if (!frozen) {
+            frozen = true;
+            return { state: "frozen", reason: "weekly_floor" };
+          }
+          return { agentId: null, output: "governed" };
+        },
+      );
+      const service: ScheduleService = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: ordinary,
+        quotaRunner: {
+          reconcilePreparation: async () => "resume",
+          prepare: async (schedule) => {
+            if (schedule.runs.some((run) => run.quotaState?.state === "reconciliation_required"))
+              return { kind: "deferred", reason: "execution_reconciliation_required" };
+            if (expireDuringPrepare)
+              await service.update({ id: schedule.id, expiresAt: now.toISOString() });
+            return {
+              kind: "ready",
+              freezeBeforeDispatch: async () => {},
+              binding: binding(),
+              run: governed,
+              resumeRunId: schedule.runs.find((run) => run.status === "running")?.id,
+            };
+          },
+        },
+      });
+      const created = await service.create({
+        prompt: "Factory",
+        cadence: { type: "every", everyMs: 60000 },
+        maxRuns: 1,
+        target: {
+          type: "new-agent",
+          config: {
+            provider: "codex-secondary",
+            cwd: tempDir,
+            quotaPolicy: {
+              version: 1,
+              account: { issuer: "openai", accountId: "account" },
+              requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
+              launchFloorPercent: 30,
+              freezeFloorPercent: 25,
+              maxObservationAgeSeconds: 120,
+              consumptionLimits: [],
+              recovery: "automatic_after_reconciliation",
+            },
+          },
+        },
+      });
+      await service.tick();
+      expect(governed).toHaveBeenCalledTimes(1);
+      const held = await service.inspect(created.id);
+      expect(held).toMatchObject({
+        status: "active",
+        nextRunAt: null,
+        runs: [{ status: "running", quotaState: { state: "frozen", reason: "weekly_floor" } }],
+      });
+      expect(held.runs[0]?.[bindingKey]).toEqual(binding());
+      expect(held.runs[0]?.[workflow ? "governorBinding" : "workflowBinding"]).toBeUndefined();
+      const store = new ScheduleStore(join(tempDir, "schedules"));
+      await store.update(created.id, (record) => {
+        const updated = structuredClone(record);
+        for (const run of updated.runs)
+          Object.assign(run, {
+            governorBinding: { account: binding().account, reservationId: "reservation" },
+            workflowBinding: {
+              account: binding().account,
+              workflowId: "11111111-1111-4111-8111-111111111111",
+            },
+          });
+        return updated;
+      });
+      await expect(service.tick()).rejects.toThrow("Ambiguous protected execution binding");
+      expect(governed).toHaveBeenCalledTimes(1);
+      await store.update(created.id, (record) => {
+        const updated = structuredClone(record);
+        for (const run of updated.runs) {
+          delete run.governorBinding;
+          delete run.workflowBinding;
+          Object.assign(run, { [bindingKey]: binding() });
+        }
+        return updated;
+      });
+      if (inherited) {
+        // Model a persisted inherited policy: protection belongs to the run,
+        // even when the editable schedule has no explicit quota policy.
+        await new ScheduleStore(join(tempDir, "schedules")).update(created.id, (record) => {
+          if (record.target.type !== "new-agent") throw new Error("Expected new-agent target");
+          const config = { ...record.target.config };
+          delete config.quotaPolicy;
+          return { ...record, target: { ...record.target, config } };
+        });
+      }
+      await expect(service.delete(created.id)).rejects.toThrow("Reconcile");
+      await service.update({ id: created.id, expiresAt: now.toISOString() });
+      await service.tick();
+      expect(governed).toHaveBeenCalledTimes(1);
+      expect(await service.inspect(created.id)).toMatchObject({
+        status: "active",
+        quotaState: { state: "held", reason: "schedule_expired" },
+        runs: [{ status: "running" }],
+      });
+      await service.update({ id: created.id, expiresAt: null });
+      bindingId = workflow ? "22222222-2222-4222-8222-222222222222" : "wrong-reservation";
+      await expect(service.tick()).rejects.toThrow("execution binding");
+      expect(governed).toHaveBeenCalledTimes(1);
+      bindingId = initialBindingId;
+      expect((await service.inspect(created.id)).runs[0]?.[bindingKey]).toEqual(binding());
+      expireDuringPrepare = true;
+      await service.tick();
+      expect(governed).toHaveBeenCalledTimes(1);
+      expect((await service.inspect(created.id)).runs[0]).toMatchObject({
+        status: "running",
+        [bindingKey]: binding(),
+        quotaState: { state: "frozen", reason: "schedule_expired" },
+      });
+      expireDuringPrepare = false;
+      await service.update({ id: created.id, expiresAt: null });
+      await expect(
+        service.update({ id: created.id, newAgentConfig: { provider: "another-account" } }),
+      ).rejects.toThrow("Reconcile");
+      await expect(service.update({ id: created.id, prompt: "Different work" })).rejects.toThrow(
+        "Reconcile",
+      );
+      await expect(
+        service.update({ id: created.id, cadence: { type: "every", everyMs: 300000 } }),
+      ).rejects.toThrow("Reconcile");
+      await service.start();
+      await service.stop();
+      await service.tick();
+      expect(governed).toHaveBeenCalledTimes(2);
+      expect(await service.inspect(created.id)).toMatchObject({
+        status: "active",
+        runs: [
+          {
+            status: "running",
+            quotaState: { state: "reconciliation_required" },
+          },
+        ],
+      });
+      const uncertainRun = (await service.inspect(created.id)).runs[0];
+      await service.start();
+      await service.stop();
+      await service.tick();
+      await service.tick();
+      expect((await service.inspect(created.id)).runs[0]).toEqual(uncertainRun);
+      expect(governed).toHaveBeenCalledTimes(2);
+      expect(governed.mock.calls[0][1]).toBe(governed.mock.calls[1][1]);
+      expect(ordinary).not.toHaveBeenCalled();
+      expect(await service.inspect(created.id)).toMatchObject({
+        status: "active",
+        nextRunAt: null,
+        runs: [{ status: "running", quotaState: { state: "reconciliation_required" } }],
+      });
+    },
+  );
+
+  test.each([1, 2])(
+    "reconciles a claimed run before its next scheduling slot (maxRuns=%i)",
+    async (maxRuns) => {
+      const binding = { account: heldQuotaPolicy.account, reservationId: "captured-reservation" };
+      let attempts = 0;
+      let allowResume = false;
+      const freeze = vi.fn(async () => {});
+      const run = vi.fn(
+        async (
+          _schedule: StoredSchedule,
+          _runId: string,
+        ): Promise<ScheduleExecutionResult | { state: "frozen"; reason: string }> => {
+          if (++attempts === 1) return { state: "frozen", reason: "weekly_floor" };
+          return { agentId: null, output: "reconciled" };
+        },
+      );
+      const prepare = vi.fn(async (schedule: StoredSchedule, _scheduledFor: string) => ({
+        kind: "ready" as const,
+        binding,
+        freezeBeforeDispatch: freeze,
+        resumeRunId: allowResume ? schedule.runs[0]?.id : undefined,
+        run,
+      }));
+      const ordinary = vi.fn(async () => ({ agentId: null, output: "ordinary" }));
+      const options = {
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: ordinary,
+        quotaRunner: { prepare, reconcilePreparation: async () => "resume" as const },
+      };
+      const service = createScheduleService(options);
+      const created = await service.create({
+        prompt: "Recover captured work",
+        cadence: { type: "every", everyMs: 60_000 },
+        maxRuns,
+        target: {
+          type: "new-agent",
+          config: { provider: "codex", cwd: tempDir, quotaPolicy: heldQuotaPolicy },
+        },
+      });
+      await service.tick();
+      const claimed = await service.inspect(created.id);
+      expect(claimed.nextRunAt).toBe(maxRuns === 1 ? null : "2026-01-01T00:01:00.000Z");
+      expect(claimed.runs).toHaveLength(1);
+      expect(claimed.runs[0]).toMatchObject({ status: "running", governorBinding: binding });
+      now = new Date("2026-01-01T00:00:10.000Z");
+      const restarted = createScheduleService(options);
+      await restarted.start();
+      await restarted.stop();
+      await expect(restarted.tick()).rejects.toThrow("Reconcile unfinished work");
+      expect(run).toHaveBeenCalledTimes(1);
+      expect((await restarted.inspect(created.id)).runs).toEqual(claimed.runs);
+      expect(freeze).toHaveBeenCalledWith("dispatch_not_started");
+      allowResume = true;
+      await restarted.tick();
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(run.mock.calls[1][1]).toBe(run.mock.calls[0][1]);
+      expect(prepare.mock.calls.map((call) => call[1])).toEqual([
+        created.nextRunAt,
+        created.nextRunAt,
+        created.nextRunAt,
+      ]);
+      expect(await restarted.inspect(created.id)).toMatchObject({
+        status: maxRuns === 1 ? "completed" : "active",
+        nextRunAt: claimed.nextRunAt,
+        runs: [{ id: claimed.runs[0].id, status: "succeeded", output: "reconciled" }],
+      });
+      await restarted.tick();
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(ordinary).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["binding", "append"])(
+    "retains failed %s preparation across restart and transfers the reconciled attempt into its run",
+    async (failureStage) => {
+      const account = { issuer: "openai", accountId: "account" };
+      const attempts: string[] = [];
+      let outcome: "held" | "resume" = "held";
+      let invalid = true;
+      let freezes = 0;
+      let runs = 0;
+      const primary = new Error("fixture cleanup failed");
+      let service!: ScheduleService;
+      const options = {
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: async () => {
+          throw new Error("Ordinary runner forbidden");
+        },
+        quotaRunner: {
+          reconcilePreparation: async () => outcome,
+          prepare: async (candidate: StoredSchedule, scheduledFor: string) => {
+            const marker = candidate.governorPreparation;
+            if (!marker) throw new Error("Missing durable attempt");
+            expect(
+              (await new ScheduleStore(join(tempDir, "schedules")).get(candidate.id))
+                ?.governorPreparation,
+            ).toEqual(marker);
+            expect(scheduledFor).toBe(marker.scheduledFor);
+            attempts.push(marker.id);
+            if (invalid && failureStage === "append")
+              await service.update({ id: candidate.id, expiresAt: now.toISOString() });
+            return {
+              kind: "ready" as const,
+              binding: {
+                account:
+                  invalid && failureStage === "binding"
+                    ? { ...account, accountId: "wrong" }
+                    : account,
+                reservationId: "reservation",
+              },
+              freezeBeforeDispatch: async () => {
+                freezes++;
+                throw primary;
+              },
+              run: async (current: StoredSchedule, runId: string) => {
+                runs++;
+                expect(current.governorPreparation).toBeUndefined();
+                expect(current.runs.find((run) => run.id === runId)?.governorPreparationId).toBe(
+                  marker.id,
+                );
+                return { state: "frozen" as const, reason: "fixture" };
+              },
+            };
+          },
+        },
+      };
+      service = createScheduleService(options);
+      const created = await service.create({
+        name: "Preparation fixture",
+        prompt: "Factory",
+        cadence: { type: "every", everyMs: 60000 },
+        maxRuns: 1,
+        target: {
+          type: "new-agent",
+          config: {
+            provider: "codex-secondary",
+            cwd: tempDir,
+            quotaPolicy: {
+              version: 1,
+              account,
+              requiredWindows: [{ bucketId: "codex", windowId: "primary", durationMinutes: 10080 }],
+              launchFloorPercent: 30,
+              freezeFloorPercent: 25,
+              maxObservationAgeSeconds: 120,
+              consumptionLimits: [],
+              recovery: "automatic_after_reconciliation",
+            },
+          },
+        },
+      });
+      let failure: unknown;
+      try {
+        await service.tick();
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(AggregateError);
+      const errors = (failure as AggregateError).errors;
+      expect(errors[0].message).toBe(
+        failureStage === "binding"
+          ? "Prepared quota account does not match the schedule."
+          : "Schedule changed during admission.",
+      );
+      expect(errors[1]).toBe(primary);
+      const retained = (await service.inspect(created.id)).governorPreparation;
+      expect(retained?.id).toBe(attempts[0]);
+      expect({ freezes, runs }).toEqual({ freezes: 1, runs: 0 });
+      await expect(service.delete(created.id)).rejects.toThrow("Reconcile");
+      await expect(
+        service.update({ id: created.id, newAgentConfig: { provider: "other" } }),
+      ).rejects.toThrow("Reconcile");
+      // Persisted preparation protects even a future inherited-policy record.
+      await new ScheduleStore(join(tempDir, "schedules")).update(created.id, (current) => {
+        if (current.target.type !== "new-agent") throw new Error("Expected target");
+        const config = { ...current.target.config };
+        delete config.quotaPolicy;
+        return { ...current, target: { ...current.target, config } };
+      });
+      const restarted = createScheduleService(options);
+      await restarted.update({ id: created.id, expiresAt: now.toISOString() });
+      await restarted.tick();
+      expect(attempts).toEqual([retained?.id]);
+      expect(await restarted.inspect(created.id)).toMatchObject({
+        status: "active",
+        governorPreparation: retained,
+        quotaState: { reason: "preparation_reconciliation_required" },
+        runs: [],
+      });
+      await expect(restarted.delete(created.id)).rejects.toThrow("Reconcile");
+      const pendingRecord = await restarted.inspect(created.id);
+      await expect(
+        restarted.createOrReplace({
+          name: pendingRecord.name,
+          prompt: "Replacement",
+          cadence: pendingRecord.cadence,
+          target: pendingRecord.target,
+        }),
+      ).rejects.toThrow("Reconcile");
+      await expect(restarted.update({ id: created.id, prompt: "Different" })).rejects.toThrow(
+        "Reconcile",
+      );
+      await restarted.update({ id: created.id, expiresAt: null });
+      outcome = "resume";
+      invalid = false;
+      await restarted.tick();
+      expect(attempts).toEqual([retained?.id, retained?.id]);
+      expect({ freezes, runs }).toEqual({ freezes: 1, runs: 1 });
+      expect(await restarted.inspect(created.id)).toMatchObject({
+        runs: [
+          {
+            status: "running",
+            governorBinding: { account, reservationId: "reservation" },
+            governorPreparationId: retained?.id,
+          },
+        ],
+      });
+      expect((await restarted.inspect(created.id)).governorPreparation).toBeUndefined();
+    },
+  );
 });

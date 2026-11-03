@@ -25,6 +25,19 @@ export class ClaudeAuthenticationError extends Error {
   }
 }
 
+/** `claude auth status` takes about 0.1s idle; the limit only matters on a loaded machine. */
+const AUTH_STATUS_TIMEOUT_MS = 15_000;
+
+/** execFile kills a child that exceeds its timeout and reports it without an exit code. */
+function isTimedOut(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { killed?: unknown }).killed === true &&
+    (error as { code?: unknown }).code == null
+  );
+}
+
 interface AuthenticationCheck {
   executable: string;
   args: string[];
@@ -46,13 +59,22 @@ export async function requireClaudeAuthentication(input: AuthenticationCheck): P
   args.push("auth", "status");
   let stdout: string;
   let commandSucceeded = true;
+  const options = {
+    ...createProviderEnvSpec({ runtimeSettings: input.runtimeSettings, overlays: [authEnv] }),
+    timeout: AUTH_STATUS_TIMEOUT_MS,
+    maxBuffer: 64 * 1024,
+    signal: input.signal,
+  };
   try {
-    const result = await run(input.executable, args, {
-      ...createProviderEnvSpec({ runtimeSettings: input.runtimeSettings, overlays: [authEnv] }),
-      timeout: 5_000,
-      maxBuffer: 64 * 1024,
-      signal: input.signal,
-    });
+    let result: Awaited<ReturnType<typeof run>>;
+    try {
+      result = await run(input.executable, args, options);
+    } catch (error) {
+      // A slow CLI start under heavy load is not an authentication failure: retry a timed
+      // out check once. A cancelled check or any other failure is not retried.
+      if (!isTimedOut(error) || input.signal?.aborted) throw error;
+      result = await run(input.executable, args, options);
+    }
     stdout = result.stdout;
   } catch (error) {
     // The CLI returns JSON with exit status 1 when signed out.

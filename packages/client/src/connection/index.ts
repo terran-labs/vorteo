@@ -127,6 +127,8 @@ export class ConnectionSubscriptions extends OwnedSubscriptions {
 export const DEFAULT_CLIENT_CAPABILITIES = {
   [CLIENT_CAPS.checklistReviewStatus]: true,
   [CLIENT_CAPS.checklistBlockedStatus]: true,
+  [CLIENT_CAPS.terminalChunkedReplay]: true,
+  [CLIENT_CAPS.binaryChunkingV1]: true,
   [CLIENT_CAPS.helloRejection]: true,
   [CLIENT_CAPS.ownedSubscriptions]: true,
   [CLIENT_CAPS.allProviders]: true,
@@ -144,6 +146,8 @@ export const DEFAULT_CLIENT_CAPABILITIES = {
   [CLIENT_CAPS.pluginTimelineItems]: true,
   [CLIENT_CAPS.profileSwitchTimeline]: true,
   [CLIENT_CAPS.workspaceSetupBlocked]: true,
+  [CLIENT_CAPS.workspaceSetupObservation]: true,
+  [CLIENT_CAPS.pluginBinaryPayloads]: true,
   [CLIENT_CAPS.explicitEventSubscriptions]: true,
 } satisfies Record<Exclude<ClientCapability, typeof CLIENT_CAPS.browserHost>, true>;
 

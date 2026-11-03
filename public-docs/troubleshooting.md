@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Why Vorteo can't find a provider you've installed, and how to fix the PATH and environment mismatches behind most setup issues.
+description: Fix Linux AppImage launch errors, missing providers, and environment mismatches.
 nav: Common problems
 order: 90
 category: Troubleshooting
@@ -9,6 +9,23 @@ category: Troubleshooting
 # Troubleshooting
 
 Almost every "it works in my terminal but not in Vorteo" problem is the same thing: Vorteo and your terminal aren't searching the same `PATH`. This page covers how to spot that and fix it.
+
+## AppImage won't open on Linux
+
+Make the downloaded AppImage executable, then launch it from a terminal to see any error:
+
+```bash
+chmod +x Paseo-x86_64.AppImage
+./Paseo-x86_64.AppImage
+```
+
+If it reports `error loading libfuse.so.2`, run without FUSE:
+
+```bash
+./Paseo-x86_64.AppImage --appimage-extract-and-run
+```
+
+The application window should open. You can also install the `.deb` on Debian/Ubuntu or the `.rpm` on Fedora from the [download page](https://paseo.sh/download).
 
 ## Vorteo can't find my provider
 

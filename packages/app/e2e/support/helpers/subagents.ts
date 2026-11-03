@@ -1,7 +1,9 @@
+import { connectDaemonClient } from "./daemon-client-loader";
+import { startIsolatedHostDaemon } from "./isolated-host-daemon";
+import { seedWorkspace, type SeededWorkspace } from "./seed-client";
+import { getE2EDaemonPort, daemonWsRoutePattern } from "./daemon-port";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { expect, type Locator, type Page } from "@playwright/test";
-import { daemonWsRoutePattern } from "./daemon-port";
-import type { SeededWorkspace } from "./seed-client";
 
 type WebSocketMessage = string | Buffer;
 
@@ -49,29 +51,35 @@ export async function seedParentWithSubagent(
     modeId: "load-test",
     model: "ten-second-stream",
   });
-  const child = await workspace.client.createAgent({
-    provider: "mock",
-    cwd: workspace.repoPath,
-    workspaceId: workspace.workspaceId,
-    title: input.childTitle,
-    modeId: "load-test",
-    model: "ten-second-stream",
-    labels: {
-      [PARENT_AGENT_ID_LABEL]: parent.id,
-    },
-  });
+  const child = await seedSubagent(workspace, { parentId: parent.id, title: input.childTitle });
 
   return {
     parent: {
       id: parent.id,
       title: input.parentTitle,
     },
-    child: {
-      id: child.id,
-      title: input.childTitle,
-    },
+    child,
     workspaceId: workspace.workspaceId,
   };
+}
+
+/** Seeds an idle Paseo subagent of an existing agent in the same workspace. */
+export async function seedSubagent(
+  workspace: Pick<SeededWorkspace, "client" | "repoPath" | "workspaceId">,
+  input: { parentId: string; title: string },
+): Promise<{ id: string; title: string }> {
+  const child = await workspace.client.createAgent({
+    provider: "mock",
+    cwd: workspace.repoPath,
+    workspaceId: workspace.workspaceId,
+    title: input.title,
+    modeId: "load-test",
+    model: "ten-second-stream",
+    labels: {
+      [PARENT_AGENT_ID_LABEL]: input.parentId,
+    },
+  });
+  return { id: child.id, title: input.title };
 }
 
 export async function seedParentWithCrossWorkspaceSubagent(
@@ -141,6 +149,19 @@ export async function openSubagentsTrack(page: Page, scope?: Locator): Promise<v
   }
 }
 
+/** Compact supporting-card rows open a standalone sheet, without a legacy list sheet. */
+export async function openSubagentFromCompactTrack(
+  page: Page,
+  childId: string,
+  scope: Page | Locator = page,
+): Promise<void> {
+  await openSubagentsTrack(page, scope === page ? undefined : (scope as Locator));
+  const row = scope.getByTestId(`subagents-track-row-${childId}`).filter({ visible: true }).first();
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
+  await row.click();
+}
+
 export async function expectSubagentRowVisible(page: Page, childId: string): Promise<void> {
   await expect(
     page.getByTestId(`subagents-track-row-${childId}`).filter({ visible: true }).first(),
@@ -159,7 +180,7 @@ export async function expectSubagentRowGone(page: Page, childId: string): Promis
 }
 
 export async function expectManagedSubagentUnarchived(
-  workspace: Pick<SeededWorkspace, "client">,
+  workspace: { client: Pick<SeededWorkspace["client"], "fetchAgent"> },
   childId: string,
 ): Promise<void> {
   await expect(workspace.client.fetchAgent({ agentId: childId })).resolves.toMatchObject({
@@ -168,7 +189,7 @@ export async function expectManagedSubagentUnarchived(
 }
 
 export async function expectManagedSubagentArchived(
-  workspace: Pick<SeededWorkspace, "client">,
+  workspace: { client: Pick<SeededWorkspace["client"], "fetchAgent"> },
   childId: string,
 ): Promise<void> {
   await expect
@@ -325,4 +346,151 @@ export async function detachSubagentFromTrack(page: Page, childId: string): Prom
   const detachButton = page.getByTestId(`subagents-track-detach-${childId}`);
   await expect(detachButton).toBeVisible({ timeout: 30_000 });
   await detachButton.click();
+}
+
+/** The primary children come from the real agent MCP endpoint on A. */
+export async function delegateFleetThroughMcp() {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } =
+    await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const { z } = await import("zod");
+  type DaemonClient = import("@getpaseo/client/internal/daemon-client").DaemonClient;
+  const workspace = await seedWorkspace({ repoPrefix: "fleet-mcp-" });
+  const destination = await startIsolatedHostDaemon(`fleet_${crypto.randomUUID()}`);
+  const a = await connectDaemonClient<DaemonClient>({ clientIdPrefix: "fleet-seed-A" });
+  const b = await connectDaemonClient<DaemonClient>({
+    clientIdPrefix: "fleet-observe-B",
+    port: destination.port,
+  });
+  const serverId = a.getLastServerInfoMessage()!.serverId;
+  const mcp = new Client({ name: "fleet-parent", version: "1" });
+  const close = async () => {
+    await mcp.close();
+    await Promise.allSettled([a.close(), b.close()]);
+    await destination.close();
+    await workspace.cleanup();
+  };
+  const call = async (name: string, args: Record<string, unknown> = {}) => {
+    const response = await mcp.callTool({ name, arguments: args });
+    expect(response, name).not.toMatchObject({ isError: true });
+    return z.record(z.string(), z.unknown()).parse(response.structuredContent);
+  };
+  try {
+    const parent = await a.createAgent({
+      provider: "mock",
+      model: "e2e-fast-stream",
+      cwd: workspace.repoPath,
+      workspaceId: workspace.workspaceId,
+      title: "Fleet parent",
+      modeId: "load-test",
+    });
+    const registration = await a.addHost({
+      connection: `127.0.0.1:${destination.port}`,
+      label: "Fleet B",
+    });
+    await expect
+      .poll(
+        async () =>
+          (await a.listHosts()).hosts.find(
+            (row) => row.registrationId === registration.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    await mcp.connect(
+      new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${getE2EDaemonPort()}/mcp/agents?callerAgentId=${parent.id}`),
+      ),
+    );
+    expect(await call("list_hosts")).toMatchObject({
+      hosts: expect.arrayContaining([
+        expect.objectContaining({ serverId: destination.serverId, label: "Fleet B" }),
+      ]),
+    });
+    const target = await call("create_workspace", {
+      serverId: destination.serverId,
+      isolation: "local",
+      path: workspace.repoPath,
+      title: "B workspace",
+    });
+    expect(await call("list_workspaces", { serverId: destination.serverId })).toMatchObject({
+      workspaces: expect.arrayContaining([
+        expect.objectContaining({ workspaceId: target.workspaceId }),
+      ]),
+    });
+    const createChild = async (targetServerId: string, workspaceId: string, title: string) => {
+      const result = await call("create_agent", {
+        serverId: targetServerId,
+        workspaceId,
+        title,
+        provider: "mock/e2e-fast-stream",
+        settings: { modeId: "load-test" },
+        initialPrompt: `Finish ${title}`,
+      });
+      return {
+        serverId: targetServerId,
+        agentId: z.string().parse(result.agentId),
+        workspaceId,
+        title,
+      };
+    };
+    const local = await createChild(serverId, workspace.workspaceId, "MCP child on A");
+    const remote = await createChild(
+      destination.serverId,
+      z.string().parse(target.workspaceId),
+      "MCP child on B",
+    );
+    // Existing SDK reservation creates unrelated equal-ID fixtures; primary children remain MCP-created.
+    await b.createAgent({
+      agentId: local.agentId,
+      provider: "mock",
+      model: "e2e-fast-stream",
+      cwd: workspace.repoPath,
+      workspaceId: String(target.workspaceId),
+      title: "Unrelated on B",
+      modeId: "load-test",
+    });
+    await a.createAgent({
+      agentId: remote.agentId,
+      provider: "mock",
+      model: "e2e-fast-stream",
+      cwd: workspace.repoPath,
+      workspaceId: workspace.workspaceId,
+      title: "Unrelated on A",
+      modeId: "load-test",
+    });
+    return {
+      workspace,
+      destination,
+      parent,
+      serverId,
+      local,
+      remote,
+      a,
+      b,
+      close,
+      async expectCompletion(child: typeof local) {
+        await expect
+          .poll(async () => {
+            const timeline = await a.fetchAgentTimeline(parent.id, {
+              direction: "tail",
+              limit: 100,
+            });
+            return timeline.entries
+              .flatMap(({ item }) =>
+                item.type === "tool_call" && item.agentMessage ? [item.agentMessage] : [],
+              )
+              .filter(
+                (message) =>
+                  message.event === "finished" &&
+                  message.sender.id === child.agentId &&
+                  message.text.includes(`Server: ${child.serverId}`),
+              ).length;
+          })
+          .toBe(1);
+      },
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }

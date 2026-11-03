@@ -1,7 +1,7 @@
+import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { UsageCard } from "./card";
-import { usageCopy } from "./copy";
 import { useUsageDisplay } from "./display";
 import { useAgentUsage } from "./queries";
 import type { UsageReportEntry } from "./types";
@@ -23,28 +23,43 @@ export function AgentUsage({
   refreshable: boolean;
 }) {
   const view = useAgentUsage(serverId, agentId);
-  return <AgentUsageSection serverId={serverId} view={view} refreshable={refreshable} />;
+  return (
+    <AgentUsageSection
+      agentId={agentId}
+      serverId={serverId}
+      view={view}
+      refreshable={refreshable}
+    />
+  );
 }
 
 /** The same section for a caller that already holds the agent's usage view. */
 export function AgentUsageSection({
   serverId,
+  agentId,
   view,
   refreshable,
 }: {
   serverId: string;
   view: AgentUsageView;
+  agentId?: string;
   refreshable: boolean;
 }) {
+  const { t } = useTranslation();
   if (view.kind === "none") return null;
   return (
     <>
       <View style={styles.divider} />
       {view.kind === "ready" ? (
-        <AgentUsageCards serverId={serverId} reports={view.reports} refreshable={refreshable} />
+        <AgentUsageCards
+          serverId={serverId}
+          agentId={agentId}
+          reports={view.reports}
+          refreshable={refreshable}
+        />
       ) : (
         <Text style={styles.message}>
-          {view.kind === "loading" ? usageCopy.loading : view.message}
+          {view.kind === "loading" ? t("providerUsage.loading") : view.message}
         </Text>
       )}
     </>
@@ -53,10 +68,12 @@ export function AgentUsageSection({
 
 function AgentUsageCards({
   serverId,
+  agentId,
   reports,
   refreshable,
 }: {
   serverId: string;
+  agentId?: string;
   reports: readonly UsageReportEntry[];
   refreshable: boolean;
 }) {
@@ -65,6 +82,7 @@ function AgentUsageCards({
     <UsageCard
       key={entry.id}
       serverId={serverId}
+      agentId={agentId}
       entry={entry}
       display={display}
       compact

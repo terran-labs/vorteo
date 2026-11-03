@@ -149,7 +149,7 @@ export function ProjectsFolderRowView({
       ) : null}
       {row.canAdd ? (
         <Button
-          size="xs"
+          size="sm"
           variant="outline"
           onPress={handleAdd}
           disabled={disabled}

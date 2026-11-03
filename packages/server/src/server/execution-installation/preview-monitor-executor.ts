@@ -20,11 +20,13 @@ export interface MonitorCommand {
   executable: string;
   args: string[];
   input?: string;
+  env?: NodeJS.ProcessEnv;
 }
 export async function monitorCommand(command: MonitorCommand): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, command.args, {
       stdio: ["pipe", "pipe", "pipe"],
+      env: command.env,
     });
     let output = "";
     let size = 0;
@@ -279,7 +281,7 @@ function compatibilityProbe(installationId: string, containerId: string): Previe
 }
 
 /** Executables exceed the protected JSON document bound. Stream their exact bytes. */
-async function verifyExecutable(
+export async function verifyExecutable(
   file: { path: string; sha256: string },
   mounts: readonly string[],
 ): Promise<void> {

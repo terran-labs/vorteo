@@ -1,127 +1,124 @@
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, Text, View } from "react-native";
+import { Text, View, type LayoutChangeEvent } from "react-native";
 import { SvgXml } from "react-native-svg";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ExternalLink, PackagePlus, Search } from "lucide-react-native";
+import { PackagePlus } from "lucide-react-native";
+import { Alert as InlineAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { isWeb } from "@/constants/platform";
+import { ExternalLink } from "@/components/ui/external-link";
+import { SearchField } from "@/components/ui/search-field";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { rankProviderCatalog } from "@/components/provider-catalog-search";
 import {
   useAcpProviderCatalog,
   type AcpProviderCatalogItem,
 } from "@/hooks/use-acp-provider-catalog";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import type { Theme } from "@/styles/theme";
-import { openExternalUrl } from "@/utils/open-external-url";
-import { EditingTextInput as TextInput } from "@/components/ui/text-input";
+import { SPACING, type Theme } from "@/styles/theme";
 import { AddCodexAccountButton, AddClaudeAccountButton } from "@/provider-usage/add-account";
 
 import { ClaudeIcon as ClaudeMark } from "@/components/icons/claude-icon";
 import { CodexIcon as CodexMark } from "@/components/icons/codex-icon";
+import { settingsStyles } from "@/styles/settings";
 
 interface ProviderCatalogListProps {
   serverId: string;
   installingProviderId: string | null;
+  installError?: { providerId: string; message: string } | null;
   onInstall: (entry: AcpProviderCatalogItem) => Promise<void> | void;
 }
 
-const SEARCH_ICON_SIZE = 16;
 const PROVIDER_FALLBACK_ICON_SIZE = 20;
 const PROVIDER_REMOTE_ICON_SIZE = 24;
+const TILE_GAP = SPACING[3];
+/** Narrowest tile that keeps the icon, type badge, install link, and Add on one row. */
+const MIN_TILE_WIDTH = 300;
+const MAX_COLUMNS = 4;
 
 const ThemedPackagePlus = withUnistyles(PackagePlus);
 const ThemedSvgXml = withUnistyles(SvgXml);
-const ThemedSearch = withUnistyles(Search);
 const ClaudeIcon = withUnistyles(ClaudeMark);
 const CodexIcon = withUnistyles(CodexMark);
-const ThemedExternalLink = withUnistyles(ExternalLink);
-const ThemedTextInput = withUnistyles(TextInput, (theme) => ({
-  placeholderTextColor: theme.colors.foregroundMuted,
-}));
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-const foregroundMutedColorMapping = (theme: Theme) => ({
-  color: theme.colors.foregroundMuted,
-});
 
-function matchesSearch(entry: AcpProviderCatalogItem, query: string): boolean {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) return true;
-  return [entry.title, entry.id, entry.description].some((value) =>
-    value.toLowerCase().includes(normalized),
-  );
+function columnCountForWidth(width: number): number {
+  const fits = Math.floor((width + TILE_GAP) / (MIN_TILE_WIDTH + TILE_GAP));
+  return Math.min(MAX_COLUMNS, Math.max(1, fits));
 }
 
-interface CatalogRowProps {
+interface CatalogTileProps {
   entry: AcpProviderCatalogItem;
+  /** `undefined` until the grid is measured, or in a single column; the tile fills the row. */
+  width: number | undefined;
   installing: boolean;
+  error?: string;
   onInstall: (entry: AcpProviderCatalogItem) => void;
 }
 
-function CatalogRow({ entry, installing, onInstall }: CatalogRowProps) {
+function CatalogTile({ entry, width, installing, error, onInstall }: CatalogTileProps) {
   const { t } = useTranslation();
-  const actionLabel = installing
-    ? t("providerCatalog.actions.adding")
-    : t("providerCatalog.actions.add");
   const handleInstall = useCallback(() => {
     onInstall(entry);
   }, [entry, onInstall]);
-
-  const handleOpenInstallLink = useCallback(() => {
-    void openExternalUrl(entry.installLink);
-  }, [entry.installLink]);
+  const tileStyle = useMemo(
+    () => [settingsStyles.card, width === undefined ? styles.tileFull : { width }],
+    [width],
+  );
 
   return (
-    <View style={styles.row}>
-      <View style={styles.iconFrame}>
-        {entry.iconSvg ? (
-          <ThemedSvgXml
-            xml={entry.iconSvg}
-            width={PROVIDER_REMOTE_ICON_SIZE}
-            height={PROVIDER_REMOTE_ICON_SIZE}
-            uniProps={foregroundColorMapping}
-          />
-        ) : (
-          <ThemedPackagePlus size={PROVIDER_FALLBACK_ICON_SIZE} uniProps={foregroundColorMapping} />
-        )}
-      </View>
-      <View style={styles.textColumn}>
-        <View style={styles.titleRow}>
+    <View style={tileStyle} testID={`provider-catalog-tile-${entry.id}`}>
+      <View style={styles.tile}>
+        <View style={styles.iconFrame}>
+          {entry.iconSvg ? (
+            <ThemedSvgXml
+              xml={entry.iconSvg}
+              width={PROVIDER_REMOTE_ICON_SIZE}
+              height={PROVIDER_REMOTE_ICON_SIZE}
+              uniProps={foregroundColorMapping}
+            />
+          ) : (
+            <ThemedPackagePlus
+              size={PROVIDER_FALLBACK_ICON_SIZE}
+              uniProps={foregroundColorMapping}
+            />
+          )}
+        </View>
+        <View style={styles.details}>
           <Text style={styles.name} numberOfLines={1}>
             {entry.title}
           </Text>
-          <Text style={styles.version} numberOfLines={1}>
-            {entry.version}
-          </Text>
+          <View style={styles.metaRow}>
+            {/* The catalog is the ACP registry, so every entry it offers is an ACP provider. */}
+            <StatusBadge label={t("providerCatalog.types.acp")} size="xs" />
+            <ExternalLink
+              href={entry.installLink}
+              label={t("providerCatalog.actions.installInstructions")}
+              accessibilityLabel={t("providerCatalog.actions.installInstructionsFor", {
+                provider: entry.title,
+              })}
+            />
+          </View>
         </View>
-        <Text style={styles.description} numberOfLines={1}>
-          {entry.description || entry.id}
-        </Text>
-        <Pressable
-          accessibilityRole="link"
-          accessibilityLabel={t("providerCatalog.actions.installInstructionsFor", {
-            provider: entry.title,
-          })}
-          onPress={handleOpenInstallLink}
-          style={styles.installLink}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={installing}
+          loading={installing}
+          onPress={handleInstall}
+          accessibilityLabel={t("providerCatalog.actions.addProvider", { provider: entry.title })}
+          style={styles.addButton}
+          testID={`install-provider-${entry.id}`}
         >
-          <Text style={styles.installLinkText} numberOfLines={1}>
-            {t("providerCatalog.actions.installInstructions")}
-          </Text>
-          <ThemedExternalLink size={12} uniProps={foregroundMutedColorMapping} />
-        </Pressable>
+          {installing ? t("providerCatalog.actions.adding") : t("providerCatalog.actions.add")}
+        </Button>
       </View>
-      <Button
-        size="sm"
-        variant="default"
-        disabled={installing}
-        loading={installing}
-        onPress={handleInstall}
-        style={styles.actionButton}
-        testID={`install-provider-${entry.id}`}
-      >
-        {actionLabel}
-      </Button>
+      {error ? (
+        <View style={styles.tileError}>
+          <InlineAlert variant="error" description={error} testID="provider-install-error" />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -129,6 +126,7 @@ function CatalogRow({ entry, installing, onInstall }: CatalogRowProps) {
 export function ProviderCatalogList({
   serverId,
   installingProviderId,
+  installError,
   onInstall,
 }: ProviderCatalogListProps) {
   const { t } = useTranslation();
@@ -136,6 +134,7 @@ export function ProviderCatalogList({
   const { entries: providerEntries } = useProvidersSnapshot(serverId);
   const [search, setSearch] = useState("");
   const showCodex = "codex openai chatgpt account".includes(search.trim().toLowerCase());
+  const [gridWidth, setGridWidth] = useState<number | null>(null);
 
   const showClaude = "claude account anthropic".includes(search.trim().toLowerCase());
   const installedIds = useMemo(
@@ -145,28 +144,34 @@ export function ProviderCatalogList({
 
   const availableEntries = useMemo(
     () =>
-      catalogEntries
-        .filter((entry) => !installedIds.has(entry.id))
-        .filter((entry) => matchesSearch(entry, search)),
+      rankProviderCatalog(
+        catalogEntries.filter((entry) => !installedIds.has(entry.id)),
+        search,
+      ),
     [catalogEntries, installedIds, search],
   );
 
+  const handleGridLayout = useCallback((event: LayoutChangeEvent) => {
+    setGridWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const tileWidth = useMemo(() => {
+    if (gridWidth === null) return undefined;
+    const columns = columnCountForWidth(gridWidth);
+    if (columns === 1) return undefined;
+    return Math.floor((gridWidth - TILE_GAP * (columns - 1)) / columns);
+  }, [gridWidth]);
+
   return (
     <View>
-      <View style={styles.searchField}>
-        <View style={styles.searchIcon}>
-          <ThemedSearch size={SEARCH_ICON_SIZE} uniProps={foregroundMutedColorMapping} />
-        </View>
-        <ThemedTextInput
-          testID="provider-catalog-search"
-          initialValue={search}
+      <View style={styles.searchRail}>
+        <SearchField
+          value={search}
           onChangeText={setSearch}
-          accessibilityLabel={t("providerCatalog.search")}
           placeholder={t("providerCatalog.search")}
-          // @ts-expect-error - outlineStyle is web-only
-          style={[styles.searchInput, isWeb && { outlineStyle: "none" }]}
-          autoCapitalize="none"
-          autoCorrect={false}
+          clearAccessibilityLabel={t("providerCatalog.clearSearch")}
+          testID="provider-catalog-search"
+          clearTestID="provider-catalog-search-clear"
         />
       </View>
 
@@ -175,13 +180,16 @@ export function ProviderCatalogList({
           <Text style={styles.stateText}>{t("providerCatalog.noProviders")}</Text>
         </View>
       ) : (
-        <View style={styles.list}>
+        <View style={styles.grid} onLayout={handleGridLayout}>
           {showCodex ? (
-            <View style={styles.row} testID="catalog-provider-codex">
+            <View
+              style={[settingsStyles.card, styles.tile, styles.tileFull]}
+              testID="catalog-provider-codex"
+            >
               <View style={styles.iconFrame}>
                 <CodexIcon size={PROVIDER_REMOTE_ICON_SIZE} uniProps={foregroundColorMapping} />
               </View>
-              <View style={styles.textColumn}>
+              <View style={styles.details}>
                 <Text style={styles.name}>Codex (ChatGPT account)</Text>
                 <Text style={styles.description}>
                   Sign in with ChatGPT to add a separate Codex account
@@ -191,11 +199,14 @@ export function ProviderCatalogList({
             </View>
           ) : null}
           {showClaude ? (
-            <View style={styles.row} testID="catalog-provider-claude">
+            <View
+              style={[settingsStyles.card, styles.tile, styles.tileFull]}
+              testID="catalog-provider-claude"
+            >
               <View style={styles.iconFrame}>
                 <ClaudeIcon size={PROVIDER_REMOTE_ICON_SIZE} uniProps={foregroundColorMapping} />
               </View>
-              <View style={styles.textColumn}>
+              <View style={styles.details}>
                 <Text style={styles.name}>Claude Code (Claude account)</Text>
                 <Text style={styles.description}>
                   Connect a separate account using the official Claude CLI
@@ -205,10 +216,12 @@ export function ProviderCatalogList({
             </View>
           ) : null}
           {availableEntries.map((entry) => (
-            <CatalogRow
+            <CatalogTile
               key={entry.id}
               entry={entry}
+              width={tileWidth}
               installing={installingProviderId === entry.id}
+              error={installError?.providerId === entry.id ? installError.message : undefined}
               onInstall={onInstall}
             />
           ))}
@@ -219,101 +232,59 @@ export function ProviderCatalogList({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  searchField: {
+  description: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
+  actionButton: { flexShrink: 0 },
+  searchRail: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    backgroundColor: theme.colors.surface2,
-    borderRadius: theme.borderRadius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    paddingHorizontal: theme.spacing[3],
     marginBottom: theme.spacing[3],
   },
-  searchIcon: {
-    width: 18,
-    alignItems: "center",
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: TILE_GAP,
   },
-  searchInput: {
-    flex: 1,
-    minWidth: 0,
-    paddingVertical: theme.spacing[3],
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-  },
-  list: {
-    borderRadius: theme.borderRadius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    overflow: "hidden",
-  },
-  row: {
+  tile: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[3],
     padding: theme.spacing[3],
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+  },
+  tileError: { paddingHorizontal: SPACING[3], paddingBottom: SPACING[3] },
+  tileFull: {
+    width: "100%",
+  },
+  details: {
+    flex: 1,
+    minWidth: 0,
+    gap: theme.spacing[1],
   },
   iconFrame: {
+    flexShrink: 0,
     width: 36,
     height: 36,
     borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.surface2,
     alignItems: "center",
     justifyContent: "center",
+  },
+  addButton: {
     flexShrink: 0,
-  },
-  textColumn: {
-    flex: 1,
-    minWidth: 0,
-    gap: theme.spacing[1],
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    minWidth: 0,
   },
   name: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
-    fontWeight: theme.fontWeight.medium,
-    flexShrink: 1,
+    fontWeight: theme.fontWeight.normal,
   },
-  version: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    flexShrink: 0,
-  },
-  description: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-  },
-  installLink: {
-    alignSelf: "flex-start",
+  metaRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: theme.spacing[1],
-    maxWidth: "100%",
-  },
-  installLinkText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-  },
-  actionButton: {
-    width: 92,
-    flexShrink: 0,
+    gap: theme.spacing[2],
   },
   stateBox: {
     minHeight: 96,
-    borderRadius: theme.borderRadius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface1,
     alignItems: "center",
     justifyContent: "center",
-    gap: theme.spacing[3],
     padding: theme.spacing[4],
   },
   stateText: {

@@ -2,7 +2,7 @@
 
 The app and the daemon are separate products that ship separately. A user updates the app from an app store or a desktop auto-update; they update the daemon when they feel like it. Every combination happens in the wild: new app against an old daemon, old app against a new daemon, and both sides months apart.
 
-In development both sides are always the same version, which is why this is the constraint contributors miss most often.
+Development can have the same version drift: an app reload picks up new code while a long-running daemon keeps its loaded version. Check the connected daemon version when diagnosing behavior that crosses this boundary.
 
 Two contracts follow from it.
 
@@ -38,7 +38,7 @@ The app checks for the capability and either runs the feature or tells the user 
 - **No defensive branches spread through the feature.** Detection happens in one place, and everything downstream reads a clean shape.
 - Capability flags live in `features` on the `server_info` message (`packages/protocol/src/messages.ts`, the `server_info` schema).
 
-Existing functionality keeps working across versions because of the protocol contract. Gating a new feature never substitutes for that.
+Existing functionality keeps working across versions. Never gate an established request on a new enhancement: negotiate the optional enhancement at the client boundary and preserve the existing request for older hosts. Whole-turn pagination can require a capability; reading conversation history cannot.
 
 ## Client capability ownership
 
@@ -51,6 +51,47 @@ its delivery semantics.
 On capable daemons, connecting creates no timeline or event demand. Client subscriptions own their network membership,
 release it on unsubscribe, and restore it after reconnect. Raw message observers inspect traffic
 without requesting streams. Application caches and which agents are visible remain caller-owned.
+
+## Terminal ANSI replay
+
+Terminal replay intentionally drops JSON-era apps, an exception to the general cross-version policy:
+use app v0.1.81 or newer. Earlier apps omit `restore` and reject ANSI Restore (`0x05`), so they show
+only subsequent live output, without the existing screen or history.
+
+`terminal_chunked_replay` is SDK-owned delivery behavior. The daemon sends new binary opcodes only to a source
+advertising the capability. The SDK keeps the established subscribe request against older
+ANSI hosts and normalizes their single Restore frame into begin/data/end. `observeTerminal` defaults
+to an explicit full snapshot: omitting restore on an ANSI-era host selects its discarded JSON path.
+Explicit caller restore modes and history counts pass through unchanged. JSON snapshot
+wire declarations remain accepted, but JSON snapshot frames have no rendering runtime.
+Terminals require `terminal-restore-modes`; older hosts show an update message without attaching.
+
+## Binary chunking
+
+`binary_chunking_v1` in hello and optional `server_info.features.binaryChunkingV1`
+negotiate connection-scoped framing. Application serializers and routed envelopes use
+the same boundary. Small messages and handshakes keep their existing representation.
+Older peers retain existing frame limits.
+
+The reserved binary opcode `0x31` is followed by version `1`, original kind
+(`0` text, `1` binary), and START/END flag bits `0`/`1`. Remaining bytes are an
+unchanged slice. There is no total length or chunk count; a future receiver can
+consume slices incrementally. Today the receiver buffers up to the existing
+100 MiB logical limit and decodes UTF-8 only after END. Transfers cannot interleave.
+Disconnect clears partial state and negotiation.
+
+The lower transport supplies its plaintext frame budget, including encryption
+overhead. The sender waits for drain between chunks while ordinary messages keep
+the existing delivery path. Slow-client protections count messages queued behind
+an active transfer as well as bytes already in the socket.
+The framing module never selects an encryption construction.
+
+Native uploads retain the platform's existing queue limits. React Native's
+WebSocket does not report its queued bytes, so the client cannot wait for native
+drain. Android's installed OkHttp transport closes when a send would put more
+than 16 MiB in its queue. The native transport disables outbound chunking, including
+on routed channels, and retains its existing single-frame admission errors.
+Inbound chunking remains enabled; daemon-to-native responses use the daemon's paced writes.
 
 ## Owned observations
 
@@ -73,6 +114,14 @@ Old clients keep their existing wire shapes and slot behavior at the daemon's so
 The adapter keys legacy slots by physical socket, so an old connection cannot replace a modern
 sibling's observation even when both use the same logical client ID. Optional wire IDs stay accepted
 for parsing compatibility; modern requests cannot select their subscription ID.
+
+Workspace setup details negotiate `workspace_setup_observation` with
+`server_info.features.workspaceSetupObservation`. Capable clients cannot request details through
+the legacy session event category. The setup panel owns a workspace-scoped observation while
+active and visible; directory metadata signals failures without requesting output. Older clients
+retain their legacy event delivery. A new app makes no setup event demand on older hosts and
+requires a host update to view details. Subscription-capable older hosts honor that absence of
+demand; broadcast-era hosts require an update before wire silence is guaranteed.
 
 ## Every shim is tagged and dated
 
@@ -164,6 +213,8 @@ The blocked status is discretionary and independent of `blockedBy` prerequisite 
 
 Daemons advertise `features.agentJournal`. The interface gates the journal card on that capability. Journal entries travel as an optional `journal` array in existing agent snapshots; older clients ignore the field, and newer clients still accept snapshots that omit it. No new WebSocket message type is sent to older clients. The caller-bound MCP tools assign append sequence and timestamp on the server, commit before broadcasting, and deduplicate retries by entry ID. Ordinary agent snapshot writes preserve the durable journal.
 
+Daemons advertise `features.agentTimelinePromptIndexAfterSeq` when `agent.timeline.list_prompts.request` accepts optional `afterSeq` and returns only prompts after that timeline position. The interface sends the field only to capable daemons; older daemons would strip it and return the complete index, which older interfaces continue to request. Prompt rows keep their sequence once appended, so a suffix extends the held index for the same epoch.
+
 Journal entries and append input accept optional `machineContext` text for agent reference details. The card renders only `text`; machine context remains available in journal reads and snapshots and is not a secret store. Older entries omit it, and older clients ignore it. Agents must inspect the append tool schema before sending this field to an older daemon; no client write path assumes support. Retries must retain both text and machine context exactly. The short-summary limits are writing instructions, not a narrowing of the existing wire text schema; historical entries remain readable.
 
 ## Open questions
@@ -233,3 +284,7 @@ Native helper, preview monitor and session host journal schemas accept optional 
 ## Unavailable-provider thread recovery
 
 The optional `agentProviderRecovery` feature advertises recovery through the existing `agent.profile.switch.request`. The client shows recovery in the load error only with this capability; older hosts retain Retry. The request shape and switch marker are unchanged, and the existing `profile_switch_timeline` client gate still applies. Older clients ignore the optional feature and continue using ordinary switching.
+
+## Claude sign-in upgrade
+
+Daemons advertise optional `features.claudeSignInUpgrade` when they accept `provider.claude.upgrade_account.request`, report a setup-token account's directory through the Host upgrade-binding route, accept setup-token withdrawals for full sign-in definitions and move running setup-token sessions to full sign-in. The request and response are new namespaced messages; older daemons never receive them because the coordinator's settings reconcile calls them only on daemons that advertise the capability, and the client method refuses otherwise. Older daemons keep calling `provider.claude.create_account` with `signIn: "full"`, which refuses an existing setup-token binding, so a coordinator never upgrades an account until every environment advertises the capability. The coordinator offers the upgrade only after checking every daemon, and the app asks the coordinator rather than reading daemon features itself. No existing field changes meaning, and older apps never see the upgrade routes.

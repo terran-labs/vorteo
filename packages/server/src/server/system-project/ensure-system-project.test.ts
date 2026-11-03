@@ -5,7 +5,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { setWorkspaceLifecycle } from "../workspace-lifecycle/policy.js";
+import {
+  assertSystemThreadArchiveAllowed,
+  setWorkspaceLifecycle,
+} from "../workspace-lifecycle/policy.js";
 import {
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
@@ -13,7 +16,11 @@ import {
   FileBackedWorkspaceRegistry,
   type PersistedWorkspaceRecord,
 } from "../workspace-registry.js";
-import { ensureSystemProject } from "./ensure-system-project.js";
+import {
+  ensureSystemProject,
+  isInstallationManaged,
+  seedSystemProjectAtStartup,
+} from "./ensure-system-project.js";
 import { SYSTEM_PROJECT_KIND, systemPaths } from "./manifest.js";
 
 const T0 = "2026-10-22T00:00:00.000Z";
@@ -84,7 +91,7 @@ describe("startup seeding", () => {
       projectId: result.projectId,
       kind: "directory",
       cwd: systemPaths(home).runner("optimization-runner"),
-      title: "Optimization Runner",
+      title: "Vorteo :: Optimizer",
       standing: true,
       protected: true,
     });
@@ -102,11 +109,30 @@ describe("startup seeding", () => {
       createdProject: false,
       created: [],
       adopted: [],
+      retitled: [],
       retired: [],
       absorbed: [],
       archivedProjects: [],
     });
     expect(JSON.stringify([await projects.list(), await workspaces.list()])).toBe(before);
+  });
+
+  test("a manifest rename carries onto an existing role workspace", async () => {
+    await ensure();
+    const created = await runner();
+    // Simulates a workspace created under the old manifest title.
+    await workspaces.writeSystemWorkspace({ ...created, title: "Optimization Runner" });
+    open();
+    const result = await ensure();
+    expect(result.retitled).toEqual([created.workspaceId]);
+    expect(await runner()).toMatchObject({
+      workspaceId: created.workspaceId,
+      title: "Vorteo :: Optimizer",
+      standing: true,
+      protected: true,
+    });
+    open();
+    expect((await ensure()).retitled).toEqual([]);
   });
 
   test("overlapping calls in one daemon allocate a single project", async () => {
@@ -155,18 +181,22 @@ describe("startup seeding", () => {
     ]);
   });
 
-  test("a role that leaves the manifest is retired, not deleted", async () => {
-    await ensure("host");
+  test("a container that joins an installation archives its standalone runner, not deletes it", async () => {
+    // The Dev container starts standalone, then the Host extension pairs it and the
+    // Host's runner covers it; its own runner must not linger beside the Host's.
+    await ensure("single");
     const member = await runner();
     open();
-    // A container daemon has no runner role, so the same records act as a retired role.
     const result = await ensure("container");
     expect(result.retired).toEqual([member.workspaceId]);
     const retired = await workspaces.get(member.workspaceId);
-    expect(retired).toMatchObject({ standing: false, protected: false, archivedAt: null });
+    expect(retired).toMatchObject({ standing: false, protected: false });
+    expect(retired?.archivedAt).toEqual(expect.any(String));
     expect(retired?.systemMembership).toBeUndefined();
-    await workspaces.archive(member.workspaceId, T0);
-    expect((await workspaces.get(member.workspaceId))?.archivedAt).toBe(T0);
+    open();
+    expect((await ensure("container")).retired).toEqual([]);
+    // The project stays: it is where source setup puts a Vorteo checkout in Dev.
+    expect((await projects.get(result.projectId))?.archivedAt).toBeNull();
   });
 });
 
@@ -218,6 +248,7 @@ describe("adoption", () => {
       branch: null,
       worktreeRoot: null,
       createdAt: T0,
+      title: "Vorteo :: Optimizer",
       systemMembership: { role: "optimization-runner" },
       standing: true,
       protected: true,
@@ -459,6 +490,46 @@ describe("protection", () => {
     expect((await workspaces.get(id))?.systemMembership).toEqual({ role: "optimization-runner" });
   });
 
+  test("a finished system thread can be archived while its workspace stays protected", async () => {
+    await ensure();
+    const member = await runner();
+    const workspace = (await workspaces.get(member.workspaceId))!;
+    const agentId = "agent-finished";
+    const schedule = (status: string, agent = agentId) => ({
+      status,
+      expiresAt: null,
+      target: { type: "agent", agentId: agent },
+    });
+    const allowed = (input: { running?: boolean; schedules?: unknown[] }) =>
+      assertSystemThreadArchiveAllowed(
+        { schedules: { list: async () => (input.schedules ?? []) as never } },
+        { workspace, agentId, running: input.running ?? false },
+      );
+    await expect(allowed({})).resolves.toBeUndefined();
+    await expect(
+      allowed({ schedules: [schedule("completed"), schedule("active", "other")] }),
+    ).resolves.toBeUndefined();
+    await expect(allowed({ running: true })).rejects.toThrow("still running");
+    await expect(allowed({ schedules: [schedule("active")] })).rejects.toThrow("standing schedule");
+    await expect(
+      assertSystemThreadArchiveAllowed(
+        { schedules: { list: async () => [] } },
+        {
+          workspace: {
+            ...workspace,
+            factoryMembership: { serverId: "s", projectId: "p" } as never,
+          },
+          agentId,
+          running: false,
+        },
+      ),
+    ).rejects.toThrow("belongs to Factory");
+    // The workspace itself keeps refusing archive and removal.
+    await expect(workspaces.archive(member.workspaceId, T0)).rejects.toThrow(
+      "managed by Vorteo System",
+    );
+  });
+
   test("pinning and labels still work on system workspaces", async () => {
     await ensure();
     const { workspaceId } = await runner();
@@ -489,5 +560,39 @@ describe("protection", () => {
     await workspaces.update(operator.workspaceId, (current) => ({ ...current, title: "Mine" }));
     await workspaces.archive(operator.workspaceId, T0);
     expect((await workspaces.get(operator.workspaceId))?.archivedAt).toBe(T0);
+  });
+});
+
+describe("installation-managed startup", () => {
+  test("a daemon its installation has not bound yet seeds nothing, then seeds as assigned", async () => {
+    const base = {
+      enabled: undefined,
+      paseoHome: home,
+      serverId: "srv_test",
+      projectRegistry: projects,
+      workspaceRegistry: workspaces,
+      logger,
+      now: () => T0,
+    };
+    const waiting = await seedSystemProjectAtStartup({
+      ...base,
+      sharedProviderPreferences: undefined,
+      installationManaged: true,
+    });
+    expect(waiting).toBe("awaiting-binding");
+    expect(await projects.list()).toEqual([]);
+    // Bound as the container, it never creates the standalone Optimizer.
+    await seedSystemProjectAtStartup({
+      ...base,
+      sharedProviderPreferences: { installation: { environment: "container" } },
+    });
+    expect(await workspaces.list()).toEqual([]);
+  });
+
+  test("only a client file or the pending marker makes a daemon installation-managed", () => {
+    expect(isInstallationManaged({})).toBe(false);
+    expect(isInstallationManaged({ VORTEO_INSTALLATION_CLIENT_CONFIG: "/client.json" })).toBe(true);
+    expect(isInstallationManaged({ PASEO_INSTALLATION_PENDING: "1" })).toBe(true);
+    expect(isInstallationManaged({ PASEO_INSTALLATION_PENDING: "0" })).toBe(false);
   });
 });

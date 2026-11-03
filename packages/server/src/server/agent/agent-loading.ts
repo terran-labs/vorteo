@@ -12,6 +12,13 @@ import {
   toAgentPersistenceHandle,
 } from "../persistence-hooks.js";
 
+export class AgentNotFoundError extends Error {
+  constructor(agentId: string) {
+    super(`Agent not found: ${agentId}`);
+    this.name = "AgentNotFoundError";
+  }
+}
+
 interface PendingAgentInitialization {
   promise: Promise<ManagedAgent>;
   options: { broadcastTimeline: boolean };
@@ -25,7 +32,9 @@ export type AgentLoaderManager = Pick<
   | "getAgent"
   | "getRegisteredProviderIds"
   | "hydrateTimelineFromProvider"
+  | "needsTimelineHydration"
   | "resumeAgentFromPersistence"
+  | "retryTimelineHydration"
 > &
   Partial<Pick<AgentManager, "waitForAgentClose">>;
 
@@ -76,7 +85,16 @@ export async function ensureAgentLoaded(
 
   const existing = deps.agentManager.getAgent(agentId);
   if (existing) {
-    return existing;
+    if (!deps.agentManager.needsTimelineHydration(agentId)) {
+      return existing;
+    }
+    // Registered, but its history read failed. Retry it, or the thread stays empty.
+    return trackInitialization(agentId, deps, async (options) => {
+      await deps.agentManager.retryTimelineHydration(agentId, {
+        broadcast: () => options.broadcastTimeline,
+      });
+      return deps.agentManager.getAgent(agentId) ?? existing;
+    });
   }
 
   // A close may have started after the first barrier observed no in-flight
@@ -90,13 +108,10 @@ export async function ensureAgentLoaded(
     return laterInflight.promise;
   }
 
-  const pendingOptions = {
-    broadcastTimeline: deps.broadcastTimeline === true,
-  };
-  const initPromise = (async () => {
+  return trackInitialization(agentId, deps, async (pendingOptions) => {
     const record = await deps.agentStorage.get(agentId);
     if (!record) {
-      throw new Error(`Agent not found: ${agentId}`);
+      throw new AgentNotFoundError(agentId);
     }
 
     const validProviders = deps.validProviders ?? deps.agentManager.getRegisteredProviderIds();
@@ -130,6 +145,7 @@ export async function ensureAgentLoaded(
         labels: record.labels,
         workspaceId: record.workspaceId,
         owner: record.owner,
+        env: record.launchEnv,
       });
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");
     }
@@ -138,13 +154,21 @@ export async function ensureAgentLoaded(
       broadcast: () => pendingOptions.broadcastTimeline,
     });
     return deps.agentManager.getAgent(agentId) ?? snapshot;
-  })();
+  });
+}
 
-  const pending: PendingAgentInitialization = { promise: initPromise, options: pendingOptions };
+/** Shares one load per agent, so concurrent requests cannot hydrate twice. */
+async function trackInitialization(
+  agentId: string,
+  deps: EnsureAgentLoadedDeps,
+  load: (options: PendingAgentInitialization["options"]) => Promise<ManagedAgent>,
+): Promise<ManagedAgent> {
+  const options = { broadcastTimeline: deps.broadcastTimeline === true };
+  const pending: PendingAgentInitialization = { promise: load(options), options };
   pendingAgentInitializations.set(agentId, pending);
 
   try {
-    return await initPromise;
+    return await pending.promise;
   } finally {
     const current = pendingAgentInitializations.get(agentId);
     if (current === pending) {

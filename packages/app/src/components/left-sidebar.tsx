@@ -1,6 +1,8 @@
+import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { SidebarSyncNotice } from "@/sidebar-state/status";
 import { useLayoutEffect } from "react";
 import { useSidebarSpacing } from "@/styles/sidebar-spacing";
+import { useAddHost } from "@/hosts/add-host";
 import {
   SidebarWidthContext,
   sidebarPresentationWidth,
@@ -24,6 +26,7 @@ import { DemoControls } from "@/demo/controls";
 import {
   Search,
   FolderPlus,
+  Link2,
   Folder,
   Plus,
   History,
@@ -45,6 +48,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { type LucideIcon } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import {
   cloneElement,
@@ -78,8 +82,9 @@ import {
   FLOATING_PANEL_CONTROL_HEIGHT,
   floatingPanelStyles,
 } from "@/styles/floating-panel";
-import { SIDEBAR_OUTER_GAP } from "@/stores/panel-store/state";
+import { COMPACT_RAIL_MARGIN, SIDEBAR_OUTER_GAP } from "@/stores/panel-store/state";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
+
 import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
@@ -89,8 +94,10 @@ import {
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
 import { SidebarSeparator, SidebarInsetContext } from "@/components/sidebar/sidebar-separator";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
+
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
+
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
@@ -101,6 +108,7 @@ import {
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
 } from "@/hooks/use-sidebar-workspaces-list";
+
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import type { PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { RetainedPanelActivity } from "@/components/retained-panel";
@@ -113,19 +121,15 @@ import { usePanelStore } from "@/stores/panel-store";
 import { useOwnsWindowChromeCorner, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
-import {
-  buildSchedulesRoute,
-  buildSessionsRoute,
-  buildSettingsAddHostRoute,
-  buildSettingsRoute,
-} from "@/utils/host-routes";
+import { buildSchedulesRoute, buildSessionsRoute, buildSettingsRoute } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
-import { UsageSidebarItem, useHasUsageSummary } from "@/usage";
+import { UsageSidebarItem, useUsageSummary } from "@/usage";
 import { SidebarGlobalCards } from "@/components/sidebar/global-cards";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
 import { useCreateSidebarFolderAction } from "@/sidebar-folders/actions";
 import { ROOT_FOLDER_SCOPE } from "@/sidebar-folders/tree";
+import { focusSidebarProject } from "@/sidebar-focus/context";
 
 type SidebarTheme = Theme;
 
@@ -226,9 +230,8 @@ const LeftSidebarBase = memo(function LeftSidebarBase({
   const { open: openImportSession, sheet: importSessionSheet } = useImportSession();
 
   const handleOpenProjectMobile = useCallback(() => {
-    showMobileAgent();
     void openProjectPicker();
-  }, [showMobileAgent, openProjectPicker]);
+  }, [openProjectPicker]);
 
   const handleOpenProjectDesktop = useCallback(() => {
     void openProjectPicker();
@@ -243,14 +246,8 @@ const LeftSidebarBase = memo(function LeftSidebarBase({
     router.push(buildSettingsRoute());
   }, []);
 
-  const handleAddHostMobile = useCallback(() => {
-    showMobileAgent();
-    router.push(buildSettingsAddHostRoute(Date.now()));
-  }, [showMobileAgent]);
-
-  const handleAddHostDesktop = useCallback(() => {
-    router.push(buildSettingsAddHostRoute(Date.now()));
-  }, []);
+  const handleAddHostMobile = useAddHost();
+  const handleAddHostDesktop = handleAddHostMobile;
 
   const handleOpenHostSettingsMobile = useCallback(
     (serverId: string) => {
@@ -265,9 +262,8 @@ const LeftSidebarBase = memo(function LeftSidebarBase({
   }, []);
 
   const handleImportSessionMobile = useCallback(() => {
-    showMobileAgent();
     openImportSession();
-  }, [openImportSession, showMobileAgent]);
+  }, [openImportSession]);
 
   const labels = useMemo(
     (): SidebarLabels => ({
@@ -367,7 +363,7 @@ function FooterIconButton({
   onPress: () => void;
   testID: string;
   label: string;
-  icon: typeof FolderPlus;
+  icon: LucideIcon;
   /** Only for a glyph that reads larger than the others at the same size. */
   iconSizeAdjustment?: number;
   shortcutKeys?: ReturnType<typeof useShortcutKeys>;
@@ -379,7 +375,7 @@ function FooterIconButton({
   const rail = useSidebarWidth() <= 96;
   const accessibilityState = useMemo(() => ({ selected: active }), [active]);
   const isCompact = useIsCompactFormFactor();
-  const iconSize = isCompact ? theme.iconSize.xl : theme.iconSize.md;
+  const iconSize = isCompact ? theme.iconSize.lg : theme.iconSize.md;
   const buttonStyle = useCallback(
     ({ hovered }: { hovered?: boolean }) => [
       styles.footerIconButton,
@@ -466,6 +462,7 @@ function sidebarNavigationVisibility(fit: number, rail: boolean) {
 }
 
 function SidebarToolbar({
+  handleAddHost,
   rail = false,
   railFooter,
   onExpand,
@@ -520,6 +517,10 @@ function SidebarToolbar({
     onBeforeNavigate?.();
     router.push(buildSchedulesRoute());
   }, [onBeforeNavigate]);
+  const openAddHost = useCallback(() => {
+    onBeforeNavigate?.();
+    handleAddHost();
+  }, [onBeforeNavigate, handleAddHost]);
   const openHelp = useCallback(() => setHelpOpen(true), []);
   const openDisplay = useCallback(() => setDisplayOpen(true), []);
   const menuIcons = useMemo(
@@ -527,6 +528,7 @@ function SidebarToolbar({
       settings: <Settings size={16} color={theme.colors.foregroundMuted} />,
       schedules: <CalendarClock size={16} color={theme.colors.foregroundMuted} />,
       history: <History size={16} color={theme.colors.foregroundMuted} />,
+      host: <Link2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       project: <FolderPlus size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       help: <CircleHelp size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       workspace: <Plus size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
@@ -626,6 +628,13 @@ function SidebarToolbar({
                 {t("sidebar.folders.actions.newFolder")}
               </DropdownMenuItem>
             ) : null}
+            <DropdownMenuItem
+              testID="sidebar-add-host"
+              onSelect={openAddHost}
+              leading={menuIcons.host}
+            >
+              {t("settings.addHost")}
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Appearance</DropdownMenuLabel>
             <View style={styles.themeMenu}>
@@ -664,6 +673,7 @@ function SidebarToolbar({
       hasMenuNavigation,
       openHistory,
       handleOpenProject,
+      openAddHost,
       handleNewWorkspace,
       handleNewFolder,
       labels.addProject,
@@ -785,10 +795,13 @@ function SidebarToolbar({
 
 function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const { items } = useSidebarNavItems("footer");
-  const hasUsageSummary = useHasUsageSummary();
+  const usageVisible = items.some(
+    (item) => item.kind === "builtin" && item.id === "usage" && item.visible,
+  );
+  const usageSummary = useUsageSummary(usageVisible);
   const rowsRef = useRef<View | null>(null);
   const visibleItems = items.filter(
-    (item) => item.visible && (item.kind === "plugin" || hasUsageSummary),
+    (item) => item.visible && (item.kind === "plugin" || usageSummary.length > 0),
   );
   if (visibleItems.length === 0) return null;
   return (
@@ -927,6 +940,7 @@ function MobileSidebar({
           <InstallationRestartBanner placement="sidebar" />
           <DemoControls />
           {<SidebarFooterRows onBeforeNavigate={closeSidebar} />}
+          <SidebarIdentityFooter />
         </SidebarInsetContext.Provider>
       </View>
     </MobilePanelOverlay>
@@ -987,18 +1001,19 @@ function DesktopSidebar({
     setCompact(false);
   }, [setCompact]);
   const showAllProjects = useSidebarViewStore((state) => state.clearProjectFilters);
+  // "Show project in sidebar" does what the project row's Focus button does, then expands
+  // the sidebar so the focused view is visible.
   const selectRailProject = useCallback(
     (key: string) => {
-      // Use the same projection as the sidebar filters so pinned rows, status groups
-      // and keyboard shortcuts all follow the chosen project.
-      useSidebarViewStore.setState({ projectFilters: [key] });
-      if (collapsedProjectKeys.has(key)) toggleProjectCollapsed(key);
+      focusSidebarProject(key);
       setCompact(false);
     },
-    [collapsedProjectKeys, setCompact, toggleProjectCollapsed],
+    [setCompact],
   );
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
-  const { width: viewportWidth } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const viewportWidth = windowWidth - insets.left - insets.right;
   const visibleSidebarWidth = resolveDesktopSidebarWidth({
     requestedWidth: sidebarWidth,
     viewportWidth,
@@ -1179,6 +1194,7 @@ function DesktopSidebar({
                 workspaceEntries={workspaceEntriesByKey}
                 projects={projects}
                 onSelectProject={selectRailProject}
+                onFocused={expandSidebar}
               />
             </>
           ) : (
@@ -1195,7 +1211,7 @@ function DesktopSidebar({
                 {toolbar}
                 {hasActiveProjectFilter ? (
                   <View style={styles.sidebarModeRow}>
-                    <Button variant="ghost" size="xs" onPress={showAllProjects}>
+                    <Button variant="ghost" size="sm" onPress={showAllProjects}>
                       All projects
                     </Button>
                   </View>
@@ -1235,6 +1251,7 @@ function DesktopSidebar({
           <InstallationRestartBanner placement={compact ? "rail" : "sidebar"} />
           {!compact ? <DemoControls /> : null}
           {!compact ? <SidebarFooterRows /> : null}
+          {!compact ? <SidebarIdentityFooter /> : null}
 
           <SidebarResizeHandle
             edge="right"
@@ -1273,7 +1290,8 @@ const staticStyles = RNStyleSheet.create({
 const styles = StyleSheet.create((theme) => ({
   narrowNavigation: { gap: 2, padding: 2 },
   narrowNavigationRow: { justifyContent: "flex-start", minHeight: 36 },
-  railToolbar: { alignItems: "center", gap: 0, paddingTop: 2 },
+  // The same margin sits above the first button as on either side of it.
+  railToolbar: { alignItems: "center", gap: 0, paddingTop: COMPACT_RAIL_MARGIN },
   sidebarContent: {
     flex: 1,
     minHeight: 0,

@@ -162,6 +162,50 @@ describe("useChatOutline", () => {
     expect(runtime.subscribeAgentTimeline).not.toHaveBeenCalled();
   });
 
+  it("fetches only newer prompts from daemons that support it", async () => {
+    const prompt = (seq: number) => ({
+      seq,
+      timestamp: new Date(seq).toISOString(),
+      preview: `prompt ${seq}`,
+    });
+    runtime.listAgentTimelinePrompts
+      .mockResolvedValueOnce({ epoch: "epoch-1", prompts: [prompt(1), prompt(2)] })
+      .mockResolvedValueOnce({ epoch: "epoch-1", prompts: [prompt(5)] });
+    const viewportRef = createRef<StreamViewportHandle>();
+    const { result, rerender } = renderHook(
+      ({ tail }) =>
+        useChatOutline({
+          agentId: "agent-1",
+          serverId: "server-1",
+          timelineEpoch: "epoch-1",
+          tail,
+          head: [],
+          enabled: true,
+          supportsIncrementalIndex: true,
+          viewportRef,
+          onJumpError: vi.fn(),
+        }),
+      { initialProps: { tail: [] as import("@/types/stream").StreamItem[] } },
+    );
+    await waitFor(() => expect(result.current.prompts).toHaveLength(2));
+    expect(runtime.listAgentTimelinePrompts).toHaveBeenLastCalledWith("agent-1");
+
+    rerender({
+      tail: [
+        {
+          id: "prompt-5",
+          kind: "user_message",
+          text: "live prompt",
+          timestamp: new Date(5),
+          timelineCursor: { epoch: "epoch-1", seq: 5 },
+        },
+      ],
+    });
+    await waitFor(() => expect(result.current.prompts).toHaveLength(3));
+    expect(runtime.listAgentTimelinePrompts).toHaveBeenLastCalledWith("agent-1", { afterSeq: 2 });
+    expect(result.current.prompts.map((entry) => entry.seq)).toEqual([1, 2, 5]);
+  });
+
   it("refreshes after reconnect catch-up and visibility changes without reacting to assistant chunks", async () => {
     runtime.listAgentTimelinePrompts.mockResolvedValue({
       epoch: "epoch-1",
@@ -178,7 +222,7 @@ describe("useChatOutline", () => {
           timelineEpoch,
           enabled,
           viewportRef,
-          visibleMessageIds: new Set(),
+          mountedHistoryMessageIds: new Set(),
           onJumpError: vi.fn(),
         }),
       {
@@ -265,6 +309,7 @@ describe("useChatOutline", () => {
     const viewport: StreamViewportHandle = {
       scrollToBottom: vi.fn(),
       prepareForViewportChange: vi.fn(),
+      holdReadingPosition: vi.fn(),
       scrollToMessage,
     };
     const viewportRef = { current: viewport };
@@ -278,7 +323,7 @@ describe("useChatOutline", () => {
       },
     ];
     const { result, rerender } = renderHook(
-      ({ visibleMessageIds }) =>
+      ({ mountedHistoryMessageIds }) =>
         useChatOutline({
           agentId: "agent-1",
           serverId: "server-1",
@@ -288,10 +333,10 @@ describe("useChatOutline", () => {
           enabled: true,
           viewportRef,
           onJumpError: vi.fn(),
-          visibleMessageIds,
+          mountedHistoryMessageIds,
           revealLoadedMessage,
         }),
-      { initialProps: { visibleMessageIds: new Set<string>() } },
+      { initialProps: { mountedHistoryMessageIds: new Set<string>() } },
     );
 
     await waitFor(() => expect(result.current.prompts).toHaveLength(1));
@@ -299,7 +344,7 @@ describe("useChatOutline", () => {
     expect(revealLoadedMessage).toHaveBeenCalledWith("older-prompt");
     expect(scrollToMessage).not.toHaveBeenCalled();
 
-    rerender({ visibleMessageIds: new Set(["older-prompt"]) });
+    rerender({ mountedHistoryMessageIds: new Set(["older-prompt"]) });
     await waitFor(() => expect(scrollToMessage).toHaveBeenCalledWith("older-prompt"));
   });
 
@@ -316,6 +361,7 @@ describe("useChatOutline", () => {
       current: {
         scrollToBottom: vi.fn(),
         prepareForViewportChange: vi.fn(),
+        holdReadingPosition: vi.fn(),
         scrollToMessage,
       },
     };
@@ -327,7 +373,7 @@ describe("useChatOutline", () => {
       timelineCursor: { epoch: "epoch-1", seq: 1 },
     };
     const { result, rerender } = renderHook(
-      ({ tail, visibleMessageIds }) =>
+      ({ tail, mountedHistoryMessageIds }) =>
         useChatOutline({
           agentId: "agent-1",
           serverId: "server-1",
@@ -337,13 +383,13 @@ describe("useChatOutline", () => {
           enabled: true,
           viewportRef,
           onJumpError: vi.fn(),
-          visibleMessageIds,
+          mountedHistoryMessageIds,
           revealLoadedMessage,
         }),
       {
         initialProps: {
           tail: [] as (typeof fetchedPrompt)[],
-          visibleMessageIds: new Set<string>(),
+          mountedHistoryMessageIds: new Set<string>(),
         },
       },
     );
@@ -352,11 +398,11 @@ describe("useChatOutline", () => {
     act(() => result.current.jumpToPrompt(1));
     await waitFor(() => expect(runtime.fetchAgentTimeline).toHaveBeenCalledOnce());
 
-    rerender({ tail: [fetchedPrompt], visibleMessageIds: new Set<string>() });
+    rerender({ tail: [fetchedPrompt], mountedHistoryMessageIds: new Set<string>() });
     await waitFor(() => expect(revealLoadedMessage).toHaveBeenCalledWith(fetchedPrompt.id));
     expect(scrollToMessage).not.toHaveBeenCalled();
 
-    rerender({ tail: [fetchedPrompt], visibleMessageIds: new Set([fetchedPrompt.id]) });
+    rerender({ tail: [fetchedPrompt], mountedHistoryMessageIds: new Set([fetchedPrompt.id]) });
     await waitFor(() => expect(scrollToMessage).toHaveBeenCalledOnce());
     expect(scrollToMessage).toHaveBeenCalledWith(fetchedPrompt.id);
     await act(async () => fetch.resolve());
@@ -371,6 +417,7 @@ describe("useChatOutline", () => {
     const viewport: StreamViewportHandle = {
       scrollToBottom: vi.fn(),
       prepareForViewportChange: vi.fn(),
+      holdReadingPosition: vi.fn(),
       scrollToMessage,
     };
     const livePrompt = {
@@ -392,7 +439,7 @@ describe("useChatOutline", () => {
         enabled: true,
         viewportRef: { current: viewport },
         onJumpError: vi.fn(),
-        visibleMessageIds: new Set([livePrompt.id]),
+        mountedHistoryMessageIds: new Set<string>(),
         revealLoadedMessage,
       }),
     );

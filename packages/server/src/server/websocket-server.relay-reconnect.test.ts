@@ -1,3 +1,4 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import { SessionDelivery } from "./session/owned-subscriptions/index.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Server as HTTPServer } from "http";
@@ -74,6 +75,18 @@ const sessionMock = vi.hoisted(() => {
     wantsSourceEvent = (source: object) => !this.delivery.isModern(source);
     getSessionId = vi.fn(() => "mock-session-id");
     getPermissions = vi.fn(() => this.args.permissions as string[]);
+    setPermissions = (permissions: string[]) => {
+      this.args.permissions = permissions;
+    };
+    private routed = false;
+    setRouted = (routed: boolean) => {
+      this.routed = routed;
+    };
+    isRouted = () => this.routed;
+    setHostSource = (sourceId: string) => {
+      this.args.sourceId = sourceId;
+    };
+    getHostSourceId = () => this.args.sourceId as string;
     allowsInbound = vi.fn(() => true);
     allowsPermission = vi.fn(() => true);
     publish = vi.fn((message: unknown) => {
@@ -119,7 +132,7 @@ vi.mock("./push/index.js", () => ({
 }));
 
 import { z } from "zod";
-import { VoiceAssistantWebSocketServer } from "./websocket-server";
+import { VoiceAssistantWebSocketServer, WS_SHUTDOWN_CLOSE_TIMEOUT_MS } from "./websocket-server";
 import { DAEMON_PERMISSIONS, parseServerInfoStatusPayload } from "./messages.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 
@@ -280,6 +293,7 @@ function createServer(options?: {
     null,
     { allowedOrigins: new Set(), startPaused: options?.startPaused },
     createWorkspaceAutoNameStub(),
+    createWorkspaceRuntimeStore(),
     options?.auth,
     speechReadiness
       ? {
@@ -480,16 +494,12 @@ function holdNextSessionMessage(session: (typeof sessionMock.instances)[number])
 function holdSessionCleanup(session: (typeof sessionMock.instances)[number]): {
   finish: () => void;
 } {
-  let finish = () => {};
-  session.cleanup.mockImplementationOnce(
-    () =>
-      new Promise<void>((resolve) => {
-        finish = resolve;
-      }),
-  );
-  return {
-    finish: () => finish(),
-  };
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  session.cleanup.mockImplementationOnce(() => pending);
+  return { finish };
 }
 
 describe("relay external socket reconnect behavior", () => {
@@ -538,7 +548,7 @@ describe("relay external socket reconnect behavior", () => {
       await server.close();
     }
   });
-  test("admits a hello password and an old relay hello, but rejects a wrong password", async () => {
+  test("admits a relay hello password, but rejects a wrong or missing password", async () => {
     const server = createServer({
       auth: {
         password: "$2b$12$OLxyuuP9uLK30Uzc4wQX0O6liuU/Q1t5P2b0Ebf36mULvpVK3DRZW",
@@ -560,7 +570,8 @@ describe("relay external socket reconnect behavior", () => {
       const legacySocket = new MockSocket();
       await server.attachExternalSocket(legacySocket, { transport: "relay" });
       legacySocket.emit("message", JSON.stringify(createHelloMessage("relay-legacy")));
-      await vi.waitFor(() => expect(sentServerInfoEnvelopes(legacySocket)).toHaveLength(1));
+      await vi.waitFor(() => expect(legacySocket.readyState).toBe(3));
+      expect(sentServerInfoEnvelopes(legacySocket)).toHaveLength(0);
 
       const wrongSocket = new MockSocket();
       await server.attachExternalSocket(wrongSocket, { transport: "relay" });
@@ -590,6 +601,40 @@ describe("relay external socket reconnect behavior", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  test("shutdown closes sockets as a server shutdown and drops a peer that never answers", async () => {
+    const server = createServer();
+    class SilentSocket extends MockSocket {
+      closeCalls: Array<[number | undefined, string | undefined]> = [];
+      terminate = vi.fn(() => {
+        this.readyState = 3;
+      });
+      override close(code?: number, reason?: string): void {
+        this.closeCalls.push([code, reason]);
+        this.readyState = 2;
+      }
+    }
+    const answering = new MockSocket();
+    const answeringClose = vi.fn();
+    answering.on("close", answeringClose);
+    const silent = new SilentSocket();
+    await attachRelayAndHello({ server, socket: answering, clientId: "cid-answers-close" });
+    await attachRelayAndHello({ server, socket: silent, clientId: "cid-ignores-close" });
+
+    let closed = false;
+    const closing = server.close().finally(() => {
+      closed = true;
+    });
+    await vi.advanceTimersByTimeAsync(WS_SHUTDOWN_CLOSE_TIMEOUT_MS - 1);
+    expect(closed).toBe(false);
+    expect(answeringClose).toHaveBeenCalledWith(1001, "Server shutting down");
+    expect(silent.closeCalls).toEqual([[1001, "Server shutting down"]]);
+    expect(silent.terminate).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await closing;
+    expect(silent.terminate).toHaveBeenCalledTimes(1);
   });
 
   test("keeps the same session when relay reconnects within grace window", async () => {
@@ -1153,10 +1198,12 @@ describe("relay external socket reconnect behavior", () => {
     expect(serverInfo.features?.stableProjectIdentity).toBe(true);
     expect(serverInfo.features?.canonicalSubmittedPrompts).toBe(true);
     expect(serverInfo.features?.providersSnapshotCwd).toBe(true);
+    expect(serverInfo.features?.hopliteProvider).toBe(false);
     expect(serverInfo.features?.pluginLogs).toBe(true);
     expect(serverInfo.features?.workspaceMarkUnread).toBe(true);
     expect(serverInfo.features?.["terminal-input-mode-replay"]).toBe(true);
     expect(serverInfo.features?.["terminal-size-ownership"]).toBe(true);
+    expect(serverInfo.features?.["terminal-grapheme-widths"]).toBe(true);
     expect(serverInfo.features?.agentTurnIdentity).toBeUndefined();
     expect(serverInfo.permissions).toEqual(DAEMON_PERMISSIONS);
     await server.close();

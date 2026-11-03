@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { attentionCount, quotaAccounts, summaryLabel } from "./global-quota";
+import { attentionCount, quotaAccounts, quotaFreshness } from "./global-quota";
 import type { ProviderUsage, ProviderUsageView } from "./types";
 
 const now = Date.parse("2026-10-22T12:00:00.000Z");
@@ -102,7 +102,7 @@ it("draws every window separately and marks the one that limits work", () => {
   ]);
   // Code review is a separate allowance: nearly spent, yet neither limiting nor urgent.
   expect(codex?.windows[2]?.separate).toBe(true);
-  expect(codex).toMatchObject({ remaining: 38, attention: false, nextResetAt: inHours(3) });
+  expect(codex).toMatchObject({ remaining: 38, attention: false });
   expect(codex?.balances).toEqual([
     {
       id: "credits",
@@ -180,15 +180,22 @@ it("derives capped balances and ranks balance-only accounts by them", () => {
   expect(cursor).toMatchObject({ remaining: 10, attention: true });
 });
 
-it("shortens window names for the collapsed line", () => {
-  expect(summaryLabel({ label: "5-hour" })).toBe("5h");
-  expect(summaryLabel({ label: "Weekly" })).toBe("Week");
-  expect(summaryLabel({ label: "Weekly · Opus" })).toBe("Opus");
-  expect(summaryLabel({ label: "Session" })).toBe("Session");
-  expect(summaryLabel({ label: "Weekly", shortLabel: "wk" })).toBe("wk");
-});
-
 it("shows nothing until usage has loaded", () => {
   expect(quotaAccounts({ kind: "loading" }, now)).toEqual([]);
   expect(quotaAccounts({ kind: "error", message: "Offline" }, now)).toEqual([]);
+});
+
+it("labels readings live until they pass the stale threshold or a refresh fails", () => {
+  const current = view([provider("codex", {}, 50)]);
+  expect(quotaFreshness(current, now + 40_000)).toEqual({ stale: false, label: "Live · 40s ago" });
+  expect(quotaFreshness(current, now + 12 * 60_000)).toEqual({
+    stale: true,
+    label: "Stale · 12m ago",
+  });
+  const failed: ProviderUsageView = {
+    ...current,
+    refreshError: "Host unavailable",
+  } as ProviderUsageView;
+  expect(quotaFreshness(failed, now + 60_000)).toEqual({ stale: true, label: "Stale · 1m ago" });
+  expect(quotaFreshness({ kind: "loading" }, now)).toBeNull();
 });

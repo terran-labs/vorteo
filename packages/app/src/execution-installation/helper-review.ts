@@ -51,15 +51,18 @@ export function helperReviewSummary(
   return "Install the reviewed helper. Host and Dev agents keep running; browser permissions stay unchanged.";
 }
 
+function nativeMaintenanceCount(value: RestartSummary["nativeHelper"]): number {
+  return value ? value.requested + value.queued + value.running + value.recovery : 0;
+}
+
 export function lockedMaintenanceSummary(summary: RestartSummary): string | null {
   const helper = summary.nativeHelper;
-  const helperCount = helper
-    ? helper.requested + helper.queued + helper.running + helper.recovery
-    : 0;
+  const helperCount = nativeMaintenanceCount(helper);
+  const deploymentCount = nativeMaintenanceCount(summary.previewBrokerDeployment);
+  const broker = summary.previewBroker;
+  const brokerCount = nativeMaintenanceCount(broker);
   const monitor = summary.previewMonitor;
-  const monitorCount = monitor
-    ? monitor.requested + monitor.queued + monitor.running + monitor.recovery
-    : 0;
+  const monitorCount = nativeMaintenanceCount(monitor);
   const sessionHost = summary.sessionHost;
   const sessionHostCount = sessionHost
     ? sessionHost.requested + sessionHost.queued + sessionHost.running
@@ -72,12 +75,17 @@ export function lockedMaintenanceSummary(summary: RestartSummary): string | null
     !summary.running &&
     !helperCount &&
     !monitorCount &&
+    !brokerCount &&
+    !deploymentCount &&
     !sessionHostCount &&
     !serviceCount
   )
     return null;
   let description = `${summary.requested} requested · ${summary.queued} queued · ${summary.running} restarting.`;
   if (helperCount) description += ` ${helperCount} helper maintenance requests need attention.`;
+  if (deploymentCount)
+    description += ` ${deploymentCount} broker consumer deployments need attention.`;
+  if (brokerCount) description += ` ${brokerCount} broker trust migrations need attention.`;
   if (monitorCount) description += ` ${monitorCount} preview monitor requests need attention.`;
   if (sessionHostCount) description += ` ${sessionHostCount} session host requests need attention.`;
   if (serviceCount) description += ` ${serviceCount} controller or launcher maintenance requests.`;

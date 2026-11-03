@@ -39,6 +39,7 @@ export function createInstallationProfiles(
       workerAccounts: false,
       uncappedManagedWorkers: false,
       async read() {
+        target.readyProviders = [];
         target.workerAccounts = false;
         target.uncappedManagedWorkers = false;
         assertReady(environment.kind === "host" ? "host" : "container-daemon");
@@ -51,7 +52,16 @@ export function createInstallationProfiles(
           target.uncappedManagedWorkers =
             client.getLastServerInfoMessage()?.features?.uncappedManagedWorkers === true;
           assertReady(environment.kind === "host" ? "host" : "container-daemon");
-          return (await client.getDaemonConfig()).config;
+          const daemonConfig = (await client.getDaemonConfig()).config;
+          // Catalog discovery can retry on the next poll without blocking existing
+          // profile synchronization when a provider probe is temporarily unavailable.
+          const snapshot = await client.getProvidersSnapshot().catch(() => null);
+          if (snapshot) {
+            target.readyProviders = snapshot.entries
+              .filter((entry) => entry.enabled && entry.status === "ready")
+              .map((entry) => entry.provider);
+          }
+          return daemonConfig;
         } finally {
           await client.close();
         }

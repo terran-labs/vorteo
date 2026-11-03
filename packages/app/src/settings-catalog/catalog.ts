@@ -33,6 +33,7 @@ export type SettingScope = "device" | "installation" | "environment";
 export interface SettingsAvailability {
   /** Electron desktop app only. */
   desktopOnly?: boolean;
+  hardwareKeyboardOnly?: boolean;
   /** Browser and Electron only. */
   webOnly?: boolean;
   /** iOS and Android only. */
@@ -159,6 +160,13 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDefinition[] = [
 export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
   { id: "general.attention", section: "general", label: "Needs attention" },
   {
+    id: "general.installation",
+    section: "general",
+    label: "Installation name",
+    requiresInstallation: true,
+    keywords: ["name", "title", "rename", "lab"],
+  },
+  {
     id: "general.notifications",
     section: "general",
     label: "Notifications",
@@ -193,7 +201,7 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     label: "Profiles",
     legacySlugs: ["profiles"],
     requiresHost: true,
-    // Each provider's page shows its profiles when an installation exists.
+    // Each provider's details show its profiles when an installation exists.
     withoutInstallation: true,
   },
   {
@@ -202,7 +210,7 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     label: "Usage",
     legacySlugs: ["usage"],
     requiresHost: true,
-    // Usage sits on each connection of a provider's page when an installation exists.
+    // Usage sits on each connection in a provider's details when an installation exists.
     withoutInstallation: true,
   },
 
@@ -257,11 +265,18 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     webOnly: true,
   },
   {
+    id: "chat.files",
+    section: "chat",
+    label: "Files",
+    legacySlugs: ["files"],
+    keywords: ["file", "panel", "associations", "open with"],
+  },
+  {
     id: "chat.shortcuts",
     section: "chat",
     label: "Keyboard shortcuts",
     legacySlugs: ["shortcuts"],
-    desktopOnly: true,
+    hardwareKeyboardOnly: true,
   },
 
   {
@@ -360,6 +375,15 @@ const installation = "installation" as const;
 const environment = "environment" as const;
 
 export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
+  {
+    id: "general.installation.name",
+    pane: "general.installation",
+    label: "Installation name",
+    hint: "Shown in the browser tab, the welcome page and the sidebar.",
+    keywords: ["name", "title", "rename"],
+    scope: installation,
+    requiresInstallation: true,
+  },
   // General
   {
     id: "general.notifications.permission",
@@ -612,6 +636,22 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
 
   // Chat & editor
   {
+    id: "chat.sending.shortcut",
+    pane: "chat.sending",
+    label: "Send shortcut",
+    labelKey: "settings.general.sendShortcut.label",
+    keywords: ["enter", "command", "control", "keyboard"],
+    scope: device,
+  },
+  {
+    id: "chat.files.associations",
+    pane: "chat.files",
+    label: "Files",
+    labelKey: "settings.files.title",
+    keywords: ["file types", "open with", "panel associations", "ask again", "plugins"],
+    scope: device,
+  },
+  {
     id: "chat.chat.reasoning",
     pane: "chat.chat",
     label: "Always expand reasoning",
@@ -622,9 +662,9 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "chat.chat.toolCalls",
     pane: "chat.chat",
-    label: "Tool call display",
-    labelKey: "settings.general.toolCallDetail.label",
-    keywords: ["summary", "full detail", "timeline"],
+    label: "Chat display",
+    labelKey: "settings.general.chatDisplay.label",
+    keywords: ["summary", "full detail", "timeline", "tool calls", "collapse turns"],
     scope: device,
   },
   {
@@ -971,6 +1011,7 @@ export function resolveSettingsTarget(slug: string): SettingsTarget {
 }
 
 export interface SettingsAvailabilityContext {
+  hardwareKeyboardPresent?: boolean;
   isDesktopApp: boolean;
   isWeb: boolean;
   isNative: boolean;
@@ -982,6 +1023,7 @@ export function isAvailable(
   item: SettingsAvailability,
   context: SettingsAvailabilityContext,
 ): boolean {
+  if (item.hardwareKeyboardOnly && !context.hardwareKeyboardPresent) return false;
   if (item.desktopOnly && !context.isDesktopApp) return false;
   if (item.webOnly && !context.isWeb) return false;
   if (item.nativeOnly && !context.isNative) return false;

@@ -1,7 +1,10 @@
 import { writeFile, rm, rename } from "node:fs/promises";
 import path from "node:path";
 import { copyPluginExample } from "./helpers/plugin-fixture";
-import { connectNewWorkspaceDaemonClient } from "./helpers/new-workspace";
+import {
+  connectNewWorkspaceDaemonClient,
+  delayBrowserAgentCreatedStatus,
+} from "./helpers/new-workspace";
 import { test as base } from "./fixtures";
 import {
   createCreationScenario,
@@ -9,10 +12,10 @@ import {
   retryNextAgentCreation,
 } from "./helpers/creation";
 import { installDaemonWebSocketGate } from "./helpers/daemon-websocket-gate";
-import { delayBrowserAgentCreatedStatus } from "./helpers/new-workspace";
 
 export const test = base.extend<{
   startup: { release(): Promise<void>; fail(): Promise<void> };
+  promptRejection: void;
   creation: Awaited<ReturnType<typeof createCreationScenario>>;
   promptRetry: ReturnType<typeof createPromptRetryScenario>;
   agentRetries: Awaited<ReturnType<typeof retryNextAgentCreation>>;
@@ -34,8 +37,8 @@ export const test = base.extend<{
 import { readFile, rm } from "node:fs/promises";
 export default function contribute(server) {
   return server.before("agent.session_open", async ({ request }) => {
-    // Workspace naming also opens sessions; only block the submitted workspace agent.
-    if (request.reason !== "create" || request.workspaceId === null) return request;
+    // Metadata helpers have no workspace and must not consume the one-shot failure.
+    if (request.reason !== "create" || !request.workspaceId) return request;
     const gate = ${JSON.stringify(gate)};
     let command = await readFile(gate, "utf8").catch(() => "release");
     while (command === "hold") {
@@ -60,6 +63,37 @@ export default function contribute(server) {
       });
     } finally {
       await rm(gate, { force: true });
+      await client.removePlugin("lifecycle-logger");
+      await client.patchDaemonConfig({ pluginsEnabled: previous.config.pluginsEnabled });
+      await plugin.cleanup();
+      await client.close();
+    }
+  },
+  promptRejection: async ({ page }, provide) => {
+    void page;
+    const client = await connectNewWorkspaceDaemonClient();
+    const plugin = await copyPluginExample("lifecycle-logger");
+    const previous = await client.getDaemonConfig();
+    try {
+      await writeFile(
+        path.join(plugin.directory, "index.server.ts"),
+        `
+export default function contribute(server) {
+  return server.before("agent.create", ({ request }) => ({
+    ...request,
+    config: {
+      ...request.config,
+      model: "e2e-fast-stream",
+      featureValues: { ...request.config.featureValues, mockPromptRejections: 1 },
+    },
+  }));
+}
+`,
+      );
+      await client.patchDaemonConfig({ pluginsEnabled: true });
+      await client.installDirectoryPlugin(plugin.directory);
+      await provide();
+    } finally {
       await client.removePlugin("lifecycle-logger");
       await client.patchDaemonConfig({ pluginsEnabled: previous.config.pluginsEnabled });
       await plugin.cleanup();

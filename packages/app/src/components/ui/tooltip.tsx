@@ -1,5 +1,7 @@
+import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
 import { interfaceRect } from "@/appearance/interface-geometry";
 import { useVortonTouch } from "@/vorton-touch";
+import { Modal } from "@/components/ui/modal";
 import {
   Children,
   cloneElement,
@@ -19,9 +21,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   Platform,
-  Modal,
   Pressable,
-  StatusBar,
   Text,
   View,
   type PressableProps,
@@ -33,8 +33,9 @@ import { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { FloatingSurface } from "@/components/ui/floating";
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { isNative, isWeb } from "@/constants/platform";
-import { getOverlayRoot, OVERLAY_Z, useWebOverlayRegistration } from "@/lib/overlay-root";
+import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
 
 type Side = "top" | "bottom" | "left" | "right";
 type Align = "start" | "center" | "end";
@@ -46,11 +47,13 @@ interface Rect {
   height: number;
 }
 
+type TooltipTriggerElement = View | HTMLElement;
+
 interface TooltipContextValue {
   contentId: string;
   open: boolean;
   setOpen: (open: boolean) => void;
-  triggerRef: React.RefObject<View | null>;
+  triggerRef: React.RefObject<TooltipTriggerElement | null>;
   enabled: boolean;
   openOnPress: boolean;
   touch: boolean;
@@ -139,12 +142,19 @@ function useControllableOpenState({
   return [value, setValue];
 }
 
-function measureElement(element: View): Promise<Rect> {
-  return new Promise((resolve) => {
-    element.measureInWindow((x, y, width, height) => {
-      resolve(interfaceRect({ x, y, width, height }));
+function measureElement(element: TooltipTriggerElement): Promise<Rect> {
+  if (isWeb && element instanceof HTMLElement) {
+    const { x, y, width, height } = element.getBoundingClientRect();
+    return Promise.resolve(interfaceRect({ x, y, width, height }));
+  }
+  if ("measureInWindow" in element) {
+    return new Promise((resolve) => {
+      element.measureInWindow((x, y, width, height) => {
+        resolve(interfaceRect({ x, y, width, height }));
+      });
     });
-  });
+  }
+  throw new Error("A DOM tooltip trigger requires the web platform");
 }
 
 function resolveActualSide(args: {
@@ -273,7 +283,7 @@ export function Tooltip({
   enabledOnMobile?: boolean;
 }>): ReactElement {
   const contentId = useId();
-  const triggerRef = useRef<View>(null);
+  const triggerRef = useRef<TooltipTriggerElement>(null);
   const [isOpen, setIsOpen] = useControllableOpenState({
     open,
     defaultOpen,
@@ -281,7 +291,11 @@ export function Tooltip({
   });
 
   const useTouchInteraction = useTooltipTouchInteraction();
-  const enabled = useTouchInteraction ? enabledOnMobile : enabledOnDesktop;
+  const active = useRetainedPanelActive();
+  const enabled = active && (useTouchInteraction ? enabledOnMobile : enabledOnDesktop);
+  useEffect(() => {
+    if (!active && isOpen) setIsOpen(false);
+  }, [active, isOpen, setIsOpen]);
 
   useEffect(() => {
     if (!isWeb || !useTouchInteraction || !enabled || !isOpen) return;
@@ -336,6 +350,12 @@ export function TooltipTrigger({
   passive?: boolean;
 }): ReactElement {
   const ctx = useTooltipContext("TooltipTrigger");
+  const setTriggerRef = useCallback(
+    (node: View | null) => {
+      ctx.triggerRef.current = node;
+    },
+    [ctx.triggerRef],
+  );
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearOpenTimer = useCallback(() => {
@@ -368,6 +388,10 @@ export function TooltipTrigger({
       clearOpenTimer();
     };
   }, [clearOpenTimer]);
+
+  useEffect(() => {
+    if (!ctx.enabled) clearOpenTimer();
+  }, [ctx.enabled, clearOpenTimer]);
 
   const handleHoverIn = useCallback(
     (e?: unknown) => {
@@ -479,7 +503,7 @@ export function TooltipTrigger({
     mergedProps["aria-describedby"] = descriptions.filter(Boolean).join(" ") || undefined;
 
     const existingRefProp = Reflect.get(rawProps, triggerRefProp);
-    mergedProps[triggerRefProp] = (node: View) => {
+    mergedProps[triggerRefProp] = (node: TooltipTriggerElement) => {
       if (isCallable(existingRefProp)) {
         existingRefProp(node);
       } else if (existingRefProp && typeof existingRefProp === "object") {
@@ -492,7 +516,7 @@ export function TooltipTrigger({
   }
 
   return (
-    <Pressable {...triggerProps} ref={ctx.triggerRef} collapsable={false}>
+    <Pressable {...triggerProps} ref={setTriggerRef} collapsable={false}>
       {children}
     </Pressable>
   );
@@ -517,7 +541,7 @@ export function TooltipContent({
   const ctx = useTooltipContext("TooltipContent");
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const handleOverlayKey = useCallback(
-    (event: KeyboardEvent) => {
+    (event: KeyboardInputEvent) => {
       if (event.key !== "Escape") return false;
       event.preventDefault();
       ctx.setOpen(false);
@@ -525,11 +549,12 @@ export function TooltipContent({
     },
     [ctx],
   );
-  const setOverlayScope = useWebOverlayRegistration({
+  const setOverlayScope = useOverlayRegistration({
     active: isWeb && ctx.open && ctx.enabled,
     layer: OVERLAY_Z.tooltip,
     onKeyDown: handleOverlayKey,
     focusBehavior: "none",
+    keys: ["Escape"],
   });
   const [triggerRect, setTriggerRect] = useState<Rect | null>(null);
   const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null);
@@ -543,11 +568,10 @@ export function TooltipContent({
       return () => {};
     }
 
-    const statusBarHeight = Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0;
     let cancelled = false;
 
     void measureElement(ctx.triggerRef.current).then((rect) => {
-      if (!cancelled) setTriggerRect({ ...rect, y: rect.y + statusBarHeight });
+      if (!cancelled) setTriggerRect(rect);
       return undefined;
     });
 

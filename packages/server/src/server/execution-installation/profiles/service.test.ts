@@ -26,6 +26,7 @@ import { planProviderPreferencesMigration } from "../../agent/provider-preferenc
 import { validateProviderPreferences } from "../../agent/provider-preferences/validation.js";
 
 class Environment implements ProfileEnvironment {
+  readyProviders: string[] = [];
   offline = false;
   workerAccounts = false;
   uncappedManagedWorkers = false;
@@ -1344,4 +1345,62 @@ test("defaults reset survives save and synchronization while existing teams reta
       .providers.codex.workflows.slice(1)
       .every((w) => w.uncappedWorkers),
   ).toBe(true);
+});
+
+test("a Host-only installation shares profiles with its one environment", async () => {
+  const host = new Environment("host", "model-b");
+  const journal = new Journal();
+  const service = new InstallationProfiles(journal, [host], "00000000-0000-4000-8000-000000000001");
+  await service.synchronize();
+  const snapshot = service.snapshot();
+  if (!snapshot) throw new Error("missing snapshot");
+  expect(Object.keys(service.status()?.sources ?? {})).toEqual(["host"]);
+  expect(service.status()?.sources.host.error).toBeNull();
+  const providers = structuredClone(snapshot.providers);
+  providers.codex.workflows[0].instructions = "Host-only instructions";
+  await service.patch({ expectedRevision: snapshot.revision, providers });
+  await service.synchronize();
+  expect(host.config.sharedProviderPreferences?.providers).toEqual(providers);
+});
+
+test("provisions ready providers once, preserves profiles and remembers deleted starters", async () => {
+  const { host, container, journal, service } = fixture();
+  for (const environment of [host, container]) {
+    environment.config.agentProfiles = [];
+    environment.config.sharedProviderPreferences = {
+      version: 1,
+      revision: 0,
+      providers: {},
+      legacyProfiles: {},
+    };
+  }
+  host.readyProviders = ["codex", "claude", "copilot", "opencode", "custom-account"];
+  host.config.providers["custom-account"] = { extends: "codex" };
+  await service.synchronize();
+  const first = service.snapshot()!;
+  expect(Object.keys(first.providers).sort()).toEqual(["claude", "codex", "copilot", "opencode"]);
+  for (const [provider, group] of Object.entries(first.providers)) {
+    expect(group.workflows).toEqual([{ id: "starter", name: "Default", provider }]);
+    expect(group.defaultWorkflowId).toBe("starter");
+  }
+  await service.synchronize();
+  expect(service.snapshot()?.revision).toBe(first.revision);
+  const edited = structuredClone(first.providers);
+  edited.codex.workflows = [];
+  edited.codex.defaultWorkflowId = null;
+  edited.claude.workflows[0].name = "My Claude";
+  await service.patch({ expectedRevision: first.revision, providers: edited });
+  const restarted = new InstallationProfiles(
+    journal,
+    [host, container],
+    "00000000-0000-4000-8000-000000000001",
+  );
+  host.readyProviders.push("muse");
+  await restarted.synchronize();
+  expect(restarted.snapshot()?.providers.codex.workflows).toEqual([]);
+  expect(restarted.snapshot()?.providers.claude.workflows[0].name).toBe("My Claude");
+  expect(restarted.snapshot()?.providers.muse.workflows).toHaveLength(1);
+  expect(container.config.sharedProviderPreferences?.providers).toEqual(
+    restarted.snapshot()?.providers,
+  );
 });

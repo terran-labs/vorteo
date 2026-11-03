@@ -107,11 +107,11 @@ function CustomModelRow({
 
   return (
     <View style={sheetStyles.modelRow}>
-      <Text style={sheetStyles.modelTitle} numberOfLines={1}>
+      <Text style={[sheetStyles.modelTitle, sheetStyles.customModelText]} numberOfLines={1}>
         {model.label}
       </Text>
       <Text
-        style={sheetStyles.monoHint}
+        style={[sheetStyles.monoHint, sheetStyles.customModelText]}
         numberOfLines={1}
         selectable
         dataSet={CODE_SURFACE_DATASET}
@@ -246,12 +246,11 @@ function AddCustomModelSubSheet({
         />
         {error ? <Text style={sheetStyles.errorText}>{error}</Text> : null}
         <ActionFooter style={sheetStyles.formActions}>
-          <Button variant="secondary" size="sm" onPress={onClose} disabled={saving}>
+          <Button variant="secondary" onPress={onClose} disabled={saving}>
             {t("common.actions.cancel")}
           </Button>
           <Button
             variant="default"
-            size="sm"
             onPress={handleAdd}
             disabled={!canAdd || saving}
             testID="custom-model-save"
@@ -464,18 +463,11 @@ function renderProviderSheetFooter({
         <ProviderUpdatedLabel fetchedAt={fetchedAt} isCompact={isCompact} />
       ) : null}
       <ActionFooter style={actionsStyle}>
-        <Button
-          variant="secondary"
-          size="sm"
-          leftIcon={Plus}
-          onPress={onOpenAddSheet}
-          style={buttonStyle}
-        >
+        <Button variant="secondary" leftIcon={Plus} onPress={onOpenAddSheet} style={buttonStyle}>
           {t("settings.providers.models.addModel")}
         </Button>
         <Button
           variant="secondary"
-          size="sm"
           leftIcon={FileText}
           onPress={onOpenDiagSheet}
           style={buttonStyle}
@@ -484,7 +476,6 @@ function renderProviderSheetFooter({
         </Button>
         <Button
           variant="default"
-          size="sm"
           leftIcon={modelsRefreshing ? undefined : RotateCw}
           onPress={onRefreshModels}
           disabled={modelsRefreshing}
@@ -548,7 +539,7 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
       <View style={sheetStyles.emptyState}>
         <AlertTriangle size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
         <Text style={sheetStyles.mutedText}>{providerErrorMessage}</Text>
-        <Button variant="default" size="sm" onPress={onRefresh} disabled={modelsRefreshing}>
+        <Button variant="default" onPress={onRefresh} disabled={modelsRefreshing}>
           {modelsRefreshing
             ? t("settings.providers.models.retrying")
             : t("settings.providers.models.retry")}
@@ -845,6 +836,7 @@ const sheetStyles = StyleSheet.create((theme) => ({
   iconButton: {
     width: 28,
     height: 28,
+    flexShrink: 0,
     borderRadius: theme.borderRadius.full,
     alignItems: "center",
     justifyContent: "center",
@@ -889,6 +881,10 @@ const sheetStyles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     flexShrink: 0,
+  },
+  customModelText: {
+    flexShrink: 1,
+    minWidth: 0,
   },
   modelRowFiller: {
     flex: 1,

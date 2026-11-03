@@ -45,9 +45,12 @@ export class MessageQueueService {
     for (const agentId of new Set([...stored, ...held])) void this.delivery.wake(agentId);
   }
 
-  async captureRestartContinuation(agentId: string, requestId: string): Promise<void> {
-    await this.initialize();
-    await this.store.captureRestartContinuation(agentId, requestId, this.restartOwner);
+  captureRestartContinuation(agentId: string, requestId: string): Promise<void> {
+    // Revoke pending automatic dispatch before initialization or the store lane yields.
+    return this.trackQueueMutation(agentId, async () => {
+      await this.initialize();
+      await this.store.captureRestartContinuation(agentId, requestId, this.restartOwner);
+    });
   }
 
   async restartContinuationReleased(requestId: string): Promise<boolean> {
@@ -219,8 +222,9 @@ export class MessageQueueService {
     return this.store.read(agentId);
   }
 
-  async acceptedHistory(agentId: string) {
-    await this.initialize();
+  async acceptedHistory(agentId: string, options?: { passive: boolean }) {
+    // Passive timeline reads must not recover pending deliveries or publish queue changes.
+    if (!options?.passive) await this.initialize();
     return this.store.acceptedHistory(agentId);
   }
 

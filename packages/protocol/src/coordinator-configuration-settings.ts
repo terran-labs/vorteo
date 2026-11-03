@@ -1,3 +1,5 @@
+import { PreviewBrokerDeploymentConfigurationSchema } from "./preview-broker-deployment.js";
+import { PreviewBrokerConfigurationSchema } from "./preview-broker-maintenance.js";
 import { z } from "zod";
 import type { CoordinatorBootstrapPlan } from "./coordinator-bootstrap.js";
 import {
@@ -9,6 +11,12 @@ import {
   HostLauncherUpdateConfigurationSchema,
 } from "./execution-installation.js";
 import { PreviewMonitorConfigurationSchema } from "./preview-monitor-maintenance.js";
+
+/** The agent thread the coordinator notifies when a coordinator update fails before
+ * it starts or stalls after approval. Notification grants that thread no authority. */
+export const InstallationLeadConfigurationSchema = z.strictObject({
+  agentId: z.string().uuid(),
+});
 
 export interface ReviewedConfigurationSettingDefinition {
   /** Location in the coordinator's installation configuration. */
@@ -34,11 +42,36 @@ type ReviewedConfigurationRegistry = Record<string, ReviewedConfigurationSetting
  * pre-registry verifier so expected configurations stay identical.
  */
 export const REVIEWED_CONFIGURATION_SETTINGS = {
+  operationalTelemetryEnabled: {
+    path: ["operationalTelemetryEnabled"],
+    value: z.literal(true),
+    renewal: true,
+  },
+  installationLead: {
+    path: ["installationLead"],
+    value: InstallationLeadConfigurationSchema,
+    renewal: true,
+  },
+  containerSourceUpdateNode: {
+    path: ["containerSourceUpdates", "node"],
+    value: z.string().startsWith("/"),
+    renewal: true,
+  },
   factoryRuntimeAdoption: {
     path: ["container", "factoryRuntimeAdoption"],
     value: FactoryRuntimeAdoptionConfigurationSchema,
     renewal: true,
     legacyField: "factoryRuntimeAdoptionConfiguration",
+  },
+  previewBrokerDeployment: {
+    path: ["previewBrokerDeployment"],
+    value: PreviewBrokerDeploymentConfigurationSchema,
+    renewal: false,
+  },
+  previewBroker: {
+    path: ["previewBroker"],
+    value: PreviewBrokerConfigurationSchema,
+    renewal: false,
   },
   previewMonitor: {
     path: ["previewMonitor"],
@@ -51,6 +84,11 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
     value: z.literal(true),
     renewal: true,
     legacyField: "claudeHostRefreshConfiguration",
+  },
+  codexHostRefresh: {
+    path: ["codexHostRefresh"],
+    value: z.literal(true),
+    renewal: true,
   },
   engineRestart: {
     path: ["container", "engineRestart"],

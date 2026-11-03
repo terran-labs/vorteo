@@ -1,3 +1,5 @@
+import { PreviewBrokerDeploymentJobSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import { PreviewBrokerJobSchema } from "@getpaseo/protocol/preview-broker-maintenance";
 import { openSync, closeSync, fsyncSync } from "node:fs";
 import path from "node:path";
 import { writePrivateFileAtomicSync } from "../private-files.js";
@@ -14,6 +16,8 @@ const LifecycleJobSchema = z.discriminatedUnion("target", [
   RestartJobSchema,
   NativeHelperJobSchema,
   PreviewMonitorJobSchema,
+  PreviewBrokerJobSchema,
+  PreviewBrokerDeploymentJobSchema,
   MaintenanceServiceJobSchema,
   SessionHostJobSchema,
 ]);

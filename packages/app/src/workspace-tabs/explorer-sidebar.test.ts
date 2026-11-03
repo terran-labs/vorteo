@@ -23,7 +23,7 @@ import {
 } from "@/workspace-tabs/explorer-sidebar";
 
 const WORKSPACE_KEY = "server-1:ws-main";
-const CHECKOUT = { serverId: "server-1", cwd: "/tmp/repo", isGit: true };
+const checkout = { serverId: "server-1", cwd: "/repo", isGit: true };
 
 beforeEach(() => {
   useWorkspaceLayoutStore.setState({
@@ -34,13 +34,13 @@ beforeEach(() => {
   });
   usePanelStore.setState({
     mobilePanel: { target: "agent", revision: 0 },
-    explorerTab: "files",
     explorerTabByCheckout: {},
+    explorerTab: "files",
   });
 });
 
 describe("Explorer sidebar", () => {
-  it("selects the Explorer shell from layout and split capabilities", () => {
+  it("selects the Explorer shell from the form factor", () => {
     expect(resolveExplorerSidebarPresentation({ isCompact: true })).toBe("overlay");
     expect(
       resolveExplorerSidebarPresentation({ isCompact: false, supportsPaneSplits: false }),
@@ -50,24 +50,27 @@ describe("Explorer sidebar", () => {
     );
   });
 
-  it("uses the compact explorer without creating a desktop pane", () => {
+  it("selects the checkout-bound Changes view inside the compact overlay", () => {
     openExplorerSidebarView({
       isCompact: true,
       workspaceKey: WORKSPACE_KEY,
-      checkout: CHECKOUT,
+      checkout,
       view: "changes",
     });
 
     expect(usePanelStore.getState().mobilePanel.target).toBe("file-explorer");
+    expect(usePanelStore.getState().explorerTab).toBe("changes");
+    expect(usePanelStore.getState().explorerTabByCheckout).toEqual({
+      "server-1::/repo": "changes",
+    });
     expect(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]).toBeUndefined();
   });
 
   it("creates a dedicated desktop Explorer containing only its requested tree", () => {
     openExplorerSidebarView({
       isCompact: false,
-      supportsPaneSplits: true,
       workspaceKey: WORKSPACE_KEY,
-      checkout: CHECKOUT,
+      checkout,
       view: "files",
     });
 
@@ -81,9 +84,8 @@ describe("Explorer sidebar", () => {
   it("toggles the desktop Explorer independently of ordinary panes", () => {
     const input = {
       isCompact: false,
-      supportsPaneSplits: true,
       workspaceKey: WORKSPACE_KEY,
-      checkout: CHECKOUT,
+      checkout,
     };
     openExplorerSidebarView({ ...input, view: "files" });
     toggleExplorerSidebar(input);
@@ -104,16 +106,21 @@ describe("Explorer sidebar", () => {
   });
 
   it("toggles the compact Explorer without changing its selected view", () => {
-    usePanelStore.getState().setExplorerTabForCheckout({ ...CHECKOUT, tab: "files" });
     const input = {
       isCompact: true,
       workspaceKey: WORKSPACE_KEY,
-      checkout: CHECKOUT,
+      checkout,
     };
 
+    usePanelStore.getState().setExplorerTabForCheckout({ ...checkout, tab: "files" });
     toggleExplorerSidebar(input);
-
     expect(isExplorerSidebarOpen(input)).toBe(true);
     expect(usePanelStore.getState().explorerTab).toBe("files");
+    toggleExplorerSidebar(input);
+    expect(isExplorerSidebarOpen(input)).toBe(false);
+    toggleExplorerSidebar(input);
+    expect(isExplorerSidebarOpen(input)).toBe(true);
+    expect(usePanelStore.getState().explorerTab).toBe("files");
+    expect(usePanelStore.getState().explorerTabByCheckout).toEqual({ "server-1::/repo": "files" });
   });
 });

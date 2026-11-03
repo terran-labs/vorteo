@@ -20,6 +20,8 @@ function project(input: {
 
 function workspace(id: string, projectId: string, root: string): WorkspaceDescriptor {
   return {
+    createdAt: null,
+    lastUserMessageAt: null,
     id,
     projectId,
     projectDisplayName: "acme/app",
@@ -38,6 +40,24 @@ function workspace(id: string, projectId: string, root: string): WorkspaceDescri
 }
 
 describe("buildWorkspaceStructureProjects", () => {
+  test("an empty Vorteo System project has no row until it holds a workspace", () => {
+    const system = project({ id: "prj_system", key: "system:srv_dev", root: "/home/paseo/system" });
+    const empty = buildWorkspaceStructureProjects({
+      sessions: [{ serverId: "srv_dev", projects: [system], workspaces: [] }],
+    });
+    expect(empty).toEqual([]);
+    const occupied = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "srv_dev",
+          projects: [system],
+          workspaces: [workspace("wks_source", "prj_system", "/home/paseo/system")],
+        },
+      ],
+    });
+    expect(occupied).toHaveLength(1);
+  });
+
   test("moves a workspace between projects without changing its environment or directory", () => {
     const moved = workspace("ws-host", "host-files", "/host/files");
     moved.projectMembership = { key: "remote:github.com/acme/app", name: "App" };
@@ -320,6 +340,35 @@ describe("shared Projects folder placements", () => {
     expect(result[0]!.workspaceKeys).toContain("dev:assigned");
   });
 
+  test("keeps one System row when the Dev System project is hidden for being empty", () => {
+    const root = "/Users/me/dev/vorteo";
+    const hostSystem = project({ id: "host-system", key: "system:host", root });
+    const hostWorkspaces = [workspace("native", "host-system", root)];
+    const recorded = workspace("recorded", "host-system", root);
+    // Recorded while the Dev project still had a row and both merged under its key.
+    recorded.projectMembership = { key: "system:dev", name: "Vorteo System" };
+    hostWorkspaces.push(recorded);
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host",
+          projectsRoot: "/Users/me/dev",
+          projects: [hostSystem],
+          workspaces: hostWorkspaces,
+        },
+        {
+          serverId: "dev",
+          projectsRoot: "/Users/me/dev",
+          projects: [project({ id: "dev-system", key: "system:dev", root })],
+          workspaces: [],
+        },
+      ],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ viewKey: "system:dev" });
+    expect(result[0]!.workspaceKeys.sort()).toEqual(["host:native", "host:recorded"]);
+  });
+
   test("keeps placements separate when the Projects folder differs or is absent", () => {
     for (const devRoot of ["/home/guest/dev", null]) {
       const result = buildWorkspaceStructureProjects({
@@ -341,4 +390,52 @@ describe("shared Projects folder placements", () => {
     });
     expect(result).toHaveLength(2);
   });
+});
+
+test("sorts by creation or human prompt without changing picker name order", () => {
+  const old = {
+    ...workspace("old", "p", "/p"),
+    name: "A",
+    createdAt: new Date("2026-01-01"),
+    lastUserMessageAt: new Date("2026-03-01"),
+  };
+  const fresh = {
+    ...workspace("fresh", "p", "/p"),
+    name: "B",
+    createdAt: new Date("2026-02-01"),
+    lastUserMessageAt: null,
+  };
+  const sessions = [
+    {
+      serverId: "host",
+      projects: [project({ id: "p", key: "p", root: "/p" })],
+      workspaces: [old, fresh],
+    },
+  ];
+  expect(
+    buildWorkspaceStructureProjects({ sessions, workspaceSort: "created" })[0].workspaceKeys,
+  ).toEqual(["host:fresh", "host:old"]);
+  expect(
+    buildWorkspaceStructureProjects({ sessions, workspaceSort: "lastPrompt" })[0].workspaceKeys,
+  ).toEqual(["host:old", "host:fresh"]);
+  expect(buildWorkspaceStructureProjects({ sessions })[0].workspaceKeys).toEqual([
+    "host:old",
+    "host:fresh",
+  ]);
+});
+
+test("time ties use workspace identity so renaming cannot move Created rows", () => {
+  const a = { ...workspace("a", "p", "/p"), name: "Z", createdAt: new Date("2026-01-01") };
+  const b = { ...workspace("b", "p", "/p"), name: "A", createdAt: a.createdAt };
+  const sessions = [
+    { serverId: "h", projects: [project({ id: "p", key: "p", root: "/p" })], workspaces: [b, a] },
+  ];
+  expect(
+    buildWorkspaceStructureProjects({ sessions, workspaceSort: "created" })[0].workspaceKeys,
+  ).toEqual(["h:a", "h:b"]);
+  a.name = "A";
+  b.name = "Z";
+  expect(
+    buildWorkspaceStructureProjects({ sessions, workspaceSort: "created" })[0].workspaceKeys,
+  ).toEqual(["h:a", "h:b"]);
 });

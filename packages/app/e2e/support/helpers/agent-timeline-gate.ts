@@ -29,6 +29,7 @@ export interface DaemonHydrationGate {
 }
 
 export interface RewindCompletionGate {
+  isPromptAccepted(prompt: string): boolean;
   clearTimelineStreamCount(): void;
   release(): void;
   timelineStreamCount(): number;
@@ -192,6 +193,8 @@ export async function holdRewindCompletion(
   agentId: string,
 ): Promise<RewindCompletionGate> {
   let released = false;
+  const submittedPrompts = new Map<string, string>();
+  const acceptedPrompts = new Set<string>();
   let timelineStreamCount = 0;
   const delayedForwards: Array<() => void> = [];
   let resolveDelayedResponse: (() => void) | null = null;
@@ -199,12 +202,39 @@ export async function holdRewindCompletion(
     resolveDelayedResponse = resolve;
   });
 
+  function recordAcceptance(
+    sessionMessage: Record<string, unknown> | null,
+    payload: Record<string, unknown> | null,
+  ): void {
+    if (
+      sessionMessage?.type === "send_agent_message_response" &&
+      payload?.agentId === agentId &&
+      payload.accepted === true &&
+      typeof payload.requestId === "string"
+    ) {
+      const prompt = submittedPrompts.get(payload.requestId);
+      if (prompt !== undefined) acceptedPrompts.add(prompt);
+    }
+  }
+
   await page.routeWebSocket(daemonWsRoutePattern(), (ws) => {
     const server = ws.connectToServer();
-    ws.onMessage((message) => server.send(message));
+    ws.onMessage((message) => {
+      const request = getSessionMessage(message);
+      if (
+        request?.type === "send_agent_message_request" &&
+        request.agentId === agentId &&
+        typeof request.requestId === "string" &&
+        typeof request.text === "string"
+      ) {
+        submittedPrompts.set(request.requestId, request.text);
+      }
+      server.send(message);
+    });
     server.onMessage((message) => {
       const sessionMessage = getSessionMessage(message);
       const payload = sessionMessage ? getPayload(sessionMessage) : null;
+      recordAcceptance(sessionMessage, payload);
       const streamEvent = payload?.event;
       if (
         sessionMessage?.type === "agent_stream" &&
@@ -232,6 +262,7 @@ export async function holdRewindCompletion(
   });
 
   return {
+    isPromptAccepted: (prompt) => acceptedPrompts.has(prompt),
     clearTimelineStreamCount() {
       timelineStreamCount = 0;
     },
@@ -338,11 +369,32 @@ export async function delayAgentOlderTimelineResponse(
   return delayAgentTimelineResponse(page, agentId, "before");
 }
 
+export interface OlderTimelinePagesOptions {
+  daemonPort?: number;
+  /**
+   * Hide whole-turn paging from the app so it reads this host with item pages, as it reads
+   * daemons released before whole-turn pages. An item page can end inside a turn or a tool run.
+   */
+  itemPagedHost?: boolean;
+}
+
+function withoutWholeTurnPages(message: WebSocketMessage): WebSocketMessage {
+  const sessionMessage = getSessionMessage(message);
+  const payload = sessionMessage ? getPayload(sessionMessage) : null;
+  if (sessionMessage?.type !== "status" || payload?.status !== "server_info") return message;
+  const envelope = parseWebSocketJson(message) as {
+    message: { payload: { features?: Record<string, unknown> } };
+  };
+  delete envelope.message.payload.features?.wholeTurnTimeline;
+  return JSON.stringify(envelope);
+}
+
 export async function holdAgentOlderTimelinePages(
   page: Page,
   agentId: string,
-  daemonPort?: number,
+  options: OlderTimelinePagesOptions = {},
 ): Promise<OlderTimelinePagesGate> {
+  const { daemonPort } = options;
   let requestCount = 0;
   let responseCount = 0;
   let repeatedEntryCount = 0;
@@ -376,7 +428,8 @@ export async function holdAgentOlderTimelinePages(
       }
       server.send(message);
     });
-    server.onMessage((message) => {
+    server.onMessage((received) => {
+      const message = options.itemPagedHost ? withoutWholeTurnPages(received) : received;
       const sessionMessage = getSessionMessage(message);
       const payload = sessionMessage ? getPayload(sessionMessage) : null;
       if (
@@ -575,20 +628,25 @@ export async function holdAssistantStream(page: Page, agentId: string) {
     });
   });
 
+  const forwardUntil = async (done: (text: string) => boolean): Promise<void> => {
+    while (!done(forwardedText)) {
+      const frame = pending.shift();
+      if (!frame) {
+        await new Promise<void>((resolve) => {
+          notifyFrame = resolve;
+        });
+        continue;
+      }
+      forwardedText += frame.text;
+      frame.forward();
+    }
+  };
+
   return {
     waitForInitialTimeline: () => initialTimeline,
+    showUntil: (text: string) => forwardUntil((forwarded) => forwarded.includes(text)),
     async showThrough(prefix: string): Promise<void> {
-      while (forwardedText.length < prefix.length) {
-        const frame = pending.shift();
-        if (!frame) {
-          await new Promise<void>((resolve) => {
-            notifyFrame = resolve;
-          });
-          continue;
-        }
-        forwardedText += frame.text;
-        frame.forward();
-      }
+      await forwardUntil((text) => text.length >= prefix.length);
       if (forwardedText !== prefix) {
         throw new Error(
           `Stream did not stop at ${JSON.stringify(prefix)}: ${JSON.stringify(forwardedText)}`,

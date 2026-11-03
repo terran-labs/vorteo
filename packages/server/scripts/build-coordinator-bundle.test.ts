@@ -70,6 +70,18 @@ async function releaseFixture(shape: ReleaseShape = {}) {
   await symlink("../../packages/protocol", path.join(root, "node_modules/@getpaseo/protocol"));
   await write("scripts/run-coordinator-owner.py", "print('owner')");
   await write("scripts/verify-coordinator-owner.py", "print('verify')");
+  for (const name of [
+    "broker_rebind.py",
+    "broker_deployment.py",
+    "broker_deployment_kernel.py",
+    "broker_deployment_observation.py",
+    "broker_deployment_worker.py",
+    "channel_identity.py",
+    "https_broker.py",
+    "https-preview.py",
+    "host_config.py",
+  ])
+    await write(`docker/tailscale/${name}`, `# inert ${name}\n`);
   await write("packages/app/huge.js", "export const unrelated = true;");
   await write(".installation-source.json", JSON.stringify({ sourceCommit: "a".repeat(40) }));
   // Runtime-named runner modules; recovery access has its own dependency.
@@ -106,6 +118,15 @@ test("the bundle holds exactly the coordinator closure, links and owner scripts"
       "node_modules/@getpaseo/protocol",
       "scripts/run-coordinator-owner.py",
       "scripts/verify-coordinator-owner.py",
+      "docker/tailscale/broker_rebind.py",
+      "docker/tailscale/broker_deployment.py",
+      "docker/tailscale/broker_deployment_kernel.py",
+      "docker/tailscale/broker_deployment_observation.py",
+      "docker/tailscale/broker_deployment_worker.py",
+      "docker/tailscale/channel_identity.py",
+      "docker/tailscale/https_broker.py",
+      "docker/tailscale/https-preview.py",
+      "docker/tailscale/host_config.py",
     ]),
   );
   expect(names).not.toContain("packages/app/huge.js");

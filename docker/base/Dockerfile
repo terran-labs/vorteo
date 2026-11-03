@@ -139,7 +139,7 @@ RUN set -eux; \
       *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends supervisor python3 util-linux iproute2 iptables; \
+    apt-get install -y --no-install-recommends supervisor python3 acl util-linux iproute2 iptables; \
     curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}.tgz" -o /tmp/tailscale.tgz; \
     echo "$checksum  /tmp/tailscale.tgz" | sha256sum -c -; \
     tar -xzf /tmp/tailscale.tgz -C /tmp; \
@@ -154,7 +154,8 @@ COPY --chown=root:root docker/tailscale/entrypoint docker/tailscale/start-paseo 
 COPY --chown=root:root docker/tailscale/supervisord.conf /etc/personal-tailscale/supervisord.conf
 COPY --chown=root:root docker/tailscale/paseo-preview.mjs /usr/local/bin/paseo-preview
 COPY --chown=root:root docker/tailscale/preview-broker-client.mjs /usr/local/bin/preview-broker-client.mjs
-RUN chmod 0755 /opt/personal-tailscale /opt/personal-tailscale/* /usr/local/bin/paseo-preview \
+COPY --chown=root:root docker/tailscale/gate-connect.mjs /usr/local/bin/gate-connect
+RUN chmod 0755 /opt/personal-tailscale /opt/personal-tailscale/* /usr/local/bin/paseo-preview /usr/local/bin/gate-connect \
  && chmod 0755 /etc/personal-tailscale \
  && chmod 0644 /etc/personal-tailscale/supervisord.conf
 ENV PASEO_WEB_UI_DIST_DIR=/home/paseo/.paseo/web-ui \

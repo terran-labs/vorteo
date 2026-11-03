@@ -3,6 +3,7 @@ import { useWorkspaceScheduleStates } from "@/workspace/lifecycle/scheduled";
 import { useHostFeatureMap } from "@/runtime/host-features";
 import { useProjectExpansion } from "./use-project-expansion";
 import React, { createContext, useContext, useMemo, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
   useSidebarWorkspacesList,
   type SidebarProjectEntry,
@@ -51,13 +52,18 @@ const SidebarModelContext = createContext<SidebarModel | null>(null);
 
 export function SidebarModelProvider({
   active,
+  keyboardNavigationActive = false,
   children,
 }: {
   active?: boolean;
+  keyboardNavigationActive?: boolean;
   children: ReactNode;
 }) {
   useSidebarSync();
-  const list = useSidebarWorkspacesList({ enabled: active });
+  const { t } = useTranslation();
+  const modelActive = active !== false || keyboardNavigationActive;
+  const list = useSidebarWorkspacesList({ enabled: modelActive });
+  const showBackground = useSidebarViewStore((state) => state.showBackground);
   const groupMode = useSidebarViewStore((state) => state.groupMode);
   const labelFilter = useSidebarViewStore((state) => state.labelFilter);
   const projectFilters = useSidebarViewStore((state) => state.projectFilters);
@@ -86,10 +92,11 @@ export function SidebarModelProvider({
   // anything; the label filter reads `labels`, which only exists on an entry. Hydration opens a
   // live session-store subscription over every workspace on every visible host, so widening this
   // for a filter that does not need it costs a retained-but-inactive sidebar real work.
+  // Hardware keyboard navigation needs the same filtered targets while the sidebar is hidden.
   const needsWorkspaceEntries = groupMode !== "project" || hasActiveLabelFilter;
   const rawWorkspaceEntries = useSidebarWorkspaceEntries(
     list.workspacePlacements,
-    active !== false || needsWorkspaceEntries,
+    modelActive || needsWorkspaceEntries,
   );
   const scheduleStates = useWorkspaceScheduleStates();
   const workspaceEntriesByKey = useMemo(() => {
@@ -108,11 +115,11 @@ export function SidebarModelProvider({
       projectFilters: resolvedProjectFilters,
     });
     const filtered = filterWorkspacesByLabels({
-      workspaces: byProject,
+      workspaces: byProject.filter((workspace) => showBackground || !workspace.background),
       ...labelFilter,
     });
     return new Map(filtered.map((workspace) => [workspace.workspaceKey, workspace]));
-  }, [labelFilter, resolvedProjectFilters, workspaceEntriesByKey]);
+  }, [showBackground, labelFilter, resolvedProjectFilters, workspaceEntriesByKey]);
   const visibleWorkspaceKeys = useMemo(
     () => new Set(filteredWorkspaceEntriesByKey.keys()),
     [filteredWorkspaceEntriesByKey],
@@ -127,16 +134,19 @@ export function SidebarModelProvider({
       const included = new Set(resolvedProjectFilters);
       projects = projects.filter((project) => included.has(project.viewKey));
     }
-    if (hasActiveLabelFilter) {
+    if (hasActiveLabelFilter || !showBackground) {
       projects = projects.flatMap((project) => {
         const workspaces = project.workspaces.filter((workspace) =>
           visibleWorkspaceKeys.has(workspace.workspaceKey),
         );
-        return workspaces.length > 0 ? [{ ...project, workspaces }] : [];
+        return workspaces.length > 0 || (!hasActiveLabelFilter && project.workspaces.length === 0)
+          ? [workspaces.length === project.workspaces.length ? project : { ...project, workspaces }]
+          : [];
       });
     }
     return projects;
   }, [
+    showBackground,
     hasActiveLabelFilter,
     hasActiveProjectFilter,
     resolvedProjectFilters,
@@ -165,6 +175,7 @@ export function SidebarModelProvider({
       collapsedWorkspaceGroupKeys,
       factorySupportedHosts,
       folderState,
+      t,
     }),
     [
       folderState,
@@ -178,6 +189,7 @@ export function SidebarModelProvider({
       pinnedWorkspaceOrder,
       filteredWorkspaceEntriesByKey,
       factorySupportedHosts,
+      t,
     ],
   );
   const projection = useMemo(() => buildSidebarProjection(projectionInput), [projectionInput]);

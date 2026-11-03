@@ -86,7 +86,7 @@ def main():
     config['channelIdentities'] = {name: [os.stat(channel / name).st_dev, os.stat(channel / name).st_ino]
                                    for name in ('', 'inbox', 'receipts', 'origins')}
     source = Path(__file__).resolve().parent
-    names = ['https_broker.py', 'host_config.py', 'launch_agent.py', 'https-preview.py',
+    names = ['https_broker.py', 'channel_identity.py', 'host_config.py', 'launch_agent.py', 'https-preview.py',
              'uninstall-https-broker.py', 'paseo-preview.mjs', 'preview-broker-client.mjs']
     backup = root / 'backups' / str(time.time_ns())
     backup.mkdir(parents=True, mode=0o700)

@@ -1,9 +1,13 @@
-import { claudeConnectionStatus } from "./claude-connection-status";
-import { readExecutionInstallation } from "@/execution-installation/policy";
-import { useCallback, useRef, useState } from "react";
+import { installationConnectionStatus } from "./claude-connection-status";
+import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { useProviderLogin } from "./use-provider-login";
+import {
+  useClaudeSignInUpgradeAvailable,
+  useProviderLogin,
+  useSharedInstallationSignIn,
+} from "./use-provider-login";
 import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -33,12 +37,11 @@ export function ProviderLoginPanel({
     (state) => state.sessions[serverId ?? ""]?.serverInfo?.permissions,
   );
   const canManage = permissions?.includes("daemon.manage") !== false;
-  const sharedClaude =
-    provider === "claude" &&
-    Boolean(readExecutionInstallation()?.environments.some((entry) => entry.serverId === serverId));
-  if (!sharedClaude && (!supported || (provider === "claude" && !claudeSupported)))
+  // Installation accounts sign in through the coordinator, whichever environment opened this.
+  const shared = useSharedInstallationSignIn(serverId, provider);
+  if (!shared && (!supported || (provider === "claude" && !claudeSupported)))
     return <Text style={styles.text}>Update this host to connect accounts here.</Text>;
-  if (!sharedClaude && !canManage)
+  if (!shared && !canManage)
     return (
       <Text style={styles.text}>
         This connection needs permission to manage the host before it can connect an account.
@@ -54,28 +57,47 @@ export function ProviderLoginPanel({
   );
 }
 
-function LoginPanelContent({
-  serverId,
-  providerId,
-  name,
-  provider = "codex",
-}: {
+interface LoginPanelContentProps {
   serverId: string | null;
   providerId: string;
   name: string;
   provider?: "codex" | "claude";
-}) {
+}
+
+function LoginPanelContent(props: LoginPanelContentProps) {
+  const { provider = "codex", serverId, providerId } = props;
+  const shared = useSharedInstallationSignIn(serverId, provider);
+  if (provider === "claude" && shared && !claudeProviderConnectsToInstallation(providerId))
+    return (
+      <View style={styles.body}>
+        <Text style={styles.text}>
+          This built-in connection uses the Claude CLI login on this machine, so it cannot connect
+          here. To connect Claude once for this whole installation, add a Claude account from Add
+          provider.
+        </Text>
+      </View>
+    );
+  return <AccountLoginContent {...props} />;
+}
+
+function AccountLoginContent({
+  serverId,
+  providerId,
+  name,
+  provider = "codex",
+}: LoginPanelContentProps) {
   const login = useProviderLogin(serverId, providerId, provider);
+  // While an upgrade runs, its own panel replaces the setup-token connect action.
+  const [upgrading, setUpgrading] = useState(false);
   const { state, connected } = login;
   const showRefresh = login.readFailed || login.actionFailed;
-  const showResumeHint = login.sharedClaude
-    ? state?.status === "waiting"
-    : state?.status !== "succeeded";
+  const label = provider === "claude" ? "Claude" : "Codex";
+  const showResumeHint = login.shared ? state?.status === "waiting" : state?.status !== "succeeded";
   return (
     <View style={styles.body} testID="provider-login-panel">
-      {login.sharedClaude ? (
+      {login.shared ? (
         <Text style={styles.text}>
-          Connect Claude once. Your connection synchronizes automatically.
+          Connect {label} once. Your connection synchronizes automatically.
         </Text>
       ) : (
         <Text style={styles.text}>
@@ -104,17 +126,25 @@ function LoginPanelContent({
         </>
       ) : null}
       {state ? (
-        <LoginProgress state={state} login={login} />
+        <LoginProgress state={state} login={login} label={label} />
       ) : (
         <Text style={styles.text}>Loading sign-in status…</Text>
       )}
-      {login.sharedClaude ? (
+      {login.shared ? (
         <Text accessibilityLiveRegion="polite" style={styles.text}>
-          {claudeConnectionStatus(login.synchronization)}
+          {installationConnectionStatus(login.synchronization, label)}
         </Text>
       ) : null}
-      <LoginAction login={login} />
-      {login.sharedClaude && login.synchronization?.connected ? (
+      {upgrading ? null : <LoginAction login={login} label={label} />}
+      {login.sharedClaude ? (
+        <ClaudeSignInUpgrade
+          serverId={serverId}
+          providerId={providerId}
+          engaged={upgrading}
+          onEngage={setUpgrading}
+        />
+      ) : null}
+      {login.shared && login.synchronization?.connected ? (
         <Button variant="outline" onPress={login.signOut} disabled={login.busy}>
           Disconnect subscription from this installation
         </Button>
@@ -129,20 +159,29 @@ function LoginPanelContent({
   );
 }
 
-function loginActionLabel(login: ReturnType<typeof useProviderLogin>): string {
-  if (login.state?.status === "succeeded") return "Reconnect Claude subscription";
+function loginActionLabel(login: ReturnType<typeof useProviderLogin>, provider: string): string {
+  if (login.state?.status === "succeeded") return `Reconnect ${provider} subscription`;
   if (login.state?.status === "failed" || login.state?.status === "cancelled")
     return "Try sign-in again";
-  return login.sharedClaude ? "Connect Claude" : "Start sign-in";
+  return login.shared ? `Connect ${provider}` : "Start sign-in";
 }
 
-function LoginAction({ login }: { login: ReturnType<typeof useProviderLogin> }) {
+function LoginAction({
+  login,
+  label: provider,
+  startLabel,
+}: {
+  login: ReturnType<typeof useProviderLogin>;
+  label: string;
+  /** Replaces the default start label, such as for an upgrade. */
+  startLabel?: string;
+}) {
   const { state, connected, busy } = login;
-  if (state?.status === "succeeded" && !login.sharedClaude) return null;
+  if (state?.status === "succeeded" && !login.shared) return null;
   const active =
     state?.status === "starting" || state?.status === "waiting" || state?.status === "verifying";
   const canStart = Boolean(state && !login.readFailed);
-  const label = loginActionLabel(login);
+  const label = startLabel ?? loginActionLabel(login, provider);
   return active ? (
     <Button
       variant="outline"
@@ -166,11 +205,13 @@ function LoginAction({ login }: { login: ReturnType<typeof useProviderLogin> }) 
 function LoginProgress({
   state,
   login,
+  label,
 }: {
   state: ProviderLoginState;
   login: ReturnType<typeof useProviderLogin>;
+  label: string;
 }) {
-  if (login.sharedClaude && (state.status === "idle" || state.status === "succeeded")) return null;
+  if (login.shared && (state.status === "idle" || state.status === "succeeded")) return null;
   if (state.status === "waiting" && state.inputRequired)
     return <BrowserCodeChallenge key={state.attemptId} state={state} login={login} />;
   if (state.status === "waiting")
@@ -181,9 +222,8 @@ function LoginProgress({
   if (state.status === "cancelled")
     message = "Sign-in cancelled. Your saved account credentials were not removed.";
   if (state.status === "failed") message = state.message;
-  if (state.status === "succeeded" && login.sharedClaude)
-    message =
-      "Claude subscription connected. Credentials are saved for this installation; offline environments will synchronize when they reconnect.";
+  if (state.status === "succeeded" && login.shared)
+    message = `${label} subscription connected. Credentials are saved for this installation; offline environments will synchronize when they reconnect.`;
   else if (state.status === "succeeded")
     message = state.accountLabel
       ? `Signed in as ${state.accountLabel}. Your account credentials are saved. You can close this panel and use this account.`
@@ -192,6 +232,90 @@ function LoginProgress({
     <Text accessibilityLiveRegion="polite" style={styles.text}>
       {message}
     </Text>
+  );
+}
+
+/**
+ * Upgrades a setup-token Claude account to full sign-in in place. The account keeps its
+ * connection, directory, history and profiles; the setup token keeps working until it succeeds.
+ */
+function ClaudeSignInUpgrade({
+  serverId,
+  providerId,
+  engaged,
+  onEngage,
+}: {
+  serverId: string | null;
+  providerId: string;
+  engaged: boolean;
+  onEngage(engaged: boolean): void;
+}) {
+  const available = useClaudeSignInUpgradeAvailable(serverId, providerId);
+  if (!available && !engaged) return null;
+  return (
+    <ClaudeSignInUpgradeFlow serverId={serverId} providerId={providerId} onEngage={onEngage} />
+  );
+}
+
+function upgradeMessage(state: ProviderLoginState | undefined): string | null {
+  if (state?.status === "starting") return "Requesting your Claude sign-in link…";
+  if (state?.status === "verifying")
+    return "Sign-in received. Checking the account and switching it to full sign-in…";
+  if (state?.status === "succeeded")
+    return "Upgraded to full sign-in. This account kept its history and now reports usage. Dev switches over when it synchronizes.";
+  if (state?.status === "cancelled") return "Upgrade cancelled. Your setup token still works.";
+  if (state?.status === "failed") return `${state.message} Your setup token still works.`;
+  return null;
+}
+
+function ClaudeSignInUpgradeFlow({
+  serverId,
+  providerId,
+  onEngage,
+}: {
+  serverId: string | null;
+  providerId: string;
+  onEngage(engaged: boolean): void;
+}) {
+  const login = useProviderLogin(serverId, providerId, "claude", "upgrade");
+  const { state } = login;
+  const status = state?.status;
+  // A failed or cancelled upgrade hands the setup-token controls back.
+  const engaged =
+    status === "starting" ||
+    status === "waiting" ||
+    status === "verifying" ||
+    status === "succeeded";
+  useEffect(() => {
+    onEngage(engaged);
+  }, [engaged, onEngage]);
+  const message = upgradeMessage(state);
+  const retry = status === "failed" || status === "cancelled";
+  return (
+    <View style={styles.body} testID="claude-sign-in-upgrade">
+      <Text style={styles.heading}>Upgrade to full sign-in</Text>
+      <Text style={styles.text}>{"Shows your usage and keeps this account's history."}</Text>
+      {state?.status === "waiting" && state.inputRequired ? (
+        <BrowserCodeChallenge key={state.attemptId} state={state} login={login} />
+      ) : null}
+      {message ? (
+        <Text accessibilityLiveRegion="polite" style={styles.text}>
+          {message}
+        </Text>
+      ) : null}
+      {login.readFailed || login.actionFailed ? (
+        <Text style={styles.warning}>
+          The upgrade request could not be confirmed. Your setup token still works. Try again.
+        </Text>
+      ) : null}
+      {status === "succeeded" ? null : (
+        <LoginAction
+          login={login}
+          label="Claude"
+          startLabel={retry ? "Try the upgrade again" : "Upgrade to full sign-in"}
+        />
+      )}
+    </View>
   );
 }
 
@@ -331,6 +455,11 @@ const styles = StyleSheet.create((theme) => ({
   body: { gap: theme.spacing[3] },
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
+  heading: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.medium,
+  },
   warning: { color: theme.colors.destructive, fontSize: theme.fontSize.base },
   code: {
     color: theme.colors.foreground,

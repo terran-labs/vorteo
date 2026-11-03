@@ -1,12 +1,13 @@
 // Agents and terminals run their own git, which the daemon's per-invocation trust does not
 // reach. When the daemon registers a project or creates a Paseo-owned worktree whose real
-// path lies under an alias of the Projects folder, such as a Dev container that reaches the
-// folder through a symlink, it appends that exact physical path to the daemon user's
-// global `safe.directory` once, so git before 2.46 trusts it there too. No wildcard is
-// written, and daemons that see the folder at its own path (the Host) write nothing.
+// path lies under a Projects folder alias or has another account's ownership, it
+// appends that exact physical path to the daemon user's global `safe.directory` once, so git before 2.46 trusts it there too. No wildcard is
+// written. Same-owner repositories at the logical root need no config change.
 // Self-contained so an installation can drop it without touching per-invocation trust.
 // See docs/execution-installation.md#projects-folder.
+import { statSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { Logger } from "pino";
 import { runGitCommand, type RunGitCommand } from "../utils/run-git-command.js";
 import {
@@ -18,6 +19,7 @@ import { activeProjectsFolderConfig, type ProjectsFolderConfig } from "./project
 export interface TrustRepositoryForAgentsDependencies {
   config?: Pick<ProjectsFolderConfig, "root" | "aliases"> | null;
   runGit?: RunGitCommand;
+  currentUid?: number;
   logger?: Pick<Logger, "info" | "warn">;
 }
 
@@ -28,8 +30,9 @@ let queue: Promise<unknown> = Promise.resolve();
 
 /**
  * Adds the physical top level of the repository at `directory` to the global
- * `safe.directory` list when it is reached through a Projects folder alias and not yet
- * listed. Never throws: a failure is logged and leaves git's behavior unchanged.
+ * `safe.directory` list when reached through a Projects folder alias or owned by
+ * another account, and not yet listed. Never throws: a failure is logged and leaves
+ * git's behavior unchanged.
  * Resolves to the added path, or null when nothing was written.
  */
 export function trustProjectsFolderRepositoryForAgents(
@@ -38,9 +41,26 @@ export function trustProjectsFolderRepositoryForAgents(
 ): Promise<string | null> {
   const config =
     dependencies.config === undefined ? activeProjectsFolderConfig() : dependencies.config;
-  if (!config?.aliases.length) return Promise.resolve(null);
+  if (!config) return Promise.resolve(null);
   const repository = findProjectsFolderRepository(config, directory);
-  if (!repository?.throughAlias) return Promise.resolve(null);
+  if (!repository) return Promise.resolve(null);
+  if (!repository.throughAlias) {
+    const uid = dependencies.currentUid ?? process.getuid?.();
+    if (uid === undefined) return Promise.resolve(null);
+    try {
+      const owners = [repository.physical, path.join(repository.physical, ".git")].map(
+        (file) => statSync(file, { throwIfNoEntry: false })?.uid,
+      );
+      if (!owners.some((owner) => owner !== undefined && owner !== uid))
+        return Promise.resolve(null);
+    } catch (error) {
+      dependencies.logger?.warn(
+        { err: error, directory },
+        "Could not inspect shared repository ownership",
+      );
+      return Promise.resolve(null);
+    }
+  }
   const physical = gitSafeDirectoryValue(repository.physical);
   if (trustedThisProcess.has(physical)) return Promise.resolve(null);
   const runGit = dependencies.runGit ?? runGitCommand;

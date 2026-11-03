@@ -1,6 +1,7 @@
 import type { CompactionInspection } from "./messages.js";
 import type { AgentAttachment, AgentProfileLaunch, ProviderCliUpdate } from "./messages.js";
 import type { QuotaReserveConfig, QuotaReserveLaunchPolicy } from "./quota-reserve.js";
+import type { AgentMessage } from "./agent-message.js";
 
 export type AgentProvider = string;
 
@@ -200,6 +201,11 @@ export interface AgentUsage {
   cachedInputTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
+  /**
+   * Estimated session cost from token counts and list prices, for providers that report no
+   * cost. Clients show it as an estimate when totalCostUsd is absent.
+   */
+  estimatedCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
 }
@@ -294,7 +300,7 @@ export type ToolCallDetail =
       subAgentType?: string;
       description?: string;
       childSessionId?: string;
-      log: string;
+      log?: string;
       actions?: Array<{
         index: number;
         toolName: string;
@@ -318,6 +324,7 @@ export type ToolCallDetail =
     };
 
 interface ToolCallBase {
+  agentMessage?: AgentMessage;
   [key: string]: unknown;
   type: "tool_call";
   callId: string;

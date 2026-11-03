@@ -15,8 +15,10 @@ import {
 import { CountBadge } from "@/components/ui/count-badge";
 import { taskCardStyles } from "@/agent-stream/task-card-styles";
 import { useVortonTouch } from "@/vorton-touch";
-import { useCallback, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useMemo, useState, type ReactNode, type ReactElement } from "react";
 import { Pressable, Text, View } from "react-native";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
+
 import { useTranslation } from "react-i18next";
 import { BrushCleaning, Archive, Unlink, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -29,6 +31,8 @@ import {
   TooltipTrigger,
   useTooltipTouchInteraction,
 } from "@/components/ui/tooltip";
+import { mutedIconColorMapping } from "@/components/ui/icon-button-chrome";
+import { paneContentToolbarIconSize } from "@/components/ui/pane-content-toolbar";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import {
@@ -36,7 +40,10 @@ import {
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
 import type { Theme } from "@/styles/theme";
+
 import { getPanelManifest } from "@/panels/panel-manifest";
+import { useSheetPanePage } from "@/screens/workspace/sheet-pane";
+import type { SheetTab } from "@/stores/workspace-layout-store";
 import type { SubagentRow } from "./select";
 import { isFinishedSubagent } from "./archive-finished";
 import { useProviderSubagentStore } from "./provider-store";
@@ -61,18 +68,23 @@ export interface SubagentsTrackProps {
   inline?: boolean;
   serverId: string;
   rows: SubagentRow[];
-  onOpenSubagent: (id: string) => void;
+  onOpenSubagent: (address: AgentAddress) => void;
   onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
-  onArchiveSubagent: (id: string) => void;
+  /**
+   * The sheet a row opens, or null when it opens as a tab. A sheet replaces the list in place and
+   * Back returns to it; a tab replaces the list's pane, so choosing it ends the list.
+   */
+  sheetTabFor?: (row: SubagentRow) => SheetTab | null;
+  onArchiveSubagent: (address: AgentAddress) => void;
   onArchiveFinished?: () => void;
   archiveFinishedStatus?: ArchiveFinishedStatus;
-  onDetachSubagent?: (id: string) => void;
+  onDetachSubagent?: (address: AgentAddress) => void;
 }
 
 const IDLE_ARCHIVE_FINISHED_STATUS: ArchiveFinishedStatus = { kind: "idle" };
 
-/** Leading and action glyphs share one size so rows keep a single icon column. */
 const ROW_ICON_SIZE = 14;
+const NO_SHEET = () => null;
 
 function useRowPresentation(row: SubagentRow, serverId: string): WorkspaceTabPresentation {
   const icon = useProviderIcon(row.provider, serverId);
@@ -92,12 +104,16 @@ export function SubagentsTrack({
   rows,
   onOpenSubagent,
   onOpenProviderSubagent,
+  sheetTabFor = NO_SHEET,
   onArchiveSubagent,
   onArchiveFinished,
   archiveFinishedStatus = IDLE_ARCHIVE_FINISHED_STATUS,
   onDetachSubagent,
 }: SubagentsTrackProps): ReactElement | null {
   const { t } = useTranslation();
+  const sheetPanePage = useSheetPanePage();
+  const sheets = rows.map(sheetTabFor);
+  const pages = sheets.flatMap((sheet) => (sheet ? [sheetPanePage(sheet)] : []));
   const pill = buildSubagentPillPresentation(t, rows);
   if (rows.length === 0 && archiveFinishedStatus.kind === "idle") return null;
 
@@ -113,6 +129,7 @@ export function SubagentsTrack({
       inline={inline}
       serverId={serverId}
       rows={rows.filter((row) => row.kind === kind)}
+      sheetTabFor={sheetTabFor}
       onOpenSubagent={onOpenSubagent}
       onOpenProviderSubagent={onOpenProviderSubagent}
       onArchiveSubagent={onArchiveSubagent}
@@ -126,6 +143,7 @@ export function SubagentsTrack({
   }
   return (
     <ComposerTrackPill
+      pages={pages}
       testID="subagents-track-header"
       segments={pill.segments}
       accessibilityLabel={pill.accessibilityLabel}
@@ -208,10 +226,11 @@ function SubagentsGroup({
     <View>
       {rows.map((row) => (
         <SubagentsTrackRow
-          key={row.id}
+          key={row.kind === "paseo" ? `${row.address.serverId}:${row.id}` : row.id}
           inline={inline}
           row={row}
           serverId={serverId}
+          sheetTabId={inline ? null : (rowActions.sheetTabFor?.(row)?.tab.tabId ?? null)}
           {...rowActions}
         />
       ))}
@@ -335,10 +354,12 @@ interface SubagentsTrackRowProps {
   inline?: boolean;
   serverId: string;
   row: SubagentRow;
-  onOpenSubagent: (id: string) => void;
+  onOpenSubagent: (address: AgentAddress) => void;
   onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
-  onArchiveSubagent: (id: string) => void;
-  onDetachSubagent?: (id: string) => void;
+  /** The sheet page the row opens in place of the list, when it opens in a sheet. */
+  sheetTabId: string | null;
+  onArchiveSubagent: (address: AgentAddress) => void;
+  onDetachSubagent?: (address: AgentAddress) => void;
 }
 
 export function SubagentsTrackRow({
@@ -347,13 +368,16 @@ export function SubagentsTrackRow({
   row,
   onOpenSubagent,
   onOpenProviderSubagent,
+  sheetTabId,
   onArchiveSubagent,
   onDetachSubagent,
 }: SubagentsTrackRowProps): ReactElement {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const touchDetails = useTooltipTouchInteraction();
-  const presentation = useRowPresentation(row, serverId);
+  const rowServerId = row.kind === "paseo" ? row.address.serverId : serverId;
+
+  const presentation = useRowPresentation(row, rowServerId);
   const displayLabel =
     presentation.titleState === "loading" ? t("common.states.loading") : presentation.label;
   const details = buildSubagentRowDetails(t, row);
@@ -375,7 +399,7 @@ export function SubagentsTrackRow({
       if (row.kind === "provider") {
         onOpenProviderSubagent(row.parentAgentId, row.id);
       } else {
-        onOpenSubagent(row.id);
+        onOpenSubagent(row.address);
       }
     };
     if (!detailsOpen) {
@@ -394,11 +418,11 @@ export function SubagentsTrackRow({
       useProviderSubagentStore.getState().hideFromTrack(serverId, row.parentAgentId, [row.id]);
       return;
     }
-    onArchiveSubagent(row.id);
+    onArchiveSubagent(row.address);
   }, [onArchiveSubagent, row, serverId]);
   const handleDetachPress = useCallback(() => {
-    onDetachSubagent?.(row.id);
-  }, [onDetachSubagent, row.id]);
+    if (row.kind === "paseo") onDetachSubagent?.(row.address);
+  }, [onDetachSubagent, row]);
   const actionsAlwaysVisible = inline || isNative || isCompact;
   const canArchive = row.kind === "paseo" || isFinishedSubagent(row);
   const canDetach = row.kind === "paseo" && Boolean(onDetachSubagent);
@@ -449,6 +473,7 @@ export function SubagentsTrackRow({
           </Tooltip>
           {canArchive ? (
             <SubagentRowActions
+              compact={isCompact}
               inline={inline}
               rowId={row.id}
               displayLabel={displayLabel}
@@ -475,6 +500,7 @@ export function SubagentsTrackRow({
       presentation,
       row.id,
       row.kind,
+      isCompact,
     ],
   );
 
@@ -486,6 +512,7 @@ export function SubagentsTrackRow({
       // A reveal tap keeps the popover open so its details stay visible.
       closeOnSelect={!touchDetails || revealed}
       testID={`subagents-track-row-${row.id}`}
+      opensPage={sheetTabId ?? undefined}
       onPress={handlePress}
     >
       {renderRow}
@@ -493,10 +520,13 @@ export function SubagentsTrackRow({
   );
 }
 
+/** The same facts line the agent's sheet shows when it opens without its composer. */
+
 function SubagentRowActions({
   inline,
   rowId,
   displayLabel,
+  compact,
   visible,
   onDetachPress,
   onArchivePress,
@@ -505,12 +535,14 @@ function SubagentRowActions({
   inline?: boolean;
   rowId: string;
   displayLabel: string;
+  compact: boolean;
   visible: boolean;
   onDetachPress?: () => void;
   onArchivePress: () => void;
   providerNative: boolean;
 }): ReactElement {
   const { t } = useTranslation();
+  const iconSize = paneContentToolbarIconSize(compact);
   return (
     <View
       style={visible ? styles.actionClusterVisible : styles.actionClusterHidden}
@@ -519,13 +551,15 @@ function SubagentRowActions({
       {onDetachPress ? (
         <SubagentActionButton
           accessibilityLabel={t("subagents.detachAction", { label: displayLabel })}
-          testID={`subagents-track-detach-${rowId}`}
           tooltipLabel={t("subagents.detachTooltip")}
           inline={inline}
           icon="detach"
           visible={visible}
           onPress={onDetachPress}
-        />
+          testID={`subagents-track-detach-${rowId}`}
+        >
+          <ThemedUnlink size={iconSize} uniProps={mutedIconColorMapping} />
+        </SubagentActionButton>
       ) : null}
       <SubagentActionButton
         accessibilityLabel={
@@ -533,7 +567,6 @@ function SubagentRowActions({
             ? t("subagents.dismissAction", { label: displayLabel })
             : t("subagents.archiveAction", { label: displayLabel })
         }
-        testID={`subagents-track-archive-${rowId}`}
         tooltipLabel={
           providerNative ? t("subagents.dismissTooltip") : t("subagents.archiveTooltip")
         }
@@ -541,7 +574,10 @@ function SubagentRowActions({
         icon={providerNative ? "dismiss" : "archive"}
         visible={visible}
         onPress={onArchivePress}
-      />
+        testID={`subagents-track-archive-${rowId}`}
+      >
+        <ThemedArchive size={iconSize} uniProps={mutedIconColorMapping} />
+      </SubagentActionButton>
     </View>
   );
 }
@@ -571,12 +607,13 @@ function SubagentActionButton({
   onPress,
 }: {
   accessibilityLabel: string;
-  testID: string;
   tooltipLabel: string;
   inline?: boolean;
   icon: SubagentActionIcon;
   visible: boolean;
   onPress: () => void;
+  testID: string;
+  children: ReactNode;
 }): ReactElement {
   const touch = useVortonTouch();
   const rowActionStyle = useTaskCardRowActionStyle();
@@ -627,6 +664,24 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     color: theme.colors.foreground,
   },
+  // Title over facts. The facts sit under the title rather than beside it, so a long task name
+  // keeps the row's full width and neither line truncates the other.
+  rowText: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: "auto",
+    minWidth: 0,
+  },
+  rowTitle: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foreground,
+  },
+  rowFacts: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+  },
+  // Progress on the archive row. It shrinks twice as fast as the label, so a long retry count
+  // gives way first instead of squeezing the thing that names the row.
   rowTrailing: {
     flexShrink: 2,
     minWidth: 0,

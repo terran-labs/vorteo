@@ -11,6 +11,8 @@ import {
   expectActiveChatOutlinePromptMovedFrom,
   expectChatOutlinePreview,
   expectChatOutlinePrompts,
+  expectGroupedChatOutline,
+  expectGroupedChatOutlinePreview,
   expectChatOutlinePromptToRemainBare,
   expectLiveTurnPromptAboveFoldAndActive,
   expectNoChatOutlinePreviewWhileCrossingToSidebar,
@@ -29,6 +31,13 @@ import {
   expectReadingStreamedMarkdown,
 } from "../support/helpers/chat-outline";
 import { createCreationScenario } from "../support/helpers/creation";
+import { resizeAndSettle } from "../support/helpers/viewport";
+import {
+  attachPromptTimelineEvidence,
+  expectPromptsDrawnByPlugin,
+  expectVirtualizedPluginPromptVisible,
+  withPromptTimelinePlugin,
+} from "../support/helpers/plugin-timeline";
 import {
   expectTimelineAtMaximumScrollWithPromptVisible,
   expectTimelinePromptNotMounted,
@@ -71,6 +80,8 @@ test.describe("desktop chat outline", () => {
   test("renders explicit agent prompts as short marks and keeps navigation after reload", async ({
     page,
   }) => {
+    // Two layout switches of up to 12s each on CI on top of 16 loaded turns and a reload.
+    test.setTimeout(120_000);
     const agent = await seedLongMockAgentTimeline({ turns: 16 });
     const client = await connectDaemonClient<DaemonClient>({ clientIdPrefix: "outline-columns" });
     try {
@@ -114,9 +125,16 @@ test.describe("desktop chat outline", () => {
         await agentTick.click();
         await expectTimelinePromptLandedBelowTop(page, agent.prompts[1]);
       }
-      await page.setViewportSize({ width: 390, height: 850 });
+      // Known performance regression, reported to Builds on 2026-10-26: crossing the phone
+      // breakpoint freezes the page for one long task (7.6s to 390px and 8.4s back on a Mac,
+      // 12.1s and 11.5s in CI), which outlasted the 10s rail checks. useVortonTouch flips with
+      // compact width (dae3b41e3) and re-runs applyAppearance, whose Unistyles updateTheme
+      // restyles every sheet (commit that made it this slow not identified). Wait for the page
+      // to answer after each switch so the rail checks still run, and return to the default
+      // budget once the switch stays well under a second.
+      await resizeAndSettle(page, { width: 390, height: 850 });
       await expectNoChatOutline(page);
-      await page.setViewportSize({ width: 2400, height: 900 });
+      await resizeAndSettle(page, { width: 2400, height: 900 });
       await expectChatOutlinePrompts(page, 16);
     } finally {
       await client.close();
@@ -179,6 +197,60 @@ test.describe("desktop chat outline", () => {
       await agent.client.sendAgentMessage(agent.agentId, "live prompt while viewing old history");
       await agent.client.waitForFinish(agent.agentId, 15_000);
       await expectTimelinePromptVisible(page, agent.oldestPrompt);
+    } finally {
+      await agent.cleanup();
+    }
+  });
+
+  test("jumps to prompts a timeline plugin draws", async ({ page }) => {
+    test.setTimeout(180_000);
+    const agent = await seedLongMockAgentTimeline({ turns: 80 });
+    try {
+      await withPromptTimelinePlugin(async () => {
+        await page.setViewportSize(WIDE_VIEWPORT);
+        await openAgentTimeline(page, agent);
+        await expectChatOutlinePrompts(page, 80);
+        await expectPromptsDrawnByPlugin(page);
+        await expectTimelinePromptNotMounted(page, agent.prompts[39]);
+
+        // Unloaded, then loaded, then near the newest edge.
+        await clickChatOutlineRowEdge(page, 40);
+        await expectTimelinePromptLandedBelowTop(page, agent.prompts[39]);
+        await attachPromptTimelineEvidence(page, test.info());
+        await clickChatOutlineRowEdge(page, 45);
+        await expectTimelinePromptLandedBelowTop(page, agent.prompts[44]);
+        await clickChatOutlineRowEdge(page, 78);
+        await expectTimelineAtMaximumScrollWithPromptVisible(page, agent.prompts[77]);
+        await expectPromptsDrawnByPlugin(page);
+      });
+    } finally {
+      await agent.cleanup();
+    }
+  });
+
+  test("jumps to a loaded virtualized prompt a timeline plugin draws without fetching", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const agent = await seedLongMockAgentTimeline({ turns: 80 });
+    const prompt = agent.prompts[29]!;
+    try {
+      await withPromptTimelinePlugin(async () => {
+        const history = await holdOlderHistoryPages(page, agent);
+        await page.setViewportSize(WIDE_VIEWPORT);
+        await openAgentTimeline(page, agent);
+        await expectChatOutlinePrompts(page, 80);
+        await scrollThroughOlderHistoryPages(page, 2, history);
+        await scrollTimelineToNewestLoadedEdge(page);
+        await expectTimelinePromptNotMounted(page, prompt);
+        const requestsBeforeJump = history.requestCount();
+
+        await clickChatOutlineRowEdge(page, 30);
+        await expectTimelinePromptLandedBelowTop(page, prompt);
+        await expectVirtualizedPluginPromptVisible(page, prompt);
+        await attachPromptTimelineEvidence(page, test.info());
+        expect(history.requestCount()).toBe(requestsBeforeJump);
+      }, [prompt]);
     } finally {
       await agent.cleanup();
     }
@@ -345,6 +417,26 @@ test.describe("desktop chat outline", () => {
       await disableChatOutlineFromAppearance(page);
 
       await expectNoChatOutline(page);
+    } finally {
+      await agent.cleanup();
+    }
+  });
+
+  test("groups prompts into a bounded rail when they outnumber its height", async ({ page }) => {
+    test.setTimeout(120_000);
+    const agent = await seedLongMockAgentTimeline({ turns: 80 });
+    try {
+      await page.setViewportSize({ width: WIDE_VIEWPORT.width, height: 420 });
+      await openAgentTimeline(page, agent);
+
+      await expectGroupedChatOutline(page, 80);
+      await hoverChatOutlinePrompt(page, 1);
+      await expectGroupedChatOutlinePreview(page, agent.oldestPrompt);
+
+      await chatOutlineRail(page).getByRole("tab").first().click();
+      await expectTimelinePromptVisible(page, agent.oldestPrompt);
+      await page.getByTestId("scroll-to-bottom-button").click();
+      await expectTimelinePromptVisible(page, agent.newestPrompt);
     } finally {
       await agent.cleanup();
     }

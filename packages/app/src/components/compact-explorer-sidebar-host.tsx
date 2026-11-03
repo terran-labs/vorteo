@@ -15,6 +15,7 @@ import { useWorkspaceLayoutStore, findPaneById } from "@/stores/workspace-layout
 import { SupportingCardsContext } from "@/screens/workspace/supporting-cards-context";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
+import { revealWorkspaceTab } from "@/workspace-tabs/navigation";
 import { openWorkspaceFileFromExplorer } from "@/screens/workspace/workspace-file-open-command";
 import { isWeb } from "@/constants/platform";
 import { DiffDocumentWorkspaceCacheProvider } from "@/git/diff-document/workspace-cache";
@@ -137,7 +138,7 @@ export function CompactExplorerSidebarHost({
       openTab({ workspaceKey, target, intent: "reveal" }),
     [openTab],
   );
-  const focusWorkspaceTab = useWorkspaceLayoutStore((state) => state.focusTab);
+  useWorkspaceLayoutStore((state) => state.focusTab);
 
   const handleOpenExplorer = useCallback(() => {
     if (!model?.workspaceRoot) {
@@ -158,13 +159,12 @@ export function CompactExplorerSidebarHost({
       openWorkspaceFileFromExplorer({
         filePath,
         persistenceKey: model.persistenceKey,
-        closeExplorerAfterOpen: presentation === "overlay",
-        showMobileAgent,
         openWorkspaceTabInFocusedPane,
-        focusWorkspaceTab,
+        revealWorkspaceTab,
       });
+      if (presentation === "overlay") showMobileAgent();
     },
-    [focusWorkspaceTab, model, openWorkspaceTabInFocusedPane, presentation, showMobileAgent],
+    [model, openWorkspaceTabInFocusedPane, presentation, showMobileAgent],
   );
 
   const handleContainerLayout = useCallback((event: LayoutChangeEvent) => {

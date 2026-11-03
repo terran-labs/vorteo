@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect } from "expo-router/react-navigation";
 import { StyleSheet } from "react-native-unistyles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, MoreVertical, Pencil, Plus } from "lucide-react-native";
@@ -22,7 +22,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Alert } from "@/components/ui/alert";
-import { ExternalLink } from "@/components/ui/external-link";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Switch } from "@/components/ui/switch";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
@@ -165,7 +164,6 @@ function NoEditableTarget({
           testID="project-settings-back-button"
           onPress={onBackToProjects}
           variant="secondary"
-          size="md"
         >
           {t("settings.project.backToProjects")}
         </Button>
@@ -182,7 +180,6 @@ function BackToProjectsButton({ onPress }: { onPress: () => void }) {
       accessibilityLabel={t("settings.project.backToProjects")}
       onPress={onPress}
       variant="ghost"
-      size="sm"
       leftIcon={ArrowLeft}
       style={styles.backButton}
     >
@@ -441,7 +438,7 @@ function ReadFailureCallout({ kind, error, onReload }: ReadFailureCalloutProps) 
   return (
     <View style={styles.errorBlock}>
       <Alert size="md" testID={testID} variant="error" title={title} description={description}>
-        <Button testID={`${testID}-action-0`} onPress={onReload} variant="outline" size="sm">
+        <Button testID={`${testID}-action-0`} onPress={onReload} variant="outline">
           {t("settings.project.actions.reload")}
         </Button>
       </Alert>
@@ -685,25 +682,21 @@ function ProjectConfigForm({
   );
 
   const setupDocsLink = useMemo(
-    () => (
-      <ExternalLink
-        href={WORKTREE_DOCS_URL}
-        label={t("settings.project.worktree.docs")}
-        tooltip={t("settings.project.worktree.docsTooltip")}
-        testID="worktree-setup-docs-link"
-      />
-    ),
+    () => ({
+      href: WORKTREE_DOCS_URL,
+      label: t("settings.project.worktree.docs"),
+      tooltip: t("settings.project.worktree.docsTooltip"),
+      testID: "worktree-setup-docs-link",
+    }),
     [t],
   );
   const teardownDocsLink = useMemo(
-    () => (
-      <ExternalLink
-        href={WORKTREE_DOCS_URL}
-        label={t("settings.project.worktree.docs")}
-        tooltip={t("settings.project.worktree.docsTooltip")}
-        testID="worktree-teardown-docs-link"
-      />
-    ),
+    () => ({
+      href: WORKTREE_DOCS_URL,
+      label: t("settings.project.worktree.docs"),
+      tooltip: t("settings.project.worktree.docsTooltip"),
+      testID: "worktree-teardown-docs-link",
+    }),
     [t],
   );
 
@@ -721,7 +714,7 @@ function ProjectConfigForm({
         <SettingsSection
           title={t("settings.project.worktree.setup")}
           testID="worktree-setup-section"
-          trailing={setupDocsLink}
+          link={setupDocsLink}
         >
           {hasUncommittedWorktreeSetupChanges ? (
             <Alert
@@ -743,7 +736,7 @@ function ProjectConfigForm({
         <SettingsSection
           title={t("settings.project.worktree.teardown")}
           testID="worktree-teardown-section"
-          trailing={teardownDocsLink}
+          link={teardownDocsLink}
           flush
         >
           <SettingsTextAreaCard
@@ -806,12 +799,7 @@ function ProjectConfigForm({
             title={t("settings.project.writeFailures.staleTitle")}
             description={t("settings.project.writeFailures.staleDescription")}
           >
-            <Button
-              testID="stale-callout-action-0"
-              onPress={handleReload}
-              variant="outline"
-              size="sm"
-            >
+            <Button testID="stale-callout-action-0" onPress={handleReload} variant="outline">
               {t("settings.project.actions.reload")}
             </Button>
           </Alert>
@@ -827,20 +815,10 @@ function ProjectConfigForm({
             title={t("settings.project.writeFailures.failedTitle")}
             description={t("settings.project.writeFailures.failedDescription")}
           >
-            <Button
-              testID="write-failed-callout-action-0"
-              onPress={handleSave}
-              variant="outline"
-              size="sm"
-            >
+            <Button testID="write-failed-callout-action-0" onPress={handleSave} variant="outline">
               {t("settings.project.actions.tryAgain")}
             </Button>
-            <Button
-              testID="write-failed-callout-action-1"
-              onPress={handleReload}
-              variant="outline"
-              size="sm"
-            >
+            <Button testID="write-failed-callout-action-1" onPress={handleReload} variant="outline">
               {t("settings.project.actions.reload")}
             </Button>
           </Alert>
@@ -852,7 +830,6 @@ function ProjectConfigForm({
           testID="save-button"
           accessibilityLabel={t("settings.project.actions.save")}
           variant="default"
-          size="md"
           disabled={saveDisabled}
           loading={saveMutation.isPending}
           onPress={handleSave}

@@ -41,13 +41,24 @@ function planBindings(values) {
 /** This client is copied alone into Dev. Use built-ins, not an undeclared
  * dispatcher dependency, to avoid fetch's shorter independent headers timeout.
  * One deadline covers connection, headers and body; failure never retries. */
+/**
+ * Plain HTTP is allowed only where nothing crosses an untrusted network: Host loopback, and
+ * a gate-mode Dev's route to the coordinator. `host.docker.internal` resolves only inside
+ * the gate, so that request travels Dev's private network to the gate and on to the Host.
+ */
+export function plainHttpAllowed(hostname, env = process.env) {
+  return (
+    ["127.0.0.1", "localhost"].includes(hostname) ||
+    (hostname === "host.docker.internal" && env.PASEO_NETWORK_MODE === "gate")
+  );
+}
+
 export async function postCoordinatorRequest(url, options, timers = { setTimeout, clearTimeout }) {
   const send = url.protocol === "https:" ? httpsRequest : httpRequest;
   if (
     url.username ||
     url.password ||
-    (url.protocol !== "https:" &&
-      !(url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)))
+    (url.protocol !== "https:" && !(url.protocol === "http:" && plainHttpAllowed(url.hostname)))
   )
     throw new Error("TLS without URL credentials is required");
   const controller = new AbortController();
@@ -134,7 +145,7 @@ if (
     },
   });
   // Vorteo :: Builds is the only writer of shared state (AGENTS.md, "Builds coordinator").
-  if (positionals[0]?.startsWith("request-"))
+  if (positionals[0]?.startsWith("request-") || positionals[0] === "management-cancel")
     assertBuildsCoordinator(`installation-agent ${positionals[0]}`);
   if (
     values["supervisor-plan"] &&
@@ -146,8 +157,7 @@ if (
     throw new Error("Factory recovery requires --factory-runtime-plan");
   const config = JSON.parse(readFileSync(values.config, "utf8"));
   const base = new URL(config.origin);
-  const local = base.hostname === "127.0.0.1" || base.hostname === "localhost";
-  if (base.protocol !== "https:" && !(base.protocol === "http:" && local))
+  if (base.protocol !== "https:" && !(base.protocol === "http:" && plainHttpAllowed(base.hostname)))
     throw new Error("TLS is required");
   if (values["require-owner-approval"]) {
     if (
@@ -298,6 +308,43 @@ if (
         throw new Error("Monitor inspection requires trusted Host client");
       resource = "/api/installation/monitor-selection";
       break;
+    case "request-broker-consumer-deployment": {
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker consumer deployment requires the trusted Host client");
+      if (!values["request-file"])
+        throw new Error("Use --request-file with the exact prepared broker plan and request ID");
+      const capabilityResponse = await fetch(new URL("/api/installation/capabilities", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (
+        !capabilityResponse.ok ||
+        !(await capabilityResponse.json()).previewBrokerDeployment?.available
+      )
+        throw new Error(
+          "Preview broker consumer deployment is unavailable. No installation requested.",
+        );
+      resource = "/api/installation/broker-deployment-requests";
+      body = JSON.parse(readFileSync(values["request-file"], "utf8"));
+      break;
+    }
+    case "request-broker-channel-rebind": {
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker maintenance requires the trusted Host client");
+      if (!values["request-file"])
+        throw new Error("Use --request-file with the exact prepared broker plan and request ID");
+      const capabilityResponse = await fetch(new URL("/api/installation/capabilities", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!capabilityResponse.ok || !(await capabilityResponse.json()).previewBroker?.available)
+        throw new Error("Preview broker maintenance is unavailable. No installation requested.");
+      resource = "/api/installation/broker-rebind-requests";
+      body = JSON.parse(readFileSync(values["request-file"], "utf8"));
+      break;
+    }
     case "request-monitor": {
       if (config.kind !== "host-agent")
         throw new Error("Preview monitor maintenance requires the trusted Host client");
@@ -352,6 +399,20 @@ if (
     case "session-host-status":
       await requireSessionHostJob(base, config);
       resource = "/api/installation/session-host";
+      break;
+    case "broker-deployment-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A request ID is required");
+      resource = `/api/installation/broker-deployment-requests/${positionals[1]}`;
+      break;
+    case "broker-rebind-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A request ID is required");
+      resource = `/api/installation/broker-rebind-requests/${positionals[1]}`;
       break;
     case "monitor-status":
       if (config.kind !== "host-agent")
@@ -408,6 +469,35 @@ if (
         ...(values["require-owner-approval"] ? { requireOwnerApproval: true } : {}),
       };
       process.stderr.write(`Coordinator request: ${preparation.id}\n`);
+      break;
+    }
+    case "management-status":
+    case "management-receipt":
+    case "management-cancel": {
+      if (config.kind !== "host-agent")
+        throw new Error("Installation management requires Host access");
+      const response = await fetch(new URL("/api/installation/capabilities", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      const capability = response.ok ? (await response.json()).installationManagement : null;
+      if (!capability?.available || !capability.enabled || !capability.cancellation)
+        throw new Error(
+          "Explicit installation management is unavailable or disabled. No decision sent.",
+        );
+      resource = "/api/installation/management/requests";
+      if (positionals[0] === "management-receipt") {
+        if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+          throw new Error("A receipt ID is required");
+        resource = `/api/installation/management/receipts/${positionals[1]}`;
+      }
+      if (positionals[0] === "management-cancel") {
+        if (!values["request-file"])
+          throw new Error("Use --request-file with the exact management cancellation");
+        body = JSON.parse(readFileSync(values["request-file"], "utf8"));
+        resource = "/api/installation/management/cancel";
+      }
       break;
     }
     case "coordinator-status":
@@ -499,7 +589,7 @@ if (
       break;
     default:
       throw new Error(
-        "Commands: capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, container-agents (Host only)",
+        "Commands: request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, container-agents (Host only)",
       );
   }
   let upload;
@@ -630,6 +720,10 @@ if (
   }
   let result = await response.json();
   if (
+    positionals[0] === "request-broker-consumer-deployment" ||
+    positionals[0] === "broker-deployment-status" ||
+    positionals[0] === "request-broker-channel-rebind" ||
+    positionals[0] === "broker-rebind-status" ||
     positionals[0] === "request-monitor" ||
     positionals[0] === "monitor-status" ||
     positionals[0] === "request-helper" ||

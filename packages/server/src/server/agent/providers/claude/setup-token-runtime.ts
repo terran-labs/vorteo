@@ -1,5 +1,9 @@
+import { mkdirSync } from "node:fs";
 import { mkdir, lstat } from "node:fs/promises";
-import { readClaudeSetupFile } from "../../../execution-installation/accounts/claude-setup-file.js";
+import {
+  readClaudeSetupFile,
+  writeClaudeSetupFile,
+} from "../../../execution-installation/accounts/claude-setup-file.js";
 import {
   ClaudeSetupDeliveryReceiptSchema,
   setupCredentialDigest,
@@ -12,6 +16,30 @@ import { claudeSignInMode } from "./sign-in-mode.js";
 
 export function claudeSetupTokenStore(configDirectory: string): ClaudeSetupTokenStore {
   return new ClaudeSetupTokenStore({ directory: join(configDirectory, ".vorteo-auth") });
+}
+
+const FULL_SIGN_IN_MARKER = "full-sign-in.json";
+
+/**
+ * Records that this account directory moved from a setup token to full sign-in. Sessions started
+ * before the upgrade still carry the setup-token environment; they read this to switch over.
+ * Not a credential.
+ */
+export function markClaudeAccountFullSignIn(configDirectory: string): void {
+  mkdirSync(configDirectory, { recursive: true, mode: 0o700 });
+  writeClaudeSetupFile(join(configDirectory, ".vorteo-auth", FULL_SIGN_IN_MARKER), {
+    version: 1,
+    signIn: "full",
+  });
+}
+
+export function claudeAccountUpgradedToFullSignIn(configDirectory: string): boolean {
+  try {
+    return readClaudeSetupFile(join(configDirectory, ".vorteo-auth", FULL_SIGN_IN_MARKER)) !== null;
+  } catch {
+    // An unsafe or unreadable marker never changes how a session authenticates.
+    return false;
+  }
 }
 
 export async function readClaudeSetupToken(
@@ -29,8 +57,16 @@ export async function readClaudeSetupToken(
     throw new ClaudeSetupTokenError();
   }
   if (receipt === null) {
-    // A managed installation must not launch against an older native account before delivery.
-    if (process.env.VORTEO_INSTALLATION_CLIENT_CONFIG) throw new ClaudeSetupTokenError();
+    // Bound accounts must wait for delivery. The unconfigured native CLI account
+    // has no delivery record and should use its existing login on this machine.
+    // A Dev image sets CLAUDE_CONFIG_DIR for the whole daemon, so only a directory the
+    // binding chose differently from the daemon's own marks a bound account.
+    const bindingDirectory =
+      env.CLAUDE_CONFIG_DIR !== undefined &&
+      env.CLAUDE_CONFIG_DIR !== process.env.CLAUDE_CONFIG_DIR;
+    const boundAccount = bindingDirectory || credential !== null;
+    if (process.env.VORTEO_INSTALLATION_CLIENT_CONFIG && boundAccount)
+      throw new ClaudeSetupTokenError();
     if (credential) await ensureConsumerSecureDirectory(config);
     return credential;
   }

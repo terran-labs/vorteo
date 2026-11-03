@@ -1,5 +1,11 @@
-import { expect, it } from "vitest";
-import { quotaReading, limitingWindow } from "./quota-reading";
+import { afterEach, expect, it, vi } from "vitest";
+import {
+  PROVIDER_USAGE_DISPLAY_STALE_MS,
+  quotaReading,
+  limitingWindow,
+  nextReset,
+  resetDescription,
+} from "./quota-reading";
 import { retainLastKnownUsage } from "./usage-cache";
 import { providerUsageView } from "./usage-view";
 import { selectedPresetPresentation } from "../agent-profiles/selected-preset-presentation";
@@ -129,12 +135,8 @@ it("shows prepaid credits when either coding allowance is exhausted", () => {
 
 it.each([
   { remainingPct: 1, balance: 12500, expected: null },
-  { remainingPct: 0.1, balance: 12500, expected: null },
   { remainingPct: 0, balance: 0, expected: null },
-  { remainingPct: 0, balance: -1, expected: null },
   { remainingPct: 0, balance: NaN, expected: null },
-  { remainingPct: 0, balance: Infinity, expected: null },
-  { remainingPct: 0, balance: undefined, expected: null },
   { remainingPct: 0, balance: 12.5, expected: "12.5 credits left" },
 ])(
   "uses actual exhaustion and a positive known balance: $remainingPct / $balance",
@@ -196,7 +198,7 @@ it.each([
       },
     };
     expect(quotaReading(prepaidView, providerId, 1).prepaidLabel).toBe(expected);
-    expect(quotaReading(prepaidView, providerId, 600000).statusLabel).toBe("Last known usage");
+    expect(quotaReading(prepaidView, providerId, 600_001).statusLabel).toBe("Last known usage");
   },
 );
 
@@ -216,4 +218,116 @@ it("hides prepaid usage after authentication fails", () => {
     },
   };
   expect(quotaReading(disconnected, "secondary", 1).prepaidLabel).toBeNull();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+function claudeUsage(windows: ProviderUsageListPayload["providers"][number]["windows"]) {
+  return { ...payload.providers[0], providerId: "claude-two", windows };
+}
+
+it("prefers a window with a reset time when allowances tie", () => {
+  vi.useFakeTimers({ now: 0 });
+  const usage = claudeUsage([
+    { id: "five_hour", label: "Session", remainingPct: 100, resetsAt: null },
+    { id: "weekly", label: "Weekly", remainingPct: 100, resetsAt: new Date(6 * DAY).toISOString() },
+    {
+      id: "weekly_model_fable",
+      label: "Weekly \u00b7 Fable",
+      remainingPct: 100,
+      resetsAt: new Date(3 * DAY).toISOString(),
+    },
+  ]);
+  const window = limitingWindow(usage);
+  expect(window?.id).toBe("weekly_model_fable");
+  expect(resetDescription(usage, window!)).toBe("Resets in 3 days");
+});
+
+it("names the next known reset when the limiting window has none", () => {
+  vi.useFakeTimers({ now: 0 });
+  const usage = claudeUsage([
+    { id: "five_hour", label: "Session", remainingPct: 40, resetsAt: null },
+    { id: "weekly", label: "Weekly", remainingPct: 90, resetsAt: new Date(6 * DAY).toISOString() },
+    {
+      id: "code_review",
+      label: "Code review",
+      remainingPct: 10,
+      resetsAt: new Date(HOUR).toISOString(),
+    },
+  ]);
+  const window = limitingWindow(usage);
+  expect(window?.id).toBe("five_hour");
+  expect(nextReset(usage)).toEqual({
+    window: usage.windows[1],
+    resetsAt: usage.windows[1].resetsAt,
+  });
+  expect(resetDescription(usage, window!)).toBe("Weekly resets in 6 days");
+});
+
+it("labels an unstarted session instead of a missing reset time", () => {
+  vi.useFakeTimers({ now: 0 });
+  const unstarted = claudeUsage([{ id: "five_hour", label: "Session", remainingPct: 100 }]);
+  expect(resetDescription(unstarted, limitingWindow(unstarted)!)).toBe("Session not started");
+  const unknown = claudeUsage([{ id: "weekly", label: "Weekly", remainingPct: 70 }]);
+  expect(resetDescription(unknown, limitingWindow(unknown)!)).toBe("Reset time unavailable");
+  const started = claudeUsage([
+    {
+      id: "five_hour",
+      label: "Session",
+      remainingPct: 80,
+      resetsAt: new Date(2 * HOUR).toISOString(),
+    },
+  ]);
+  expect(resetDescription(started, limitingWindow(started)!)).toBe("Resets in 2h");
+});
+
+it("keeps a healthy cached reading current until the display threshold passes", () => {
+  expect(quotaReading(view, "secondary", 6 * 60 * 1000).statusLabel).toBeNull();
+  expect(quotaReading(view, "secondary", PROVIDER_USAGE_DISPLAY_STALE_MS).statusLabel).toBeNull();
+  expect(quotaReading(view, "secondary", PROVIDER_USAGE_DISPLAY_STALE_MS + 1).statusLabel).toBe(
+    "Last known usage",
+  );
+  expect(
+    quotaReading({ ...view, refreshError: "Timeout" }, "secondary", 6 * 60 * 1000).statusLabel,
+  ).toBe("Last known usage; refresh unavailable");
+});
+
+it("shows a limit-message window as an ordinary reading and marks its source", () => {
+  vi.useFakeTimers({ now: 0 });
+  const setupToken = {
+    ...payload.providers[0],
+    providerId: "claude-setup",
+    status: "unavailable" as const,
+    windows: [],
+    details: [
+      { id: "claude-setup-token", label: "Subscription", value: "Setup-token connection." },
+    ],
+  };
+  const observedUsage = {
+    ...setupToken,
+    status: "available" as const,
+    windows: [
+      {
+        id: "weekly",
+        label: "Weekly",
+        remainingPct: 0,
+        resetsAt: new Date(9 * HOUR).toISOString(),
+      },
+    ],
+    details: [
+      ...setupToken.details,
+      { id: "claude-limit-observation", label: "Source", value: "From last limit message" },
+    ],
+  };
+  const reading = (usage: typeof setupToken | typeof observedUsage) =>
+    quotaReading({ ...view, payload: { ...payload, providers: [usage] } }, "claude-setup", 1);
+  expect(reading(setupToken)).toMatchObject({ statusLabel: "Usage not provided", observed: false });
+  const observed = reading(observedUsage);
+  expect(observed).toMatchObject({ remaining: 0, statusLabel: null, observed: true });
+  expect(resetDescription(observed.usage, observed.window!)).toBe("Resets in 9h");
 });

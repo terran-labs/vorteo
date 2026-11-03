@@ -1,3 +1,4 @@
+import { pendingCodexAsyncQuestions } from "./providers/codex/async-questions.js";
 import type { HeldRestart } from "@getpaseo/protocol/messages";
 import {
   blockedReviewDue,
@@ -40,11 +41,19 @@ import {
 import type { MessageQueueService } from "../message-queue/service.js";
 import type { QueueItem } from "@getpaseo/protocol/message-queue";
 import { mergeGoalHistory } from "./goal-history.js";
+import type {
+  AttachedAgentTool,
+  PluginAgentToolsRuntime,
+  SessionOpenWireRequest,
+} from "../plugins/agent-tools.js";
+import type { AgentToolResult } from "@getpaseo/plugin/server";
+import type { RuntimeCleanupCandidate } from "./idle-runtime-cleanup/index.js";
+import { ensureAgentLoaded } from "./agent-loading.js";
 import { projectTimelineRows } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { managedWorkerLimit } from "./worker-limit.js";
 import { countRunningWorkers } from "./worker-activity.js";
@@ -119,6 +128,7 @@ import {
 import type { AgentUsageLimitResumeAction, UsageLimitHold } from "@getpaseo/protocol/usage-limit";
 import { usageLimitContinuationText } from "./usage-limit/resume-service.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
+import { toStoredAgentRecord } from "./agent-projections.js";
 import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import { ProviderQuotaExhaustedError } from "./quota-error.js";
@@ -143,7 +153,7 @@ import {
   type PendingForegroundRun,
 } from "./agent-run-state.js";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
-import { isSystemInjectedEnvelope } from "./agent-prompt.js";
+import { hasArmedFinishNotification, isSystemInjectedEnvelope } from "./agent-prompt.js";
 import {
   buildSwitchHistory,
   prependSwitchHistory,
@@ -154,8 +164,13 @@ import type {
   ProfileSwitchEndpoint,
   ProfileSwitchTimelineItem,
 } from "@getpaseo/protocol/agent-types";
+import { parseAgentMessage, projectAgentMessages } from "./agent-messages/index.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
-import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
+import {
+  PASEO_MCP_SERVER_NAME,
+  stripInternalPaseoMcpServer,
+  withRuntimePaseoMcpServer,
+} from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
 import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
@@ -363,6 +378,7 @@ export type {
 
 export type AgentManagerEvent =
   | { type: "agent_state"; agent: ManagedAgent }
+  | { type: "agent_removed"; agentId: string; workspaceId?: string; internal: boolean }
   | { type: "provider_subagent"; event: ProviderSubagentStoreEvent }
   | { type: "timeline_replacement"; agentId: string; epoch: string }
   | {
@@ -379,6 +395,8 @@ export type AgentSubscriber = (event: AgentManagerEvent) => void;
 export interface SubscribeOptions {
   agentId?: string;
   replayState?: boolean;
+  /** Receive events for internal agents too. Off by default for global subscribers. */
+  includeInternal?: boolean;
 }
 
 interface HydrateTimelineOptions {
@@ -455,7 +473,14 @@ export interface AgentManagerOptions {
   getSharedProviderConfig?: () => MutableDaemonConfig;
   installationSettingsReader?: InstallationSettingsReader;
   assertWorkspaceArchiveAllowed?: (workspaceId: string) => Promise<void>;
+  /** Archive admission for one thread; falls back to the workspace check when absent. */
+  assertThreadArchiveAllowed?: (input: {
+    workspaceId: string;
+    agentId: string;
+    running: boolean;
+  }) => Promise<void>;
   pluginLifecycle?: PluginLifecycle;
+  /** An internal workspace makes every agent created inside it internal. */
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
   idFactory?: () => string;
@@ -463,10 +488,12 @@ export interface AgentManagerOptions {
   registry?: AgentStorage;
   onAgentAttention?: AgentAttentionCallback;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
+  timelineStore?: InMemoryAgentTimelineStore;
   durableTimelineStore?: AgentTimelineStore;
   terminalManager?: TerminalManager | null;
   mcpBaseUrl?: string;
   mcpAuthToken?: string;
+  pluginAgentTools?: PluginAgentToolsRuntime;
   paseoToolsEnabled?: boolean;
   paseoToolCatalogFactory?: PaseoToolCatalogFactory;
   resolvePaseoToolPolicy?: (provider: AgentProvider) => ProviderPaseoToolsPolicy | undefined;
@@ -513,6 +540,33 @@ export type AttentionState =
       attentionTimestamp: Date;
     };
 
+/** What an idle-release pass observed; the release is refused if the agent changed since. */
+export interface IdleSessionObservation {
+  updatedAt: number;
+  session: unknown;
+}
+
+function matchesIdleObservation(
+  agent: { updatedAt: Date; session: unknown },
+  expected: IdleSessionObservation,
+): boolean {
+  return agent.updatedAt.getTime() === expected.updatedAt && agent.session === expected.session;
+}
+
+/** Quota, usage-limit and controller custody each expect the agent's current session to stay. */
+function hasQuotaOrControllerHold(config: AgentSessionConfig): boolean {
+  const usageLimitHeld = Boolean(config.usageLimitHold && !config.usageLimitHold.releasedAt);
+  return Boolean(config.quotaPausedAt || config.controllerExecutionId) || usageLimitHeld;
+}
+
+/** An active goal continues by itself inside the provider; a usage-limited one resumes there. */
+function hasLiveGoal(session: Pick<AgentSession, "goals">): boolean {
+  const state = session.goals?.state;
+  if (!state) return false;
+  if (state.status !== "ready") return true;
+  return state.goal?.status === "active" || state.goal?.status === "usageLimited";
+}
+
 function resolveInitialAttention(input: AttentionState | undefined): AttentionState {
   if (input == null || !input.requiresAttention) {
     return { requiresAttention: false };
@@ -556,6 +610,8 @@ interface ManagedAgentBase {
   owner?: AgentOwner;
   capabilities: AgentCapabilityFlags;
   config: AgentSessionConfig;
+  /** Explicit launch overrides, before per-opening hooks and daemon-owned variables. */
+  launchEnv?: Record<string, string>;
   runtimeInfo?: AgentRuntimeInfo;
   createdAt: Date;
   updatedAt: Date;
@@ -698,18 +754,20 @@ interface AgentMetadataPatch {
 
 const SYSTEM_ERROR_PREFIX = "[System Error]";
 
-function attachPersistenceCwd(
+function normalizePersistenceForConfig(
   handle: AgentPersistenceHandle | null,
-  cwd: string,
+  config: AgentSessionConfig,
 ): AgentPersistenceHandle | null {
   if (!handle) {
     return null;
   }
+  const { mcpServers: _launchMcpServers, ...metadata } = handle.metadata ?? {};
   return {
     ...handle,
     metadata: {
-      ...handle.metadata,
-      cwd,
+      ...metadata,
+      cwd: config.cwd,
+      ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
     },
   };
 }
@@ -717,6 +775,7 @@ function attachPersistenceCwd(
 interface SubscriptionRecord {
   callback: AgentSubscriber;
   agentId: string | null;
+  includeInternal: boolean;
 }
 
 interface SteerEventBarrier {
@@ -801,14 +860,13 @@ function buildExplicitTimelineSeedForRegister(
 function buildImportedTimelineRows(entries: readonly ImportedTimelineEntry[]): AgentTimelineRow[] {
   const rows: AgentTimelineRow[] = [];
   for (const entry of entries) {
-    if (entry.item.type === "user_message" && isSystemInjectedEnvelope(entry.item.text)) {
-      continue;
+    for (const item of projectAgentMessages(entry.item)) {
+      rows.push({
+        seq: rows.length + 1,
+        timestamp: entry.timestamp ?? new Date().toISOString(),
+        item: limitAgentTimelineItemContent(item),
+      });
     }
-    rows.push({
-      seq: rows.length + 1,
-      timestamp: entry.timestamp ?? new Date().toISOString(),
-      item: limitAgentTimelineItemContent(entry.item),
-    });
   }
   return rows;
 }
@@ -843,7 +901,7 @@ function getFirstUserMessageTextFromRows(rows: readonly AgentTimelineRow[]): str
 }
 
 function shouldDetachFromArchivedParent(
-  parent: StoredAgentRecord,
+  parent: Pick<StoredAgentRecord, "workspaceId">,
   child: StoredAgentRecord,
 ): boolean {
   const isCrossWorkspace =
@@ -865,6 +923,18 @@ function detachedAgentLabelPatch(labels: Record<string, string>): AgentLabelPatc
 
 /** How long an account counts as limited after a stop that reported no reset time. */
 const USAGE_LIMIT_UNKNOWN_RESET_MS = 60 * 60 * 1000;
+/**
+ * How long an archived internal agent stays readable by id. Storage plays this
+ * role for public agents; internal agents never reach it, and a one-shot helper
+ * can finish and auto-archive before its creator's `waitForFinish` arrives.
+ */
+const RETIRED_INTERNAL_AGENT_TTL_MS = 10 * 60 * 1000;
+const RETIRED_INTERNAL_AGENT_LIMIT = 500;
+
+export interface RetiredInternalAgent {
+  record: ArchivedStoredAgentRecord;
+  lastMessage: string | null;
+}
 
 export class AgentManager {
   private readonly pendingWorkerCreations = new Map<string, number>();
@@ -886,6 +956,15 @@ export class AgentManager {
     reader: NonNullable<AgentManager["quotaReserveObservationReader"]>,
   ): void {
     this.quotaReserveObservationReader = reader;
+  }
+
+  private usageLimitObserver:
+    | ((provider: AgentProvider, stop: Extract<AgentStreamEvent, { type: "turn_failed" }>) => void)
+    | null = null;
+
+  /** Receives each live usage-limit stop, including internal and structured-generation runs. */
+  setUsageLimitObserver(observer: NonNullable<AgentManager["usageLimitObserver"]>): void {
+    this.usageLimitObserver = observer;
   }
 
   private async readQuotaReserveObservation(provider: AgentProvider) {
@@ -1409,6 +1488,10 @@ export class AgentManager {
   }
 
   private readonly pluginLifecycle: PluginLifecycle | undefined;
+  private readonly retiredInternalAgents = new Map<
+    string,
+    RetiredInternalAgent & { expiresAt: number }
+  >();
   private readonly clients = new Map<AgentProvider, AgentClient>();
   private readonly governedClientGenerations = new Map<AgentProvider, number>();
   private readonly controllerSessions = new Map<
@@ -1421,7 +1504,7 @@ export class AgentManager {
   private readonly providerEnabled = new Map<AgentProvider, boolean>();
   private readonly providerDefinitions = new Map<AgentProvider, ProviderEnabledFlag>();
   private readonly agents = new Map<string, LiveManagedAgent>();
-  private readonly timelineStore = new InMemoryAgentTimelineStore();
+  private readonly timelineStore: InMemoryAgentTimelineStore;
   private readonly providerSubagents = new ProviderSubagentStore();
   private readonly agentsAwaitingInitialSnapshotPersist = new Set<string>();
   private readonly sessionEventTails = new Map<string, Promise<void>>();
@@ -1436,11 +1519,19 @@ export class AgentManager {
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
+  /** Agents whose idle session is being released; no run may start until the close settles. */
+  private readonly automaticCloses = new Set<string>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
+  private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
+  private readonly collectingRuntimes = new Set<string>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
   private readonly mcpAuthToken: string | null;
+  private sessionOpenGeneration = 0;
+  private readonly sessionOpenGenerations = new Map<string, number>();
+  private readonly attachedPluginTools = new Map<string, AttachedAgentTool[]>();
+  private readonly pluginAgentTools: PluginAgentToolsRuntime | undefined;
   private paseoToolsEnabled = true;
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private readonly paseoToolPolicies = new Map<string, ProviderPaseoToolsPolicy | undefined>();
@@ -1505,15 +1596,21 @@ export class AgentManager {
   private readonly installationSettingsReader?: InstallationSettingsReader;
 
   readonly assertWorkspaceArchiveAllowed?: AgentManagerOptions["assertWorkspaceArchiveAllowed"];
+  private readonly assertThreadArchiveAllowed?: AgentManagerOptions["assertThreadArchiveAllowed"];
 
   constructor(options: AgentManagerOptions) {
     this.getSharedProviderConfig = options.getSharedProviderConfig;
     this.installationSettingsReader = options.installationSettingsReader;
     this.assertWorkspaceArchiveAllowed = options.assertWorkspaceArchiveAllowed;
+    this.assertThreadArchiveAllowed = options.assertThreadArchiveAllowed;
     this.now = options.now ?? Date.now;
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.registry = options.registry;
     this.pluginLifecycle = options.pluginLifecycle;
+    this.pluginAgentTools = options.pluginAgentTools;
+    this.timelineStore = options.timelineStore ?? new InMemoryAgentTimelineStore();
+    this.idFactory = options.idFactory ?? (() => randomUUID());
+    this.registry = options?.registry;
     this.durableTimelineStore = options?.durableTimelineStore;
     this.onAgentAttention = options?.onAgentAttention;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
@@ -1523,12 +1620,7 @@ export class AgentManager {
     this.resolvePaseoToolPolicy = options.resolvePaseoToolPolicy ?? (() => undefined);
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
-    this.rescueTimeouts = {
-      reloadSessionCloseMs:
-        options.rescueTimeouts?.reloadSessionCloseMs ?? RELOAD_SESSION_CLOSE_TIMEOUT_MS,
-      interruptSessionMs:
-        options.rescueTimeouts?.interruptSessionMs ?? INTERRUPT_SESSION_TIMEOUT_MS,
-    };
+    this.rescueTimeouts = this.resolveRescueTimeouts(options);
     this.beforeSteerUnavailableFallback = options.beforeSteerUnavailableFallback;
     this.agentStreamCoalescer = new AgentStreamCoalescer({
       windowMs: options.agentStreamCoalesceWindowMs ?? AGENT_STREAM_COALESCE_DEFAULT_WINDOW_MS,
@@ -1542,6 +1634,17 @@ export class AgentManager {
       providerDefinitions: options.providerDefinitions ?? {},
       clients: options.clients ?? {},
     });
+  }
+
+  private resolveRescueTimeouts(
+    options: AgentManagerOptions,
+  ): Required<AgentManagerRescueTimeouts> {
+    return {
+      reloadSessionCloseMs:
+        options.rescueTimeouts?.reloadSessionCloseMs ?? RELOAD_SESSION_CLOSE_TIMEOUT_MS,
+      interruptSessionMs:
+        options.rescueTimeouts?.interruptSessionMs ?? INTERRUPT_SESSION_TIMEOUT_MS,
+    };
   }
 
   private configurePaseoTools(options: AgentManagerOptions): void {
@@ -1812,7 +1915,7 @@ export class AgentManager {
     prompt: AgentPromptInput,
     item: QueueItem,
   ): AsyncGenerator<AgentStreamEvent> | null {
-    if (this.isRestartDraining()) return null;
+    if (this.isRestartDraining() || this.automaticCloses.has(agentId)) return null;
     const agent = this.getAgent(agentId);
     const stored = this.registry?.getLoadedRecord(agentId);
     if (!agent || stored?.archivedAt || agent.lifecycle !== "idle") return null;
@@ -2323,6 +2426,62 @@ export class AgentManager {
     this.paseoToolCatalogFactory = factory;
   }
 
+  invalidatePluginSessions(): void {
+    this.sessionOpenGeneration++;
+  }
+
+  async reloadStalePluginSession(agentId: string): Promise<void> {
+    if (!this.needsPluginSessionReload(agentId)) return;
+    await this.trackAgentRegistrationOperation(
+      this.runLifecycleMutation(agentId, async () => {
+        if (!this.needsPluginSessionReload(agentId)) return;
+        await this.reloadAgentSessionInternal(agentId);
+      }),
+    );
+  }
+
+  private needsPluginSessionReload(agentId: string): boolean {
+    const agent = this.getAgent(agentId);
+    return (
+      agent !== null &&
+      agent.lifecycle !== "closed" &&
+      this.sessionOpenGenerations.get(agentId) !== this.sessionOpenGeneration &&
+      !this.hasInFlightRun(agentId)
+    );
+  }
+
+  getPluginTools(agentId: string): readonly AttachedAgentTool[] {
+    return (this.attachedPluginTools.get(agentId) ?? []).filter((tool) =>
+      this.pluginAgentTools?.isToolPluginAvailable(tool.pluginId, tool.pluginInstanceId),
+    );
+  }
+
+  async executePluginTool(
+    tool: AttachedAgentTool,
+    agentId: string,
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<AgentToolResult> {
+    const agent = this.getAgent(agentId);
+    if (!agent || agent.lifecycle === "closed") throw new Error(`Agent is not live: ${agentId}`);
+    if (!this.pluginAgentTools) throw new Error("Plugin tools are unavailable");
+    const record = await this.registry?.get(agentId);
+    return this.pluginAgentTools.callTool(
+      tool.pluginId,
+      tool.pluginInstanceId,
+      describeHookAgent({ ...agent, title: record?.title ?? agent.config.title }),
+      tool.name,
+      input,
+      signal,
+    );
+  }
+
+  private detachPluginTools(agentId: string): void {
+    this.attachedPluginTools.delete(agentId);
+    this.sessionOpenGenerations.delete(agentId);
+    this.pluginAgentTools?.detachTools(agentId);
+  }
+
   getPaseoToolPolicy(agentId: string): ProviderPaseoToolsPolicy | undefined {
     return this.paseoToolPolicies.get(agentId);
   }
@@ -2457,6 +2616,7 @@ export class AgentManager {
     const record: SubscriptionRecord = {
       callback,
       agentId: targetAgentId,
+      includeInternal: options?.includeInternal === true,
     };
     this.subscribers.add(record);
 
@@ -2470,9 +2630,9 @@ export class AgentManager {
           });
         }
       } else {
-        // For global subscribers, skip internal agents during replay
+        // Global subscribers skip internal agents unless they opted in.
         for (const agent of this.agents.values()) {
-          if (agent.internal) {
+          if (agent.internal && !record.includeInternal) {
             continue;
           }
           callback({
@@ -2503,9 +2663,9 @@ export class AgentManager {
     );
   }
 
-  listAgents(): ManagedAgent[] {
+  listAgents(options?: { includeInternal?: boolean }): ManagedAgent[] {
     return Array.from(this.agents.values())
-      .filter((agent) => !agent.internal)
+      .filter((agent) => options?.includeInternal === true || !agent.internal)
       .map((agent) => Object.assign({}, agent));
   }
 
@@ -2514,6 +2674,20 @@ export class AgentManager {
     // Its final provider is not indexed yet, so defer deletion until registration settles.
     if (this.agentRegistrationTasks.size > 0) return true;
     return Array.from(this.agents.values()).some((agent) => agent.provider === provider);
+  }
+
+  /** Archived internal agents still readable by id; see getRetiredInternalAgent. */
+  listRetiredInternalAgents(): RetiredInternalAgent[] {
+    const now = Date.now();
+    const retired: RetiredInternalAgent[] = [];
+    for (const [agentId, entry] of this.retiredInternalAgents) {
+      if (entry.expiresAt <= now) {
+        this.retiredInternalAgents.delete(agentId);
+        continue;
+      }
+      retired.push({ record: entry.record, lastMessage: entry.lastMessage });
+    }
+    return retired;
   }
 
   async listImportableSessions(
@@ -2720,6 +2894,34 @@ export class AgentManager {
     return agent ? { ...agent } : null;
   }
 
+  /**
+   * True when a registered, idle agent's provider history never loaded. A run in flight
+   * may hold rows the provider has not written yet, so the retry waits for it to finish.
+   */
+  needsTimelineHydration(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.historyPrimed || agent.session === null) return false;
+    if (agent.config.controllerExecutionId || this.hasInFlightRun(agentId)) return false;
+    return this.timelineStore.has(agentId);
+  }
+
+  /**
+   * Retries a history load that failed after the agent was registered. Turns recorded
+   * since the failure are also in the provider's transcript, so when any exist the replay
+   * replaces the timeline under a new epoch; clients then reset instead of keeping only
+   * the recent rows.
+   */
+  async retryTimelineHydration(
+    agentId: string,
+    options: { broadcast: () => boolean },
+  ): Promise<void> {
+    const replace = this.timelineStore.getLastItem(agentId) !== null;
+    await this.hydrateTimelineFromProvider(agentId, {
+      broadcast: options.broadcast,
+      ...(replace ? { force: true } : {}),
+    });
+  }
+
   async waitForAgentClose(agentId: string): Promise<void> {
     // Loading during reload must wait for the replacement, not resume another writer.
     await this.lifecycleMutationTails.get(agentId);
@@ -2780,10 +2982,18 @@ export class AgentManager {
   async fetchSavedTimeline(
     id: string,
     options?: AgentTimelineFetchOptions,
+    loadLegacyRows?: () => Promise<AgentTimelineRow[]>,
   ): Promise<AgentTimelineFetchResult> {
     // Reading committed history must not require starting its original provider.
-    if (!this.durableTimelineStore) throw new Error("Saved timeline storage is unavailable");
-    return this.durableTimelineStore.fetchCommitted(id, options);
+    if (this.durableTimelineStore) return this.durableTimelineStore.fetchCommitted(id, options);
+    if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
+    const rows = await loadLegacyRows();
+    // Native transcripts predate durable timelines. Keep pagination stable across reads,
+    // and reset cursors if the transcript changes, without registering a live session.
+    const epoch = createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+    const saved = new InMemoryAgentTimelineStore();
+    saved.initialize(id, { rows, epoch });
+    return saved.fetch(id, options);
   }
 
   listProviderSubagents(parentAgentId: string): ProviderSubagentDescriptor[] {
@@ -2861,7 +3071,7 @@ export class AgentManager {
     options: CreateAgentOptions,
   ): Promise<{ config: AgentSessionConfig; options: CreateAgentOptions }> {
     if (this.pluginLifecycle && !config.internal) {
-      const request = await this.pluginLifecycle.before("agent.create", {
+      const request = await this.pluginLifecycle.before("agent.create.before", {
         config: structuredClone(config),
         env: { ...options.env },
       });
@@ -2951,19 +3161,28 @@ export class AgentManager {
       provider: storedConfig.provider,
     });
     this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
+    function buildCreateOpening() {
+      return {
+        reason: "create" as const,
+        purpose: "interactive" as const,
+        workspaceId: options.workspaceId ?? null,
+        title: options.initialTitle ?? storedConfig.title ?? null,
+        labels: options.labels ?? {},
+      };
+    }
     const launchContext = await this.buildLaunchContext(
       resolvedAgentId,
       client,
       storedConfig.cwd,
       paseoToolPolicy,
       options?.env,
-      { reason: "create", purpose: "interactive", workspaceId: options.workspaceId ?? null },
+      buildCreateOpening(),
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
     assertInternalBindings();
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
-    await this.requireExternalMcpSupport(session, storedConfig);
+    await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
     const parentId = options.labels?.[PARENT_AGENT_ID_LABEL];
     const pausedAt = parentId ? this.agents.get(parentId)?.config.quotaPausedAt : undefined;
     if (pausedAt) storedConfig.quotaPausedAt = pausedAt;
@@ -2972,10 +3191,11 @@ export class AgentManager {
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
+      launchEnv: options.env ? { ...options.env } : undefined,
       historyPrimed: true,
     });
     if (!agent.internal) {
-      this.pluginLifecycle?.emit("agent.created", {
+      this.pluginLifecycle?.emit("agent.create.after", {
         agent: describeHookAgent({ ...agent, title: agent.config.title }),
       });
     }
@@ -3098,10 +3318,11 @@ export class AgentManager {
       : resumeOptions;
     const purpose = currentResumeOptions?.purpose ?? "interactive";
 
+    const launchEnv = record?.launchEnv;
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       mergedConfig,
       resolvedAgentId,
-      { purpose },
+      { purpose, env: launchEnv },
     );
     const client = this.requireClient(handle.provider);
     const available = await client.isAvailable();
@@ -3111,17 +3332,25 @@ export class AgentManager {
       );
     }
     this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
+    function buildResumeOpening(): Pick<
+      PluginSessionOpenRequest,
+      "reason" | "purpose" | "workspaceId" | "title" | "labels"
+    > {
+      return {
+        reason: "resume",
+        purpose,
+        workspaceId: options?.workspaceId ?? null,
+        title: record?.title ?? mergedConfig.title ?? null,
+        labels: record?.labels ?? options?.labels ?? {},
+      };
+    }
     const launchContext = await this.buildLaunchContext(
       resolvedAgentId,
       client,
       storedConfig.cwd,
       paseoToolPolicy,
-      undefined,
-      {
-        reason: "resume",
-        purpose,
-        workspaceId: options?.workspaceId ?? null,
-      },
+      launchEnv,
+      buildResumeOpening(),
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const session = await client.resumeSession(
@@ -3130,9 +3359,10 @@ export class AgentManager {
       launchContext,
       currentResumeOptions,
     );
-    await this.requireExternalMcpSupport(session, storedConfig);
+    await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
     return this.registerSession(session, storedConfig, resolvedAgentId, {
       ...options,
+      launchEnv,
       persistence: handle,
       restoring: true,
     });
@@ -3184,7 +3414,12 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       undefined,
-      { reason: "import", purpose: "interactive", workspaceId: input.workspaceId },
+      {
+        reason: "import",
+        purpose: "interactive",
+        workspaceId: input.workspaceId,
+        labels: input.labels ?? {},
+      },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const imported = await client.importSession(
@@ -3194,6 +3429,7 @@ export class AgentManager {
       },
       { config: providerLaunchConfig, storedConfig, launchContext },
     );
+    await this.requireExternalMcpSupport(imported.session, providerLaunchConfig, launchContext);
     let handedToRegistration = false;
     try {
       const importedConfig = await this.normalizeConfig(
@@ -3270,6 +3506,7 @@ export class AgentManager {
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       refreshConfig,
       agentId,
+      { env: existing.launchEnv },
     );
     const hadPreviousPaseoToolPolicy = this.paseoToolPolicies.has(agentId);
     const previousPaseoToolPolicy = this.paseoToolPolicies.get(agentId);
@@ -3278,15 +3515,21 @@ export class AgentManager {
       client,
       storedConfig.cwd,
       paseoToolPolicy,
-      undefined,
-      { reason: "refresh", purpose: "interactive", workspaceId: existing.workspaceId },
+      existing.launchEnv,
+      {
+        reason: "refresh",
+        purpose: "interactive",
+        workspaceId: existing.workspaceId,
+        title: await this.resolveInitialPersistedTitle(agentId, existing.config, null),
+        labels: existing.labels,
+      },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     if (
-      Object.keys(storedConfig.mcpServers ?? {}).length > 0 &&
+      Object.keys(stripInternalPaseoMcpServer(providerLaunchConfig).mcpServers ?? {}).length > 0 &&
       existing.session.capabilities.supportsMcpServers !== true
     ) {
-      throw new Error(`Provider '${provider}' does not support MCP servers`);
+      throw this.unsupportedMcpError(providerLaunchConfig, launchContext);
     }
 
     let session: AgentSession | undefined;
@@ -3305,7 +3548,7 @@ export class AgentManager {
       session = handle
         ? await client.resumeSession(handle, providerLaunchConfig, launchContext)
         : await client.createSession(providerLaunchConfig, launchContext);
-      await this.requireExternalMcpSupport(session, storedConfig);
+      await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
       this.assertAcceptingAgentRegistrations();
 
       if (rehydrateFromDisk) {
@@ -3323,6 +3566,7 @@ export class AgentManager {
         labels: existing.labels,
         workspaceId: existing.workspaceId,
         owner: existing.owner,
+        launchEnv: existing.launchEnv,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
         lastUserMessageAt: existing.lastUserMessageAt,
@@ -3343,6 +3587,7 @@ export class AgentManager {
       throw error;
     } finally {
       if (!handedToRegistration) {
+        this.detachPluginTools(agentId);
         if (hadPreviousPaseoToolPolicy) {
           this.paseoToolPolicies.set(agentId, previousPaseoToolPolicy);
         } else {
@@ -3366,7 +3611,9 @@ export class AgentManager {
         "The original transcript could not be read. Restore access to the original account and retry; this thread has not changed.",
       );
     const rows: AgentTimelineRow[] = [];
-    for await (const rawEvent of this.streamHistoryWithSubmissions(record, events)) {
+    for await (const rawEvent of this.streamHistoryWithSubmissions(record, events, {
+      passive: true,
+    })) {
       const event = limitAgentStreamEventContent(rawEvent);
       if (event.type !== "timeline") continue;
       if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) continue;
@@ -3462,7 +3709,7 @@ export class AgentManager {
 
       this.paseoToolPolicies.set(agentId, paseoToolPolicy);
       session = await client.createSession(providerLaunchConfig, launchContext);
-      await this.requireExternalMcpSupport(session, storedConfig);
+      await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
       this.assertAcceptingAgentRegistrations();
 
       handedToRegistration = true;
@@ -3602,6 +3849,117 @@ export class AgentManager {
     }
   }
 
+  /**
+   * The archived snapshot of an internal agent, for a while after archive.
+   * Null once it has expired or was never an internal agent.
+   */
+  getRetiredInternalAgent(agentId: string): RetiredInternalAgent | null {
+    const entry = this.retiredInternalAgents.get(agentId);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAt <= Date.now()) {
+      this.retiredInternalAgents.delete(agentId);
+      return null;
+    }
+    return { record: entry.record, lastMessage: entry.lastMessage };
+  }
+
+  private retireInternalAgent(entry: RetiredInternalAgent): void {
+    const now = Date.now();
+    for (const [agentId, retired] of this.retiredInternalAgents) {
+      if (retired.expiresAt <= now) {
+        this.retiredInternalAgents.delete(agentId);
+      }
+    }
+    while (this.retiredInternalAgents.size >= RETIRED_INTERNAL_AGENT_LIMIT) {
+      const oldest = this.retiredInternalAgents.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.retiredInternalAgents.delete(oldest);
+    }
+    this.retiredInternalAgents.set(entry.record.id, {
+      ...entry,
+      expiresAt: now + RETIRED_INTERNAL_AGENT_TTL_MS,
+    });
+  }
+
+  /** Capture runtime capabilities without handing lifecycle ownership to the collector. */
+  getRuntimeCleanupCandidates(): RuntimeCleanupCandidate[] {
+    if (!this.registry) return [];
+    const candidates: RuntimeCleanupCandidate[] = [];
+    for (const agent of this.agents.values()) {
+      const updatedAt = agent.updatedAt;
+      let identity = this.runtimeCleanupIdentities.get(agent.session);
+      if (!identity) {
+        identity = Object.freeze({});
+        this.runtimeCleanupIdentities.set(agent.session, identity);
+      }
+      const isEligible = () =>
+        this.agents.get(agent.id) === agent &&
+        agent.updatedAt === updatedAt &&
+        this.runtimeHasNoPendingWork(agent);
+      candidates.push({
+        identity,
+        agentId: agent.id,
+        parentAgentId: getParentAgentIdFromLabels(agent.labels) ?? undefined,
+        provider: agent.provider,
+        sessionId: agent.persistence?.sessionId ?? null,
+        lastActivityAt: updatedAt.getTime(),
+        isEligible,
+        canStopRuntime: agent.session.canStopRuntime?.bind(agent.session),
+        closeIfEligible: async (revalidate) => {
+          if (!agent.persistence?.sessionId) return false;
+          // The collector cannot infer delivery or restart custody from provider idleness.
+          const queue = await this.messageQueueControl?.read?.(agent.id);
+          if (
+            !queue ||
+            queue.paused ||
+            queue.items.length > 0 ||
+            queue.deliveryError ||
+            (await this.messageQueueControl?.restartContinuationHeld?.(agent.id))
+          )
+            return false;
+          // Block prompt admission before entering the close lane. A skipped close also
+          // releases this barrier, so the waiting prompt keeps the existing runtime.
+          this.collectingRuntimes.add(agent.id);
+          try {
+            return await this.runLifecycleMutation(agent.id, () =>
+              this.closeAgentRuntime(agent.id, () => isEligible() && revalidate()),
+            );
+          } finally {
+            this.collectingRuntimes.delete(agent.id);
+          }
+        },
+      });
+    }
+    return candidates;
+  }
+
+  private runtimeHasNoPendingWork(agent: LiveManagedAgent): boolean {
+    return (
+      agent.lifecycle === "idle" &&
+      !this.isRestartDraining() &&
+      !hasQuotaOrControllerHold(agent.config) &&
+      !hasLiveGoal(agent.session) &&
+      !this.controllerSessions.has(agent.id) &&
+      !agent.owner &&
+      !agent.queueGoalHold &&
+      !hasArmedFinishNotification(this, agent.id) &&
+      !agent.internal &&
+      agent.activeForegroundTurnId === null &&
+      !this.runs.hasRun(agent.id) &&
+      !agent.pendingReplacement &&
+      agent.pendingPermissions.size === 0 &&
+      agent.inFlightPermissionResponses.size === 0 &&
+      (this.collectingRuntimes.has(agent.id) || !this.lifecycleMutationTails.has(agent.id)) &&
+      !this.foregroundMutationTails.has(agent.id) &&
+      !this.sessionEventTails.has(agent.id) &&
+      !this.providerSubagents.list(agent.id).some((child) => child.status === "running")
+    );
+  }
+
   closeAgent(agentId: string, options?: { onlyIfIdle: boolean }): Promise<void> {
     const existing = this.inFlightAgentCloses.get(agentId);
     if (existing) {
@@ -3626,7 +3984,65 @@ export class AgentManager {
     return close;
   }
 
-  private async closeAgentRuntime(agentId: string, onlyIfIdle = false): Promise<void> {
+  /**
+   * Closes an idle agent's provider session so its process exits; the agent reopens on demand
+   * the way an unloaded agent does after a restart. Leaves the agent loaded, returning false,
+   * whenever something still relies on the live session or the agent changed since the caller
+   * observed it idle.
+   */
+  async releaseIdleSession(agentId: string, expected?: IdleSessionObservation): Promise<boolean> {
+    const queue = this.messageQueueControl;
+    if (this.automaticCloses.has(agentId)) return false;
+    if (!queue?.read || !this.isIdleReleasable(agentId, expected)) return false;
+    const snapshot = await queue.read(agentId);
+    const queueBusy =
+      snapshot.paused || snapshot.items.length > 0 || Boolean(snapshot.deliveryError);
+    if (queueBusy || (await queue.restartContinuationHeld?.(agentId))) return false;
+    // Final check, then reserve the agent in the same synchronous step. Run admission
+    // (streamAgent, queued delivery) refuses an agent with a reserved run, so no turn can start
+    // on a session while it closes; a refused queue item is delivered after the agent reopens.
+    if (!this.isIdleReleasable(agentId, expected)) return false;
+    // The marker, unlike the reservation, cannot be settled by a Stop or a replacement's
+    // cancellation timeout, so admission stays closed until the close itself settles.
+    this.automaticCloses.add(agentId);
+    const reservation = this.runs.createPendingRun(agentId);
+    const hosted = Boolean(this.agents.get(agentId)?.session?.isDurablyHosted?.());
+    try {
+      // The host additionally refuses atomically if its session is no longer idle.
+      await this.closeAgent(agentId, hosted ? { onlyIfIdle: true } : undefined);
+      return true;
+    } catch (error) {
+      if (!hosted) throw error;
+      return false;
+    } finally {
+      // A completed close clears the agent's runs; otherwise drop only our own reservation.
+      if (this.runs.getRun(agentId) === reservation) this.runs.clearAgentRun(agentId);
+      this.automaticCloses.delete(agentId);
+    }
+  }
+
+  private isIdleReleasable(agentId: string, expected?: IdleSessionObservation): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent?.session || agent.lifecycle !== "idle" || agent.internal) return false;
+    // A newer update or a reopened session restarts the idle period the caller measured.
+    if (expected && !matchesIdleObservation(agent, expected)) return false;
+    if (this.isRestartDraining() || this.inFlightAgentCloses.has(agentId)) return false;
+    if (this.lifecycleMutationTails.has(agentId) || this.hasInFlightRun(agentId)) return false;
+    const awaitingPermission =
+      agent.pendingPermissions.size > 0 || agent.inFlightPermissionResponses.size > 0;
+    if (agent.activeTurnId || awaitingPermission || agent.pendingReplacement) return false;
+    if (this.controllerSessions.has(agentId) || agent.owner || agent.queueGoalHold) return false;
+    // Closing a watched child would send its caller a "was closed" notification.
+    if (hasArmedFinishNotification(this, agentId)) return false;
+    return !hasQuotaOrControllerHold(agent.config) && !hasLiveGoal(agent.session);
+  }
+
+  private async closeAgentRuntime(
+    agentId: string,
+    condition?: boolean | (() => boolean),
+  ): Promise<boolean> {
+    const onlyIfIdle = condition === true;
+    const canClose = typeof condition === "function" ? condition : undefined;
     const agent = this.requireAgent(agentId);
     await this.assertControllerSettled(agent);
     this.logger.trace(
@@ -3642,6 +4058,7 @@ export class AgentManager {
       "agent.manager.close.start",
     );
     await this.drainSessionEvents(agentId);
+    if (canClose && !canClose()) return false;
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
     if (onlyIfIdle) {
@@ -3660,6 +4077,7 @@ export class AgentManager {
     } catch (error) {
       persistError = error;
     }
+    this.detachPluginTools(agentId);
     this.emitClosedAgent(closedAgent, { persist: false });
     this.logger.trace(
       {
@@ -3674,6 +4092,7 @@ export class AgentManager {
       throw persistError;
     }
     this.controllerSessions.delete(agentId);
+    return true;
   }
 
   private cancelRunningProviderSubagents(parentAgentId: string): void {
@@ -3691,13 +4110,27 @@ export class AgentManager {
   }
 
   async assertAgentArchiveAllowed(agentId: string): Promise<void> {
-    const agent = this.getAgent(agentId) ?? (await this.registry?.get(agentId));
-    if (agent?.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    const live = this.getAgent(agentId);
+    const agent = live ?? (await this.registry?.get(agentId));
+    // Running is judged only here, before archive cancels the run, so a refusal
+    // never follows a cancellation. Later checks repeat the workspace rules.
+    const running = live ? live.lifecycle === "running" || this.runs.hasRun(agentId) : false;
+    if (agent?.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId, running);
+  }
+
+  private async assertThreadArchive(
+    workspaceId: string,
+    agentId: string,
+    running = false,
+  ): Promise<void> {
+    if (this.assertThreadArchiveAllowed)
+      return this.assertThreadArchiveAllowed({ workspaceId, agentId, running });
+    await this.assertWorkspaceArchiveAllowed?.(workspaceId);
   }
 
   async archiveAgent(agentId: string): Promise<{ archivedAt: string }> {
     const agent = this.requireAgent(agentId);
-    if (agent.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    if (agent.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId);
     await this.messageQueueControl?.pause(agentId);
     return this.runLifecycleMutation(agentId, () => this.archiveAgentUnlocked(agentId));
   }
@@ -3707,8 +4140,25 @@ export class AgentManager {
     requestedArchivedAt?: string,
   ): Promise<{ archivedAt: string }> {
     const agent = this.requireAgent(agentId);
-    if (agent.workspaceId) await this.assertWorkspaceArchiveAllowed?.(agent.workspaceId);
+    if (agent.workspaceId) await this.assertThreadArchive(agent.workspaceId, agentId);
     await this.assertControllerSettled(agent);
+    if (agent.internal) {
+      // Nothing about an internal agent is on disk, and archiving must not put
+      // it there. Its final snapshot is kept in memory for a while (see
+      // getRetiredInternalAgent); the runtime is closed and the committed
+      // timeline dropped, so `getAgent` returns null from here on.
+      const archivedAt = requestedArchivedAt ?? new Date().toISOString();
+      const lastMessage = await this.getLastAssistantMessage(agentId);
+      const record = buildArchivedAgentRecord(
+        toStoredAgentRecord(agent, { title: agent.config.title ?? null, internal: true }),
+        { archivedAt, updatedAt: archivedAt },
+      );
+      await this.closeAgentRuntime(agentId);
+      await this.deleteAgentState(agentId);
+      this.retireInternalAgent({ record, lastMessage });
+      await this.cascadeArchiveChildren(record);
+      return { archivedAt };
+    }
     if (!this.registry) {
       throw new Error("Agent storage is not configured");
     }
@@ -3727,7 +4177,7 @@ export class AgentManager {
     await this.syncNativeArchiveState(stored.provider, stored.persistence, "archive");
     this.discardRetainedAgentState(agentId);
 
-    await this.cascadeArchiveChildren(agentId);
+    await this.cascadeArchiveChildren(stored);
 
     return { archivedAt };
   }
@@ -3736,16 +4186,15 @@ export class AgentManager {
   // label pointing back at the caller. Archiving the parent cascades to those
   // children so subagent fleets don't outlive their orchestrator. Detached
   // handoff agents omit this label, so they stand outside the cascade.
-  private async cascadeArchiveChildren(parentAgentId: string): Promise<void> {
+  private async cascadeArchiveChildren(
+    parent: Pick<StoredAgentRecord, "id" | "workspaceId">,
+  ): Promise<void> {
     const registry = this.registry;
     if (!registry) {
       return;
     }
+    const parentAgentId = parent.id;
     const records = await registry.list();
-    const parent = records.find((record) => record.id === parentAgentId);
-    if (!parent) {
-      throw new Error(`Archived parent ${parentAgentId} not found in storage`);
-    }
     for (const record of records) {
       if (record.archivedAt) {
         continue;
@@ -3773,6 +4222,21 @@ export class AgentManager {
         } else {
           await this.archiveSnapshotUnlocked(currentChild.id, new Date().toISOString());
         }
+      });
+    }
+    // Internal children never reach storage, so the scan above cannot see them.
+    // They have no tab to keep open and no listing to detach into, so they
+    // always archive with the parent.
+    for (const child of Array.from(this.agents.values())) {
+      if (!child.internal || getParentAgentIdFromLabels(child.labels) !== parentAgentId) {
+        continue;
+      }
+      await this.runLifecycleMutation(child.id, async () => {
+        const current = this.agents.get(child.id);
+        if (!current || getParentAgentIdFromLabels(current.labels) !== parentAgentId) {
+          return;
+        }
+        await this.archiveAgentUnlocked(current.id);
       });
     }
   }
@@ -3804,7 +4268,7 @@ export class AgentManager {
     const archivedRecord = buildArchivedAgentRecord(record, options);
     await this.requireRegistry().upsert(archivedRecord);
     if (!record.archivedAt && !record.internal) {
-      this.pluginLifecycle?.emit("agent.archived", {
+      this.pluginLifecycle?.emit("agent.archive.after", {
         agent: describeHookAgent(archivedRecord),
         archivedAt: archivedRecord.archivedAt,
       });
@@ -3845,7 +4309,9 @@ export class AgentManager {
         availableModes: [],
         features: record.features,
         currentModeId: record.lastModeId ?? null,
-        pendingPermissions: new Map(),
+        pendingPermissions: new Map(
+          pendingCodexAsyncQuestions(record.persistence).map((request) => [request.id, request]),
+        ),
         bufferedPermissionResolutions: new Map(),
         inFlightPermissionResponses: new Set(),
         pendingReplacement: false,
@@ -3889,6 +4355,139 @@ export class AgentManager {
   ): Promise<import("@getpaseo/protocol/agent-context").AgentContextBreakdown | null> {
     const agent = this.requireSessionAgent(agentId);
     return (await agent.session.getContextBreakdown?.()) ?? null;
+  }
+
+  /**
+   * Automatic recovery never opens an unloaded provider: resumeSession may execute
+   * native goal work before the manager can read its authority. Manual loading is unchanged.
+   */
+  async startRestartRecovery(
+    agentId: string,
+    prompt: string,
+  ): Promise<AsyncGenerator<AgentStreamEvent> | null> {
+    const registry = this.registry;
+    const queue = this.messageQueueControl;
+    if (!registry || !queue?.withIdleQueue) return null;
+    // Warm durable state before taking lanes. Never use this detached read as a permit.
+    await registry.get(agentId);
+    return this.runForegroundMutation(agentId, (foregroundAllowsStart) =>
+      this.withQueueGoalMutation(agentId, async (goalAllowsStart) => {
+        const agent = this.agents.get(agentId);
+        if (!agent?.session || agent.session.supportsAutomaticRecoveryDispatch !== true)
+          return null;
+        const session = agent.session;
+        const config = agent.config;
+        const configSnapshot = structuredClone(config);
+        const storedConfigSnapshot = structuredClone(registry.getLoadedRecord(agentId)?.config);
+        const sharedConfig = this.getSharedProviderConfig?.();
+        let reservedRun: PendingForegroundRun | null = null;
+        const durableStateAllowsRecovery = () => {
+          const record = registry.getLoadedRecord(agentId);
+          if (
+            !record ||
+            record.archivedAt ||
+            record.internal ||
+            record.owner ||
+            record.queueGoalHold
+          )
+            return false;
+          if (
+            !isDeepStrictEqual(record.config, storedConfigSnapshot) ||
+            !isDeepStrictEqual(agent.config, configSnapshot) ||
+            this.getSharedProviderConfig?.() !== sharedConfig
+          )
+            return false;
+          if (
+            record.config?.quotaPausedAt ||
+            record.config?.quotaReserve ||
+            (record.config?.usageLimitHold && !record.config.usageLimitHold.releasedAt)
+          )
+            return false;
+          return true;
+        };
+        const lanesAllowRecovery = () => {
+          if (
+            !foregroundAllowsStart() ||
+            !goalAllowsStart() ||
+            !this.acceptingAgentRegistrations ||
+            this.isRestartDraining() ||
+            this.collectingRuntimes.has(agentId) ||
+            this.automaticCloses.has(agentId) ||
+            this.stoppedRestartContinuations.has(agentId)
+          )
+            return false;
+          return true;
+        };
+        const runtimeAllowsRecovery = () => {
+          if (
+            this.agents.get(agentId) !== agent ||
+            agent.session !== session ||
+            agent.config !== config ||
+            agent.lifecycle !== "idle" ||
+            agent.activeTurnId ||
+            agent.queueGoalHold ||
+            agent.owner ||
+            agent.pendingPermissions.size ||
+            agent.inFlightPermissionResponses.size ||
+            hasQuotaOrControllerHold(config) ||
+            config.quotaReserve ||
+            this.controllerSessions.has(agentId) ||
+            session.supportsAutomaticRecoveryDispatch !== true
+          )
+            return false;
+          const run = this.runs.getPendingRun(agentId);
+          if (reservedRun ? run !== reservedRun || reservedRun.settled : this.runs.hasRun(agentId))
+            return false;
+          return true;
+        };
+        const goalAllowsRecovery = () => {
+          const state = session.goals?.state;
+          if (
+            state &&
+            (state.status !== "ready" ||
+              state.queueContinuationHeld ||
+              state.restartContinuationHeld ||
+              (state.goal &&
+                (state.goal.status !== "active" ||
+                  (state.goal.tokenBudget !== null &&
+                    state.goal.tokensUsed >= state.goal.tokenBudget))))
+          )
+            return false;
+          return true;
+        };
+        const eligible = () =>
+          durableStateAllowsRecovery() &&
+          lanesAllowRecovery() &&
+          runtimeAllowsRecovery() &&
+          goalAllowsRecovery();
+        if (!eligible()) return null;
+        if (session.goals) await this.readAgentGoal(agentId);
+        if (!eligible()) return null;
+        const dispatchWhenQueueIdle = async (queueAllowsStart: () => boolean) => {
+          const permit = {
+            assertValidForDispatch: () => {
+              if (!eligible() || !queueAllowsStart())
+                throw new Error("Automatic recovery admission changed before native dispatch.");
+              this.assertQuotaNotPaused(agentId);
+            },
+          };
+          if (!eligible() || !queueAllowsStart()) return null;
+          // No await between the final check and synchronous run reservation. Keep
+          // all lanes until startTurn acknowledges; later mutations invalidate this permit.
+          const stream = this.streamAgent(agentId, prompt, {
+            origin: "agent",
+            automaticRecoveryPermit: permit,
+          });
+          reservedRun = this.runs.getPendingRun(agentId) ?? null;
+          const first = await stream.next();
+          return (async function* () {
+            if (!first.done) yield first.value;
+            yield* stream;
+          })();
+        };
+        return queue.withIdleQueue!(agentId, dispatchWhenQueueIdle);
+      }),
+    );
   }
 
   async readAgentGoal(
@@ -4330,7 +4929,7 @@ export class AgentManager {
 
   async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {
     const record = await this.requireRegistry().get(agentId);
-    if (record?.workspaceId) await this.assertWorkspaceArchiveAllowed?.(record.workspaceId);
+    if (record?.workspaceId) await this.assertThreadArchive(record.workspaceId, agentId);
     await this.messageQueueControl?.pause(agentId);
     return this.runLifecycleMutation(agentId, () =>
       this.archiveSnapshotUnlocked(agentId, archivedAt),
@@ -4356,7 +4955,7 @@ export class AgentManager {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    if (record.workspaceId) await this.assertWorkspaceArchiveAllowed?.(record.workspaceId);
+    if (record.workspaceId) await this.assertThreadArchive(record.workspaceId, agentId);
     const nextRecord = await this.persistArchivedRecord(record, { archivedAt });
 
     await this.syncNativeArchiveState(record.provider, record.persistence, "archive");
@@ -4365,7 +4964,7 @@ export class AgentManager {
     if (!nextRecord.internal) this.dispatchStoredAgentState(nextRecord);
 
     await this.fireAgentArchived(agentId);
-    await this.cascadeArchiveChildren(agentId);
+    await this.cascadeArchiveChildren(record);
 
     return nextRecord;
   }
@@ -4576,16 +5175,34 @@ export class AgentManager {
    * emitted by the handler flow through dispatchStream so they persist and
    * broadcast like normal timeline events.
    */
-  tryRunOutOfBand(agentId: string, prompt: AgentPromptInput, options?: AgentRunOptions): boolean {
+  async tryRunOutOfBand(
+    agentId: string,
+    prompt: AgentPromptInput,
+    options?: AgentRunOptions,
+  ): Promise<boolean> {
+    if (this.collectingRuntimes.has(agentId) || !this.agents.has(agentId)) {
+      await this.waitForAgentClose(agentId);
+      await ensureAgentLoaded(agentId, {
+        agentManager: this,
+        agentStorage: this.requireRegistry(),
+        logger: this.logger,
+      });
+    }
     this.assertAcceptingAgentRegistrations();
     this.assertQuotaNotPaused(agentId);
     const agent = this.requireSessionAgent(agentId);
-    const handler = agent.session.tryHandleOutOfBand?.(prompt);
+    // Providers parse slash commands from the raw text, so a command another agent sent
+    // must reach them without its sender envelope.
+    const agentMessage = typeof prompt === "string" ? parseAgentMessage(prompt) : null;
+    const handler = agent.session.tryHandleOutOfBand?.(
+      agentMessage?.source ? agentMessage.text : prompt,
+    );
     if (!handler) {
       return false;
     }
+    this.touchUpdatedAt(agent);
     if (options?.clientMessageId) {
-      this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, {
+      this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
         intent: handler.intent,
         origin: options.origin,
       });
@@ -4606,7 +5223,7 @@ export class AgentManager {
       }
       this.dispatchStream(agent.id, event, { timestamp: new Date().toISOString() });
     };
-    void (async () => {
+    void this.runForegroundMutation(agentId, async () => {
       try {
         await handler.run({ emit: dispatch });
       } catch (error) {
@@ -4617,7 +5234,7 @@ export class AgentManager {
           item: { type: "assistant_message", text: `[Error] ${text}` },
         });
       }
-    })();
+    });
     return true;
   }
 
@@ -4777,7 +5394,7 @@ export class AgentManager {
         throw error;
       }
       if (isStaleProviderSessionError(error)) {
-        pendingRun.start = { status: "failed", error: error.message };
+        this.runs.settleForegroundStart(pendingRun, { status: "failed", error: error.message });
         agent.pendingReplacement = false;
         if (!agent.activeForegroundTurnId) agent.lifecycle = "idle";
         this.runs.settleForegroundRun(agentId, pendingRun.token);
@@ -4785,28 +5402,47 @@ export class AgentManager {
       }
       agent.pendingReplacement = false;
       const errorMsg = error instanceof Error ? error.message : "Failed to start turn";
-      pendingRun.start = { status: "failed", error: errorMsg };
-      await this.handleStreamEvent(agent, {
-        type: "turn_failed",
-        provider: agent.provider,
-        error: errorMsg,
-        ...(error instanceof ProviderQuotaExhaustedError ? { code: error.code } : {}),
-      });
-      this.finalizeForegroundTurn(agent);
-      this.runs.settleForegroundRun(agentId, pendingRun.token);
+      this.runs.settleForegroundStart(pendingRun, { status: "failed", error: errorMsg });
+      try {
+        // A terminal rejection belongs after the submitted prompt even though no provider turn exists.
+        if (options?.clientMessageId) {
+          this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "rejected", {
+            messageId: options.clientMessageId,
+          });
+        }
+        await this.handleStreamEvent(agent, {
+          type: "turn_failed",
+          provider: agent.provider,
+          error: errorMsg,
+          ...(error instanceof ProviderQuotaExhaustedError ? { code: error.code } : {}),
+        });
+        this.finalizeForegroundTurn(agent);
+      } finally {
+        // A steer waiting on this start is released only once the run is cleared.
+        this.runs.settleForegroundRun(agentId, pendingRun.token);
+      }
       throw error;
     }
   }
 
-  streamAgent(
+  private async *streamAfterRuntimeCollection(
     agentId: string,
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
   ): AsyncGenerator<AgentStreamEvent> {
-    this.assertAcceptingAgentRegistrations();
-    const existingAgent = this.requireSessionAgent(agentId);
-    this.assertQuotaNotPaused(agentId);
-    this.takeOverUsageLimitHold(existingAgent, options);
+    await this.waitForAgentClose(agentId);
+    await ensureAgentLoaded(agentId, {
+      agentManager: this,
+      agentStorage: this.requireRegistry(),
+      logger: this.logger,
+    });
+    yield* this.streamAgent(agentId, prompt, options);
+  }
+
+  private assertManagedWorkerStartAllowed(
+    existingAgent: ActiveManagedAgent,
+    agentId: string,
+  ): void {
     const parentId = existingAgent.labels[PARENT_AGENT_ID_LABEL];
     const parent = parentId ? this.agents.get(parentId) : undefined;
     if (parent?.config.profileLaunch?.worker) {
@@ -4823,6 +5459,22 @@ export class AgentManager {
         );
       }
     }
+  }
+
+  streamAgent(
+    agentId: string,
+    prompt: AgentPromptInput,
+    options?: AgentRunOptions,
+  ): AsyncGenerator<AgentStreamEvent> {
+    this.assertAcceptingAgentRegistrations();
+    if (this.collectingRuntimes.has(agentId) || (!this.agents.has(agentId) && this.registry))
+      return this.streamAfterRuntimeCollection(agentId, prompt, options);
+    const existingAgent = this.requireSessionAgent(agentId);
+    this.assertNotAutomaticallyClosing(agentId);
+    this.assertQuotaNotPaused(agentId);
+    options?.automaticRecoveryPermit?.assertValidForDispatch();
+    this.takeOverUsageLimitHold(existingAgent, options);
+    this.assertManagedWorkerStartAllowed(existingAgent, agentId);
     this.logger.trace(
       {
         agentId,
@@ -4856,7 +5508,7 @@ export class AgentManager {
     const isReplacement = agent.pendingReplacement;
     agent.lastError = undefined;
 
-    this.stoppedRestartContinuations.delete(agentId);
+    if (!options?.automaticRecoveryPermit) this.stoppedRestartContinuations.delete(agentId);
     const pendingRun = this.runs.createPendingRun(agentId);
 
     const streamForwarder = async function* streamForwarder(this: AgentManager) {
@@ -4874,9 +5526,10 @@ export class AgentManager {
         agent.pendingReplacement = false;
       }
       const turnStartedAt = new Date();
-      pendingRun.start = { status: "started", turnId };
+      this.runs.settleForegroundStart(pendingRun, { status: "started", turnId });
       agent.activeForegroundTurnId = turnId;
       this.openActiveTurn(agent, turnId, turnStartedAt);
+      agent.attention = { requiresAttention: false };
       agent.lifecycle = "running";
       this.touchUpdatedAt(agent);
       // AgentManager owns the accepted-turn boundary. Publish liveness before the canonical
@@ -4896,7 +5549,7 @@ export class AgentManager {
           )
         : undefined;
       if (options?.clientMessageId) {
-        this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, {
+        this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
           messageId: options.clientMessageId,
           intent: options.intent,
           origin: options.origin,
@@ -4980,7 +5633,10 @@ export class AgentManager {
         ? { provider: mutableAgent.provider, sessionId: mutableAgent.runtimeInfo.sessionId }
         : null);
     if (persistenceHandle) {
-      mutableAgent.persistence = attachPersistenceCwd(persistenceHandle, mutableAgent.cwd);
+      mutableAgent.persistence = normalizePersistenceForConfig(
+        persistenceHandle,
+        mutableAgent.config,
+      );
     }
     this.logger.trace(
       {
@@ -5025,6 +5681,8 @@ export class AgentManager {
   ): Promise<AsyncGenerator<AgentStreamEvent>> {
     this.assertAcceptingAgentRegistrations();
     const snapshot = this.requireAgent(agentId);
+    // Refuse before cancelling: cancelling the release's reservation must not reopen admission.
+    this.assertNotAutomaticallyClosing(agentId);
     this.assertQuotaNotPaused(agentId);
     if (
       snapshot.lifecycle !== "running" &&
@@ -5074,6 +5732,7 @@ export class AgentManager {
           prompt,
           options?.clientMessageId,
           expectedTurnId,
+          admission.providerMessageId,
           options?.intent,
           options?.origin,
         );
@@ -5094,6 +5753,9 @@ export class AgentManager {
     options?: AgentSteerOptions,
   ): Promise<ActiveTurnSteerDispatchResult> {
     this.assertAcceptingAgentRegistrations();
+    // A turn that is still starting has no id to steer yet. Replacing it would drop its
+    // prompt, so wait until it is accepted (or fails) and steer the turn it became.
+    await this.runs.waitForForegroundStart(agentId);
     const agent = this.requireSessionAgent(agentId);
     const expectedTurnId = agent.activeForegroundTurnId ?? agent.activeTurnId;
     if (!expectedTurnId) {
@@ -5112,6 +5774,7 @@ export class AgentManager {
               prompt,
               options?.clientMessageId,
               expectedTurnId,
+              admission.providerMessageId,
               options?.intent,
               options?.origin,
             );
@@ -5224,17 +5887,19 @@ export class AgentManager {
     prompt: AgentPromptInput,
     clientMessageId: string | undefined,
     expectedTurnId: string,
+    providerMessageId: string | undefined,
     intent?: "goal",
     origin?: "agent",
   ): Promise<void> {
     if (!clientMessageId) {
       return;
     }
-    this.recordSubmittedPrompt(agent, prompt, clientMessageId, {
+    this.recordSubmittedPrompt(agent, prompt, clientMessageId, "accepted", {
       messageId: clientMessageId,
       turnId: expectedTurnId,
       intent,
       origin,
+      ...(providerMessageId ? { providerMessageId } : {}),
     });
     this.emitState(agent);
   }
@@ -5597,6 +6262,8 @@ export class AgentManager {
 
   async rewind(agentId: string, messageId: string, mode: RewindMode): Promise<void> {
     const agent = this.requireSessionAgent(agentId);
+    // Rewind cancels any reservation, so it must not run while an idle release is closing.
+    this.assertNotAutomaticallyClosing(agentId);
     const submittedRow = this.timelineStore
       .getRows(agentId)
       .find(
@@ -5665,6 +6332,10 @@ export class AgentManager {
         "agent.rewind.complete",
       );
     } catch (error) {
+      // Native rewind can commit a fork before history refresh fails. Recovery
+      // must resume that latest handle rather than the abandoned conversation.
+      this.refreshSessionPersistence(agent);
+      await this.persistSnapshot(agent);
       this.logger.warn(
         { err: error, agentId, provider: agent.provider, messageId, mode },
         "agent.rewind.failed",
@@ -5680,16 +6351,23 @@ export class AgentManager {
     await this.deleteCommittedTimeline(agentId);
   }
 
+  notifyAgentRemoved(agent: Pick<StoredAgentRecord, "id" | "workspaceId" | "internal">): void {
+    this.dispatch({
+      type: "agent_removed",
+      agentId: agent.id,
+      workspaceId: agent.workspaceId,
+      internal: agent.internal === true,
+    });
+  }
+
   async deleteCommittedTimeline(agentId: string): Promise<void> {
     await this.durableTimelineStore?.deleteAgent(agentId);
   }
 
   async getLastAssistantMessage(agentId: string): Promise<string | null> {
-    const agent = this.agents.get(agentId);
-    if (!agent) {
-      return null;
+    if (!this.timelineStore.has(agentId)) {
+      return (await this.durableTimelineStore?.getLastAssistantMessage(agentId)) ?? null;
     }
-
     return await this.getLastAssistantMessageFromStores(agentId);
   }
 
@@ -5963,6 +6641,7 @@ export class AgentManager {
       publishWhenReady?: boolean;
       workspaceId?: string;
       owner?: AgentOwner;
+      launchEnv?: Record<string, string>;
     },
   ): Promise<ManagedAgent> {
     let registered = false;
@@ -6021,7 +6700,7 @@ export class AgentManager {
           // Legacy/imported chats need their existing history before startup rows.
           await this.primeTimelineFromLegacyProviderHistory(managed, false, startupHistory);
         } else {
-          for (const entry of session.initialTimeline) {
+          for (const entry of buildImportedTimelineRows(session.initialTimeline)) {
             this.recordTimeline(managed.id, entry.item, { timestamp: entry.timestamp });
           }
         }
@@ -6050,6 +6729,8 @@ export class AgentManager {
       this.assertAgentRegistrationActive(managed);
       this.emitState(managed, { persist: false });
       this.subscribeToSession(managed);
+      await this.drainSessionEvents(managed.id);
+      this.assertAgentRegistrationActive(managed);
       return { ...managed };
     } catch (error) {
       if (!registered) {
@@ -6085,16 +6766,23 @@ export class AgentManager {
 
   private async requireExternalMcpSupport(
     session: AgentSession,
-    storedConfig: AgentSessionConfig,
+    launchConfig: AgentSessionConfig,
+    launchContext: AgentLaunchContext,
   ): Promise<void> {
     if (
-      Object.keys(storedConfig.mcpServers ?? {}).length === 0 ||
+      Object.keys(stripInternalPaseoMcpServer(launchConfig).mcpServers ?? {}).length === 0 ||
       session.capabilities.supportsMcpServers === true
     ) {
       return;
     }
     await this.closeUnregisteredSession(session);
-    throw new Error(`Provider '${storedConfig.provider}' does not support MCP servers`);
+    throw this.unsupportedMcpError(launchConfig, launchContext);
+  }
+
+  private unsupportedMcpError(config: AgentSessionConfig, context: AgentLaunchContext): Error {
+    const owners = [...new Set(Object.values(context.mcpServerOwners ?? {}))];
+    const source = owners.length ? ` (plugin ${owners.join(", ")})` : "";
+    return new Error(`Provider '${config.provider}' does not support MCP servers${source}`);
   }
 
   private async initializeAgentTimelineForRegister(params: {
@@ -6151,24 +6839,31 @@ export class AgentManager {
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
           owner?: AgentOwner;
+          launchEnv?: Record<string, string>;
         }
       | undefined;
   }): ActiveManagedAgent {
     const { resolvedAgentId, session, config, now, durableTimelineHasRows, options } = params;
+    function registrationTimestamps() {
+      return {
+        createdAt: options?.createdAt ?? now,
+        updatedAt: options?.updatedAt ?? now,
+      };
+    }
     return {
       id: resolvedAgentId,
       provider: config.provider,
       cwd: config.cwd,
       workspaceId: options?.workspaceId,
       owner: options?.owner,
+      launchEnv: options?.launchEnv,
       session,
       capabilities: session.capabilities,
       goalState: session.goals?.state,
       config,
       runtimeInfo: undefined,
       lifecycle: "initializing",
-      createdAt: options?.createdAt ?? now,
-      updatedAt: options?.updatedAt ?? now,
+      ...registrationTimestamps(),
       availableModes: [],
       currentModeId: null,
       pendingPermissions: new Map<string, AgentPermissionRequest>(),
@@ -6181,9 +6876,9 @@ export class AgentManager {
       foregroundTurnWaiters: new Set<ForegroundTurnWaiter>(),
       finalizedForegroundTurnIds: new Set<string>(),
       unsubscribeSession: null,
-      persistence: attachPersistenceCwd(
+      persistence: normalizePersistenceForConfig(
         options?.persistence ?? session.describePersistence(),
-        config.cwd,
+        config,
       ),
       historyPrimed: options?.historyPrimed ?? durableTimelineHasRows,
       lastUserMessageAt: options?.lastUserMessageAt ?? null,
@@ -6233,7 +6928,9 @@ export class AgentManager {
       activeForegroundTurnId: null,
       activeTurnId: null,
       activeTurnStartedAt: null,
-      pendingPermissions: new Map(),
+      pendingPermissions: new Map(
+        pendingCodexAsyncQuestions(agent.persistence).map((request) => [request.id, request]),
+      ),
       bufferedPermissionResolutions: new Map(),
       inFlightPermissionResponses: new Set(),
       pendingReplacement: false,
@@ -6246,6 +6943,7 @@ export class AgentManager {
   private discardRetainedAgentState(agentId: string): void {
     this.timelineStore.delete(agentId);
     this.paseoToolPolicies.delete(agentId);
+    this.detachPluginTools(agentId);
     for (const event of this.providerSubagents.deleteParent(agentId)) {
       this.dispatch({ type: "provider_subagent", event });
     }
@@ -6254,7 +6952,7 @@ export class AgentManager {
   private emitClosedAgent(agent: ManagedAgentClosed, options?: { persist?: boolean }): void {
     this.emitState(agent, options);
     if (!agent.internal) {
-      this.pluginLifecycle?.emit("agent.closed", {
+      this.pluginLifecycle?.emit("agent.close.after", {
         agent: describeHookAgent({ ...agent, title: agent.config.title }),
       });
     }
@@ -6513,9 +7211,9 @@ export class AgentManager {
         newInfo.modeId !== agent.runtimeInfo?.modeId;
       agent.runtimeInfo = newInfo;
       if (!agent.persistence && newInfo.sessionId) {
-        agent.persistence = attachPersistenceCwd(
+        agent.persistence = normalizePersistenceForConfig(
           { provider: agent.provider, sessionId: newInfo.sessionId },
-          agent.cwd,
+          agent.config,
         );
       }
       // Emit state if runtimeInfo changed so clients get the updated model
@@ -6530,6 +7228,7 @@ export class AgentManager {
   private async *streamHistoryWithSubmissions(
     agent: Pick<ActiveManagedAgent, "id" | "provider" | "profileSwitches" | "goalSubmissions">,
     history: AsyncIterable<AgentStreamEvent> | Iterable<AgentStreamEvent>,
+    options?: { passive: boolean },
   ): AsyncGenerator<AgentStreamEvent> {
     history = prependSwitchHistory(await this.readSwitchHistory(agent), agent.provider, history);
     if (!agent.goalSubmissions?.length && !this.messageQueueControl) {
@@ -6538,8 +7237,8 @@ export class AgentManager {
     }
     const events: AgentStreamEvent[] = [];
     for await (const event of history) events.push(event);
-    await this.messageQueueControl?.reconcileHistory(agent.id, events);
-    const queued = (await this.messageQueueControl?.acceptedHistory(agent.id)) ?? [];
+    if (!options?.passive) await this.messageQueueControl?.reconcileHistory(agent.id, events);
+    const queued = (await this.messageQueueControl?.acceptedHistory(agent.id, options)) ?? [];
     const withGoals = mergeGoalHistory(events, agent.goalSubmissions ?? [], agent.provider);
     yield* mergeQueueHistory(withGoals, queued, agent.provider);
   }
@@ -6599,10 +7298,9 @@ export class AgentManager {
     )) {
       const event = limitAgentStreamEventContent(rawEvent);
       if (event.type === "timeline") {
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
-          continue;
+        for (const item of projectAgentMessages(event.item)) {
+          historyEvents.push({ ...event, item });
         }
-        historyEvents.push(event);
       } else if (event.type === "provider_subagent") {
         providerSubagentEvents.push(event);
       }
@@ -6673,10 +7371,9 @@ export class AgentManager {
         if (event.type !== "timeline") {
           continue;
         }
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
-          continue;
+        for (const item of projectAgentMessages(event.item)) {
+          historyEvents.push({ ...event, item });
         }
-        historyEvents.push(event);
       }
     } catch (error) {
       this.logger.warn({ err: error, agentId: agent.id }, "Failed to hydrate provider history");
@@ -6916,7 +7613,7 @@ export class AgentManager {
         flags.shouldDispatchEvent = false;
         return undefined;
       case "usage_updated":
-        agent.lastUsage = event.usage;
+        agent.lastUsage = withReportedCost(event.usage, agent.lastUsage);
         this.emitState(agent);
         return undefined;
       case "mode_changed":
@@ -6931,9 +7628,9 @@ export class AgentManager {
       case "model_changed":
         agent.runtimeInfo = event.runtimeInfo;
         if (!agent.persistence && event.runtimeInfo.sessionId) {
-          agent.persistence = attachPersistenceCwd(
+          agent.persistence = normalizePersistenceForConfig(
             { provider: agent.provider, sessionId: event.runtimeInfo.sessionId },
-            agent.cwd,
+            agent.config,
           );
         }
         this.applyObservedMode(agent, event.runtimeInfo.modeId ?? agent.currentModeId);
@@ -7008,7 +7705,7 @@ export class AgentManager {
   private refreshSessionPersistence(agent: ActiveManagedAgent): void {
     const handle = agent.session.describePersistence();
     if (handle) {
-      agent.persistence = attachPersistenceCwd(handle, agent.cwd);
+      agent.persistence = normalizePersistenceForConfig(handle, agent.config);
     }
   }
 
@@ -7021,42 +7718,33 @@ export class AgentManager {
     const { agent, event, options, flags } = params;
 
     event.item = mergeProviderChecklistEvent(event.item, agent.tasks);
-
-    if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
-      flags.shouldDispatchEvent = false;
-      flags.shouldNotifyWaiters = false;
-      return;
-    }
-
-    if (
-      event.item.type === "user_message" &&
-      event.item.clientMessageId &&
-      this.reconcileSubmittedPromptEcho(agent, event.item, event.turnId)
-    ) {
-      flags.shouldDispatchEvent = false;
-      flags.shouldNotifyWaiters = false;
-      return;
-    }
-
-    if (options?.fromHistory) {
-      this.recordTimeline(
-        agent.id,
-        event.item,
-        event.timestamp ? { timestamp: event.timestamp } : undefined,
-      );
-      flags.shouldDispatchEvent = false;
-      flags.shouldNotifyWaiters = false;
-      return;
-    }
-
-    this.recordAndDispatchTimelineItem(agent.id, event.item, event.provider, event.turnId);
-    if (event.item.type === "todo") this.emitState(agent);
-    if (event.item.type === "user_message") {
-      agent.lastUserMessageAt = new Date();
-      this.emitState(agent);
-    }
     flags.shouldDispatchEvent = false;
-    flags.shouldNotifyWaiters = true;
+    flags.shouldNotifyWaiters = false;
+    for (const item of projectAgentMessages(event.item)) {
+      if (
+        item.type === "user_message" &&
+        item.clientMessageId &&
+        this.reconcileSubmittedPromptEcho(agent, item, event.turnId)
+      )
+        continue;
+
+      if (options?.fromHistory) {
+        this.recordTimeline(
+          agent.id,
+          item,
+          event.timestamp ? { timestamp: event.timestamp } : undefined,
+        );
+        continue;
+      }
+
+      this.recordAndDispatchTimelineItem(agent.id, item, event.provider, event.turnId);
+      if (item.type === "todo") this.emitState(agent);
+      if (item.type === "user_message") {
+        agent.lastUserMessageAt = new Date();
+        this.emitState(agent);
+      }
+      flags.shouldNotifyWaiters = true;
+    }
   }
 
   private onStreamTurnCompleted(params: {
@@ -7130,6 +7818,7 @@ export class AgentManager {
     );
     if (terminalDisposition === "stale") return;
     if (event.code === "quota_exhausted" && !options?.fromHistory) {
+      this.usageLimitObserver?.(agent.provider, event);
       this.holdForUsageLimit(agent, event.usageLimit);
       await this.pauseQuotaTeam(agent);
     }
@@ -7217,6 +7906,8 @@ export class AgentManager {
     if (eventTurnId) {
       this.openActiveTurn(agent, eventTurnId, new Date());
     }
+    agent.lastError = undefined;
+    agent.attention = { requiresAttention: false };
     agent.lifecycle = "running";
     this.emitState(agent);
   }
@@ -7324,21 +8015,30 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     prompt: AgentPromptInput,
     clientMessageId: string,
-    options: {
+    outcomeOrOptions:
+      | "accepted"
+      | "rejected"
+      | {
+          messageId?: string;
+          providerMessageId?: string;
+          turnId?: string;
+          intent?: "goal";
+          origin?: "agent";
+          queuedMessage?: QueueItem;
+        } = "accepted",
+    suppliedOptions?: {
       messageId?: string;
       providerMessageId?: string;
       turnId?: string;
       intent?: "goal";
       origin?: "agent";
       queuedMessage?: QueueItem;
-    } = {},
+    },
   ): void {
-    if (this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId)) {
-      return;
-    }
-    this.touchUpdatedAt(agent);
-    agent.lastUserMessageAt = new Date();
-    const item: AgentTimelineItem = {
+    const outcome = typeof outcomeOrOptions === "string" ? outcomeOrOptions : "accepted";
+    const options =
+      (typeof outcomeOrOptions === "string" ? suppliedOptions : outcomeOrOptions) ?? {};
+    const items = projectAgentMessages({
       type: "user_message",
       text: options.queuedMessage ? options.queuedMessage.text : submittedPromptText(prompt),
       ...(options.queuedMessage
@@ -7352,26 +8052,55 @@ export class AgentManager {
       ...(options.intent ? { intent: options.intent } : {}),
       ...(options.origin ? { origin: options.origin } : {}),
       clientMessageId,
-      ...(options.messageId ? { messageId: options.messageId } : {}),
-    };
+      ...(options?.messageId ? { messageId: options.messageId } : {}),
+    });
     if (options.queuedMessage && options.providerMessageId) {
       this.persistQueuedPromptIdentity(agent.id, clientMessageId, options.providerMessageId);
     }
     if (options.intent === "goal") {
-      agent.goalSubmissions = [
-        ...(agent.goalSubmissions ?? []),
-        {
-          text: item.text,
-          clientMessageId,
-          ...((options.providerMessageId ?? options.messageId)
-            ? { messageId: options.providerMessageId ?? options.messageId }
-            : {}),
-          timestamp: new Date().toISOString(),
-        },
-      ];
-      this.enqueueBackgroundPersist(agent);
+      this.recordGoalSubmission(agent, prompt, clientMessageId, options);
     }
-    this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, options.turnId, options);
+    for (const item of items) {
+      // Human attempts stay in history on rejection; delivery notifications require acceptance.
+      if (outcome === "rejected" && item.type !== "user_message") continue;
+      this.recordSubmittedPromptItem(agent, item, options);
+    }
+  }
+
+  private recordGoalSubmission(
+    agent: ActiveManagedAgent,
+    prompt: AgentPromptInput,
+    clientMessageId: string,
+    options: { queuedMessage?: QueueItem; providerMessageId?: string; messageId?: string },
+  ): void {
+    agent.goalSubmissions = [
+      ...(agent.goalSubmissions ?? []),
+      {
+        text: options.queuedMessage ? options.queuedMessage.text : submittedPromptText(prompt),
+        clientMessageId,
+        ...((options.providerMessageId ?? options.messageId)
+          ? { messageId: options.providerMessageId ?? options.messageId }
+          : {}),
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    this.enqueueBackgroundPersist(agent);
+  }
+
+  private recordSubmittedPromptItem(
+    agent: ActiveManagedAgent,
+    item: AgentTimelineItem,
+    options?: { providerMessageId?: string; turnId?: string },
+  ): void {
+    if (
+      item.type === "user_message" &&
+      item.clientMessageId &&
+      this.timelineStore.getSubmittedUserMessage(agent.id, item.clientMessageId)
+    )
+      return;
+    this.touchUpdatedAt(agent);
+    if (item.type === "user_message") agent.lastUserMessageAt = new Date();
+    this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, options?.turnId, options);
   }
 
   private reconcileSubmittedPromptEcho(
@@ -7383,11 +8112,14 @@ export class AgentManager {
     if (!clientMessageId) return null;
     let existing = this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId);
     if (!existing) {
-      this.recordSubmittedPrompt(agent, item.text, clientMessageId, {
-        messageId: clientMessageId,
-        ...(messageId ? { providerMessageId: messageId } : {}),
-        ...(turnId ? { turnId } : {}),
-      });
+      this.recordSubmittedPromptItem(
+        agent,
+        { ...item, messageId: clientMessageId },
+        {
+          ...(messageId ? { providerMessageId: messageId } : {}),
+          ...(turnId ? { turnId } : {}),
+        },
+      );
       existing = this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId);
     }
     if (!existing || existing.item.type !== "user_message") return null;
@@ -7710,7 +8442,6 @@ export class AgentManager {
         this.pluginLifecycle,
         describeHookAgent({ ...agent, title: agent.config.title }),
         event,
-        this.timelineStore.getItems(agentId),
       );
     }
   }
@@ -7719,7 +8450,7 @@ export class AgentManager {
     for (const subscriber of this.subscribers) {
       if (
         subscriber.agentId &&
-        event.type === "agent_stream" &&
+        (event.type === "agent_stream" || event.type === "agent_removed") &&
         subscriber.agentId !== event.agentId
       ) {
         continue;
@@ -7741,8 +8472,12 @@ export class AgentManager {
       ) {
         continue;
       }
-      // Skip internal agents for global subscribers (those without a specific agentId)
-      if (!subscriber.agentId && this.eventBelongsToInternalAgent(event)) {
+      // Global subscribers (no agentId) skip internal agents unless they opted in.
+      if (
+        !subscriber.agentId &&
+        !subscriber.includeInternal &&
+        this.eventBelongsToInternalAgent(event)
+      ) {
         continue;
       }
       subscriber.callback(event);
@@ -7751,6 +8486,7 @@ export class AgentManager {
 
   private eventBelongsToInternalAgent(event: AgentManagerEvent): boolean {
     if (event.type === "agent_state") return event.agent.internal === true;
+    if (event.type === "agent_removed") return event.internal;
     if (event.type === "agent_stream") return this.agents.get(event.agentId)?.internal === true;
     if (event.type !== "provider_subagent") return false;
     const parentAgentId =
@@ -7899,23 +8635,44 @@ export class AgentManager {
       reason: PluginSessionOpenRequest["reason"];
       purpose: PluginSessionOpenRequest["purpose"];
       workspaceId?: string | null;
+      title?: string | null;
+      labels?: Record<string, string>;
     },
   ): Promise<AgentLaunchContext> {
+    // A plugin changing during this open must still make the resulting session stale.
+    const generation = this.sessionOpenGeneration;
+    this.detachPluginTools(agentId);
+    let mcpServers: AgentSessionConfig["mcpServers"];
+    let mcpServerOwners: Record<string, string> | undefined;
     if (this.pluginLifecycle) {
-      const request: PluginSessionOpenRequest = {
-        agentId,
-        provider: client.provider,
-        cwd,
-        workspaceId: opening?.workspaceId ?? null,
-        reason: opening?.reason ?? "resume",
-        purpose: opening?.purpose ?? "interactive",
-        env: { ...env },
-      };
-      const transformed = await this.pluginLifecycle.before("agent.session_open", request);
+      function buildOpenRequest(): SessionOpenWireRequest {
+        return {
+          agentId,
+          provider: client.provider,
+          cwd,
+          workspaceId: opening?.workspaceId ?? null,
+          reason: opening?.reason ?? "resume",
+          purpose: opening?.purpose ?? "interactive",
+          env: { ...env },
+          title: opening?.title ?? null,
+          labels: opening?.labels ?? {},
+          tools: [],
+          mcpServers: {},
+        };
+      }
+      const request = buildOpenRequest();
+      const transformed = await this.pluginLifecycle.before("agent.open.before", request);
       env = { ...transformed.env, ...env };
+      if (request.purpose === "interactive") {
+        this.attachedPluginTools.set(agentId, transformed.tools as AttachedAgentTool[]);
+        mcpServers = transformed.mcpServers;
+        mcpServerOwners = transformed.mcpServerOwners;
+      }
     }
     const context: AgentLaunchContext = {
       agentId,
+      mcpServers,
+      mcpServerOwners,
       env: {
         ...env,
         // Configured account credentials and homes remain authoritative on create and resume.
@@ -7924,17 +8681,26 @@ export class AgentManager {
         PASEO_AGENT_CWD: cwd,
       },
     };
-    if (
+    const useNativeTools =
       this.paseoToolsEnabled &&
       isPaseoToolPolicyEnabled(paseoToolPolicy) &&
-      client.capabilities.supportsNativePaseoTools &&
-      this.paseoToolCatalogFactory
+      client.capabilities.supportsNativePaseoTools;
+    if (
+      this.paseoToolCatalogFactory &&
+      (useNativeTools || this.getPluginTools(agentId).length > 0)
     ) {
-      context.paseoTools = await this.paseoToolCatalogFactory({
-        callerAgentId: agentId,
-        paseoToolPolicy,
-      });
+      try {
+        const catalog = await this.paseoToolCatalogFactory({
+          callerAgentId: agentId,
+          paseoToolPolicy,
+        });
+        if (useNativeTools) context.paseoTools = catalog;
+      } catch (error) {
+        this.detachPluginTools(agentId);
+        throw error;
+      }
     }
+    this.sessionOpenGenerations.set(agentId, generation);
     return context;
   }
 
@@ -7942,7 +8708,26 @@ export class AgentManager {
     launchConfig: AgentSessionConfig,
     launchContext: AgentLaunchContext,
   ): AgentSessionConfig {
-    return launchContext.paseoTools ? stripInternalPaseoMcpServer(launchConfig) : launchConfig;
+    const savedServerNames = new Set(
+      Object.keys(stripInternalPaseoMcpServer(launchConfig).mcpServers ?? {}),
+    );
+    for (const name of Object.keys(launchContext.mcpServers ?? {})) {
+      const owner = launchContext.mcpServerOwners?.[name];
+      if (name === PASEO_MCP_SERVER_NAME || savedServerNames.has(name)) {
+        const existingOwner = savedServerNames.has(name)
+          ? "agent saved configuration"
+          : "Paseo internal MCP server";
+        throw new Error(`MCP server '${name}' from plugin ${owner} collides with ${existingOwner}`);
+      }
+    }
+    const merged =
+      Object.keys(launchContext.mcpServers ?? {}).length > 0
+        ? {
+            ...launchConfig,
+            mcpServers: { ...launchConfig.mcpServers, ...launchContext.mcpServers },
+          }
+        : launchConfig;
+    return launchContext.paseoTools ? stripInternalPaseoMcpServer(merged) : merged;
   }
 
   private async requireAvailableClient(options: { provider: AgentProvider }): Promise<AgentClient> {
@@ -8027,6 +8812,11 @@ export class AgentManager {
     return agent;
   }
 
+  private assertNotAutomaticallyClosing(agentId: string): void {
+    if (this.automaticCloses.has(agentId))
+      throw new Error(`Agent ${agentId} is closing its idle session; send again in a moment`);
+  }
+
   private requireSessionAgent(id: string): ActiveManagedAgent {
     const agent = this.requireAgent(id);
     if (agent.config.controllerExecutionId)
@@ -8080,4 +8870,15 @@ export function commandMayHaveChangedExternalState(command: string): boolean {
     // ahead/behind counts can drift stale until the next refresh.
     /\bgit\s+fetch\b/.test(normalized)
   );
+}
+
+/**
+ * A streamed usage update replaces the last one, so a field it omits is cleared, as compaction
+ * clears the used context. The provider's reported cost is the exception: Claude reports it only
+ * when a turn completes, so it carries over until the next report. An estimate does not carry
+ * over, since a provider that estimates sends one with every update it can price.
+ */
+function withReportedCost(usage: AgentUsage, previous: AgentUsage | undefined): AgentUsage {
+  if (usage.totalCostUsd !== undefined || previous?.totalCostUsd === undefined) return usage;
+  return { ...usage, totalCostUsd: previous.totalCostUsd };
 }

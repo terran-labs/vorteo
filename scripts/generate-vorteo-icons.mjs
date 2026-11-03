@@ -72,6 +72,7 @@ const pinnedMask = execFileSync(
   .toString()
   .replace(/width="[^"]+" height="[^"]+"/, 'width="16" height="16"');
 const publicDir = "packages/app/public";
+fs.copyFileSync(white, `${publicDir}/vorteo-logo-white-${hash}.png`);
 fs.writeFileSync(`${publicDir}/vorteo-pinned-tab-${hash}.svg`, pinnedMask);
 fs.writeFileSync("packages/website/public/safari-pinned-tab.svg", pinnedMask);
 png(white, "packages/website/public/apple-touch-icon.png", 180, "#52535b");
@@ -117,7 +118,16 @@ html = html.replace(
   /(<link rel="icon"[^>]*>)/,
   `$1\n    <link rel="mask-icon" href="/vorteo-pinned-tab-${hash}.svg" color="#3b82f6" />`,
 );
+html = html.replace(/\/vorteo-logo-white-[^"]+\.png/g, `/vorteo-logo-white-${hash}.png`);
 fs.writeFileSync(`${publicDir}/index.html`, html);
+// The app reuses the boot loader's copy of the master on web.
+const masterModule = "packages/app/src/components/icons/vorteo-master.ts";
+fs.writeFileSync(
+  masterModule,
+  fs
+    .readFileSync(masterModule, "utf8")
+    .replace(/\/vorteo-logo-white-[^"]+\.png/, `/vorteo-logo-white-${hash}.png`),
+);
 const desktop = "packages/desktop/assets";
 const desktopTile = path.join(brand, "vorteo-desktop.png");
 magick(

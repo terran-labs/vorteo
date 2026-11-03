@@ -1,4 +1,23 @@
+import { type PreviewBrokerDeploymentJob } from "@getpaseo/protocol/preview-broker-deployment";
+import {
+  PreviewBrokerDeploymentWorkflow,
+  type BrokerDeploymentExecutor,
+} from "./preview-broker-deployment-workflow.js";
+import {
+  PreviewBrokerPreparationSchema,
+  PreviewBrokerDecisionSchema,
+  PreviewBrokerObservationSchema,
+  type PreviewBrokerObservation,
+  type PreviewBrokerJob,
+  type PreviewBrokerPlan,
+} from "@getpaseo/protocol/preview-broker-maintenance";
 import { WorkerLaunchVerifiedCauseSchema } from "@getpaseo/protocol/execution-installation";
+import { summarizeOperationalQueues } from "./operational-telemetry-queues.js";
+import {
+  createOperationalActivityBatch,
+  type OperationalActivitySink,
+} from "./operational-telemetry-activity.js";
+import type { OperationalQueueObservation } from "./operational-telemetry-record.js";
 import {
   DEFAULT_SHARED_TARGET_MESSAGE,
   RESTART_OPERATIONS,
@@ -133,6 +152,8 @@ export interface RestartApprovalPolicy {
   supervisorRequestsAfter?: () => string | null;
   /** Owner delegation: automatic Host source updates may replace the supervisor. */
   hostUpdateServiceRestart?: () => boolean;
+  /** Daemon targets that exist. Omitted means Host and Dev; Host-only installations pass ["host"]. */
+  daemonTargets?: readonly RestartJob["target"][];
 }
 
 export interface RestartJournal {
@@ -168,6 +189,11 @@ export interface RestartExecutor {
   inspectMonitor?(): Promise<
     import("@getpaseo/protocol/preview-monitor-maintenance").PreviewMonitorSelection
   >;
+  brokerDeployment?: BrokerDeploymentExecutor;
+  brokerCompatible?(): Promise<boolean>;
+  validateBrokerPlan?(plan: PreviewBrokerPlan): Promise<void>;
+  installBroker?(job: PreviewBrokerJob): Promise<string>;
+  observeBrokerOutcome?(job: PreviewBrokerJob): Promise<PreviewBrokerObservation>;
   monitorCompatible?(): Promise<boolean>;
   validateMonitorPlan?(plan: PreviewMonitorPlan): Promise<void>;
   installMonitor?(job: PreviewMonitorJob): Promise<string>;
@@ -296,16 +322,20 @@ function requestPredatesPolicy(
 }
 
 export class InstallationRestarts {
+  private operationalActivitySink: OperationalActivitySink | null = null;
   private readonly progress: NonNullable<RestartStartupOptions["progress"]>;
   private readonly dispatchDeadlineMs: number;
   private jobs: RestartJob[];
   private helpers: NativeHelperJob[];
   private monitors: PreviewMonitorJob[];
+  private brokers: PreviewBrokerJob[];
+  private brokerDeployments: PreviewBrokerDeploymentJob[];
   private sessionHosts: SessionHostJob[];
   private snapshot: LifecycleJob[];
   private active = false;
   private running = false;
   private readonly candidateChecks = new Map<string, AbortController>();
+  private readonly brokerObservationAfter = new Map<string, number>();
   private refreshingImpacts = false;
   private preparing = false;
   private readonly impactCache = new Map<RestartJob["target"], RestartImpact>();
@@ -329,6 +359,12 @@ export class InstallationRestarts {
     this.monitors = this.snapshot.filter(
       (job): job is PreviewMonitorJob => job.target === "preview-monitor",
     );
+    this.brokers = this.snapshot.filter(
+      (job): job is PreviewBrokerJob => job.target === "preview-broker",
+    );
+    this.brokerDeployments = this.snapshot.filter(
+      (job): job is PreviewBrokerDeploymentJob => job.target === "preview-broker-deployment",
+    );
     this.sessionHosts = this.snapshot.filter(
       (job): job is SessionHostJob => job.target === "session-host",
     );
@@ -345,6 +381,12 @@ export class InstallationRestarts {
     );
     this.monitors = this.snapshot.filter(
       (job): job is PreviewMonitorJob => job.target === "preview-monitor",
+    );
+    this.brokers = this.snapshot.filter(
+      (job): job is PreviewBrokerJob => job.target === "preview-broker",
+    );
+    this.brokerDeployments = this.snapshot.filter(
+      (job): job is PreviewBrokerDeploymentJob => job.target === "preview-broker-deployment",
     );
     this.sessionHosts = this.snapshot.filter(
       (job): job is SessionHostJob => job.target === "session-host",
@@ -421,6 +463,36 @@ export class InstallationRestarts {
         };
       return job;
     });
+    const brokers = this.brokers.map((job): PreviewBrokerJob => {
+      if (job.status === "approved" || job.status === "running")
+        return {
+          ...job,
+          status: "failed",
+          stage: "recovery_required",
+          detail:
+            "Coordinator interrupted. Inspect retained broker receipt; never replay or roll back automatically.",
+        };
+      if (job.status === "pending" && job.stage === "preparing")
+        return {
+          ...job,
+          status: "failed",
+          detail: "Preparation interrupted. Prepare a new broker request.",
+        };
+      return job;
+    });
+    const brokerDeployments = this.brokerDeployments.map((job): PreviewBrokerDeploymentJob => {
+      if (job.status === "approved" || job.status === "running")
+        return {
+          ...job,
+          status: "failed",
+          stage: "recovery_required",
+          detail:
+            "Consumer deployment interrupted. Observe retained native receipts; never replay.",
+        };
+      if (job.status === "pending" && job.stage === "preparing")
+        return { ...job, status: "failed", detail: "Consumer preparation interrupted" };
+      return job;
+    });
     const monitors = this.monitors.map((job): PreviewMonitorJob => {
       if (job.status === "approved" || job.status === "running")
         return {
@@ -450,7 +522,11 @@ export class InstallationRestarts {
           "The coordinator restarted before this operation finished. Check the session host status before requesting it again.",
       };
     });
-    this.writeState(recovered, helpers, monitors, this.listServices(), undefined, { sessionHosts });
+    this.writeState(recovered, helpers, monitors, this.listServices(), undefined, {
+      sessionHosts,
+      brokers,
+      brokerDeployments,
+    });
     this.active = true;
     this.reconcilePending();
   }
@@ -465,6 +541,14 @@ export class InstallationRestarts {
     return structuredClone(
       this.jobs.map((job) => ({ ...job, impact: this.impactCache.get(job.target) })),
     );
+  }
+
+  operationalSummary(): OperationalQueueObservation {
+    return summarizeOperationalQueues(this.snapshot);
+  }
+
+  setOperationalActivitySink(sink: OperationalActivitySink): void {
+    this.operationalActivitySink = sink;
   }
 
   serviceMaintenanceAvailable(): boolean {
@@ -552,6 +636,254 @@ export class InstallationRestarts {
     };
     this.replaceService(job, next);
     return structuredClone(next);
+  }
+
+  listBrokerDeployments(): PreviewBrokerDeploymentJob[] {
+    return structuredClone(this.brokerDeployments);
+  }
+
+  async brokerDeploymentAvailable(): Promise<boolean> {
+    return this.executor.brokerDeployment?.brokerDeploymentCompatible() ?? false;
+  }
+
+  private deploymentWorkflow(): PreviewBrokerDeploymentWorkflow {
+    const executor = this.executor.brokerDeployment;
+    const current = () => {
+      if (JSON.stringify(this.journal.read()) !== JSON.stringify(this.snapshot))
+        throw new RestartRequestError("Full installation journal reservation changed");
+      return this.snapshot;
+    };
+    return new PreviewBrokerDeploymentWorkflow({
+      requireActive: () => this.requireActive(),
+      snapshot: current,
+      requestExists: (id) => current().some((job) => job.id === id),
+      jobs: () => this.listBrokerDeployments(),
+      replace: (job) => {
+        current();
+        const brokerDeployments = this.brokerDeployments.some((prior) => prior.id === job.id)
+          ? this.brokerDeployments.map((prior) => (prior.id === job.id ? job : prior))
+          : [...this.brokerDeployments, job];
+        this.writeState(this.jobs, this.helpers, this.monitors, this.listServices(), undefined, {
+          brokerDeployments,
+        });
+      },
+      executor,
+      now: this.now,
+    });
+  }
+
+  async prepareBrokerDeployment(
+    input: unknown,
+    requestedBy: string,
+  ): Promise<PreviewBrokerDeploymentJob> {
+    return this.deploymentWorkflow().prepare(input, requestedBy);
+  }
+
+  decideBrokerDeployment(input: unknown): PreviewBrokerDeploymentJob {
+    return this.deploymentWorkflow().decide(input);
+  }
+
+  async observeBrokerDeployment(id: string): Promise<void> {
+    await this.deploymentWorkflow().observe(id);
+  }
+
+  listBrokers(): PreviewBrokerJob[] {
+    return structuredClone(this.brokers);
+  }
+
+  private replaceBroker(next: PreviewBrokerJob): void {
+    this.requireActive();
+    const brokers = this.brokers.some((job) => job.id === next.id)
+      ? this.brokers.map((job) => (job.id === next.id ? next : job))
+      : [...this.brokers, next];
+    this.writeState(this.jobs, this.helpers, this.monitors, this.listServices(), undefined, {
+      brokers,
+    });
+  }
+
+  async prepareBroker(input: unknown, requestedBy: string): Promise<PreviewBrokerJob> {
+    this.requireActive();
+    if (requestedBy !== "host-agent")
+      throw new RestartRequestError("Broker preparation requires Host access");
+    if (
+      !this.executor.validateBrokerPlan ||
+      !this.executor.installBroker ||
+      !(await this.executor.brokerCompatible?.())
+    )
+      throw new RestartRequestError(
+        "Broker maintenance requires compatible selected and recovery coordinators",
+      );
+    const prepared = PreviewBrokerPreparationSchema.parse(input);
+    const planSha256 = createHash("sha256").update(JSON.stringify(prepared.plan)).digest("hex");
+    const existing = this.snapshot.find((job) => job.id === prepared.id);
+    if (existing) {
+      if (
+        existing.target !== "preview-broker" ||
+        existing.planSha256 !== planSha256 ||
+        existing.reason !== prepared.reason
+      )
+        throw new RestartRequestError("Request identity belongs to different work");
+      return structuredClone(existing);
+    }
+    const job: PreviewBrokerJob = {
+      ...prepared,
+      target: "preview-broker",
+      operation: prepared.plan.operation,
+      revision: randomUUID(),
+      requestedBy: "host-agent",
+      createdAt: new Date(this.now()).toISOString(),
+      planSha256,
+      status: "pending",
+      stage: "preparing",
+      detail: "Verifying reviewed broker channel identities and exact config hashes",
+    };
+    this.replaceBroker(job);
+    try {
+      await this.executor.validateBrokerPlan(structuredClone(job.plan));
+      if (this.brokers.find((item) => item.id === job.id)?.status === "pending")
+        this.replaceBroker({
+          ...job,
+          stage: "prepared",
+          detail: "Review this exact broker channel migration. Host and Dev agents keep running.",
+        });
+    } catch {
+      if (this.brokers.find((item) => item.id === job.id)?.status === "pending")
+        this.replaceBroker({
+          ...job,
+          status: "failed",
+          detail: "Broker preparation failed. Inspect artifacts and prepare a new request.",
+        });
+    }
+    return this.listBrokers().find((item) => item.id === job.id)!;
+  }
+
+  decideBroker(input: unknown): PreviewBrokerJob {
+    this.requireActive();
+    const decision = PreviewBrokerDecisionSchema.parse(input);
+    const job = this.brokers.find((item) => item.id === decision.id);
+    if (
+      !job ||
+      job.revision !== decision.revision ||
+      job.planSha256 !== decision.planSha256 ||
+      createHash("sha256").update(JSON.stringify(job.plan)).digest("hex") !== job.planSha256
+    )
+      throw new RestartRequestError("Broker request changed. Review its exact revision and bytes.");
+    if (decision.decision === "cancel") {
+      if (!["pending", "approved"].includes(job.status))
+        throw new RestartRequestError("Broker request already dispatched or decided");
+      this.replaceBroker({
+        ...job,
+        status: "rejected",
+        detail: "Broker channel migration canceled",
+      });
+    } else {
+      if (job.status !== "pending" || job.stage !== "prepared")
+        throw new RestartRequestError("Broker is not ready for approval");
+      this.replaceBroker({
+        ...job,
+        status: "approved",
+        approvedAt: new Date(this.now()).toISOString(),
+        detail: "Exact broker channel migration approved",
+      });
+    }
+    return this.listBrokers().find((item) => item.id === job.id)!;
+  }
+
+  private brokerRecoveryRequired(): boolean {
+    return [...this.brokers, ...this.brokerDeployments].some(
+      (job) => job.status === "running" || job.stage === "recovery_required",
+    );
+  }
+
+  private previewRecoveryRequired(): boolean {
+    return this.monitorRecoveryRequired() || this.brokerRecoveryRequired();
+  }
+
+  private async reconcileBrokerOutcomes(): Promise<void> {
+    if (!this.executor.observeBrokerOutcome) return;
+    for (const job of this.brokers.filter(
+      (item) => item.stage === "recovery_required" && item.approvedAt,
+    )) {
+      if ((this.brokerObservationAfter.get(job.id) ?? 0) > this.now()) continue;
+      // Reuse the existing drain, but bound repeated executable hashing/lock probes.
+      this.brokerObservationAfter.set(job.id, this.now() + 30_000);
+      try {
+        const observation = PreviewBrokerObservationSchema.parse(
+          await this.executor.observeBrokerOutcome(structuredClone(job)),
+        );
+        const current = this.brokers.find((item) => item.id === job.id);
+        if (
+          !current ||
+          current.revision !== job.revision ||
+          current.stage !== "recovery_required" ||
+          observation.id !== job.id ||
+          observation.planSha256 !== job.planSha256
+        )
+          continue;
+        if (JSON.stringify(current.observation) === JSON.stringify(observation)) continue;
+        const committed = observation.kind === "committed";
+        if (committed) this.brokerObservationAfter.delete(job.id);
+        let detail =
+          "Broker commitment remains unresolved. Preserve evidence; never replay or roll back automatically.";
+        if (committed)
+          detail =
+            "Shared activation commit verified after an uncertain response. No effect was replayed. Service availability still requires acceptance.";
+        else if (observation.kind === "precommit-held")
+          detail =
+            "Both consumers remain fenced before commitment. Preserve evidence for separately reviewed recovery.";
+        this.replaceBroker({
+          ...current,
+          observation,
+          status: committed ? "succeeded" : "failed",
+          stage: committed ? "succeeded" : "recovery_required",
+          detail,
+        });
+      } catch {
+        // Inability to observe is not permission to change selection or release the fence.
+      }
+    }
+  }
+
+  private async dispatchBroker(job: PreviewBrokerJob): Promise<void> {
+    try {
+      if (
+        !this.executor.validateBrokerPlan ||
+        !this.executor.installBroker ||
+        !(await this.executor.brokerCompatible?.())
+      )
+        throw new Error("Broker execution unavailable");
+      if (createHash("sha256").update(JSON.stringify(job.plan)).digest("hex") !== job.planSha256)
+        throw new Error("Broker plan changed");
+      await this.executor.validateBrokerPlan(structuredClone(job.plan));
+      const current = this.brokers.find((item) => item.id === job.id);
+      if (current?.status !== "approved" || current.revision !== job.revision) return;
+      const dispatched: PreviewBrokerJob = {
+        ...current,
+        status: "running",
+        stage: "dispatch_pending",
+        detail: "Migrating approved broker channel identities and verifying shared commitment",
+      };
+      this.replaceBroker(dispatched); // Durable dispatch intent before any write.
+      const detail = await this.executor.installBroker(structuredClone(dispatched));
+      this.replaceBroker({
+        ...dispatched,
+        status: "succeeded",
+        stage: "succeeded",
+        detail,
+      });
+    } catch {
+      const current = this.brokers.find((item) => item.id === job.id)!;
+      if (current.status === "rejected") return;
+      this.replaceBroker({
+        ...current,
+        status: "failed",
+        stage: current.status === "running" ? "recovery_required" : "prepared",
+        detail:
+          current.status === "running"
+            ? "Broker outcome is uncertain. Inspect retained bytes and receipt. Never replay or roll back automatically."
+            : "Broker validation failed before dispatch. Prepare a new request.",
+      });
+    }
   }
 
   listMonitors(): PreviewMonitorJob[] {
@@ -1255,6 +1587,11 @@ export class InstallationRestarts {
     requestedBy: RestartJob["requestedBy"],
     update?: RestartJob["update"],
   ): RestartJob {
+    if (
+      this.approvalPolicy.daemonTargets &&
+      !this.approvalPolicy.daemonTargets.includes(input.target)
+    )
+      throw new RestartRequestError("This installation has no Dev container");
     if (input.workerLaunchRequest) return this.requestWorkerLaunch(input, requestedBy, update);
     return this.requestRestart(input, requestedBy, update);
   }
@@ -2275,6 +2612,8 @@ export class InstallationRestarts {
     if (!this.active) return "Coordinator startup must be verified before maintenance can proceed.";
     if (this.helperRecoveryRequired())
       return "Native helper recovery must finish before maintenance can proceed.";
+    if (this.brokerRecoveryRequired())
+      return "Broker recovery must finish before maintenance can proceed.";
     if (this.monitorRecoveryRequired())
       return "Preview monitor recovery must finish before maintenance can proceed.";
     if (this.factoryRecoveryRequired(target))
@@ -2369,6 +2708,28 @@ export class InstallationRestarts {
     }
   }
 
+  private async drainBrokers(): Promise<void> {
+    // Factory recovery fences apply to all target maintenance, including broker writes.
+    const factoryUncertain = this.jobs.some(
+      (job) => job.factoryRuntimeRecoveryRequired && !job.factoryRuntimeRecoveredBy,
+    );
+    if (
+      !factoryUncertain &&
+      !this.jobs.some(
+        (job) => (job.finishCurrentTurns || job.continuationCaptureRequested) && !job.holdReleased,
+      )
+    ) {
+      for (const job of this.brokerDeployments.filter((item) => item.status === "approved")) {
+        if (this.brokerRecoveryRequired()) break;
+        await this.deploymentWorkflow().dispatch(job.id);
+      }
+      for (const job of this.brokers.filter((item) => item.status === "approved")) {
+        if (this.brokerRecoveryRequired()) break;
+        await this.dispatchBroker(job);
+      }
+    }
+  }
+
   private async drainMonitors(): Promise<void> {
     // Factory recovery fences apply to all target maintenance, including monitor writes.
     const factoryUncertain = this.jobs.some(
@@ -2443,6 +2804,22 @@ export class InstallationRestarts {
     }
   }
 
+  private async reconcileBrokerDeploymentOutcomes(): Promise<void> {
+    if (this.executor.brokerDeployment) {
+      for (const job of this.brokerDeployments.filter(
+        (item) => item.stage === "recovery_required",
+      )) {
+        if ((this.brokerObservationAfter.get(job.id) ?? 0) > this.now()) continue;
+        this.brokerObservationAfter.set(job.id, this.now() + 30_000);
+        try {
+          await this.observeBrokerDeployment(job.id);
+        } catch {
+          // Observation failure retains uncertainty and never authorizes another effect.
+        }
+      }
+    }
+  }
+
   async drain(): Promise<void> {
     if (!this.active) return;
     this.refreshApprovalPolicy();
@@ -2453,6 +2830,8 @@ export class InstallationRestarts {
     this.running = true;
     try {
       await this.releaseFinishedHolds();
+      await this.reconcileBrokerOutcomes();
+      await this.reconcileBrokerDeploymentOutcomes();
       if (await this.reconcileRetainedInterruptions()) return;
       if (this.hasServiceWork()) await this.drainServices();
       if (this.listServices().some(unresolvedMaintenanceService)) return;
@@ -2462,7 +2841,7 @@ export class InstallationRestarts {
       }
       // Release completed holds above, but never start another lifecycle operation
       // while the installed helper selection remains ambiguous.
-      if (this.monitorRecoveryRequired()) return;
+      if (this.previewRecoveryRequired()) return;
       this.approveDelegatedNativeRequests();
       if (this.helperRecoveryRequired()) {
         const blocked = this.helpers.filter(
@@ -2477,8 +2856,11 @@ export class InstallationRestarts {
         if (rollback) await this.dispatchHelper(rollback);
         return;
       }
+      if ([...this.brokers, ...this.brokerDeployments].some((job) => job.status === "approved"))
+        await this.drainBrokers();
+      if (this.brokerRecoveryRequired()) return;
       if (this.monitors.some((job) => job.status === "approved")) await this.drainMonitors();
-      if (this.monitorRecoveryRequired()) return;
+      if (this.previewRecoveryRequired()) return;
       this.approveTrustedHostRequests();
       if (await this.dispatchApprovedRestarts()) return;
       if (
@@ -3014,21 +3396,23 @@ export class InstallationRestarts {
   async impacts(): Promise<RestartImpact[]> {
     this.requireActive();
     return Promise.all(
-      (["host", "container-daemon"] as const).map(async (target) => {
-        try {
-          if (!this.executor.inspect) throw new Error("Agent inspection unavailable");
-          return await this.executor.inspect(target);
-        } catch {
-          return {
-            target,
-            checkedAt: new Date(this.now()).toISOString(),
-            agents: [],
-            pendingStarts: 0,
-            idleRestartSupported: false,
-            error: "Cannot verify agent activity. The target may be offline.",
-          };
-        }
-      }),
+      (this.approvalPolicy.daemonTargets ?? (["host", "container-daemon"] as const)).map(
+        async (target) => {
+          try {
+            if (!this.executor.inspect) throw new Error("Agent inspection unavailable");
+            return await this.executor.inspect(target);
+          } catch {
+            return {
+              target,
+              checkedAt: new Date(this.now()).toISOString(),
+              agents: [],
+              pendingStarts: 0,
+              idleRestartSupported: false,
+              error: "Cannot verify agent activity. The target may be offline.",
+            };
+          }
+        },
+      ),
     );
   }
 
@@ -3086,27 +3470,48 @@ export class InstallationRestarts {
     monitors: PreviewMonitorJob[] = this.monitors,
     services: MaintenanceServiceJob[] = this.listServices(),
     evidence?: MaintenanceServiceAdmissionEvidence,
-    extra: { sessionHosts?: SessionHostJob[] } = {},
+    extra: {
+      sessionHosts?: SessionHostJob[];
+      brokers?: PreviewBrokerJob[];
+      brokerDeployments?: PreviewBrokerDeploymentJob[];
+    } = {},
   ): void {
     const sessionHosts = extra.sessionHosts ?? this.sessionHosts;
+    const brokers = extra.brokers ?? this.brokers;
+    const brokerDeployments = extra.brokerDeployments ?? this.brokerDeployments;
     const remaining = new Map<string, LifecycleJob>(
-      [...jobs, ...helpers, ...monitors, ...services, ...sessionHosts].map((job) => [job.id, job]),
+      [
+        ...jobs,
+        ...helpers,
+        ...monitors,
+        ...services,
+        ...sessionHosts,
+        ...brokers,
+        ...brokerDeployments,
+      ].map((job) => [job.id, job]),
     );
+    const activity = this.operationalActivitySink ? createOperationalActivityBatch() : null;
     const next: LifecycleJob[] = [];
     for (const previous of this.snapshot) {
       const job = remaining.get(previous.id);
       if (job) {
+        activity?.change(previous, job);
         next.push(job);
         remaining.delete(previous.id);
       }
     }
+    for (const job of remaining.values()) activity?.change(undefined, job);
     next.push(...remaining.values());
     this.journal.write(next, evidence);
     this.snapshot = next;
     this.jobs = jobs;
     this.helpers = helpers;
     this.monitors = monitors;
+    this.brokers = brokers;
+    this.brokerDeployments = brokerDeployments;
     this.sessionHosts = sessionHosts;
+    if (activity && this.operationalActivitySink)
+      activity.flush(this.operationalActivitySink, this.now);
   }
 
   private replaceService(
@@ -3122,6 +3527,11 @@ export class InstallationRestarts {
         throw new RestartRequestError("Maintenance journal changed; inspect its current receipt");
       return jobs.map((job) => (job.id === previous.id ? next : job));
     }, evidence);
+    if (this.operationalActivitySink) {
+      const activity = createOperationalActivityBatch();
+      activity.change(previous, next);
+      activity.flush(this.operationalActivitySink, this.now);
+    }
   }
 
   private async drainServices(): Promise<void> {

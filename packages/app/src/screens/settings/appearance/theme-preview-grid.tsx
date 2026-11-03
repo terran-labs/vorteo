@@ -281,10 +281,15 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: 4,
   },
   hoverTarget: { position: "relative", flex: 1, minWidth: 0 },
+  // A column, so the bubble sits on the card's vertical centerline at every height. As a
+  // web button the card is otherwise a row, which pins a shorter bubble to the top.
   card: {
+    flexDirection: "column",
     width: "100%",
     minWidth: 0,
     padding: 0,
+    // Override the button's responsive inline padding as well as its shorthand.
+    paddingHorizontal: 0,
     borderWidth: 0,
     borderRadius: 25,
     height: 44,

@@ -1,3 +1,4 @@
+import { useSessionStore } from "@/stores/session-store";
 import { supportsDesktopPaneSplits } from "@/constants/layout";
 import { selectIsCompactFileExplorerOpen, usePanelStore } from "@/stores/panel-store";
 import type { ExplorerCheckoutContext } from "@/stores/explorer-checkout-context";
@@ -24,7 +25,7 @@ export interface ExplorerSidebarQuery {
 }
 
 export interface ExplorerSidebarInput extends ExplorerSidebarQuery {
-  checkout: ExplorerCheckoutContext | null;
+  checkout?: ExplorerCheckoutContext | null;
 }
 
 export function resolveExplorerSidebarPresentation(
@@ -53,10 +54,11 @@ export function openExplorerSidebarView(
   input: ExplorerSidebarInput & { view: ExplorerSidebarView },
 ): void {
   if (usesCompactExplorerSidebar(input)) {
-    if (!input.checkout) return;
+    const checkout = resolveCheckout(input);
+    if (!checkout) return;
     const panel = usePanelStore.getState();
-    panel.setExplorerTabForCheckout({ ...input.checkout, tab: input.view });
-    panel.openCompactFileExplorer(input.checkout);
+    panel.setExplorerTabForCheckout({ ...checkout, tab: input.view });
+    panel.openCompactFileExplorer(checkout);
     return;
   }
   if (!input.workspaceKey) return;
@@ -73,7 +75,8 @@ export function openExplorerSidebarView(
 
 export function showExplorerSidebar(input: ExplorerSidebarInput): void {
   if (usesCompactExplorerSidebar(input)) {
-    if (input.checkout) usePanelStore.getState().openCompactFileExplorer(input.checkout);
+    const checkout = resolveCheckout(input);
+    if (checkout) usePanelStore.getState().openCompactFileExplorer(checkout);
     return;
   }
   if (input.workspaceKey && canUseExplorerSidebar(input)) {
@@ -93,7 +96,8 @@ export function hideExplorerSidebar(input: ExplorerSidebarInput): void {
 
 export function toggleExplorerSidebar(input: ExplorerSidebarInput): void {
   if (usesCompactExplorerSidebar(input)) {
-    if (input.checkout) usePanelStore.getState().toggleCompactFileExplorer(input.checkout);
+    const checkout = resolveCheckout(input);
+    if (checkout) usePanelStore.getState().toggleCompactFileExplorer(checkout);
     return;
   }
   if (!input.workspaceKey) return;
@@ -123,4 +127,22 @@ export function isExplorerSidebarOpen(input: ExplorerSidebarQuery): boolean {
     canUseExplorerSidebar(input) &&
     selectIsExplorerSidebarVisible(useWorkspaceLayoutStore.getState(), input.workspaceKey),
   );
+}
+
+/** Incoming callers identify a workspace; fork callers may provide its exact checkout. */
+function resolveCheckout(input: ExplorerSidebarInput): ExplorerCheckoutContext | null {
+  if (input.checkout) return input.checkout;
+  if (!input.workspaceKey) return null;
+  for (const [serverId, session] of Object.entries(useSessionStore.getState().sessions)) {
+    const prefix = `${serverId}:`;
+    if (!input.workspaceKey.startsWith(prefix)) continue;
+    const workspace = session.workspaces.get(input.workspaceKey.slice(prefix.length));
+    if (workspace?.workspaceDirectory)
+      return {
+        serverId,
+        cwd: workspace.workspaceDirectory,
+        isGit: workspace.projectKind === "git",
+      };
+  }
+  return null;
 }

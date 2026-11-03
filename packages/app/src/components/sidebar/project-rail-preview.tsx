@@ -1,3 +1,4 @@
+import { useOverlayRegistration, hasActiveOverlay, type KeyboardInputEvent } from "@/keyboard";
 import { getInterfaceScale } from "@/appearance/interface-zoom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View } from "react-native";
@@ -5,16 +6,12 @@ import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { useBottomSheetModalInternal } from "@gorhom/bottom-sheet";
 import { Portal } from "@gorhom/portal";
 import { StyleSheet } from "react-native-unistyles";
+import { ChevronsRight } from "lucide-react-native";
 import { Button } from "@/components/ui/button";
 import { FloatingSurface } from "@/components/ui/floating";
 import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useVortonTouch } from "@/vorton-touch";
-import {
-  OVERLAY_Z,
-  OverlayLayerProvider,
-  hasActiveWebOverlay,
-  useWebOverlayRegistration,
-} from "@/lib/overlay-root";
+import { OVERLAY_Z, OverlayLayerProvider } from "@/lib/overlay-root";
 import { isWeb } from "@/constants/platform";
 import { ProjectRailList } from "./project-rail-list";
 import type {
@@ -28,11 +25,15 @@ export function ProjectRailPreview({
   workspaceEntries,
   initials,
   onSelect,
+  onFocused,
 }: {
   project: SidebarProjectEntry;
   workspaceEntries: ReadonlyMap<string, SidebarWorkspaceEntry>;
   initials: string;
+  /** Show project in sidebar: focuses the project and expands the sidebar. */
   onSelect: (key: string) => void;
+  /** After a Focus button in the flyout focuses its item, so the sidebar can expand. */
+  onFocused: () => void;
 }) {
   const bottomSheetInternal = useBottomSheetModalInternal(true);
   const triggerRef = useRef<View>(null);
@@ -74,7 +75,7 @@ export function ProjectRailPreview({
   const leave = useCallback(() => {
     clear();
     timer.current = setTimeout(() => {
-      if (pinned.current || (isWeb && hasActiveWebOverlay())) return;
+      if (pinned.current || (isWeb && hasActiveOverlay())) return;
       // A pointer departure must not dismiss a preview still being used by keyboard.
       if (isWeb) {
         const focused = document.activeElement;
@@ -101,7 +102,7 @@ export function ProjectRailPreview({
   useEffect(() => clear, [clear]);
   useEffect(() => close(), [width, height, close]);
   const handleOverlayKey = useCallback(
-    (event: KeyboardEvent) => {
+    (event: KeyboardInputEvent) => {
       if (
         event.key === "ArrowRight" &&
         (triggerRef.current as unknown as HTMLElement | null)?.contains(document.activeElement)
@@ -126,17 +127,18 @@ export function ProjectRailPreview({
     },
     [close],
   );
-  const setOverlayScope = useWebOverlayRegistration({
+  const setOverlayScope = useOverlayRegistration({
     active: isWeb && Boolean(anchor),
     layer: OVERLAY_Z.tooltip,
     onKeyDown: handleOverlayKey,
     focusBehavior: "none",
+    keys: ["Escape", "ArrowRight"],
   });
 
   useEffect(() => {
     if (!isWeb || !anchor) return;
     const outside = (event: Event) => {
-      if (hasActiveWebOverlay()) return;
+      if (hasActiveOverlay()) return;
       const target = event.target;
       if (!(target instanceof Node)) return;
       const contains = (ref: typeof triggerRef) =>
@@ -164,6 +166,10 @@ export function ProjectRailPreview({
     close();
     onSelect(project.viewKey);
   }, [close, onSelect, project.viewKey]);
+  const focused = useCallback(() => {
+    close();
+    onFocused();
+  }, [close, onFocused]);
   const click = useCallback(() => {
     pinned.current = true;
     open();
@@ -208,10 +214,16 @@ export function ProjectRailPreview({
                   workspaceEntries={workspaceEntries}
                   width={previewWidth - 16}
                   onNavigate={close}
+                  onFocused={focused}
                   onContentSizeChange={measureContent}
                 />
               </OverlayLayerProvider>
-              <Button variant="ghost" onPress={selectProject}>
+              <Button
+                variant="ghost"
+                leftIcon={ChevronsRight}
+                onPress={selectProject}
+                testID="project-rail-show-in-sidebar"
+              >
                 Show project in sidebar
               </Button>
             </FloatingSurface>

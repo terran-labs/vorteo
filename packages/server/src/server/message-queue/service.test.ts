@@ -383,7 +383,7 @@ it("persists one restart continuation and respects a manually paused queue", asy
   }
 });
 
-it.each(["pause", "enqueue", "close"] as const)(
+it.each(["pause", "enqueue", "restart hold", "close"] as const)(
   "withdraws automatic review admission when %s arrives during preparation",
   async (action) => {
     const root = await mkdtemp(join(tmpdir(), "paseo-review-race-"));
@@ -403,6 +403,8 @@ it.each(["pause", "enqueue", "close"] as const)(
       await entered.promise;
       let mutation: Promise<unknown>;
       if (action === "pause") mutation = service.pause("agent");
+      else if (action === "restart hold")
+        mutation = service.captureRestartContinuation("agent", "exact-restart");
       else if (action === "enqueue")
         mutation = service.mutate("agent", {
           kind: "enqueue",
@@ -419,6 +421,13 @@ it.each(["pause", "enqueue", "close"] as const)(
       expect(await admission).toBe(false);
       await mutation;
       expect(await service.withIdleQueue("agent", async () => "started")).toBe(null);
+      if (action === "restart hold") {
+        expect(await service.restartContinuationHeld("agent")).toBe(true);
+        await service.releaseRestartContinuation("unrelated-restart", "cancelled");
+        expect(await service.restartContinuationHeld("agent")).toBe(true);
+        await service.releaseRestartContinuation("exact-restart", "cancelled");
+        expect(await service.withIdleQueue("agent", async () => "started")).toBe("started");
+      }
       if (action === "enqueue") {
         expect((await service.read("agent")).items).toMatchObject([
           { id: "owner-message", text: "Keep this owner message" },

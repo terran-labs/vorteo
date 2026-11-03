@@ -2,21 +2,33 @@
 
 Vorteo extends upstream Paseo with multi-account agent workflows. This npm monorepo runs agents in your environment and exposes web, mobile and desktop clients. `CLAUDE.md` links here; edit `AGENTS.md`.
 
+## Stop: updating from inside a Dev container
+
+If you were asked to update or upgrade a Vorteo installation, you are running inside a Vorteo Dev container (for example `/home/paseo` exists or `PASEO_NETWORK_MODE` is set), and no Host environment is connected (no installed `installation-maintenance` skill offers a Host target), stop. Do not clone, build, or run any installer or update script. A container cannot install its own Host.
+
+Tell the owner to run this on the computer that runs Docker:
+
+```sh
+curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash
+```
+
+It keeps this Dev environment, its agents and files, and adds the Host that installs later updates from Settings.
+
 ## Before editing
 
 1. Fetch `origin`. If your checkout is behind `origin/main`, read the current rules with `git show origin/main:AGENTS.md`. Check the working tree and preserve unrelated changes.
 2. Read the relevant rules below and the owning docs. “The docs” means `docs/`, not the web. Use the [docs index](docs/README.md) for other subjects; do not load the whole catalog.
 3. Verify behavior in code and tests before changing it or documenting it as shipped.
 
-| Task                           | Read first                                                                                                                       |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| App or interface work          | [App instructions](packages/app/AGENTS.md)                                                                                       |
-| Protocol or WebSocket changes  | [Compatibility](docs/protocol-compatibility.md), [RPC names](docs/rpc-namespacing.md), [validation](docs/protocol-validation.md) |
-| Implementation or tests        | [Coding standards](docs/coding-standards.md), [testing](docs/testing.md)                                                         |
-| README or other documentation  | [Writing rules](docs/writing.md)                                                                                                 |
-| Installation or deployment     | [Container installer](docker/multiplex/README.md), [instance continuity](docs/instance-continuity.md)                            |
-| Commit, publication or release | [Versioning](docs/release.md#vorton-commit-versions), [publication hygiene](docs/publication-hygiene.md)                         |
-| Worktrees, delivery or archive | [Task delivery](docs/task-delivery.md)                                                                                           |
+| Task                           | Read first                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| App or interface work          | [App instructions](packages/app/AGENTS.md)                                                                                                 |
+| Protocol or WebSocket changes  | [Compatibility](docs/protocol-compatibility.md), [RPC names](docs/rpc-namespacing.md), [validation](docs/protocol-validation.md)           |
+| Implementation or tests        | [Coding standards](docs/coding-standards.md), [testing](docs/testing.md)                                                                   |
+| README or other documentation  | [Writing rules](docs/writing.md)                                                                                                           |
+| Installation or deployment     | [Install](README.md#install), [installation reference](docs/execution-installation.md), [instance continuity](docs/instance-continuity.md) |
+| Commit, publication or release | [Versioning](docs/release.md#vorteo-versions), [publication hygiene](docs/publication-hygiene.md)                                          |
+| Worktrees, delivery or archive | [Task delivery](docs/task-delivery.md)                                                                                                     |
 
 ## Authorization levels
 
@@ -42,18 +54,28 @@ Otherwise ask once through `update_questions`: "What authorization level should 
 - Levels never bypass other gates. Restarts still need an approval decision in installation controls: automatic where the owner's policy allows it, otherwise the owner's, or the installation lead's when the owner has delegated approvals. The installed `installation-maintenance` skill names that lead. Force-pushing `main` stays forbidden, and publication hygiene, wire compatibility and external-post authorization still apply.
 - Archiving belongs to no level. Offer it once delivery is verified, and archive only on request.
 - Record the level in the first journal entry's `machineContext` and carry it into handoffs and subagent prompts. A subagent or handoff never receives a higher level than its coordinator holds.
-- At Level 2 and higher, work in a task worktree from `scripts/task-worktree.mjs` unless you already run in a clean dedicated one. Never edit a shared checkout that holds other work.
+- At Level 2 and higher, use a dedicated task checkout or worktree. Reuse it for sequential work; create separate filesystem worktrees when concurrent edits need isolation. Read-only reviewers need no worktree. Never edit the primary checkout or discard another task's changes. See [task delivery](docs/task-delivery.md#start-in-a-task-worktree).
 - When the work needs more than the granted level, finish what the level allows. Then ask for the specific higher level and say what it would do.
+
+## Public release presentation
+
+Release notes never contain AI-generated prefixes or authorship disclaimers. This exception overrides the general external-post attribution rule for release notes only. Publish one GitHub Release page per calendar version; promote its beta page to stable while preserving assets and both immutable channel tags. Follow the release publisher and [public release summaries](docs/release.md#public-release-summaries).
 
 ## Builds coordinator
 
-Vorteo :: Builds is the only thread that writes state other threads share: GitHub `main`, web interface publication, Host and Dev installs and restarts, coordinator maintenance, and approval decisions. One writer keeps `main` equal to the live build and stops installs from colliding.
+Vorteo :: Builds owns build and release validation, integration, publication, installation and installation recovery. It serializes writes to GitHub `main`, web publication and installation lifecycle state, including coordinator maintenance and approval decisions within its recorded grant. Published source, served interface and installed daemon can differ; record and verify each separately.
 
-- Every other thread works on its own task branch in its own worktree, started from current `main`, and stops there.
-- To ship, hand the branch to Builds. Send the Builds thread the branch, its head commit, the worktree path, the checks you ran, what the change does and its level (3 or 4). The installed `installation-maintenance` skill gives the Builds thread's agent ID. Builds integrates, installs and publishes in batches, then reports back. A container agent that cannot reach Builds puts the same details in its Host handoff.
-- Do not push `main`, publish the web interface, submit restart, source update, coordinator or instruction requests, or approve requests. `scripts/publish-main.mjs`, `scripts/build-instance-web.mjs --destination`, the installation client's `request-*` commands and the `main` pre-push hook refuse unless they run as Builds (`VORTEO_BUILDS=1`). Never set that variable outside the Builds thread. `scripts/publish-instance-web.mjs` has no guard because the coordinator runs it during installs; never run it yourself.
-- Preview in your own worktree with a dev server or the managed preview helper. Do not run web exports or release builds for previews.
-- Keep heavy commands to what your change needs: one dependency install per worktree, targeted tests while iterating, and the full suite once before handing off.
+Carry the owner's authorization through delivery; routine phase transitions do not require another owner question. Builds owns execution choices within that scope. Follow [Standing delivery authority](docs/task-delivery.md#standing-delivery-authority) to distinguish technical work from decisions that actually need the owner.
+
+- Read and follow [Builds delivery details](docs/task-delivery.md#builds-delivery-details) before preparing or handing off delivery. Existing feature and CI owners retain source defects. Use the [handoff contract](docs/task-delivery.md#handoff-contract); batch compatible deliveries and reuse valid evidence without weakening applicable gates.
+- While Builds owns your delivery, keep its step in Review on your checklist; see [waiting on Builds](docs/task-delivery.md#while-builds-owns-delivery).
+- `main` changes only through pull requests, Builds' included; the pre-push hook refuses direct pushes. Do not merge pull requests, create release tags, publish the web interface, submit restart, source update, coordinator or instruction requests, or approve requests outside Builds. `scripts/publish-main.mjs`, `scripts/vorteo-release.mjs tag`, `scripts/build-instance-web.mjs --destination` and the installation client's `request-*` commands refuse unless they run as Builds (`VORTEO_BUILDS=1`). Never set that variable outside the Builds thread. `scripts/publish-instance-web.mjs` has no guard because the coordinator runs it during installs; never run it yourself.
+- Deliver through a [pull request](docs/task-delivery.md#deliver-to-main-through-a-pull-request) with a merge commit. At Level 4, an installation used to develop Vorteo installs first, by guarded static publication for interface-only changes or the tracked lifecycle workflow otherwise, then merges the same day; Level 3 merges source only. An installation that follows a release channel installs only tagged releases. Required checks are a floor, never a substitute for integration checks, independent review, rollback plans or installation acceptance.
+- [Release tags](docs/release.md#vorteo-releases): an owner installation's Builds may tag beta after its install passes acceptance; stable needs the owner's request and a beta tag on the same commit. Never move, delete or reuse a tag, or create one matching upstream release triggers such as `v*`.
+
+### Bounded delegation and workspace ownership
+
+Follow the mandatory [delegation and workspace rules](docs/task-delivery.md#bounded-delegation-and-workspace-ownership) before delegating or routing work. Keep children in the existing owner workspace, bound concurrency by enforced capacity, and schedule heavy builds separately with Builds. Delegation grants no integration or lifecycle authority.
 
 ## Task status
 
@@ -74,15 +96,7 @@ Before starting an authorized checklist item, call `update_checklist` with opera
 
 ## Keep work bounded and recommend splits early
 
-Recommend separate focused workspaces before a thread becomes a catch-all. Reassess at the first substantial scope expansion or handoff, and at least once per working day on continuing work. Recommend a split when there are multiple independently deliverable outcomes with different owners or dependencies, when two consecutive checkpoints add prerequisites instead of closing an agreed acceptance criterion, or when a working day produces no user-reviewable result. Do not wait for the owner to notice that work has run for days.
-
-Explain the current user-facing outcome, what is installed versus merely prepared, the smallest complete path to delivery, and the exact external blockers. Propose one finish line and a short acceptance checklist per workspace. First check whether an existing thread already owns the work. Preserve that ownership instead of creating a duplicate.
-
-A recommendation does not authorize creating agents or workspaces. Once the owner approves the split, transfer exact source, patches, evidence, failed attempts, decisions, checklist state, file ownership and delivery constraints into separate worktrees. Keep one coordinator for shared integration and publication. Leave blocked work inactive with a concrete resumption condition, and do not count a handoff as completion of its implementation.
-
-Record deferrable debt found along the way in one deduplicated GitHub issue, at Level 3 or higher, or list it in your report otherwise, then return to the task. Do not widen the current delivery to fix it.
-
-Accept explicit owner reports of successful everyday use as acceptance for the behavior they describe. Do not keep that behavior open solely for an additional synthetic test or optional monitoring. Do not widen the acceptance criteria or add infrastructure without showing why it is necessary for the requested outcome.
+Follow the mandatory [scope and task reconciliation rules](docs/task-delivery.md#keep-work-bounded-and-recommend-splits-early). Reassess expansion early, retain existing owners, preserve unfinished acceptance, and ask consequential questions only when existing authorization does not resolve them. Archive only on explicit authorization.
 
 ## Goal ownership
 
@@ -104,7 +118,7 @@ Use a sealed production build when checking production behavior or when the owne
 - Treat the project's primary checkout as read-only. Many threads start there, new workspaces branch from it, and an hourly job fast-forwards its `main` to `origin/main`. Do not edit, commit, stash or switch branches in it; start a [task worktree](docs/task-delivery.md#start-in-a-task-worktree) first. Machine-local service settings belong in the untracked `paseo.local.json`, never in `paseo.json`.
 - Never restart the main daemon on port `6767` without explicit permission. It owns running agents. A timeout is not a reason to restart it.
 - Previews reuse the task workspace, service and HTTPS reservation. Never create a project or workspace solely to serve a preview or work around a broker rejection. Keep isolated code in its task worktree and follow the [preview workflow](docker/tailscale/AGENT-INSTRUCTIONS.md#preview-workspace-reuse).
-- Use the container installer by default. The explicitly owner-authorized macOS host extension follows [host and container execution](docs/execution-installation.md); it adds a trusted native daemon through the host handoff workflow. Never infer authorization for that topology from an ordinary container task. Keep the native runtime, interface, state and credentials outside guest-writable mounts. Never mount Docker's socket or place host control credentials in the guest. Host Docker administration belongs to the operator.
+- Install and upgrade with the one-command installer in the [README](README.md#install). It adds the trusted native Host daemon described in [host and container execution](docs/execution-installation.md). It runs on the Host computer, never inside a container. Never infer authorization for that topology from an ordinary container task. Keep the native runtime, interface, state and credentials outside guest-writable mounts. Never mount Docker's socket or place host control credentials in the guest. Host Docker administration belongs to the operator.
 - Keep credentials, deployment details, account inventories, backups and acceptance receipts outside Git.
 - Primary web publication requires clean, committed integration source and the guarded build/publish scripts in [instance continuity](docs/instance-continuity.md). Task worktrees produce previews. Never publish raw exports or reuse another build directory; integrate the currently deployed source before rebuilding a stale candidate.
 - Preserve wire compatibility: new fields are optional, existing fields are not removed or narrowed, and wire schemas stay pure. Gate new features on their advertised capability; tag compatibility shims as required by the compatibility doc.
@@ -128,21 +142,11 @@ Use a sealed production build when checking production behavior or when the owne
 
 ### Required restart control path
 
-This subsection describes how the [Builds](#builds-coordinator) thread submits and follows requests. Other threads hand their work to Builds instead.
-
-When the owner has saved automatic maintenance permission for a target and `capabilities` reports `ownerApprovalRequired: false` for it, restart and source-update requests submitted with the Host credential are approved automatically for both Host and Dev targets. Inspect the recorded request decision rather than asking for a click or a chat approval. Requests made with the Dev credential, and batches containing a Dev contribution, still require the owner's button approval. Do not enable the policy yourself, impersonate a Host requester, transfer Host credentials, or treat routine automatic approval as coordinator or supervisor maintenance authority.
-
-For authorized work, prepare and submit required restart or installation requests without asking permission in chat to create them. Present the exact request's review link and a short description of the target and interruption to whoever decides it: the installation lead when the owner has delegated approvals, otherwise the owner. That decision in Installation controls is the approval; do not require a verbal reply before or after it. Observe the recorded decision and continue automatically when approved. Only the delegated installation lead approves on the owner's behalf, within its recorded grant. A changed source, plan or request revision requires its own button approval.
-
-This rule also applies to coordinator maintenance. If the installed system cannot represent an operation with a visible request and approval button, report that specific capability gap and prepare the missing managed workflow. Do not substitute chat approval, a plain daemon request or an untracked service operation. Instruction changes do not themselves add coordinator reload support.
-
-Every Host or Dev daemon restart, supervisor replacement, and preparatory finish-turns hold must use the installation coordinator's tracked lifecycle workflow. The request must be visible in the sidebar and installation controls, with live status and owner cancellation before dispatch. Chat approval does not authorize bypassing these controls.
-
-Never call daemon drain/restart RPCs directly or use launchctl, supervisorctl, Docker restart, kill, or a private polling loop to perform or manage a Host/Dev daemon restart outside that workflow. Do not create an invisible hold while waiting for agents to finish. If the coordinator cannot represent the required operation, extend and validate the managed workflow before placing a hold or interrupting anything. Supervisor maintenance is not an exception. Report the unsupported operation explicitly; do not substitute a worker restart or fabricate a coordinator receipt.
+Only [Builds](#builds-coordinator) submits and follows restart, source-update and coordinator requests, by the [restart control path](docs/task-delivery.md#restart-control-path). Every Host or Dev daemon restart, supervisor replacement and finish-turns hold uses the coordinator's tracked lifecycle workflow, visible in installation controls with live status, cancellation and an approval decision; chat approval never substitutes. Never call daemon drain/restart RPCs directly, use launchctl, supervisorctl, Docker restart, kill or a private polling loop to manage a Host/Dev daemon, or create an invisible hold. If the workflow cannot represent an operation, report the gap and extend the workflow first.
 
 - Before handing host work back to the owner, inspect the available skills, tools and installed clients for a supported operation. Use them within the task's authorization. Being in the container or lacking a host shell does not by itself require a continuity prompt.
-- For Host or Dev daemon restart requests and status queries, read the installed `installation-maintenance` skill and use its scoped client. Use `request-restart` only after preparation and validation, return the exact request's approval link, and use `restart-status` to inspect an existing request. Do not substitute a host continuity prompt for these supported operations. The owner still approves the exact restart; the client cannot approve it or grant host-shell access. See [restart routing](docs/host-handoff.md#use-supported-operations-first).
-- For daemon or protocol deployment, inspect the maintenance client's `capabilities` and use `request-restart --target host|container-daemon --update` for each affected target. Host installs its daemon and shared interface; Dev installs its daemon in the existing container. Complete validation before submitting, retain contribution receipts, and wait for the recorded approval, automatic or by the owner. Prefer guarded static publication for interface-only changes. If that operation is unavailable from the current environment, inspect the supported Host source updater before declaring delivery blocked. When it is available, prepare and submit the validated source with `request-restart --target host --update`, then return its exact review link and explain that approval installs the Host daemon, restarts Host and publishes the interface. Do not ask for chat permission to prepare or submit the request. Wait for the recorded approval before execution. A plain restart does not install code. Hand off only when both the applicable static route and managed source-update route are unavailable or concretely refused; report the observed failure. Preview-only requests still stop at preview delivery.
+- For Host or Dev daemon restart requests and status queries, read the installed `installation-maintenance` skill and use its scoped client. Use `request-restart` only after preparation and validation, and use `restart-status` to inspect an existing request. Follow the installed approval policy: observe automatic approval, route a required decision to the delegated installation lead, or return the exact approval link to the owner when neither applies. Do not ask for an additional owner decision when the recorded policy already covers it. The client cannot grant approval or host-shell access. Do not substitute a host continuity prompt for these supported operations. See [restart routing](docs/host-handoff.md#use-supported-operations-first).
+- For daemon or protocol deployment, Builds follows the [source update route](docs/task-delivery.md#source-updates): guarded static publication for interface-only changes, otherwise the advertised source updater, with a handoff only when both are unavailable or concretely refused. A plain restart does not install code. Preview-only requests still stop at preview delivery.
 - Use the managed preview helper for authorized preview lifecycle operations. A plain restart does not install source or publish the interface. Source updates require the separate advertised capability.
 - Prepare a self-contained host handoff only for remaining work that available tools cannot perform, or when a concrete access or policy failure blocks the supported route. State what you inspected or attempted and the exact blocker. Complete supported operations and container work first. Do not send the owner individual diagnostic commands to run and relay back.
 - In a handoff, include the objective, verified findings, relevant paths, changes already made, validation evidence, remaining work, acceptance checks and unresolved decisions. Tell the receiving agent to gather its own diagnostics and carry the task through completion.
@@ -150,7 +154,18 @@ Never call daemon drain/restart RPCs directly or use launchctl, supervisorctl, D
 
 ## Installation account connections
 
-Provider accounts connect to the installation and synchronize to Host and Dev by default. Do not add per-environment sign-in flows or another environment selector. Only an explicit post-connection environment exclusion may disable an account in one environment. Report synchronization pending until every non-excluded environment verifies the same account. Follow [installation account connections](docs/plans/execution-environments/provider-auth.md) for authentication, refresh and migration requirements; this is the required contract, not a claim that the current installation already implements it.
+Provider accounts connect to the installation and synchronize to Host and Dev by default. Do not add per-environment sign-in flows or another environment selector. Only an explicit post-connection environment exclusion may disable an account in one environment. Report synchronization pending until every non-excluded environment verifies the same account. Follow [installation account connections](docs/providers.md#installation-account-connections) for authentication, refresh and migration requirements; this is the required contract, not a claim that every installation already implements it.
+
+## Testing budget
+
+Every test costs CI time on every push and maintenance on every change. This budget overrides any broader coverage advice in [testing](docs/testing.md).
+
+- Add a test only for behavior that broke before or carries real risk: security boundaries (network gate, owner authorization, credential handling), data migrations, wire compatibility, and installer, upgrade and recovery paths. Shipping a feature does not by itself earn a test.
+- Extend an existing test or case table before creating a new file. Cover each risk with one representative case, not every permutation.
+- Never assert screenshots, copy, colors, CSS or pixel geometry. Assert what the user or caller can do.
+- End-to-end coverage is one smoke per platform at release time, not on every push. Add a Playwright spec only when a unit test with a fake adapter cannot catch the failure.
+- Delete tests that your change makes obsolete in the same commit. Do not skip them or keep tests for removed behavior.
+- Do not delete or rewrite upstream Paseo tests to slim the suite; every upstream merge would conflict. Change CI routing instead.
 
 ## Check your work
 
@@ -160,7 +175,8 @@ Provider accounts connect to the installation and synchronize to Host and Dev by
 - Add tests to existing suites and reuse their npm scripts and CI jobs instead of creating feature-specific runners.
 - Reuse passing test evidence from another agent for unchanged code. Do not add provider-auth checks or auth-dependent skips to tests.
 - Before diagnosing cross-package type errors, rebuild declarations with `npm run build:client` or `npm run build:server` as appropriate. Do not patch types to hide stale declarations. See [development](docs/development.md).
-- Update and stage `VORTEO_CHANGELOG.md` in every commit, including documentation, tests, tooling and upstream merges. Describe the complete commit at the prepared version, following [release notes](docs/release.md#vorteo-release-notes).
+- Public release notes are curated executive summaries following [public release summaries](docs/release.md#public-release-summaries), with one outcome summary and grouped user-visible improvements. Never publish concatenated internal date, version or Unreleased headings.
+- Update and stage `VORTEO_CHANGELOG.md` in every commit, including documentation, tests, tooling and upstream merges. Head the entry `## Unreleased - YYYY-MM-DD`, or with the new version for a release preparation, following [release notes](docs/release.md#vorteo-release-notes).
 - Every commit increments the Vorteo version through the installed hook. Stage intended manifest changes first; never bypass hooks or use upstream release commands for routine commits.
 - Update [Vorteo customizations](docs/vorteo-customizations.md) in every commit, including documentation, tooling and upstream merges. Maintain the affected feature or limitation; when functionality is unchanged, update the maintenance review with the commit's scope and result. Follow [inventory maintenance](docs/writing.md#maintain-the-vorteo-customizations-inventory).
 - For every Paseo upstream merge, compare incoming implementation and tests with the customizations inventory. Record full or partial overlap and the remaining Vorteo difference, credit upstream, and revise the roadmap in the same change. Do not claim parity from a release-note title alone or remove custom behavior without verifying compatibility.
@@ -168,7 +184,7 @@ Provider accounts connect to the installation and synchronize to Host and Dev by
 ## Finish the task
 
 - “Ship it” grants [Level 4](#authorization-levels). Commit the requested changes on your task branch, verify them, and hand the branch to [Builds](#builds-coordinator), which integrates it into `main`, installs it and reports back. Do not push `main` or deploy yourself.
-- Builds alone publishes with `node scripts/publish-main.mjs`, prepares Host updates with `scripts/prepare-host-delivery.mjs`, and keeps `main` equal to the installed source. See [task delivery](docs/task-delivery.md).
+- Builds alone delivers to `main` through a pull request with `node scripts/publish-main.mjs`, tags releases, prepares Host updates with `scripts/prepare-host-delivery.mjs`, and records published source, served interface and installed daemon revisions separately. See [task delivery](docs/task-delivery.md).
 - Before reporting “shipped”, wait for Builds' report, then verify the remote branch directly and prove it contains the task commits. Report GitHub publication and deployment separately. A successful deployment, local commit, open PR or pushed feature branch alone does not complete shipping. If either required step is blocked, state what remains instead of claiming completion.
 - In this repository, a request to "push" grants [Level 3](#authorization-levels) and means hand the branch to Builds to integrate into `main`, unless the user explicitly names another destination. Never force-push `main`.
 

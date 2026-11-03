@@ -1,18 +1,11 @@
-import { readExecutionInstallation } from "@/execution-installation/policy";
-import { replaceProviderDefaults, editSharedProfile } from "./shared-profile-edits";
-import { useInstallationProfiles } from "@/execution-installation/profiles";
-import { PreferredChoicesField } from "./preferred-choices-field";
+import { reportSyncError } from "@/components/settings/sync-error-notification";
+import { useProviderSettingsStore } from "@/stores/provider-settings-store";
+import { useRouter } from "expo-router";
+import { useSharedProviderProfiles } from "./use-shared-provider-profiles";
 import { sharedChoiceState } from "../shared-choices";
-import { useCallback, useMemo, useState } from "react";
-import { Text, View } from "react-native";
-import type {
-  AgentProfile,
-  MutableDaemonConfig,
-  ProviderPreferences,
-  SharedProviderPreferences,
-} from "@getpaseo/protocol/messages";
-import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
-import { useDaemonConfig } from "@/hooks/use-daemon-config";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Text, View, Pressable } from "react-native";
+import type { AgentProfile } from "@getpaseo/protocol/messages";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { SettingsCard, SettingsCollapsibleRow } from "@/components/settings";
@@ -20,21 +13,9 @@ import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { describeCopies, groupDuplicateProfiles, type ProfileGroup } from "./profile-duplicates";
 import { settingsStyles } from "@/styles/settings";
 import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
-import { AgentProfileEditModal } from "./agent-profile-edit-modal";
+import { useToast } from "@/contexts/toast-context";
 import { AgentProfileRow } from "./agent-profile-row";
-import type { AgentProfileValue } from "../internal/profile-form-model";
-import { generateAgentProfileId } from "../internal/profile-id";
-import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
-import { useReportActionError } from "@/hooks/use-action-error";
-
-interface EditTarget {
-  serverId: string;
-  kind: "defaults" | "workflow";
-  profile: AgentProfile;
-  snapshot: SharedProviderPreferences;
-  providers: MutableDaemonConfig["providers"];
-}
+import { toErrorMessage } from "@/utils/error-messages";
 
 export function SharedProviderSection({
   serverId,
@@ -43,150 +24,48 @@ export function SharedProviderSection({
   serverId: string;
   provider: string;
 }) {
-  const { config, patchConfig } = useDaemonConfig(serverId);
   const {
+    shared,
+    group,
+    saveGroup,
+    deleteWorkflow,
     installation,
-    data: sharedSnapshot,
-    save: saveInstallation,
     error: installationError,
-  } = useInstallationProfiles();
+  } = useSharedProviderProfiles(serverId, provider);
+  const router = useRouter();
   const { entries } = useProvidersSnapshot(serverId, { cwd: null });
-  const [editor, setEditor] = useState<EditTarget | null>(null);
-  const [operation, setOperation] = useState<
-    { status: "idle" } | { status: "saving" } | { status: "error"; message: string }
-  >({ status: "idle" });
-  const reportActionError = useReportActionError();
+  const [operation, setOperation] = useState<{ status: "idle" } | { status: "saving" }>({
+    status: "idle",
+  });
+  const toast = useToast();
   const failOperation = useCallback(
     (error: unknown) => {
-      if (isConnectionError(error)) {
-        reportActionError(error);
-        setOperation({ status: "idle" });
-      } else {
-        setOperation({ status: "error", message: toErrorMessage(error) });
-      }
+      toast.show(toErrorMessage(error));
+      setOperation({ status: "idle" });
     },
-    [reportActionError],
+    [toast],
   );
-  const shared = useMemo(() => {
-    const local = config?.sharedProviderPreferences;
-    if (!installation) return local;
-    if (!sharedSnapshot) return undefined;
-    return {
-      ...local,
-      version: 1 as const,
-      revision: sharedSnapshot.revision,
-      providers: sharedSnapshot.providers,
-      legacyProfiles: local?.legacyProfiles ?? {},
-    };
-  }, [config, installation, sharedSnapshot]);
-  const providerType = resolveProviderType(provider, config?.providers ?? {});
-  const group = shared?.providers[providerType];
-  const close = useCallback(() => setEditor(null), []);
-
-  const saveGroup = useCallback(
-    async (snapshot: SharedProviderPreferences, next: ProviderPreferences) => {
-      if (installation) {
-        await saveInstallation({
-          expectedRevision: snapshot.revision,
-          providers: { ...snapshot.providers, [providerType]: next },
-        });
-        return;
-      }
-      const saved = await patchConfig({
-        expectedProviderPreferencesRevision: snapshot.revision,
-        sharedProviderPreferences: {
-          ...snapshot,
-          providers: { ...snapshot.providers, [providerType]: next },
-        },
-      }).catch((error: unknown) => {
-        if (
-          error instanceof Error &&
-          "userMessage" in error &&
-          typeof error.userMessage === "string"
-        ) {
-          throw new Error(error.userMessage.replace(/^Request failed: /, ""));
-        }
-        throw error;
-      });
-      if (!saved) throw new Error("Reconnect to the host before saving.");
-    },
-    [patchConfig, providerType, installation, saveInstallation],
-  );
-
-  const openDefaults = useCallback(() => {
-    if (!shared) return;
-    setEditor({
-      serverId,
-      kind: "defaults",
-      snapshot: shared,
-      providers: config?.providers ?? {},
-      profile: { ...group?.defaults, id: "provider-defaults", name: "Provider defaults", provider },
-    });
-  }, [shared, group, provider, serverId, config?.providers]);
+  useEffect(() => {
+    reportSyncError(
+      `installation-profiles:${installation?.installationId ?? serverId}`,
+      installationError,
+      () => toast.show(toErrorMessage(installationError)),
+    );
+  }, [installationError, installation?.installationId, serverId, toast]);
   const openWorkflow = useCallback(
-    (id?: string) => {
+    (id = "new") => {
       if (!shared) return;
-      const workflow = group?.workflows.find((item) => item.id === id);
-      const profile = workflow ?? {
-        id: generateAgentProfileId(),
-        name: "",
-        provider: providerType,
-        workerProfileId: "",
-        maxWorkers: 2,
-      };
-      setEditor({
-        serverId,
-        kind: "workflow",
-        snapshot: shared,
-        providers: config?.providers ?? {},
-        profile: { ...group?.defaults, ...profile, provider },
+      // Profile editing leaves the provider sheet for a full page.
+      useProviderSettingsStore.getState().close();
+      router.push({
+        pathname: "/settings/profiles/[profileId]",
+        params: { profileId: id, providerType: provider, serverId },
       });
     },
-    [shared, group, provider, providerType, serverId, config?.providers],
+    [shared, router, provider, serverId],
   );
-  const add = useCallback(() => openWorkflow(), [openWorkflow]);
-
-  const save = useCallback(
-    async (value: AgentProfileValue) => {
-      if (!editor) return;
-      const previous = editor.snapshot.providers[providerType] ?? {
-        defaults: {},
-        preferredModels: [],
-        preferredThinkingOptions: [],
-        workflows: [],
-        defaultWorkflowId: null,
-      };
-      let next = structuredClone(previous);
-      if (editor.kind === "defaults") {
-        const {
-          name: _name,
-          provider: _account,
-          nickname: _nickname,
-          icon: _icon,
-          color: _color,
-          notes: _notes,
-          excludedEnvironments: _excludedEnvironments,
-          ...defaults
-        } = value;
-        next = replaceProviderDefaults(next, defaults);
-      } else {
-        const workflow = editSharedProfile(
-          next,
-          editor.profile.id,
-          providerType,
-          value,
-          editor.providers,
-          Boolean(installation),
-        );
-        const index = next.workflows.findIndex((item) => item.id === workflow.id);
-        if (index < 0) next.workflows.push(workflow);
-        else next.workflows[index] = workflow;
-        next.defaultWorkflowId ??= workflow.id;
-      }
-      await saveGroup(editor.snapshot, next);
-    },
-    [editor, providerType, saveGroup, installation],
-  );
+  const openDefaults = useCallback(() => openWorkflow("defaults"), [openWorkflow]);
+  const add = useCallback(() => openWorkflow("new"), [openWorkflow]);
 
   const changeDefault = useCallback(
     async (id: string) => {
@@ -206,29 +85,15 @@ export function SharedProviderSection({
   const remove = useCallback(
     async (id: string) => {
       if (!shared || !group) return;
-      const referenced = Object.values(shared.legacyProfiles).some(
-        (binding) => binding.workflowId === id && binding.providerType === providerType,
-      );
-      if (referenced) {
-        setOperation({
-          status: "error",
-          message:
-            "Older launches and workers still use this profile. Keep it until they use another profile.",
-        });
-        return;
-      }
       setOperation({ status: "saving" });
       try {
-        const workflows = group.workflows.filter((workflow) => workflow.id !== id);
-        const defaultWorkflowId =
-          group.defaultWorkflowId === id ? (workflows[0]?.id ?? null) : group.defaultWorkflowId;
-        await saveGroup(shared, { ...group, workflows, defaultWorkflowId });
+        await deleteWorkflow(id, shared);
         setOperation({ status: "idle" });
       } catch (error) {
         failOperation(error);
       }
     },
-    [shared, group, providerType, saveGroup, failOperation],
+    [shared, group, deleteWorkflow, failOperation],
   );
   // Older copies are folded under their current profile, so moving a profile
   // swaps it with its visible neighbor rather than with a hidden copy.
@@ -271,52 +136,6 @@ export function SharedProviderSection({
     },
     [reorder],
   );
-  const togglePreferred = useCallback(
-    async (field: "preferredModels" | "preferredThinkingOptions", id: string) => {
-      if (!shared || !group) return;
-      const selected = group[field];
-      const values = selected.includes(id)
-        ? selected.filter((value) => value !== id)
-        : [...selected, id];
-      setOperation({ status: "saving" });
-      try {
-        await saveGroup(shared, { ...group, [field]: values });
-        setOperation({ status: "idle" });
-      } catch (error) {
-        failOperation(error);
-      }
-    },
-    [shared, group, saveGroup, failOperation],
-  );
-  const toggleModel = useCallback(
-    (id: string) => {
-      void togglePreferred("preferredModels", id);
-    },
-    [togglePreferred],
-  );
-  const toggleThinking = useCallback(
-    (id: string) => {
-      void togglePreferred("preferredThinkingOptions", id);
-    },
-    [togglePreferred],
-  );
-  const catalog = useMemo(() => {
-    const family = (entries ?? []).filter(
-      (entry) => resolveProviderType(entry.provider, config?.providers ?? {}) === providerType,
-    );
-    const entry = family.find((candidate) => candidate.provider === provider);
-    return sharedChoiceState({
-      profile: { ...group?.defaults, id: "defaults", name: "Defaults", provider },
-      choices: {},
-      entry,
-      family,
-      preferences: group,
-    });
-  }, [entries, config, providerType, provider, group]);
-  const reasoningOptions = useMemo(
-    () => catalog.thinkingOptions.filter((option) => option.value !== ""),
-    [catalog],
-  );
   const workflows = useMemo(
     () =>
       (group?.workflows ?? []).map((workflow) =>
@@ -324,23 +143,6 @@ export function SharedProviderSection({
       ),
     [group, provider],
   );
-  const providerLabel =
-    entries?.find((entry) => entry.provider === providerType)?.label ?? providerType;
-  const sharedScope = useMemo(() => {
-    if (!editor) return undefined;
-    const accountLabel =
-      entries?.find((entry) => entry.provider === editor.profile.provider)?.label ??
-      editor.profile.provider;
-    const environment = readExecutionInstallation()?.environments.find(
-      (entry) => entry.serverId === editor.serverId,
-    );
-    return {
-      providerType,
-      providerLabel,
-      kind: editor.kind,
-      catalogLabel: environment ? `${accountLabel} (${environment.kind})` : accountLabel,
-    };
-  }, [editor, entries, providerType, providerLabel]);
   const pending = operation.status === "saving";
   const profileGroups = useMemo(() => groupDuplicateProfiles(workflows), [workflows]);
 
@@ -368,12 +170,6 @@ export function SharedProviderSection({
         info="The starred profile is used when you pick this provider without choosing a profile."
         testID="shared-provider-profiles"
       >
-        {installationError ? (
-          <Alert variant="error" description={toErrorMessage(installationError)} />
-        ) : null}
-        {operation.status === "error" ? (
-          <Alert variant="error" title="Unable to save" description={operation.message} />
-        ) : null}
         {profileGroups.length ? null : (
           <Text style={settingsStyles.rowHint}>
             No profiles yet. Add one to save a model setup.
@@ -409,42 +205,17 @@ export function SharedProviderSection({
         }
         testID="shared-provider-settings"
       >
-        {group ? (
-          <SettingsCard>
-            <SettingsCollapsibleRow label="Preferred models and reasoning">
-              <View style={settingsStyles.row}>
-                <View style={settingsStyles.rowContent}>
-                  <PreferredChoicesField
-                    label="Preferred models"
-                    options={catalog.modelOptions}
-                    preferred={group.preferredModels}
-                    onToggle={toggleModel}
-                    disabled={pending}
-                  />
-                  <PreferredChoicesField
-                    label="Preferred reasoning"
-                    options={reasoningOptions}
-                    preferred={group.preferredThinkingOptions}
-                    onToggle={toggleThinking}
-                    disabled={pending}
-                  />
-                </View>
-              </View>
-            </SettingsCollapsibleRow>
-          </SettingsCard>
-        ) : null}
+        <SettingsCard>
+          <Pressable
+            accessibilityRole="button"
+            onPress={openDefaults}
+            disabled={!shared || pending}
+            style={settingsStyles.row}
+          >
+            <Text style={settingsStyles.rowTitle}>Preferred models and reasoning</Text>
+          </Pressable>
+        </SettingsCard>
       </SettingsSection>
-      {editor ? (
-        <AgentProfileEditModal
-          serverId={editor.serverId}
-          visible
-          mode="edit"
-          profile={editor.profile}
-          sharedScope={sharedScope}
-          onSave={save}
-          onClose={close}
-        />
-      ) : null}
     </>
   );
 }

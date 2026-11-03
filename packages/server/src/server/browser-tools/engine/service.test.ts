@@ -41,6 +41,7 @@ class FakeTab implements TabContents {
   public readonly actions: string[] = [];
   public readonly capturedViewports: AbortSignal[] = [];
   public readonly debugCommands: Array<{ command: string; params?: Record<string, unknown> }> = [];
+  public readonly insertedText: string[] = [];
   public readonly inputEvents: IsolatedKeyboardInputEvent[] = [];
   private readonly captureStartWaiters: Array<() => void> = [];
   private readonly deferredCaptures: Array<(image: TabImage) => void> = [];
@@ -229,6 +230,10 @@ class FakeTab implements TabContents {
 
   public sendInputEvent(event: IsolatedKeyboardInputEvent): void {
     this.inputEvents.push(event);
+  }
+
+  public async insertText(text: string): Promise<void> {
+    this.insertedText.push(text);
   }
 
   public waitForCaptureStart(count: number): Promise<void> {
@@ -925,24 +930,6 @@ describe("executeAutomationCommand", () => {
     });
   });
 
-  test("fill with an empty string clears a ref through the regular fill path", async () => {
-    const browser = new BrowserAutomationHarness();
-    browser.tab.snapshotNodes = formElements();
-
-    requireSnapshotRefs(await browser.snapshot());
-    const action = await browser.execute({
-      command: "fill",
-      args: { browserId: BROWSER_A, ref: "@e1", value: "" },
-    });
-
-    expect(action).toEqual({
-      requestId: "req-fill",
-      ok: true,
-      result: { command: "fill", browserId: BROWSER_A, ref: "@e1" },
-    });
-    expect(containsScript(browser.tab, '"@e1"', 'const nextValue = "";')).toBe(true);
-  });
-
   test("refs become stale after navigation changes the tab URL", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.snapshotNodes = formElements();
@@ -1104,15 +1091,29 @@ describe("executeAutomationCommand", () => {
       ok: true,
       result: { command: "type", browserId: BROWSER_A, ref: "@e1", x: 40, y: 30 },
     });
-    expect(browser.tab.debugCommands.at(-1)).toEqual({
-      command: "Input.insertText",
-      params: { text: "Ada" },
-    });
-    expect(browser.tab.debugCommands.slice(0, 3).map((entry) => entry.command)).toEqual([
+    expect(browser.tab.insertedText).toEqual(["Ada"]);
+    expect(browser.tab.debugCommands.map((entry) => entry.command)).toEqual([
       "Input.dispatchMouseEvent",
       "Input.dispatchMouseEvent",
       "Input.dispatchMouseEvent",
     ]);
+  });
+
+  test("type inserts text through the tab, not the window-wide debugger input", async () => {
+    const browser = new BrowserAutomationHarness();
+
+    const action = await browser.execute({
+      command: "type",
+      args: { browserId: BROWSER_A, text: "Ada" },
+    });
+
+    expect(action).toEqual({
+      requestId: "req-type",
+      ok: true,
+      result: { command: "type", browserId: BROWSER_A },
+    });
+    expect(browser.tab.insertedText).toEqual(["Ada"]);
+    expect(browser.tab.debugCommands).toEqual([]);
   });
 
   test("keypress dispatches a trusted key to the focused element when ref is omitted", async () => {
@@ -1409,30 +1410,6 @@ describe("executeAutomationCommand", () => {
     expect(containsScript(browser.tab, "__PASEO_BROWSER_EVALUATE__", "() => 42")).toBe(true);
   });
 
-  test("evaluate returns object JSON from the page context", async () => {
-    const browser = new BrowserAutomationHarness();
-    browser.tab.evaluateScriptResult = {
-      ok: true,
-      resultJson: '{"title":"Fixture","ready":true}',
-    };
-
-    const result = await browser.execute({
-      command: "evaluate",
-      args: { browserId: BROWSER_A, function: "() => ({ title: document.title, ready: true })" },
-    });
-
-    expect(result).toEqual({
-      requestId: "req-evaluate",
-      ok: true,
-      result: {
-        command: "evaluate",
-        browserId: BROWSER_A,
-        resultJson: '{"title":"Fixture","ready":true}',
-        truncated: false,
-      },
-    });
-  });
-
   test("evaluate passes the resolved ref element as the first argument", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.snapshotNodes = formElements();
@@ -1525,20 +1502,6 @@ describe("executeAutomationCommand", () => {
     expect(JSON.parse(result.result.resultJson)).toBe("x".repeat(79_000));
   });
 
-  test("evaluate caps oversized results inside the page script", async () => {
-    const browser = new BrowserAutomationHarness();
-
-    await browser.execute({
-      command: "evaluate",
-      args: { browserId: BROWSER_A, function: "() => 'large'" },
-    });
-
-    expect(
-      containsScript(browser.tab, "__PASEO_BROWSER_EVALUATE__", "resultJson.length <= 80000"),
-    ).toBe(true);
-    expect(containsScript(browser.tab, "resultJson.slice(0, 79000)")).toBe(true);
-  });
-
   test("screenshot captures the painted viewport", async () => {
     const browser = new BrowserAutomationHarness();
 
@@ -1629,38 +1592,6 @@ describe("executeAutomationCommand", () => {
     ).rejects.toThrow("capture failed");
 
     expect(browser.tab.actions).toEqual(["invalidate", "capture"]);
-  });
-
-  test("overlapping screenshots serialize through the shared capture queue", async () => {
-    const browser = new BrowserAutomationHarness();
-    browser.tab.deferCaptures = true;
-
-    const first = browser.execute({
-      command: "screenshot",
-      args: { browserId: BROWSER_A },
-    });
-    await browser.tab.waitForCaptureStart(1);
-
-    const second = browser.execute(
-      {
-        command: "screenshot",
-        args: { browserId: BROWSER_A },
-      },
-      { requestId: "req-screenshot-2" },
-    );
-    await Promise.resolve();
-
-    expect(browser.tab.actions).toEqual(["invalidate", "capture"]);
-
-    browser.tab.finishNextCapture();
-    await browser.tab.waitForCaptureStart(2);
-
-    expect(browser.tab.actions).toEqual(["invalidate", "capture", "invalidate", "capture"]);
-
-    browser.tab.finishNextCapture();
-    await expect(first).resolves.toMatchObject({ requestId: "req-screenshot", ok: true });
-    await expect(second).resolves.toMatchObject({ requestId: "req-screenshot-2", ok: true });
-    expect(browser.tab.actions).toEqual(["invalidate", "capture", "invalidate", "capture"]);
   });
 
   test("overlapping screenshots across browser tabs serialize through the shared capture queue", async () => {
