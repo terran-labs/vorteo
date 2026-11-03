@@ -285,6 +285,21 @@ export function createClaudeOAuthRuntime(
    * new grant out again and leaves the setup token in use. After it changes, offline environments
    * catch up through the settings, setup-token and refresh reconcilers.
    */
+  /** The label of another Claude definition whose recorded sign-in is this email, if any. */
+  function duplicateIdentity(
+    definitionId: string,
+    email: string | null,
+    snapshot: ReturnType<typeof definition>["snapshot"],
+  ): string | null {
+    if (!email) return null;
+    for (const other of snapshot.settings?.providerDefinitions ?? []) {
+      if (other.id === definitionId || other.removed || other.providerType !== "claude") continue;
+      const recorded = refresher.status(other.id).identity?.email;
+      if (recorded?.toLowerCase() === email.toLowerCase()) return other.policy.label ?? other.id;
+    }
+    return null;
+  }
+
   async function finishUpgrade(definitionId: string, upgrade: PendingUpgrade) {
     try {
       const identity = await cli.identity(upgrade.configDir);
@@ -301,6 +316,14 @@ export function createClaudeOAuthRuntime(
       const { snapshot, providerId, creationId } = upgradeCandidate(definitionId);
       if (providerId !== upgrade.providerId || login.read(definitionId).status !== "verifying")
         throw new ClaudeOAuthDeliveryError();
+      // With nothing recorded for this account, refuse a login another account already uses.
+      const duplicate = duplicateIdentity(definitionId, identity.email, snapshot);
+      if (duplicate)
+        throw new ProviderLoginRefusal(
+          `Claude signed in as ${identity.email}, which ${duplicate} already uses. Nothing changed. Sign in with this account's own Claude login.`,
+        );
+      // A daemon may have been replaced by an older release since the upgrade started.
+      await assertUpgradeSupported();
       const definitions = structuredClone(snapshot.settings!.providerDefinitions!);
       definitions.find((item) => item.id === definitionId)!.accountSetup = {
         provider: "claude",
@@ -318,6 +341,7 @@ export function createClaudeOAuthRuntime(
       });
     } catch (error) {
       if (upgrades.has(definitionId)) await cli.logout(upgrade.configDir).catch(() => {});
+      upgrades.delete(definitionId);
       throw error;
     }
     // Bindings switch, the setup token is withdrawn everywhere, then Dev receives access.
@@ -403,7 +427,9 @@ export function createClaudeOAuthRuntime(
       // Verifying an upgrade may already be switching the account; let it finish.
       if (upgrades.has(definitionId) && login.read(definitionId).status === "verifying")
         return login.read(definitionId);
-      return login.cancel(definitionId, attemptId);
+      const state = await login.cancel(definitionId, attemptId);
+      if (!isActive(state)) upgrades.delete(definitionId);
+      return state;
     },
     /** Whether the account can be upgraded, and the state of the upgrade sign-in. */
     upgradeRead: async (definitionId: string) => {
