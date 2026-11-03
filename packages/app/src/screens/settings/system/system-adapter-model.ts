@@ -1,3 +1,5 @@
+import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
+import type { HostProfile } from "@/types/host-connection";
 import type { InstallationPanelModel } from "@/execution-installation/panel-model";
 import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
 import type { RestartJob } from "@getpaseo/protocol/execution-installation";
@@ -113,4 +115,23 @@ export function systemAttentionCount(
   return (
     requests + blockedServices + Number(state.enrollmentStatus?.activation === "recovery-required")
   );
+}
+
+export function selectSystemEnvironments(
+  installation: ExecutionInstallation | null,
+  hosts: readonly HostProfile[],
+  serverId?: string,
+  selectedServerId?: string | null,
+) {
+  return {
+    hostId:
+      serverId ??
+      installation?.environments.find((environment) => environment.kind === "host")?.serverId ??
+      hosts.find((host) => host.serverId === selectedServerId)?.serverId ??
+      hosts[0]?.serverId ??
+      null,
+    devId:
+      installation?.environments.find((environment) => environment.kind === "container")
+        ?.serverId ?? null,
+  };
 }
