@@ -742,10 +742,6 @@ function FullMaintenanceDelegation({
     () => void model.changeMaintenanceDelegation(!delegation?.enabled),
     [model, delegation?.enabled],
   );
-  const changeManagement = useCallback(
-    () => void model.changeMaintenanceDelegation(true, !delegation?.managementEnabled),
-    [model, delegation?.managementEnabled],
-  );
   if (!delegation?.available) return null;
   return (
     <View>
@@ -768,24 +764,14 @@ function FullMaintenanceDelegation({
           : "Delegate all supported maintenance"}
       </Button>
       {delegation.managementAvailable ? (
-        <View>
-          <Text style={styles.text}>
-            Delegate installation management to trusted Host agents. This enables supported
-            automatic maintenance and cancellation of pending or queued requests, with durable
-            receipts. Exact manual-review jobs still require your decision. Agents cannot change
-            this grant, accounts or credentials. You can revoke management here at any time.
-          </Text>
-          <Button
-            size="md"
-            disabled={state.busy || Boolean(state.maintenanceDelegationError)}
-            onPress={changeManagement}
-            testID="installation-management-change"
-          >
-            {delegation.managementEnabled
-              ? "Revoke installation management"
-              : "Delegate installation management"}
-          </Button>
-        </View>
+        <Text style={styles.text} testID="installation-management-status">
+          {delegation.managementEnabled
+            ? "Installation management is enabled by this grant."
+            : "This grant also enables installation management."}{" "}
+          Trusted Host agents can cancel pending or queued requests, with durable receipts. They
+          cannot approve requests that need your review, stop claimed work, or change this grant,
+          accounts, credentials or settings.
+        </Text>
       ) : null}
     </View>
   );

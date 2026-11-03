@@ -128,7 +128,7 @@ import {
 import type { AgentUsageLimitResumeAction, UsageLimitHold } from "@getpaseo/protocol/usage-limit";
 import { usageLimitContinuationText } from "./usage-limit/resume-service.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
-import { toStoredAgentRecord } from "./agent-projections.js";
+import { restoreStoredUsage, toStoredAgentRecord } from "./agent-projections.js";
 import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import { ProviderQuotaExhaustedError } from "./quota-error.js";
@@ -3224,6 +3224,7 @@ export class AgentManager {
       workspaceId?: string;
       owner?: AgentOwner;
       attention?: AttentionState;
+      lastUsage?: AgentUsage;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -3286,6 +3287,7 @@ export class AgentManager {
       workspaceId?: string;
       owner?: AgentOwner;
       attention?: AttentionState;
+      lastUsage?: AgentUsage;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -4324,7 +4326,7 @@ export class AgentManager {
         persistence: record.persistence ?? null,
         historyPrimed: true,
         lastUserMessageAt: record.lastUserMessageAt ? new Date(record.lastUserMessageAt) : null,
-        lastUsage: undefined,
+        lastUsage: restoreStoredUsage(record),
         lastError: record.lastError ?? undefined,
         attention,
         internal: record.internal,
