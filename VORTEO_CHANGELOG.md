@@ -8,6 +8,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Improvements
 
+- A coordinator update reaches its claim about a minute sooner after its cancellation window. The launcher no longer re-reads the candidate before starting the runner, which re-reads every byte under its exclusive lock, and the claim reuses the runner's own runtime digest from admission; the digest it replaces was never compared. Every live process and service check at the claim stays.
+
 - A coordinator update blocked by other installation work now waits up to eight minutes for that work to finish and then starts, within the same approval, instead of failing at once. Only that busy refusal is retried; a canceled or changed approval, or any other error, stops it.
 
 ### Fixed

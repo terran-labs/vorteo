@@ -276,14 +276,14 @@ export function runnerRenewal(
   // boundaries and derives the renewal once, at the claim. Watchdogs never digest
   // the tree; maintenance runners keep the full checks at every fence.
   const custodyBoundaries = role === "executor" && Boolean(setup.renewal) && !setup.maintenance;
-  const requireRuntimeCustody: RequireRuntimeCustody | undefined = custodyBoundaries
-    ? (() => {
-        const check = createRuntimeCustody({
-          custody: { runtimeDirectory: setup.runtimeDirectory, runtimeSha256: setup.runtimeSha256 },
-          digest: (directory) => digestRuntimeInChild(setup.node.path, directory),
-        });
-        return (boundary) => trace("runtime-digest", () => check(boundary));
-      })()
+  const custody = custodyBoundaries
+    ? createRuntimeCustody({
+        custody: { runtimeDirectory: setup.runtimeDirectory, runtimeSha256: setup.runtimeSha256 },
+        digest: (directory) => digestRuntimeInChild(setup.node.path, directory),
+      })
+    : undefined;
+  const requireRuntimeCustody: RequireRuntimeCustody | undefined = custody
+    ? (boundary) => trace("runtime-digest", () => custody(boundary))
     : undefined;
   const verifyRenewal = async (fence: "setup" | "claim") => {
     const renewal = setup.renewal;
@@ -312,6 +312,8 @@ export function runnerRenewal(
           setup: original,
           moduleFile: fileURLToPath(import.meta.url),
           dispatchedRequest: renewal.request,
+          // This process digested this runtime at admission, under the same lock.
+          verifiedRuntime: custody?.admitted(),
         }),
       );
       const expected = { ...renewal, request: undefined };
