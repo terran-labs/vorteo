@@ -174,3 +174,42 @@ describe("paseo factory project", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 });
+
+describe("paseo factory project drain", () => {
+  const listed = {
+    projects: [
+      {
+        projectId: "prj_app",
+        state: "paused",
+        repository: "acme/app",
+        paused: true,
+        drain: { reason: "drain before restart", pausedAt: "2026-11-03T12:00:00.000Z" },
+      },
+    ],
+  };
+
+  it("lists every project", async () => {
+    invoke.mockResolvedValue(listed);
+    await run("list");
+    expect(invoke).toHaveBeenCalledWith("factory", "factory.project.list", {});
+    expect(stdout.join("")).toContain("drain before restart");
+  });
+
+  it("pause-all defaults its reason and accepts one", async () => {
+    invoke.mockResolvedValue(listed);
+    await run("pause-all");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.pause_all", {
+      reason: "drain before restart",
+    });
+    await run("pause-all", "--reason", "upgrade to 26.11.300");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.pause_all", {
+      reason: "upgrade to 26.11.300",
+    });
+  });
+
+  it("resume-all takes no arguments", async () => {
+    invoke.mockResolvedValue(listed);
+    await run("resume-all");
+    expect(invoke).toHaveBeenCalledWith("factory", "factory.project.resume_all", {});
+  });
+});

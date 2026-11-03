@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Added
+
+- Add `paseo factory project list`, `pause-all` and `resume-all` for draining Factory work before a restart or upgrade. Pause-all records which projects it paused, and resume-all resumes only those, so projects an operator paused by hand stay paused. The Builds charter drains with them, and the Mechanic charter now reads update status. The shared, Foreman and Builds charters gain the operating rules Builds learned running delivery.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Update the sidebar projection test's Factory fixture to a per-project Factory member, matching the Factory folder's grouping rule.

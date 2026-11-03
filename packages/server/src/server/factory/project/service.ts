@@ -12,11 +12,15 @@ import {
   factoryProjectInstructionsPropose,
   factoryProjectInstructionsResolve,
   factoryProjectInstructionsSet,
+  factoryProjectList,
   factoryProjectPause,
+  factoryProjectPauseAll,
+  factoryProjectResumeAll,
   factoryProjectResume,
   factoryProjectSendThread,
   factoryProjectStatusSet,
   type ProjectFactoryInstructions,
+  type ProjectFactoryList,
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
 } from "@getpaseo/server/factory-project";
@@ -193,6 +197,14 @@ export class ProjectFactoryService {
         return this.setStatus(factoryProjectStatusSet.input.parse(rawInput));
       case factoryProjectSendThread.name:
         return this.sendThread(factoryProjectSendThread.input.parse(rawInput));
+      case factoryProjectList.name:
+        factoryProjectList.input.parse(rawInput);
+        return this.list();
+      case factoryProjectPauseAll.name:
+        return this.pauseAll(factoryProjectPauseAll.input.parse(rawInput).reason);
+      case factoryProjectResumeAll.name:
+        factoryProjectResumeAll.input.parse(rawInput);
+        return this.resumeAll();
       case factoryProjectInstructionsGet.name: {
         const { projectId, role } = factoryProjectInstructionsGet.input.parse(rawInput);
         return this.getInstructions(projectId, role);
@@ -271,6 +283,8 @@ export class ProjectFactoryService {
       await this.mutateProject(projectId, (project) => {
         if (!project.enabled) throw new ProjectFactoryError("Factory is off for this project.");
         project.paused = paused;
+        // A manual pause or resume takes the project out of any pause_all drain.
+        delete project.drain;
       });
       if (paused) this.stopTimers(projectId);
       else this.startTimers(projectId);
@@ -295,9 +309,71 @@ export class ProjectFactoryService {
       await this.mutateProject(projectId, (current) => {
         current.enabled = false;
         current.paused = false;
+        delete current.drain;
       });
       await this.reconcileOptimizerReview(projectId, await this.readProject(projectId));
       return this.describe(record, await this.readProject(projectId), null);
+    });
+  }
+
+  /** Every project the Factory service knows, with its state. */
+  async list(): Promise<ProjectFactoryList> {
+    let file;
+    try {
+      file = await this.store.read();
+    } catch (error) {
+      if (!(error instanceof ProjectFactoryStateDamagedError)) throw error;
+      return { projects: [] };
+    }
+    const projects: ProjectFactoryList["projects"] = [];
+    for (const [projectId, project] of Object.entries(file.projects)) {
+      const record = await this.input.projects.get(projectId);
+      const unavailable = !record || record.archivedAt ? "unavailable" : null;
+      projects.push({
+        projectId,
+        state: unavailable ?? factoryState(project, null),
+        repository: project.repository || null,
+        paused: project.paused,
+        drain: project.drain ?? null,
+      });
+    }
+    return { projects };
+  }
+
+  /**
+   * Pauses every project whose Factory is on, before a restart or upgrade, and records which
+   * ones it paused. Projects already paused, off or unavailable are left alone, so a rerun
+   * records nothing new.
+   */
+  private pauseAll(reason: string): Promise<ProjectFactoryList> {
+    return this.serialize(async () => {
+      const pausedAt = this.now().toISOString();
+      for (const entry of (await this.list()).projects) {
+        if (entry.state !== "on") continue;
+        await this.mutateProject(entry.projectId, (project) => {
+          project.paused = true;
+          project.drain = { reason, pausedAt };
+        });
+        this.stopTimers(entry.projectId);
+      }
+      return this.list();
+    });
+  }
+
+  /** Resumes only the projects pause_all paused; a project paused by hand stays paused. */
+  private resumeAll(): Promise<ProjectFactoryList> {
+    return this.serialize(async () => {
+      for (const entry of (await this.list()).projects) {
+        // An unavailable project keeps its drain, so restoring it leaves the record intact.
+        if (!entry.drain || entry.state === "unavailable") continue;
+        const resume = entry.state === "paused";
+        await this.mutateProject(entry.projectId, (project) => {
+          if (resume) project.paused = false;
+          delete project.drain;
+        });
+        if (resume) this.startTimers(entry.projectId);
+      }
+      return this.list();
     });
   }
 

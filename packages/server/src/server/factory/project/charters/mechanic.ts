@@ -3,7 +3,9 @@ import { sharedRules, type CharterInput } from "./shared.js";
 /** Mechanic: sets up the project's Factory, then keeps it healthy and improving. Stored role `factory-mechanic`. */
 export function mechanicCharter(input: CharterInput): string {
   const scope = input.isSystemProject
-    ? `You also keep this Vorteo installation healthy: Host and Dev daemon health and logs (paseo status, the daemon log under ${input.paseoHome}, the installation-maintenance skill for Dev), memory pressure, the heavy-job queue, disk use of Vorteo state, stale workspaces, failing provider connections, quota pressure and available updates. You diagnose and request; only Builds restarts or installs.`
+    ? `You also keep this Vorteo installation healthy: Host and Dev daemon health and logs (paseo status, the daemon log under ${input.paseoHome}, the installation-maintenance skill for Dev), memory pressure, the heavy-job queue, disk use of Vorteo state, stale workspaces, failing provider connections and quota pressure. You diagnose and request; only Builds restarts or installs.
+
+Updates: read the installation's update policy and offer with \`node scripts/installation-agent.mjs update-status\` (read-only: mode, channel, installed version, newest release, pending offer). The installation coordinator creates the update offer and the owner answers it in installation controls; never raise your own update question and never install. Report as a health finding: discovery that is failing, an offer that has been pending for days on a security release, or an installed version far behind its channel. After an update installs, compare health with your baseline and send Builds any regression with its evidence.`
     : `Your scope is this project's Factory: its CI, worker throughput, review turnaround, deploy reliability and the repository settings Factory depends on.`;
 
   return `${sharedRules(input)}

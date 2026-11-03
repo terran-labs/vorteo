@@ -59,6 +59,11 @@ const ProjectStateSchema = z.object({
    * until a resume succeeds, so startup can reconcile either half after a crash or failure.
    */
   pausedOptimizerScheduleId: z.string().optional(),
+  /**
+   * Set when pause_all paused this project. resume_all resumes only these, and any manual
+   * pause, resume or turn off clears it, so an operator's own pause is never undone.
+   */
+  drain: z.object({ reason: z.string(), pausedAt: z.string() }).optional(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
 

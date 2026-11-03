@@ -926,3 +926,116 @@ describe("launch switches keep the charter", () => {
     expectCharterDelivered(foreman, sentBefore);
   });
 });
+
+describe("list, pause_all and resume_all", () => {
+  async function threeProjects(factory: ProjectFactoryService) {
+    await addProject("prj_paused");
+    await addProject("prj_off");
+    await enable(factory);
+    for (const projectId of ["prj_paused", "prj_off"])
+      await factory.invoke("factory.project.enable", {
+        projectId,
+        repository: `acme/${projectId}`,
+      });
+    await factory.invoke("factory.project.pause", { projectId: "prj_paused" });
+    await factory.invoke("factory.project.disable", { projectId: "prj_off" });
+  }
+
+  type Listed = Awaited<ReturnType<ProjectFactoryService["list"]>>;
+  const byId = (list: unknown) =>
+    Object.fromEntries((list as Listed).projects.map((entry) => [entry.projectId, entry]));
+
+  test("list reports every known project with its state, repository and pause", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    expect(byId(await factory.invoke("factory.project.list", {}))).toEqual({
+      [PROJECT]: { projectId: PROJECT, state: "on", repository: REPO, paused: false, drain: null },
+      prj_paused: {
+        projectId: "prj_paused",
+        state: "paused",
+        repository: "acme/prj_paused",
+        paused: true,
+        drain: null,
+      },
+      prj_off: {
+        projectId: "prj_off",
+        state: "off",
+        repository: "acme/prj_off",
+        paused: false,
+        drain: null,
+      },
+    });
+  });
+
+  test("pause_all pauses only projects that are on; resume_all resumes only those", async () => {
+    const factory = service();
+    await threeProjects(factory);
+
+    const paused = byId(
+      await factory.invoke("factory.project.pause_all", { reason: "upgrade to 26.11.300" }),
+    );
+    expect(paused[PROJECT]).toMatchObject({
+      state: "paused",
+      drain: { reason: "upgrade to 26.11.300", pausedAt: T0 },
+    });
+    expect(paused.prj_paused).toMatchObject({ state: "paused", drain: null });
+    expect(paused.prj_off).toMatchObject({ state: "off", drain: null });
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(false);
+
+    const resumed = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(resumed.prj_paused).toMatchObject({ state: "paused", drain: null });
+    expect(resumed.prj_off).toMatchObject({ state: "off" });
+    expect(factory.hasTimer(PROJECT, "factory-intake")).toBe(true);
+    expect(factory.hasTimer("prj_paused", "factory-intake")).toBe(false);
+  });
+
+  test("both are idempotent", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    const empty = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(empty[PROJECT]).toMatchObject({ state: "on", drain: null });
+
+    await factory.invoke("factory.project.pause_all", { reason: "first" });
+    clock = new Date(Date.parse(T0) + 60_000);
+    const again = byId(await factory.invoke("factory.project.pause_all", { reason: "second" }));
+    expect(again[PROJECT]?.drain).toEqual({ reason: "first", pausedAt: T0 });
+    expect(again.prj_paused?.drain).toBeNull();
+
+    await factory.invoke("factory.project.resume_all", {});
+    const twice = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(twice[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(twice.prj_paused).toMatchObject({ state: "paused" });
+  });
+
+  test("a manual pause or resume takes a project out of the drain", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    await factory.invoke("factory.project.resume", { projectId: PROJECT });
+    await factory.invoke("factory.project.pause", { projectId: PROJECT });
+
+    const resumed = byId(await factory.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "paused", drain: null });
+  });
+
+  test("the drain record survives a service restart", async () => {
+    const factory = service();
+    await threeProjects(factory);
+    await factory.invoke("factory.project.pause_all", { reason: "drain before restart" });
+    factory.stop();
+
+    const restarted = service();
+    await restarted.start();
+    expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(false);
+    expect(byId(await restarted.invoke("factory.project.list", {}))[PROJECT]?.drain).toEqual({
+      reason: "drain before restart",
+      pausedAt: T0,
+    });
+
+    const resumed = byId(await restarted.invoke("factory.project.resume_all", {}));
+    expect(resumed[PROJECT]).toMatchObject({ state: "on", drain: null });
+    expect(resumed.prj_paused).toMatchObject({ state: "paused" });
+    expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(true);
+  });
+});

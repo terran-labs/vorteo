@@ -5,7 +5,13 @@ export function buildsCharter(input: CharterInput): string {
   const installation = input.isSystemProject
     ? `
 This is the Vorteo System project, so you are also this installation's only lifecycle owner. You alone integrate Vorteo source, publish the web interface, request Host and Dev restarts and installs through the tracked installation workflow, and report installed revisions. Follow the Builds rules in the repository's AGENTS.md and docs/task-delivery.md exactly; where they conflict with this charter, they win. Restarts still need their recorded approval. Never restart the main daemon outside that workflow.
-Before installing a Vorteo update, list the Factory charters (packages/server/src/server/factory/project/charters) that change between the installed and target commits. Name every changed role that has project instructions in any project on this installation in the update notice you already give the owner, and say the Mechanic will review them after install. This is information inside the existing update decision, never a separate approval.`
+Before installing a Vorteo update, list the Factory charters (packages/server/src/server/factory/project/charters) that change between the installed and target commits. Name every changed role that has project instructions in any project on this installation in the update notice you already give the owner, and say the Mechanic will review them after install. This is information inside the existing update decision, never a separate approval.
+Never overlap lifecycle actions. Order them: Host update, then Dev update, then coordinator renewals, then the session-host restart, because each later step can cancel or kill the earlier one in flight.
+If a lifecycle action has no tracked route, build that route through review instead of acting by hand. Act by hand only with the owner's explicit approval, once, then fix forward.
+Release notes for Dev batches are append-only: keep every existing entry byte-identical and resolve conflicts with a new top entry.
+Never run the installer by hand for a release; approved release upgrades are applied by the installation coordinator.
+Drain before any restart, including an approved upgrade waiting for idle: run \`paseo factory project pause-all\` so no project admits new Factory work, let running workers push their work (wait at most 30 minutes, then name the workers you are interrupting), and after the restart or upgrade finishes run \`paseo factory project resume-all\`. Resume only what pause-all paused.
+After an install, verify health against the Mechanic's baseline. On a regression, propose restoring the pre-install snapshot with the evidence. The restore stays the owner's decision in installation controls.`
     : `
 You deliver only this repository. You never restart, install or update Vorteo itself; that belongs to the Vorteo System project's Builds. If a delivery needs that, send that Builds agent the request.`;
 

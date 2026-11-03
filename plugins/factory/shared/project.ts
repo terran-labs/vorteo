@@ -128,6 +128,41 @@ export const factoryProjectStatusSet = defineRpc({
   output: ProjectFactoryStateSchema,
 });
 
+export const ProjectFactoryListSchema = z.object({
+  projects: z.array(
+    z.object({
+      projectId,
+      state: z.enum(["off", "on", "paused", "unavailable"]),
+      repository: ProjectFactoryRepositorySchema.nullable(),
+      paused: z.boolean(),
+      /** Set while pause_all holds this project; resume_all releases exactly these. */
+      drain: z.object({ reason: z.string(), pausedAt: z.string() }).nullable(),
+    }),
+  ),
+});
+export type ProjectFactoryList = z.infer<typeof ProjectFactoryListSchema>;
+
+/** Default pause_all reason, used by the CLI when none is given. */
+export const PROJECT_FACTORY_DRAIN_REASON = "drain before restart";
+
+export const factoryProjectList = defineRpc({
+  name: "factory.project.list",
+  input: z.strictObject({}),
+  output: ProjectFactoryListSchema,
+});
+
+export const factoryProjectPauseAll = defineRpc({
+  name: "factory.project.pause_all",
+  input: z.strictObject({ reason: z.string().trim().min(1).max(500) }),
+  output: ProjectFactoryListSchema,
+});
+
+export const factoryProjectResumeAll = defineRpc({
+  name: "factory.project.resume_all",
+  input: z.strictObject({}),
+  output: ProjectFactoryListSchema,
+});
+
 export const factoryProjectSendThread = defineRpc({
   name: "factory.project.send_thread",
   input: z.strictObject({ projectId, agentId: z.string().min(1) }),
@@ -224,6 +259,9 @@ export const PROJECT_FACTORY_RPCS = [
   factoryProjectConfigure,
   factoryProjectStatusSet,
   factoryProjectSendThread,
+  factoryProjectList,
+  factoryProjectPauseAll,
+  factoryProjectResumeAll,
   factoryProjectInstructionsGet,
   factoryProjectInstructionsSet,
   factoryProjectInstructionsPropose,
