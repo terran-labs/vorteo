@@ -1961,6 +1961,8 @@ Question form spacing review: forms keep 16px vertical insets and 12px between c
 
 Claude authentication status review: Connection controls use the existing account-scoped CLI authentication result. Usage availability and explicit credential rejection retain their separate meanings. Focused checks cover missing usage, account isolation and sign-out. No Keychain access or credential transfer was added. This source change awaits publication and installation; the README overview and onboarding are unchanged.
 
+Maintenance review: Docker restart preflight and readiness read `{{json .State}}` instead of templating `.State.Health`, which Docker 29.8 rejects for containers without a healthcheck. A failed inspect reports the first line of the CLI error rather than "not found". Verified against the installed Dev, gateway Tailscale and gateway Caddy containers.
+
 ## Optional native macOS helper
 
 Legacy coordinator compatibility: an unavailable helper query is retried once per minute instead of every settings refresh. Owner lock checks still apply during the delay, and upgraded coordinators are discovered without reloading.

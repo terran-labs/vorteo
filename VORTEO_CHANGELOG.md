@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Merge `main` after the eighth Host delivery so the ninth installed Host update can follow it to `main`. No source changes.
