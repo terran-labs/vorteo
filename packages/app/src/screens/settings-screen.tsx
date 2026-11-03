@@ -7,7 +7,7 @@ import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
 import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
-import { InstallationConnectionCheck } from "@/execution-installation/connection-check-wrapper";
+import { SystemPane } from "@/screens/settings/system/system-pane";
 import { InstallationRestartBanner, InstallationControls } from "@/execution-installation/panel";
 import { SystemProjectCard } from "@/execution-installation/system-project-card";
 import { WorkspaceDefaultsSection } from "@/screens/settings/general/workspace-defaults-section";
@@ -18,17 +18,9 @@ import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout"
 import { usePanelStore } from "@/stores/panel-store";
 import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
-import {
-  Alert,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-  type PressableStateCallbackType,
-} from "react-native";
+import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { useRouter } from "expo-router";
-import { useFocusEffect } from "expo-router/react-navigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -55,18 +47,12 @@ import { OpenLocationSection } from "@/screens/settings/open-location/open-locat
 import { TerminalSection } from "@/screens/settings/terminal/terminal-section";
 import { ChatSection } from "@/screens/settings/chat/chat-section";
 import { SendingSection } from "@/screens/settings/general/sending-section";
-import {
-  useAppSettings,
-  useSettings,
-  type AppSettings,
-  type Settings as EffectiveSettings,
-} from "@/hooks/use-settings";
+import { useAppSettings, type AppSettings } from "@/hooks/use-settings";
 import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { type HostProfile } from "@/types/host-connection";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { WindowChromeRegion, WindowChromeSafeArea } from "@/utils/desktop-window";
-import { confirmDialog } from "@/utils/confirm-dialog";
 import { BackHeader } from "@/components/headers/back-header";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { PageLayout } from "@/components/page-layout";
@@ -77,17 +63,13 @@ import { Switch } from "@/components/ui/switch";
 import { VORTEO_GITHUB_URL } from "@/components/community-links";
 import { GitHubIcon } from "@/components/icons/github-icon";
 import { openExternalUrl } from "@/utils/open-external-url";
-import { SegmentedControl } from "@/components/ui/segmented-control";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { DesktopPermissionsSection } from "@/desktop/components/desktop-permissions-section";
 import { DesktopNotificationsSection } from "@/desktop/components/desktop-notifications-section";
 import { BrowserDataSection } from "@/desktop/browser/settings/browser-data-section";
 import { IntegrationsSection } from "@/desktop/components/integrations-section";
 import { isElectronRuntime } from "@/desktop/host";
-import { useDesktopAppUpdater } from "@/desktop/updates/use-desktop-app-updater";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
-import { UpstreamUpdatesSection } from "@/vorton-updates/upstream-section";
-import { VortonUpdatesSection } from "@/vorton-updates/section";
 import { resolveAppVersion } from "@/utils/app-version";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { openChangelog } from "@/changelog";
@@ -472,10 +454,9 @@ function LegacyTerminalRow({ context }: { context: PaneContext }) {
 
 interface AboutSectionProps {
   appVersionText: string;
-  isDesktopApp: boolean;
 }
 
-function AboutSection({ appVersionText, isDesktopApp }: AboutSectionProps) {
+function AboutSection({ appVersionText }: AboutSectionProps) {
   const { t } = useTranslation();
   return (
     <SettingsSection title={t("settings.about.title")}>
@@ -489,7 +470,6 @@ function AboutSection({ appVersionText, isDesktopApp }: AboutSectionProps) {
         </View>
         <WhatsNewRow />
         <GitHubRow />
-        {isDesktopApp ? <DesktopAppUpdateRow /> : null}
       </View>
     </SettingsSection>
   );
@@ -573,7 +553,7 @@ function ConnectedHostsSection({ context }: { context: PaneContext }) {
   return (
     <SettingsSection
       title={t("settings.about.connectedHosts")}
-      info="Daemon versions for each environment, a connection check from this device and app diagnostics. Checks send no passwords or tokens and never restart services."
+      info="Host versions for each environment and app diagnostics. The connection check lives in System."
     >
       <View style={settingsStyles.card}>
         {hosts.map((host, index) => (
@@ -584,9 +564,6 @@ function ConnectedHostsSection({ context }: { context: PaneContext }) {
             clientVersion={context.appVersion}
           />
         ))}
-        {hasInstallation ? (
-          <InstallationConnectionCheck embedded showTopBorder={hosts.length > 0} />
-        ) : null}
         <DiagnosticsRows
           useLegacyTerminalRenderer={context.settings.useLegacyTerminalRenderer}
           onUseLegacyTerminalRendererChange={context.onUseLegacyTerminalRendererChange}
@@ -655,165 +632,6 @@ function HostVersionRow({
   );
 }
 
-function getUpdateButtonLabel(
-  t: TFunction,
-  isInstalling: boolean,
-  latestVersion: string | null | undefined,
-): string {
-  if (isInstalling) return t("settings.about.updates.installing");
-  if (latestVersion) {
-    return t("settings.about.updates.updateTo", {
-      version: formatVersionWithPrefix(latestVersion),
-    });
-  }
-  return t("settings.about.updates.update");
-}
-
-function DesktopAppUpdateRow() {
-  const isCompactLayout = useIsCompactFormFactor();
-  const { t } = useTranslation();
-  const { settings, updateSettings } = useSettings();
-  const {
-    isDesktopApp,
-    statusText,
-    availableUpdate,
-    errorMessage,
-    isChecking,
-    isInstalling,
-    checkForUpdates,
-    installUpdate,
-  } = useDesktopAppUpdater();
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!isDesktopApp) {
-        return undefined;
-      }
-      void checkForUpdates({ intent: "automatic", silent: true });
-      return undefined;
-    }, [checkForUpdates, isDesktopApp]),
-  );
-
-  const handleCheckForUpdates = useCallback(() => {
-    if (!isDesktopApp) {
-      return;
-    }
-    void checkForUpdates();
-  }, [checkForUpdates, isDesktopApp]);
-
-  const handleReleaseChannelChange = useCallback(
-    (releaseChannel: EffectiveSettings["releaseChannel"]) => {
-      void updateSettings({ releaseChannel });
-    },
-    [updateSettings],
-  );
-  const releaseChannelOptions = useMemo(
-    () => [
-      {
-        value: "stable" as const,
-        label: t("settings.about.releaseChannel.stable"),
-      },
-      {
-        value: "beta" as const,
-        label: t("settings.about.releaseChannel.beta"),
-      },
-    ],
-    [t],
-  );
-
-  const handleInstallUpdate = useCallback(() => {
-    if (!isDesktopApp) {
-      return;
-    }
-
-    void confirmDialog({
-      title: t("settings.about.updates.installTitle"),
-      message: t("settings.about.updates.installMessage"),
-      confirmLabel: t("settings.about.updates.installConfirm"),
-      cancelLabel: t("common.actions.cancel"),
-    })
-      .then((confirmed) => {
-        if (!confirmed) {
-          return;
-        }
-        void installUpdate();
-        return;
-      })
-      .catch((error) => {
-        console.error("[Settings] Failed to open app update confirmation", error);
-        Alert.alert(
-          t("settings.about.updates.alertTitle"),
-          t("settings.about.updates.alertMessage"),
-        );
-      });
-  }, [installUpdate, isDesktopApp, t]);
-
-  const isUpdateReady = availableUpdate?.readyToInstall === true;
-  const readyUpdateVersion = isUpdateReady ? availableUpdate?.latestVersion : null;
-
-  if (!isDesktopApp) {
-    return null;
-  }
-
-  return (
-    <>
-      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("settings.about.releaseChannel.label")}</Text>
-          <Text style={settingsStyles.rowHint}>
-            {t("settings.about.releaseChannel.description")}
-          </Text>
-        </View>
-        <SegmentedControl
-          value={settings.releaseChannel}
-          onValueChange={handleReleaseChannelChange}
-          options={releaseChannelOptions}
-        />
-      </View>
-      <View
-        style={[
-          settingsStyles.row,
-          settingsStyles.rowBorder,
-          isCompactLayout && styles.narrowDesktopAppUpdateRow,
-        ]}
-      >
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("settings.about.updates.label")}</Text>
-          <Text style={settingsStyles.rowHint}>{statusText}</Text>
-          {readyUpdateVersion ? (
-            <Text style={settingsStyles.rowHint}>
-              {t("settings.about.updates.readyToInstall", {
-                version: formatVersionWithPrefix(readyUpdateVersion),
-              })}
-            </Text>
-          ) : null}
-          {errorMessage ? <Text style={styles.aboutErrorText}>{errorMessage}</Text> : null}
-        </View>
-        <View style={styles.aboutUpdateActions}>
-          <Button
-            variant="outline"
-            onPress={handleCheckForUpdates}
-            disabled={isChecking || isInstalling}
-          >
-            {isChecking ? t("settings.about.updates.checking") : t("settings.about.updates.check")}
-          </Button>
-          <Button
-            variant="default"
-            onPress={handleInstallUpdate}
-            disabled={isChecking || isInstalling || !isUpdateReady}
-          >
-            {getUpdateButtonLabel(t, isInstalling, readyUpdateVersion)}
-          </Button>
-        </View>
-      </View>
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sidebar
-// ---------------------------------------------------------------------------
-
 interface SidebarSectionButtonProps {
   sectionId: SettingsSectionId;
   label: string;
@@ -822,7 +640,6 @@ interface SidebarSectionButtonProps {
   onSelect: (section: SettingsSectionId) => void;
 }
 
-// Lighter than lucide's default 2px stroke so the nav reads quieter than the content.
 const SIDEBAR_ICON_STROKE_WIDTH = 1.5;
 
 function SidebarSectionButton({
@@ -1075,9 +892,7 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "general.attention": (context) => <AttentionSection onOpenPane={context.onOpenPane} />,
   "general.installation": () => <InstallationNameSection />,
   "general.notifications": () => <DesktopNotificationsSection />,
-  "general.about": (context) => (
-    <AboutSection appVersionText={context.appVersionText} isDesktopApp={context.isDesktopApp} />
-  ),
+  "general.about": (context) => <AboutSection appVersionText={context.appVersionText} />,
   "general.hosts": (context) => <ConnectedHostsSection context={context} />,
   "privacy.dataSaver": () => <DataSaverSection />,
   "accounts.providers": installationPane("providers"),
@@ -1131,8 +946,8 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
       <SystemProjectCard />
     </>
   ),
-  "maintenance.updates": () => <VortonUpdatesSection />,
-  "maintenance.upstream": () => <UpstreamUpdatesSection />,
+  // One view of Host and Dev status, restarts, updates and their technical details.
+  "system.overview": () => <SystemPane />,
 };
 
 // ---------------------------------------------------------------------------
@@ -1572,11 +1387,6 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[3],
   },
   headerSearch: { width: 164, height: 44, flexDirection: "row" },
-  narrowDesktopAppUpdateRow: {
-    flexDirection: "column",
-    alignItems: "stretch",
-    gap: theme.spacing[3],
-  },
   aboutUpdateActions: {
     flexDirection: "row",
     flexWrap: "wrap",

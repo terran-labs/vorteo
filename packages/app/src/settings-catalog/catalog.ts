@@ -377,6 +377,14 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     desktopOnly: true,
   },
   {
+    // Host and Dev status, one action each, restarts, updates and technical details.
+    id: "system.overview",
+    section: "system",
+    label: "System",
+    legacySlugs: ["system.overview", "maintenance.updates", "maintenance.upstream"],
+    keywords: ["status", "health", "restart", "update", "daemon", "host", "dev", "upstream"],
+  },
+  {
     id: "general.about",
     section: "system",
     label: "About",
@@ -392,22 +400,10 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
   {
     id: "maintenance.installation",
     section: "system",
-    label: "Installation",
+    label: "Installation controls",
+    group: "Advanced",
     legacySlugs: ["maintenance.installation", "maintenance"],
     requiresInstallation: true,
-  },
-  {
-    id: "maintenance.updates",
-    legacySlugs: ["maintenance.updates"],
-    section: "system",
-    label: "Vorteo updates",
-  },
-  {
-    id: "maintenance.upstream",
-    legacySlugs: ["maintenance.upstream"],
-    section: "system",
-    label: "Paseo upstream updates",
-    group: "Advanced",
   },
 ];
 
@@ -491,7 +487,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "general.about.releaseChannel",
-    pane: "general.about",
+    pane: "system.overview",
     label: "Release channel",
     labelKey: "settings.about.releaseChannel.label",
     keywords: ["beta", "stable"],
@@ -500,7 +496,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "general.about.appUpdates",
-    pane: "general.about",
+    pane: "system.overview",
     label: "App updates",
     labelKey: "settings.about.updates.label",
     keywords: ["desktop update", "install update"],
@@ -517,7 +513,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "general.hosts.connectionCheck",
-    pane: "general.hosts",
+    pane: "system.overview",
     label: "Connection check",
     keywords: ["connection check", "host", "dev", "dns", "tailscale", "latency", "reachability"],
     scope: device,
@@ -1002,7 +998,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "maintenance.installation.automatic",
     pane: "maintenance.installation",
-    label: "Automatic daemon updates and restarts",
+    label: "Automatic updates and restarts",
     keywords: ["auto update", "idle restart"],
     scope: installation,
   },
@@ -1028,7 +1024,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "maintenance.updates.vorteo",
-    pane: "maintenance.updates",
+    pane: "system.overview",
     label: "Vorteo updates",
     labelKey: "settings.about.vortonUpdates.title",
     keywords: ["check for updates", "new commits", "host update task"],
@@ -1036,7 +1032,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "maintenance.upstream.merge",
-    pane: "maintenance.upstream",
+    pane: "system.overview",
     label: "Paseo upstream updates",
     labelKey: "settings.about.upstreamUpdates.title",
     keywords: ["upstream merge", "host merge task", "copy host prompt"],
