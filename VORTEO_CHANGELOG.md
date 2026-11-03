@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Improvements
 
+- A coordinator update reaches its claim about a minute sooner after its cancellation window. The launcher no longer re-reads the candidate before starting the runner, which re-reads every byte under its exclusive lock, and the claim reuses the runner's own runtime digest from admission; the digest it replaces was never compared. Every live process and service check at the claim stays.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
 - Archive a finished thread in a Vorteo System workspace, such as a finished Optimizer thread. The workspace stays protected, running or still-scheduled threads are refused, and deleting system threads stays refused.
 
 ## Unreleased - 2026-11-03

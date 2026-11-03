@@ -1029,6 +1029,19 @@ test.runIf(process.platform === "darwin")(
     expect(renewal?.runtimeDirectory).toBe(f.host.directory);
     expect(renewal?.renewal?.configuration).toEqual(f.configuration);
     expect(renewal?.renewal?.hostProcess).toEqual(f.hostProcess);
+    // A digest this process verified for the same runtime is reused; one for another
+    // directory, or none, is digested in full. The renewal itself is identical.
+    const verified = "e".repeat(64);
+    const reused = await f.derive({
+      verifiedRuntime: { runtimeDirectory: f.host.directory, runtimeSha256: verified },
+    });
+    expect(reused?.runtimeSha256).toBe(verified);
+    expect(reused?.renewal).toEqual(renewal?.renewal);
+    const elsewhere = await f.derive({
+      verifiedRuntime: { runtimeDirectory: `${f.host.directory}-other`, runtimeSha256: verified },
+    });
+    expect(elsewhere?.runtimeSha256).toBe(renewal?.runtimeSha256);
+    expect(renewal?.runtimeSha256).not.toBe(verified);
     expect(readFileSync(f.setupFile)).toEqual(before);
     expect(f.original.admissionSetupFile).toBe(renewal!.admissionSetupFile);
     await expect(f.derive({ moduleFile: f.original.entrypoint.path })).rejects.toThrow("stale");

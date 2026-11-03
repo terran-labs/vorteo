@@ -962,6 +962,12 @@ export async function deriveBootstrapRenewal(input: {
   hostPid?: number;
   ports?: BootstrapRenewalPorts;
   dispatchedRequest?: { id: string; planSha256: string };
+  /** A runtime digest this same process matched at its admission custody boundary,
+   * under the execution lock. Every native observation below still runs; only the
+   * duplicate digest of that same tree is skipped. Any other directory, or none,
+   * is digested in full. The renewal comparison does not include this digest, and
+   * custody digests the tree again at freeze, before the first effect. */
+  verifiedRuntime?: { runtimeDirectory: string; runtimeSha256: string };
 }): Promise<RunnerSetup | undefined> {
   const authority = await readRenewalAuthority(input);
   if (!authority) return undefined;
@@ -1025,7 +1031,10 @@ export async function deriveBootstrapRenewal(input: {
     ...input.setup,
     node: await observeExecutable(node, roots),
     runtimeDirectory: root,
-    runtimeSha256: await digestBootstrapArtifact(root),
+    runtimeSha256:
+      input.verifiedRuntime?.runtimeDirectory === root
+        ? input.verifiedRuntime.runtimeSha256
+        : await digestBootstrapArtifact(root),
     entrypoint: await observeFile(path.join(root, runnerRelative), roots),
     ownerLauncher: await observeFile(path.join(root, "scripts/run-coordinator-owner.py"), roots),
     ownershipVerifier: await observeFile(
