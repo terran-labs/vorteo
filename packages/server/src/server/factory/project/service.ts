@@ -99,7 +99,11 @@ export interface ProjectFactoryServiceInput {
       options: { steer: boolean },
     ): Promise<PromptOutcome>;
     /** Moves the agent to another provider or profile through the profile switch path. */
-    switchLaunch(agentId: string, launch: Launch): Promise<void>;
+    /**
+     * Moves the agent to another provider or profile. The new session starts with
+     * `standingInstructions` ahead of the switch's carried context.
+     */
+    switchLaunch(agentId: string, launch: Launch, standingInstructions: string): Promise<void>;
   };
   /** The launch the Optimizer would use now, or null when no provider is usable. */
   defaultLaunch: () => Promise<Launch | null>;
@@ -320,8 +324,20 @@ export class ProjectFactoryService {
         if (request.profileId !== undefined) role.launch.profileId = request.profileId;
         role.resetLaunch = !role.launch.provider && !role.launch.profileId;
       });
-      if (request.role) await this.applyLaunch(request.projectId, request.role);
-      return this.describe(record, project, null);
+      const outcome = request.role
+        ? await this.applyLaunch(record, request.projectId, request.role)
+        : "none";
+      return { state: this.describe(record, project, null), outcome };
+    }).then(({ state, outcome }) => {
+      // Deliver the charter promptly after a switch instead of waiting for the next heartbeat.
+      if (outcome === "switched" && request.role)
+        void this.tick(request.projectId, request.role).catch((error) =>
+          this.logger.warn(
+            { err: error, role: request.role },
+            "Factory tick after a switch failed",
+          ),
+        );
+      return state;
     });
   }
 
@@ -472,11 +488,12 @@ export class ProjectFactoryService {
       const agent = await this.input.agentStorage.get(agentId);
       if (!agent || agent.archivedAt) return;
       const role = projectFactoryRole(roleId);
-      const launchPending = await this.applyLaunch(projectId, roleId);
-      const effective = await this.syncSystemPrompt(record, project, roleId, agent);
-      const hash = charterVersion(effective);
-      const undelivered =
-        roleState.delivered?.agentId !== agentId || roleState.delivered.hash !== hash;
+      const { effective, hash, undelivered, launchPending } = await this.prepareDelivery(
+        record,
+        project,
+        roleId,
+        agent,
+      );
       const now = this.now();
       const current = GATED_ROLES.has(roleId)
         ? await this.readFingerprint(roleId as GatedRole, project.repository)
@@ -503,6 +520,34 @@ export class ProjectFactoryService {
         state.delivered = { agentId, hash };
       });
     });
+  }
+
+  /**
+   * Applies a pending launch, then works out what the agent must receive. A switch replaces the
+   * session's prompt and clears the delivered marker, so both are read again after it.
+   */
+  private async prepareDelivery(
+    record: PersistedProjectRecord,
+    project: ProjectState,
+    roleId: ProjectFactoryRoleId,
+    agent: StoredAgentRecord,
+  ) {
+    const launch = await this.applyLaunch(record, record.projectId, roleId);
+    const fresh = (await this.readProject(record.projectId)) ?? project;
+    const delivered = fresh.roles[roleId]?.delivered;
+    const effective = await this.syncSystemPrompt(
+      record,
+      fresh,
+      roleId,
+      (await this.input.agentStorage.get(agent.id)) ?? agent,
+    );
+    const hash = charterVersion(effective);
+    return {
+      effective,
+      hash,
+      undelivered: delivered?.agentId !== agent.id || delivered.hash !== hash,
+      launchPending: launch === "pending",
+    };
   }
 
   /**
@@ -846,30 +891,40 @@ export class ProjectFactoryService {
    * Applies a configured launch that differs from the agent's last applied one. A launch set by
    * profile alone takes that profile's provider. A cleared launch switches once to the default
    * the Optimizer would use, rather than following every later change of the default.
-   * Returns true while a switch is pending.
+   * A switch starts the new session with the role's effective instructions and clears the
+   * delivered marker, so the next prompt carries them in full as a safety net.
    */
-  private async applyLaunch(projectId: string, roleId: ProjectFactoryRoleId): Promise<boolean> {
-    const state = (await this.readProject(projectId))?.roles[roleId];
-    if (!state?.agentId) return false;
+  private async applyLaunch(
+    record: PersistedProjectRecord,
+    projectId: string,
+    roleId: ProjectFactoryRoleId,
+  ): Promise<"none" | "pending" | "switched"> {
+    const project = await this.readProject(projectId);
+    const state = project?.roles[roleId];
+    if (!project || !state?.agentId) return "none";
     const target = await this.targetLaunch(state);
-    if (!target) return false;
+    if (!target) return "none";
     const applied = state.appliedLaunch;
     const sameAsApplied =
       applied?.provider === target.provider &&
       (applied.profileId ?? null) === (target.profileId ?? null);
     if (sameAsApplied) {
       if (state.resetLaunch) await this.recordLaunch(projectId, roleId, target);
-      return false;
+      return "none";
     }
+    const effective = effectiveInstructions(
+      this.charterText(record, project, roleId),
+      state.instructions,
+    );
     try {
-      await this.input.agents.switchLaunch(state.agentId, target);
+      await this.input.agents.switchLaunch(state.agentId, target, effective);
     } catch (error) {
       // A busy thread cannot switch; the next tick tries again.
       this.logger.info({ err: error, projectId, role: roleId }, "Factory role launch is pending");
-      return true;
+      return "pending";
     }
-    await this.recordLaunch(projectId, roleId, target);
-    return false;
+    await this.recordLaunch(projectId, roleId, target, { switched: true });
+    return "switched";
   }
 
   private async targetLaunch(state: RoleState): Promise<Launch | null> {
@@ -886,12 +941,14 @@ export class ProjectFactoryService {
     projectId: string,
     roleId: ProjectFactoryRoleId,
     launch: Launch,
+    options?: { switched: boolean },
   ): Promise<void> {
     await this.mutateProject(projectId, (current) => {
       const role = current.roles[roleId];
       if (!role) return;
       role.appliedLaunch = { provider: launch.provider, profileId: launch.profileId ?? null };
       delete role.resetLaunch;
+      if (options?.switched) delete role.delivered;
     });
   }
 

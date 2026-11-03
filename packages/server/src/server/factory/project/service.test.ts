@@ -48,6 +48,7 @@ class FakeAgents {
   readonly records = new Map<string, StoredAgentRecord>();
   readonly prompts: SentPrompt[] = [];
   readonly switches: { agentId: string; provider: string; profileId?: string }[] = [];
+  readonly switchCharters: string[] = [];
   created = 0;
   busy = new Set<string>();
   switchFails = false;
@@ -113,9 +114,17 @@ class FakeAgents {
       this.prompts.push({ agentId, prompt, steer: options.steer });
       return "sent";
     },
-    switchLaunch: async (agentId: string, launch: { provider: string; profileId?: string }) => {
+    switchLaunch: async (
+      agentId: string,
+      launch: { provider: string; profileId?: string },
+      standingInstructions: string,
+    ) => {
       if (this.switchFails) throw new Error("This thread is busy.");
       this.switches.push({ agentId, ...launch });
+      this.switchCharters.push(standingInstructions);
+      // Like the real switch, the new session's stored prompt is the handoff, not the charter.
+      const record = this.records.get(agentId)!;
+      record.config = { ...record.config, systemPrompt: "Switched accounts. Carried context." };
     },
   };
 }
@@ -862,5 +871,58 @@ describe("review fixes", () => {
     await service().start();
     await service().start();
     expect(notices()).toHaveLength(1);
+  });
+});
+
+describe("launch switches keep the charter", () => {
+  async function foremanWithSettledGate(factory: ProjectFactoryService) {
+    const foreman = roleAgent(await enable(factory), "factory-intake");
+    fingerprints.set("factory-intake", "same");
+    await factory.tick(PROJECT, "factory-intake");
+    return { foreman, sentBefore: agents.prompts.length };
+  }
+
+  function promptsTo(agentId: string, after: number) {
+    return agents.prompts.slice(after).filter((prompt) => prompt.agentId === agentId);
+  }
+
+  function expectCharterDelivered(foreman: string, sentBefore: number) {
+    const [next] = promptsTo(foreman, sentBefore);
+    expect(next?.prompt).toMatch(/^Your standing instructions changed\./);
+    expect(next?.prompt).toContain("You are the Foreman.");
+    expect(agents.records.get(foreman)?.config?.systemPrompt).toContain("You are the Foreman.");
+  }
+
+  test("an immediate configure switch delivers the full charter promptly", async () => {
+    const factory = service();
+    const { foreman, sentBefore } = await foremanWithSettledGate(factory);
+
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      role: "factory-intake",
+      provider: "codex",
+    });
+
+    expect(agents.switchCharters.at(-1)).toContain("You are the Foreman.");
+    await vi.waitFor(() => expect(promptsTo(foreman, sentBefore)).not.toHaveLength(0));
+    expectCharterDelivered(foreman, sentBefore);
+  });
+
+  test("a switch retried on a tick delivers the full charter in that tick", async () => {
+    const factory = service();
+    const { foreman, sentBefore } = await foremanWithSettledGate(factory);
+    agents.switchFails = true;
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      role: "factory-intake",
+      provider: "codex",
+    });
+    expect(agents.prompts.length).toBe(sentBefore);
+
+    agents.switchFails = false;
+    await factory.tick(PROJECT, "factory-intake");
+
+    expect(agents.switches.at(-1)).toEqual({ agentId: foreman, provider: "codex" });
+    expectCharterDelivered(foreman, sentBefore);
   });
 });

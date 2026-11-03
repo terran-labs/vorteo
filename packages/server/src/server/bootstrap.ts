@@ -1911,10 +1911,11 @@ export async function createPaseoDaemon(
         );
         return "sent";
       },
-      switchLaunch: (agentId, launch) =>
+      switchLaunch: (agentId, launch, standingInstructions) =>
         switchAgentProfileCommand(
           { ...createAgentCommandDependencies, providerSnapshotManager },
           { agentId, provider: launch.provider, profileId: launch.profileId, reason: "manual" },
+          { standingInstructions },
         ),
     },
     defaultLaunch: () =>

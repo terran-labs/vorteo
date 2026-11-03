@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Changing a Factory role's provider or profile no longer drops its charter. The new session starts with the role's instructions ahead of the carried context, and the next prompt, sent right away, repeats them in full.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Turning Factory on again with a new repository, or any other change to a role's charter inputs, now updates each role agent's instructions and sends them once with its next heartbeat. Previously the agents kept the old repository's instructions.
 - A heartbeat that fired while Factory was being paused or turned off could rearm itself; it now stays off.
 - Clearing a role's provider or profile now switches the agent back to the default launch, and a launch set by profile alone uses that profile's provider.
