@@ -12,6 +12,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Changed
+
+- Make the sidebar's waiting hourglass smaller and neutral grey, with sand that gently drains into a pile over eight seconds and then resets. Reduced motion holds the sand at rest.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
