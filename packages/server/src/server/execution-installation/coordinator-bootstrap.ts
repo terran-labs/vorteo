@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { compare } from "bcryptjs";
 import { z } from "zod";
+import type { RestartJob } from "@getpaseo/protocol/execution-installation";
 import { parseLifecycleJournal, isSupervisorEffectSettled } from "./lifecycle-journal.js";
 import {
   CoordinatorBootstrapPlanSchema,
@@ -39,6 +40,8 @@ export interface BootstrapRequestJournal {
   ): T;
   /** Under the journal lock, prove a failed claim never reached either promotion location. */
   verifyUnpromotedFailure?(expected: CoordinatorBootstrapRequest): void;
+  /** The installation lifecycle journal, for display-only dispatch readiness. */
+  readLifecycle?(): unknown;
 }
 
 const BindingSchema = z.strictObject({
@@ -63,7 +66,7 @@ export type BootstrapReconciliationLedger = Pick<
   | "finishAutomaticReconciliation"
   | "cancelForReplacedHostRelease"
 > &
-  Partial<Pick<CoordinatorBootstrapRequests, "cancelUnderManagement">>;
+  Partial<Pick<CoordinatorBootstrapRequests, "cancelUnderManagement" | "readLifecycle">>;
 
 export function coordinatorAutomaticStatus(
   request: CoordinatorBootstrapRequest,
@@ -132,33 +135,67 @@ export function assertCoordinatorLifecycleIdle(journal: unknown): void {
 }
 
 export function coordinatorLifecycleWork(journal: unknown) {
-  return parseLifecycleJournal(journal).filter((job) => {
-    // A coordinator replacement must not cut a session host install or removal short either.
-    if (["maintenance-controller", "recovery-launcher", "session-host"].includes(job.target))
-      return job.status === "approved" || job.status === "running";
-    if (
-      job.target === "native-helper" ||
-      job.target === "preview-monitor" ||
-      job.target === "preview-broker" ||
-      job.target === "preview-broker-deployment"
-    ) {
-      return (
-        ["approved", "running"].includes(job.status) ||
-        (job.stage === "preparing" && job.status === "pending") ||
-        job.stage === "recovery_required"
-      );
-    }
-    if (job.target === "host" || job.target === "container-daemon") {
-      const active = job.status === "approved" || job.status === "running";
-      const held =
-        (job.finishCurrentTurns === true || job.continuationCaptureRequested === true) &&
-        job.holdReleased !== true;
-      const preparing = job.sourceBatch?.status === "preparing";
-      const registration = job.supervisorEffect && !isSupervisorEffectSettled(job.supervisorEffect);
-      return active || held || preparing || registration;
-    }
-    return false;
+  return parseLifecycleJournal(journal).filter((job) => lifecycleWorkReason(job) !== null);
+}
+
+/** Plain descriptions of the recorded work that would refuse a coordinator claim
+ * now. Shown before approval; the claim itself still runs the authoritative check. */
+export function coordinatorLifecycleBlockers(journal: unknown): string[] {
+  return parseLifecycleJournal(journal).flatMap((job) => {
+    const reason = lifecycleWorkReason(job);
+    return reason
+      ? [`${lifecycleTargetLabels[job.target] ?? "An installation job"} ${reason}`]
+      : [];
   });
+}
+
+const lifecycleTargetLabels: Record<string, string> = {
+  host: "A Host restart or source update",
+  "container-daemon": "A Dev restart or source update",
+  "session-host": "A session host job",
+  "maintenance-controller": "A maintenance service job",
+  "recovery-launcher": "A recovery service job",
+  "native-helper": "A native helper installation",
+  "preview-monitor": "A preview monitor installation",
+  "preview-broker": "A preview broker installation",
+  "preview-broker-deployment": "A preview broker deployment",
+};
+
+type LifecycleWorkJob = ReturnType<typeof parseLifecycleJournal>[number];
+
+/** Why one job blocks a coordinator replacement, or null when it does not. */
+function lifecycleWorkReason(job: LifecycleWorkJob): string | null {
+  const active = job.status === "approved" || job.status === "running";
+  // A coordinator replacement must not cut a session host install or removal short either.
+  if (["maintenance-controller", "recovery-launcher", "session-host"].includes(job.target))
+    return active ? `is ${job.status}` : null;
+  if (
+    job.target === "native-helper" ||
+    job.target === "preview-monitor" ||
+    job.target === "preview-broker" ||
+    job.target === "preview-broker-deployment"
+  ) {
+    if (active) return `is ${job.status}`;
+    if (job.stage === "preparing" && job.status === "pending") return "is still preparing";
+    return job.stage === "recovery_required" ? "needs recovery" : null;
+  }
+  if (job.target === "host" || job.target === "container-daemon")
+    return active ? `is ${job.status}` : restartWorkReason(job);
+  return null;
+}
+
+function restartWorkReason(job: RestartJob): string | null {
+  if (
+    (job.finishCurrentTurns === true || job.continuationCaptureRequested === true) &&
+    job.holdReleased !== true
+  )
+    return "is holding agents at the end of their turns";
+  // A rejected, canceled or failed request never resumes source preparation.
+  if (job.status === "pending" && job.sourceBatch?.status === "preparing")
+    return "is still preparing its source";
+  if (job.supervisorEffect && !isSupervisorEffectSettled(job.supervisorEffect))
+    return "has an unsettled supervisor registration";
+  return null;
 }
 
 const dispatchIdentity = z.strictObject({
@@ -856,6 +893,50 @@ export class CoordinatorBootstrapRequests {
       decisionAt: new Date(this.now()).toISOString(),
     };
     // Another decision or preparation may finish during authentication or byte checks.
+    this.journal.replace(
+      expected,
+      expected.map((item) => (item.id === next.id ? next : item)),
+    );
+    return structuredClone(next);
+  }
+
+  /** Display-only lifecycle view; claims recheck it under the journal lock. */
+  readLifecycle(): unknown {
+    if (!this.journal.readLifecycle)
+      throw new BootstrapRequestConflict("Installation journal is unavailable");
+    return this.journal.readLifecycle();
+  }
+
+  /**
+   * Close an approval whose dispatch failed before its durable claim, so the
+   * request stops reading as "approved, awaiting dispatch" and cannot be reused.
+   * Applies only to the exact approved revision without an execution record: a
+   * claimed or changed request is left alone and its own recovery path decides.
+   * Like cancelForReplacedHostRelease, this is a system decision applied by CAS.
+   * Returns null when the request no longer matches.
+   */
+  closeFailedDispatch(
+    value: unknown,
+    closedRevision: string = randomUUID(),
+  ): CoordinatorBootstrapRequest | null {
+    const input = dispatchIdentity.parse(value);
+    z.string().uuid().parse(closedRevision);
+    const expected = this.read();
+    const request = expected.find((item) => item.id === input.id);
+    if (
+      !request ||
+      request.revision !== input.revision ||
+      request.planSha256 !== input.planSha256 ||
+      request.status !== "approved" ||
+      request.execution
+    )
+      return null;
+    const next: CoordinatorBootstrapRequest = {
+      ...request,
+      revision: closedRevision,
+      status: "canceled",
+      decisionAt: new Date(this.now()).toISOString(),
+    };
     this.journal.replace(
       expected,
       expected.map((item) => (item.id === next.id ? next : item)),

@@ -6,6 +6,34 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge `main` after the second Host delivery so the third and fourth installed Host updates can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Fixed
+
+- A thread whose history failed to load after a daemon or session host restart no longer stays blank or shows only its recent messages. The next request for the thread retries the load once the thread is idle, and when newer messages arrived after the failure, it replaces the partial history with the full transcript under a new epoch so open clients reset. Concurrent requests share one retry, and a thread with a running turn waits for it to finish.
+- Session host disconnects now say whether this daemon closed the connection, the host closed it, or a socket error ended it, with the error code, instead of only "Session host connection closed."
+
+## Unreleased - 2026-11-02
+
+## Unreleased - 2026-11-02
+
+### Fixes
+
+- Ignore stale source-preparation state on rejected, canceled or failed update requests when checking whether the coordinator is idle. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
+- Report a coordinator update that fails before it starts as failed, with a plain reason, instead of leaving it approved and waiting forever. Its approval cannot be reused, so a fresh update can be prepared.
+- Also close a coordinator update's approval when its runner never starts or exits before claiming the update. A runner that is still running, even past the observation deadline, is left alone.
+
+### Improvements
+
+- Show on the coordinator approval card whether the update could start now and which installation work blocks it.
+- Flag an approved coordinator update that has not started three minutes after it became eligible, in Installation controls, the sidebar banner and `coordinator-status`.
+
+## Unreleased - 2026-11-03
+
 ### Security
 
 - Only the owner can turn on Chrome for a thread. Agent tools now refuse to enable it when creating or updating a thread, and scheduled runs no longer inherit it from the thread that created them. Agents can still turn it off.

@@ -1,8 +1,12 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): merged `main` after the second Host delivery into the installed Host source for its pull request; functionality is unchanged.
+
 Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): the sidebar merges an empty, hidden Dev System project with the Host's again, so the System project keeps one row, its folder placement, its ordering and the workspaces recorded under its merged key. App-only change; README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-02): a registered thread whose provider history failed to load retries it on the next request while idle, replacing any partial timeline with the full replay under a new epoch, and session host disconnect errors name their cause. The existing history sync error callout and Retry are unchanged. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-01): the installation panel uses the existing toast API context directly, avoiding a native viewport import in browser review tests. Toast behavior is unchanged.
 
@@ -27,6 +31,10 @@ Maintenance review (2026-11-02): the Context window card shows only the agent's 
 Maintenance review (2026-11-02): rebuilt the sidebar Quotas card as per-account runway lanes with a Best now note, in-place account detail and a footer key, built on the usage display fixes; the Open questions entry describes it. The card reuses the shared limiting window, next reset, display stale threshold and a newly exported prepaid-balance predicate instead of local copies. App-only change from existing usage data, with no daemon or protocol change. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): usage display fixes for account tiles: tie-breaks and reset fallbacks, a 10-minute last-known threshold, a 2-minute daemon cache, forced refresh after sign-in, and limit-message readings for Claude setup-token accounts. Wire messages are unchanged; the observed reading reuses existing usage details. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-02): the coordinator launch path also closes an approval when its runner never starts or exits before claiming the update, using the same exact compare-and-swap and a generic reason. A still-running runner keeps its approval and appears as stalled; nothing is signaled or relaunched, and the runner's own ownership gate is unchanged. Builds reviewed it. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-02): coordinator update reliability, first batch. Admission ignores stale source preparation on terminal update requests, adapted from the reviewed delegated-installation fix. A dispatch that fails before its durable claim now closes its approval as canceled with a plain reason kept beside the ledger, so a rollback coordinator still parses it. Negotiating clients see dispatch blockers before approval and stalled approvals in Installation controls, the sidebar banner and `coordinator-status`. Builds is not yet notified automatically. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): integrated the current release branch for the keyboard regression correction. No additional runtime changes were introduced.
 
