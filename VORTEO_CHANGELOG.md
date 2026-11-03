@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
@@ -281,8 +287,6 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Make local relay regression tests exercise the local adapter instead of inheriting the deployment's external forwarding URL.
 
 ## Unreleased - 2026-11-01
-
-- Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
 - Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.
 - Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.
