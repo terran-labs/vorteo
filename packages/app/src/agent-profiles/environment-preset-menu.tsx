@@ -1,3 +1,4 @@
+import { isProviderSelectable, areProvidersDetecting } from "./provider-availability";
 import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { useAppSettings } from "@/hooks/use-settings";
 import { installationProviderReference } from "@getpaseo/protocol/installation-settings";
@@ -116,11 +117,10 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
           (profile) => !environmentKind || !profile.excludedEnvironments?.includes(environmentKind),
         )
         .filter((profile) => isProfileAllowed(projectPolicy, profile))
-        .filter(
-          (profile) =>
-            accountIndependent ||
-            entries?.find((item) => item.provider === profile.provider)?.enabled !== false,
-        )
+        .filter((profile) => {
+          const entry = entries?.find((item) => item.provider === profile.provider);
+          return accountIndependent || !entry || isProviderSelectable(entry);
+        })
         .map((profile) => {
           const entry = entries?.find((item) => item.provider === profile.provider);
           const model = entry?.models?.find((item) => item.id === profile.model);
@@ -139,6 +139,7 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
     [definitions, entries, accountIndependent, environmentKind, projectPolicy],
   );
   const { view, resetLoadingProviders } = usePresetData(serverId, true);
+  const sameEnvironment = serverId === props.serverId;
   const accounts = useMemo(
     () =>
       accountPresets({
@@ -148,12 +149,21 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
         query: "",
         providers: config?.providers,
         accountIndependent,
+        currentProvider: sameEnvironment ? props.currentProvider : undefined,
       }).filter((account) =>
         isProfileAllowed(projectPolicy, { id: "", provider: account.provider }),
       ),
-    [rows, definitions, entries, config, accountIndependent, projectPolicy],
+    [
+      rows,
+      definitions,
+      entries,
+      config,
+      accountIndependent,
+      projectPolicy,
+      props.currentProvider,
+      sameEnvironment,
+    ],
   );
-  const sameEnvironment = serverId === props.serverId;
   const defaultProviders = useMemo(
     () =>
       (entries ?? [])
@@ -206,7 +216,10 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
       }
       const profile = definitions?.find((item) => item.id === id);
       if (profile && serverId && props.profiles.applyDestinationProfile) {
-        props.profiles.applyDestinationProfile(serverId, { ...profile, ...choices });
+        props.profiles.applyDestinationProfile(serverId, {
+          ...profile,
+          ...choices,
+        });
         props.onClose();
       }
     },
@@ -214,7 +227,10 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
   );
   const inspectAccount = useCallback(
     (provider: string) => {
-      setAccountByServer((current) => ({ ...current, [serverId ?? ""]: provider }));
+      setAccountByServer((current) => ({
+        ...current,
+        [serverId ?? ""]: provider,
+      }));
       if (props.inline) {
         const account = accounts.find((item) => item.provider === provider);
         const entry = entries?.find((item) => item.provider === provider);
@@ -236,7 +252,11 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
             ? sharedWorkflowProfileId(provider, decodeURIComponent(inspectedId.split("/")[2]))
             : undefined;
         const row = account?.rows.find((item) => item.id === matchingId) ?? account?.rows[0];
-        if (row) setInspectedByServer((current) => ({ ...current, [serverId ?? ""]: row.id }));
+        if (row)
+          setInspectedByServer((current) => ({
+            ...current,
+            [serverId ?? ""]: row.id,
+          }));
       }
     },
     [
@@ -285,7 +305,10 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
         now={props.now}
         localStatus={
           row.localEndpoint
-            ? `${formatLocalEndpointSummary(row.localEndpoint, props.now)?.replace("Local endpoint", "Local")} · ${formatWorkerActivity(
+            ? `${formatLocalEndpointSummary(row.localEndpoint, props.now)?.replace(
+                "Local endpoint",
+                "Local",
+              )} · ${formatWorkerActivity(
                 view.kind === "ready" ? view.payload.workerActivity : undefined,
                 row.provider,
                 props.now,
@@ -353,7 +376,12 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
       onAccount={inspectAccount}
       compact={props.compact}
       disabled={props.disabled || !connected}
-      loading={isLoading || definitions === null}
+      loading={isPresetListLoading(
+        isLoading,
+        definitions === null,
+        accounts.length,
+        areProvidersDetecting(entries),
+      )}
       error={availabilityError}
       currentProvider={sameEnvironment ? props.currentProvider : undefined}
       currentModel={sameEnvironment ? props.currentModel : undefined}
@@ -368,4 +396,13 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
       renderAccountDetails={renderAccountDetails}
     />
   );
+}
+
+function isPresetListLoading(
+  initialLoading: boolean,
+  profilesLoading: boolean,
+  accountCount: number,
+  detecting: boolean,
+): boolean {
+  return initialLoading || profilesLoading || (accountCount === 0 && detecting);
 }

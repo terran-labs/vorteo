@@ -62,6 +62,22 @@ export function providerEnabled(
   return host ? detectIn(definition, host) === "ready" : false;
 }
 
+/**
+ * A provider's display name. Built-in providers use the manifest label. Plugin providers have no
+ * manifest entry, so they use the label the plugin registered (policy.label on its plugin/
+ * definition). Account definitions are skipped on purpose: their policy.label names one
+ * connection, such as "Claude 1", not the provider.
+ */
+function familyName(definition: InstallationProvider, manifestLabel: string | undefined): string {
+  if (manifestLabel) return manifestLabel;
+  if (definition.id.startsWith("plugin/") && definition.policy.label)
+    return definition.policy.label;
+  return definition.providerType.replace(
+    /(^|[-_ ])(\w)/g,
+    (_, separator: string, letter: string) => `${separator ? " " : ""}${letter.toUpperCase()}`,
+  );
+}
+
 export function groupInstallationProviders(
   definitions: readonly InstallationProvider[],
   visibility: "active" | "removed" = "active",
@@ -76,7 +92,7 @@ export function groupInstallationProviders(
     if (!family) {
       family = {
         id: type,
-        name: manifest?.label ?? type,
+        name: familyName(definition, manifest?.label),
         enabled: false,
         installed: false,
         accounts: [],
@@ -144,4 +160,9 @@ const INSTALL_HINTS: Record<string, string> = {
 
 export function providerInstallHint(providerType: string): string {
   return INSTALL_HINTS[providerType] ?? "Install its CLI on the Host, then sign in.";
+}
+
+/** Only documented shell commands are copyable as commands. */
+export function providerInstallCommand(providerType: string): string | undefined {
+  return providerInstallHint(providerType).match(/with (.+), then sign in\./)?.[1];
 }
