@@ -1,4 +1,3 @@
-import { useToast } from "@/contexts/toast-context";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { formatPluginInstallation } from "@getpaseo/protocol/plugin-source-reference";
 import { PluginSettingsMenuItems } from "@/plugins/settings";
@@ -294,7 +293,6 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
     [t],
   );
   const [logsPluginId, setLogsPluginId] = useState<string | null>(null);
-  const toast = useToast();
   const [feedback, setFeedback] = useState<string | null>(null);
   const plugins = useFetchQuery({
     queryKey,
@@ -341,15 +339,14 @@ export function HostPluginsPage({ serverId }: { serverId: string }) {
       pluginId?: string;
       run: () => Promise<string>;
     }) => operation.run(),
+    onMutate: () => setFeedback(null),
     onSuccess: async (message) => {
-      toast.show(message);
       setFeedback(message);
       await refresh();
     },
     onError: (error) => {
       if (isConnectionError(error)) reportActionError(error);
       else {
-        toast.error(toErrorMessage(error));
         setFeedback(toErrorMessage(error));
       }
     },

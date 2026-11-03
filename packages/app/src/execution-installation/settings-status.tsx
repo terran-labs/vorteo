@@ -301,7 +301,7 @@ export function InstallationSettingsStatus({
     );
   if (!data)
     return (
-      <View style={styles.reserved}>
+      <View style={styles.reserved} dataSet={loadingPane}>
         <SettingsStatusLine message="Loading shared settings..." />
       </View>
     );
@@ -332,7 +332,7 @@ export function InstallationSettingsStatus({
   }
   if (!data.settings)
     return (
-      <View style={styles.reserved}>
+      <View style={styles.reserved} dataSet={loadingPane}>
         <SettingsStatusLine message="Reading shared settings..." />
       </View>
     );
@@ -372,3 +372,5 @@ export function InstallationSettingsSyncStatus() {
     message = "An account is not available in every environment yet. Check each connection.";
   return <SettingsStatusLine message={message} />;
 }
+
+const loadingPane = { settingsLoading: "true" };

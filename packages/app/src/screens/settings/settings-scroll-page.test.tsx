@@ -5,6 +5,7 @@ const hooks = vi.hoisted(() => ({
   effects: [] as (() => unknown)[],
   web: false,
   row: null as unknown,
+  skeleton: false,
 }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
@@ -88,6 +89,7 @@ beforeEach(() => {
   hooks.refs = [];
   hooks.web = false;
   hooks.row = null;
+  hooks.skeleton = false;
 });
 afterEach(() => {
   vi.clearAllTimers();
@@ -125,25 +127,40 @@ it("preserves a search-result request submitted with a query clear until restore
   expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ y: 234, animated: false });
   expect(first.page.props.contentContainerStyle.paddingBottom).toBe(64);
 });
-it("waits for a web row skeleton to resolve, flashes once, and never re-pins", () => {
-  hooks.web = true;
-  vi.stubGlobal("CSS", { supports: () => true });
-  vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200, style: {} }) });
-  const input = props();
-  input.request = { ...input.request, pane: entry.pane, entry };
-  const { section } = render(input);
-  const scrollTo = vi.fn();
-  hooks.refs[0].current = { scrollTo, getScrollableNode: () => ({}) };
-  section.props.onSectionLayout("general", { y: 200, height: 300 });
-  section.props.onPaneLayout(entry.pane, { y: 0, height: 100 });
-  expect(scrollTo).not.toHaveBeenCalled();
-  hooks.row = { y: 400 };
-  section.props.onPaneLayout(entry.pane, { y: 0, height: 200 });
-  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ y: 336, animated: false });
-  expect(flashSettingRow).toHaveBeenCalledTimes(1);
-  section.props.onPaneLayout(entry.pane, { y: 0, height: 300 });
-  expect(scrollTo).toHaveBeenCalledTimes(1);
-});
+it.each([false, true])(
+  "shows a ready pane immediately and refines once, but waits for skeletons (%s)",
+  (skeleton) => {
+    hooks.skeleton = skeleton;
+    hooks.web = true;
+    vi.stubGlobal("CSS", { supports: () => true });
+    vi.stubGlobal("document", {
+      getElementById: () => ({
+        offsetHeight: 100,
+        y: 200,
+        style: {},
+        querySelector: () => hooks.skeleton,
+      }),
+    });
+    const input = props();
+    input.request = { ...input.request, pane: entry.pane, entry };
+    const { section } = render(input);
+    const scrollTo = vi.fn();
+    hooks.refs[0].current = { scrollTo, getScrollableNode: () => ({}) };
+    section.props.onSectionLayout("general", { y: 200, height: 300 });
+    section.props.onPaneLayout(entry.pane, { y: 0, height: 100 });
+    expect(scrollTo).toHaveBeenCalledTimes(skeleton ? 0 : 1);
+    if (!skeleton) expect(scrollTo).toHaveBeenLastCalledWith({ y: 184, animated: false });
+    section.props.onPaneLayout(entry.pane, { y: 0, height: 150 });
+    expect(scrollTo).toHaveBeenCalledTimes(skeleton ? 0 : 1);
+    hooks.skeleton = false;
+    hooks.row = { y: 400 };
+    section.props.onPaneLayout(entry.pane, { y: 0, height: 200 });
+    expect(scrollTo).toHaveBeenLastCalledWith({ y: 336, animated: false });
+    expect(flashSettingRow).toHaveBeenCalledTimes(1);
+    section.props.onPaneLayout(entry.pane, { y: 0, height: 300 });
+    expect(scrollTo).toHaveBeenCalledTimes(skeleton ? 1 : 2);
+  },
+);
 
 it("does not revive a completed request when Escape clears search", () => {
   const input = props();
@@ -163,7 +180,14 @@ it.each([true, false])(
   (supported) => {
     hooks.web = true;
     vi.stubGlobal("CSS", { supports: () => supported });
-    vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200, style: {} }) });
+    vi.stubGlobal("document", {
+      getElementById: () => ({
+        offsetHeight: 100,
+        y: 200,
+        style: {},
+        querySelector: () => hooks.skeleton,
+      }),
+    });
     const input = props();
     const { page, section } = render(input);
     const scrollTo = vi.fn();
@@ -182,7 +206,14 @@ it.each([true, false])(
 it.each([false, true])("bounds delayed row jumps and respects reader gestures (%s)", (cancel) => {
   hooks.web = true;
   vi.stubGlobal("CSS", { supports: () => true });
-  vi.stubGlobal("document", { getElementById: () => ({ offsetHeight: 100, y: 200, style: {} }) });
+  vi.stubGlobal("document", {
+    getElementById: () => ({
+      offsetHeight: 100,
+      y: 200,
+      style: {},
+      querySelector: () => hooks.skeleton,
+    }),
+  });
   const input = props();
   input.request = { ...input.request, pane: entry.pane, entry };
   const { page, section } = render(input);
@@ -192,10 +223,10 @@ it.each([false, true])("bounds delayed row jumps and respects reader gestures (%
   section.props.onPaneLayout(entry.pane, { y: 0, height: 100 });
   if (cancel) page.props.onScrollBeginDrag();
   vi.advanceTimersByTime(3000);
-  expect(scrollTo).toHaveBeenCalledTimes(cancel ? 0 : 1);
+  expect(scrollTo).toHaveBeenCalledTimes(1);
   hooks.row = { y: 400 };
   section.props.onPaneLayout(entry.pane, { y: 0, height: 200 });
-  expect(scrollTo).toHaveBeenCalledTimes(cancel ? 0 : 1);
+  expect(scrollTo).toHaveBeenCalledTimes(1);
 });
 
 it("expires a row request even when its pane never reports layout", () => {
@@ -213,8 +244,18 @@ it("expires a row request even when its pane never reports layout", () => {
 it("excludes neighboring sections from browser anchoring after a jump", () => {
   hooks.web = true;
   vi.stubGlobal("CSS", { supports: () => true });
-  const general = { offsetHeight: 100, y: 200, style: { overflowAnchor: "" } };
-  const accounts = { offsetHeight: 100, y: 400, style: { overflowAnchor: "" } };
+  const general = {
+    offsetHeight: 100,
+    y: 200,
+    style: { overflowAnchor: "" },
+    querySelector: () => false,
+  };
+  const accounts = {
+    offsetHeight: 100,
+    y: 400,
+    style: { overflowAnchor: "" },
+    querySelector: () => false,
+  };
   vi.stubGlobal("document", {
     getElementById: (id: string) => (id.endsWith("accounts") ? accounts : general),
   });

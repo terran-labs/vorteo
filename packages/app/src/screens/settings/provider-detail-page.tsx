@@ -140,6 +140,7 @@ function useEnvironmentState(
   const localId = serverId ? provider.bindings[serverId] : undefined;
   const connected = useHostRuntimeIsConnected(serverId ?? "");
   const catalog = useProvidersSnapshot(localId ? serverId : null);
+  const usageSupported = useHostFeature(serverId, "providerUsageList");
   const { view } = useProviderUsage(serverId, {
     enabled: Boolean(localId && connected),
   });
@@ -152,6 +153,8 @@ function useEnvironmentState(
   return {
     environment,
     usage,
+    usageSupported: Boolean(localId && usageSupported),
+    usageFailed: view.kind === "error" || (view.kind === "ready" && Boolean(view.refreshError)),
     ...classifyEnvironment({
       bound: Boolean(localId),
       excluded: isExcluded(settings, environment.serverId, provider.id),
@@ -378,6 +381,10 @@ function primaryDefinition(account: ProviderAccount, environments: InstallationE
   );
 }
 
+function isUsageValid(state: EnvironmentState | undefined): boolean {
+  return Boolean(state && state.kind !== "attention" && !state.usageFailed);
+}
+
 function ConnectionRow({
   account,
   snapshot,
@@ -408,13 +415,20 @@ function ConnectionRow({
   const devState = useEnvironmentState(provider, dev, snapshot.settings);
   const states = [hostState, devState].filter((state): state is EnvironmentState => !!state);
   const status = describeConnectionStatus(states);
-  const usage = useRetainedUsage(
-    states.find((state) => state.kind === "ready" && state.usage)?.usage,
-  );
-  const usageSpace = useMemo(
-    () => ({ minHeight: (usage?.windows.length ?? 0) * 32 }),
-    [usage?.windows.length],
-  );
+  const usageState = states.find((state) => state.kind !== "none" && state.kind !== "excluded");
+  const usageServerId = usageState?.environment.serverId;
+  const { usage, reservedWindows } = useRetainedUsage({
+    identity: JSON.stringify([
+      account.id,
+      provider.id,
+      usageServerId,
+      provider.bindings[usageServerId ?? ""],
+    ]),
+    supported: Boolean(usageState?.usageSupported),
+    valid: isUsageValid(usageState),
+    latest: usageState?.usage,
+  });
+  const usageSpace = useMemo(() => ({ minHeight: reservedWindows * 32 }), [reservedWindows]);
   const error = states.find((state) => state.error)?.error ?? null;
   const name = account.name === "Default connection" ? providerName(provider) : account.name;
   // Sign-ins run on Host; the Dev container receives access from there.
