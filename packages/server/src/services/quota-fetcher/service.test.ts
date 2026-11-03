@@ -16,6 +16,7 @@ import { MiniMaxQuotaProvider } from "./providers/minimax.js";
 import { ZaiQuotaProvider } from "./providers/zai.js";
 import { ProviderUsageService } from "./service.js";
 import { createProviderUsageFetchers } from "./manifest.js";
+import { ClaudeLimitObservations } from "../../server/agent/providers/claude/limit-observation.js";
 
 function writeClaudeCredentials(
   dir: string,
@@ -294,6 +295,81 @@ describe("ProviderUsageService", () => {
     expect(calls).toBe(2);
     expect(cached).toBe(first);
     expect(refreshed.providers[0]?.windows[0]?.usedPct).toBe(2);
+  });
+
+  it("serves cached usage for two minutes by default", async () => {
+    let now = Date.parse("2026-06-19T00:00:00.000Z");
+    let calls = 0;
+    const service = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => now,
+      fetchers: [
+        {
+          providerId: "claude",
+          displayName: "Claude",
+          fetchUsage: async () => {
+            calls += 1;
+            return {
+              providerId: "claude",
+              displayName: "Claude",
+              status: "available",
+              planLabel: null,
+              windows: [],
+            };
+          },
+        },
+      ],
+    });
+
+    await service.listUsage();
+    now += 2 * 60 * 1000 - 1;
+    await service.listUsage();
+    expect(calls).toBe(1);
+    now += 1;
+    await service.listUsage();
+    expect(calls).toBe(2);
+  });
+
+  it("shows a setup-token account's last limit stop through configured accounts", async () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-setup-observed-"));
+    mkdirSync(join(home, ".vorteo-auth"));
+    try {
+      const claudeLimitObservations = new ClaudeLimitObservations({
+        now: () => Date.parse("2026-11-02T18:00:00.000Z"),
+      });
+      claudeLimitObservations.record("claude-two", {
+        error: "You've hit your session limit · resets 1pm (America/Los_Angeles)",
+      });
+      const service = new ProviderUsageService({
+        logger: createLogger(),
+        claudeLimitObservations,
+        getProviderConfigs: () => ({
+          claude: { enabled: false },
+          codex: { enabled: false },
+          "claude-two": {
+            extends: "claude",
+            label: "Claude 2",
+            env: { CLAUDE_CONFIG_DIR: home },
+          },
+        }),
+      });
+      const usage = (await service.listUsage()).providers.find(
+        (entry) => entry.providerId === "claude-two",
+      );
+      expect(usage).toMatchObject({
+        status: "available",
+        windows: [
+          {
+            id: "five_hour",
+            label: "Session",
+            remainingPct: 0,
+            resetsAt: "2026-11-02T21:00:00.000Z",
+          },
+        ],
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("deduplicates concurrent cache misses", async () => {

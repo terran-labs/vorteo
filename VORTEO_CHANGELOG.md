@@ -4,6 +4,15 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Account tiles name a reset time when allowances tie, fall back to another window's next reset, and show Session not started for an unused Claude session instead of Reset time unavailable.
+- Healthy usage no longer flips to Last known usage between refreshes: the label waits 10 minutes, and the daemon caches usage for 2 minutes instead of 5.
+- New accounts show usage within seconds of signing in. The app refreshes past the daemon cache on completion and again when the credential reaches the host.
+- Claude setup-token accounts at their limit show 0% left with the reset time from their last limit message, noted as From last limit message, instead of Usage not provided. The reading lasts until the reset, or 7 days when the message gave none, and does not survive a daemon restart.
+
 ## 26.11.206 - 2026-11-02
 
 ### Improvements

@@ -2731,6 +2731,8 @@ test("a usage limit holds a standalone thread for its reset without pausing it",
   });
   const queued: Array<{ agentId: string; key: string; text: string }> = [];
   manager.setMessageQueueControl(usageLimitQueue(queued));
+  const stops: Array<{ provider: string; error: string }> = [];
+  manager.setUsageLimitObserver((provider, stop) => stops.push({ provider, error: stop.error }));
   try {
     const agent = await manager.createAgent({ provider: "claude", cwd: workdir }, undefined, {
       workspaceId: undefined,
@@ -2750,6 +2752,7 @@ test("a usage limit holds a standalone thread for its reset without pausing it",
         attempts: 0,
       }),
     );
+    expect(stops).toEqual([{ provider: "claude", error: "You've hit your session limit" }]);
     expect(manager.getAgent(agent.id)?.config.quotaPausedAt).toBeUndefined();
     expect(() => manager.assertQuotaNotPaused(agent.id)).not.toThrow();
     expect(await manager.usageLimitedUntil("claude")).toBe(

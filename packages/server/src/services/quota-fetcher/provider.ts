@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import type { ProviderUsage } from "../../server/messages.js";
+import type { ClaudeLimitObservationReader } from "../../server/agent/providers/claude/limit-observation.js";
 
 export type ProviderApiFetch = typeof fetch;
 
@@ -22,6 +23,8 @@ export interface ProviderUsageFetcherFactoryOptions {
   logger: Logger;
   fetch?: ProviderApiFetch;
   providers?: ProviderUsageConfigMap;
+  /** Last usage-limit stops, shown for Claude accounts whose credential cannot read usage. */
+  claudeLimitObservations?: ClaudeLimitObservationReader;
 }
 
 export interface ProviderUsageFetcherManifestEntry {
