@@ -4,6 +4,8 @@ Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrom
 
 Maintenance review (2026-11-02): the sidebar merges an empty, hidden Dev System project with the Host's again, so the System project keeps one row, its folder placement, its ordering and the workspaces recorded under its merged key. App-only change; README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-02): a registered thread whose provider history failed to load retries it on the next request while idle, replacing any partial timeline with the full replay under a new epoch, and session host disconnect errors name their cause. The existing history sync error callout and Retry are unchanged. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-01): the installation panel uses the existing toast API context directly, avoiding a native viewport import in browser review tests. Toast behavior is unchanged.
 
 Maintenance review (2026-11-01): the compiled restart fixture waits for durable capture acknowledgement before asserting an empty pending-work count. Runtime behavior and restart approval requirements are unchanged.
