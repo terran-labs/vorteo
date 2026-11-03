@@ -419,9 +419,68 @@ Release seals are off unless both the coordinator and Host services run with `VO
 
 Never point a worktree's dependencies at an installed release: writes into it fail with "Operation not permitted". Cleanup code must remove releases through `removeBootstrapRelease`, because a plain recursive delete fails on flagged files. To remove a sealed release by hand, first clear the flags on the tree and its seal files: `chflags -R nouchg <release> <release>.release-*`. Then delete them. Sealing does not detect writable shared memory mappings opened before sealing.
 
+#### Turn release seals on or off
+
+Each service changes through its tracked workflow, coordinator first, then Host. Nothing else in either launcher may change, and each change is refused with a message naming the setting that differed. A Host builds and installs sealed releases only once both services carry the variable. After turning seals off, existing sealed releases keep their flags until removed as above.
+
+**Coordinator.** A reviewed coordinator renewal carries `{ "setting": "releaseSeals", "value": "enabled" }` in `configurationChanges`; `null` turns seals off. The candidate configuration adds (or removes) `"releaseSeals": "enabled"`, and the candidate launcher equals the current one except `ProgramArguments`, `Program` and exactly `EnvironmentVariables.VORTEO_RELEASE_SEALS` = `enabled` added (or removed). Without that declared change, any difference in `VORTEO_RELEASE_SEALS` is refused. The compatible recovery launcher and configuration keep the current environment and configuration, so rollback restores the previous setting. A current launcher that already sets the variable (when turning on), lacks `enabled` (when turning off) or carries any other value is refused. Like other registered settings, the change needs the owner's review, or an active [full maintenance delegation](#full-maintenance-delegation); automatic plans without that grant refuse it.
+
+**Host.** The [Host launcher update](#one-time-host-launcher-update) also accepts a candidate that adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` on a launcher that already sets `PASEO_MANAGED_RELEASE_LINK` and `PASEO_MANAGED_RELEASE_ROOT` to the configured `sourceUpdates.currentReleaseLink` and `releaseRoot`. It reloads the Host service once, so both the supervisor and the worker it starts carry the change. Verification additionally requires the new supervisor's environment to carry the variable (on) or not carry it (off). Its plan digest also binds the direction.
+
+Builds runs these steps on the Host with the installed Host client (`<client>` below). Run `<client> capabilities` first and stop if `coordinatorMaintenance.available` is false.
+
+1. Prepare the Host candidate from the live Host plist, outside guest-writable mounts:
+
+   ```sh
+   cp ~/Library/LaunchAgents/<host-label>.plist <protected>/host-seals.plist
+   plutil -insert EnvironmentVariables.VORTEO_RELEASE_SEALS -string enabled <protected>/host-seals.plist
+   shasum -a 256 <protected>/host-seals.plist
+   ```
+
+   To turn seals off, use `plutil -remove EnvironmentVariables.VORTEO_RELEASE_SEALS` instead.
+
+2. Prepare the coordinator renewal exactly as for any renewal, with three differences. In the candidate configuration, add `"releaseSeals": "enabled"` and set `host.launcherUpdate` to `{ "candidate": "<protected>/host-seals.plist", "sha256": "<digest>" }`. In the candidate launcher, run `plutil -insert EnvironmentVariables.VORTEO_RELEASE_SEALS -string enabled` (when the launcher has no `EnvironmentVariables`, first run `plutil -insert EnvironmentVariables -dictionary`). Leave the compatible recovery launcher and configuration unchanged. Then write `preparation.json`:
+
+   ```json
+   {
+     "id": "<new request uuid>",
+     "reason": "Turn on release seals for the coordinator and stage the Host launcher change",
+     "plan": {
+       "...": "the renewal plan, unchanged otherwise",
+       "configurationChanges": [
+         { "setting": "releaseSeals", "value": "enabled" },
+         {
+           "setting": "hostLauncherUpdate",
+           "value": { "candidate": "<protected>/host-seals.plist", "sha256": "<digest>" }
+         }
+       ]
+     }
+   }
+   ```
+
+   To turn seals off, use `"value": null` for `releaseSeals`, remove the key from the candidate configuration and remove the variable from the candidate launcher.
+
+3. Submit it and follow it to a verified coordinator:
+
+   ```sh
+   VORTEO_BUILDS=1 <client> request-coordinator --request-file preparation.json
+   <client> coordinator-status <request-id>
+   ```
+
+   Confirm the running coordinator's environment with `launchctl print gui/$(id -u)/<coordinator-label>`.
+
+4. Once `<client> capabilities` reports `hostLauncherUpdate.available: true`, take its `sha256` and request the Host restart. `reason.txt` names the change, for example "Turn on release seals for the Host service".
+
+   ```sh
+   VORTEO_BUILDS=1 <client> request-restart --target host --host-launcher-plan <sha256> --reason-file reason.txt
+   <client> restart-status <request-id>
+   ```
+
+   The result reads "with release seals turned on" (or "off"). Any failure restores and reloads the previous Host plist without retrying.
+
 ## Full maintenance delegation
 
-Installation controls let an owner explicitly delegate supported maintenance to authenticated Host requests on a never-enrolled installation. Revoking the full grant restores the existing per-service choices; those choices remain visible but cannot override an active full grant. This separate grant covers daemon updates and restarts, exact coordinator configuration and tooling changes, supervisor and Factory plans, Docker restart and degraded recovery plans, Host launcher updates, native helpers, the preview monitor and the session host. Ordinary service permissions retain their narrower scope. The manual approval rules below apply unless this full grant is active. A new operation is excluded until its executor explicitly supports delegation. The grant also includes [installation management](#delegated-installation-management), which can only cancel retained requests.
+Installation controls let an owner explicitly delegate supported maintenance to authenticated Host requests on a never-enrolled installation. Revoking the full grant restores the existing per-service choices; those choices remain visible but cannot override an active full grant. This separate grant covers daemon updates and restarts, exact coordinator configuration and tooling changes (including the coordinator `releaseSeals` change and its launcher), supervisor and Factory plans, Docker restart and degraded recovery plans, Host launcher updates (including the release seal variant), native helpers, the preview monitor and the session host. Ordinary service permissions retain their narrower scope. The manual approval rules below apply unless this full grant is active. A new operation is excluded until its executor explicitly supports delegation. The grant also includes [installation management](#delegated-installation-management), which can only cancel retained requests.
 
 The owner-authenticated `maintenance-delegation/query` and `maintenance-delegation/change` routes under `/api/installation/owner/` expose the current revision and accept `{expectedRevision, enabled}`. Both require an allowed Origin and owner authentication. Scoped agent credentials cannot enable delegation. The coordinator stores the grant in protected state, preserves existing delegation settings and rejects unsafe files or stale revisions. Host capabilities advertise `maintenanceDelegation.available` and `enabled`; clients must check availability before offering this control.
 
@@ -535,6 +594,8 @@ The Host client discovers `hostLauncherUpdate` through `capabilities` and submit
 
 On any failure after the swap, it puts the previous plist back and reloads it, and reports the failure without retrying. If launchd cannot reload the previous plist either, the detail names the fallback copy for a manual reload.
 
+The same operation also turns release seals on or off for the Host service: on a launcher that already selects managed releases, the candidate may add or remove only `VORTEO_RELEASE_SEALS=enabled`. See [Turn release seals on or off](#turn-release-seals-on-or-off).
+
 ### Factory checks around Dev restarts
 
 Once `container.factoryGate` is configured, the coordinator runs Factory's read-only lock acceptance script around every restart that replaces the Dev worker. That covers source updates, plain and idle restarts, held restarts, supervisor maintenance, Factory adoption and the Docker restart. Configure it through an owner-reviewed coordinator plan or renewal with `factoryGateConfiguration`: the pinned `docker` binary, the socket path, the Dev container's full ID, and `verify` with the script path, its `sha256`, the pinned `lockInode` and the expected `ownerMode`. `null` removes it. The script must be version 2 or later, which reports the owner sequence and a custody digest.
@@ -551,7 +612,7 @@ A failure after the restart names the difference and needs Factory's review. Not
 
 ### Reviewed coordinator configuration changes
 
-A reviewed coordinator plan or renewal changes a registered coordinator setting with `configurationChanges`: a list of `{ "setting": <name>, "value": <value> }`, where a `null` value removes the setting. The registry in `packages/protocol/src/coordinator-configuration-settings.ts` names each setting, its configuration path, its value schema and whether a runner renewal may carry it. It includes `factoryRuntimeAdoption`, `previewMonitor`, `claudeHostRefresh`, `engineRestart`, `engineRecovery`, `recoveryOrigin`, `factoryGate` and `hostLauncherUpdate`. The candidate configuration must differ from the live one by exactly the listed changes. Unknown settings, invalid values and a setting named twice are refused. Automatic coordinator plans refuse every configuration change.
+A reviewed coordinator plan or renewal changes a registered coordinator setting with `configurationChanges`: a list of `{ "setting": <name>, "value": <value> }`, where a `null` value removes the setting. The registry in `packages/protocol/src/coordinator-configuration-settings.ts` names each setting, its configuration path, its value schema and whether a runner renewal may carry it. It includes `factoryRuntimeAdoption`, `previewMonitor`, `claudeHostRefresh`, `engineRestart`, `engineRecovery`, `recoveryOrigin`, `factoryGate`, `hostLauncherUpdate` and `releaseSeals`. `releaseSeals` is the only setting that also changes the coordinator launcher, by exactly `VORTEO_RELEASE_SEALS=enabled`. The candidate configuration must differ from the live one by exactly the listed changes. Unknown settings, invalid values and a setting named twice are refused. Automatic coordinator plans refuse every configuration change.
 
 Clients negotiate review by setting name, behind `coordinatorBootstrapConfigurationChanges`. A client that does not name every listed setting sees the request without the list, with a reload reason, and cannot approve it. Cancellation stays available. Adding a setting takes one registry entry, its review text in the app and a test.
 

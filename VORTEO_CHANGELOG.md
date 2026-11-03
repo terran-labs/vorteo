@@ -12,6 +12,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Features
+
+- Turn release seals on or off through tracked workflows. A reviewed coordinator update with the new `releaseSeals` setting adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, and the Host launcher update does the same for the Host service once managed release selection is in place. Full maintenance delegation covers both. Any other launcher difference, value or unexpected launcher state is refused with a message naming what differed.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
@@ -30,6 +36,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Maintenance
 
 - Merge current `main` into the durable sessions branch, keeping both sides' new installer tests and the browser test's mocks for the upgrade and snapshot cards.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- The Factory Overview row in the sidebar now steps in with the Factory workspaces below it at every nesting depth, instead of keeping a fixed indent.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Account tiles name the usage window their reset belongs to, such as Session resets in 3h or Weekly resets in 4 days, so a short session reset no longer reads as the weekly quota resetting.
 
 ## Unreleased - 2026-11-03
 

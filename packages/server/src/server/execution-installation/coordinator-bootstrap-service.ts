@@ -5,11 +5,18 @@ import { open, realpath } from "node:fs/promises";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { CoordinatorBootstrapPlan } from "@getpaseo/protocol/coordinator-bootstrap";
+import { planConfigurationChanges } from "@getpaseo/protocol/coordinator-configuration-settings";
 import { BootstrapRequestConflict } from "./coordinator-bootstrap.js";
 import {
   assertBootstrapPathsProtected,
   readBootstrapPreparedFile,
 } from "./coordinator-bootstrap-artifact.js";
+import {
+  launcherDifferences,
+  RELEASE_SEALS_VALUE,
+  RELEASE_SEALS_VARIABLE,
+  withReleaseSeals,
+} from "./launcher-environment.js";
 
 const execute = promisify(execFile);
 
@@ -140,14 +147,31 @@ export async function readBootstrapLauncher(
   }
 }
 
+/** The release seal change a plan declares for its candidate launcher: `"enabled"` adds
+ * `VORTEO_RELEASE_SEALS=enabled`, `null` removes it, undefined leaves the environment alone.
+ * The declaration is the reviewed `releaseSeals` configuration change, so the owner (or the
+ * full maintenance grant) reviews it and automatic plans without that grant refuse it. */
+export function plannedReleaseSeals(plan: CoordinatorBootstrapPlan): "enabled" | null | undefined {
+  const result = planConfigurationChanges(plan);
+  if (!result.ok) throw new BootstrapRequestConflict(result.reason);
+  const change = result.changes.find((item) => item.setting === "releaseSeals");
+  if (!change) return undefined;
+  return change.value === null ? null : RELEASE_SEALS_VALUE;
+}
+
 /** Plists are decoded by the fixed Host parser. Preserve environment, logs and
- * lifetime settings while changing only the approved executable/config paths. */
+ * lifetime settings while changing only the approved executable/config paths.
+ * A declared release seal change also adds or removes exactly
+ * `VORTEO_RELEASE_SEALS=enabled`. A recovery launcher restores the previous
+ * configuration, so it keeps the current environment unchanged. */
 export function verifyBootstrapLaunchers(input: {
   plan: CoordinatorBootstrapPlan;
   configurationFile: string;
   current: unknown;
   previous: unknown;
   candidate: unknown;
+  /** The candidate is a compatible recovery launcher, not the reviewed replacement. */
+  recovery?: boolean;
 }): void {
   const schema = z.record(z.string(), z.unknown());
   const current = schema.parse(input.current);
@@ -167,7 +191,7 @@ export function verifyBootstrapLaunchers(input: {
     throw new BootstrapRequestConflict(
       "Current coordinator launcher no longer matches preparation",
     );
-  const expected: Record<string, unknown> = {
+  let expected: Record<string, unknown> = {
     ...current,
     ProgramArguments: [
       input.plan.candidate.node.path,
@@ -176,8 +200,26 @@ export function verifyBootstrapLaunchers(input: {
     ],
   };
   if (current.Program !== undefined) expected.Program = input.plan.candidate.node.path;
-  if (!isDeepStrictEqual(candidate, expected))
-    throw new BootstrapRequestConflict("Candidate launcher changes unapproved service settings");
+  const seals = input.recovery ? undefined : plannedReleaseSeals(input.plan);
+  if (seals !== undefined) {
+    try {
+      expected = withReleaseSeals(expected, seals, "Current coordinator launcher");
+    } catch (error) {
+      throw new BootstrapRequestConflict((error as Error).message);
+    }
+  }
+  if (!isDeepStrictEqual(candidate, expected)) {
+    const subject = input.recovery ? "Recovery launcher" : "Candidate launcher";
+    const differences = launcherDifferences(expected, candidate);
+    let hint = "";
+    if (differences.includes(`EnvironmentVariables.${RELEASE_SEALS_VARIABLE}`))
+      hint = input.recovery
+        ? `. A recovery launcher keeps the current ${RELEASE_SEALS_VARIABLE} setting`
+        : `. Only a declared releaseSeals change may add or remove ${RELEASE_SEALS_VARIABLE}=${RELEASE_SEALS_VALUE}`;
+    throw new BootstrapRequestConflict(
+      `${subject} changes unapproved service settings: ${differences.join(", ")}${hint}`,
+    );
+  }
 }
 
 /** Helper identity is supplied by protected Host setup, never by a review RPC.
