@@ -2032,6 +2032,8 @@ Maintenance review: Docker restart preflight and readiness read `{{json .State}}
 
 Maintenance review: the terminal worker tolerates EINVAL, ENOTSUP and EPERM when restricting its socket mode, because Docker Desktop virtiofs homes reject chmod on sockets. The socket directory is still verified as an owner-only 0700 directory before use. Reproduced in the Dev container: chmod on the socket returned EINVAL with the directory at 700.
 
+Maintenance review: release seals now turn on and off through tracked workflows. A reviewed coordinator update with the `releaseSeals` setting may add or remove exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, while compatible recovery keeps the previous launcher environment. The Host launcher update may add or remove only that variable on a launcher that already selects managed releases, then reloads the Host service. Full maintenance delegation covers both; any other launcher difference is refused by name. Not yet installed. README overview and onboarding are unchanged.
+
 ## Optional native macOS helper
 
 Legacy coordinator compatibility: an unavailable helper query is retried once per minute instead of every settings refresh. Owner lock checks still apply during the delay, and upgraded coordinators are discovered without reloading.
