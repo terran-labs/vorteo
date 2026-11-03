@@ -9,7 +9,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ProviderLoginState } from "@getpaseo/protocol/provider-login";
 import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
-import { providerUsageQueryKey } from "./use-provider-usage";
+import { useForceProviderUsageRefresh } from "./use-provider-usage";
 
 /**
  * Whether this account signs in once for the installation through the coordinator. Claude always
@@ -79,6 +79,28 @@ function installationRequest(
   return provider === "claude"
     ? claudeSetupRequest(serverId, providerId, operation, attempt)
     : codexInstallationRequest(serverId, providerId, operation, attempt);
+}
+
+interface SignInUsageRefreshInput {
+  login: ProviderLoginState | undefined;
+  environments: readonly { serverId: string; status: string }[] | undefined;
+  serverId: string | null;
+}
+
+/**
+ * Changes when a completed sign-in should show its usage: once on completion, and again when an
+ * installation sign-in reaches this host, since the credential arrives after the attempt ends.
+ */
+export function signInUsageRefreshKey({
+  login,
+  environments,
+  serverId,
+}: SignInUsageRefreshInput): string | null {
+  if (login?.status !== "succeeded") return null;
+  const delivered = environments?.some(
+    (environment) => environment.serverId === serverId && environment.status === "ready",
+  );
+  return `${login.attemptId}:${delivered ? "delivered" : "completed"}`;
 }
 
 export function useProviderLogin(
@@ -185,12 +207,17 @@ export function useProviderLogin(
     reset();
     void refetch();
   }, [reset, refetch]);
-  const completedId = query.data?.status === "succeeded" ? query.data.attemptId : null;
+  const refreshKey = signInUsageRefreshKey({
+    login: query.data,
+    environments: synchronization.data?.environments,
+    serverId,
+  });
+  const refreshUsage = useForceProviderUsageRefresh(serverId);
   useEffect(() => {
-    if (!completedId) return;
-    void cache.invalidateQueries({ queryKey: providerUsageQueryKey(serverId) });
+    if (!refreshKey) return;
+    void refreshUsage();
     void cache.invalidateQueries({ queryKey: ["providerReset", serverId, providerId] });
-  }, [cache, completedId, serverId, providerId]);
+  }, [cache, refreshKey, refreshUsage, serverId, providerId]);
   return {
     state: query.data,
     /** One sign-in for the whole installation, through the coordinator. */

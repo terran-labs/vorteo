@@ -916,6 +916,15 @@ export class AgentManager {
     this.quotaReserveObservationReader = reader;
   }
 
+  private usageLimitObserver:
+    | ((provider: AgentProvider, stop: Extract<AgentStreamEvent, { type: "turn_failed" }>) => void)
+    | null = null;
+
+  /** Receives each live usage-limit stop, including internal and structured-generation runs. */
+  setUsageLimitObserver(observer: NonNullable<AgentManager["usageLimitObserver"]>): void {
+    this.usageLimitObserver = observer;
+  }
+
   private async readQuotaReserveObservation(provider: AgentProvider) {
     if (!this.quotaReserveObservationReader)
       throw new QuotaReserveAdmissionError("usage_unavailable");
@@ -7233,6 +7242,7 @@ export class AgentManager {
     );
     if (terminalDisposition === "stale") return;
     if (event.code === "quota_exhausted" && !options?.fromHistory) {
+      this.usageLimitObserver?.(agent.provider, event);
       this.holdForUsageLimit(agent, event.usageLimit);
       await this.pauseQuotaTeam(agent);
     }

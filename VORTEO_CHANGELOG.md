@@ -6,6 +6,25 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Changed
+
+- Rebuild the sidebar Quotas card around a week of runway per account. A quiet Best now note names the account to use next, with a reason and a runner-up. Each account shows a thin 7-day lane on a shared day axis, marking plan capacity, running low, prepaid credits, out of quota, unknown stretches and every known reset, with one summary line beneath it.
+- Keep the card mostly monochrome: amber marks running low at 30% left or less, matching the usage tiles, red marks out, and credits show as a fainter capacity tone. Provider dots and most badges are gone; a row shows one status label only when it is out or on credits.
+- Open an account in place to see every window with its bar, remaining percent and exact reset, plus plan, balances, details, source, the pace warning and reset credits. Reconnect stays visible on the collapsed row for signed-out accounts, which list first. Accounts now start collapsed unless only one reports.
+- A setup-token Claude account at its observed limit shows out until the reset, then unknown, and its detail says From last limit message.
+- Show reading freshness in the footer, Live or Stale after the 10-minute display threshold, with the reading's age, beside a Key that explains the lane styles and names the time zone, and the Open Usage link.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Account tiles name a reset time when allowances tie, fall back to another window's next reset, and show Session not started for an unused Claude session instead of Reset time unavailable.
+- Healthy usage no longer flips to Last known usage between refreshes: the label waits 10 minutes, and the daemon caches usage for 2 minutes instead of 5.
+- New accounts show usage within seconds of signing in. The app refreshes past the daemon cache on completion and again when the credential reaches the host.
+- Claude setup-token accounts at their limit show 0% left with the reset time from their last limit message, noted as From last limit message, instead of Usage not provided. The reading lasts until the reset, or 7 days when the message gave none, and does not survive a daemon restart.
+
+## Unreleased - 2026-11-02
+
 ### Fixes
 
 - Show only the agent's own account in the Context window details instead of repeating its quotas from the provider-level plan card.
