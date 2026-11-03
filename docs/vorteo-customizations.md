@@ -4,6 +4,47 @@ Maintenance review (2026-11-01): the installation panel uses the existing toast 
 
 Maintenance review (2026-11-01): the compiled restart fixture waits for durable capture acknowledgement before asserting an empty pending-work count. Runtime behavior and restart approval requirements are unchanged.
 
+Connection completion: install, repair and existing-install paths share a connection summary with the installed CLI. It includes the address, local address where distinct, password-file reference and clipboard copy when available, plus a QR code in interactive terminals. Local-only codes are labeled as local. Passwords never appear in output, and `status --json` stays machine-readable.
+
+Installer demo: `install.sh --demo` embeds the production animation and shared installation step order, simulates setup and completion, and spends five minutes animating builds. It needs an existing Node runtime but never downloads source, installs prerequisites, creates temporary files, reads credentials or changes services. Node discovery now checks later PATH entries and Homebrew's installed versioned Node formula before proposing an installation.
+
+Welcome presentation: wide screens split owner sign-in and password help into two columns; compact screens stack them. The whole command field is an accessible copy target with toast feedback; hovering the block highlights its copy icon. Interactive installation completion omits agent-only result markers.
+
+Installer presentation review: the elapsed timer is assigned before export to preserve shell failure reporting. the startup logo has a leading blank line, and the build animation centers within the current terminal dimensions on every frame. Progress remains visible below the artwork; small terminals retain the compact status display.
+
+Maintenance review (2026-11-02): integrated the current release branch for the keyboard regression correction. No additional runtime changes were introduced.
+
+Maintenance review (2026-11-02): the keyboard mode-isolation browser regression now advertises legacy profile capabilities so its live mode control remains mounted. Existing keyboard and agent-state assertions remain intact; production behavior is unchanged.
+
+Maintenance review (2026-11-02): release publisher formatting now matches the repository formatter; release behavior is unchanged.
+
+Maintenance review (2026-11-02): relay integration tests explicitly use the local Durable Object instead of forwarding to the production cutover hostname. Production relay configuration is unchanged.
+
+Maintenance review (2026-11-02): pre-existing duplicate release pages require explicit asset reconciliation before mutation; normal beta promotion preserves the original page and assets.
+
+Maintenance review (2026-11-02): public release summaries omit attribution prefixes. Publication promotes one page per version from beta to stable while preserving assets and immutable tags; agent instructions record both rules.
+
+Maintenance review (2026-11-02): release 26.11.200 combines the square-tile installer animation, welcome page and provider defaults with reviewed legacy Claude fixes. Gate migration preserves unsupported custom deployments by refusing before changes, and Dev connectivity must verify the correct coordinator before installation completes. Focused tests and a live Dev-user health check pass; final release acceptance remains pending.
+
+Maintenance review (2026-11-01): legacy gate migration refuses common custom Compose override files during planning, before applying a saved plan, and at the migration boundary, preserving files and avoiding silent mount changes. Completed steps display their follow-up notes. Focused planning, application and renderer tests pass; arbitrary custom Compose configurations still require review.
+
+Maintenance review (2026-11-01): release 26.11.108 combines the approved square-tile build animation, welcome and starter-profile fixes, curated release summaries, and the reviewed dependency lifecycle fix. Synthetic shell checkouts include the animation module. Final combined installation acceptance is pending.
+Maintenance review (2026-11-02): the installer reports Tailscale refusal details and verifies coordinator health and installation identity through the Dev agent route in both local and Tailscale modes. A failed probe leaves installation incomplete and resumable. Recognized custom Compose overrides stop gate migration before changes.
+
+Maintenance review (2026-11-01): the Claude connection panel no longer offers a shared connection for the built-in provider, which the coordinator always refuses. It points to adding a Claude account.
+
+Maintenance review (2026-11-01): a failed packaged Claude CLI selection is no longer cached, so repairing a release does not need a process restart.
+
+Maintenance review (2026-11-01): the native Claude account stays usable in Dev containers, whose image sets CLAUDE_CONFIG_DIR for the whole daemon. Only a directory a binding chose differently from the daemon's own marks a bound account.
+
+Maintenance review (2026-11-01): the one-command installer now runs dependency install hooks when it builds a release, matching the other Host and Dev build paths, so the packaged Claude CLI is usable and Full sign-in can start. A release-build installer test covers the order.
+
+Maintenance review (2026-11-01): installer build animation uses a separate terminal screen, continuous gradient noise, and green square-tile lettering with independently drifting highlights. Build completion, errors and EOF restore the normal screen; small terminals retain progress and redirected output remains plain text. Release notes also reject indented internal headings.
+
+Maintenance review (2026-11-01): release publication requires curated executive notes, validates them before tagging, and no longer copies internal changelog batches into public release bodies.
+
+Maintenance review (2026-11-01): welcome feedback imports the shared toast API without loading the native renderer in browser tests.
+
 Maintenance review (2026-11-01): installer builds report elapsed time and live activity, with planning estimates before approval and a startup wordmark. The welcome card preserves Matrix rain and confirms command copying with a toast. Ready accounts remain selectable without saved profiles; the installation provisions one starter profile per ready provider and remembers provisioning across restarts. Existing profiles and deliberate starter deletions are retained. Native Claude CLI authentication remains available in managed installations; separately bound accounts still require credential delivery.
 
 Maintenance review (2026-11-01): release 26.11.103 extends existing exact-path Git trust to registered Projects repositories whose root or .git ownership differs from the daemon account. This completes agent and terminal Git access for shared Linux projects without wildcard trust or ownership changes. Focused trust tests and a real two-UID Docker Git index-write check pass.

@@ -20,7 +20,12 @@ describe("installer progress", () => {
   test("renders steps, skips and plain output as tidy lines", () => {
     const { output, state } = render([
       { step: "identity", status: "start", message: "Creating the identity" },
-      { step: "identity", status: "done", message: "Created the identity" },
+      {
+        step: "identity",
+        status: "done",
+        message: "Created the identity",
+        fix: "Check Dev connectivity.",
+      },
       { step: "dev", status: "skip", message: "Dev container" },
       "docker: pulling layer",
       { result: { origin: "https://vorteo.example.ts.net" } },
@@ -30,6 +35,7 @@ describe("installer progress", () => {
       [
         "  … Creating the identity",
         "  ✓ Created the identity",
+        "    Note: Check Dev connectivity.",
         "  · Dev container (skipped)",
         "    docker: pulling layer",
         "",
@@ -61,7 +67,7 @@ describe("installer progress", () => {
       ],
       { animate: true },
     );
-    assert.ok(output.startsWith("\r  ⠋ 0:00 elapsed | Starting the Host"));
+    assert.ok(output.startsWith("\r  ⠋ 0:00 elapsed | Total 0:00 | Starting the Host"));
     assert.ok(output.endsWith("\r\u001b[K  ✓ Started the Host\n"));
   });
 
@@ -119,6 +125,8 @@ test("live progress reports elapsed time and quiet output without claiming a sta
   const finished = output;
   t.mock.timers.tick(30000);
   assert.equal(output, finished);
+  renderer.handle(JSON.stringify({ step: "release", status: "start", message: "Next phase" }));
+  assert.match(output, /0:00 elapsed \| Total 1:37 \| Next phase/);
   renderer.finish();
 });
 
@@ -162,4 +170,71 @@ test("a narrow terminal keeps the counter and latest Docker stage visible", () =
   assert.match(last, /4\/15.*0:00 elapsed.*build 4\/8/);
   assert.ok(last.length < 60);
   renderer.finish();
+});
+
+test("build animation preserves ordinary output across resize and stops before prompts", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1000 });
+  for (const completion of [
+    { step: "release", status: "done", message: "Built" },
+    { step: "release", status: "fail", message: "Build failed" },
+    { result: { name: "Vorteo" } },
+    null,
+  ]) {
+    let output = "";
+    let columns = 120;
+    let rows = 40;
+    const renderer = createRenderer({
+      write: (text) => (output += text),
+      animate: true,
+      banner: true,
+      columns: () => columns,
+      rows: () => rows,
+    });
+    renderer.handle(JSON.stringify({ step: "release", status: "start", message: "Building" }));
+    assert.equal(output.split("\u001b[?1049h").length - 1, 1);
+    columns = 40;
+    rows = 10;
+    t.mock.timers.tick(1000);
+    assert.match(output, /Phase 0:01/);
+    columns = 100;
+    rows = 35;
+    t.mock.timers.tick(1000);
+    assert.equal(output.split("\u001b[?1049h").length - 1, 1);
+    if (completion) renderer.handle(JSON.stringify(completion));
+    renderer.finish();
+    assert.equal(output.split("\u001b[?1049l").length - 1, 1);
+    const stopped = output;
+    t.mock.timers.tick(1000);
+    assert.equal(output, stopped);
+  }
+});
+
+test("demo walks every installation step with five minutes of simulated build time", async () => {
+  const { runDemo } = await import("./demo.mjs");
+  const { planSteps, STEP_TITLES } = await import("./flow.mjs");
+  let output = "";
+  let buildWait = 0;
+  await runDemo({
+    write: (text) => {
+      output += text;
+    },
+    interactive: false,
+    wait: async (ms) => {
+      if (ms !== 250) buildWait += ms;
+    },
+  });
+  assert.equal(buildWait, 300_000);
+  for (const step of planSteps({ devContainer: true, adopt: false, remote: "tailscale" }))
+    assert.ok(output.includes(STEP_TITLES[step]), step);
+  assert.ok(output.includes("Nothing was changed"));
+  let waited = false;
+  await runDemo({
+    write: () => {},
+    interactive: false,
+    ask: async (prompt) => (prompt.startsWith("Proceed") ? "no" : ""),
+    wait: async () => {
+      waited = true;
+    },
+  });
+  assert.equal(waited, false);
 });

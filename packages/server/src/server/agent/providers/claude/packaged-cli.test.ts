@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
   initializePackagedClaudeCli,
   managedClaudeCli,
@@ -104,6 +104,17 @@ test("refuses unknown Linux libc and unsupported architectures", async () => {
   await expect(resolvePackagedClaudeCli({ ...f.runtime, arch: "ia32" })).rejects.toThrow(
     "unsupported",
   );
+});
+
+test.runIf(process.platform === "linux")("a failed selection is retried", async () => {
+  initializePackagedClaudeCli(true);
+  const report = vi.spyOn(process.report, "getReport").mockImplementationOnce(() => {
+    throw new Error("first selection failed");
+  });
+  await expect(managedClaudeCli()).rejects.toThrow("first selection failed");
+  const retried = await managedClaudeCli().catch((error: Error) => error.message);
+  expect(retried).not.toBe("first selection failed");
+  report.mockRestore();
 });
 
 test("import is inert and standalone preserves the PATH default", async () => {

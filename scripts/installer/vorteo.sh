@@ -26,6 +26,29 @@ vorteo_command() {
     shift
     "$node_bin" "$installer/main.mjs" "$command" --root "$root" "$@" </dev/null
   }
+  connection() {
+    local source_dir="${VORTEO_SOURCE:-$root/source}" platform=linux interactive=""
+    local origin="" local_origin="" password_file="" name="" assignments
+    if [ "$(uname -s)" = Darwin ]; then platform=macos; fi
+    if [ -t 1 ]; then interactive=1; fi
+    say() { printf '%s\n' "$*"; }
+    # shellcheck source=scripts/installer/connection.sh
+    . "$installer/connection.sh" || return 1
+    assignments=$(engine status --json | "$node_bin" -e '
+      let text = "";
+      process.stdin.on("data", chunk => text += chunk).on("end", () => {
+        const status = JSON.parse(text);
+        const d = status.result || status;
+        const q = String.fromCharCode(39);
+        for (const [key, value] of Object.entries({origin:d.origin || d.localOrigin, local_origin:d.localOrigin, password_file:d.passwordFile, name:d.name})) {
+          if (typeof value !== "string") throw new Error("Missing connection detail: " + key);
+          console.log(key + "=" + q + value.split(q).join(q + "\\" + q + q) + q);
+        }
+      });
+    ') || { echo "Could not read connection details. Run: vorteo doctor" >&2; return 1; }
+    eval "$assignments"
+    show_connection "$origin" "$local_origin" "$password_file" "$name"
+  }
   # Prints the interface address from the engine's status: the Tailscale origin when there
   # is one, otherwise the local one.
   address() {
@@ -71,7 +94,10 @@ vorteo_command() {
   local command="${1-}"
   if [ "$#" -gt 0 ]; then shift; fi
   case "$command" in
-    status) engine status "$@" ;;
+    status)
+      engine status "$@" || return $?
+      case " $* " in *" --json "*) ;; *) connection ;; esac
+      ;;
     doctor)
       local doctor_status=0
       engine detect --json | "$node_bin" -e '
@@ -98,6 +124,7 @@ vorteo_command() {
         echo ""
         echo "Fix the items marked ✗. vorteo repair fixes services and files the installer owns."
       fi
+      if [ "$doctor_status" -eq 0 ]; then connection || return 1; fi
       return "$doctor_status"
       ;;
     open)
@@ -106,6 +133,7 @@ vorteo_command() {
         echo "Could not read the interface address. Run: vorteo doctor" >&2
         return 1
       }
+      connection || return 1
       open_url "$url"
       ;;
     update)
@@ -116,6 +144,7 @@ vorteo_command() {
         echo "Could not read the interface address. Run: vorteo doctor" >&2
         return 1
       }
+      connection || return 1
       open_url "${url%/}/settings/maintenance"
       ;;
     repair)
@@ -126,6 +155,7 @@ vorteo_command() {
         echo "The repair did not finish. Fix the problem above, then run vorteo repair again."
         return 1
       fi
+      connection
       ;;
     uninstall)
       local confirmed="" keep_data="" arg

@@ -32,10 +32,12 @@ export async function buildRelease({
   });
   await runCommand("tar", ["-xf", archive, "-C", release]);
   // A reviewed Git archive has no .git directory. Follow the existing snapshot
-  // build workflow: install dependencies without repository hooks, then apply
-  // the project's dependency patches explicitly.
+  // build workflow: install dependencies without repository hooks, run their
+  // install hooks, then apply the project's dependency patches explicitly.
   const steps = [
     [["ci", "--ignore-scripts", "--include=dev", "--no-audit", "--no-fund"], "dependencies.log"],
+    // Builds native addons and replaces the packaged Claude CLI's placeholder executable.
+    [["rebuild", "--foreground-scripts"], "dependency-rebuild.log"],
     [["run", "postinstall"], "dependency-patches.log"],
     [["run", "build:server"], "server-build.log"],
     [["run", "build:app-deps"], "app-deps.log"],

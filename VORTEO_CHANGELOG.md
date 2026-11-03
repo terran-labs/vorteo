@@ -4,17 +4,132 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Merge `main` through 26.11.206 into the installed Host source, and drop the Host-only 26.11.105 heading whose entries `main` released as 26.11.106.
+
 ## Unreleased - 2026-11-01
 
 - Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.
 - Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.
 - Wait for durable restart capture acknowledgement in the compiled restart fixture before checking that no work remains pending. Keep the worker replacement and no-replay assertions unchanged.
 
-## 26.11.105 - 2026-11-01
+## 26.11.206 - 2026-11-02
+
+### Improvements
+
+- Show connection details after repairs and existing-install checks, as well as fresh installs. Installed commands also provide the address, owner-password access, password-file reference and terminal QR code while keeping JSON status output machine-readable.
+
+## 26.11.205 - 2026-11-02
+
+### Improvements
+
+- Preview the installer with `--demo`: answer setup questions, review the simulated plan, watch five minutes of build animation, and see completion without changing the system.
+- Reuse an installed compatible Node.js runtime when an older PATH entry hides Homebrew Node 24, avoiding repeated installation prompts.
+
+## 26.11.204 - 2026-11-02
+
+### Improvements
+
+- Copy the password command by clicking anywhere in its block; hovering anywhere highlights the copy icon, and copying confirms with a toast.
+
+## 26.11.203 - 2026-11-02
+
+### Improvements
+
+- Split welcome sign-in and password help into two columns on wide screens, with an accessible copy icon inside the command field and toast confirmation.
+- Keep machine-readable installation results out of the interactive completion screen while preserving agent output.
+
+## 26.11.202 - 2026-11-02
+
+### Maintenance
+
+- Separate the installer timer assignment from its export so shell validation can detect assignment failures.
+
+## 26.11.201 - 2026-11-02
+
+### Improvements
+
+- Show build progress in two default-color lines with total installation and current phase timers, with a blank line beneath the tagline.
+
+- Center the animated installer banner vertically and horizontally as the terminal resizes, add breathing room before the startup logo, and separate and indent the completion QR code.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Integrate the release branch before publishing the reviewed keyboard regression correction.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Make the background-agent keyboard safety regression explicitly exercise legacy host mode controls, avoiding a race with the modern profile picker.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Apply repository formatting to the release publisher and regression tests.
+
+## Unreleased - 2026-11-02
+
+### Maintenance
+
+- Keep relay integration tests local by disabling the production cutover upstream in the test server.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Refuse automatic reconciliation of existing duplicate release pages until their assets have been compared and preserved.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Remove attribution prefixes from public release notes and promote each beta release page to stable instead of publishing duplicate pages.
+
+## 26.11.200 - 2026-11-02
+
+### Installation
+
+- Verify Dev coordinator health and installation identity through the agent route before reporting readiness. Failed connectivity remains resumable and reports diagnostic guidance without assuming every failure is a firewall block.
+
+- Refuse conversion to gate mode when a legacy deployment contains recognized custom Compose overrides, before changing its mounts or services. Recheck saved plans and the migration step, and keep all override files intact.
+- Display follow-up notes from completed installation steps instead of silently discarding them.
+
+## 26.11.108 - 2026-11-01
+
+- Complete release acceptance fixtures by including the terminal animation module in synthetic installer checkouts.
+
+## 26.11.107 - 2026-11-01
+
+### Installation
+
+- Make installer failures on existing deployments visible: report Tailscale's reason for a refused route, test that Dev can reach the coordinator through the gate and report the firewall rule when it cannot, and refuse unsafe migration when recognized custom Compose overrides would be ignored.
+- Explain that the built-in Claude connection cannot connect to the installation, instead of offering Connect Claude and failing with an unconfirmed request.
+- Retry the packaged Claude CLI check after a failure instead of keeping the error until the process restarts.
+- Keep existing Dev threads on the built-in Claude provider working after an upgrade: the Dev image's own CLAUDE_CONFIG_DIR no longer marks the native account as a bound account awaiting delivery.
+- Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
+
+- The installer wordmark uses clear square tiles with slowly wandering highlight clusters, retaining its silhouette throughout the animation.
+
+- Build steps show a continuous green Matrix wordmark inside a particle collider, with slow layered texture and live elapsed progress. The animation pauses for questions, adapts to terminal size, and restores ordinary output after a build.
+
+### Maintenance
+
+- Require curated executive summaries for public releases and reject internal version/date headings before publishing. Keep detailed engineering history separate.
+
+## 26.11.106 - 2026-11-01
 
 - Provision a starter profile for each ready provider, including connections added later, while preserving edited and deleted profiles.
 
 ### Interface
+
+- Keep the welcome toast API independent of native rendering imports in browser contexts.
 
 - Put owner sign-in in a bordered card over the existing falling Matrix background, with readable password help and a copy-confirmation toast.
 - Show detected accounts in new workspaces even when no profiles have been saved. New tasks can use account defaults without another login.

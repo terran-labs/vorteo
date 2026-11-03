@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { buildCoordinatorConfig, gateRoutes, interfaceOrigins } from "./coordinator-config.mjs";
@@ -168,6 +168,19 @@ describe("plan generation", () => {
     expect(plan.steps).not.toContain("dev-create");
     expect(summary[0]).toContain("stay where they are");
     expect(JSON.stringify(plan)).not.toContain("PASEO_PASSWORD");
+
+    for (const name of [
+      "compose.override.yaml",
+      "compose.override.yml",
+      "docker-compose.override.yaml",
+      "docker-compose.override.yml",
+    ]) {
+      const override = path.join(legacy, name);
+      writeFileSync(override, "services: {}\n");
+      await expect(createPlan(answers(), context)).rejects.toThrow("Gate migration would ignore");
+      expect(existsSync(override)).toBe(true);
+      rmSync(override);
+    }
 
     // Without a Dev container the deployment is left alone.
     const hostOnly = await createPlan(answers({ devContainer: false }), context);

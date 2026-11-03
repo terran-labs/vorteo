@@ -9,6 +9,8 @@
 // expected, see --no-result), 1 after a failed step, 2 when the stream ended early.
 import { writeFileSync } from "node:fs";
 import readline from "node:readline";
+import { stripVTControlCharacters } from "node:util";
+import { colliderFrame } from "./banner.mjs";
 import { isMainModule } from "../is-main-module.mjs";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -26,9 +28,15 @@ export function createRenderer({
   animate = false,
   color = false,
   intervalMs = 1000,
+  banner = false,
+  installationStarted = Date.now(),
+  rows = () => process.stdout.rows || 24,
   columns = () => process.stdout.columns || 120,
 }) {
   let active = null;
+  let showBanner = false;
+  let alternateScreen = false;
+  const animationStarted = Date.now();
   let frame = 0;
   let timer = null;
   let started = 0;
@@ -45,16 +53,24 @@ export function createRenderer({
       lastOutput === null
         ? "waiting for output"
         : `last output ${duration(Date.now() - lastOutput)} ago`;
-    return `${counter}${duration(Date.now() - started)} elapsed | ${active} | ${
+    return `${counter}${duration(Date.now() - started)} elapsed | Total ${duration(Date.now() - installationStarted)} | ${active} | ${
       detail || quiet
     }${detail ? `; ${quiet}` : ""}`;
   };
   const state = { failed: null, result: null };
 
+  const clearFrame = () => {
+    if (!alternateScreen) return;
+    write("\u001b[?1049l");
+    alternateScreen = false;
+  };
   const clearSpinner = () => {
     if (timer) clearInterval(timer);
     timer = null;
-    if (active && animate) write("\r\u001b[K");
+    if (active && animate) {
+      if (alternateScreen) clearFrame();
+      else write("\r\u001b[K");
+    }
     active = null;
   };
   const line = (text) => {
@@ -67,6 +83,7 @@ export function createRenderer({
     start(event) {
       clearSpinner();
       active = label(event);
+      showBanner = banner && ["dev-images", "release"].includes(event.step);
       counter = event.index ? `[${event.index}/${event.total}] ` : "";
       started = Date.now();
       lastOutput = null;
@@ -81,14 +98,51 @@ export function createRenderer({
             lastOutput === null ? "" : ` | output ${duration(Date.now() - lastOutput)} ago`;
           const compact = `${elapsed} | ${activity}${quiet}`;
           const text = `  ${SPINNER[frame++ % SPINNER.length]} ${width < 100 ? compact : status()}`;
-          write(`\r${text.slice(0, width)}\u001b[K`);
+          if (showBanner) {
+            const art = colliderFrame({
+              seconds: (Date.now() - animationStarted) / 1000,
+              columns: columns(),
+              rows: rows(),
+              color,
+            });
+            const total = duration(Date.now() - installationStarted);
+            const phase = duration(Date.now() - started);
+            const timing =
+              width < 100
+                ? `Total ${total} | Phase ${phase}`
+                : `Total elapsed ${total} | Phase elapsed ${phase}`;
+            const statusLines = [
+              `${SPINNER[(frame - 1) % SPINNER.length]} ${counter}${active}`.slice(0, width),
+              `${timing}${detail ? ` | ${detail}` : ""}${quiet}`.slice(0, width),
+            ].slice(0, Math.max(1, rows()));
+            // Recompute margins every frame; small terminals retain just status.
+            const content = [...art, ...(art.length ? [""] : []), ...statusLines];
+            const top = art.length ? Math.max(0, Math.floor((rows() - content.length) / 2)) : 0;
+            const lines = [
+              ...Array(top).fill(""),
+              ...content.map((frameLine) => {
+                const cells = [...stripVTControlCharacters(frameLine)].length;
+                const left = art.length ? Math.max(0, Math.floor((columns() - cells) / 2)) : 0;
+                return " ".repeat(left) + frameLine;
+              }),
+            ];
+            if (!alternateScreen) {
+              write("\u001b[?1049h");
+              alternateScreen = true;
+            }
+            // A dedicated build surface keeps terminal reflow away from prior logs.
+            write("\u001b[H" + lines.join("\u001b[K\r\n") + "\u001b[K\u001b[J");
+          } else {
+            write(`\r${text.slice(0, width)}\u001b[K`);
+          }
         } else {
           write(`  … ${status()}\n`);
         }
       };
       if (animate) draw();
       else write(`  ${paint(color, 2, "…")} ${active}\n`);
-      timer = setInterval(draw, animate ? intervalMs : 15000);
+      const animatedInterval = showBanner ? 150 : intervalMs;
+      timer = setInterval(draw, animate ? animatedInterval : 15000);
       timer.unref?.();
     },
     progress(event) {
@@ -99,6 +153,7 @@ export function createRenderer({
     },
     done(event) {
       line(`  ${paint(color, 32, "✓")} ${label(event)}`);
+      if (event.fix) line(`    ${paint(color, 1, "Note:")} ${event.fix}`);
     },
     skip(event) {
       // The engine skips steps that are already done on a rerun or do not apply.
@@ -155,11 +210,25 @@ async function main(argv) {
   const renderer = createRenderer({
     write: (text) => process.stdout.write(text),
     animate: interactive,
+    banner: interactive,
+    installationStarted: Number(process.env.VORTEO_INSTALL_STARTED_MS) || Date.now(),
     color: interactive && !process.env.NO_COLOR,
   });
+  const interrupted = (signal) => {
+    renderer.finish();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
   const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const rawLine of input) renderer.handle(rawLine);
-  const state = renderer.finish();
+  try {
+    for await (const rawLine of input) renderer.handle(rawLine);
+  } finally {
+    renderer.finish();
+    process.removeListener("SIGINT", interrupted);
+    process.removeListener("SIGTERM", interrupted);
+  }
+  const state = renderer.state;
   if (resultFile && state.result) {
     writeFileSync(resultFile, `${JSON.stringify(state.result)}\n`, { mode: 0o600 });
   }

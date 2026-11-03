@@ -57,6 +57,10 @@ Otherwise ask once through `update_questions`: "What authorization level should 
 - At Level 2 and higher, use a dedicated task checkout or worktree. Reuse it for sequential work; create separate filesystem worktrees when concurrent edits need isolation. Read-only reviewers need no worktree. Never edit the primary checkout or discard another task's changes. See [task delivery](docs/task-delivery.md#start-in-a-task-worktree).
 - When the work needs more than the granted level, finish what the level allows. Then ask for the specific higher level and say what it would do.
 
+## Public release presentation
+
+Release notes never contain AI-generated prefixes or authorship disclaimers. This exception overrides the general external-post attribution rule for release notes only. Publish one GitHub Release page per calendar version; promote its beta page to stable while preserving assets and both immutable channel tags. Follow the release publisher and [public release summaries](docs/release.md#public-release-summaries).
+
 ## Builds coordinator
 
 Vorteo :: Builds owns build and release validation, integration, publication, installation and installation recovery. It serializes writes to GitHub `main`, web publication and installation lifecycle state, including coordinator maintenance and approval decisions within its recorded grant. Published source, served interface and installed daemon can differ; record and verify each separately.
@@ -170,6 +174,7 @@ Every test costs CI time on every push and maintenance on every change. This bud
 - Add tests to existing suites and reuse their npm scripts and CI jobs instead of creating feature-specific runners.
 - Reuse passing test evidence from another agent for unchanged code. Do not add provider-auth checks or auth-dependent skips to tests.
 - Before diagnosing cross-package type errors, rebuild declarations with `npm run build:client` or `npm run build:server` as appropriate. Do not patch types to hide stale declarations. See [development](docs/development.md).
+- Public release notes are curated executive summaries following [public release summaries](docs/release.md#public-release-summaries), with one outcome summary and grouped user-visible improvements. Never publish concatenated internal date, version or Unreleased headings.
 - Update and stage `VORTEO_CHANGELOG.md` in every commit, including documentation, tests, tooling and upstream merges. Head the entry `## Unreleased - YYYY-MM-DD`, or with the new version for a release preparation, following [release notes](docs/release.md#vorteo-release-notes).
 - Every commit increments the Vorteo version through the installed hook. Stage intended manifest changes first; never bypass hooks or use upstream release commands for routine commits.
 - Update [Vorteo customizations](docs/vorteo-customizations.md) in every commit, including documentation, tooling and upstream merges. Maintain the affected feature or limitation; when functionality is unchanged, update the maintenance review with the commit's scope and result. Follow [inventory maintenance](docs/writing.md#maintain-the-vorteo-customizations-inventory).

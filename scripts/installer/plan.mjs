@@ -1,8 +1,15 @@
+import { planSteps } from "./flow.mjs";
+export { planSteps } from "./flow.mjs";
 // Turns the owner's answers into a complete, self-contained plan without changing
 // anything. `apply` executes exactly this plan; it never re-reads the answers.
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { detectExisting, detectPrerequisites, tailscaleStatus } from "./detect.mjs";
+import {
+  detectExisting,
+  detectPrerequisites,
+  tailscaleStatus,
+  assertGateMigrationSupported,
+} from "./detect.mjs";
 import { servicePath } from "./service-path.mjs";
 import { DEFAULT_PORTS, choosePorts, servePortsInUse } from "./ports.mjs";
 import { InstallerError, assertProjectsFolderSeparate, shellQuote } from "./primitives.mjs";
@@ -209,25 +216,6 @@ function adoptedDeployment(existing, answers) {
   return undefined;
 }
 
-export function planSteps({ devContainer, adopt, remote }) {
-  return [
-    "prepare",
-    "identity",
-    ...(remote === "tailscale" ? ["tailscale"] : []),
-    ...(devContainer
-      ? ["dev-images", adopt ? "dev-adopt" : "dev-create", "dev-identity", "projects-access"]
-      : []),
-    "release",
-    "host-config",
-    ...(devContainer ? ["dev-pair"] : []),
-    "services",
-    "ready",
-    ...(remote === "tailscale" ? ["remote"] : []),
-    ...(devContainer ? ["guest-client"] : []),
-    "finish",
-  ];
-}
-
 export function npmPath(context) {
   const beside = path.join(path.dirname(context.execPath), "npm");
   return existsSync(beside) ? beside : (context.which("npm") ?? "npm");
@@ -371,6 +359,7 @@ export async function createPlan(rawAnswers, context) {
   const existing = await detectExisting(context, { docker: answers.devContainer });
   assertNoCurrent(existing, context.root);
   const adopt = adoptedDeployment(existing, answers);
+  if (adopt) assertGateMigrationSupported(adopt.path);
   assertLayout(answers, context.root, adopt);
   const prerequisites = await detectPrerequisites(context, { docker: answers.devContainer });
   assertPrerequisites(prerequisites, answers);

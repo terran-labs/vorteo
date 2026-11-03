@@ -3,18 +3,22 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { applyPlan, installationStatus, repair, uninstall } from "./apply.mjs";
-import { fakeContext } from "./fakes.mjs";
-import { AGENT_SCRIPT, INSTALLATION_SKILL } from "./host-installation.mjs";
+import { fakeContext, fakeRunner } from "./fakes.mjs";
+import { AGENT_SCRIPT, buildRelease, INSTALLATION_SKILL } from "./host-installation.mjs";
 import { createPlan } from "./plan.mjs";
+import { STEPS } from "./steps.mjs";
 
 const DEV_ID = "srv_dev123";
 const REPOSITORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -26,6 +30,10 @@ function machine({ platform = "darwin", healthy = true, extraRules = [] } = {}) 
   const rules = [
     ...extraRules,
     ["docker ps", ""],
+    [
+      (command, args) => command === "docker" && args.includes("curl"),
+      () => JSON.stringify({ installationId: context.plan.installationId }),
+    ],
     ["docker image inspect", new Error("No such image")],
     [
       "docker build",
@@ -350,6 +358,18 @@ describe("apply", () => {
     mkdirSync(path.join(legacy, "data"));
     const plan = await planFor(context);
     expect(plan.kind).toBe("adopt");
+    // Recheck a saved plan before writing its journal or changing the deployment.
+    const override = path.join(legacy, "compose.override.yml");
+    writeFileSync(override, "services: {}\n");
+    context.run.calls.length = 0;
+    await expect(apply(plan, context)).rejects.toThrow("Gate migration would ignore");
+    await expect(STEPS["dev-adopt"]({ plan, context, outputs: {} })).rejects.toThrow(
+      "Gate migration would ignore",
+    );
+    expect(context.run.calls).toHaveLength(0);
+    expect(existsSync(path.join(context.root, "state", "install.json"))).toBe(false);
+    expect(existsSync(override)).toBe(true);
+    rmSync(override);
     const { ok } = await apply(plan, context);
     expect(ok).toBe(true);
     expect(readFileSync(path.join(legacy, "common.sh.before-installer"), "utf8")).toBe("# old\n");
@@ -367,6 +387,77 @@ describe("apply", () => {
         (call) => call.command === "docker" && call.args.includes("paseo-abcdefabcdef-paseo-1"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("Tailscale and firewall failures", () => {
+  test("a refused route reports Tailscale's reason", async () => {
+    const refused = Object.assign(new Error("exit 1"), {
+      stderr: "Access denied: serve config\nmore",
+    });
+    const { context } = machine({
+      platform: "linux",
+      extraRules: [["tailscale serve --bg", refused]],
+    });
+    const { ok, lines } = await apply(await planFor(context), context);
+    expect(ok).toBe(false);
+    expect(lines.find((line) => line.status === "fail").message).toContain(
+      "port 44444: Access denied: serve config",
+    );
+  });
+
+  test.each([
+    { mode: "tailscale", probe: new Error("exit 56") },
+    { mode: "tailscale", probe: "Proxy denied" },
+    { mode: "local", probe: JSON.stringify({ installationId: "another-installation" }) },
+  ])("an unverified coordinator route remains incomplete: $mode", async ({ mode, probe }) => {
+    const { context } = machine({
+      platform: "linux",
+      extraRules: [
+        [(command, args) => command === "docker" && args.includes("curl"), probe],
+        [
+          (command, args) =>
+            command === "docker" && args.includes("{{(index .IPAM.Config 0).Subnet}}"),
+          "172.18.0.0/16",
+        ],
+        ["tailscale ip", "100.64.0.1"],
+      ],
+    });
+    const { ok, lines } = await apply(await planFor(context, { remote: { mode } }), context);
+    expect(ok).toBe(false);
+    const failed = lines.find((line) => line.step === "guest-client" && line.status === "fail");
+    expect(failed.message).toContain("Installation is incomplete");
+    expect(lines.some((line) => line.result)).toBe(false);
+    if (mode === "tailscale")
+      expect(failed.fix).toContain("ufw allow from 172.18.0.0/16 to 100.64.0.1 port 44444");
+    else expect(failed.fix).not.toContain("ufw");
+  });
+});
+
+describe("release build", () => {
+  // The packaged Claude CLI stays a placeholder until its install hook runs after `npm ci`.
+  test("runs dependency install hooks before patching and building", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "vorteo-release-build-"));
+    const run = fakeRunner();
+    try {
+      await buildRelease({
+        release: path.join(root, "releases", "abc"),
+        revision: "abc",
+        sourceDirectory: root,
+        logDir: path.join(root, "logs"),
+        runCommand: run,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    const npm = run.calls
+      .filter((call) => call.command === "npm")
+      .map((call) => call.args.slice(0, 2));
+    expect(npm.slice(0, 3)).toEqual([
+      ["ci", "--ignore-scripts"],
+      ["rebuild", "--foreground-scripts"],
+      ["run", "postinstall"],
+    ]);
   });
 });
 

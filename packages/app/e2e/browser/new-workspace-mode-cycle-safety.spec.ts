@@ -55,7 +55,27 @@ async function recordSetAgentModeRequests(page: Page): Promise<{
       }
       server.send(message);
     });
-    server.onMessage((message) => ws.send(message));
+    server.onMessage((message) => {
+      const sessionMessage = getSessionMessage(message);
+      const payload = sessionMessage?.payload;
+      if (
+        sessionMessage?.type === "status" &&
+        payload &&
+        typeof payload === "object" &&
+        "status" in payload &&
+        payload.status === "server_info" &&
+        "features" in payload &&
+        payload.features &&
+        typeof payload.features === "object"
+      ) {
+        // Exercise a legacy host's live mode control. Modern hosts replace it with
+        // the profile picker after configuration loads, making that control transient.
+        Object.assign(payload.features, { agentProfileLaunch: false });
+        ws.send(JSON.stringify({ type: "session", message: sessionMessage }));
+        return;
+      }
+      ws.send(message);
+    });
   });
   return {
     requestsForAgent: (agentId: string) => seen.filter((request) => request.agentId === agentId),
@@ -95,7 +115,7 @@ async function cycleNewWorkspaceMode(page: Page, presses: number): Promise<void>
   }
 }
 
-test.describe("New Workspace mode cycle safety", () => {
+test.describe("New Workspace mode cycle safety on legacy hosts", () => {
   test.describe.configure({ timeout: 240_000 });
 
   // Regression guard for the P1 safety bug: cycling the execution mode with Shift+Tab in
