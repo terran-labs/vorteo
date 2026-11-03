@@ -20,12 +20,7 @@ export interface ProjectFactoryState {
   reason: string | null;
   workers: { workerProfileId: string | null; reviewerProfileId: string | null };
   roles: {
-    role:
-      | "factory-triage"
-      | "factory-intake"
-      | "factory-builds"
-      | "factory-releases"
-      | "factory-mechanic";
+    role: import("./factory-role-ids").RoleId;
     title: string;
     workspaceId: string | null;
     agentId: string | null;

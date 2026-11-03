@@ -6,6 +6,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+- Keep Factory instruction drafts through revision conflicts, show contextual review diffs and bind acceptance to the displayed proposal.
+
 - Route Factory thread intake through the thread’s owning environment and project.
 
 - Add project Factory controls, ordered role folders, model controls, thread intake and editable role instructions with revision history and charter review.

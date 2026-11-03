@@ -22,7 +22,12 @@ export const en = {
       "The Mechanic proposed updated project instructions. Review the changes before accepting.",
     reviewBadge: "Instructions need review",
     saveFailed:
-      "Could not save instructions. If someone else saved first, close and reopen to load their revision. Your draft is still here.",
+      "Could not save instructions. Your draft is still here. Retry when the problem is resolved.",
+    conflict:
+      "Another revision or proposal landed. The latest instructions are shown below against your draft. Review the changes, then save or resolve again.",
+    unchangedLines_one: "{{count}} unchanged line",
+    unchangedLines_other: "{{count}} unchanged lines",
+
     folder: "Factory",
     open: "Open Factory",
     loading: "Loading Factory…",

@@ -12,7 +12,9 @@ export function useSendToFactory(serverId: string, workspaceId: string, agentId:
     if (!agent) return "";
     return session?.workspaces.get(agent.workspaceId ?? workspaceId)?.projectId ?? "";
   });
-  const factory = useProjectFactory(serverId, projectId, !!projectId && !!agentId);
+  const factory = useProjectFactory(serverId, projectId, !!projectId && !!agentId, {
+    refetchInterval: false,
+  });
   const plugin = useInstalledPlugins().find((p) => p.id === "factory" && p.serverId === serverId);
   const toast = useToast();
   const { t } = useTranslation();

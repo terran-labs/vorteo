@@ -1,3 +1,7 @@
+import {
+  PROJECT_FACTORY_ROLE_IDS,
+  fallbackFactoryRoleTitle,
+} from "@/components/sidebar/factory-role-ids";
 import type {
   SidebarWorkspaceEntry,
   SidebarWorkspacePlacement,
@@ -20,6 +24,11 @@ export function splitFactoryWorkspaces(
   workspaces: readonly SidebarWorkspacePlacement[],
   entries: ReadonlyMap<string, SidebarWorkspaceEntry>,
   supportedHosts: ReadonlyMap<string, boolean>,
+  states: readonly {
+    serverId: string;
+    projectId: string;
+    roles: readonly { workspaceId: string | null }[];
+  }[] = [],
 ) {
   const factory: SidebarWorkspacePlacement[] = [];
   const remaining: SidebarWorkspacePlacement[] = [];
@@ -45,12 +54,22 @@ export function splitFactoryWorkspaces(
       factory.push(workspace);
     else remaining.push(workspace);
   }
-  const roles = ["Triage", "Foreman", "Builds", "Releases", "Mechanic"];
+  const roles = PROJECT_FACTORY_ROLE_IDS;
   const rank = (workspace: SidebarWorkspacePlacement) => {
     const entry = entries.get(workspace.workspaceKey);
-    if (entry?.systemMembership?.role === "optimization-runner") return 4;
+    const state = states.find(
+      (candidate) =>
+        candidate.serverId === workspace.serverId && candidate.projectId === entry?.projectId,
+    );
+    if (state) {
+      const index = state.roles.findIndex((role) => role.workspaceId === workspace.workspaceId);
+      return index < 0 ? state.roles.length : index;
+    }
+    // Display-only fallback until daemon state arrives. Membership is established above.
+    if (entry?.systemMembership?.role === "optimization-runner")
+      return roles.indexOf("factory-mechanic");
     const title = entry?.title ?? entry?.name ?? "";
-    const index = roles.findIndex((role) => title.endsWith(`:: ${role}`));
+    const index = roles.findIndex((role) => title.endsWith(`:: ${fallbackFactoryRoleTitle(role)}`));
     return index < 0 ? roles.length : index;
   };
   factory.sort((a, b) => rank(a) - rank(b));
