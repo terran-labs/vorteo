@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Changes
+
+- Full maintenance delegation may approve a renewal that attaches the preview broker deployment or broker settings, as the owner decided. Consumer deployment and channel rebind still need the owner.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Let an owner-reviewed coordinator renewal attach the preview broker deployment or broker channel configuration, one section per renewal, so installations that update through renewals can restore the managed preview broker. Each section passes its existing protected file, scope and recovery reader checks before admission, rollback keeps the live configuration, and maintenance delegation cannot approve it. Consumer deployment and channel rebind remain separate owner decisions.

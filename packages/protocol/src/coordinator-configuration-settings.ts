@@ -71,13 +71,11 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
     path: ["previewBrokerDeployment"],
     value: PreviewBrokerDeploymentConfigurationSchema,
     renewal: "alone",
-    ownerOnly: true,
   },
   previewBroker: {
     path: ["previewBroker"],
     value: PreviewBrokerConfigurationSchema,
     renewal: "alone",
-    ownerOnly: true,
   },
   previewMonitor: {
     path: ["previewMonitor"],

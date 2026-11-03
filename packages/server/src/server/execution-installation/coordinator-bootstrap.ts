@@ -424,7 +424,7 @@ function assertAutomaticCoordinatorPlan(
     plan.compatibleRecovery.configuration.sha256 !== plan.previous.configuration.sha256 ||
     (plan.recoveredFrom && !preFreezeRecovery) ||
     plan.supervisionRecovery ||
-    // Broker configuration pins what owner-only broker operations run; delegation never covers it.
+    // Settings marked ownerOnly in the registry always need exact owner review.
     plansOwnerOnlyConfigurationChange(plan) ||
     (!delegatedMaintenance &&
       (plan.candidate.configuration.sha256 !== plan.previous.configuration.sha256 ||

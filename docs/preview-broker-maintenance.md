@@ -157,14 +157,15 @@ candidate: protected files and their SHA256 pins, consumer and participant scope
 and the retained recovery reader probe. Preparation, approval and claim each
 repeat these checks.
 
-Maintenance delegation never approves either section. Request the renewal with
-`--require-owner-approval`; the owner approves it in installation controls.
-Builds submits each request below.
+Full maintenance delegation may approve attaching either section, as the owner
+decided on 2026-11-03; without it the owner approves the renewal in installation
+controls. The consumer deployment and channel rebind in steps 2 and 4 stay
+owner-only. Builds submits each request below.
 
 1. Attach `previewBrokerDeployment` through a renewal. Prepare the protected
    participant scope first. Its `validUntil` must cover the renewal, its approval
    and the deployment execution, with more than three minutes left at each check.
-   Submit with `request-coordinator --require-owner-approval --request-file
+   Submit with `request-coordinator --request-file
 <preparation.json>` and follow it with `coordinator-status <id>` until the
    renewal succeeds. `capabilities` then reports `previewBrokerDeployment`
    available.
