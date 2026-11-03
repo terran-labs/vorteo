@@ -32,6 +32,7 @@ export const archiveSchema: OutputSchema<WorktreeArchiveResult> = {
 
 export interface WorktreeArchiveOptions extends CommandOptions, WorktreeRepoOptions {
   host?: string;
+  cwd?: string;
 }
 
 export type WorktreeArchiveCommandResult = SingleResult<WorktreeArchiveResult>;

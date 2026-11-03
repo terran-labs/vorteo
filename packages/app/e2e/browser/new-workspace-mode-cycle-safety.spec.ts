@@ -1,4 +1,7 @@
-import { expect, test, type Page } from "../support/fixtures";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { expect, test as base, type Page } from "../support/fixtures";
 import type { FormPreferences } from "@/create-agent-preferences/preferences";
 import { daemonWsRoutePattern } from "../support/helpers/daemon-port";
 import { openAgentRoute } from "../support/helpers/mock-agent";
@@ -7,6 +10,41 @@ import {
   selectNewWorkspaceProject,
 } from "../support/helpers/new-workspace";
 import { seedWorkspace } from "../support/helpers/seed-client";
+
+const test = base.extend({
+  e2eDaemonEnvironment: [
+    async ({ browserName }, provide) => {
+      void browserName;
+      const codexHome = await mkdtemp(path.join(tmpdir(), "mode-cycle-codex-"));
+      try {
+        await provide({ CODEX_HOME: codexHome });
+      } finally {
+        // The daemon depends on this worker fixture and stops before its state is removed.
+        await rm(codexHome, { recursive: true, force: true });
+      }
+    },
+    { scope: "worker" },
+  ],
+});
+
+test.use({
+  e2eDaemonConfig: {
+    version: 1,
+    agents: {
+      providers: {
+        codex: {
+          enabled: true,
+          command: [process.execPath, path.resolve("e2e/fixtures/catalog-codex.mjs")],
+        },
+        claude: { enabled: false },
+        copilot: { enabled: false },
+        opencode: { enabled: false },
+        pi: { enabled: false },
+        omp: { enabled: false },
+      },
+    },
+  },
+});
 
 const CREATE_AGENT_PREFERENCES_KEY = "@paseo:create-agent-preferences";
 
@@ -91,9 +129,9 @@ async function seedCodexDefaultPreferences(page: Page): Promise<void> {
           provider: "codex",
           providerPreferences: {
             codex: {
-              model: "gpt-5.4-mini",
+              model: "gpt-6.1-sol",
               mode: "auto",
-              thinkingByModel: { "gpt-5.4-mini": "low" },
+              thinkingByModel: { "gpt-6.1-sol": "medium" },
             },
             mock: { model: "ten-second-stream" },
           },
@@ -134,7 +172,7 @@ test.describe("New Workspace mode cycle safety on legacy hosts", () => {
         workspaceId: seeded.workspaceId,
         title: "mode cycle safety e2e",
         modeId: "auto",
-        model: "gpt-5.4-mini",
+        model: "gpt-6.1-sol",
       });
 
       // Mount the live agent tab: its mode control registers a mode-cycle keyboard handler.

@@ -1,4 +1,10 @@
+import {
+  WorkspaceHeaderExplorerToggle,
+  WorkspaceExplorerSidebarToggle,
+} from "./workspace-explorer-toggle";
 import { describe, expect, it } from "vitest";
+import { resolveWorkspaceTabChipBackdrop } from "@/screens/workspace/workspace-tab-chip-backdrop";
+import { THEME_OPTIONS } from "@/styles/theme";
 import {
   computeWorkspaceTabLayout,
   retainWorkspaceTabMeasuredWidth,
@@ -23,6 +29,7 @@ describe("computeWorkspaceTabLayout", () => {
       viewportWidth: 1200,
       tabLabelWidths: [56, 70, 49],
       metrics,
+      compact: false,
     });
 
     expect(result.closeButtonPolicy).toBe("all");
@@ -37,6 +44,7 @@ describe("computeWorkspaceTabLayout", () => {
       viewportWidth: 300,
       tabLabelWidths: [29, 52],
       metrics: { ...metrics, actionsReservedWidth: 36 },
+      compact: false,
     });
     expect(result.items).toEqual([
       { width: 64, showLabel: true },
@@ -50,6 +58,7 @@ describe("computeWorkspaceTabLayout", () => {
       viewportWidth: 1200,
       tabLabelWidths: [105],
       metrics,
+      compact: false,
     });
 
     expect(result.requiresHorizontalScrollFallback).toBe(false);
@@ -61,6 +70,7 @@ describe("computeWorkspaceTabLayout", () => {
       viewportWidth: 460,
       tabLabelWidths: [168, 84, 56],
       metrics,
+      compact: false,
     });
 
     expect(result.closeButtonPolicy).toBe("all");
@@ -79,6 +89,7 @@ describe("computeWorkspaceTabLayout", () => {
         rowPaddingHorizontal: 0,
         tabGap: 0,
       },
+      compact: false,
     });
 
     expect(result.closeButtonPolicy).toBe("all");
@@ -91,6 +102,7 @@ describe("computeWorkspaceTabLayout", () => {
       viewportWidth: 404,
       tabLabelWidths: [98, 98, 98, 98],
       metrics,
+      compact: false,
     });
 
     expect(result.closeButtonPolicy).toBe("all");
@@ -99,16 +111,43 @@ describe("computeWorkspaceTabLayout", () => {
     expect(result.items.every((item) => item.showLabel)).toBe(true);
   });
 
-  it("uses horizontal scroll rather than shrinking below the clickable minimum", () => {
+  it("scrolls at natural widths rather than shrinking below the clickable minimum", () => {
     const result = computeWorkspaceTabLayout({
       viewportWidth: 403,
       tabLabelWidths: [98, 98, 98, 98],
       metrics,
+      compact: false,
     });
 
     expect(result.closeButtonPolicy).toBe("all");
     expect(result.requiresHorizontalScrollFallback).toBe(true);
-    expect(result.items.map((item) => item.width)).toEqual([64, 64, 64, 64]);
+    expect(result.items.map((item) => item.width)).toEqual([132, 132, 132, 132]);
+    expect(result.items.every((item) => item.showLabel)).toBe(true);
+  });
+
+  it("keeps natural widths and no inline close on compact layouts while the tabs fit", () => {
+    const result = computeWorkspaceTabLayout({
+      viewportWidth: 600,
+      tabLabelWidths: [56, 70, 49],
+      metrics,
+      compact: true,
+    });
+
+    expect(result.closeButtonPolicy).toBe("none");
+    expect(result.requiresHorizontalScrollFallback).toBe(false);
+    expect(result.items.map((item) => item.width)).toEqual([90, 104, 83]);
+  });
+
+  it("scrolls compact layouts as soon as natural widths overflow instead of squeezing labels", () => {
+    const result = computeWorkspaceTabLayout({
+      viewportWidth: 460,
+      tabLabelWidths: [168, 84, 56],
+      metrics,
+      compact: true,
+    });
+
+    expect(result.requiresHorizontalScrollFallback).toBe(true);
+    expect(result.items.map((item) => item.width)).toEqual([160, 118, 90]);
     expect(result.items.every((item) => item.showLabel)).toBe(true);
   });
 
@@ -117,6 +156,7 @@ describe("computeWorkspaceTabLayout", () => {
       viewportWidth: 1200,
       tabLabelWidths: [],
       metrics,
+      compact: false,
     });
 
     expect(result.closeButtonPolicy).toBe("all");
@@ -129,6 +169,7 @@ describe("computeWorkspaceTabLayout", () => {
       viewportWidth: 1200,
       tabLabelWidths: [68, 104],
       metrics,
+      compact: false,
     });
 
     expect(result.items.map((item) => item.width)).toEqual([102, 138]);
@@ -142,5 +183,75 @@ describe("retainWorkspaceTabMeasuredWidth", () => {
 
   it("accepts the next usable layout width", () => {
     expect(retainWorkspaceTabMeasuredWidth(720, 640)).toBe(640);
+  });
+});
+
+describe("Explorer toggle ownership", () => {
+  const toggleProps = {
+    onPress: () => {},
+    label: "Close Explorer sidebar",
+    tooltipLabel: "Toggle Explorer sidebar",
+    tooltipKeys: [],
+    accessibilityState: { expanded: true },
+  };
+
+  it("keeps the desktop opening action in the header and closing action in the sidebar", () => {
+    for (const owner of ["header", "window"] as const) {
+      const closed = { ...toggleProps, owner, accessibilityState: { expanded: false } };
+      const opened = { ...toggleProps, owner };
+      expect(WorkspaceHeaderExplorerToggle(closed)).not.toBeNull();
+      expect(WorkspaceExplorerSidebarToggle(closed)).toBeNull();
+      expect(WorkspaceHeaderExplorerToggle(opened)).toBeNull();
+      expect(WorkspaceExplorerSidebarToggle(opened)).not.toBeNull();
+    }
+  });
+
+  it("leaves compact explorer controls to the compact supporting cards", () => {
+    for (const expanded of [false, true]) {
+      const props = { ...toggleProps, owner: "mobile" as const, accessibilityState: { expanded } };
+      expect(WorkspaceHeaderExplorerToggle(props)).toBeNull();
+      expect(WorkspaceExplorerSidebarToggle(props)).toBeNull();
+    }
+  });
+});
+
+describe("resolveWorkspaceTabChipBackdrop", () => {
+  const themes = Object.fromEntries(
+    THEME_OPTIONS.flatMap((option) => ("theme" in option ? [[option.name, option.theme]] : [])),
+  );
+  const rails = {
+    sidebar: "surfaceSidebar",
+    surface: "surface0",
+  } as const;
+
+  it("paints the active chip in a colour the rail does not already use, in every theme", () => {
+    for (const [, theme] of Object.entries(themes)) {
+      for (const [rail, resting] of Object.entries(rails) as Array<
+        [keyof typeof rails, (typeof rails)[keyof typeof rails]]
+      >) {
+        const active = resolveWorkspaceTabChipBackdrop({
+          rail,
+          isActiveFocused: true,
+          isFilled: true,
+        });
+        const filled = resolveWorkspaceTabChipBackdrop({
+          rail,
+          isActiveFocused: false,
+          isFilled: true,
+        });
+        expect(theme.colors[active]).not.toBe(theme.colors[resting]);
+        expect(theme.colors[filled]).not.toBe(theme.colors[resting]);
+        expect(theme.colors[active]).not.toBe(theme.colors[filled]);
+      }
+    }
+  });
+
+  it("rests on the rail surface when the chip is neither active nor hovered", () => {
+    expect(
+      resolveWorkspaceTabChipBackdrop({ rail: "sidebar", isActiveFocused: false, isFilled: false }),
+    ).toBe("surfaceSidebar");
+    expect(
+      resolveWorkspaceTabChipBackdrop({ rail: "surface", isActiveFocused: false, isFilled: false }),
+    ).toBe("surface0");
   });
 });

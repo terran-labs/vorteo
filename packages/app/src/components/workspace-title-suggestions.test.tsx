@@ -43,6 +43,7 @@ vi.mock("@/components/adaptive-modal-sheet", async () => {
       replaceText: (text) => {
         if (inputRef.current) inputRef.current.value = text;
       },
+      setSelection: ({ start, end }) => inputRef.current?.setSelectionRange(start, end),
       reset: () => {
         if (inputRef.current) inputRef.current.value = "";
       },

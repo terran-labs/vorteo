@@ -991,6 +991,7 @@ test("coordinator reconciliation revokes protected submissions after credential 
   // preparation, owner decisions or dispatch claims.
   expect(Object.keys(observer).sort()).toEqual([
     "cancelForReplacedHostRelease",
+    "cancelUnderManagement",
     "finishAutomaticReconciliation",
     "list",
     "reserveAutomaticReconciliation",

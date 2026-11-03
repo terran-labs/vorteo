@@ -1301,7 +1301,7 @@ function ProviderErrorEmptyState({
       <ThemedAlertTriangle size={ICON_SIZE.md} uniProps={foregroundMutedMapping} />
       <Text style={styles.emptyStateText}>{message}</Text>
       {onRetryProvider ? (
-        <Button variant="default" size="sm" onPress={handleRetry} disabled={isRetryingProvider}>
+        <Button variant="default" onPress={handleRetry} disabled={isRetryingProvider}>
           {isRetryingProvider ? t("modelSelector.retrying") : t("modelSelector.retry")}
         </Button>
       ) : null}
@@ -1806,7 +1806,7 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0,
   },
   emptyState: {
-    paddingVertical: theme.spacing[4],
+    padding: theme.spacing[4],
     alignItems: "center",
     gap: theme.spacing[2],
   },

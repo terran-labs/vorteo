@@ -34,6 +34,14 @@ interface WorkspaceStructureSession {
   workspaces: Iterable<WorkspaceDescriptor>;
 }
 
+export type WorkspaceSort = "manual" | "created" | "lastPrompt";
+
+interface WorkspaceSortItem {
+  workspaceName: string;
+  workspaceKey: string;
+  sortTime: number;
+}
+
 interface ProjectDraft {
   viewKey: string;
   projectKey: string | null;
@@ -43,7 +51,7 @@ interface ProjectDraft {
   iconWorkingDir: string;
   hosts: Map<string, WorkspaceStructureHostPlacement>;
   membership?: { key: string; name: string };
-  workspaces: Array<{ workspaceId: string; workspaceName: string; workspaceKey: string }>;
+  workspaces: WorkspaceSortItem[];
 }
 
 /**
@@ -58,6 +66,7 @@ function isListedProject(project: ProjectDescriptor, occupied: ReadonlySet<strin
 
 export function buildWorkspaceStructureProjects(input: {
   sessions: WorkspaceStructureSession[];
+  workspaceSort?: WorkspaceSort;
 }): WorkspaceStructureProject[] {
   const sessions = input.sessions.map((session) => ({
     ...session,
@@ -152,7 +161,7 @@ export function buildWorkspaceStructureProjects(input: {
         workspace,
       });
       draft?.workspaces.push({
-        workspaceId: workspace.id,
+        sortTime: workspaceSortTime(workspace, input.workspaceSort),
         workspaceName: workspace.name,
         workspaceKey: `${session.serverId}:${workspace.id}`,
       });
@@ -171,7 +180,7 @@ export function buildWorkspaceStructureProjects(input: {
       hosts: Array.from(draft.hosts.values()),
       membership: draft.membership,
       workspaceKeys: draft.workspaces
-        .sort(compareWorkspaceStructureItems)
+        .sort(input.workspaceSort ? compareWorkspaceTimes : compareWorkspaceStructureItems)
         .map((workspace) => workspace.workspaceKey),
     }))
     .sort(
@@ -353,14 +362,27 @@ function getOrCreate<K, V>(map: Map<K, V>, key: K, create: () => V): V {
   return value;
 }
 
-function compareWorkspaceStructureItems(
-  left: { workspaceId: string; workspaceName: string },
-  right: { workspaceId: string; workspaceName: string },
-): number {
+function compareWorkspaceStructureItems(left: WorkspaceSortItem, right: WorkspaceSortItem): number {
   return (
     left.workspaceName.localeCompare(right.workspaceName, undefined, {
       numeric: true,
       sensitivity: "base",
-    }) || left.workspaceId.localeCompare(right.workspaceId, undefined, { sensitivity: "base" })
+    }) || left.workspaceKey.localeCompare(right.workspaceKey)
   );
+}
+
+function workspaceSortTime(
+  workspace: WorkspaceDescriptor,
+  sort: WorkspaceSort | undefined,
+): number {
+  if (!sort) return 0;
+  const time =
+    sort === "lastPrompt"
+      ? (workspace.lastUserMessageAt ?? workspace.createdAt)
+      : workspace.createdAt;
+  return time?.getTime() ?? 0;
+}
+
+function compareWorkspaceTimes(left: WorkspaceSortItem, right: WorkspaceSortItem): number {
+  return right.sortTime - left.sortTime || left.workspaceKey.localeCompare(right.workspaceKey);
 }

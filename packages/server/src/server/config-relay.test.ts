@@ -3,7 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
-import { loadConfig, resolveConfigFromPersisted } from "./config.js";
+import { loadConfig, resolveConfigFromPersisted, resolveReloadableConfig } from "./config.js";
+
+import type { PersistedConfig } from "./persisted-config.js";
+
+interface RelayResolutionCase {
+  name: string;
+  persisted: PersistedConfig;
+  expected: boolean;
+}
 
 const roots: string[] = [];
 
@@ -25,6 +33,44 @@ describe("daemon relay config", () => {
     const home = await createPaseoHome({ version: 1, daemon: { relay: {} } });
     expect(loadConfig(home, { env: {} }).relayEnabled).toBe(false);
   });
+
+  test.each<RelayResolutionCase>([
+    { name: "absent daemon", persisted: { version: 1 }, expected: false },
+    { name: "absent relay", persisted: { version: 1, daemon: {} }, expected: false },
+    { name: "empty relay", persisted: { version: 1, daemon: { relay: {} } }, expected: false },
+    {
+      name: "explicit opt-in",
+      persisted: { version: 1, daemon: { relay: { enabled: true } } },
+      expected: true,
+    },
+    {
+      name: "explicit opt-out",
+      persisted: { version: 1, daemon: { relay: { enabled: false } } },
+      expected: false,
+    },
+  ])(
+    "keeps initial and reload relay resolution consistent: $name",
+    async ({ persisted, expected }) => {
+      const home = await createPaseoHome(persisted);
+      const startup = loadConfig(home, { env: {} });
+      expect(startup.relayEnabled).toBe(expected);
+      expect(resolveConfigFromPersisted(home, persisted, { env: {} }).relayEnabled).toBe(expected);
+      expect(resolveReloadableConfig(persisted, { env: {} }).relayEnabled).toBe(expected);
+      expect(resolveReloadableConfig(persisted, startup.configReload).relayEnabled).toBe(expected);
+    },
+  );
+
+  test.each([true, false])(
+    "preserves explicit environment and CLI relay overrides on reload: %s",
+    (enabled) => {
+      const persisted: PersistedConfig = { version: 1, daemon: { relay: { enabled: !enabled } } };
+      const env = { PASEO_RELAY_ENABLED: String(enabled) };
+      expect(resolveReloadableConfig(persisted, { env }).relayEnabled).toBe(enabled);
+      expect(
+        resolveReloadableConfig(persisted, { env, cli: { relayEnabled: !enabled } }).relayEnabled,
+      ).toBe(!enabled);
+    },
+  );
 
   test("preserves explicitly enabled legacy connections", async () => {
     const home = await createPaseoHome({ version: 1, daemon: { relay: { enabled: true } } });

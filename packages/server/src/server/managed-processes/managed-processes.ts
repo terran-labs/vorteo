@@ -7,6 +7,20 @@ import { writeJsonFileAtomic } from "../atomic-file.js";
 import { execCommand } from "../../utils/spawn.js";
 import type { ProcessTerminator, TreeKillTarget } from "../../utils/tree-kill.js";
 
+/**
+ * Windows PowerShell by its install path. Process identity must not depend on the caller's
+ * PATH: a daemon or terminal worker can run with a PATH that does not reach System32.
+ */
+export function windowsPowerShellPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.win32.join(
+    env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+}
+
 const MANAGED_PROCESS_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5_000;
 const MANAGED_PROCESS_FORCE_SHUTDOWN_TIMEOUT_MS = 1_000;
 const MANAGED_PROCESS_EXIT_POLL_INTERVAL_MS = 50;
@@ -38,8 +52,11 @@ const WindowsProcessSnapshotSchema = z.object({
 });
 
 class ManagedProcessExitUnverifiedError extends Error {
-  constructor(readonly pid: number) {
+  readonly pid: number;
+
+  constructor(pid: number) {
     super("Managed helper process exit remains unverified");
+    this.pid = pid;
     this.name = "ManagedProcessExitUnverifiedError";
   }
 }
@@ -190,7 +207,7 @@ class SystemManagedProcessTable implements ManagedProcessTable {
       `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}';`,
       "if ($process) { $process | Select-Object ProcessId,CommandLine,CreationDate | ConvertTo-Json -Compress }",
     ].join(" ");
-    const { stdout } = await this.commandRunner.exec("powershell.exe", [
+    const { stdout } = await this.commandRunner.exec(windowsPowerShellPath(), [
       "-NoProfile",
       "-NonInteractive",
       "-Command",

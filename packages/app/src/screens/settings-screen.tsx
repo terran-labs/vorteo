@@ -1,3 +1,7 @@
+import { selectSettingsHost } from "@/navigation/settings-presentation";
+import { useHardwareKeyboardPresent } from "@/keyboard";
+import { useAddHost } from "@/hosts/add-host";
+import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
 import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
@@ -10,7 +14,7 @@ import { EnvironmentsPane } from "./settings/environments-page";
 import { SkillLibraryContent } from "@/agent-skills/library";
 import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout";
 import { usePanelStore } from "@/stores/panel-store";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import {
   Alert,
@@ -22,7 +26,7 @@ import {
 } from "react-native";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { useRouter } from "expo-router";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect } from "expo-router/react-navigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -66,9 +70,6 @@ import { confirmDialog } from "@/utils/confirm-dialog";
 import { BackHeader } from "@/components/headers/back-header";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { PageLayout } from "@/components/page-layout";
-import { AddHostMethodModal } from "@/components/add-host-method-modal";
-import { AddHostModal } from "@/components/add-host-modal";
-import { AddRemoteSshHostModal } from "@/components/add-remote-ssh-host-modal";
 import { KeyboardShortcutsSection } from "@/screens/settings/keyboard-shortcuts-section";
 import { EditorSection } from "@/screens/settings/editor-section";
 import { Button } from "@/components/ui/button";
@@ -137,6 +138,7 @@ import {
 } from "@/screens/settings/settings-scroll-page";
 import { useSettingsNavigation } from "@/screens/settings/use-settings-navigation";
 import { useSettingsSearchShortcut } from "@/screens/settings/use-settings-search-shortcut";
+import { useOpenOnboarding, UPSTREAM_SETUP_ENABLED } from "@/onboarding";
 
 // ---------------------------------------------------------------------------
 // View model
@@ -181,16 +183,18 @@ function selectedSidebarSection(
 function useAvailabilityContext(): SettingsAvailabilityContext {
   const hosts = useHosts();
   const isDesktopApp = isElectronRuntime();
+  const hardwareKeyboardPresent = useHardwareKeyboardPresent();
   const hasInstallation = readExecutionInstallation() !== null;
   return useMemo(
     () => ({
       isDesktopApp,
+      hardwareKeyboardPresent,
       isWeb,
       isNative,
       hasHosts: hosts.length > 0,
       hasInstallation,
     }),
-    [hasInstallation, hosts.length, isDesktopApp],
+    [hasInstallation, hosts.length, isDesktopApp, hardwareKeyboardPresent],
   );
 }
 
@@ -357,8 +361,25 @@ function LanguageSection({ settings, handleLanguageChange }: LanguageSectionProp
             </DropdownMenuContent>
           </DropdownMenu>
         </View>
+        {UPSTREAM_SETUP_ENABLED && !isNative ? <ShowSetupAgainRow /> : null}
       </View>
     </SettingsSection>
+  );
+}
+
+function ShowSetupAgainRow() {
+  const { t } = useTranslation();
+  const openOnboarding = useOpenOnboarding();
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("settings.general.setup.label")}</Text>
+        <Text style={settingsStyles.rowHint}>{t("settings.general.setup.description")}</Text>
+      </View>
+      <Button variant="secondary" onPress={openOnboarding ?? undefined} disabled={!openOnboarding}>
+        {t("settings.general.setup.action")}
+      </Button>
+    </View>
   );
 }
 
@@ -738,7 +759,6 @@ function DesktopAppUpdateRow() {
           </Text>
         </View>
         <SegmentedControl
-          size="sm"
           value={settings.releaseChannel}
           onValueChange={handleReleaseChannelChange}
           options={releaseChannelOptions}
@@ -766,7 +786,6 @@ function DesktopAppUpdateRow() {
         <View style={styles.aboutUpdateActions}>
           <Button
             variant="outline"
-            size="sm"
             onPress={handleCheckForUpdates}
             disabled={isChecking || isInstalling}
           >
@@ -774,7 +793,6 @@ function DesktopAppUpdateRow() {
           </Button>
           <Button
             variant="default"
-            size="sm"
             onPress={handleInstallUpdate}
             disabled={isChecking || isInstalling || !isUpdateReady}
           >
@@ -1047,6 +1065,7 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "chat.sending": () => <SendingSection />,
   "chat.openLocation": () => <OpenLocationSection />,
   "chat.editor": () => <EditorSection />,
+  "chat.files": () => <FilesSection />,
   "chat.shortcuts": () => <KeyboardShortcutsSection />,
   "terminal.terminal": () => <TerminalSection />,
   "terminal.profiles": installationPane("terminals"),
@@ -1129,7 +1148,6 @@ function renderDetailContent(
 
 export interface SettingsScreenProps {
   view: SettingsView;
-  openAddHostIntent?: string | null;
   installationRequested?: boolean;
   restartRequestId?: string | null;
   /** Catalog entry id to scroll to and highlight, from `?setting=`. */
@@ -1138,7 +1156,6 @@ export interface SettingsScreenProps {
 
 export default function SettingsScreen({
   view,
-  openAddHostIntent = null,
   installationRequested = false,
   restartRequestId = null,
   settingId = null,
@@ -1147,12 +1164,8 @@ export default function SettingsScreen({
   const { t } = useTranslation();
   const voiceAudioEngine = useVoiceAudioEngineOptional();
   const { settings, isLoading: settingsLoading, updateSettings } = useAppSettings();
-  const [isAddHostMethodVisible, setIsAddHostMethodVisible] = useState(false);
-  const [isDirectHostVisible, setIsDirectHostVisible] = useState(false);
-  const [isRemoteSshVisible, setIsRemoteSshVisible] = useState(false);
   const [isPlaybackTestRunning, setIsPlaybackTestRunning] = useState(false);
   const [playbackTestResult, setPlaybackTestResult] = useState<string | null>(null);
-  const lastOpenedAddHostIntentRef = useRef<string | null>(null);
   const isDesktopApp = isElectronRuntime();
   const appVersion = resolveAppVersion();
   const appVersionText = formatVersionWithPrefix(appVersion);
@@ -1220,43 +1233,10 @@ export default function SettingsScreen({
     }
   }, [isPlaybackTestRunning, t, voiceAudioEngine]);
 
-  const closeAddConnectionFlow = useCallback(() => {
-    setIsAddHostMethodVisible(false);
-    setIsDirectHostVisible(false);
-    setIsRemoteSshVisible(false);
-  }, []);
-
-  const goBackToAddConnectionMethods = useCallback(() => {
-    setIsDirectHostVisible(false);
-    setIsRemoteSshVisible(false);
-    setIsAddHostMethodVisible(true);
-  }, []);
-
-  const handleAddHost = useCallback(() => {
-    setIsAddHostMethodVisible(true);
-  }, []);
-
-  useEffect(() => {
-    if (!openAddHostIntent || lastOpenedAddHostIntentRef.current === openAddHostIntent) {
-      return;
-    }
-    lastOpenedAddHostIntentRef.current = openAddHostIntent;
-    handleAddHost();
-  }, [handleAddHost, openAddHostIntent]);
-
-  const handleSelectDirectConnection = useCallback(() => {
-    setIsAddHostMethodVisible(false);
-    setIsDirectHostVisible(true);
-  }, []);
-
-  const handleSelectRemoteSsh = useCallback(() => {
-    setIsAddHostMethodVisible(false);
-    setIsRemoteSshVisible(true);
-  }, []);
-
   const handleHostAdded = useCallback(
-    ({ serverId }: { serverId: string }) => {
-      const target = buildSettingsHostSectionRoute(serverId, "connections");
+    (serverId: string) => {
+      selectSettingsHost(serverId);
+      const target = buildSettingsHostSectionRoute(serverId, "host");
       if (isCompactLayout) {
         router.push(target);
       } else {
@@ -1265,6 +1245,8 @@ export default function SettingsScreen({
     },
     [isCompactLayout, router],
   );
+
+  const handleAddHost = useAddHost({ onAdded: handleHostAdded });
 
   const handleHostRemoved = useCallback(() => {
     if (isCompactLayout) {
@@ -1379,29 +1361,6 @@ export default function SettingsScreen({
     </PageLayout>
   );
 
-  const addHostModals = (
-    <>
-      <AddHostMethodModal
-        visible={isAddHostMethodVisible}
-        onClose={closeAddConnectionFlow}
-        onDirectConnection={handleSelectDirectConnection}
-        onRemoteSsh={handleSelectRemoteSsh}
-      />
-      <AddHostModal
-        visible={isDirectHostVisible}
-        onClose={closeAddConnectionFlow}
-        onCancel={goBackToAddConnectionMethods}
-        onSaved={handleHostAdded}
-      />
-      <AddRemoteSshHostModal
-        visible={isRemoteSshVisible}
-        onClose={closeAddConnectionFlow}
-        onCancel={goBackToAddConnectionMethods}
-        onSaved={handleHostAdded}
-      />
-    </>
-  );
-
   const selectedSection = selectedSidebarSection(view, searching, activeSection);
 
   // Mobile root: search above the section list; a query swaps the list for results.
@@ -1433,18 +1392,12 @@ export default function SettingsScreen({
             </ScrollView>
           </>
         )}
-        {addHostModals}
       </View>
     );
   }
 
   if (isCompactLayout) {
-    return (
-      <View style={styles.container}>
-        {detailPage}
-        {addHostModals}
-      </View>
-    );
+    return <View style={styles.container}>{detailPage}</View>;
   }
 
   // Desktop split view — mirrors AppContainer: sidebar owns the titlebar drag
@@ -1470,7 +1423,6 @@ export default function SettingsScreen({
           </View>
         </WindowChromeRegion>
       </View>
-      {addHostModals}
     </View>
   );
 }

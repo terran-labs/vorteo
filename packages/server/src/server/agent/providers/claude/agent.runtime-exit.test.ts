@@ -135,6 +135,25 @@ const SPAWN_OPTIONS: ClaudeSpawnOptions = {
   signal: new AbortController().signal,
 };
 
+async function closingRuntimeFixture(query: Query, child: ChildProcess) {
+  let capturedOptions: Options | undefined;
+  vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
+  const client = new ClaudeAgentClient({
+    logger: createTestLogger(),
+    queryFactory: ({ options }) => {
+      capturedOptions = options;
+      return query;
+    },
+    resolveBinary: async () => "/test/claude/bin",
+  });
+  const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+  await session.run("fixture turn");
+  const spawnChild = capturedOptions?.spawnClaudeCodeProcess;
+  if (!spawnChild) throw new Error("Fixture spawn callback missing");
+  spawnChild(SPAWN_OPTIONS);
+  return session;
+}
+
 describe("Claude runtime exit", () => {
   let configDirectory: string;
   beforeEach(() => {
@@ -214,6 +233,134 @@ describe("Claude runtime exit", () => {
     expect(query.return).toHaveBeenCalledTimes(1);
     expect(child.killSignals).toEqual(["SIGTERM"]);
   });
+
+  test.each(["close", "interrupt", "return"] as const)(
+    "close cleans the owned child when SDK %s throws synchronously",
+    async (failure) => {
+      const query = createQueryMock(COMPLETED_TURN_EVENTS);
+      const child = createChildProcessStub();
+      const session = await closingRuntimeFixture(query, child);
+      const calls: string[] = [];
+      query.close = vi.fn(() => {
+        calls.push("close");
+        if (failure === "close") throw new Error("SDK close refused");
+      });
+      query.interrupt = vi.fn(() => {
+        calls.push("interrupt");
+        if (failure === "interrupt") throw new Error("SDK interrupt refused");
+        return Promise.resolve();
+      });
+      query.return = vi.fn(() => {
+        calls.push("return");
+        if (failure === "return") throw new Error("SDK return refused");
+        return Promise.resolve({ done: true as const, value: undefined });
+      });
+      const first = session.close();
+      expect(session.close()).toBe(first);
+      await first;
+      expect(calls).toEqual(["close", "interrupt", "return"]);
+      expect(child.killSignals).toEqual(["SIGTERM"]);
+      await session.close();
+      expect(calls).toEqual(["close", "interrupt", "return"]);
+      expect(child.killSignals).toEqual(["SIGTERM"]);
+    },
+  );
+
+  test("close bounds SDK stalls while native teardown proceeds independently", async () => {
+    const query = createQueryMock(COMPLETED_TURN_EVENTS);
+    const child = createChildProcessStub();
+    child.kill = (signal) => {
+      child.killSignals.push(signal ?? "SIGTERM");
+      if (signal === "SIGKILL") child.emit("exit", null, "SIGKILL");
+      return true;
+    };
+    const session = await closingRuntimeFixture(query, child);
+    const calls: string[] = [];
+    const never = new Promise<never>(() => {});
+    query.close = vi.fn(() => {
+      calls.push("close");
+      return never;
+    });
+    query.interrupt = vi.fn(() => {
+      calls.push("interrupt");
+      return never;
+    });
+    query.return = vi.fn(() => {
+      calls.push("return");
+      return never;
+    });
+    vi.useFakeTimers();
+    try {
+      const closing = session.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(child.killSignals).toEqual(["SIGTERM"]);
+      expect(calls).toEqual(["close"]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(calls).toEqual(["close", "interrupt"]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(child.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(calls).toEqual(["close", "interrupt", "return"]);
+      await vi.advanceTimersByTimeAsync(1000);
+      await closing;
+      expect(session.close()).toBe(closing);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each([false, true])(
+    "stalled history cannot delay native cleanup or hide its failure (kill timeout=%s)",
+    async (killTimeout) => {
+      const query = createQueryMock(COMPLETED_TURN_EVENTS);
+      const child = createChildProcessStub();
+      if (killTimeout)
+        child.kill = (signal) => {
+          child.killSignals.push(signal ?? "SIGTERM");
+          return true;
+        };
+      const session = await closingRuntimeFixture(query, child);
+      if (!("ensureHistoryReady" in session) || typeof session.ensureHistoryReady !== "function")
+        throw new Error("Fixture history boundary missing");
+      const history = Promise.withResolvers<void>();
+      session.ensureHistoryReady = () => history.promise;
+      vi.useFakeTimers();
+      try {
+        let settled = false;
+        const closing = session.close();
+        void closing.then(
+          () => {
+            settled = true;
+            return undefined;
+          },
+          () => {
+            settled = true;
+            return undefined;
+          },
+        );
+        const failed = killTimeout
+          ? expect(closing).rejects.toThrow("Claude process cleanup remains unverified")
+          : undefined;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(child.killSignals).toEqual(["SIGTERM"]);
+        expect(query.close).not.toHaveBeenCalled();
+        expect(settled).toBe(false);
+        if (killTimeout) {
+          await vi.advanceTimersByTimeAsync(4000);
+          await failed;
+          expect(settled).toBe(true);
+          expect(child.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+          expect(session.close()).toBe(closing);
+        }
+        history.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        if (!killTimeout) await closing;
+        expect(query.close).toHaveBeenCalledOnce();
+      } finally {
+        history.resolve();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   test("reports a turn failure when the process dies while the session is idle", async () => {
     let capturedOptions: Options | undefined;

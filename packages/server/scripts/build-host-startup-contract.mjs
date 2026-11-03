@@ -225,7 +225,7 @@ async function buildContract(root) {
   const optional = {
     bufferutil: {
       importer: "node_modules/ws/lib/buffer-util.js",
-      sha256: "8b0a45739132f82e25ea13163780abf547ccfe989267f3eb7abb475beec92da3",
+      sha256: "4e996b0c29f30bb094d836a2a563aceebaf3e8692a1e3d5bb4a01a233029732f",
     },
     "utf-8-validate": {
       importer: "node_modules/ws/lib/validation.js",

@@ -203,7 +203,6 @@ function LegacyAgentProfilesSection({
     () => (
       <Button
         variant="ghost"
-        size="sm"
         leftIcon={addIcon}
         onPress={handleAddOpen}
         disabled={!profiles}
@@ -276,7 +275,7 @@ function LegacyAgentProfilesSection({
               <Text style={styles.emptyText} testID="agent-profiles-empty">
                 {t("settings.host.agentProfiles.emptyState")}
               </Text>
-              <Button size="sm" leftIcon={addIcon} onPress={handleAddOpen} disabled={!profiles}>
+              <Button leftIcon={addIcon} onPress={handleAddOpen} disabled={!profiles}>
                 {t("settings.host.agentProfiles.newProfile")}
               </Button>
             </View>

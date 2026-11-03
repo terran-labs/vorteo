@@ -137,3 +137,14 @@ it("returns a surviving worker to its physical workspace after the parent is arc
     workspaceId: "execution",
   });
 });
+
+it("leaves a parentless foreign tab for workspace reconciliation without redirecting", () => {
+  const { result } = renderHook(() =>
+    useAgentPresentationNavigation({
+      ...input,
+      tab: { descriptor: { target: { kind: "agent", agentId: "parent" } } },
+    }),
+  );
+  expect(result.current).toBe(false);
+  expect(navigate).not.toHaveBeenCalled();
+});

@@ -8,9 +8,13 @@ import { useProviderIcon } from "@/components/provider-icons";
 
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { usePaneContext } from "@/panels/pane-context";
+
 import { definePanel, type PanelDescriptor } from "@/panels/panel-registry";
 import { useSessionStore } from "@/stores/session-store";
+
+import { ParentAgentCallout } from "@/subagents/parent";
 import { useSubagentsForParent } from "@/subagents/select";
+import { useSubagentSheetTab } from "@/subagents/sheet-tab";
 import { SubagentsTrack } from "@/subagents/track";
 import {
   providerSubagentKey,
@@ -25,6 +29,7 @@ import type { StreamItem } from "@/types/stream";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { TIMELINE_FETCH_PAGE_SIZE } from "@/timeline/timeline-fetch-policy";
 import type { TurnPresentation } from "@/timeline/turn-liveness";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 
 const EMPTY_PERMISSIONS = new Map<string, PendingPermission>();
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
@@ -77,7 +82,7 @@ function useProviderSubagentDescriptor(
 
 function ProviderSubagentPanel() {
   const { t } = useTranslation();
-  const { serverId, target, openFileInWorkspace, openTab } = usePaneContext();
+  const { serverId, workspaceId, tabId, target, openFileInWorkspace, openTab } = usePaneContext();
   invariant(target.kind === "provider_subagent", "ProviderSubagentPanel requires provider target");
   const key = providerSubagentKey(serverId, target.parentAgentId, target.subagentId);
   const streamId = `provider:${encodeURIComponent(target.parentAgentId)}:${encodeURIComponent(target.subagentId)}`;
@@ -104,8 +109,11 @@ function ProviderSubagentPanel() {
     parentAgentId: target.parentAgentId,
     providerParentSubagentId: target.subagentId,
   });
-
   const childTrackClearance = { tail: 0, controls: 0 };
+  const sheetTabFor = useSubagentSheetTab(
+    buildWorkspaceTabPersistenceKey({ serverId, workspaceId }),
+    tabId,
+  );
   const openProviderChild = useCallback(
     (parentAgentId: string, subagentId: string) => {
       openTab({ kind: "provider_subagent", parentAgentId, subagentId });
@@ -119,12 +127,13 @@ function ProviderSubagentPanel() {
         inline
         serverId={serverId}
         rows={childRows}
+        sheetTabFor={sheetTabFor}
         onOpenSubagent={NOOP_SUBAGENT}
         onOpenProviderSubagent={openProviderChild}
         onArchiveSubagent={NOOP_SUBAGENT}
       />
     ),
-    [serverId, childRows, openProviderChild],
+    [serverId, childRows, openProviderChild, sheetTabFor],
   );
 
   useEffect(() => {
@@ -252,13 +261,12 @@ function ProviderSubagentPanel() {
         bottomOverlayTailClearance={childTrackClearance.tail}
         bottomOverlayControlClearance={childTrackClearance.controls}
       />
-      {null}
+      <ParentAgentCallout serverId={serverId} parentAgentId={target.parentAgentId} />
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  container: { flex: 1, minHeight: 0 },
   subtitleHeader: {
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[1],
@@ -269,6 +277,8 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
+  container: { flex: 1, minHeight: 0 },
+  stream: { flex: 1, minHeight: 0 },
   unsupported: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   unsupportedText: { color: theme.colors.foregroundMuted, textAlign: "center" },
 }));

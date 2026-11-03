@@ -66,6 +66,7 @@ import { Button } from "@/components/ui/button";
 
 import { getHostRuntimeStore, useHostRegistryLoaded } from "@/runtime/host-runtime";
 import { useVortonTouch } from "@/vorton-touch";
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import {
   getBootstrapPanel,
   BootstrapHistory,
@@ -216,7 +217,7 @@ function InstallationWelcomeForm({
           </Text>
         ) : null}
         <Button
-          size="lg"
+          size="md"
           disabled={state.busy || !state.password.trim()}
           onPress={connect}
           testID="installation-unlock"
@@ -1194,7 +1195,13 @@ function BrokerRequest({
       </View>
       <Text style={styles.text}>{brokerReviewSummary(job)}</Text>
       <Text style={styles.text}>{job.reason}</Text>
-      <Button variant="ghost" size={size} onPress={toggle} {...disclosureProps(expanded)}>
+      <Button
+        variant="ghost"
+        size={size}
+        style={styles.reviewControl(size === "md")}
+        onPress={toggle}
+        {...disclosureProps(expanded)}
+      >
         Details
       </Button>
       {expanded ? (
@@ -1799,12 +1806,14 @@ function RestartActionButton({
   disabledReason,
   ...props
 }: ComponentProps<typeof Button> & { disabledReason: string | null }) {
-  if (!disabledReason) return <Button {...props} />;
+  const touch = useVortonTouch();
+  const style = useMemo(() => [styles.reviewControl(touch), props.style], [props.style, touch]);
+  if (!disabledReason) return <Button {...props} style={style} />;
   // A separate hit target avoids browsers suppressing taps on a disabled descendant.
   return (
     <Tooltip enabledOnMobile>
       <View style={styles.disabledAction}>
-        <Button {...props} disabled accessible={false} focusable={false} />
+        <Button {...props} style={style} disabled accessible={false} focusable={false} />
         <TooltipTrigger
           style={StyleSheet.absoluteFillObject}
           accessibilityRole="button"
@@ -2394,6 +2403,9 @@ function RestartBannerItem({ job, model }: { job: RestartJob; model: Installatio
 }
 
 const styles = StyleSheet.create((theme) => ({
+  reviewControl: (touch: boolean) => ({
+    minHeight: touch ? CONTROL_HEIGHTS.md.xs : CONTROL_HEIGHTS.md.md,
+  }),
   disabledAction: { position: "relative", alignSelf: "flex-start" },
   unlockRow: {
     flexDirection: "row",

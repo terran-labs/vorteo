@@ -1,3 +1,10 @@
+import { DirectorySync } from "@/runtime/directory-sync";
+import { subscriptionFixture } from "@/runtime/subscription-fixture";
+import type {
+  SessionOutboundMessage,
+  WorkspaceDescriptorPayload,
+} from "@getpaseo/protocol/messages";
+import { normalizeWorkspaceDescriptor } from "@/stores/session-store";
 import { queryClient } from "@/data/query-client";
 import type { Agent } from "@/stores/session-store";
 import type { ScheduleSummary } from "@getpaseo/protocol/schedule/types";
@@ -38,6 +45,8 @@ function archivePayload(input: {
 
 function workspace(input?: Partial<WorkspaceDescriptor>): WorkspaceDescriptor {
   return {
+    createdAt: null,
+    lastUserMessageAt: null,
     id: "workspace-1",
     projectId: "project-1",
     projectDisplayName: "Project",
@@ -582,13 +591,55 @@ describe("native Factory managed workspace protection", () => {
 });
 
 describe("archive preflight lifecycle changes", () => {
-  function seedEnvironments() {
+  let directory: DirectorySync;
+  let receiveUpdate: (message: SessionOutboundMessage) => void;
+
+  afterEach(() => directory?.dispose());
+
+  function wireWorkspace(value: WorkspaceDescriptor): WorkspaceDescriptorPayload {
+    return {
+      ...value,
+      createdAt: value.createdAt?.toISOString(),
+      lastUserMessageAt: value.lastUserMessageAt?.toISOString() ?? null,
+      statusEnteredAt: value.statusEnteredAt?.toISOString() ?? null,
+      activityAt: null,
+    };
+  }
+
+  async function seedEnvironments() {
     const owner = workspace();
     const companion = workspace({
       id: "workspace-2",
       projectMembership: { key: "project-1", name: "Project", environmentOwner: target() },
     });
-    getHostRuntimeStore().acceptWorkspaceSnapshots(SERVER_ID, [owner]);
+    const subscription = subscriptionFixture(
+      Promise.resolve({
+        requestId: "workspaces",
+        entries: [wireWorkspace(owner)],
+        pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+      }),
+      (receive) => {
+        receiveUpdate = receive;
+        return () => {};
+      },
+    );
+    const directoryClient = {
+      observeWorkspaces: () => subscription,
+      supportsBackgroundWorkspaces: () => false,
+      getLastServerInfoMessage: () => null,
+    } as unknown as DaemonClient;
+    directory = new DirectorySync(SERVER_ID, {
+      onAgentStoppedRunning: () => {},
+      markAgentLoading: () => {},
+      markAgentReady: () => {},
+      markAgentError: () => {},
+    });
+    useSessionStore.getState().updateSessionClient(SERVER_ID, directoryClient, 1);
+    directory.connectionChanged({
+      client: directoryClient,
+      status: "online",
+      source: { clientGeneration: 1, connectionEpoch: 1 },
+    });
     useSessionStore.getState().initializeSession(SECOND_SERVER_ID, null);
     getHostRuntimeStore().acceptWorkspaceSnapshots(SECOND_SERVER_ID, [companion]);
     useSessionStore.getState().updateSessionServerInfo(SERVER_ID, {
@@ -597,7 +648,8 @@ describe("archive preflight lifecycle changes", () => {
       version: null,
       features: { factoryWorkspaceMembership: true },
     });
-    return { owner, companion };
+    await directory.refreshWorkspaces({ subscribe: true });
+    return { owner: normalizeWorkspaceDescriptor(wireWorkspace(owner)), companion };
   }
 
   function protectOwner(owner: WorkspaceDescriptor, managed: boolean) {
@@ -613,14 +665,15 @@ describe("archive preflight lifecycle changes", () => {
           }
         : undefined,
     });
-    getHostRuntimeStore().acceptWorkspaceSnapshots(SERVER_ID, [updated]);
-    return updated;
+    const payload = wireWorkspace(updated);
+    receiveUpdate({ type: "workspace_update", payload: { kind: "upsert", workspace: payload } });
+    return normalizeWorkspaceDescriptor(payload);
   }
 
   it.each([true, false])(
     "refuses with zero effects when companion refresh changes owner lifecycle (managed: %s)",
     async (managed) => {
-      const { owner, companion } = seedEnvironments();
+      const { owner, companion } = await seedEnvironments();
       const refreshing = deferred<void>();
       const refresh = deferred<ScheduleSummary[]>();
       const archived: string[] = [];
@@ -662,7 +715,7 @@ describe("archive preflight lifecycle changes", () => {
   );
 
   it("refuses later owner dispatch when membership changes during companion archive", async () => {
-    const { owner, companion } = seedEnvironments();
+    const { owner, companion } = await seedEnvironments();
     const archiving = deferred<void>();
     const completed = deferred<ArchiveWorkspacePayload>();
     const archived: string[] = [];

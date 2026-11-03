@@ -1,3 +1,4 @@
+import { usePluginWorkspaceMenu } from "@/plugins";
 import { WorkspaceMenuItems } from "@/components/sidebar/sidebar-workspace-menu";
 import { WorkspaceRenameModal } from "@/components/workspace-rename-modal";
 import { createSidebarWorkspaceEntry } from "@/hooks/sidebar-workspaces-view-model";
@@ -13,6 +14,7 @@ import { View } from "react-native";
 import { useRouter, type Href } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { EllipsisVertical, Globe, SquarePen } from "lucide-react-native";
+
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { TerminalProfile } from "@getpaseo/protocol/messages";
 import {
@@ -27,6 +29,7 @@ import {
   extraMutedIconColorMapping,
   iconButtonChromeGlyphSize,
   iconButtonChromeStyle,
+  useIconButtonChromeStyle,
 } from "@/components/ui/icon-button-chrome";
 import { TerminalProfileIcon } from "@/components/terminal-profile-icon";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
@@ -48,6 +51,7 @@ export const WorkspaceOverflowItemsContext = createContext<{
 interface WorkspaceMenuPresentation {
   children?: ReactNode;
   extraItems?: ReactNode;
+  includeCompactPluginButtons?: boolean;
   overflow?: boolean;
   enabled?: boolean;
 }
@@ -61,13 +65,15 @@ export function WorkspaceOverflowProvider(
 
 const ThemedEllipsis = withUnistyles(EllipsisVertical);
 const ThemedSquarePen = withUnistyles(SquarePen);
+
 const ThemedGlobe = withUnistyles(Globe);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-const MENU_NEW_AGENT_ICON = <ThemedSquarePen size={16} uniProps={mutedColorMapping} />;
 const MENU_NEW_BROWSER_ICON = <ThemedGlobe size={16} uniProps={mutedColorMapping} />;
+const MENU_NEW_AGENT_ICON = <ThemedSquarePen size={16} uniProps={mutedColorMapping} />;
 const MENU_NEW_TERMINAL_ICON = <TerminalProfileIcon iconKey={undefined} size={16} />;
+
 function WorkspaceHeaderMenuTriggerIcon() {
   return (
     <ThemedEllipsis
@@ -76,6 +82,8 @@ function WorkspaceHeaderMenuTriggerIcon() {
     />
   );
 }
+
+/** The ⋯ with a dot on it, for when something inside the menu needs looking at. */
 
 /**
  * The compact header buttons draw at 32pt, under the 44pt touch minimum, and sit flush against
@@ -94,6 +102,7 @@ function WorkspaceHeaderActionsMenu({
   normalizedWorkspaceId,
   children,
   extraItems,
+  includeCompactPluginButtons = false,
   overflow = false,
   enabled = true,
 }: WorkspaceHeaderWorkspaceActions & WorkspaceMenuPresentation) {
@@ -117,6 +126,7 @@ function WorkspaceHeaderActionsMenu({
       overflow={overflow}
       enabled={enabled}
       extraItems={extraItems}
+      includeCompactPluginButtons={includeCompactPluginButtons}
     >
       {children}
     </WorkspaceHeaderActionsMenuLoaded>
@@ -127,6 +137,7 @@ function WorkspaceHeaderActionsMenuLoaded({
   workspace,
   children,
   extraItems,
+  includeCompactPluginButtons,
   overflow,
   enabled,
 }: WorkspaceMenuPresentation & {
@@ -150,7 +161,12 @@ function WorkspaceHeaderActionsMenuLoaded({
     }),
     [workspace.serverId, workspace.workspaceId, workspace.labels],
   );
-  const pages = useWorkspaceLabelMenuPages(target);
+  const labelPages = useWorkspaceLabelMenuPages(target);
+  const pluginMenu = usePluginWorkspaceMenu(workspace.serverId, workspace.workspaceId);
+  const pages = useMemo(
+    () => (includeCompactPluginButtons ? [...labelPages, ...pluginMenu.pages] : labelPages),
+    [includeCompactPluginButtons, labelPages, pluginMenu.pages],
+  );
   const items = useMemo(
     () => (
       <WorkspaceMenuItems
@@ -220,6 +236,12 @@ function WorkspaceHeaderActionsMenuLoaded({
           pages={pages}
           sheetTitle={t("workspace.header.actions.workspaceActions")}
         >
+          {includeCompactPluginButtons && pluginMenu.rows.length > 0 ? (
+            <>
+              {pluginMenu.rows}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {items}
           {children}
         </DropdownMenuContent>
@@ -288,31 +310,38 @@ function HeaderMenuProfileItem({
 
 export interface WorkspaceHeaderMenuMobileProps extends WorkspaceHeaderWorkspaceActions {
   children?: ReactNode;
+  normalizedServerId: string;
+  normalizedWorkspaceId: string;
   showCreateBrowserTab: boolean;
   createTerminalDisabled: boolean;
-  onCreateDraftTab: () => void;
-  onCreateTerminal: () => void;
   onCreateTerminalWithProfile: (profile: TerminalProfile) => void;
+  onCreateTerminal: () => void;
+  onCreateDraftTab: () => void;
   onCreateBrowser: () => void;
 }
 
 /**
- * Compact layouts have no tab strip to launch from, so new tabs live here alongside the workspace
- * actions.
+ * Compact layouts have no tab strip. New agent and New terminal sit in the tab switcher's footer;
+ * the rarer launches stay here alongside the workspace actions.
+ *
+ * The header has no room for a scripts button either, so scripts are a page of this menu, and the
+ * ⋯ carries a dot while a running service is unhealthy. Plugin header buttons are rows here for the
+ * same reason.
  */
 export function WorkspaceHeaderMenuMobile({
   normalizedServerId,
   normalizedWorkspaceId,
   showCreateBrowserTab,
   createTerminalDisabled,
-  onCreateDraftTab,
-  onCreateTerminal,
   onCreateTerminalWithProfile,
+  onCreateTerminal,
+  onCreateDraftTab,
   onCreateBrowser,
   children,
 }: WorkspaceHeaderMenuMobileProps) {
   const { t } = useTranslation();
   const router = useRouter();
+  useIconButtonChromeStyle({ size: "large" });
   const { config } = useDaemonConfig(normalizedServerId);
   const profiles = useMemo(
     () => resolveTerminalProfiles(config?.terminalProfiles),
@@ -327,6 +356,7 @@ export function WorkspaceHeaderMenuMobile({
     <WorkspaceHeaderActionsMenu
       normalizedServerId={normalizedServerId}
       normalizedWorkspaceId={normalizedWorkspaceId}
+      includeCompactPluginButtons
     >
       {children}
       <DropdownMenuSeparator />
@@ -375,9 +405,21 @@ export function WorkspaceHeaderMenuMobile({
   );
 }
 
-const styles = StyleSheet.create({
+const ATTENTION_DOT_SIZE = 6;
+
+const styles = StyleSheet.create((theme) => ({
   headerMenuProfileIconWrapper: {
     width: 16,
     height: 16,
   },
-});
+  // Same red as the Scripts row's unhealthy ▶, so the dot and the row it leads to agree.
+  attentionDot: {
+    position: "absolute",
+    top: -1,
+    right: -2,
+    width: ATTENTION_DOT_SIZE,
+    height: ATTENTION_DOT_SIZE,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.palette.red[500],
+  },
+}));

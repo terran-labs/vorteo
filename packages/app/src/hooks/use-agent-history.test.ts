@@ -1,32 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type {
   DaemonClient,
   FetchAgentHistoryEntry,
   FetchAgentHistoryOptions,
 } from "@getpaseo/client/internal/daemon-client";
-import {
-  collectAgentHistoryHostErrors,
-  fetchAgentHistoryBatch,
-  fetchAgentHistoryPage,
-  type AgentHistoryClient,
-  type AgentHistoryHost,
-} from "./use-agent-history";
+import { type AgentHistoryClient, type AgentHistoryHost } from "./use-agent-history";
 import { allAgentHistoryQueryKey } from "./agent-history-query-key";
 
-// Only the useAgentHistory hook reads the host runtime, and these tests call the fetch helpers with
-// their own clients. The real module pulls in the whole daemon runtime and its protocol
-// validators, about 10 s to transform.
-vi.mock("@/runtime/host-runtime", () => {
-  const unused = () => {
-    throw new Error("The host runtime is not available in these tests");
-  };
-  return { getHostRuntimeStore: unused, isHostRuntimeConnected: unused, useHosts: unused };
-});
-
-// Hoisted with the mocks so it is set before the static imports above load.
-vi.hoisted(() => {
-  (globalThis as unknown as { __DEV__: boolean }).__DEV__ = false;
-});
+const { fetchAgentHistoryBatch, fetchAgentHistoryPage, collectAgentHistoryHostErrors } =
+  await import("./use-agent-history");
 
 type FetchAgentHistory = DaemonClient["fetchAgentHistory"];
 type FetchAgentHistoryResult = Awaited<ReturnType<FetchAgentHistory>>;

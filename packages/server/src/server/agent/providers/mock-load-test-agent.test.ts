@@ -8,6 +8,7 @@ import { AgentManager } from "../agent-manager.js";
 import type { AgentStreamEvent, AgentTimelineItem } from "../agent-sdk-types.js";
 import {
   MOCK_LOAD_TEST_DEFAULT_MODEL_ID,
+  MOCK_LOAD_TEST_HANDLED_COMMAND,
   MockLoadTestAgentClient,
 } from "./mock-load-test-agent.js";
 
@@ -47,6 +48,46 @@ describe("MockLoadTestAgentClient", () => {
         intervalMs: 40,
       },
     });
+  });
+
+  test("lists the command it handles without starting a turn", async () => {
+    const client = new MockLoadTestAgentClient();
+    const session = await client.createSession({ provider: "mock", cwd: process.cwd() });
+
+    const commands = (await session.listCommands?.()) ?? [];
+
+    expect(commands.map((command) => `/${command.name} ${command.argumentHint}`)).toEqual([
+      MOCK_LOAD_TEST_HANDLED_COMMAND,
+    ]);
+    expect(session.tryHandleOutOfBand?.(MOCK_LOAD_TEST_HANDLED_COMMAND)).not.toBeNull();
+  });
+
+  test("steering replay waits for an accepted steer when the renderer is delayed", async () => {
+    vi.useFakeTimers();
+    const session = await new MockLoadTestAgentClient().createSession({
+      provider: "mock",
+      cwd: process.cwd(),
+      model: "ten-second-stream",
+    });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    try {
+      const { turnId } = await session.startTurn!(
+        "Replay a codex-shaped foreground shell tool call while the user steers this turn.",
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(events.filter((event) => event.type === "turn_completed")).toHaveLength(0);
+      await expect(session.steerActiveTurn!("hello", { expectedTurnId: turnId })).resolves.toEqual({
+        status: "accepted",
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(events.filter((event) => event.type === "turn_started")).toHaveLength(1);
+      expect(events.filter((event) => event.type === "turn_completed")).toEqual([
+        expect.objectContaining({ turnId }),
+      ]);
+    } finally {
+      await session.close();
+    }
   });
 
   test("rejects the configured number of prompts before starting a retry", async () => {

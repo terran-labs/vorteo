@@ -1,3 +1,5 @@
+import type { HostProfile } from "@/types/host-connection";
+import { useAddHost } from "@/hosts/add-host";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, ScrollView } from "react-native";
@@ -5,9 +7,7 @@ import { useRouter } from "expo-router";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { Link2, ExternalLink, Settings, Plus, Play } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { HostProfile } from "@/types/host-connection";
 import { getHostRuntimeStore, isHostRuntimeConnected, useHosts } from "@/runtime/host-runtime";
-import { AddHostModal } from "./add-host-modal";
 import { AdaptiveModalSheet } from "./adaptive-modal-sheet";
 import { enterDemo } from "@/demo/mode";
 import { WelcomeRain } from "./welcome-rain";
@@ -200,7 +200,6 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
   const router = useRouter();
   const appVersion = resolveAppVersion();
   const appVersionText = formatVersionWithPrefix(appVersion);
-  const [isDirectOpen, setIsDirectOpen] = useState(false);
   const [isSetupOpen, setIsSetupOpen] = useState(false);
   const [demoError, setDemoError] = useState<string | null>(null);
   const installation = readExecutionInstallation();
@@ -225,8 +224,6 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
     router.push("/settings");
   }, [router]);
 
-  const handleOpenDirect = useCallback(() => setIsDirectOpen(true), []);
-  const handleCloseDirect = useCallback(() => setIsDirectOpen(false), []);
   const handleOpenSetup = useCallback(() => setIsSetupOpen(true), []);
   const handleCloseSetup = useCallback(() => setIsSetupOpen(false), []);
   const handleDemo = useCallback(() => {
@@ -237,13 +234,16 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
     }
   }, []);
 
-  const handleHostSaved = useCallback(
-    ({ profile }: { profile: HostProfile; serverId: string }) => {
-      onHostAdded?.(profile);
+  const handleOpenDirect = useAddHost({
+    method: "direct",
+    onAdded: (serverId) => {
+      const profile = getHostRuntimeStore()
+        .getHosts()
+        .find((host) => host.serverId === serverId);
+      if (profile) onHostAdded?.(profile);
       finishOnboarding();
     },
-    [onHostAdded, finishOnboarding],
-  );
+  });
 
   // A page served by a running installation shows its owner sign-in inline
   // instead (below): offering to create an installation there is a dead end.
@@ -319,13 +319,7 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
             </View>
 
             <View style={styles.footerActions}>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={Play}
-                onPress={handleDemo}
-                testID="welcome-demo"
-              >
+              <Button variant="ghost" leftIcon={Play} onPress={handleDemo} testID="welcome-demo">
                 Demo
               </Button>
               <Text style={styles.footerSeparator} aria-hidden>
@@ -333,7 +327,6 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
               </Text>
               <Button
                 variant="ghost"
-                size="sm"
                 leftIcon={Settings}
                 onPress={handleOpenSettings}
                 testID="welcome-open-settings"
@@ -344,14 +337,6 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
             <Text style={styles.versionLabel}>{appVersionText}</Text>
           </View>
         </View>
-
-        {installation ? null : (
-          <AddHostModal
-            visible={isDirectOpen}
-            onClose={handleCloseDirect}
-            onSaved={handleHostSaved}
-          />
-        )}
         <AdaptiveModalSheet
           visible={isSetupOpen}
           onClose={handleCloseSetup}

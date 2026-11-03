@@ -1,11 +1,17 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { measureMainThreadWork } from "../test-utils/main-thread-work.js";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 
-import { loadConfig, resolveBundledWebUiDistDir, resolveConfigFromPersisted } from "./config.js";
-import { loadPersistedConfig } from "./persisted-config.js";
+import {
+  loadConfig,
+  resolveBundledWebUiDistDir,
+  resolveConfigFromPersisted,
+  resolveReloadableConfig,
+} from "./config.js";
+import { loadPersistedConfig, PersistedConfigSchema } from "./persisted-config.js";
 
 const roots: string[] = [];
 
@@ -13,6 +19,44 @@ describe("server config", () => {
   afterEach(async () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
+
+  test("resolves reloadable settings without resolving the startup password", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-auth-reload-"));
+    roots.push(paseoHome);
+    const env = { PASEO_PASSWORD: "synthetic-audit-password" };
+    const persisted = loadPersistedConfig(paseoHome);
+    const startup = resolveConfigFromPersisted(paseoHome, persisted, { env });
+    const { result: reloaded, blockingMs } = await measureMainThreadWork(
+      "config resolve main-thread work",
+      () =>
+        resolveReloadableConfig(
+          { ...persisted, daemon: { ...persisted.daemon, browserTools: { enabled: true } } },
+          { env },
+        ),
+    );
+    expect(reloaded).not.toHaveProperty("auth");
+    expect(reloaded.browserToolsEnabled).toBe(true);
+    expect(startup.auth?.password).toBeTypeOf("string");
+    expect(blockingMs).toBeLessThan(50);
+  });
+
+  test.each([undefined, false, true])(
+    "restart recovery requires explicit opt-in (%s)",
+    async (enabled) => {
+      const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-recovery-"));
+      roots.push(paseoHome);
+      await writeFile(
+        path.join(paseoHome, "config.json"),
+        JSON.stringify({
+          version: 1,
+          agents: { resumeOnStartup: enabled, resumePrompt: "Continue exactly.\n" },
+        }),
+      );
+      const config = loadConfig(paseoHome, { env: {} });
+      expect(config.resumeOnStartup).toBe(enabled === true);
+      expect(config.resumePrompt).toBe("Continue exactly.\n");
+    },
+  );
 
   test("records when the daemon is managed by Paseo Desktop", async () => {
     const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-desktop-managed-"));
@@ -53,6 +97,17 @@ describe("server config", () => {
     );
     // A local root is resolved, which on Windows places it on the current drive.
     expect(loadConfig(paseoHome, { env: {} }).worktreesRoot).toBe(path.resolve("/srv/worktrees"));
+  });
+
+  test("idle runtime cleanup defaults on and supports a host-wide opt-out", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-idle-cleanup-"));
+    roots.push(paseoHome);
+    expect(loadConfig(paseoHome, { env: {} }).idleRuntimeCleanup).toBe(true);
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({ agents: { idleRuntimeCleanup: false } }),
+    );
+    expect(loadConfig(paseoHome, { env: {} }).idleRuntimeCleanup).toBe(false);
   });
 
   test("loads the provider catalog refresh timeout", async () => {
@@ -132,9 +187,13 @@ describe("server config", () => {
       name: "OpenAI speech providers",
       providers: { dictation: "openai", voiceStt: "openai", voiceTts: "openai" },
       expected: [
+        "features.dictation.stt.apiKey",
         "features.dictation.stt.confidenceThreshold",
         "features.dictation.stt.model",
+        "features.voiceMode.stt.apiKey",
+        "features.voiceMode.stt.confidenceThreshold",
         "features.voiceMode.stt.model",
+        "features.voiceMode.tts.apiKey",
         "features.voiceMode.tts.model",
         "features.voiceMode.tts.voice",
       ],
@@ -143,8 +202,9 @@ describe("server config", () => {
       name: "mixed local and OpenAI speech providers",
       providers: { dictation: "local", voiceStt: "openai", voiceTts: "local" },
       expected: [
-        "features.dictation.stt.confidenceThreshold",
         "features.dictation.stt.model",
+        "features.voiceMode.stt.apiKey",
+        "features.voiceMode.stt.confidenceThreshold",
         "features.voiceMode.stt.model",
         "features.voiceMode.tts.model",
       ],
@@ -239,16 +299,43 @@ test("loads private plugin registry settings through the configuration boundary"
     });
     expect(config.pluginRegistryUrl).toBe("https://plugins.example.test/internal");
     expect(config.pluginRegistries).toEqual(pluginRegistries);
-    expect(config.pluginRegistryEnabled).toBe(false);
-    await writeFile(
-      path.join(home, "config.json"),
-      JSON.stringify({ pluginRegistries, pluginRegistryEnabled: true }),
-    );
-    expect(loadConfig(home, { env: {} }).pluginRegistryEnabled).toBe(true);
-    expect(
-      loadConfig(home, { env: { PASEO_PLUGIN_REGISTRY_ENABLED: "false" } }).pluginRegistryEnabled,
-    ).toBe(false);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test.each([
+  { persisted: undefined, environment: undefined, enabled: false },
+  { persisted: false, environment: undefined, enabled: false },
+  { persisted: true, environment: undefined, enabled: true },
+  { persisted: true, environment: "false", enabled: false },
+  { persisted: false, environment: "true", enabled: true },
+  { persisted: undefined, environment: "1", enabled: true },
+  { persisted: true, environment: "off", enabled: false },
+])(
+  "resolves plugin registry opt-in: $persisted / $environment => $enabled",
+  async ({ persisted, environment, enabled }) => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paseo-registry-opt-in-"));
+    try {
+      await writeFile(
+        path.join(home, "config.json"),
+        JSON.stringify({ pluginRegistryEnabled: persisted }),
+      );
+      const config = loadConfig(home, { env: { PASEO_PLUGIN_REGISTRY_ENABLED: environment } });
+      expect(config.pluginRegistryEnabled).toBe(enabled);
+      expect(loadPersistedConfig(home).pluginRegistryEnabled).toBe(persisted);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+);
+
+test("plugin registry opt-in accepts only a persisted boolean", () => {
+  expect(PersistedConfigSchema.parse({ pluginRegistryEnabled: true }).pluginRegistryEnabled).toBe(
+    true,
+  );
+  expect(PersistedConfigSchema.parse({ pluginRegistryEnabled: false }).pluginRegistryEnabled).toBe(
+    false,
+  );
+  expect(PersistedConfigSchema.safeParse({ pluginRegistryEnabled: "true" }).success).toBe(false);
 });

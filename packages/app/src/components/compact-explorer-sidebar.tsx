@@ -26,7 +26,6 @@ import { ChangesSurface } from "@/git/diff-pane";
 import { changesStateSchema, defaultChangesState, type ChangesState } from "@/panels/changes/state";
 import { FileExplorerPane } from "./file-explorer-pane";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
-import { shouldUseCompactExplorerKeyboardPadding } from "@/keyboard/shift";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanel, RetainedPanelActivity } from "@/components/retained-panel";
@@ -39,11 +38,13 @@ import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
 } from "@/components/sidebar-resize-handle-layout";
+import { resolveExplorerSidebarWidth } from "@/components/explorer-sidebar-layout";
 import {
-  explorerSidebarCloseButtonLayout,
-  resolveExplorerSidebarWidth,
-} from "@/components/explorer-sidebar-layout";
-import { ToolbarButton } from "@/components/ui/pane-content-toolbar";
+  ToolbarButton,
+  paneContentToolbarIconSize,
+  paneContentToolbarTrailingPadding,
+} from "@/components/ui/pane-content-toolbar";
+import { smallIconButtonChromeFrameSize } from "@/components/ui/icon-button-chrome";
 import { mutedIconColorMapping } from "@/components/ui/icon-button-chrome";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { TaskCard, TaskCardHeader } from "@/agent-stream/task-card";
@@ -102,7 +103,7 @@ export function CompactExplorerSidebar({
     workspaceRoot,
     isGit,
   });
-  const usePanelKeyboardPadding = shouldUseCompactExplorerKeyboardPadding({ isGit, explorerTab });
+  const usePanelKeyboardPadding = !isGit || explorerTab !== "changes";
   const { style: mobileKeyboardInsetStyle } = useKeyboardShiftStyle({
     mode: "padding",
     enabled: usePanelKeyboardPadding,
@@ -550,3 +551,14 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 0,
   },
 }));
+
+function explorerSidebarCloseButtonLayout(compact: boolean) {
+  return compact
+    ? {
+        size: smallIconButtonChromeFrameSize(compact),
+        iconSize: paneContentToolbarIconSize(compact),
+        hitSlop: 0,
+        trailingPadding: paneContentToolbarTrailingPadding(compact, "glyph"),
+      }
+    : { size: 34, iconSize: 18, hitSlop: 8, trailingPadding: 8 };
+}

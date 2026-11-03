@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import { basename, resolve } from "node:path";
+import type { DaemonTarget } from "../../utils/daemon-target.js";
+import { resolveRepositoryDirectory } from "./repository-directory.js";
 import { connectToDaemon } from "../../utils/client.js";
 import type { AgentSnapshotPayload, PaseoWorktreeListResponse } from "@getpaseo/protocol/messages";
 import type { CommandOptions, ListResult, OutputSchema, CommandError } from "../../output/index.js";
@@ -47,6 +49,7 @@ export interface WorktreeRepoOptions {
 
 export interface WorktreeLsOptions extends CommandOptions, WorktreeRepoOptions {
   host?: string;
+  cwd?: string;
 }
 
 export interface WorktreeListRequest {
@@ -58,11 +61,22 @@ export interface WorktreeListRequest {
  * The daemon refuses a worktree list without a repository (upstream a94bc0720),
  * so always send one: `--repo` as repoRoot, otherwise `--cwd` or the process cwd.
  */
-export function buildWorktreeListRequest(options: WorktreeRepoOptions): WorktreeListRequest {
+export function buildWorktreeListRequest(
+  options: WorktreeRepoOptions & { daemonTarget?: DaemonTarget },
+): WorktreeListRequest {
   if (options.repo) {
-    return { repoRoot: resolve(options.repo) };
+    return {
+      repoRoot:
+        options.daemonTarget && options.daemonTarget.kind !== "instance"
+          ? options.repo
+          : resolve(options.repo),
+    };
   }
-  return { cwd: resolve(options.cwd ?? process.cwd()) };
+  return {
+    cwd: options.daemonTarget
+      ? resolveRepositoryDirectory({ ...options, daemonTarget: options.daemonTarget })
+      : resolve(options.cwd ?? process.cwd()),
+  };
 }
 
 export async function runLsCommand(

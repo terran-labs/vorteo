@@ -6,20 +6,30 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createIconCatalog } from "./icon-catalog-state";
 import { iconNameGroups } from "./icon-names.generated";
 import { Settings } from "lucide-react-native";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Icon } from "./icons";
+
+vi.mock("lucide-react-native", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("lucide-react-native")>();
+  function SettingsIcon(props: { size?: number; color?: string }) {
+    return createElement("svg", { width: props.size, height: props.size, color: props.color });
+  }
+  return { ...actual, Settings: SettingsIcon, LucideSettings: SettingsIcon, SettingsIcon };
+});
 
 describe("Icon", () => {
   it("renders a host Lucide icon with the requested presentation", () => {
-    expect(Icon({ name: "Settings", size: 18, color: "#123456" })).toMatchObject({
-      type: Settings,
-      props: { size: 18, color: "#123456" },
-    });
+    expect(
+      renderToStaticMarkup(createElement(Icon, { name: "Settings", size: 18, color: "#123456" })),
+    ).toBe(renderToStaticMarkup(createElement(Settings, { size: 18, color: "#123456" })));
   });
 
   it("keeps public aliases of common icons immediate", () => {
-    expect(Icon({ name: "LucideSettings", size: 18 })).toMatchObject({ type: Settings });
-    expect(Icon({ name: "SettingsIcon", size: 18 })).toMatchObject({ type: Settings });
+    for (const name of ["LucideSettings", "SettingsIcon"]) {
+      expect(renderToStaticMarkup(createElement(Icon, { name, size: 18 }))).toBe(
+        renderToStaticMarkup(createElement(Settings, { size: 18, color: "currentColor" })),
+      );
+    }
   });
 
   it("renders nothing for an unknown icon name", () => {

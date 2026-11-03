@@ -65,7 +65,7 @@ test("old Claude CLI explains missing models and clears the warning after upgrad
     await expect(row).toContainText("CLI update needed");
     await client.patchDaemonConfig({
       providers: {
-        [provider]: { env: { CATALOG_CLAUDE_VERSION: "2.1.285" } },
+        [provider]: { env: { CATALOG_CLAUDE_VERSION: "2.1.293" } },
       },
     });
     await client.refreshProvidersSnapshot({ providers: [provider] });

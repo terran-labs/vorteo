@@ -118,9 +118,14 @@ const EXPECTED_CLAUDE_MODELS = [
     descriptionFragment: "Most capable",
   },
   {
+    id: "claude-haiku-5-5",
+    model: "Haiku 5.5",
+    descriptionFragment: "Fastest",
+  },
+  {
     id: "claude-haiku-4-5",
     model: "Haiku 4.5",
-    descriptionFragment: "Fastest",
+    descriptionFragment: "Previous release",
   },
 ] as const;
 
@@ -151,7 +156,7 @@ await writeFile(
   `
   const command = process.argv.slice(2).join(" ");
   if (command === "auth status") console.log(JSON.stringify({ loggedIn: true }));
-  else if (command === "--version") console.log("2.1.284 (Claude Code)");
+  else if (command === "--version") console.log("2.1.293 (Claude Code)");
   else process.exit(1);
 `,
 );
@@ -445,8 +450,8 @@ try {
       "--quiet should print the same ordered model IDs returned by --json",
     );
     assert(
-      claudeModelsFromJson.some((m) => m.id === "claude-sonnet-5-5"),
-      "captured --json output should include the current Claude everyday model id",
+      claudeModelsFromJson.some((m) => m.id === "claude-haiku-5-5"),
+      "captured --json output should include the current Claude quick-answer model id",
     );
     console.log("✓ provider models --quiet outputs model IDs only\n");
   }
