@@ -35,28 +35,14 @@ export const TEST_WORKER_CAPS = { VITEST_MAX_WORKERS: "2", E2E_WORKERS: "1" };
 export function defaultQueueDir(env = process.env) {
   return (
     env.VORTEO_HEAVY_QUEUE_DIR ||
-    path.join(
-      os.homedir(),
-      ".local",
-      "share",
-      "vorteo-host",
-      "state",
-      "heavy-jobs"
-    )
+    path.join(os.homedir(), ".local", "share", "vorteo-host", "state", "heavy-jobs")
   );
 }
 
 export function defaultGateMarker(env = process.env) {
   return (
     env.VORTEO_BUILDS_GATE_MARKER ||
-    path.join(
-      os.homedir(),
-      ".local",
-      "share",
-      "vorteo-host",
-      "state",
-      "builds-gate-running.json"
-    )
+    path.join(os.homedir(), ".local", "share", "vorteo-host", "state", "builds-gate-running.json")
   );
 }
 
@@ -79,10 +65,7 @@ function readJson(file) {
 }
 
 /** Adds a ticket at the back of the queue and returns its path. */
-export function enqueue(
-  dir,
-  { label, pid = process.pid, now = Date.now() } = {}
-) {
+export function enqueue(dir, { label, pid = process.pid, now = Date.now() } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const ticket = {
     pid,
@@ -99,10 +82,7 @@ export function enqueue(
 }
 
 /** Live tickets in grant order, with the Builds gate marker first when live. Prunes dead tickets. */
-export function readQueue(
-  dir,
-  { gateMarker = defaultGateMarker(), alive = processAlive } = {}
-) {
+export function readQueue(dir, { gateMarker = defaultGateMarker(), alive = processAlive } = {}) {
   const entries = [];
   const gate = readJson(gateMarker);
   if (gate && alive(gate.pid)) {
@@ -132,13 +112,8 @@ export function readQueue(
 }
 
 /** Returns a reason to defer a heavy start, or null when memory allows it. */
-export function memoryDeferral({
-  pressureLevel,
-  freePercent,
-  swapoutBytesPerSecond,
-}) {
-  if (pressureLevel >= CRITICAL_PRESSURE)
-    return "macOS reports critical memory pressure";
+export function memoryDeferral({ pressureLevel, freePercent, swapoutBytesPerSecond }) {
+  if (pressureLevel >= CRITICAL_PRESSURE) return "macOS reports critical memory pressure";
   if (Number.isFinite(freePercent) && freePercent < MIN_FREE_PERCENT) {
     return `only ${freePercent}% of memory is free (need ${MIN_FREE_PERCENT}%)`;
   }
@@ -163,9 +138,7 @@ function swapoutBytes() {
 }
 
 function sysctl(name) {
-  return Number(
-    execFileSync("sysctl", ["-n", name], { encoding: "utf8" }).trim()
-  );
+  return Number(execFileSync("sysctl", ["-n", name], { encoding: "utf8" }).trim());
 }
 
 /** Samples memory over `windowMs`; unsupported platforms never defer. */
@@ -182,8 +155,7 @@ export async function sampleMemory(windowMs = POLL_MS) {
   }
   if (process.platform === "linux") {
     const info = fs.readFileSync("/proc/meminfo", "utf8");
-    const kb = (key) =>
-      Number(new RegExp(`^${key}:\\s+(\\d+)`, "m").exec(info)?.[1]);
+    const kb = (key) => Number(new RegExp(`^${key}:\\s+(\\d+)`, "m").exec(info)?.[1]);
     const freePercent = Math.round((kb("MemAvailable") / kb("MemTotal")) * 100);
     return { pressureLevel: 1, freePercent, swapoutBytesPerSecond };
   }
@@ -191,22 +163,16 @@ export async function sampleMemory(windowMs = POLL_MS) {
 }
 
 /** The command line and environment a heavy job runs with. */
-export function launchSpec(
-  command,
-  { platform = process.platform, env = process.env } = {}
-) {
+export function launchSpec(command, { platform = process.platform, env = process.env } = {}) {
   const niced = ["nice", "-n", "10", ...command];
   const argv = platform === "darwin" ? ["taskpolicy", "-b", ...niced] : niced;
   const capped = { ...env };
-  for (const [key, value] of Object.entries(TEST_WORKER_CAPS))
-    capped[key] ??= value;
+  for (const [key, value] of Object.entries(TEST_WORKER_CAPS)) capped[key] ??= value;
   return { argv, env: capped };
 }
 
 function describe(entry) {
-  return `${entry.label} (pid ${entry.pid}${
-    entry.cwd ? `, ${entry.cwd}` : ""
-  })`;
+  return `${entry.label} (pid ${entry.pid}${entry.cwd ? `, ${entry.cwd}` : ""})`;
 }
 
 async function waitForSlot(dir, ticket, log) {
@@ -218,12 +184,9 @@ async function waitForSlot(dir, ticket, log) {
   for (;;) {
     const queue = readQueue(dir);
     const position = queue.findIndex((entry) => entry.file === ticket);
-    if (position === -1)
-      throw new Error("heavy-job ticket disappeared from the queue");
+    if (position === -1) throw new Error("heavy-job ticket disappeared from the queue");
     if (position > 0) {
-      say(
-        `Queued at position ${position + 1}; waiting for ${describe(queue[0])}.`
-      );
+      say(`Queued at position ${position + 1}; waiting for ${describe(queue[0])}.`);
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       continue;
     }
@@ -237,14 +200,9 @@ async function run(args) {
   const separator = args.indexOf("--");
   const command = separator === -1 ? [] : args.slice(separator + 1);
   const labelIndex = args.indexOf("--label");
-  const label =
-    labelIndex !== -1 && labelIndex < separator
-      ? args[labelIndex + 1]
-      : command[0];
+  const label = labelIndex !== -1 && labelIndex < separator ? args[labelIndex + 1] : command[0];
   if (command.length === 0) {
-    console.error(
-      "usage: heavy-job.mjs run [--label <text>] -- <command> [args...]"
-    );
+    console.error("usage: heavy-job.mjs run [--label <text>] -- <command> [args...]");
     return 2;
   }
   const dir = defaultQueueDir();
@@ -260,10 +218,7 @@ async function run(args) {
   process.once("SIGTERM", stop);
 
   await waitForSlot(dir, ticket, log);
-  fs.writeFileSync(
-    ticket,
-    JSON.stringify({ ...readJson(ticket), startedAt: Date.now() })
-  );
+  fs.writeFileSync(ticket, JSON.stringify({ ...readJson(ticket), startedAt: Date.now() }));
   log(`Starting ${label} with background priority.`);
 
   const spec = launchSpec(command);
@@ -282,7 +237,7 @@ async function run(args) {
       resolve(127);
     });
     child.on("exit", (code, signal) =>
-      resolve(code ?? (signal ? 128 + os.constants.signals[signal] : 1))
+      resolve(code ?? (signal ? 128 + os.constants.signals[signal] : 1)),
     );
   });
 }
@@ -295,8 +250,7 @@ function status() {
   }
   queue.forEach((entry, index) => {
     let state = "queued";
-    if (index === 0)
-      state = entry.startedAt || entry.gate ? "running" : "starting";
+    if (index === 0) state = entry.startedAt || entry.gate ? "running" : "starting";
     console.log(`${index + 1}. ${state}: ${describe(entry)}`);
   });
   return 0;
