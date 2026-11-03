@@ -65,7 +65,7 @@ async function openWorkspace(
 }
 
 test.describe("Settings sidebar scroll position", () => {
-  test.use({ viewport: { width: 1000, height: 500 } });
+  test.use({ viewport: { width: 1000, height: 400 } });
 
   test("clamps after resizing and starts a fresh visit at the top", async ({ page }) => {
     await gotoAppShell(page);
@@ -73,7 +73,7 @@ test.describe("Settings sidebar scroll position", () => {
     await scrollSettingsSidebarToEnd(page);
     await page.setViewportSize({ width: 1000, height: 1100 });
     await expectSettingsSidebarScrollOffset(page, 0);
-    await page.setViewportSize({ width: 1000, height: 500 });
+    await page.setViewportSize({ width: 1000, height: 400 });
     await openSettingsSection(page, "appearance");
     await expectSettingsSidebarScrollOffset(page, 0);
     await scrollSettingsSidebarToEnd(page);
