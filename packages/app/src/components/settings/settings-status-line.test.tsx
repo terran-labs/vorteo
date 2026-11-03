@@ -18,7 +18,9 @@ describe("SettingsStatusLine", () => {
     expect(full).toContain("min-height:80px");
     expect(empty).not.toContain("polite");
     expect(empty).not.toContain("accessibilityLabel");
-    expect(full).toContain('accessibilityLabel="An error with the full explanation"');
+    // The full message stays in the text node; a copied label would collide with field labels.
+    expect(full).not.toContain("accessibilityLabel");
+    expect(full).toContain("An error with the full explanation");
     expect(full).toContain('numberOfLines="2"');
     expect(full).toContain('accessibilityLiveRegion="polite"');
   });

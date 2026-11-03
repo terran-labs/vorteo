@@ -84,7 +84,6 @@ function OwnerErrorSlot({ message, testID }: { message: string | null; testID: s
       <Text
         testID={testID}
         numberOfLines={2}
-        accessibilityLabel={message || undefined}
         accessibilityLiveRegion={message ? "polite" : undefined}
         style={styles.error}
       >

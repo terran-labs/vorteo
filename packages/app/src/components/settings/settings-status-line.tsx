@@ -2,7 +2,11 @@ import { useMemo } from "react";
 import { Text, View, useWindowDimensions } from "react-native";
 import { settingsStyles } from "@/styles/settings";
 
-/** Reserve two scaled lines, including when there is no status to announce. */
+/**
+ * Reserve two scaled lines, including when there is no status to announce. The text node keeps
+ * the full message for assistive technology; numberOfLines only clips it visually. A copied
+ * accessibilityLabel would also make the message match getByLabel queries for nearby fields.
+ */
 export function SettingsStatusLine({
   message,
   testID,
@@ -20,7 +24,6 @@ export function SettingsStatusLine({
       <Text
         testID={message ? testID : undefined}
         numberOfLines={2}
-        accessibilityLabel={message || undefined}
         accessibilityLiveRegion={message ? "polite" : undefined}
         style={[settingsStyles.rowHint, lineStyle]}
       >
