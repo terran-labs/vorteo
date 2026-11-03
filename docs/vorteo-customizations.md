@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): merged `main` after the second Host delivery into the installed Host source for its pull request; functionality is unchanged.
+
 Maintenance review (2026-11-03): Claude threads gain an opt-in, per-thread Chrome toggle that starts Claude with `--chrome` from the next turn, listed only where the Claude in Chrome native host is installed and off by default. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): the sidebar merges an empty, hidden Dev System project with the Host's again, so the System project keeps one row, its folder placement, its ordering and the workspaces recorded under its merged key. App-only change; README overview and onboarding are unchanged.

@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge `main` after the second Host delivery so the third and fourth installed Host updates can follow it to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - A thread whose history failed to load after a daemon or session host restart no longer stays blank or shows only its recent messages. The next request for the thread retries the load once the thread is idle, and when newer messages arrived after the failure, it replaces the partial history with the full transcript under a new epoch so open clients reset. Concurrent requests share one retry, and a thread with a running turn waits for it to finish.
