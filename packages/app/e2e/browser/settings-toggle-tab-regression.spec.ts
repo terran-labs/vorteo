@@ -409,3 +409,31 @@ for (const behavior of ["Steer", "Interrupt", "Queue"] as const) {
     }
   });
 }
+
+test.describe("Phone Settings toggle", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("returns to the same conversation and draft after changing a setting", async ({ page }) => {
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "phone-settings-toggle-",
+      title: "Phone Settings return",
+    });
+    try {
+      await openAgentRoute(page, agent);
+      const composer = page.getByRole("textbox", { name: "Message agent..." });
+      await composer.fill("Keep this phone draft");
+      await pressSettingsToggleShortcut(page);
+      await expect(page).toHaveURL(/\/settings$/);
+      await revealSettingsLocation(page, "chat.sending");
+      await selectSendingOption(page, "Default send", "Queue");
+      await pressSettingsToggleShortcut(page);
+      await expect(page).toHaveURL(buildHostWorkspaceRoute(getServerId(), agent.workspaceId));
+      await expect(composer).toHaveValue("Keep this phone draft");
+      await expect(
+        page.getByTestId("workspace-tab-switcher-trigger").filter({ visible: true }),
+      ).toBeVisible();
+    } finally {
+      await agent.cleanup();
+    }
+  });
+});
