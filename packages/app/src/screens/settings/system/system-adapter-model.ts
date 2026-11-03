@@ -119,7 +119,7 @@ export function systemAttentionCount(
 
 export function selectSystemEnvironments(
   installation: ExecutionInstallation | null,
-  hosts: readonly HostProfile[],
+  hosts: readonly Pick<HostProfile, "serverId">[],
   serverId?: string,
   selectedServerId?: string | null,
 ) {

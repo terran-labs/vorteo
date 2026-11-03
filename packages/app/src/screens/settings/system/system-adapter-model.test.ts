@@ -113,9 +113,7 @@ it("includes public System services requests and recovery in the locked notice",
 });
 
 it("respects explicit, installation, selected and first-host precedence", () => {
-  const hosts = [{ serverId: "first" }, { serverId: "selected" }] as Parameters<
-    typeof selectSystemEnvironments
-  >[1];
+  const hosts = [{ serverId: "first" }, { serverId: "selected" }];
   const installation = {
     environments: [
       { kind: "host", serverId: "installation-host" },
