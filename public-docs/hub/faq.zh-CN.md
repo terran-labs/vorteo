@@ -6,7 +6,7 @@ nav: 常见问题
 
 # Hub 常见问题 {#hub-faq}
 
-## 使用 Paseo 需要 Hub 吗？ {#do-i-need-hub-to-use-paseo}
+## 使用 Vorteo 需要 Hub 吗？ {#do-i-need-hub-to-use-vorteo}
 
 不需要。没有 Hub，Paseo 也能在你的机器上运行 Agent。Hub 增加的是单个 daemon 自身做不到的事：由外部活动启动 Agent、版本化的配置、共享的运行记录，以及团队访问。
 

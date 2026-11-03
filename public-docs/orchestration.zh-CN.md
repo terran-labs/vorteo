@@ -26,7 +26,7 @@ Paseo 让你的编程 Agent 协调其他 Agent，把工作分配到不同的 Pro
 
 使用内置的 Paseo 工具或 CLI。两者都能让 Agent 启动和协调执行者。
 
-### 内置 Paseo 工具（MCP） {#built-in-paseo-tools-mcp}
+### 内置 Vorteo 工具（MCP） {#built-in-vorteo-tools-mcp}
 
 启用 Paseo 工具后，在 Paseo 中运行的 Agent 可以直接管理其主机上的 Agent 和工作区。
 

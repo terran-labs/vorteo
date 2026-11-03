@@ -274,7 +274,7 @@ export default function contribute(server: PluginServerContext) {
 
 `contributeClient` 原本就接收 `PluginClientContext` 并返回清理函数，因此客户端入口直接调用它并返回它的清理函数。如果插件的 `addClientSide` 回调还注册了标签或订阅，请保留那些代码；只去掉外层包装。
 
-## 7. 声明 Paseo 版本要求 {#7-declare-the-paseo-requirement}
+## 7. 声明 Vorteo 版本要求 {#7-declare-the-vorteo-requirement}
 
 迁移完入口和导入后，在 `paseo-plugin.json` 中添加最低运行时版本：
 

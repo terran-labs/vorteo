@@ -23,13 +23,13 @@ chmod +x Paseo-x86_64.AppImage
 
 Paseo 窗口应该会打开。你也可以从[下载页面](https://paseo.sh/download)获取 `.deb`（Debian/Ubuntu）或 `.rpm`（Fedora）进行安装。
 
-## Paseo 找不到我的 Provider {#paseo-cant-find-my-provider}
+## Vorteo 找不到我的 Provider {#vorteo-cant-find-my-provider}
 
 你已经安装的 Provider 显示为 **未安装**。
 
 Paseo 启动的是你已经安装的 Agent CLI，它并不自带这些 CLI（参见 [Provider](/docs/providers)）。所以它必须在自己的 `PATH` 中找到命令。如果你的 shell 只在特定条件下才把该位置加入 `PATH`，Paseo 就可能找不到它。
 
-### 查看 Paseo 看到的内容 {#see-what-paseo-sees}
+### 查看 Vorteo 看到的内容 {#see-what-vorteo-sees}
 
 打开 **设置 → 你的主机 → Providers**，点击该 Provider，然后点击 **诊断**。重要的几行：
 
@@ -50,7 +50,7 @@ paseo --host <host:port> provider diagnostic <provider> --json
 
 ### 修复 {#fix-it}
 
-持久的修复方法是确保该命令在普通登录 shell 的 `PATH` 中，然后重启 Paseo。为什么要以此为准，请参见 [Paseo 的环境为何可能与终端不同](#why-paseos-environment-can-differ-from-your-terminal)。
+持久的修复方法是确保该命令在普通登录 shell 的 `PATH` 中，然后重启 Paseo。为什么要以此为准，请参见 [Paseo 的环境为何可能与终端不同](#why-vorteos-environment-can-differ-from-your-terminal)。
 
 如果你更想直接固定路径，请在 `~/.paseo/config.json` 中设置二进制文件路径：
 
@@ -70,7 +70,7 @@ paseo --host <host:port> provider diagnostic <provider> --json
 
 关于替代端点、多个配置、自定义二进制文件和 ACP Agent，请参见[自定义 Provider](/docs/custom-providers)。各 Agent 的安装链接见[支持的 Provider](/docs/supported-providers)。
 
-## Paseo 的环境为何可能与终端不同 {#why-paseos-environment-can-differ-from-your-terminal}
+## Vorteo 的环境为何可能与终端不同 {#why-vorteos-environment-can-differ-from-your-terminal}
 
 只要 Paseo 运行你的工具、Agent 或终端，就可能出现同样的不一致：你每天都在用的命令被报告为 `command not found`。
 

@@ -8,7 +8,7 @@ nav: Claude Code
 
 Paseo 通过官方的 `claude` CLI，借助 Claude Agent SDK 运行 Claude Code。
 
-## 在 Paseo 中使用 Claude Code 需要额外付费吗？ {#does-claude-code-cost-extra-in-paseo}
+## 在 Vorteo 中使用 Claude Code 需要额外付费吗？ {#does-claude-code-cost-extra-in-vorteo}
 
 不需要。在 Paseo 中使用 Claude Code 计入你正常的 Claude 套餐额度，不需要单独的 Agent SDK 额度。
 
@@ -20,7 +20,7 @@ Paseo 通过官方的 `claude` CLI，借助 Claude Agent SDK 运行 Claude Code�
 
 如果 Claude 登录过期，请用 Claude Code CLI 重新认证，然后在 Paseo 中启动新的 Claude Code 会话。已有的 Paseo 会话保留启动时的认证，因此重新认证不会更新已经在运行的会话。
 
-## 在 Paseo 终端中使用 Claude Code {#use-claude-code-in-the-paseo-terminal}
+## 在 Vorteo 终端中使用 Claude Code {#use-claude-code-in-the-vorteo-terminal}
 
 Claude Code 在 Paseo 终端里也很好用。如果你更喜欢标准的 CLI 体验，在工作区中打开终端，像平常一样运行 `claude` 即可。
 

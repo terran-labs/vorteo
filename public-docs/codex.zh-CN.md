@@ -8,7 +8,7 @@ nav: Codex
 
 Paseo 通过官方的 `codex` CLI 及其 app-server 接口运行 Codex。
 
-## 在 Paseo 中使用 Codex 需要额外付费吗？ {#does-codex-cost-extra-in-paseo}
+## 在 Vorteo 中使用 Codex 需要额外付费吗？ {#does-codex-cost-extra-in-vorteo}
 
 不需要。Paseo 不会为 Codex 额外收费。用 ChatGPT 登录 Codex CLI，即可使用 ChatGPT 套餐包含的额度；或者用 API key 登录，用量通过你的 OpenAI Platform 账号计费。
 
@@ -48,7 +48,7 @@ codex
 
 你启动 Codex Agent 时，Paseo 会使用这份安装及其现有的认证。
 
-## Paseo 中找不到 Codex {#codex-is-missing-in-paseo}
+## Vorteo 中找不到 Codex {#codex-is-missing-in-vorteo}
 
 ChatGPT 桌面应用和 Codex CLI 是分开安装的。安装桌面应用并不会让 Paseo 找到 `codex` 命令。
 
@@ -71,7 +71,7 @@ where.exe codex
 
 当 Paseo 能找到并启动 `codex` 命令后，这个 Provider 就会变为可用。
 
-## 在 Paseo 终端中使用 Codex {#use-codex-in-the-paseo-terminal}
+## 在 Vorteo 终端中使用 Codex {#use-codex-in-the-vorteo-terminal}
 
 Codex 在 Paseo 终端里同样可用。在工作区中打开终端并运行 `codex`，即可获得标准的 CLI 体验，同时保留对工作区、git 改动和其他 Paseo 工具的访问。
 

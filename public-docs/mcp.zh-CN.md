@@ -17,7 +17,7 @@ nav: MCP 参考
 
 根据 Provider 的不同，Paseo 通过其原生工具接口或 MCP 提供工具，能力是相同的。修改注入设置后，请启动新的 Agent 或重新加载已有的 Agent。
 
-## 按 Provider 限制 Paseo 工具 {#limit-paseo-tools-by-provider}
+## 按 Provider 限制 Vorteo 工具 {#limit-vorteo-tools-by-provider}
 
 当不同的 Agent 配置应获得不同的 Paseo 工具时，请使用 Provider 策略。先全局启用工具注入，然后在你启动所用的确切 Provider ID 上添加 `paseoTools`：
 

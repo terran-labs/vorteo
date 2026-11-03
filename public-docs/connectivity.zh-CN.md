@@ -11,7 +11,7 @@ nav: 连接
 这里说的是客户端到 daemon 的传输。如果你要找的是由 GitHub、Slack 和 Discord 事件启动 Agent 的服务，那是 [Hub](/docs/hub)。
 
 - [SSH](#ssh)
-- [Paseo 中继](#paseo-relay)
+- [Paseo 中继](#vorteo-relay)
 - [Tailscale](#tailscale)
 
 ## SSH {#ssh}
@@ -47,13 +47,13 @@ paseo --host 'ssh://user@host?daemonPort=7777' ls -a
 
 如果远程 daemon 设置了密码，请在 **守护进程密码** 中输入；它会随主机一起保存，并在每次连接时发送，与直连的密码一样。SSH 登录本身仍然基于密钥，Paseo 从不提示输入 SSH 密码。
 
-## Paseo 中继 {#paseo-relay}
+## Vorteo 中继 {#vorteo-relay}
 
 中继无需 Tailscale、端口转发或网络配置即可工作。流量是端到端加密的。
 
 在你启用之前，中继是关闭的。
 
-### 在 Paseo 桌面端启用中继 {#enable-relay-from-paseo-desktop}
+### 在 Vorteo 桌面端启用中继 {#enable-relay-from-vorteo-desktop}
 
 1. 打开 **设置 → 你的主机 → 配对设备**。
 2. 选择 **启用中继**。

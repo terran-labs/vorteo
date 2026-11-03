@@ -1,50 +1,12 @@
 ---
 title: 快速上手
-description: 安装 Paseo，随时随地运行编程 Agent。
+description: 安装 Vorteo，随时随地运行编程 Agent。
 nav: 快速上手
 ---
 
 # 快速上手 {#getting-started}
 
-Paseo 是一个 Agent 开发环境，用于运行编程 Agent、编辑文件、审查改动和测试你的工作。Agent 运行在你的机器上；桌面端、移动端、网页端和 CLI 客户端让你随时随地工作。在下面选择安装方式。
-
-## 桌面应用（推荐） {#desktop-app-recommended}
-
-从 [paseo.sh/download](https://paseo.sh/download) 或 [GitHub releases 页面](https://github.com/getpaseo/paseo/releases)下载。打开即可使用。
-
-桌面应用自带 daemon 并会自动启动它，无需单独安装。首次启动时你会看到一个简短的启动画面，之后在手机上通过 **设置 → 你的主机 → 配对设备** 连接。
-
-## 服务器 / CLI {#server--cli}
-
-适用于无界面的机器、开发机，或任何你想在没有桌面界面的情况下运行 daemon 的场景：
-
-```bash
-npm install -g @getpaseo/cli
-paseo
-```
-
-Paseo 会在本地启动 daemon，然后询问是否启用端到端加密中继并打印配对二维码。如果你拒绝，可以通过 TCP、Tailscale 或其他 VPN 手动输入 daemon 地址。
-
-daemon 还可以自己提供浏览器网页应用，这样你无需托管版应用也能使用完整界面。参见[自托管网页界面](/docs/web-ui)。
-
-配置和本地状态位于 `PASEO_HOME` 下（默认为 `~/.paseo`）。
-
-## Docker {#docker}
-
-在服务器、开发机、NAS 设备或家庭实验室主机上，运行官方镜像：
-
-```bash
-docker run -d --name paseo \
-  -p 6767:6767 \
-  -e PASEO_PASSWORD=change-me \
-  -v "$PWD/paseo-home:/home/paseo" \
-  -v "$PWD:/workspace" \
-  ghcr.io/getpaseo/paseo:latest
-```
-
-然后打开 `http://localhost:6767`。
-
-该镜像运行 daemon 并提供内置的网页界面。它不包含 Agent CLI，因此请用你使用的 Agent 扩展它。Compose、反向代理、Agent 安装和安全方面的示例见 [Docker](/docs/docker)。
+Vorteo 在你的机器上运行 Agent，包含一个受信任的 Host 环境和一个可选的隔离 Dev 容器。安装 fork 版本请参阅[安装指南](https://github.com/terran-labs/vorteo#install)，容器细节见 [Docker 运维](/docs/docker)。安装程序从 fork 源码构建，并配置私有连接。
 
 ## 接下来 {#where-next}
 

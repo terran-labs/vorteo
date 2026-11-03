@@ -1721,7 +1721,7 @@ const behavior: PluginButtonBehavior = {
 `remove()` 是幂等的。移除之后的更新不起作用。当插件安装被销毁时，Paseo 会移除尚存的按钮（参见[主机与生命周期](#hosts-and-lifecycle)）。
 请从客户端入口返回清理函数，用来释放你的订阅、定时器和其他资源。
 
-## 使用 Paseo SDK {#use-the-paseo-sdk}
+## 使用 Vorteo SDK {#use-the-vorteo-sdk}
 
 在界面中执行普通的 Paseo 操作请使用 `usePaseo()`。它借用所选主机现有的连接；不要再创建一个客户端。
 
