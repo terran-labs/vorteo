@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { ProviderLoginService } from "./service.js";
+import { expect, it, vi } from "vitest";
+import { ProviderLoginRefusal, ProviderLoginService } from "./service.js";
 import type { ProviderLoginSession } from "./session.js";
 
 class LoginSession implements ProviderLoginSession {
@@ -163,4 +163,28 @@ it("submits a browser code only to the matching live account attempt", async () 
   await expect(f.service.submitCode("one", attempt.attemptId, "late-code")).rejects.toThrow();
   expect(session.codes).toEqual(["correct-code"]);
   await f.service.dispose();
+});
+
+it("fails a completed sign-in that verification refuses and reports no connection", async () => {
+  const session = new LoginSession();
+  const connected: string[] = [];
+  const verify = vi.fn(async () => {
+    throw new ProviderLoginRefusal("Sign in as owner@example.test instead.");
+  });
+  const service = new ProviderLoginService({
+    getClient: () => ({ openAccountLoginSession: async () => session }),
+    onConnected: (id) => connected.push(id),
+    verify,
+    schedule: () => () => {},
+  });
+  service.start("one");
+  await expect.poll(() => service.read("one").status).toBe("waiting");
+  session.complete(true);
+  await expect
+    .poll(() => service.read("one"))
+    .toMatchObject({ status: "failed", message: "Sign in as owner@example.test instead." });
+  expect(verify).toHaveBeenCalledWith("one");
+  expect(connected).toEqual([]);
+  expect(session.disposals).toBe(1);
+  await service.dispose();
 });

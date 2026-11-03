@@ -1,7 +1,11 @@
 import { z } from "zod";
-import { ProviderLoginStateSchema } from "@getpaseo/protocol/provider-login";
+import {
+  ProviderLoginStateSchema,
+  type ProviderLoginState,
+} from "@getpaseo/protocol/provider-login";
 import {
   InstallationRequestFailed,
+  InstallationRouteUnavailable,
   OwnerAccessExpired,
   requestInstallationOwner,
 } from "@/execution-installation/client";
@@ -99,5 +103,47 @@ export async function claudeFullSignInAvailable(): Promise<boolean> {
   } catch (error) {
     if (error instanceof OwnerAccessExpired) throw error;
     return error instanceof InstallationRequestFailed && error.status === 409;
+  }
+}
+
+const UpgradeReadSchema = z.object({ available: z.boolean(), login: ProviderLoginStateSchema });
+
+/**
+ * Upgrades a setup-token account to full sign-in in place: same account, directory and history.
+ * Read, submit and cancel act on the upgrade's own sign-in attempt.
+ */
+export async function claudeUpgradeRequest(
+  serverId: string,
+  providerId: string,
+  operation: "read" | "start" | "submit" | "cancel",
+  attempt?: { attemptId: string; code?: string },
+): Promise<ProviderLoginState> {
+  const definition = await claudeDefinition(serverId, providerId);
+  const result = await requestInstallationOwner(`claude/oauth/upgrade/${operation}`, "", {
+    definitionId: definition.id,
+    ...attempt,
+  });
+  if (operation === "read") return UpgradeReadSchema.parse(result).login;
+  return ProviderLoginStateSchema.parse(result);
+}
+
+/**
+ * Whether this setup-token account can be upgraded. The coordinator answers only when it runs
+ * Host-owned refresh and every daemon advertises the upgrade; older coordinators answer 404.
+ */
+export async function claudeUpgradeAvailable(
+  serverId: string,
+  providerId: string,
+): Promise<boolean> {
+  const definition = await claudeDefinition(serverId, providerId);
+  if (definition.accountSetup?.signIn === "full") return false;
+  try {
+    const result = await requestInstallationOwner("claude/oauth/upgrade/read", "", {
+      definitionId: definition.id,
+    });
+    return UpgradeReadSchema.parse(result).available;
+  } catch (error) {
+    if (error instanceof InstallationRouteUnavailable) return false;
+    throw error;
   }
 }

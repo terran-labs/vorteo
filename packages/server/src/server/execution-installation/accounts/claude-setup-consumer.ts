@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { ErrorRequestHandler, Express } from "express";
+import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { readClaudeSetupFile, writeClaudeSetupFile } from "./claude-setup-file.js";
 import { createClaudeAccount } from "../../../services/provider-login/create-account.js";
@@ -26,6 +27,19 @@ interface ConsumerOptions {
   paseoHome: string;
   store: DaemonConfigStore;
   onApplied?(providerId: string): void;
+}
+
+/**
+ * Managed accounts only. Full sign-in accounts never receive setup tokens; one upgraded from a
+ * setup token still accepts the withdrawal that deletes its old one.
+ */
+function acceptsDelivery(definition: InstallationProvider, delivery: ClaudeSetupDelivery): boolean {
+  const setup = definition.accountSetup;
+  return (
+    setup?.provider === "claude" &&
+    (setup.signIn !== "full" || delivery.credential === null) &&
+    delivery.providerId === `claude-account-${setup.creationId}`
+  );
 }
 
 /** Mounted behind daemon bearer authentication. Returns metadata only, never credentials. */
@@ -48,10 +62,7 @@ export function mountClaudeSetupConsumer(app: Express, options: ConsumerOptions)
       authority.revision !== delivery.policyRevision ||
       definition.providerType !== "claude" ||
       definition.bindings[delivery.serverId] !== delivery.providerId ||
-      definition.accountSetup?.provider !== "claude" ||
-      // Full sign-in accounts never receive setup tokens.
-      definition.accountSetup.signIn === "full" ||
-      delivery.providerId !== `claude-account-${definition.accountSetup.creationId}`
+      !acceptsDelivery(definition, delivery)
     )
       throw new ClaudeSetupDeliveryError();
     const excluded =

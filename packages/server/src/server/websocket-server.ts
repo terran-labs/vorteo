@@ -2098,6 +2098,8 @@ export class VoiceAssistantWebSocketServer {
         codexAccountCreation: true,
         claudeAccountCreation: true,
         claudeFullSignIn: true,
+        // COMPAT(claudeSignInUpgrade): added after v26.11.206, remove gate after 2027-05-02.
+        claudeSignInUpgrade: true,
         codexInstallationSignIn: true,
         providerSecretDelivery: true,
         providerCredentialRemoval: true,

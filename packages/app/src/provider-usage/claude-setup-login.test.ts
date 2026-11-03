@@ -3,6 +3,8 @@ import {
   claudeFullSignInAvailable,
   claudeProviderConnectsToInstallation,
   claudeSetupRequest,
+  claudeUpgradeAvailable,
+  claudeUpgradeRequest,
 } from "./claude-setup-login";
 import { requestInstallationSettings } from "@/execution-installation/settings";
 import {
@@ -163,4 +165,64 @@ test("full sign-in is offered only when the coordinator serves its routes", asyn
 test("only installation accounts offer the shared connection", () => {
   expect(claudeProviderConnectsToInstallation("claude-account-f7b775da")).toBe(true);
   expect(claudeProviderConnectsToInstallation("claude")).toBe(false);
+});
+
+test("a setup-token account upgrades through the coordinator's upgrade routes", async () => {
+  const setupAccount = {
+    ...account,
+    accountSetup: { provider: "claude", creationId: "33333333-3333-4333-8333-333333333333" },
+  };
+  settings([setupAccount]);
+  const attemptId = "11111111-1111-4111-8111-111111111111";
+  request.mockResolvedValueOnce({ available: true, login: { status: "idle" } });
+  await expect(claudeUpgradeAvailable("dev", "claude-one")).resolves.toBe(true);
+  request.mockResolvedValueOnce({ status: "starting", attemptId });
+  await expect(claudeUpgradeRequest("host", "claude-one", "start")).resolves.toEqual({
+    status: "starting",
+    attemptId,
+  });
+  request.mockResolvedValueOnce({ available: false, login: { status: "verifying", attemptId } });
+  await expect(claudeUpgradeRequest("host", "claude-one", "read")).resolves.toEqual({
+    status: "verifying",
+    attemptId,
+  });
+  request.mockResolvedValueOnce({
+    status: "waiting",
+    attemptId,
+    verificationUrl: "x",
+    userCode: "",
+    expiresAt: "y",
+  });
+  await claudeUpgradeRequest("host", "claude-one", "submit", { attemptId, code: "synthetic" });
+  expect(request.mock.calls).toEqual([
+    ["claude/oauth/upgrade/read", "", { definitionId: "shared-one" }],
+    ["claude/oauth/upgrade/start", "", { definitionId: "shared-one" }],
+    ["claude/oauth/upgrade/read", "", { definitionId: "shared-one" }],
+    [
+      "claude/oauth/upgrade/submit",
+      "",
+      { definitionId: "shared-one", attemptId, code: "synthetic" },
+    ],
+  ]);
+});
+
+test("the upgrade is unavailable on older coordinators and for full sign-in accounts", async () => {
+  settings([account]);
+  request.mockRejectedValueOnce(new InstallationRouteUnavailable("unavailable"));
+  await expect(claudeUpgradeAvailable("host", "claude-one")).resolves.toBe(false);
+  request.mockRejectedValueOnce(new OwnerAccessExpired("expired"));
+  await expect(claudeUpgradeAvailable("host", "claude-one")).rejects.toThrow("expired");
+  request.mockClear();
+  settings([
+    {
+      ...account,
+      accountSetup: {
+        provider: "claude",
+        creationId: "33333333-3333-4333-8333-333333333333",
+        signIn: "full",
+      },
+    },
+  ]);
+  await expect(claudeUpgradeAvailable("host", "claude-one")).resolves.toBe(false);
+  expect(request).not.toHaveBeenCalled();
 });

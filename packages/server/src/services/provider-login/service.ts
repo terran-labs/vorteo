@@ -14,12 +14,20 @@ export const CODEX_START_FAILURE =
 export const CLAUDE_START_FAILURE =
   "Could not start Claude sign-in. Check the host connection and that the Claude CLI is installed and up to date on the Host, then try again.";
 
+/** A sign-in the provider accepted but that this account must refuse; its message is shown. */
+export class ProviderLoginRefusal extends Error {}
+
 interface LoginClient {
   openAccountLoginSession?(): Promise<ProviderLoginSession>;
 }
 interface LoginServiceOptions {
   getClient(providerId: string): LoginClient | null;
   onConnected(providerId: string): void;
+  /**
+   * Runs while the attempt is verifying, after the provider CLI saved the sign-in. A throw fails
+   * the attempt instead of reporting success; a ProviderLoginRefusal message is shown as is.
+   */
+  verify?: (providerId: string) => Promise<void>;
   now?: () => number;
   schedule?: (callback: () => void, delay: number) => () => void;
   /** Shown when the provider CLI cannot open a sign-in; says what to check for this provider. */
@@ -161,6 +169,31 @@ export class ProviderLoginService {
       /* Login completion already proves credentials were saved. */
     }
     if (attempt.state.status !== "verifying") return;
+    if (this.options.verify) {
+      try {
+        await this.options.verify(attempt.providerId);
+      } catch (error) {
+        // A refusal's message is user copy that can name accounts; log only that it happened.
+        this.options.logger?.warn(
+          error instanceof ProviderLoginRefusal
+            ? { refused: true, providerId: attempt.providerId }
+            : { err: error, providerId: attempt.providerId },
+          "Account sign-in could not be verified",
+        );
+        if (attempt.state.status !== "verifying") return;
+        attempt.state = {
+          status: "failed",
+          attemptId,
+          message:
+            error instanceof ProviderLoginRefusal
+              ? error.message
+              : "Sign-in completed, but this account could not be updated. Nothing changed; try again.",
+        };
+        await this.release(attempt);
+        return;
+      }
+      if (attempt.state.status !== "verifying") return;
+    }
     attempt.state = { status: "succeeded", attemptId, accountLabel };
     this.options.onConnected(attempt.providerId);
     await this.release(attempt);
