@@ -1,3 +1,4 @@
+import { revealSettingsLocation } from "../support/helpers/settings";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { buildHostAgentDetailRoute, buildHostWorkspaceRoute } from "@/utils/host-routes";
 import { expect, test } from "../support/fixtures";
@@ -8,7 +9,16 @@ import { getServerId } from "../support/helpers/server-id";
 
 async function pressSettingsToggleShortcut(page: import("@playwright/test").Page) {
   const modifier = process.platform === "darwin" ? "Meta" : "Control";
+  const before = page.url();
   await page.keyboard.press(`${modifier}+Comma`);
+  if (
+    (page.viewportSize()?.width ?? 1280) < 600 &&
+    new URL(before).pathname.startsWith("/settings")
+  ) {
+    await expect(page).not.toHaveURL(before);
+    if (new URL(page.url()).pathname.startsWith("/settings"))
+      await page.keyboard.press(`${modifier}+Comma`);
+  }
 }
 
 async function openComposerTab(page: import("@playwright/test").Page, agentId: string) {
@@ -133,8 +143,9 @@ test.describe("Settings toggle tab regression", () => {
       await expectAgentTabActive(page, secondAgent.id);
 
       await pressSettingsToggleShortcut(page);
-      await expect(page).toHaveURL(/\/settings\/general$/);
+      await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
 
+      await revealSettingsLocation(page, "chat.sending");
       const defaultSendTrigger = page.getByRole("button", {
         name: "Default send: Steer",
         exact: true,
@@ -201,7 +212,7 @@ test.describe("Settings toggle tab regression", () => {
 
       await startComposerFrameCapture(page);
       await pressSettingsToggleShortcut(page);
-      await expect(page).toHaveURL(/\/settings\/general$/);
+      await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
       await pressSettingsToggleShortcut(page);
       await expect(page).not.toHaveURL(/\/settings(\/|$)/);
       await expect(input).toHaveValue("Keep this short draft in the composer");
@@ -324,6 +335,7 @@ test("send shortcut selection persists and controls the composer", async ({ page
     });
     await test.step("choose the explicit modifier shortcut and retain it after reload", async () => {
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await expect(
         page.getByRole("button", { name: "Send shortcut: Enter", exact: true }),
       ).toBeVisible();
@@ -351,6 +363,7 @@ test("send shortcut selection persists and controls the composer", async ({ page
     });
     await test.step("switch back to Enter without changing the default send behavior", async () => {
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await selectSendingOption(page, "Send shortcut", "Enter");
       await pressSettingsToggleShortcut(page);
       await composer.fill("Shift still edits");
@@ -375,6 +388,7 @@ for (const behavior of ["Steer", "Interrupt", "Queue"] as const) {
       await openAgentRoute(page, agent);
       await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
       await pressSettingsToggleShortcut(page);
+      await revealSettingsLocation(page, "chat.sending");
       await selectSendingOption(page, "Send shortcut", `${modifierLabel}+Enter`);
       await selectSendingOption(page, "Default send", behavior);
       await pressSettingsToggleShortcut(page);

@@ -6,6 +6,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+- Settings now groups eight sections by device and installation scope, keeps search in the top bar, and closes Command Center when Settings opens. Keyboard shortcuts opens from a drill-in row and owner access has a reserved location. Pane headers show the scope of their settings. The search shortcut ignores hidden retained pages. Sidebar scrolling stays put during font changes. Existing settings links remain valid; desktop and phone browser checks account for the shorter section list and use visible navigation controls to cover header search, overlay dismissal and returning from Settings.
+
 ### Fixes
 
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.

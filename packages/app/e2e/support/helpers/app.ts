@@ -32,6 +32,10 @@ export const gotoHome = async (page: Page) => {
 };
 
 export const openSettings = async (page: Page) => {
+  if ((page.viewportSize()?.width ?? 1280) < 600) {
+    const menu = page.getByTestId("menu-button").filter({ visible: true }).first();
+    if (await menu.isVisible()) await menu.click();
+  }
   // Navigate through the real app control so route changes stay aligned with UI behavior.
   // Settings sits in the toolbar when there is room, otherwise in its overflow menu.
   const settingsButton = page.locator('[data-testid="sidebar-settings"]:visible').first();
@@ -48,7 +52,7 @@ export const openSettings = async (page: Page) => {
     await expect(settingsButton).toBeVisible();
     await settingsButton.click();
   }
-  await expect(page).toHaveURL(/\/settings\/general$/);
+  await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
 };
 
 export const setWorkingDirectory = async (page: Page, directory: string) => {

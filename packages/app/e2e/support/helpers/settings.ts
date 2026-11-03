@@ -19,6 +19,9 @@ interface SavedSettingsHostInput {
 /** Old settings page names that specs open; the catalog maps each to its new place. */
 const OLD_SETTINGS_PAGES = [
   "general",
+  "interface",
+  "privacy",
+  "system",
   "chat",
   "appearance",
   "sidebar",
@@ -62,6 +65,12 @@ export async function openSettingsSection(page: Page, section: SettingsSection):
 /** Scrolls the settings page to the pane that an old settings page name now opens. */
 export async function revealSettingsLocation(page: Page, slug: string): Promise<void> {
   const target = resolveSettingsTarget(slug);
+  if (
+    (page.viewportSize()?.width ?? 1280) < 768 &&
+    !(await page.getByTestId("settings-sidebar").isVisible())
+  ) {
+    await page.getByRole("button", { name: "Back", exact: true }).first().click();
+  }
   // A drill-in can leave an earlier settings screen mounted but hidden, and a section can also
   // appear in the page body, so use the visible sidebar's entry and the visible anchor.
   const sidebar = page.getByTestId("settings-sidebar").filter({ visible: true }).first();
@@ -113,16 +122,10 @@ export async function expectSettingsSidebarScrollSettled(
 
 export async function selectSettingsHostSectionsRapidly(page: Page): Promise<void> {
   for (let selection = 0; selection < 5; selection += 1) {
-    await page
-      .getByRole("navigation", { name: "Settings" })
-      .getByRole("button", { name: "Providers", exact: true })
-      .click();
-    await page
-      .getByRole("navigation", { name: "Settings" })
-      .getByRole("button", { name: "Terminals", exact: true })
-      .click();
-    await expectSettingsHeader(page, "Terminals");
+    await page.getByTestId("settings-section-providers").dispatchEvent("click");
+    await page.getByTestId("settings-section-agents").dispatchEvent("click");
   }
+  await expect(page.getByTestId("settings-page-section-agents")).toBeVisible();
 }
 
 export async function scrollSettingsSidebarUp(page: Page, pixels: number): Promise<void> {
@@ -355,7 +358,13 @@ export async function expectSettingsBackButton(page: Page): Promise<void> {
 }
 
 export async function clickSettingsBackToWorkspace(page: Page): Promise<void> {
-  await page.getByTestId("settings-back-to-workspace").click();
+  const desktopBack = page.getByTestId("settings-back-to-workspace");
+  if (await desktopBack.isVisible()) {
+    await desktopBack.click();
+    return;
+  }
+  await goBackInSettings(page);
+  if (new URL(page.url()).pathname.startsWith("/settings")) await goBackInSettings(page);
 }
 
 /**
@@ -433,7 +442,7 @@ export async function expectAboutContent(page: Page): Promise<void> {
 }
 
 export async function expectGeneralContent(page: Page): Promise<void> {
-  await expect(page.getByTestId("settings-github")).toBeVisible();
+  await expect(page.getByTestId("settings-pane-general.attention")).toHaveCount(1);
   await expect(page.getByTestId("settings-pane-chat.sending")).toHaveCount(1);
   await expect(page.getByTestId("settings-pane-general.sending")).toHaveCount(0);
 }
@@ -570,11 +579,27 @@ export async function expectRetiredSidebarSectionsAbsent(page: Page): Promise<vo
   await expect(sidebar).toBeVisible();
 
   // One entry per section; old pages are panes inside them.
-  for (const id of ["general", "accounts", "agents", "environments", "maintenance"]) {
+  for (const id of [
+    "interface",
+    "privacy",
+    "general",
+    "providers",
+    "agents",
+    "environments",
+    "projects",
+    "system",
+  ]) {
     await expect(sidebar.getByTestId(`settings-section-${id}`)).toBeVisible();
   }
   await expect(sidebar.getByRole("button", { name: "Daemon", exact: true })).toHaveCount(0);
-  for (const retired of ["connections", "projects", "providers", "usage", "diagnostics", "about"]) {
+  for (const retired of [
+    "connections",
+    "accounts",
+    "maintenance",
+    "usage",
+    "diagnostics",
+    "about",
+  ]) {
     await expect(sidebar.getByTestId(`settings-section-${retired}`)).toHaveCount(0);
   }
 
