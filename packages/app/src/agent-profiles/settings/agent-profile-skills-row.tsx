@@ -1,7 +1,5 @@
-/* oxlint-disable no-nested-ternary -- Three policy variants map directly to their persisted values. */
-/* oxlint-disable react-perf/jsx-no-new-object-as-prop, react-perf/jsx-no-new-function-as-prop -- These bounded form controls render with their draft; callbacks intentionally read the current draft. */
-import { useState } from "react";
-import { Text, View } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import { Text, View, StyleSheet } from "react-native";
 import type { SkillPolicy } from "@getpaseo/protocol/skill-library";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
@@ -11,7 +9,40 @@ import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import { profileSkillChoices } from "@/agent-skills/profile-selection";
 
-/** One quiet selector row; individual choices live in a centered dialog. */
+const header = { title: "Skills" };
+const policyOptions = [
+  { id: "inherit", value: "inherit", label: "Inherit defaults" },
+  { id: "none", value: "none", label: "No optional skills" },
+  { id: "selected", value: "selected", label: "Selected only" },
+];
+type SelectedPolicy = Extract<SkillPolicy, { mode: "selected" }>;
+function SkillRow({
+  identity,
+  value,
+  onChange,
+}: {
+  identity: string;
+  value: SelectedPolicy;
+  onChange: (value: SkillPolicy | undefined) => void;
+}) {
+  const toggle = useCallback(
+    (enabled: boolean) =>
+      onChange({
+        mode: "selected",
+        skills: enabled
+          ? [...value.skills, identity]
+          : value.skills.filter((item) => item !== identity),
+      }),
+    [onChange, value.skills, identity],
+  );
+  return (
+    <View style={styles.row}>
+      <Text>{identity}</Text>
+      <Switch value={value.skills.includes(identity)} onValueChange={toggle} />
+    </View>
+  );
+}
+/** One selector row; individual choices live in a centered dialog. */
 export function AgentProfileSkillsRow({
   serverId,
   provider,
@@ -24,6 +55,8 @@ export function AgentProfileSkillsRow({
   onChange: (value: SkillPolicy | undefined) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const show = useCallback(() => setOpen(true), []);
+  const close = useCallback(() => setOpen(false), []);
   const client = useHostRuntimeClient(serverId);
   const query = useFetchQuery({
     dataShape: "value",
@@ -35,75 +68,57 @@ export function AgentProfileSkillsRow({
       return client.readSkillLibrary({ kind: "inventory" });
     },
   });
-  const choices = profileSkillChoices(
-    query.data?.kind === "inventory" ? query.data.inventory.skills : [],
-    provider,
+  const choices = useMemo(
+    () =>
+      profileSkillChoices(
+        query.data?.kind === "inventory" ? query.data.inventory.skills : [],
+        provider,
+      ),
+    [query.data, provider],
   );
-  const label =
-    value?.mode === "none"
-      ? "No optional skills"
-      : value?.mode === "selected"
-        ? `${value.skills.length} selected skills`
-        : "Inherit defaults";
+  let label = "Inherit defaults";
+  if (value?.mode === "none") label = "No optional skills";
+  if (value?.mode === "selected") label = `${value.skills.length} selected skills`;
+  const display = useMemo(() => ({ label }), [label]);
+  const changePolicy = useCallback(
+    (mode: string) => {
+      if (mode === value?.mode || (mode === "inherit" && value === undefined)) return;
+      if (mode === "inherit") onChange(undefined);
+      else if (mode === "none") onChange({ mode: "none" });
+      else onChange({ mode: "selected", skills: [] });
+    },
+    [onChange, value],
+  );
   return (
     <>
-      <Button variant="ghost" onPress={() => setOpen(true)}>
+      <Button variant="ghost" onPress={show}>
         {label}
       </Button>
-      <AdaptiveModalSheet
-        visible={open}
-        header={{ title: "Skills" }}
-        onClose={() => setOpen(false)}
-      >
+      <AdaptiveModalSheet visible={open} header={header} onClose={close}>
         <SelectField
           label="Skills policy"
           value={value?.mode ?? "inherit"}
-          selectedDisplay={{ label }}
-          options={[
-            { id: "inherit", value: "inherit", label: "Inherit defaults" },
-            { id: "none", value: "none", label: "No optional skills" },
-            { id: "selected", value: "selected", label: "Selected only" },
-          ]}
-          onChange={(mode) =>
-            onChange(
-              mode === "inherit"
-                ? undefined
-                : mode === "none"
-                  ? { mode: "none" }
-                  : { mode: "selected", skills: [] },
-            )
-          }
+          selectedDisplay={display}
+          options={policyOptions}
+          onChange={changePolicy}
           placeholder="Choose"
           emptyText="No options"
         />
         {value?.mode === "selected"
           ? choices.map((skill) => (
-              <View
+              <SkillRow
                 key={skill.identity}
-                style={{
-                  minHeight: 48,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 12,
-                }}
-              >
-                <Text>{skill.identity}</Text>
-                <Switch
-                  value={value.skills.includes(skill.identity)}
-                  onValueChange={(enabled) =>
-                    onChange({
-                      mode: "selected",
-                      skills: enabled
-                        ? [...value.skills, skill.identity]
-                        : value.skills.filter((identity) => identity !== skill.identity),
-                    })
-                  }
-                />
-              </View>
+                identity={skill.identity}
+                value={value}
+                onChange={onChange}
+              />
             ))
           : null}
-        <Button onPress={() => setOpen(false)}>Done</Button>
+        <Button onPress={close}>Done</Button>
       </AdaptiveModalSheet>
     </>
   );
 }
+const styles = StyleSheet.create({
+  row: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12 },
+});

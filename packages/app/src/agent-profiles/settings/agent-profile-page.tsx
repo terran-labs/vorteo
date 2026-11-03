@@ -1,6 +1,5 @@
-/* oxlint-disable react-perf/jsx-no-new-object-as-prop, react-perf/jsx-no-new-function-as-prop -- These bounded form controls render with their draft; callbacks intentionally read the current draft. */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Platform, ScrollView, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Alert, Platform, ScrollView, Text, View, StyleSheet } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
 import { Button } from "@/components/ui/button";
@@ -11,7 +10,8 @@ import {
   useAgentProfileFormState,
 } from "../internal/use-profile-form-model";
 import type { AgentProfileValue } from "../internal/profile-form-model";
-import { AgentProfileForm } from "./agent-profile-form";
+import { readExecutionInstallation } from "@/execution-installation/policy";
+import { AgentProfileForm, type ProfileSharedScope } from "./agent-profile-form";
 import { profileDraftKey, showProfileSaveBar } from "./agent-profile-page-model";
 
 export interface AgentProfilePageProps {
@@ -19,8 +19,12 @@ export interface AgentProfilePageProps {
   profile: AgentProfile;
   onBack: () => void;
   onSave: (value: AgentProfileValue) => Promise<void>;
-  onDelete: () => Promise<void>;
+  onDelete?: () => Promise<void>;
+  sharedScope?: ProfileSharedScope;
+  mode?: "create" | "edit";
   centered?: boolean;
+  modelDetails?: (disabled: boolean) => ReactNode;
+  additionalDirty?: boolean;
 }
 function confirmDiscard(leave: () => void) {
   if (Platform.OS === "web") {
@@ -39,8 +43,16 @@ export function AgentProfilePage({
   onSave,
   onDelete,
   centered,
+  modelDetails,
+  additionalDirty = false,
+  sharedScope,
+  mode = "edit",
 }: AgentProfilePageProps) {
-  const rawModel = useAgentProfileFormModel({ mode: "edit", profile });
+  const rawModel = useAgentProfileFormModel({
+    mode,
+    profile,
+    sharedCatalog: Boolean(sharedScope && readExecutionInstallation()),
+  });
   const touched = useRef(false);
   const model = useMemo(
     () =>
@@ -69,7 +81,7 @@ export function AgentProfilePage({
   useEffect(() => {
     if (!touched.current) setBaseline(draftKey);
   }, [draftKey]);
-  const dirty = touched.current && showProfileSaveBar(baseline, state);
+  const dirty = additionalDirty || (touched.current && showProfileSaveBar(baseline, state));
   const allowLeave = useRef(false);
   const navigation = useNavigation();
   const toast = useToast();
@@ -94,7 +106,7 @@ export function AgentProfilePage({
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [dirty]);
-  const close = () => {
+  const close = useCallback(() => {
     if (state.isSubmitting) return;
     if (dirty)
       confirmDiscard(() => {
@@ -102,8 +114,8 @@ export function AgentProfilePage({
         onBack();
       });
     else onBack();
-  };
-  const save = async () => {
+  }, [state.isSubmitting, dirty, onBack]);
+  const save = useCallback(async () => {
     if (!state.submitValue) return;
     const value = state.submitValue;
     model.setSubmitting(true);
@@ -111,13 +123,16 @@ export function AgentProfilePage({
       await onSave(value);
       setBaseline(profileDraftKey(model.getState()));
       toast.show("Profile saved");
+      allowLeave.current = true;
+      onBack();
     } catch (error) {
       toast.show(error instanceof Error ? error.message : "Could not save profile");
     } finally {
       model.setSubmitting(false);
     }
-  };
-  const remove = () => {
+  }, [state.submitValue, model, onSave, onBack, toast]);
+  const remove = useCallback(() => {
+    if (!onDelete) return;
     const perform = () => {
       void onDelete()
         .then(() => {
@@ -136,35 +151,33 @@ export function AgentProfilePage({
         { text: "Cancel", style: "cancel" },
         { text: "Delete", style: "destructive", onPress: perform },
       ]);
-  };
+  }, [onDelete, onBack, toast, profile.name]);
+  const header = useMemo(() => ({ title: profile.name || "New profile" }), [profile.name]);
   const content = (
-    <View style={{ flex: 1, minHeight: 400 }}>
-      <ScrollView contentContainerStyle={{ padding: 24, paddingBottom: 100 }}>
+    <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.content}>
         <Button onPress={close}>Back to provider</Button>
         <Text accessibilityRole="header">{state.name || profile.name}</Text>
-        <AgentProfileForm serverId={serverId} profileId={profile.id} model={model} state={state} />
-        <Button variant="ghost" onPress={remove} disabled={state.isSubmitting}>
-          Delete profile
-        </Button>
+        <AgentProfileForm
+          serverId={serverId}
+          profileId={profile.id}
+          model={model}
+          state={state}
+          sharedScope={sharedScope}
+          modelDetails={modelDetails}
+        />
+        {onDelete && sharedScope?.kind !== "defaults" ? (
+          <Button variant="ghost" onPress={remove} disabled={state.isSubmitting}>
+            Delete profile
+          </Button>
+        ) : null}
       </ScrollView>
       {dirty ? (
-        <View
-          testID="profile-save-bar"
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            padding: 16,
-            flexDirection: "row",
-            justifyContent: "flex-end",
-            gap: 12,
-          }}
-        >
+        <View testID="profile-save-bar" style={styles.saveBar}>
           <Button onPress={close} disabled={state.isSubmitting}>
             Cancel
           </Button>
-          <Button onPress={() => void save()} disabled={!state.canSubmit}>
+          <Button onPress={save} disabled={!state.canSubmit}>
             Save
           </Button>
         </View>
@@ -172,7 +185,7 @@ export function AgentProfilePage({
     </View>
   );
   return centered ? (
-    <AdaptiveModalSheet visible header={{ title: profile.name }} onClose={close}>
+    <AdaptiveModalSheet visible header={header} onClose={close}>
       {content}
     </AdaptiveModalSheet>
   ) : (
@@ -182,3 +195,18 @@ export function AgentProfilePage({
 export function AgentProfileCenteredModal(props: Omit<AgentProfilePageProps, "centered">) {
   return <AgentProfilePage {...props} centered />;
 }
+
+const styles = StyleSheet.create({
+  container: { flex: 1, minHeight: 400 },
+  content: { padding: 24, paddingBottom: 100 },
+  saveBar: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: 16,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+  },
+});

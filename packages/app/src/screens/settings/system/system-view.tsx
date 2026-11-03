@@ -1,6 +1,5 @@
-/* oxlint-disable react-perf/jsx-no-new-object-as-prop, react-perf/jsx-no-new-function-as-prop -- These bounded form controls render with their draft; callbacks intentionally read the current draft. */
-import { useState, type ReactNode } from "react";
-import { Text, View, Pressable } from "react-native";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { Text, View, Pressable, StyleSheet } from "react-native";
 import { Button } from "@/components/ui/button";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 
@@ -20,33 +19,27 @@ export interface SystemEnvironmentRow {
 }
 function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
   const [expanded, setExpanded] = useState(false);
+  const toggle = useCallback(() => setExpanded((current) => !current), []);
+  const act = useCallback(() => {
+    if (row.action) row.onAction(row.action);
+  }, [row]);
+  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
   return (
     <View>
-      <View
-        style={{
-          height: 64,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 12,
-        }}
-      >
+      <View style={styles.row}>
         <Text>{row.name}</Text>
         <Text accessibilityRole="text">{labels[row.status]}</Text>
-        <View style={{ flex: 1 }} />
-        <View style={{ width: 240 }}>
-          {row.action ? (
-            <Button onPress={() => row.action && row.onAction(row.action)}>
-              {row.action.label}
-            </Button>
-          ) : null}
+        <View style={styles.spacer} />
+        <View style={styles.action}>
+          {row.action ? <Button onPress={act}>{row.action.label}</Button> : null}
         </View>
-        <View style={{ width: 40 }}>{row.restartMenu}</View>
+        <View style={styles.menu}>{row.restartMenu}</View>
       </View>
       <Pressable
         accessibilityRole="button"
-        accessibilityState={{ expanded }}
-        onPress={() => setExpanded(!expanded)}
-        style={{ height: 40, justifyContent: "center" }}
+        accessibilityState={accessibilityState}
+        onPress={toggle}
+        style={styles.details}
       >
         <Text>Details</Text>
       </Pressable>
@@ -67,14 +60,7 @@ export function SystemView({
         <EnvironmentRow key={row.name} row={row} />
       ))}
       {/* Reserve this slot so readiness polling cannot move the next section. */}
-      <View
-        style={{
-          height: 48,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 12,
-        }}
-      >
+      <View style={styles.services}>
         {services ? (
           <>
             <Text>System services</Text>
@@ -85,3 +71,12 @@ export function SystemView({
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  row: { height: 64, flexDirection: "row", alignItems: "center", gap: 12 },
+  spacer: { flex: 1 },
+  action: { width: 240 },
+  menu: { width: 40 },
+  details: { height: 40, justifyContent: "center" },
+  services: { height: 48, flexDirection: "row", alignItems: "center", gap: 12 },
+});

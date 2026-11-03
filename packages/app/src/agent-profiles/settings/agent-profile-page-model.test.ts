@@ -29,3 +29,11 @@ it("parses route parameters", () => {
     serverId: null,
   });
 });
+
+it.each(["new", "defaults", "workflow-id"])("preserves the %s profile route", (profileId) => {
+  expect(parseProfileRoute({ profileId, providerType: "claude", serverId: "host" })).toEqual({
+    profileId,
+    providerType: "claude",
+    serverId: "host",
+  });
+});
