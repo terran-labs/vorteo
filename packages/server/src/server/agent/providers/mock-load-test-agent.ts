@@ -214,6 +214,8 @@ interface ActiveTurn {
   queue: CycleEvent[];
   emittedTokens: number;
   turnStarted: boolean;
+  steered?: boolean;
+  finishAfterSteer?: () => void;
   burst: BurstProfile | null;
   burstIndex: number;
 }
@@ -1129,6 +1131,8 @@ export class MockLoadTestAgentSession implements AgentSession {
       this.remainingSteerFailures -= 1;
       throw new Error("Requested mock steer transport failure");
     }
+    this.activeTurn.steered = true;
+    this.activeTurn.finishAfterSteer?.();
     return { status: "accepted" };
   }
 
@@ -1256,26 +1260,31 @@ export class MockLoadTestAgentSession implements AgentSession {
         turn.turnId,
         createToolCall({ callId, name: "bash", status: "running", detail }),
       );
-      turn.timer = setTimeout(() => {
-        if (this.activeTurn !== turn) return;
-        this.clearTurnTimer(turn);
-        this.emitTimeline(
-          turn.turnId,
-          createToolCall({
-            callId,
-            name: "bash",
-            status: "completed",
-            detail: { ...detail, output: "", exitCode: 0 },
-          }),
-        );
-        this.emitTimeline(turn.turnId, {
-          type: "assistant_message",
-          text: "Foreground command completed after steering.",
-          messageId: turn.assistantMessageId,
-        });
-        this.finishTurnWithText(turn, "Foreground command completed after steering.");
-      }, 5_000);
-      turn.timer.unref?.();
+      // The browser may receive the running tool late; finish only after a real steer.
+      turn.finishAfterSteer = () => {
+        turn.finishAfterSteer = undefined;
+        turn.timer = setTimeout(() => {
+          if (this.activeTurn !== turn) return;
+          this.clearTurnTimer(turn);
+          this.emitTimeline(
+            turn.turnId,
+            createToolCall({
+              callId,
+              name: "bash",
+              status: "completed",
+              detail: { ...detail, output: "", exitCode: 0 },
+            }),
+          );
+          this.emitTimeline(turn.turnId, {
+            type: "assistant_message",
+            text: "Foreground command completed after steering.",
+            messageId: turn.assistantMessageId,
+          });
+          this.finishTurnWithText(turn, "Foreground command completed after steering.");
+        }, 5_000);
+        turn.timer.unref?.();
+      };
+      if (turn.steered) turn.finishAfterSteer();
     }, 0);
     turn.timer.unref?.();
   }

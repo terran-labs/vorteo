@@ -37,6 +37,7 @@ vi.mock("react-native-reanimated", () => ({
 }));
 
 vi.mock("react-native", () => ({
+  useWindowDimensions: () => ({ width: 1200, height: 800, scale: 1, fontScale: 1 }),
   Platform: {
     select: (values: Record<string, unknown>) => values.web ?? values.default,
   },

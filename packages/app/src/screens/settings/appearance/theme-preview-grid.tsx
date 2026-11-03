@@ -288,6 +288,8 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     minWidth: 0,
     padding: 0,
+    // Override the button's responsive inline padding as well as its shorthand.
+    paddingHorizontal: 0,
     borderWidth: 0,
     borderRadius: 25,
     height: 44,

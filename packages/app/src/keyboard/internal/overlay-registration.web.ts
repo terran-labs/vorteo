@@ -136,21 +136,24 @@ function addWebOverlay(entry: WebOverlayEntry): (options?: RemoveWebOverlayOptio
   const remove = overlays.register(registration);
   attachWebOverlayListeners();
 
-  const focusFrame = window.requestAnimationFrame(() => {
-    const scope = entry.getScope();
-    if (
-      entry.getFocusBehavior() !== "none" &&
-      entry.manageFocus &&
-      getTopWebOverlay() === entry &&
-      scope &&
-      !scope.contains(document.activeElement)
-    ) {
-      focusFirstElement(scope);
-    }
-  });
+  const needsInitialFocus = entry.getFocusBehavior() !== "none" && entry.manageFocus;
+  let focusFrame: number | null = null;
+  if (needsInitialFocus) {
+    focusFrame = window.requestAnimationFrame(() => {
+      const scope = entry.getScope();
+      if (
+        entry.getFocusBehavior() !== "none" &&
+        getTopWebOverlay() === entry &&
+        scope &&
+        !scope.contains(document.activeElement)
+      ) {
+        focusFirstElement(scope);
+      }
+    });
+  }
 
   return (options) => {
-    window.cancelAnimationFrame(focusFrame);
+    if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
     remove();
     detachWebOverlayListeners();
     if (

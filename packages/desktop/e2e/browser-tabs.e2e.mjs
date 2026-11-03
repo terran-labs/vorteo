@@ -201,7 +201,9 @@ async function waitForDesktopStatus(page) {
 
 async function settleDesktopStartup(page) {
   await expect(
-    page.getByRole("button", { name: "Desktop browser workspace 1", exact: true }),
+    page
+      .getByRole("button", { name: "Desktop browser workspace 1", exact: true })
+      .and(page.locator('[data-testid^="sidebar-workspace-row-"]')),
   ).toBeVisible({ timeout: timeoutMs });
   // The dev launcher supplies its package directory as an open-project request.
   // Before the local host connects, that request opens the connection prompt.

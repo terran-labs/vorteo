@@ -94,10 +94,56 @@ jobs:
       - name: Installer engine
         run: npx vitest run scripts/installer/plan.test.mjs scripts/installer/detect.test.mjs scripts/installer/apply.test.mjs scripts/installer/services.test.mjs scripts/installer/gate.test.mjs scripts/installer/host-adoption.test.mjs
 
+  # Vorteo's main ruleset requires the separate format and lint checks by name, so they stay
+  # their own jobs; quality runs upstream's remaining lint-rule, relay and SDK steps.
+  format:
+    name: format
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.format != 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Check formatting
+        run: npm run format:check
+
+  lint:
+    name: lint
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Lint lockfile
+        run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
+
+      - name: Verify dependency signatures
+        run: npm audit signatures
+
+      - name: Lint
+        run: npm run lint
+
   quality:
     name: quality
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.format != 'false' || needs.changes.outputs.quality != 'false' || needs.changes.outputs.relay != 'false' || needs.changes.outputs.sdk != 'false') }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false' || needs.changes.outputs.relay != 'false' || needs.changes.outputs.sdk != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,22 +159,6 @@ jobs:
 
       # Explicit status checks keep independent domains running after a failure.
       # A failed step still fails quality; no continue-on-error or success shim.
-      - name: Check formatting
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.format != 'false') }}
-        run: npm run format:check
-
-      - name: Lint lockfile
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
-        run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
-
-      - name: Verify dependency signatures
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
-        run: npm audit signatures
-
-      - name: Lint
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
-        run: npm run lint
-
       - name: Test lint rules
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
         run: node --test scripts/oxlint/paseo-plugin.test.mjs

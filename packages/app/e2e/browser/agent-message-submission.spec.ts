@@ -373,7 +373,11 @@ async function replaySteeredSleepTurnInBrowser(
   try {
     await expect(page.getByTestId("tool-call-badge").last()).toBeVisible({ timeout: 30_000 });
     await expectComposerVisible(page);
-    await submitMessage(page, "hello");
+    // Vorteo queues Enter during a running turn; the modified shortcut sends immediately.
+    const composer = page.getByRole("textbox", { name: "Message agent..." }).first();
+    await composer.fill("hello");
+    await composer.press(process.platform === "darwin" ? "Meta+Enter" : "Control+Enter");
+    await expect(page.getByRole("button", { name: "Send queued message now" })).toHaveCount(0);
 
     await expect(page.getByText("hello", { exact: true })).toHaveCount(1);
     await expect(page.getByRole("button", { name: /^Worked for/ })).toHaveCount(0);

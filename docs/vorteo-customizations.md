@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): CI keeps the format and lint checks the main ruleset requires by name. Upstream's two-size controls no longer override the fork's theme preview padding or review panel targets, and non-focus overlays skip initial focus. The steering browser check uses the composer's immediate send, because Vorteo queues plain Enter. Remaining inherited browser failures are recorded with pre-sync evidence; full browser acceptance is not claimed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): inherited website browser checks now assert the Vorteo branding the site shows; none are skipped or removed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): Simplified Chinese docs keep every English section and anchor, so the website translation check passes. Their remaining body text still names Paseo; a full Chinese rebrand is separate documentation debt. README overview and onboarding are unchanged.
