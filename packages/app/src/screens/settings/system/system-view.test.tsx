@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { SystemView } from "./system-view";
 import { deriveSystemEnvironment } from "./system-status-model";
 vi.mock("react-native", () => ({
+  useWindowDimensions: () => ({ width: 1280 }),
+  ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: (styles: unknown) => styles },
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Text: ({

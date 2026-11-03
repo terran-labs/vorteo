@@ -1,0 +1,218 @@
+import type { ExecutionInstallation } from "@getpaseo/protocol/execution-installation";
+import type { HostProfile } from "@/types/host-connection";
+import { executeSystemAction } from "./system-actions";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useInstallationSystemModel,
+  useInstallationOwnerClient,
+} from "@/execution-installation/panel";
+import { getHostRuntimeStore, useHosts, useHostRuntimeSnapshot } from "@/runtime/host-runtime";
+import { readExecutionInstallation } from "@/execution-installation/policy";
+import {
+  useInstallationUpgradeActions,
+  useInstallationUpgradeStatus,
+} from "@/execution-installation/use-installation-upgrades";
+import { upgradeOffer } from "@/execution-installation/installation-upgrades-model";
+import { useVortonUpdate } from "@/vorton-updates/use-update";
+import { useToast } from "@/contexts/toast-context";
+import { reportSyncError } from "@/components/settings/sync-error-notification";
+import { confirmDialog } from "@/utils/confirm-dialog";
+import { toErrorMessage } from "@/utils/error-messages";
+import { useSessionStore } from "@/stores/session-store";
+import { resolveAppVersion } from "@/utils/app-version";
+import { isVersionMismatch } from "@/desktop/updates/desktop-updates";
+import { updateDaemonFromSettings } from "../daemon-lifecycle";
+import type { SystemAction } from "./system-status-model";
+import {
+  systemEnvironmentState,
+  systemServicesState,
+  type SystemTarget,
+} from "./system-adapter-model";
+const noSubscription = () => () => {};
+
+export function useSystemAdapter(serverId?: string) {
+  const installation = readExecutionInstallation();
+  const hosts = useHosts();
+  const { hostId, devId } = selectSystemEnvironments(installation, hosts, serverId);
+  const host = useHostRuntimeSnapshot(hostId ?? "");
+  const dev = useHostRuntimeSnapshot(devId ?? "");
+  const model = useInstallationSystemModel();
+  const read = useCallback(() => model?.getState() ?? null, [model]);
+  const state = useSyncExternalStore(model?.subscribe ?? noSubscription, read, read);
+  const client = useInstallationOwnerClient();
+  const upgrades = useInstallationUpgradeStatus(client);
+  const upgradeActions = useInstallationUpgradeActions(client);
+  const update = useVortonUpdate();
+  const offer = upgradeOffer({
+    status: state?.unlocked ? upgrades.data : null,
+    latestRelease: update.data?.latestRelease,
+    updateAvailable: update.data?.status === "available",
+  });
+  const hostInfo = useSessionStore((store) => store.sessions[hostId ?? ""]?.serverInfo);
+  const devInfo = useSessionStore((store) => store.sessions[devId ?? ""]?.serverInfo);
+  const [updating, setUpdating] = useState<string | null>(null);
+  const toast = useToast();
+  const previousNotice = useRef(state?.notice);
+  useEffect(() => {
+    const error =
+      state?.error ??
+      state?.helperError ??
+      state?.enrollmentError ??
+      state?.serviceQueueError ??
+      state?.daemonAutomationError ??
+      state?.maintenanceDelegationError ??
+      upgrades.error;
+    reportSyncError(`system:${installation?.installationId ?? hostId}`, error, () =>
+      toast.error(toErrorMessage(error)),
+    );
+    if (state?.notice && state.notice !== previousNotice.current) toast.show(state.notice);
+    previousNotice.current = state?.notice;
+  }, [state, toast, upgrades.error, installation?.installationId, hostId]);
+  const runAction = useCallback(
+    async (target: SystemTarget, action: SystemAction) => {
+      const id = target === "host" ? hostId : devId;
+      if (!id) return;
+      try {
+        await executeSystemAction(
+          {
+            serverId: id,
+            target,
+            installation,
+            state,
+            upgrades: upgrades.data?.upgrades ?? [],
+            offer,
+          },
+          action,
+          {
+            confirm: confirmDialog,
+            reconnect: async (selectedId) => {
+              getHostRuntimeStore().ensureConnectedAll({ verify: true });
+              await getHostRuntimeStore().runProbeCycleNow(selectedId);
+            },
+            restart: async (job, decision) => {
+              if (!model) throw new Error("Unlock System controls first");
+              await model.decide(job, decision);
+            },
+            upgrade: (upgrade) =>
+              upgradeActions.decide.mutateAsync({ upgrade, decision: "approve" }),
+            requestUpgrade: (release) => upgradeActions.create.mutateAsync(release),
+            updateStandalone: async (selectedId) => {
+              const runtime = getHostRuntimeStore().getClient(selectedId);
+              if (!runtime) throw new Error("Reconnect before updating.");
+              setUpdating(selectedId);
+              await updateDaemonFromSettings(selectedId, {
+                updateDaemon: () => runtime.updateDaemon(`settings_update_${selectedId}`),
+                getStatus: async () => ({
+                  ...(await runtime.getDaemonStatus()),
+                  serverId: runtime.getLastServerInfoMessage()?.serverId ?? "",
+                  version: runtime.getLastServerInfoMessage()?.version ?? null,
+                }),
+              });
+              toast.show("Host updated");
+            },
+          },
+        );
+      } catch (error) {
+        toast.error(toErrorMessage(error));
+      } finally {
+        setUpdating(null);
+      }
+    },
+    [hostId, devId, state, model, installation, upgrades.data, upgradeActions, offer, toast],
+  );
+  const version = (info: typeof hostInfo) =>
+    !installation &&
+    info?.features?.daemonSelfUpdate &&
+    !info.desktopManaged &&
+    isVersionMismatch(resolveAppVersion(), info.version)
+      ? resolveAppVersion()
+      : null;
+  return {
+    installation,
+    hostId,
+    devId,
+    host,
+    dev,
+    hostInfo,
+    devInfo,
+    model,
+    state,
+    client,
+    upgrades,
+    runAction,
+    busy: Boolean(
+      state?.busy || upgradeActions.create.isPending || upgradeActions.decide.isPending || updating,
+    ),
+    ...buildEnvironmentStatuses({
+      state,
+      host,
+      dev,
+      hostId,
+      devId,
+      upgrades: upgrades.data,
+      offer,
+      standaloneVersion: version(hostInfo),
+      installation,
+      updating,
+    }),
+  };
+}
+
+export function selectSystemEnvironments(
+  installation: ExecutionInstallation | null,
+  hosts: readonly HostProfile[],
+  serverId?: string,
+) {
+  return {
+    hostId:
+      installation?.environments.find((environment) => environment.kind === "host")?.serverId ??
+      serverId ??
+      hosts[0]?.serverId ??
+      null,
+    devId:
+      installation?.environments.find((environment) => environment.kind === "container")
+        ?.serverId ?? null,
+  };
+}
+function buildEnvironmentStatuses({
+  state,
+  host,
+  dev,
+  hostId,
+  devId,
+  upgrades,
+  offer,
+  standaloneVersion,
+  installation,
+  updating,
+}: {
+  state: import("./system-adapter-model").InstallationSystemState | null;
+  host: import("@/runtime/host-runtime").HostRuntimeSnapshot | null;
+  dev: import("@/runtime/host-runtime").HostRuntimeSnapshot | null;
+  hostId: string | null;
+  devId: string | null;
+  upgrades: import("@getpaseo/protocol/installation-upgrades").UpgradeStatus | null | undefined;
+  offer: string | null;
+  standaloneVersion: string | null;
+  installation: ExecutionInstallation | null;
+  updating: string | null;
+}) {
+  return {
+    services: systemServicesState(state),
+    hostStatus: systemEnvironmentState({
+      target: "host",
+      snapshot: host,
+      installation: state,
+      upgrades: upgrades?.upgrades,
+      availableVersion: installation ? offer : standaloneVersion,
+      reconnectingAfterAction: updating === hostId && updating !== null,
+    }),
+    devStatus: systemEnvironmentState({
+      target: "container-daemon",
+      snapshot: dev,
+      installation: state,
+      upgrades: upgrades?.upgrades,
+      reconnectingAfterAction: updating === devId && updating !== null,
+    }),
+  };
+}

@@ -23,7 +23,6 @@ import {
   expectHostLabelEditMode,
   expectHostConnectionsCard,
   expectHostInjectMcpCard,
-  expectHostActionCards,
   expectHostProvidersCard,
   expectHostNoDaemonLifecycleRow,
   expectRetiredSidebarSectionsAbsent,
@@ -62,12 +61,14 @@ test.describe("Settings host page", () => {
       await expectHostProvidersCard(page, serverId);
       await expectSettingsHeader(page, "Providers");
     });
-    await test.step("host section shows the host label and restart/remove action cards", async () => {
+    await test.step("host section shows the host label and removal controls", async () => {
       await openHostSection(page, serverId, "host");
       // The host's details live in the Environments pane of the single settings page.
       await expectSettingsHeader(page, "Environments");
       await expectHostLabelDisplayed(page);
-      await expectHostActionCards(page, serverId);
+      await expect(page.getByTestId("host-page-remove-host-card")).toBeVisible();
+      await expect(page.getByTestId("host-page-remove-host-button")).toBeVisible();
+      await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
     });
     await test.step("clicking the label pencil reveals the inline editor", async () => {
       await openHostSection(page, serverId, "host");
@@ -87,7 +88,7 @@ test.describe("Settings host page", () => {
     });
   });
 
-  test("a failed remote daemon update remains visible in the host UI", async ({
+  test("remote lifecycle controls are absent from Host details", async ({
     page,
     outdatedDaemon,
   }) => {
@@ -96,20 +97,10 @@ test.describe("Settings host page", () => {
     await openSettings(page);
     await openSettingsHost(page, outdatedDaemon.serverId);
     await openHostSection(page, outdatedDaemon.serverId, "host");
-
-    page.once("dialog", (dialog) => dialog.accept());
-    const updateButton = page.getByTestId("host-page-update-button");
-    await updateButton.click();
-
-    await expect(
-      updateButton.filter({ hasText: /Preparing update|Downloading packages|Installing/ }),
-    ).toBeDisabled();
-
-    const updateFailure = page.getByTestId("host-page-update-error");
-    await expect(updateFailure).toBeVisible();
-    await expect(updateFailure).toContainText("Update failed");
-    await expect(updateFailure).toContainText("Failed to update the daemon:");
-    await expect(updateButton).toBeEnabled();
+    // Update and restart behavior is covered on System after catalog integration.
+    await expect(page.getByTestId("host-page-update-button")).toHaveCount(0);
+    await expect(page.getByTestId("host-page-update-error")).toHaveCount(0);
+    await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
   });
 
   test("a host rejected for its password reconnects after being removed and added again with it", async ({
@@ -267,7 +258,8 @@ test.describe("Settings host page", () => {
     await expectSettingsHeader(page, "Connections");
     await openHostSection(page, serverId, "host");
     await expectHostLabelDisplayed(page);
-    await expectHostActionCards(page, serverId);
+    await expect(page.getByTestId("host-page-remove-host-card")).toBeVisible();
+    await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
   });
 });
 

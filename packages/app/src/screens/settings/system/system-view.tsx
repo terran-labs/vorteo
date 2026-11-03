@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Text, View, Pressable, StyleSheet } from "react-native";
+import { Text, View, Pressable, StyleSheet, ScrollView, useWindowDimensions } from "react-native";
 import { Button } from "@/components/ui/button";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 
@@ -12,6 +12,7 @@ export interface SystemEnvironmentRow {
   name: "Host" | "Dev";
   status: SystemStatus;
   action: SystemAction | null;
+  disabled?: boolean;
   reason?: string;
   onAction: (action: SystemAction) => void;
   /** Caller supplies the overflow menu containing Restart…. */
@@ -19,6 +20,13 @@ export interface SystemEnvironmentRow {
   details?: ReactNode;
 }
 function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
+  const { width } = useWindowDimensions();
+  const compact = width < 1100;
+  const rowStyle = useMemo(() => [styles.row, compact && styles.compactRow], [compact]);
+  const descriptionStyle = useMemo(
+    () => [styles.description, compact && styles.compactDescription],
+    [compact],
+  );
   const [expanded, setExpanded] = useState(false);
   const toggle = useCallback(() => setExpanded((current) => !current), []);
   const act = useCallback(() => {
@@ -27,8 +35,8 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
   return (
     <View>
-      <View style={styles.row}>
-        <View style={styles.description}>
+      <View style={rowStyle}>
+        <View style={descriptionStyle}>
           <Text>{row.name}</Text>
           <Text style={styles.reason} numberOfLines={1} accessibilityLabel={row.reason}>
             {row.reason ?? ""}
@@ -36,7 +44,19 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
         </View>
         <Text accessibilityRole="text">{labels[row.status]}</Text>
         <View style={styles.action}>
-          {row.action ? <Button onPress={act}>{row.action.label}</Button> : null}
+          {row.action ? (
+            <Button
+              onPress={act}
+              disabled={row.disabled}
+              testID={
+                row.action.kind === "update"
+                  ? "host-page-update-button"
+                  : `system-primary-${row.name.toLowerCase()}`
+              }
+            >
+              {row.action.label}
+            </Button>
+          ) : null}
         </View>
         <View style={styles.menu}>{row.restartMenu}</View>
       </View>
@@ -46,9 +66,9 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
         onPress={toggle}
         style={styles.details}
       >
-        <Text>Details</Text>
+        <Text>{`${row.name} Details`}</Text>
       </Pressable>
-      {expanded ? row.details : null}
+      {expanded ? <ScrollView style={styles.detailsViewport}>{row.details}</ScrollView> : null}
     </View>
   );
 }
@@ -78,11 +98,14 @@ export function SystemView({
 }
 
 const styles = StyleSheet.create({
-  row: { height: 64, flexDirection: "row", alignItems: "center", gap: 12 },
+  row: { height: 80, flexDirection: "row", alignItems: "center", gap: 12 },
+  compactRow: { height: 136, flexWrap: "wrap", alignContent: "center" },
+  compactDescription: { flexBasis: "65%", flexGrow: 1 },
   description: { flex: 1, minWidth: 0 },
   reason: { height: 20 },
-  action: { width: 240 },
-  menu: { width: 40 },
+  action: { flexGrow: 1, flexBasis: 160, maxWidth: 240 },
+  menu: { width: 72 },
+  detailsViewport: { height: 560 },
   details: { height: 40, justifyContent: "center" },
   services: { height: 48, flexDirection: "row", alignItems: "center", gap: 12 },
 });

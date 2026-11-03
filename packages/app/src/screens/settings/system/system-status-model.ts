@@ -45,7 +45,7 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
   const activeUpgrade = upgrades.some(
     (job) => job.status === "approved" || job.status === "running",
   );
-  const activeWork = Boolean(activeJob) || activeUpgrade;
+  const activeWork = Boolean(activeJob) || activeUpgrade || input.reconnectingAfterAction === true;
   const attention =
     ((offline || Boolean(connection.lastError)) && !activeWork) ||
     enrollment?.activation === "recovery-required" ||
