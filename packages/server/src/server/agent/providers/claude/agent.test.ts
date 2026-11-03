@@ -18,6 +18,13 @@ import {
   toClaudeSdkMcpConfig,
 } from "./agent.js";
 import { claudeProjectDirSync } from "./project-dir.js";
+
+// The Chrome toggle depends on a native host manifest in the owner's home directory. Keep tests
+// independent of the machine running them.
+const chromeBridge = vi.hoisted(() => ({ installed: false }));
+vi.mock("./chrome-integration.js", () => ({
+  isClaudeChromeBridgeInstalled: () => chromeBridge.installed,
+}));
 import { streamSession } from "../test-utils/session-stream-adapter.js";
 import type {
   AgentPromptInput,
@@ -1382,6 +1389,101 @@ describe("ClaudeAgentSession features", () => {
     });
 
     await session.close();
+  });
+
+  describe("Claude in Chrome toggle", () => {
+    afterEach(() => {
+      chromeBridge.installed = false;
+    });
+
+    test("is offered only when the Chrome bridge is installed", async () => {
+      const client = new ClaudeAgentClient({
+        logger,
+        resolveBinary: async () => "/test/claude/bin",
+      });
+      const config = { provider: "claude", cwd: process.cwd(), model: "claude-sonnet-5" } as const;
+
+      await expect(client.listFeatures(config)).resolves.toEqual([]);
+
+      chromeBridge.installed = true;
+      await expect(client.listFeatures(config)).resolves.toEqual([
+        expect.objectContaining({ id: "chrome", value: false }),
+      ]);
+    });
+
+    test("launches without --chrome unless the thread opts in", async () => {
+      chromeBridge.installed = true;
+      const { queryFactory } = createQueryMock();
+      const client = new ClaudeAgentClient({
+        logger,
+        queryFactory,
+        resolveBinary: async () => "/test/claude/bin",
+      });
+      const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+
+      await (session as unknown as { ensureQuery(): Promise<unknown> }).ensureQuery();
+
+      expect(queryFactory.mock.calls[0]?.[0].options.extraArgs?.chrome).toBeUndefined();
+      await session.close();
+    });
+
+    test("passes --chrome when created with the feature on, keeping other arguments", async () => {
+      chromeBridge.installed = true;
+      const { queryFactory } = createQueryMock();
+      const client = new ClaudeAgentClient({
+        logger,
+        queryFactory,
+        resolveBinary: async () => "/test/claude/bin",
+      });
+      const session = await client.createSession({
+        provider: "claude",
+        cwd: process.cwd(),
+        featureValues: { chrome: true },
+        providerOptions: { extraArgs: { debug: null } },
+      });
+
+      await (session as unknown as { ensureQuery(): Promise<unknown> }).ensureQuery();
+
+      expect(queryFactory.mock.calls[0]?.[0].options.extraArgs).toEqual({
+        debug: null,
+        chrome: null,
+      });
+      await session.close();
+    });
+
+    test("restarts the CLI with --chrome after the toggle is turned on", async () => {
+      chromeBridge.installed = true;
+      const { queryFactory } = createQueryMock();
+      const client = new ClaudeAgentClient({
+        logger,
+        queryFactory,
+        resolveBinary: async () => "/test/claude/bin",
+      });
+      const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+      const ensureQuery = () =>
+        (session as unknown as { ensureQuery(): Promise<unknown> }).ensureQuery();
+
+      await ensureQuery();
+      await session.setFeature?.("chrome", true);
+      await ensureQuery();
+
+      expect(queryFactory).toHaveBeenCalledTimes(2);
+      expect(queryFactory.mock.calls[1]?.[0].options.extraArgs).toMatchObject({ chrome: null });
+      expect(session.features).toEqual([expect.objectContaining({ id: "chrome", value: true })]);
+      await session.close();
+    });
+
+    test("refuses to turn on without the Chrome bridge", async () => {
+      const client = new ClaudeAgentClient({
+        logger,
+        queryFactory: createQueryMock().queryFactory,
+        resolveBinary: async () => "/test/claude/bin",
+      });
+      const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+
+      await expect(session.setFeature?.("chrome", true)).rejects.toThrow(/not set up/);
+      await session.close();
+    });
   });
 
   test("toggles fast mode on the active query without restarting it", async () => {
