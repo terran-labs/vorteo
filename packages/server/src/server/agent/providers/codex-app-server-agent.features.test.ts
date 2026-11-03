@@ -622,7 +622,11 @@ describe("Codex app-server provider features", () => {
         config: {
           mcp_servers: {
             "chrome-devtools": {
-              args: expect.arrayContaining(["chrome-devtools-mcp@1.12.0", "--autoConnect"]),
+              args: expect.arrayContaining([
+                "chrome-devtools-mcp@1.12.0",
+                "--autoConnect",
+                "--no-usage-statistics",
+              ]),
             },
           },
         },

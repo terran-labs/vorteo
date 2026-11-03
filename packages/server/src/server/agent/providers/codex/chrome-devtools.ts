@@ -48,7 +48,16 @@ export function buildChromeDevtoolsMcpServer(nodePath: string = process.execPath
   const npxCli = fs.existsSync(npx) ? fs.realpathSync(npx) : null;
   return {
     command: npxCli ? nodePath : "npx",
-    args: [...(npxCli ? [npxCli] : []), "-y", CODEX_CHROME_DEVTOOLS_MCP_PACKAGE, "--autoConnect"],
+    args: [
+      ...(npxCli ? [npxCli] : []),
+      "-y",
+      CODEX_CHROME_DEVTOOLS_MCP_PACKAGE,
+      "--autoConnect",
+      // The server reads the owner's logged-in sessions; keep its telemetry and CrUX lookups,
+      // which send page URLs to Google, off.
+      "--no-usage-statistics",
+      "--no-performance-crux",
+    ],
     env: { PATH: [nodeBin, process.env.PATH].filter(Boolean).join(path.delimiter) },
   };
 }
