@@ -8,6 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Clear completed removes every completed task from the card at once instead of one row at a time. Deletes still run in order in the background; tasks left by an error reappear with it.
 - Keep hover tooltips open while another part of the window scrolls. A streaming agent reply scrolls the chat, which closed any task tooltip you were reading; tooltips now close only when a scroll moves the item they describe.
 
 ### Changed

@@ -69,7 +69,11 @@ function inactiveTaskIcon(status: AgentTaskItem["status"]) {
 const taskKey = (task: AgentTaskItem, index: number) =>
   `${task.source ?? "provider"}:${task.id ?? index}`;
 
-export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: ChecklistCardProps) {
+export function ChecklistCard({
+  serverId,
+  agentId,
+  tasks: allTasks = EMPTY_TASKS,
+}: ChecklistCardProps) {
   const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
   const connected = useHostRuntimeIsConnected(serverId);
@@ -112,7 +116,23 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
   });
   const { mutate: clearTasks } = clearMutation;
   const { mutate: sendMutation } = mutation;
-  const clearCompleted = useCallback(() => clearTasks(tasks), [clearTasks, tasks]);
+  // Deletes run one at a time because each one rewrites dependency links, so hide the whole
+  // batch at once instead of letting each broadcast remove one row. Anything left after an
+  // error reappears with the error.
+  const [clearing, setClearing] = useState<ReadonlySet<string> | null>(null);
+  const tasks = useMemo(
+    () =>
+      clearing
+        ? allTasks.filter((task) => !(task.source === "vorteo" && clearing.has(task.id ?? "")))
+        : allTasks,
+    [allTasks, clearing],
+  );
+  const clearCompleted = useCallback(() => {
+    setClearing(
+      new Set(allTasks.filter(canClearTask).flatMap((task) => (task.id ? [task.id] : []))),
+    );
+    clearTasks(allTasks, { onSettled: () => setClearing(null) });
+  }, [clearTasks, allTasks]);
   const canMutate = connected && !readOnly && !mutation.isPending && !clearMutation.isPending;
   const editing = editMode && !readOnly;
   const progress = checklistProgress(tasks);
@@ -180,7 +200,7 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
               />
             ) : null}
             <ClearCompletedButton
-              available={tasks.some(canClearTask)}
+              available={allTasks.some(canClearTask)}
               pending={clearMutation.isPending}
               disabled={!canMutate}
               onPress={clearCompleted}
