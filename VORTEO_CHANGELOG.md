@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Documentation
+
+- Builds now states what each long wait is watching, when it started, its usual duration and what ends it, and keeps its checklist current after each install, so the operator can tell progress from a stall.
+
+## Unreleased - 2026-11-03
+
 ### Tooling
 
 - Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
