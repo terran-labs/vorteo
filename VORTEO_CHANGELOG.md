@@ -8,25 +8,23 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
-- Merge `main` after the sixth Host delivery so the seventh installed Host update can follow it to `main`. No source changes.
+- Record the eighth installed Host update and Dev's installed release notes for their pull request to `main`. No source changes.
+
+## Unreleased - 2026-11-03
+
+### Fixed
+
+- Claude threads no longer fail with "Could not verify Claude authentication" when the machine is busy. The sign-in check now allows the Claude CLI 15 seconds instead of 5 and retries a timed-out check once, so a slow start is no longer reported as a failed sign-in. Signed-out and unreadable results still fail immediately.
+
+## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
 
 ## Unreleased - 2026-11-03
 
 ### Maintenance
 
-- Merge `main` after the fifth Host delivery so the sixth installed Host update can follow it to `main`. No source changes.
-
-## Unreleased - 2026-11-03
-
-### Maintenance
-
-- Merge `main` after the fourth Host delivery so the fifth installed Host update can follow it to `main`. No source changes.
-
-## Unreleased - 2026-11-03
-
-### Maintenance
-
-- Merge `main` after the second Host delivery so the third and fourth installed Host updates can follow it to `main`. No source changes.
+- Combine 1 source contributions; retain their release notes below
 
 ## Unreleased - 2026-11-03
 
@@ -46,10 +44,20 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - A coordinator update blocked by other installation work now waits up to eight minutes for that work to finish and then starts, within the same approval, instead of failing at once. Only that busy refusal is retried; a canceled or changed approval, or any other error, stops it.
 
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - The Claude sign-in upgrade keeps Dev working while it switches: Dev keeps its setup token until its own account has moved to full sign-in, instead of giving it up during the seconds before settings reach it, and a fenced Dev no longer risks being left with no credential.
 - A first upgrade refuses a Claude login that another connected Claude account already uses, so Claude 1 cannot be signed into Claude 2's subscription by mistake. The upgrade also checks again that every daemon supports it before switching, and cancelled or failed attempts clear their pending state.
+
+## Unreleased - 2026-11-03
 
 ## Unreleased - 2026-11-03
 
@@ -62,6 +70,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Known limitations
 
 - The upgrade needs Host-owned refresh and every daemon advertising the capability. Unmanaged daemons have no upgrade. Live acceptance on the installation is pending.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
 
 ## Unreleased - 2026-11-03
 
@@ -84,6 +98,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - A thread whose history failed to load after a daemon or session host restart no longer stays blank or shows only its recent messages. The next request for the thread retries the load once the thread is idle, and when newer messages arrived after the failure, it replaces the partial history with the full transcript under a new epoch so open clients reset. Concurrent requests share one retry, and a thread with a running turn waits for it to finish.
 - Session host disconnects now say whether this daemon closed the connection, the host closed it, or a socket error ended it, with the error code, instead of only "Session host connection closed."
+
+## Unreleased - 2026-11-02
 
 ## Unreleased - 2026-11-02
 
