@@ -10,6 +10,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Ignore stale source-preparation state on rejected, canceled or failed update requests when checking whether the coordinator is idle. Pending preparation, active jobs, unreleased holds, unsettled supervisor effects and native children still block replacement.
 - Report a coordinator update that fails before it starts as failed, with a plain reason, instead of leaving it approved and waiting forever. Its approval cannot be reused, so a fresh update can be prepared.
+- Also close a coordinator update's approval when its runner never starts or exits before claiming the update. A runner that is still running, even past the observation deadline, is left alone.
 
 ### Improvements
 
