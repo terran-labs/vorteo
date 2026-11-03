@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+### Fixed
+
+- Keep a Codex turn that finished before Vorteo identified it from becoming the next Stop target. Completion events now carry their turn id, so a late event from that turn is ignored and Stop interrupts the turn actually running.
+
+## Unreleased - 2026-11-02
+
+### Fixed
+
+- Stop a Codex agent whose new message joined a turn Codex was already running, such as a goal continuation resumed after a restart. Stop previously failed with "active run cancellation was not acknowledged" because Vorteo waited for a turn start that never came; it now identifies the running turn from its activity and interrupts it.
+
+## Unreleased - 2026-11-02
+
 ### Maintenance
 
 - Merge `main` through 26.11.206 into the installed Host source, and drop the Host-only 26.11.105 heading whose entries `main` released as 26.11.106.

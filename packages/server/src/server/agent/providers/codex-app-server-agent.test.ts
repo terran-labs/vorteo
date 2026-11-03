@@ -5595,6 +5595,93 @@ describe("Codex app-server provider", () => {
     }
   });
 
+  test("interrupts the running Codex turn that absorbed a new prompt", async () => {
+    const interruptedTurns: unknown[] = [];
+    const appServer = createFakeCodexAppServer({
+      "turn/interrupt": async (params) => {
+        interruptedTurns.push(params);
+        return {};
+      },
+    });
+    const session = new CodexAppServerAgentSession(
+      createConfig({ cwd: "/workspace/project" }),
+      null,
+      createTestLogger(),
+      async () => appServer.child,
+    );
+
+    try {
+      const resultPromise = session.run("Join the goal turn.");
+      await appServer.waitForTurnStart();
+      // A goal continuation was already running, so Codex never sends turn/started.
+      appServer.child.stdout.write(
+        `${JSON.stringify({
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            turnId: "goal-turn",
+            item: { type: "reasoning", id: "goal-reasoning" },
+          },
+        })}\n`,
+      );
+
+      await expect(session.interrupt()).resolves.toBeUndefined();
+
+      expect(interruptedTurns).toEqual([{ threadId: "thread-1", turnId: "goal-turn" }]);
+      appServer.completeTurn();
+      await resultPromise;
+      appServer.assertNoErrors();
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("never interrupts a late item's turn that completed before identification", async () => {
+    const interruptedTurns: unknown[] = [];
+    const appServer = createFakeCodexAppServer({
+      "turn/interrupt": async (params) => {
+        interruptedTurns.push(params);
+        return {};
+      },
+    });
+    const session = new CodexAppServerAgentSession(
+      createConfig({ cwd: "/workspace/project" }),
+      null,
+      createTestLogger(),
+      async () => appServer.child,
+    );
+
+    try {
+      // The first turn finishes before any turn/started or item identifies it.
+      const firstResult = session.run("Finish unidentified.");
+      await appServer.waitForTurnStart();
+      appServer.completeTurn({ turnId: "finished-turn" });
+      await firstResult;
+
+      await session.startTurn("Start the next turn.");
+      appServer.child.stdout.write(
+        `${JSON.stringify({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            turnId: "finished-turn",
+            item: { type: "reasoning", id: "late-reasoning" },
+          },
+        })}\n`,
+      );
+      // Adopting the stale item would send its interrupt before the real turn starts.
+      const interruptPromise = session.interrupt();
+      appServer.startsTurn({ threadId: "thread-1", turnId: "next-turn" });
+      await interruptPromise;
+
+      expect(interruptedTurns).toEqual([{ threadId: "thread-1", turnId: "next-turn" }]);
+      appServer.completeTurn({ turnId: "next-turn" });
+      appServer.assertNoErrors();
+    } finally {
+      await session.close();
+    }
+  });
+
   test("acknowledges interruption when the accepted turn terminates before identification", async () => {
     const interruptedTurns: unknown[] = [];
     const appServer = createFakeCodexAppServer({
