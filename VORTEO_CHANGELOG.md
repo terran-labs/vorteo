@@ -14,6 +14,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Point the website browser checks at Vorteo's page titles, download thanks heading, homepage mockup and plugin demo heading. Registry fixture text and release download URLs are unchanged.
 - Align the Simplified Chinese docs with Vorteo's English sections: renamed Vorteo anchors, the installer-based getting started page and the Standing, Protected and Scheduled workspaces section. Other Chinese body text still names Paseo.
 - Restore keyboard entry into the collapsed sidebar's project preview: non-trapping overlays get first refusal for each key, with fallback to the focused surface. Reconcile the idle agent release browser checks with Vorteo's installation-wide Agents settings and its read error text.
 - Merge Paseo through `eb8b5b8f9`, the cutoff for this synchronization: hardware keyboard shortcuts on native and desktop, Codex multi-file patch diffs, linked issue and pull request references, plugin screen progress, two-size controls, Apache-2.0 license declarations and fixes for ACP, Pi, cron days and workspaces. Shortcut settings appear wherever a hardware keyboard is available. Upstream's first-run walkthrough is merged but not shown; Vorteo keeps its own onboarding. Upstream's interrupted-agent recovery now defaults off, while Vorteo's tracked restart continuation is unaffected.

@@ -77,7 +77,7 @@ test("the plugin demo plays through to the panel the agent built", async ({ page
   expect(await renderedOpacity(builtPanelRow)).toBe(0);
 
   // Hydration can reset the scroll position, so keep the demo in view until it finishes.
-  const heading = page.getByRole("heading", { name: "Ask Paseo to change Paseo" });
+  const heading = page.getByRole("heading", { name: "Ask Vorteo to change Vorteo" });
   await expect(async () => {
     await heading.scrollIntoViewIfNeeded();
     expect(await renderedOpacity(builtPanelRow)).toBe(1);
@@ -90,7 +90,7 @@ test("the plugin demo shows its finished state when motion is reduced", async ({
   await openHomepage(page);
   const builtPanelRow = page.getByText("Add Gruvbox theme", { exact: true });
   const panel = builtPanelRow.locator("xpath=ancestor::div[contains(@class, 'md:border-l')]");
-  const heading = page.getByRole("heading", { name: "Ask Paseo to change Paseo" });
+  const heading = page.getByRole("heading", { name: "Ask Vorteo to change Vorteo" });
 
   await expect(async () => {
     await heading.scrollIntoViewIfNeeded();

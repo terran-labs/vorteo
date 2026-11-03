@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): inherited website browser checks now assert the Vorteo branding the site shows; none are skipped or removed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): Simplified Chinese docs keep every English section and anchor, so the website translation check passes. Their remaining body text still names Paseo; a full Chinese rebrand is separate documentation debt. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): after the cutoff merge, ArrowRight again enters a collapsed sidebar project preview's workspace list; a workspace hover card takes the first Escape and the preview the second. Idle agent release checks follow the installation-wide Agents settings. README overview and onboarding are unchanged.

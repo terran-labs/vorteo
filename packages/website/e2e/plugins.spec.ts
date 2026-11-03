@@ -295,16 +295,16 @@ test.describe("search engine visits without JavaScript", () => {
   }) => {
     await openPlugins(page);
     await expect(page.getByRole("link", { name: /Base2Tone/ }).first()).toBeVisible();
-    await expectPageMetadata(page, "Plugins – Extend Paseo with community plugins", "/plugins");
+    await expectPageMetadata(page, "Plugins – Extend Vorteo with community plugins", "/plugins");
 
     await page.goto("/plugins/category/git");
     await expect(page.getByRole("link", { name: /Fresh Worktrees/ })).toBeVisible();
-    await expectPageMetadata(page, "Git – Paseo plugins", "/plugins/category/git");
+    await expectPageMetadata(page, "Git – Vorteo plugins", "/plugins/category/git");
 
     await page.goto("/plugins/omercnet");
     await expect(page.getByRole("heading", { level: 1, name: "Omer Cohen" })).toBeVisible();
     await expect(page.getByRole("link", { name: /Fresh Worktrees/ }).first()).toBeVisible();
-    await expectPageMetadata(page, "Omer Cohen – Paseo plugins", "/plugins/omercnet");
+    await expectPageMetadata(page, "Omer Cohen – Vorteo plugins", "/plugins/omercnet");
 
     const response = await page.goto("/plugins/omercnet/fresh-worktrees");
     expect(response?.status()).toBe(200);
@@ -316,7 +316,7 @@ test.describe("search engine visits without JavaScript", () => {
     ).toBeVisible();
     await expectPageMetadata(
       page,
-      "Fresh Worktrees – Paseo plugin",
+      "Fresh Worktrees – Vorteo plugin",
       "/plugins/omercnet/fresh-worktrees",
     );
     await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
@@ -330,7 +330,7 @@ test.describe("search engine visits without JavaScript", () => {
     await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
 
     await page.goto("/plugins/tomgrin10/graphite");
-    await expectPageMetadata(page, "Graphite – Paseo plugin", "/plugins/tomgrin10/graphite");
+    await expectPageMetadata(page, "Graphite – Vorteo plugin", "/plugins/tomgrin10/graphite");
     await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
       "content",
       "https://paseo.sh/og-image.png",
@@ -361,15 +361,15 @@ test.describe("search engine visits without JavaScript", () => {
     const plugin = await page.goto("/plugins/acme/does-not-exist");
     expect(plugin?.status()).toBe(404);
     await expect(page.getByRole("heading", { name: "Plugin not found" })).toBeVisible();
-    await expect(page).toHaveTitle("Plugin not found – Paseo");
+    await expect(page).toHaveTitle("Plugin not found – Vorteo");
     const author = await page.goto("/plugins/does-not-exist");
     expect(author?.status()).toBe(404);
     await expect(page.getByRole("heading", { name: "Author not found" })).toBeVisible();
-    await expect(page).toHaveTitle("Author not found – Paseo");
+    await expect(page).toHaveTitle("Author not found – Vorteo");
     const category = await page.goto("/plugins/category/does-not-exist");
     expect(category?.status()).toBe(404);
     await expect(page.getByRole("heading", { name: "Category not found" })).toBeVisible();
-    await expect(page).toHaveTitle("Category not found – Paseo");
+    await expect(page).toHaveTitle("Category not found – Vorteo");
   });
 
   test("redirects old category links permanently", async ({ request }) => {
