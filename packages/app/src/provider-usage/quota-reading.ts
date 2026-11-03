@@ -132,14 +132,8 @@ function prepaidBalanceLabel(
   remaining: number | null,
 ): string | null {
   if (!usage || remaining !== 0) return null;
-  const balance = usage.balances?.find(
-    (entry) =>
-      entry.unit !== "requests" &&
-      typeof entry.remaining === "number" &&
-      Number.isFinite(entry.remaining) &&
-      entry.remaining > 0,
-  );
-  if (balance && typeof balance.remaining === "number") {
+  const balance = prepaidBalance(usage);
+  if (balance) {
     const unit = displayBalanceUnit(usage.providerId, balance);
     const label = unit === "usd" ? "credit" : unit;
     const amount =
@@ -149,6 +143,20 @@ function prepaidBalanceLabel(
     return `${amount} ${label} left`;
   }
   return null;
+}
+
+/** A positive balance other than requests, which keeps work going once the plan is spent. */
+export function prepaidBalance(
+  usage: ProviderUsage | undefined,
+): (ProviderUsageBalance & { remaining: number }) | null {
+  const balance = usage?.balances?.find(
+    (entry): entry is ProviderUsageBalance & { remaining: number } =>
+      entry.unit !== "requests" &&
+      typeof entry.remaining === "number" &&
+      Number.isFinite(entry.remaining) &&
+      entry.remaining > 0,
+  );
+  return balance ?? null;
 }
 
 /** The unit to show a balance in, correcting daemons that reported Codex credits as dollars. */
