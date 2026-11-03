@@ -16,7 +16,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Added
 
-- Settings status lines keep their full message readable to assistive technology without duplicating it as a label.
+- Settings status lines keep their full message readable to assistive technology without duplicating it as a label, so error text never collides with nearby field labels.
 - Building blocks for a single System view of Host and Dev status, an owner lock with an unlock window, and collapsed Locked groups. They are not connected to Settings yet.
 
 ## Unreleased - 2026-11-02

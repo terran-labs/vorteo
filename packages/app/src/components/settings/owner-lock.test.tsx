@@ -164,7 +164,8 @@ describe("owner access controls", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Lock" })));
     expect(slot.getAttribute("aria-live")).toBe("polite");
-    expect(slot.getAttribute("aria-label")).toBe(slot.textContent);
+    // The text node carries the message; no duplicate label.
+    expect(slot.getAttribute("aria-label")).toBeNull();
     expect(renderedLineCounts.get("owner-lock-error")).toBe(2);
     expect(screen.getByTestId("owner-lock-error-slot").style.minHeight).toBe(height);
   });
@@ -195,7 +196,8 @@ describe("owner access controls", () => {
       );
     }
     const error = screen.getByTestId("owner-unlock-error");
-    expect(error.getAttribute("aria-label")).toBe(message);
+    expect(error.getAttribute("aria-label")).toBeNull();
+    expect(error.textContent).toBe(message);
     expect(error.getAttribute("aria-live")).toBe("polite");
     expect(renderedLineCounts.get("owner-unlock-error")).toBe(2);
     expect(screen.getByTestId("owner-lock-error").hasAttribute("aria-live")).toBe(false);
