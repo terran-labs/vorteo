@@ -313,31 +313,91 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
-posixTest("management requires a separate opt-in and revokes with full delegation", () => {
+const credentials = {
+  installationId: "installation-1",
+  hostAgentTokenHash: "1".repeat(64),
+  containerAgentTokenHash: "2".repeat(64),
+  ownerPasswordHash: "$2b$10$owner",
+};
+
+posixTest("the full grant implies management and revokes it", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "management-grant-")));
   dirs.push(dir);
-  const legacy = changeMaintenanceDelegation(dir, { expectedRevision: null, enabled: true });
-  expect(managementDelegationAuthority(dir)).toBeNull();
-  const managed = changeMaintenanceDelegation(dir, {
-    expectedRevision: legacy.revision,
-    enabled: true,
-    management: true,
+  expect(managementDelegationAuthority(dir, credentials)).toBeNull();
+  const granted = changeMaintenanceDelegation(dir, { expectedRevision: null, enabled: true });
+  const authority = managementDelegationAuthority(dir, credentials);
+  expect(authority).toEqual({
+    revision: expect.stringMatching(/^[a-f0-9]{64}$/),
+    activatedAt: granted.activatedAt,
   });
-  expect(managementDelegationAuthority(dir)).toEqual({
-    revision: managed.revision,
-    activatedAt: expect.any(String),
-  });
-  expect(managed.activatedAt).toBe(legacy.activatedAt);
-  expect(managed.revision).not.toBe(legacy.revision);
-  const managementOff = changeMaintenanceDelegation(dir, {
-    expectedRevision: managed.revision,
+  // An older client's separate switch is accepted and ignored.
+  const ignored = changeMaintenanceDelegation(dir, {
+    expectedRevision: granted.revision,
     enabled: true,
     management: false,
   });
-  expect(managementOff.activatedAt).toBe(legacy.activatedAt);
-  expect(managementDelegationAuthority(dir)).toBeNull();
-  changeMaintenanceDelegation(dir, { expectedRevision: managementOff.revision, enabled: false });
-  expect(managementDelegationAuthority(dir)).toBeNull();
+  expect(ignored.revision).toBe(granted.revision);
+  expect(managementDelegationAuthority(dir, credentials)).toEqual(authority);
+  // Rotated credentials invalidate the observed authority revision.
+  expect(
+    managementDelegationAuthority(dir, { ...credentials, hostAgentTokenHash: "3".repeat(64) })
+      ?.revision,
+  ).not.toBe(authority?.revision);
+  expect(
+    managementDelegationAuthority(dir, { ...credentials, ownerPasswordHash: "$2b$10$rotated" })
+      ?.revision,
+  ).not.toBe(authority?.revision);
+  const revoked = changeMaintenanceDelegation(dir, {
+    expectedRevision: granted.revision,
+    enabled: false,
+    management: true,
+  });
+  expect(revoked.enabled).toBe(false);
+  expect(managementDelegationAuthority(dir, credentials)).toBeNull();
+  // A later grant has a new epoch, so the earlier authority revision stays invalid.
+  changeMaintenanceDelegation(dir, { expectedRevision: revoked.revision, enabled: true });
+  const regranted = managementDelegationAuthority(dir, credentials);
+  expect(regranted?.revision).toMatch(/^[a-f0-9]{64}$/);
+  expect(regranted?.revision).not.toBe(authority?.revision);
+});
+
+posixTest("a legacy separate opt-in is read, ignored and never rewritten as granted", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "management-legacy-")));
+  dirs.push(dir);
+  const file = join(dir, "owner-delegation.json");
+  const legacyFile = (managementApprovedAfter: string | null) =>
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        delegatedRequesterPrefixes: [],
+        hostUpdateServiceRestart: false,
+        maintenanceApprovedAfter: "2026-10-28T19:00:00.000Z",
+        maintenanceChangedAt: "2026-10-28T19:00:00.000Z",
+        managementApprovedAfter,
+      }),
+      { mode: 0o600 },
+    );
+  // A full grant whose owner never opted in to separate management gains it automatically.
+  legacyFile(null);
+  const implied = managementDelegationAuthority(dir, credentials);
+  expect(implied?.activatedAt).toBe("2026-10-28T19:00:00.000Z");
+  legacyFile("2026-10-29T19:00:00.000Z");
+  const status = maintenanceDelegationStatus(dir);
+  expect(status.enabled).toBe(true);
+  // The legacy timestamp is not part of the authority, so the revision is unchanged.
+  expect(managementDelegationAuthority(dir, credentials)).toEqual(implied);
+  changeMaintenanceDelegation(dir, { expectedRevision: status.revision, enabled: false });
+  expect(JSON.parse(readFileSync(file, "utf8")).managementApprovedAfter).toBeNull();
+  const regrant = changeMaintenanceDelegation(dir, {
+    expectedRevision: maintenanceDelegationStatus(dir).revision,
+    enabled: true,
+    management: true,
+  });
+  expect(regrant.enabled).toBe(true);
+  // An older runtime reading this file after rollback sees no separate opt-in.
+  expect(JSON.parse(readFileSync(file, "utf8")).managementApprovedAfter).toBeNull();
+  expect(managementDelegationAuthority(dir, credentials)).not.toBeNull();
 });
 
 posixTest(
@@ -345,11 +405,7 @@ posixTest(
   () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "management-durability-")));
     dirs.push(dir);
-    const grant = changeMaintenanceDelegation(dir, {
-      expectedRevision: null,
-      enabled: true,
-      management: true,
-    });
+    const grant = changeMaintenanceDelegation(dir, { expectedRevision: null, enabled: true });
     const sync = fs.fsyncSync;
     let refuse = true;
     let directorySyncs = 0;
@@ -365,7 +421,7 @@ posixTest(
       expect(() =>
         changeMaintenanceDelegation(dir, { expectedRevision: grant.revision, enabled: false }),
       ).toThrow("Directory sync failed");
-      expect(managementDelegationAuthority(dir)).toBeNull();
+      expect(managementDelegationAuthority(dir, credentials)).toBeNull();
       const observed = maintenanceDelegationStatus(dir);
       expect(() =>
         changeMaintenanceDelegation(dir, { expectedRevision: observed.revision, enabled: false }),

@@ -35,11 +35,11 @@ If the owner has delegated approvals to an installation lead, give the lead the 
 
 ## Delegated installation management
 
-When `capabilities.installationManagement.enabled` is true, the owner has explicitly enabled management for the authenticated Host client. An older full maintenance grant does not confer this permission. Use `management-status` to read the current authority revision and exact retained request identities. To cancel, write a private JSON file with a fresh `receiptId`, the returned `authorityRevision`, and the selected request's `kind`, `id`, `revision` and `jobSha256`; submit it once with `management-cancel --request-file <file>`.
+When `capabilities.installationManagement.enabled` is true, the owner's full maintenance delegation grant is active, and it includes management for the authenticated Host client. Use `management-status` to read the current authority revision and exact retained request identities. To cancel, write a private JSON file with a fresh `receiptId`, the returned `authorityRevision`, and the selected request's `kind`, `id`, `revision` and `jobSha256`; submit it once with `management-cancel --request-file <file>`. Always take `jobSha256` from a fresh `management-status`, never from a `request-*` response, which reports a different record and is refused.
 
 Read `management-receipt <receipt-id>` and the retained request after a lost response. An uncertain receipt requires observation, never replay. Cancellation reuses the existing lifecycle checks and cannot stop claimed execution. It does not authorize resubmitting a manual-review request as automatically approved. Preserve the owner's manual-review constraint on replacements.
 
-The management surface cannot approve manual-review work, grant itself permission, or manage owner credentials and account connections. Use existing automatic admission for supported fresh maintenance covered by the owner's grant. If management is unavailable or disabled, prepare the supported upgrade or exact owner opt-in; do not use an owner password, browser session or direct journal edit. Enrolled installations require their own exact scope and never inherit a legacy grant.
+The management surface cannot approve manual-review work, grant itself permission, or manage owner credentials and account connections. Use existing automatic admission for supported fresh maintenance covered by the owner's grant. If management is unavailable or disabled, prepare the supported upgrade or ask the owner for full maintenance delegation; do not use an owner password, browser session or direct journal edit. Enrolled installations require their own exact scope and never inherit a legacy grant.
 
 ## Restart requests
 

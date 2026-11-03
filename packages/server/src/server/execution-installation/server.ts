@@ -789,10 +789,23 @@ export function createInstallationServer(
     res.locals.updateRequester = host ? "host-agent" : "container-agent";
     next();
   }
-  const management = new InstallationManagement(config.stateDir, restarts, coordinatorRequests);
+  // Full maintenance delegation implies cancellation-only management; it never approves.
+  const management = new InstallationManagement(
+    config.stateDir,
+    restarts,
+    coordinatorRequests,
+    () => ({
+      installationId: config.public.installationId,
+      hostAgentTokenHash: config.hostAgentTokenHash,
+      containerAgentTokenHash: config.containerAgentTokenHash,
+      ownerPasswordHash: config.ownerPasswordHash,
+    }),
+  );
   function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
     if (res.locals.updateRequester !== "host-agent" || !management.authority()) {
-      res.status(403).json({ error: "Explicit Host installation management grant required" });
+      res.status(403).json({
+        error: "Full maintenance delegation is required for Host installation management",
+      });
       return;
     }
     next();
@@ -2228,6 +2241,8 @@ export function createInstallationServer(
       throw new RestartRequestError(
         "Enrolled installations require their exact standing maintenance grant.",
       );
+    // COMPAT(separateInstallationManagement): an older client's `management` field is
+    // ignored; the response reports management derived from the full grant.
     const status = changeMaintenanceDelegation(config.stateDir, req.body);
     coordinatorRequests?.revokeAutomatic();
     restarts.refreshApprovalPolicy();
