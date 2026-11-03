@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Improvements
 
+- Archive a finished thread in a Vorteo System workspace, such as a finished Optimizer thread. The workspace stays protected, running or still-scheduled threads are refused, and deleting system threads stays refused.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
 - A coordinator update blocked by other installation work now waits up to eight minutes for that work to finish and then starts, within the same approval, instead of failing at once. Only that busy refusal is retried; a canceled or changed approval, or any other error, stops it.
 
 ### Fixed
