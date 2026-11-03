@@ -6,15 +6,55 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge current `main` into the sidebar placement branch, keeping both sides' changelog and customizations entries.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - New projects, workspaces and folders now appear as the first row of the list that holds them, and stay where they are on every device. Before, the sidebar saved new rows only on the device that saw them, so each sync update could move them, and a project with a saved folder order slotted new workspaces into the middle. In the Created and Last prompt sorts, workspaces inside folders follow the sort again, and drops there change only folder membership and folder positions. A device waits for its first Host snapshot before placing new rows, so it never replays a stale order over newer drags.
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Name the hosted agents holding a pending session host upgrade in the Session host card: those waiting for the owner's answer first, then those running a turn or still starting. Idle hosted agents are left out because they leave after about five quiet minutes. Interface only, with no wire change; older coordinators show no list.
+- Add `install-execution-host.mjs enable-durable-sessions` for Host setup. It refuses without Host source updates or a matching session host job, installs the job through the owner-approved request, waits until the coordinator sees its host answer, then writes `{"enabled": true}` only when no setting exists. An explicit off survives reruns, a broken setting file is reported as broken, and `--request <id>` resumes waiting on an earlier request.
+
+### Changed
+
+- The installer's removal refusal and `install` output name the durable sessions steps. The docs give the order for uninstalling or rolling back below the session host and say that turning the setting off ends no hosted session.
+
+### Maintenance
+
+- Merge current `main` into the durable sessions branch, keeping both sides' new installer tests and the browser test's mocks for the upgrade and snapshot cards.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Keep the Context window card after a daemon restart. Agents now save their last reported usage, so the card no longer disappears until each agent runs another turn.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Full maintenance delegation now includes installation management, so trusted Host agents can cancel pending or queued requests whenever the full grant is active, and revoking the grant removes it. Existing full grants gain this automatically, and Installation controls no longer show a separate management switch. Management still cannot approve requests that need the owner, stop claimed work, or change credentials or settings. Enrolled installations do not gain management. Its authority revision now binds the grant epoch and installation credentials. An older client's separate switch is accepted and ignored. A rollback to an older runtime keeps management only where its earlier separate opt-in is still recorded.
+- Explain that a management cancellation must use the `jobSha256` from `management-status`; a digest taken from a `request-*` submission response is refused.
 
 ## Unreleased - 2026-11-03
 

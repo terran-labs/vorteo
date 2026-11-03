@@ -1,5 +1,9 @@
 import { expect, test, vi } from "vitest";
 import { postCoordinatorRequest } from "./installation-agent.mjs";
+import {
+  enableDurableSessions,
+  writeDurableSessionsSettingIfMissing,
+} from "./lib/durable-sessions-setup.mjs";
 import fs from "node:fs/promises";
 import {
   mkdtempSync,
@@ -1684,6 +1688,324 @@ test("repair-projects-folder-worktree-links rewrites old Dev links once, with ba
     });
   } finally {
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+function durableSessionsFixture({ sourceUpdates = true } = {}) {
+  const root = mkdtempSync(path.join(os.tmpdir(), "durable-sessions-setup-"));
+  const hostHome = path.join(root, "state/host");
+  mkdirSync(hostHome, { recursive: true });
+  const configFile = path.join(root, "coordinator.json");
+  writeFileSync(
+    configFile,
+    JSON.stringify({
+      host: { startupValidation: { node: "/usr/bin/node", entrypoint: "/e", home: hostHome } },
+      ...(sourceUpdates
+        ? { sourceUpdates: { currentReleaseLink: path.join(root, "current") } }
+        : {}),
+    }),
+  );
+  writeFileSync(
+    path.join(root, "installation.json"),
+    JSON.stringify({ phase: "started", configFile, hostHome }),
+  );
+  writeFileSync(
+    path.join(root, "host-agent.json"),
+    JSON.stringify({
+      origin: "http://127.0.0.1:6770",
+      publicOrigin: "https://h.ts.net:443",
+      token: "t",
+    }),
+  );
+  return { root, hostHome, setting: path.join(hostHome, "durable-sessions.json") };
+}
+
+/**
+ * A coordinator whose job answers once the owner approves on the given poll. Like the real one, it
+ * can serve a cached status reading for a while after the setting file changes.
+ */
+function fakeCoordinator({
+  hostHome,
+  installed = false,
+  plist = "matching",
+  hostUp = true,
+  approveOnPoll = 1,
+  outcome = "succeeded",
+  staleReads = 0,
+  conflict = false,
+  /** The request succeeded long ago and its job was removed since. */
+  removedSince = false,
+  loaded = true,
+  /** The daemon's reader refuses the file's contents, as with a non-positive interval. */
+  rejectsSetting = false,
+}) {
+  const calls = [];
+  const settingFile = path.join(hostHome, "durable-sessions.json");
+  let polls = 0;
+  let jobInstalled = installed;
+  let cached = null;
+  let staleLeft = staleReads;
+  const reply = (body, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const status = () => {
+    // Like the daemon's reader: a missing or unreadable file means off.
+    let settingEnabled = false;
+    try {
+      settingEnabled =
+        !rejectsSetting && JSON.parse(readFileSync(settingFile, "utf8")).enabled === true;
+    } catch {
+      /* off */
+    }
+    const fresh = {
+      supported: true,
+      installed: jobInstalled,
+      detail: {
+        plist: jobInstalled ? plist : "absent",
+        loaded: jobInstalled && loaded,
+        host: jobInstalled && loaded && hostUp ? { pid: 42, sessions: 0 } : null,
+        settingEnabled,
+      },
+    };
+    if (cached && fresh.detail.settingEnabled !== cached.detail.settingEnabled && staleLeft > 0) {
+      staleLeft -= 1;
+      return cached;
+    }
+    cached = fresh;
+    return fresh;
+  };
+  const fetch = vi.fn(async (url, init = {}) => {
+    const { pathname } = new URL(url);
+    calls.push({ call: `${init.method ?? "GET"} ${pathname}`, setting: existsSync(settingFile) });
+    expect(init.headers.Authorization).toBe("Bearer t");
+    if (pathname === "/api/installation/capabilities")
+      return reply({ sessionHostJob: { available: true } });
+    if (pathname === "/api/installation/session-host") return reply(status());
+    if (pathname === "/api/installation/session-host-requests") {
+      if (conflict)
+        return reply(
+          { error: "Another session host request is still open. Decide or cancel it first." },
+          409,
+        );
+      const body = JSON.parse(init.body);
+      expect(body.operation).toBe("session-host-install");
+      return reply({ id: "job-1", operation: body.operation, status: "pending" }, 201);
+    }
+    if (pathname === "/api/installation/session-host-requests/job-1") {
+      polls += 1;
+      if (polls < approveOnPoll)
+        return reply({ id: "job-1", operation: "session-host-install", status: "pending" });
+      if (outcome === "succeeded" && !removedSince) jobInstalled = true;
+      return reply({ id: "job-1", operation: "session-host-install", status: outcome });
+    }
+    return reply({ error: "unexpected" }, 404);
+  });
+  return { fetch, calls: () => calls.map((entry) => entry.call), log: calls };
+}
+
+const quiet = { sleep: async () => {}, log: () => {} };
+/** A clock that advances a minute per reading, so settle and approval windows end quickly. */
+const fastClock = () => {
+  let clock = 0;
+  return () => (clock += 60_000);
+};
+
+test("enabling durable sessions installs the job through an approved request before writing the setting", async () => {
+  const fixture = durableSessionsFixture();
+  try {
+    const coordinator = fakeCoordinator({ hostHome: fixture.hostHome, approveOnPoll: 2 });
+    const lines = [];
+    const result = await enableDurableSessions({
+      root: fixture.root,
+      fetch: coordinator.fetch,
+      ...quiet,
+      log: (line) => lines.push(line),
+    });
+    expect(result).toEqual({ jobInstalled: true, settingWritten: true, enabled: true });
+    expect(JSON.parse(readFileSync(fixture.setting, "utf8"))).toEqual({ enabled: true });
+    expect(statSync(fixture.setting).mode & 0o777).toBe(0o600);
+    expect(coordinator.calls().slice(0, 5)).toEqual([
+      "GET /api/installation/capabilities",
+      "GET /api/installation/session-host",
+      "POST /api/installation/session-host-requests",
+      "GET /api/installation/session-host-requests/job-1",
+      "GET /api/installation/session-host-requests/job-1",
+    ]);
+    // The setting appears only after the job succeeded and its host answered.
+    const firstWithSetting = coordinator.log.findIndex((entry) => entry.setting);
+    expect(coordinator.log.slice(0, firstWithSetting).map((entry) => entry.call)).toContain(
+      "GET /api/installation/session-host-requests/job-1",
+    );
+    expect(lines[0]).toBe(
+      "Approve the session host install in Installation controls: https://h.ts.net/settings/general?installation=1&sessionHost=job-1",
+    );
+    expect(lines.at(-1)).toBe("Durable sessions are on.");
+    expect(readdirSync(fixture.hostHome)).toEqual(["durable-sessions.json"]);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("enabling durable sessions waits out the coordinator's cached status after writing", async () => {
+  const fixture = durableSessionsFixture();
+  try {
+    const coordinator = fakeCoordinator({
+      hostHome: fixture.hostHome,
+      installed: true,
+      staleReads: 3,
+    });
+    const result = await enableDurableSessions({
+      root: fixture.root,
+      fetch: coordinator.fetch,
+      ...quiet,
+    });
+    expect(result).toEqual({ jobInstalled: false, settingWritten: true, enabled: true });
+    expect(coordinator.calls()).not.toContain("POST /api/installation/session-host-requests");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("enabling durable sessions never overrides an existing setting and names a broken one", async () => {
+  const fixture = durableSessionsFixture();
+  try {
+    writeFileSync(fixture.setting, '{"enabled": false}');
+    const coordinator = fakeCoordinator({ hostHome: fixture.hostHome, installed: true });
+    const lines = [];
+    const result = await enableDurableSessions({
+      root: fixture.root,
+      fetch: coordinator.fetch,
+      ...quiet,
+      log: (line) => lines.push(line),
+    });
+    expect(result).toEqual({ jobInstalled: false, settingWritten: false, enabled: false });
+    expect(readFileSync(fixture.setting, "utf8")).toBe('{"enabled": false}');
+    expect(lines.at(-1)).toContain("turns them off. This step never overrides it.");
+    expect(writeDurableSessionsSettingIfMissing(fixture.hostHome)).toEqual({ written: false });
+
+    // A file the daemon rejects reads as off even when it says enabled.
+    writeFileSync(fixture.setting, '{"enabled": true, "idleReleaseMs": 0}');
+    lines.length = 0;
+    const rejected = await enableDurableSessions({
+      root: fixture.root,
+      fetch: fakeCoordinator({ hostHome: fixture.hostHome, installed: true, rejectsSetting: true })
+        .fetch,
+      ...quiet,
+      log: (line) => lines.push(line),
+    });
+    expect(rejected.enabled).toBe(false);
+    expect(lines.at(-1)).toContain("is not a setting the daemon can use");
+
+    writeFileSync(fixture.setting, "{broken");
+    lines.length = 0;
+    await enableDurableSessions({
+      root: fixture.root,
+      fetch: fakeCoordinator({ hostHome: fixture.hostHome, installed: true }).fetch,
+      ...quiet,
+      log: (line) => lines.push(line),
+    });
+    expect(lines.at(-1)).toContain("durable sessions stay off; fix or remove it");
+    expect(readFileSync(fixture.setting, "utf8")).toBe("{broken");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("enabling durable sessions never turns on without a job whose host answers", async () => {
+  const fixture = durableSessionsFixture();
+  try {
+    // Installed and loaded, but the host does not answer.
+    const down = fakeCoordinator({ hostHome: fixture.hostHome, installed: true, hostUp: false });
+    await expect(
+      enableDurableSessions({ root: fixture.root, fetch: down.fetch, ...quiet, now: fastClock() }),
+    ).rejects.toThrow("not loaded with a host that answers");
+    expect(down.calls()).not.toContain("POST /api/installation/session-host-requests");
+    // A matching plist that launchd has not loaded gets a next step, not a new request.
+    const unloaded = fakeCoordinator({
+      hostHome: fixture.hostHome,
+      installed: true,
+      loaded: false,
+    });
+    await expect(
+      enableDurableSessions({
+        root: fixture.root,
+        fetch: unloaded.fetch,
+        ...quiet,
+        now: fastClock(),
+      }),
+    ).rejects.toThrow("launchd has not loaded it");
+    // Resuming an old request that succeeded for a job removed since.
+    const removed = fakeCoordinator({ hostHome: fixture.hostHome, removedSince: true });
+    await expect(
+      enableDurableSessions({
+        root: fixture.root,
+        requestId: "job-1",
+        fetch: removed.fetch,
+        ...quiet,
+        now: fastClock(),
+      }),
+    ).rejects.toThrow("not loaded with a host that answers");
+    expect(existsSync(fixture.setting)).toBe(false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("enabling durable sessions changes nothing without source updates, a matching job or an approval", async () => {
+  const unconfigured = durableSessionsFixture({ sourceUpdates: false });
+  const fixture = durableSessionsFixture();
+  try {
+    const untouched = fakeCoordinator({ hostHome: unconfigured.hostHome });
+    await expect(
+      enableDurableSessions({ root: unconfigured.root, fetch: untouched.fetch, ...quiet }),
+    ).rejects.toThrow("one-time Host setup");
+    expect(untouched.calls()).toEqual([]);
+
+    const different = fakeCoordinator({
+      hostHome: fixture.hostHome,
+      installed: true,
+      plist: "different",
+    });
+    await expect(
+      enableDurableSessions({ root: fixture.root, fetch: different.fetch, ...quiet }),
+    ).rejects.toThrow("A different session host job is installed");
+
+    const declined = fakeCoordinator({ hostHome: fixture.hostHome, outcome: "rejected" });
+    await expect(
+      enableDurableSessions({ root: fixture.root, fetch: declined.fetch, ...quiet }),
+    ).rejects.toThrow("was declined; durable sessions stay off");
+
+    const open = fakeCoordinator({ hostHome: fixture.hostHome, conflict: true });
+    await expect(
+      enableDurableSessions({ root: fixture.root, fetch: open.fetch, ...quiet }),
+    ).rejects.toThrow("still open. Decide or cancel it first. If that request installs");
+
+    const waiting = fakeCoordinator({ hostHome: fixture.hostHome, approveOnPoll: Infinity });
+    await expect(
+      enableDurableSessions({
+        root: fixture.root,
+        fetch: waiting.fetch,
+        ...quiet,
+        now: fastClock(),
+        approvalWaitMs: 120_000,
+      }),
+    ).rejects.toThrow("run this step again with --request job-1");
+    // Resuming with the request id waits on that request instead of opening a second one.
+    const lines = [];
+    const resumed = fakeCoordinator({ hostHome: fixture.hostHome, approveOnPoll: 2 });
+    await enableDurableSessions({
+      root: fixture.root,
+      requestId: "job-1",
+      fetch: resumed.fetch,
+      ...quiet,
+      log: (line) => lines.push(line),
+    });
+    expect(resumed.calls()).not.toContain("POST /api/installation/session-host-requests");
+    expect(lines[0]).toContain("sessionHost=job-1");
+    expect(existsSync(fixture.setting)).toBe(true);
+    expect(existsSync(unconfigured.setting)).toBe(false);
+  } finally {
+    rmSync(unconfigured.root, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 

@@ -4335,6 +4335,7 @@ test("retained broad delegation cannot bypass enrolled maintenance admission", a
           delegatedRequesterPrefixes: [],
           hostUpdateServiceRestart: false,
           maintenanceApprovedAfter: "2026-01-01T00:00:00.000Z",
+          managementApprovedAfter: "2026-01-01T00:00:00.000Z",
         }),
         { mode: 0o600 },
       );
@@ -4347,6 +4348,10 @@ test("retained broad delegation cannot bypass enrolled maintenance admission", a
     await f.request("/api/installation/capabilities", "host-agent-test-token")
   ).json();
   expect(caps.maintenanceDelegation).toEqual({ available: false, enabled: false });
+  expect(caps.installationManagement).toMatchObject({ available: false, enabled: false });
+  expect(
+    (await f.request("/api/installation/management/requests", "host-agent-test-token")).status,
+  ).toBe(403);
   expect(caps.sessionHostJob.ownerApprovalRequired).toBe(true);
   expect(
     (
@@ -4555,7 +4560,7 @@ test("the gate route authority reaches agent routes only", async () => {
   expect(other.status).toBe(403);
 });
 
-test("management cancellation requires explicit Host authority and exact retained work", async () => {
+test("full maintenance delegation implies cancellation-only management of exact retained work", async () => {
   const f = await fixture();
   const request = await f.request("/api/installation/restart-requests", "host-agent-test-token", {
     target: "host",
@@ -4564,29 +4569,54 @@ test("management cancellation requires explicit Host authority and exact retaine
   });
   const job = await request.json();
   const route = "/api/installation/management/requests";
+  const capabilities = async () =>
+    (await (await f.request("/api/installation/capabilities", "host-agent-test-token")).json())
+      .installationManagement;
   expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  expect(await capabilities()).toEqual({
+    available: true,
+    enabled: false,
+    cancellation: true,
+    approval: false,
+  });
   const query = "/api/installation/owner/maintenance-delegation/query?management=1";
+  const change = "/api/installation/owner/maintenance-delegation/change?management=1";
   const initial = await (await f.request(query, "owner-test-password", {})).json();
-  const legacy = await (
-    await f.request(
-      "/api/installation/owner/maintenance-delegation/change?management=1",
-      "owner-test-password",
-      { expectedRevision: initial.revision, enabled: true },
-    )
-  ).json();
-  expect(legacy.managementEnabled).toBe(false);
-  expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  expect(initial.managementEnabled).toBe(false);
   const grant = await (
-    await f.request(
-      "/api/installation/owner/maintenance-delegation/change?management=1",
-      "owner-test-password",
-      { expectedRevision: legacy.revision, enabled: true, management: true },
-    )
+    await f.request(change, "owner-test-password", {
+      expectedRevision: initial.revision,
+      enabled: true,
+    })
   ).json();
-  expect(grant.managementEnabled).toBe(true);
+  expect(grant).toMatchObject({
+    enabled: true,
+    managementAvailable: true,
+    managementEnabled: true,
+  });
+  expect(await capabilities()).toEqual({
+    available: true,
+    enabled: true,
+    cancellation: true,
+    approval: false,
+  });
+  // COMPAT: an older client's separate switch is a no-op reporting the derived state.
+  const ignored = await f.request(change, "owner-test-password", {
+    expectedRevision: grant.revision,
+    enabled: true,
+    management: false,
+  });
+  expect(ignored.status).toBe(200);
+  expect(await ignored.json()).toMatchObject({
+    revision: grant.revision,
+    enabled: true,
+    managementEnabled: true,
+  });
   expect((await f.request(route, "guest-agent-test-token")).status).toBe(403);
   const snapshot = await (await f.request(route, "host-agent-test-token")).json();
   const retained = snapshot.jobs.find((item: { id: string }) => item.id === job.id);
+  // The grant never approves explicit-review work.
+  expect(retained.status).toBe("pending");
   const input = {
     receiptId: randomUUID(),
     authorityRevision: snapshot.authority.revision,
@@ -4629,19 +4659,30 @@ test("management cancellation requires explicit Host authority and exact retaine
     "host-agent-test-token",
   );
   expect(await receipt.json()).toMatchObject({
+    authorityRevision: snapshot.authority.revision,
     status: "completed",
     result: { status: "rejected" },
   });
   expect((await f.request(cancel, "host-agent-test-token", input)).status).toBe(409);
-  await f.request(
-    "/api/installation/owner/maintenance-delegation/change?management=1",
-    "owner-test-password",
-    {
+  const revoked = await (
+    await f.request(change, "owner-test-password", {
       expectedRevision: grant.revision,
-      enabled: true,
-      management: false,
-    },
-  );
+      enabled: false,
+    })
+  ).json();
+  expect(revoked).toMatchObject({ enabled: false, managementEnabled: false });
   expect((await f.request(route, "host-agent-test-token")).status).toBe(403);
+  expect((await f.request(cancel, "host-agent-test-token", input)).status).toBe(403);
+  expect((await capabilities()).enabled).toBe(false);
+  const regranted = await (
+    await f.request(change, "owner-test-password", {
+      expectedRevision: revoked.revision,
+      enabled: true,
+    })
+  ).json();
+  expect(regranted.managementEnabled).toBe(true);
+  const renewed = await (await f.request(route, "host-agent-test-token")).json();
+  // A new grant epoch yields a new authority revision, so earlier observations stay invalid.
+  expect(renewed.authority.revision).not.toBe(snapshot.authority.revision);
   expect(f.calls).toEqual([]);
 });

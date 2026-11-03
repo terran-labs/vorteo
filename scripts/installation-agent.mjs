@@ -484,7 +484,7 @@ if (
       const capability = response.ok ? (await response.json()).installationManagement : null;
       if (!capability?.available || !capability.enabled || !capability.cancellation)
         throw new Error(
-          "Explicit installation management is unavailable or disabled. No decision sent.",
+          "Installation management is unavailable, or full maintenance delegation is off. No decision sent.",
         );
       resource = "/api/installation/management/requests";
       if (positionals[0] === "management-receipt") {

@@ -36,6 +36,8 @@ import {
   sessionHostRestartWarning,
   sessionHostReviewSummary,
   sessionHostStatusLines,
+  sessionHostUpgradeHolderLines,
+  sessionHostUpgradeHolders,
   visibleSessionHostJobs,
   type SessionHostAction,
   type SessionHostOverview,
@@ -65,6 +67,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 
 import { getHostRuntimeStore, useHostRegistryLoaded } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
 import { useVortonTouch } from "@/vorton-touch";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import {
@@ -742,10 +745,6 @@ function FullMaintenanceDelegation({
     () => void model.changeMaintenanceDelegation(!delegation?.enabled),
     [model, delegation?.enabled],
   );
-  const changeManagement = useCallback(
-    () => void model.changeMaintenanceDelegation(true, !delegation?.managementEnabled),
-    [model, delegation?.managementEnabled],
-  );
   if (!delegation?.available) return null;
   return (
     <View>
@@ -768,24 +767,14 @@ function FullMaintenanceDelegation({
           : "Delegate all supported maintenance"}
       </Button>
       {delegation.managementAvailable ? (
-        <View>
-          <Text style={styles.text}>
-            Delegate installation management to trusted Host agents. This enables supported
-            automatic maintenance and cancellation of pending or queued requests, with durable
-            receipts. Exact manual-review jobs still require your decision. Agents cannot change
-            this grant, accounts or credentials. You can revoke management here at any time.
-          </Text>
-          <Button
-            size="md"
-            disabled={state.busy || Boolean(state.maintenanceDelegationError)}
-            onPress={changeManagement}
-            testID="installation-management-change"
-          >
-            {delegation.managementEnabled
-              ? "Revoke installation management"
-              : "Delegate installation management"}
-          </Button>
-        </View>
+        <Text style={styles.text} testID="installation-management-status">
+          {delegation.managementEnabled
+            ? "Installation management is enabled by this grant."
+            : "This grant also enables installation management."}{" "}
+          Trusted Host agents can cancel pending or queued requests, with durable receipts. They
+          cannot approve requests that need your review, stop claimed work, or change this grant,
+          accounts, credentials or settings.
+        </Text>
       ) : null}
     </View>
   );
@@ -1630,6 +1619,18 @@ function SessionHostCard({
     void model.requestSessionHost("session-host-restart");
   }, [model]);
   const overview = state.sessionHost;
+  // The session host runs on Host, so only Host agents can hold its upgrade.
+  const hostServerId =
+    readExecutionInstallation()?.environments.find((environment) => environment.kind === "host")
+      ?.serverId ?? "";
+  const hostAgents = useSessionStore((store) => store.sessions[hostServerId]?.agents);
+  const holderLines = useMemo(
+    () =>
+      sessionHostUpgradeHolderLines(
+        sessionHostUpgradeHolders(overview?.status ?? null, hostAgents?.values() ?? []),
+      ),
+    [overview?.status, hostAgents],
+  );
   if (!overview) return null;
   const review = { busy: state.busy, unlocked: state.unlocked };
   return (
@@ -1645,6 +1646,11 @@ function SessionHostCard({
         <Text selectable style={styles.text} testID="session-host-status">
           {sessionHostStatusLines(overview.status).join("\n")}
         </Text>
+        {holderLines.length > 0 ? (
+          <Text selectable style={styles.text} testID="session-host-upgrade-holders">
+            {holderLines.join("\n")}
+          </Text>
+        ) : null}
         {state.sessionHostError ? (
           <>
             <Text accessibilityRole="alert" style={styles.error}>
