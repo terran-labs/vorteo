@@ -20,6 +20,7 @@ import { createRequireBearerMiddleware, hashDaemonPassword } from "../../auth.js
 import { readInstallationSettings } from "../settings/projection.js";
 import type { InstallationSettingsAdmission } from "../settings/admission.js";
 import { mountClaudeSetupConsumer } from "./claude-setup-consumer.js";
+import { upgradeClaudeAccount } from "../../../services/provider-login/create-account.js";
 
 test("authenticated consumer writes only the policy-bound account and rejects excluded/stale deliveries", async () => {
   const home = await mkdtemp(join(tmpdir(), "claude-consumer-http-"));
@@ -229,6 +230,10 @@ test("an account upgraded to full sign-in refuses setup tokens and deletes its o
     const upgraded = { ...delivery, revision: 2, policyRevision: 2 };
     expect((await request(upgraded)).status).toBe(409);
     expect(JSON.parse(await readFile(artifact, "utf8"))).toEqual(credential);
+    // Until this environment's own binding switches, the setup token is its only credential.
+    expect((await request({ ...upgraded, credential: null })).status).toBe(409);
+    expect(JSON.parse(await readFile(artifact, "utf8"))).toEqual(credential);
+    await upgradeClaudeAccount({ paseoHome: home, store, creationId, name: "Claude 1" });
     const withdrawn = await request({ ...upgraded, credential: null });
     expect(withdrawn.status).toBe(200);
     expect(await withdrawn.json()).toMatchObject({ phase: "applied", active: false });

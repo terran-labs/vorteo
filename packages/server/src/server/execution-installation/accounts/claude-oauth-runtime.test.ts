@@ -33,6 +33,8 @@ interface HarnessOptions {
   /** Coordinator refresh state present before the runtime starts. */
   state?: (definitionId: string) => unknown;
   setupSigningIn?: boolean;
+  /** Other definitions in the installation, such as an account already on full sign-in. */
+  others?: InstallationProvider[];
 }
 
 function harness(
@@ -73,6 +75,7 @@ function harness(
       bindings: options.everywhere ? { host: providerId, dev: providerId } : { host: providerId },
       policy: { enabled: true, label: "Max" },
     },
+    ...(options.others ?? []),
   ];
   const snapshot = () => ({
     revision,
@@ -339,6 +342,63 @@ it("refuses a sign-in to a different account than the one recorded and signs it 
   expect(h.cli.logout).toHaveBeenCalledWith(h.configDir);
   expect(h.definitions()[0]).toEqual(original);
   expect(h.settings.update).not.toHaveBeenCalled();
+});
+
+it("refuses a first upgrade into a Claude login another account already uses", async () => {
+  const otherCreation = randomUUID();
+  const h = harness(setupToken, SUPPORTED, {
+    everywhere: true,
+    others: [
+      {
+        id: "two",
+        providerType: "claude",
+        accountSetup: { provider: "claude", creationId: otherCreation, signIn: "full" },
+        bindings: { host: `claude-account-${otherCreation}` },
+        policy: { enabled: true, label: "Claude 2" },
+      },
+    ],
+    state: () => [
+      {
+        definitionId: "two",
+        generation: 1,
+        rotation: 0,
+        signedIn: true,
+        hostGrant: "present",
+        policyRevision: 1,
+        digest: null,
+        expiresAt: null,
+        identity: { email: "Shared@Example.com", orgId: "org-1" },
+        checkedAt: null,
+        refresh: null,
+        targets: [],
+      },
+    ],
+  });
+  const original = structuredClone(h.definitions()[0]);
+  h.cli.identity.mockResolvedValueOnce({ email: "shared@example.com", orgId: "org-1" });
+  await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.runtime.read("one").login.status === "failed");
+  expect(h.runtime.read("one").login).toMatchObject({
+    message: expect.stringContaining("Claude 2 already uses"),
+  });
+  expect(h.cli.logout).toHaveBeenCalledWith(h.configDir);
+  expect(h.definitions()[0]).toEqual(original);
+  expect(h.settings.update).not.toHaveBeenCalled();
+});
+
+it("signs the new grant out when the definition changed during the upgrade", async () => {
+  const h = harness(setupToken, SUPPORTED, { everywhere: true });
+  const original = structuredClone(h.definitions()[0]);
+  vi.mocked(h.settings.update).mockRejectedValueOnce(new Error("Settings revision is stale"));
+  await h.runtime.upgradeStart("one");
+  await until(() => h.runtime.read("one").login.status === "waiting");
+  h.complete(true);
+  await until(() => h.runtime.read("one").login.status === "failed");
+  expect(h.cli.logout).toHaveBeenCalledWith(h.configDir);
+  expect(h.definitions()[0]).toEqual(original);
+  await expect(h.runtime.upgradeRead("one")).resolves.toMatchObject({ available: true });
 });
 
 it("accepts the recorded account regardless of email case", async () => {

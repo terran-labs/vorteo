@@ -337,6 +337,12 @@ test("enrollment status is owner-only and reading it cannot approve or dispatch 
   const route = "/api/installation/owner/enrollment/query";
   for (const credential of [undefined, "host-agent-test-token", "guest-agent-test-token"])
     expect((await f.request(route, credential, {})).status).toBe(401);
+  // The Claude sign-in upgrade can replace an account's credential, so it is owner-only too.
+  for (const upgrade of ["upgrade/read", "upgrade/start", "upgrade/submit", "upgrade/cancel"])
+    for (const credential of [undefined, "host-agent-test-token", "guest-agent-test-token"])
+      expect(
+        (await f.request(`/api/installation/owner/claude/oauth/${upgrade}`, credential, {})).status,
+      ).toBe(401);
   const response = await f.request(route, "owner-test-password", {});
   expect(response.status).toBe(200);
   const status = InstallationEnrollmentStatusSchema.parse(await response.json());
