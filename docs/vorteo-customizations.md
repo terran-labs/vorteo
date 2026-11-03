@@ -1399,7 +1399,7 @@ Project workspace rows and their group controls share an icon-width inset beneat
 
 Reset-label and theme-logo integration preserves the installed embedded-card spacing and viewport height limits.
 
-Embedded logos share theme-aware selection: Starship uses the original rainbow artwork, Dark Star retains shaded white, and Scriptorium, Midas, Ember and Neon use sepia, gold, warm orange and violet-blue gradients shaded by the approved raster master, preserving the shadow where the ribbon loops under itself. The early loader remembers validated display colors for its artwork, ring and recovery text, with neutral dark fallback when storage is unavailable. Loader geometry and the stationary inner mark are unchanged.
+Embedded logos and the early loader draw every theme from the approved master: its traced silhouette takes the theme's gradient (blue to magenta for Starship light, white for Dark Star, and sepia, gold, warm orange and violet-blue for Scriptorium, Midas, Ember and Neon), and a 5 KB inline overlay taken from the master's luminance keeps the shadow where the ribbon loops under itself. Neither fetches an image, so the mark appears with the first frame; `scripts/generate-vorteo-icons.mjs` regenerates both from the master. The early loader remembers validated display colors for its artwork, ring and recovery text, with neutral dark fallback when storage is unavailable. Loader geometry and the stationary inner mark are unchanged.
 
 Compact account reset controls draw their border on the button itself, keeping labels centered when touch accessibility enlarges the tap target. Account rows reserve the full control height rather than a text-line-sized slot. Phone and tablet browser checks cover the alignment and existing reset review flow. README overview and onboarding are unchanged.
 
@@ -1759,6 +1759,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+November 3, 2026: Brand marks no longer load the 57 KB master into two image masks per logo, which delayed the startup loader and every themed logo. They draw the traced silhouette with an inline shading overlay instead, unchanged in color and shading. README overview and onboarding are unchanged.
 
 November 1, 2026: Upstream synchronization preserves the fork's installer CI job, supported macOS runner pins and bounded browser-job timeouts while adopting eight browser shards. Local relay tests clear the deployment forwarding override so they exercise the checkout's adapter. The README retains the fork's installer, security overview and demonstrations; incoming upstream installation instructions do not replace them.
 

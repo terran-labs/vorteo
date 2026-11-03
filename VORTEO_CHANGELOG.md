@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
