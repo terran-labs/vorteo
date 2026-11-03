@@ -143,3 +143,7 @@ export async function expectAddProjectResultVisible(page: Page, text: string): P
     })
     .toBe(true);
 }
+
+export async function chooseAddHostFromProjectFlow(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /Add host.*No connected hosts/ }).click();
+}

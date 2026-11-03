@@ -1,6 +1,7 @@
 import { resolveExplorerSidebarPresentation } from "@/workspace-tabs/explorer-sidebar";
 import { SidebarSpacingProvider } from "@/styles/sidebar-spacing";
 import { useResponsiveSidebar } from "@/hooks/use-responsive-sidebar";
+import { AddHostProvider, AddHostFlowHost } from "@/hosts/add-host";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useIsExplorerSidebarOpen } from "@/workspace-tabs/explorer-sidebar";
@@ -482,6 +483,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
   // Theme updates preserve panel, navigator and portal lifetimes.
   const surface = (
     <View style={layoutStyles.surfaceFill} dataSet={appearanceCanvasDataSet}>
+      <AddHostFlowHost />
       {sharedWindowChrome ? (
         <WindowChromeSafeArea placement="below" testID="workspace-window-chrome">
           <TitlebarDragRegion />
@@ -931,11 +933,13 @@ function RootAppTree() {
     <GestureHandlerRootView style={flexStyle}>
       <View style={layoutStyles.surfaceFill}>
         <LucideProvider strokeWidth={ICON_STROKE_WIDTH}>
-          <RootProviders>
-            <RuntimeProviders>
-              <AppShell />
-            </RuntimeProviders>
-          </RootProviders>
+          <AddHostProvider>
+            <RootProviders>
+              <RuntimeProviders>
+                <AppShell />
+              </RuntimeProviders>
+            </RootProviders>
+          </AddHostProvider>
         </LucideProvider>
       </View>
     </GestureHandlerRootView>

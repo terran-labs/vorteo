@@ -34,6 +34,7 @@ import { readPluginManifest } from "./manifest.js";
 import { expandTilde } from "../../utils/path.js";
 import { runPluginBuild } from "./preparation.js";
 import { PluginRuntime } from "./runtime.js";
+import type { PluginRuntimeSubscription } from "./runtime-subscription.js";
 import { BuiltinPluginLoader, type BuiltinPlugin } from "./builtin/index.js";
 import type { PluginProviderMetadata } from "./plugin-process-protocol.js";
 import { readPluginProviderIcon } from "./provider-icon.js";
@@ -68,6 +69,7 @@ interface PluginRuntimePort {
   catalog: PluginRuntime["catalog"];
   isBuiltinPluginLoaded?: PluginRuntime["isBuiltinPluginLoaded"];
   invoke(pluginId: string, method: string, input: unknown): Promise<unknown>;
+  startSubscription: PluginRuntime["startSubscription"];
   getLogs(pluginId: string): PluginLogEntry[];
   clearLogs(pluginId: string): void;
   getProviderRegistrations?(pluginId: string): readonly PluginProviderMetadata[];
@@ -769,6 +771,10 @@ export class PluginService {
     return (
       this.builtinPluginIds.has(pluginId) && this.runtime.isBuiltinPluginLoaded?.(pluginId) === true
     );
+  }
+
+  subscribePluginRpc(pluginId: string, method: string, input: unknown): PluginRuntimeSubscription {
+    return this.runtime.startSubscription(pluginId, method, input);
   }
 
   async stopAllPlugins(): Promise<void> {

@@ -434,3 +434,83 @@ it("requires an explicit expected path and enabled state for directory bindings 
     SessionInboundMessageSchema.parse({ ...legacy, binding: { expectedPath: "/old/plugin" } }),
   ).toThrow();
 });
+
+describe("plugin subscription protocol", () => {
+  it("round-trips void subscription input and undefined events through JSON", () => {
+    const request = JSON.parse(
+      JSON.stringify({
+        type: "plugin.rpc.subscribe.request",
+        requestId: "void-input",
+        pluginId: "voids",
+        method: "watch",
+        input: undefined,
+      }),
+    );
+    expect(request).toEqual({
+      type: "plugin.rpc.subscribe.request",
+      requestId: "void-input",
+      pluginId: "voids",
+      method: "watch",
+    });
+    const parsedRequest = SessionInboundMessageSchema.parse(request);
+    expect(parsedRequest).toEqual(request);
+    if (parsedRequest.type !== "plugin.rpc.subscribe.request")
+      throw new Error("Unexpected request");
+    expect(z.void().safeParse(parsedRequest.input).success).toBe(true);
+    for (const key of ["requestId", "pluginId", "method"]) {
+      const invalid = { ...request };
+      Reflect.deleteProperty(invalid, key);
+      expect(SessionInboundMessageSchema.safeParse(invalid).success).toBe(false);
+    }
+    const event = JSON.parse(
+      JSON.stringify({
+        type: "plugin.rpc.event",
+        payload: { subscriptionId: "void-stream", event: undefined },
+      }),
+    );
+    expect(event).toEqual({ type: "plugin.rpc.event", payload: { subscriptionId: "void-stream" } });
+    const parsedEvent = SessionOutboundMessageSchema.parse(event);
+    expect(parsedEvent).toEqual(event);
+    if (parsedEvent.type !== "plugin.rpc.event") throw new Error("Unexpected event");
+    expect(z.void().safeParse(parsedEvent.payload.event).success).toBe(true);
+    expect(SessionOutboundMessageSchema.safeParse({ ...event, payload: {} }).success).toBe(false);
+  });
+
+  it("parses a subscribe request and its response", () => {
+    const request = {
+      type: "plugin.rpc.subscribe.request",
+      requestId: "r1",
+      pluginId: "diff-watch",
+      method: "diff.watch",
+      input: { a: "main", b: "HEAD" },
+    };
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+    const response = {
+      type: "plugin.rpc.subscribe.response",
+      payload: { requestId: "r1", subscriptionId: "s1" },
+    };
+    expect(SessionOutboundMessageSchema.parse(response)).toEqual(response);
+  });
+
+  it("parses JSON events and closes with and without an error", () => {
+    for (const message of [
+      { type: "plugin.rpc.event", payload: { subscriptionId: "s1", event: { path: "a.ts" } } },
+      { type: "plugin.rpc.closed", payload: { subscriptionId: "s1" } },
+      { type: "plugin.rpc.closed", payload: { subscriptionId: "s1", error: "boom" } },
+    ]) {
+      expect(SessionOutboundMessageSchema.parse(message)).toEqual(message);
+    }
+  });
+
+  it("advertises the feature as an optional flag", () => {
+    const status = {
+      type: "status",
+      payload: {
+        status: "server_info",
+        serverId: "srv",
+        features: { pluginSubscriptions: true },
+      },
+    };
+    expect(StatusMessageSchema.parse(status)).toMatchObject(status);
+  });
+});

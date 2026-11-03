@@ -1216,6 +1216,7 @@ test("advertises client capabilities in hello", async () => {
       profile_switch_timeline: true,
       checklist_review_status: true,
       checklist_blocked_status: true,
+      plugin_binary_payloads: true,
       workspace_setup_blocked: true,
       workspace_setup_observation: true,
       hello_rejection: true,

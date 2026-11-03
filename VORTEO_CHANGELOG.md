@@ -12,6 +12,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-02
 
+- Merge 24 newer Paseo commits, adding plugin live subscriptions, in-place Add host, Codex patch details, JSON agent logs, stricter cron steps, Markdown table and question fixes, and provider cleanup fixes. Plugin subscriptions receive the daemon's authenticated server identity and fail closed without it; binary plugin frames require the client's advertised decoder. QR and link pairing remain retired.
 - Offer Stop turn and switch for running turns, explain goal pausing, and wait for cancellation before capturing handoff context. Permission-only states keep the existing refusal without stopping the thread.
 - Synchronize the welcome animation marker when reduced motion stops its frame loop; retain event-driven resumption and validate both motion transitions.
 - Integrate published installer, packaged Claude and release-tooling corrections while retaining upstream dependencies and installation safeguards.

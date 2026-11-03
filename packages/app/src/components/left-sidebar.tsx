@@ -2,6 +2,7 @@ import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { SidebarSyncNotice } from "@/sidebar-state/status";
 import { useLayoutEffect } from "react";
 import { useSidebarSpacing } from "@/styles/sidebar-spacing";
+import { useAddHost } from "@/hosts/add-host";
 import {
   SidebarWidthContext,
   sidebarPresentationWidth,
@@ -25,6 +26,7 @@ import { DemoControls } from "@/demo/controls";
 import {
   Search,
   FolderPlus,
+  Link2,
   Folder,
   Plus,
   History,
@@ -119,12 +121,7 @@ import { usePanelStore } from "@/stores/panel-store";
 import { useOwnsWindowChromeCorner, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
-import {
-  buildSchedulesRoute,
-  buildSessionsRoute,
-  buildSettingsAddHostRoute,
-  buildSettingsRoute,
-} from "@/utils/host-routes";
+import { buildSchedulesRoute, buildSessionsRoute, buildSettingsRoute } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
 import { UsageSidebarItem, useUsageSummary } from "@/usage";
 import { SidebarGlobalCards } from "@/components/sidebar/global-cards";
@@ -249,14 +246,8 @@ const LeftSidebarBase = memo(function LeftSidebarBase({
     router.push(buildSettingsRoute());
   }, []);
 
-  const handleAddHostMobile = useCallback(() => {
-    showMobileAgent();
-    router.push(buildSettingsAddHostRoute(Date.now()));
-  }, [showMobileAgent]);
-
-  const handleAddHostDesktop = useCallback(() => {
-    router.push(buildSettingsAddHostRoute(Date.now()));
-  }, []);
+  const handleAddHostMobile = useAddHost();
+  const handleAddHostDesktop = handleAddHostMobile;
 
   const handleOpenHostSettingsMobile = useCallback(
     (serverId: string) => {
@@ -471,6 +462,7 @@ function sidebarNavigationVisibility(fit: number, rail: boolean) {
 }
 
 function SidebarToolbar({
+  handleAddHost,
   rail = false,
   railFooter,
   onExpand,
@@ -525,6 +517,10 @@ function SidebarToolbar({
     onBeforeNavigate?.();
     router.push(buildSchedulesRoute());
   }, [onBeforeNavigate]);
+  const openAddHost = useCallback(() => {
+    onBeforeNavigate?.();
+    handleAddHost();
+  }, [onBeforeNavigate, handleAddHost]);
   const openHelp = useCallback(() => setHelpOpen(true), []);
   const openDisplay = useCallback(() => setDisplayOpen(true), []);
   const menuIcons = useMemo(
@@ -532,6 +528,7 @@ function SidebarToolbar({
       settings: <Settings size={16} color={theme.colors.foregroundMuted} />,
       schedules: <CalendarClock size={16} color={theme.colors.foregroundMuted} />,
       history: <History size={16} color={theme.colors.foregroundMuted} />,
+      host: <Link2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       project: <FolderPlus size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       help: <CircleHelp size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
       workspace: <Plus size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
@@ -631,6 +628,13 @@ function SidebarToolbar({
                 {t("sidebar.folders.actions.newFolder")}
               </DropdownMenuItem>
             ) : null}
+            <DropdownMenuItem
+              testID="sidebar-add-host"
+              onSelect={openAddHost}
+              leading={menuIcons.host}
+            >
+              {t("settings.addHost")}
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Appearance</DropdownMenuLabel>
             <View style={styles.themeMenu}>
@@ -669,6 +673,7 @@ function SidebarToolbar({
       hasMenuNavigation,
       openHistory,
       handleOpenProject,
+      openAddHost,
       handleNewWorkspace,
       handleNewFolder,
       labels.addProject,

@@ -2,6 +2,8 @@
 
 Maintenance review (2026-11-03): merged the stop-turn account switching feature commit for ancestry only; its reviewed changes and corrections were already integrated, so functionality is unchanged.
 
+Maintenance review (2026-11-02): a follow-up synchronization merges 24 newer Paseo commits through `3857ed336`. Plugin live subscriptions now pass the daemon's authenticated server identity to handlers, failing closed like plugin RPCs, and binary frames reach only clients that advertise a decoder. Add host opens in place for direct and SSH hosts from the sidebar's More menu; QR and link pairing stay retired. The [upstream comparison](#upstream-comparison) records the overlap. Combined validation, CI and installation are pending. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-02): account switching offers manual Stop only for running turns, discloses goal pausing and reads handoff context after cancellation settles. Permission-only states keep the daemon refusal without stopping. Eight focused tests, app typechecking and lint pass on Node 24.21. Integrated typechecking, lint, formatting, the web build and both complete welcome cases pass on Node 24.14.1; final commit provenance, CI and interface publication remain pending. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-02): integration includes the published installer, packaged Claude and release-tooling corrections. Upstream dependency changes and reviewed installation safeguards remain intact. Combined validation and installation are pending.
@@ -1651,6 +1653,12 @@ Sidebar integration review: shared state is integrated with the published Nova b
 - **Acceptance across installations and devices.** Native host setup, real account sign-in, supervisor/Pi workflows, physical devices, dictation, accessibility and performance require environment-specific acceptance. A source test or responsive browser layout does not establish those results. See [host acceptance](host-handoff.md#acceptance). Keep deployment evidence private.
 
 ## Upstream comparison
+
+The November 2, 2026 follow-up adds Paseo commits through `3857ed336594978410e7acddb4eeb194e84ea046`. Most of them, including JSON agent logs, cron steps rejected when they would run hourly, Markdown tables below prose, question choices that stay open, refreshed collapsed folders, visible reconnecting status, Codex patch details before approval, final Claude usage on failed turns, and the ACP, Pi, Git-refresh and remote-wake fixes, are inherited without a Vorteo difference.
+
+- **Plugin live subscriptions have partial overlap.** Paseo adds subscriptions that stream events and binary data to the app. Vorteo requires its authenticated server identity in every plugin handler context, so subscription start fails closed when the daemon identity is unavailable, as RPCs already do. Binary frames are sent only to clients advertising `plugin_binary_payloads`; JSON events are unchanged. Registry access still requires explicit opt-in.
+- **Adding hosts has partial overlap.** Paseo opens Add host in place and offers QR and link pairing. Vorteo adopts the in-place flow for direct and SSH hosts and places it under the sidebar's More menu, because the fork has no Hosts toolbar. QR scanning and pairing links, retired with the shared Settings simplification on October 6, 2026, are not restored; `/pair-scan` remains a compatibility redirect.
+- **Settings layout is not replaced.** Paseo's flat App and Host settings sidebar is not adopted; Vorteo keeps its shared Settings presentation and catalog.
 
 The November 1, 2026 synchronization targets Paseo commit `efc64a5443dfe166dfb0d80434ecb48516b8fbe2` from the `0.15.0-beta.1` line. The comparison below credits incoming implementation; deployment and physical-device acceptance remain separate.
 

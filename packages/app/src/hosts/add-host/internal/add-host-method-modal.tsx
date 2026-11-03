@@ -1,9 +1,10 @@
+import { PressHighlight } from "@/components/ui/press-highlight";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Link2, Terminal } from "lucide-react-native";
-import { AdaptiveModalSheet, type SheetHeader } from "./adaptive-modal-sheet";
+import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { isElectronRuntime } from "@/desktop/host";
 import type { Theme } from "@/styles/theme";
 
@@ -68,7 +69,7 @@ export function AddHostMethodModal({
       onClose={onClose}
       testID="add-host-method-modal"
     >
-      <Pressable
+      <PressHighlight
         style={styles.option}
         onPress={handleDirect}
         accessibilityRole="button"
@@ -82,10 +83,10 @@ export function AddHostMethodModal({
             {t("pairing.connectionMethods.direct.description")}
           </Text>
         </View>
-      </Pressable>
+      </PressHighlight>
 
       {isElectronRuntime() ? (
-        <Pressable
+        <PressHighlight
           style={styles.option}
           onPress={handleRemoteSsh}
           accessibilityRole="button"
@@ -99,7 +100,7 @@ export function AddHostMethodModal({
               {t("pairing.connectionMethods.remoteSsh.description")}
             </Text>
           </View>
-        </Pressable>
+        </PressHighlight>
       ) : null}
     </AdaptiveModalSheet>
   );

@@ -31,6 +31,8 @@ import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import type { WorkspaceDescriptorPayload } from "@getpaseo/protocol/messages";
 import {
   decodeFileTransferFrame,
+  decodePluginFrame,
+  PluginFrameOpcode,
   encodeFileTransferFrame,
   FileTransferOpcode,
   type FileTransferFrame,
@@ -351,6 +353,8 @@ interface SessionForTestOptions {
   messages?: unknown[];
   targetedMessages?: Array<{ source: object; message: SessionOutboundMessage }>;
   binaryMessages?: Uint8Array[];
+  targetedBinaryMessages?: Array<{ source: object; frame: Uint8Array }>;
+  clientCapabilities?: SessionOptions["clientCapabilities"];
   pluginRuntime?: SessionOptions["pluginRuntime"];
   orchestrationSkills?: SessionOptions["orchestrationSkills"];
   workspaceLabelService?: WorkspaceLabelService;
@@ -412,6 +416,14 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
             messages.push(message),
         }),
     onBinaryMessage: createBinaryMessageHandler(options.binaryMessages),
+    ...(options.targetedBinaryMessages
+      ? {
+          onBinaryMessageToSource: async (source: object, frame: Uint8Array) => {
+            options.targetedBinaryMessages?.push({ source, frame });
+          },
+        }
+      : {}),
+    clientCapabilities: options.clientCapabilities,
     logger,
     downloadTokenStore: options.downloadTokenStore ?? asDownloadTokenStore(),
     pushNotifications: options.pushNotifications ?? asPushNotifications(),
@@ -872,6 +884,188 @@ test("routes plugin requests and releases its owned catalog subscription on clea
   await session.cleanup();
   expect(listeners.size).toBe(0);
   expect(releasePluginSubscription).toHaveBeenCalledOnce();
+});
+
+test("losing daemon.manage releases the session's plugin subscriptions", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const release = vi.fn();
+  const pluginRuntime = {
+    subscribe: () => () => {},
+    subscribePluginRpc: () => ({ ready: Promise.resolve(), attach: () => {}, release }),
+  } as unknown as NonNullable<SessionOptions["pluginRuntime"]>;
+  const session = createSessionForTest({ messages, pluginRuntime });
+
+  await session.handleMessage({
+    type: "plugin.rpc.subscribe.request",
+    requestId: "watch",
+    pluginId: "example",
+    method: "screen.capture",
+    input: {},
+  });
+  expect(messages.map((message) => message.type)).toContain("plugin.rpc.subscribe.response");
+  session.setPermissions(["daemon.read"]);
+
+  // Bytes have no outbound permission check, so the stream itself has to end.
+  await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+});
+
+test.each([undefined, false, true])(
+  "delayed plugin bytes use each physical source's decoder capability, first=%s",
+  async (firstCapability) => {
+    const messages: SessionOutboundMessage[] = [];
+    const binaryMessages: Uint8Array[] = [];
+    const targetedMessages: Array<{ source: object; message: SessionOutboundMessage }> = [];
+    const targetedBinaryMessages: Array<{ source: object; frame: Uint8Array }> = [];
+    const sources = [{}, {}];
+    const capabilities = [firstCapability, firstCapability !== true];
+    const sinks: Array<{ event(value: unknown): void }> = [];
+    const releases: Array<ReturnType<typeof vi.fn>> = [];
+    const pluginRuntime = {
+      subscribe: () => () => {},
+      subscribePluginRpc: () => {
+        const release = vi.fn();
+        releases.push(release);
+        return {
+          ready: Promise.resolve(),
+          attach: (sink: { event(value: unknown): void }) => sinks.push(sink),
+          release,
+        };
+      },
+    } as unknown as NonNullable<SessionOptions["pluginRuntime"]>;
+    const session = createSessionForTest({
+      messages,
+      binaryMessages,
+      targetedMessages,
+      targetedBinaryMessages,
+      pluginRuntime,
+    });
+    let emit!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      emit = resolve;
+    });
+    // Register outside either request context, as a plugin IPC listener is registered at startup.
+    const emitted = (async () => {
+      await delayed;
+      for (const sink of sinks) sink.event({ width: 1 });
+      for (const sink of sinks) sink.event(new Uint8Array([1, 2, 3]));
+    })();
+    try {
+      for (const [index, source] of sources.entries()) {
+        const capability = capabilities[index];
+        session.updateClientCapabilities(
+          {
+            [CLIENT_CAPS.ownedSubscriptions]: true,
+            ...(capability === undefined ? {} : { [CLIENT_CAPS.pluginBinaryPayloads]: capability }),
+          },
+          source,
+        );
+        await session.handleMessage(
+          {
+            type: "plugin.rpc.subscribe.request",
+            requestId: `watch-${index}`,
+            pluginId: "example",
+            method: "screen.capture",
+            input: {},
+          },
+          source,
+        );
+      }
+      expect(sinks).toHaveLength(2);
+      const subscriptionIds = sources.map((source) => {
+        const response = targetedMessages.find(
+          (row) => row.source === source && row.message.type === "plugin.rpc.subscribe.response",
+        )?.message;
+        if (!response || response.type !== "plugin.rpc.subscribe.response")
+          throw new Error("Missing source-owned subscription acknowledgement");
+        return response.payload.subscriptionId;
+      });
+      expect(new Set(subscriptionIds).size).toBe(2);
+      emit();
+      await emitted;
+      const supported = firstCapability === true ? 0 : 1;
+      const unsupported = 1 - supported;
+      await vi.waitFor(() => expect(releases[unsupported]).toHaveBeenCalled());
+      expect(releases[supported]).not.toHaveBeenCalled();
+      expect(targetedBinaryMessages[0]?.source).toBe(sources[supported]);
+      expect(
+        targetedBinaryMessages.map(({ source, frame }) => ({
+          source,
+          frame: decodePluginFrame(frame),
+        })),
+      ).toEqual([
+        {
+          source: sources[supported],
+          frame: {
+            opcode: PluginFrameOpcode.Event,
+            subscriptionId: subscriptionIds[supported],
+            payload: new Uint8Array([1, 2, 3]),
+          },
+        },
+      ]);
+      for (const [index, source] of sources.entries()) {
+        const subscriptionId = subscriptionIds[index];
+        expect(
+          targetedMessages.filter((row) => row.source === source).map((row) => row.message),
+        ).toEqual([
+          {
+            type: "plugin.rpc.subscribe.response",
+            payload: { requestId: `watch-${index}`, subscriptionId },
+          },
+          { type: "plugin.rpc.event", payload: { subscriptionId, event: { width: 1 } } },
+          ...(index === unsupported
+            ? [
+                {
+                  type: "plugin.rpc.closed",
+                  payload: {
+                    subscriptionId,
+                    error: "This connection cannot carry binary plugin events",
+                  },
+                },
+              ]
+            : []),
+        ]);
+      }
+      expect(messages).toEqual([]);
+      expect(binaryMessages).toEqual([]);
+    } finally {
+      await session.cleanup();
+    }
+  },
+);
+
+test("losing daemon.manage during a plugin RPC withholds its JSON and binary results", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const binaryMessages: Uint8Array[] = [];
+  const outputs = new Map<string, (output: unknown) => void>();
+  const pluginRuntime = {
+    subscribe: () => () => {},
+    invokePluginRpc: (_pluginId: string, method: string) =>
+      new Promise((resolve) => outputs.set(method, resolve)),
+  } as unknown as NonNullable<SessionOptions["pluginRuntime"]>;
+  const session = createSessionForTest({
+    messages,
+    binaryMessages,
+    pluginRuntime,
+    clientCapabilities: { [CLIENT_CAPS.pluginBinaryPayloads]: true },
+  });
+  const invoke = (method: string) =>
+    session.handleMessage({
+      type: "plugin.rpc.invoke.request",
+      requestId: method,
+      pluginId: "example",
+      method,
+      input: {},
+    });
+
+  const pending = [invoke("capture.json"), invoke("capture.bytes")];
+  await vi.waitFor(() => expect(outputs.size).toBe(2));
+  session.setPermissions(["daemon.read"]);
+  outputs.get("capture.json")?.({ width: 1 });
+  outputs.get("capture.bytes")?.(new Uint8Array([1, 2, 3]));
+  await Promise.all(pending);
+
+  expect(messages.filter((message) => message.type === "plugin.rpc.invoke.response")).toEqual([]);
+  expect(binaryMessages).toEqual([]);
 });
 
 test("leaves out the client bundles a catalog request already holds", async () => {

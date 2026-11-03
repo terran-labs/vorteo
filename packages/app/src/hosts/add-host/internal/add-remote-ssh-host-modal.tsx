@@ -13,7 +13,7 @@ import { CONTROL_HEIGHTS, createControlGeometry } from "@/components/ui/control-
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { DaemonConnectionTestError } from "@/utils/test-daemon-connection";
-import { AdaptiveModalSheet, type SheetHeader } from "./adaptive-modal-sheet";
+import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 
 const ThemedTerminal = withUnistyles(Terminal);
 
@@ -161,11 +161,11 @@ export function AddRemoteSshHostModal({
     }
 
     clear();
-    onClose();
     onSaved?.({
       ...result,
       isNewHost: !hosts.some((profile) => profile.serverId === result.serverId),
     });
+    onClose();
   }, [clear, hosts, isSaving, onClose, onSaved, probeAndUpsertRemoteSshConnection, t]);
   const handleTargetChange = useCallback((value: string) => {
     targetRef.current = value;
