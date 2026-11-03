@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useState, type ReactNode } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import {
   OwnerAccessSourceContext,
   useOwnerAccess,
@@ -10,6 +10,24 @@ import {
 } from "@/execution-installation/owner-access";
 import { OwnerLockBadge, OwnerLockedGroup, OwnerUnlockDialog } from "./owner-lock";
 
+const renderedLineCounts = vi.hoisted(() => new Map<string | undefined, number | undefined>());
+const windowDimensions = vi.hoisted(() => ({ fontScale: 1 }));
+vi.mock("react-native", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-native")>();
+  return {
+    ...actual,
+    Text: (props: ComponentProps<typeof actual.Text>) => {
+      renderedLineCounts.set(props.testID, props.numberOfLines);
+      return <actual.Text {...props} />;
+    },
+    useWindowDimensions: () => ({
+      width: 1000,
+      height: 800,
+      scale: 1,
+      fontScale: windowDimensions.fontScale,
+    }),
+  };
+});
 vi.mock("@/execution-installation/panel", () => ({
   useInstallationOwnerClient: () => null,
 }));
@@ -51,7 +69,10 @@ vi.mock(".", () => ({
   ),
 }));
 vi.mock("lucide-react-native", () => ({ Lock: () => <span /> }));
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  windowDimensions.fontScale = 1;
+});
 function access(status: OwnerAccess["status"]): OwnerAccess {
   return {
     status,
@@ -109,14 +130,14 @@ describe("owner access controls", () => {
     });
     render(wrap(value, <OwnerUnlockDialog visible onClose={vi.fn()} />));
     expect(screen.queryByRole("alert")).toBeNull();
-    const height = screen.getByTestId("owner-unlock-error").style.height;
+    const height = screen.getByTestId("owner-unlock-error-slot").style.minHeight;
     fireEvent.change(screen.getByLabelText("Owner password"), {
       target: { value: "wrong" },
     });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Unlock" })));
     expect(value.unlock).toHaveBeenCalledWith("wrong");
-    expect(screen.getByRole("alert").textContent).toBe("Incorrect owner password");
-    expect(screen.getByRole("alert").style.height).toBe(height);
+    expect(screen.getByTestId("owner-unlock-error").textContent).toBe("Incorrect owner password");
+    expect(screen.getByTestId("owner-unlock-error-slot").style.minHeight).toBe(height);
   });
   it("makes peeked inputs inert and hidden from web accessibility", () => {
     const children = () => <input aria-label="Protected setting" />;
@@ -133,22 +154,51 @@ describe("owner access controls", () => {
   it("reserves badge error space without announcing an empty alert", async () => {
     const value = access("unlocked");
     value.lock = vi.fn(async () => {
-      throw new Error("Could not lock");
+      throw new Error(
+        "Could not lock settings because the server connection was interrupted. Check your connection and try again.",
+      );
     });
     render(wrap(value, <OwnerLockBadge />));
     const slot = screen.getByTestId("owner-lock-error");
-    const height = slot.style.height;
+    const height = screen.getByTestId("owner-lock-error-slot").style.minHeight;
     expect(screen.queryByRole("alert")).toBeNull();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Lock" })));
-    expect(screen.getByRole("alert")).toBe(slot);
-    expect(slot.textContent).toBe("Could not lock");
-    expect(slot.style.height).toBe(height);
+    expect(slot.getAttribute("aria-live")).toBe("polite");
+    expect(slot.getAttribute("aria-label")).toBe(slot.textContent);
+    expect(renderedLineCounts.get("owner-lock-error")).toBe(2);
+    expect(screen.getByTestId("owner-lock-error-slot").style.minHeight).toBe(height);
   });
   it("announces a source error in the dialog", () => {
     const value = access("locked");
     value.error = "Incorrect owner password";
     render(wrap(value, <OwnerUnlockDialog visible onClose={vi.fn()} />));
-    expect(screen.getByRole("alert").textContent).toBe(value.error);
+    expect(screen.getByTestId("owner-unlock-error").textContent).toBe(value.error);
+  });
+  it.each([1, 2])("reserves two error lines at font scale %s", (fontScale) => {
+    windowDimensions.fontScale = fontScale;
+    const message =
+      "The server could not complete this request. Check the connection and try unlocking your installation again.";
+    const value = access("locked");
+    value.error = message;
+    render(
+      wrap(
+        value,
+        <>
+          <OwnerUnlockDialog visible onClose={vi.fn()} />
+          <OwnerLockBadge />
+        </>,
+      ),
+    );
+    for (const id of ["owner-unlock-error", "owner-lock-error"]) {
+      expect(screen.getByTestId(`${id}-slot`).style.minHeight).toBe(
+        `${14 * 1.5 * 2 * fontScale}px`,
+      );
+    }
+    const error = screen.getByTestId("owner-unlock-error");
+    expect(error.getAttribute("aria-label")).toBe(message);
+    expect(error.getAttribute("aria-live")).toBe("polite");
+    expect(renderedLineCounts.get("owner-unlock-error")).toBe(2);
+    expect(screen.getByTestId("owner-lock-error").hasAttribute("aria-live")).toBe(false);
   });
   it("subscribes through an injectable hook source", () => {
     let update: (value: OwnerAccess) => void = () => {};
