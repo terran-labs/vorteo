@@ -113,18 +113,43 @@ async function mount(review: object) {
   );
   await screen.findByLabelText("projectFactory.projectInstructions");
 }
-it("keeps a conflicting draft visible and reports the failure", async () => {
+it("refreshes a conflicting revision, preserves the draft, and saves against the latest revision", async () => {
   await mount({ status: "none" });
-  fixture.invoke.mockRejectedValueOnce(new Error("Someone else saved first"));
+  fixture.invoke
+    .mockRejectedValueOnce(new Error("Revision mismatch"))
+    .mockResolvedValueOnce({
+      ...base,
+      additions: "their new additions",
+      revision: 5,
+      review: { status: "none" },
+    })
+    .mockResolvedValueOnce({
+      ...base,
+      additions: "unsaved draft",
+      revision: 6,
+      review: { status: "none" },
+    });
   fireEvent.change(screen.getByLabelText("projectFactory.projectInstructions"), {
     target: { value: "unsaved draft" },
   });
   fireEvent.click(screen.getByText("common.actions.save"));
-  await screen.findByText(/Someone else saved first/);
+  await screen.findByText("projectFactory.conflict");
   expect(
     (screen.getByLabelText("projectFactory.projectInstructions") as HTMLTextAreaElement).value,
   ).toBe("unsaved draft");
+  expect(screen.getByText(/− their new additions/)).toBeTruthy();
+  fireEvent.click(screen.getByText("common.actions.save"));
+  await waitFor(() =>
+    expect(fixture.invoke).toHaveBeenLastCalledWith("factory.project.instructions.set", {
+      projectId: "project",
+      role: "factory-builds",
+      expectedRevision: 5,
+      additions: "unsaved draft",
+    }),
+  );
+  await waitFor(() => expect(screen.queryByText("projectFactory.conflict")).toBeNull());
 });
+
 it("shows needed review and both charter versions", async () => {
   await mount({ status: "needed" });
   expect(screen.getByText("projectFactory.reviewNeeded")).toBeTruthy();
@@ -150,6 +175,7 @@ it.each([true, false])("resolves proposed instructions with accept=%s", async (a
       role: "factory-builds",
       expectedRevision: 4,
       accept,
+      ...(accept ? { proposedAt: "now" } : {}),
     }),
   );
 });
@@ -166,4 +192,72 @@ it("opens a fresh revision instead of reusing an earlier opening's cache", async
     openFactoryInstructions({ serverId: "host", projectId: "project", role: "factory-builds" }),
   );
   await screen.findByDisplayValue("someone else's latest revision");
+});
+
+it("refreshes a replaced proposal before allowing another acceptance", async () => {
+  await mount({
+    status: "proposed",
+    proposal: { text: "old proposal", rationale: "old reason", proposedAt: "old-time" },
+  });
+  fixture.invoke
+    .mockRejectedValueOnce(new Error("Proposal mismatch"))
+    .mockResolvedValueOnce({
+      ...base,
+      review: {
+        status: "proposed",
+        proposal: { text: "new proposal", rationale: "new reason", proposedAt: "new-time" },
+      },
+    })
+    .mockResolvedValueOnce({
+      ...base,
+      revision: 5,
+      additions: "new proposal",
+      review: { status: "none" },
+    });
+  fireEvent.click(screen.getByText("projectFactory.accept"));
+  await screen.findByText("new reason");
+  expect(
+    fixture.invoke.mock.calls.filter((call) => call[0] === "factory.project.instructions.resolve"),
+  ).toHaveLength(1);
+  expect(fixture.invoke).toHaveBeenCalledWith("factory.project.instructions.resolve", {
+    projectId: "project",
+    role: "factory-builds",
+    expectedRevision: 4,
+    accept: true,
+    proposedAt: "old-time",
+  });
+  fireEvent.click(screen.getByText("projectFactory.accept"));
+  await waitFor(() =>
+    expect(fixture.invoke).toHaveBeenLastCalledWith("factory.project.instructions.resolve", {
+      projectId: "project",
+      role: "factory-builds",
+      expectedRevision: 4,
+      accept: true,
+      proposedAt: "new-time",
+    }),
+  );
+});
+it("takes role labels and order from daemon state", async () => {
+  fixture.invoke.mockImplementation(async (method: string) =>
+    method === "factory.project.get"
+      ? {
+          roles: [
+            { role: "factory-builds", title: "Builder supplied by daemon" },
+            { role: "factory-triage", title: "Intake supplied by daemon" },
+          ],
+        }
+      : { ...base, review: { status: "none" } },
+  );
+  act(() => openFactoryInstructions({ serverId: "host", projectId: "project" }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <FactoryInstructionsPanel />
+    </QueryClientProvider>,
+  );
+  await screen.findByText("Builder supplied by daemon");
+  const labels = screen.getAllByRole("button").map((button) => button.textContent);
+  expect(labels.indexOf("Builder supplied by daemon")).toBeLessThan(
+    labels.indexOf("Intake supplied by daemon"),
+  );
 });

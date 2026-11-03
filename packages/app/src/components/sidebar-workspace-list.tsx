@@ -1,13 +1,8 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
+import { FactoryProjectActions } from "./sidebar/factory-project-actions";
 import { FactoryFolderStatus } from "./sidebar/factory-status";
-import { FactoryInstructionsPanel, openFactoryInstructions } from "./sidebar/factory-instructions";
-import { useMenuContext } from "@/components/ui/menu";
-import {
-  ProjectFactoryDialog,
-  openFactoryDialog,
-  factoryActions,
-  type ProjectFactoryState,
-} from "./sidebar/project-factory";
+import { FactoryInstructionsPanel, useProjectFactories } from "./sidebar/factory-instructions";
+import { ProjectFactoryDialog } from "./sidebar/project-factory";
 import { hasActiveSidebarLabelFilter } from "@/stores/sidebar-view-store";
 import { useScrollReporter } from "./use-scroll-divider";
 import { NestableScrollDivider } from "./nestable-scroll-divider";
@@ -50,7 +45,6 @@ import {
   type MutableRefObject,
   type Ref,
   type ComponentProps,
-  type PropsWithChildren,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { router, usePathname } from "expo-router";
@@ -111,7 +105,6 @@ import { useShowShortcutBadges } from "@/hooks/use-show-shortcut-badges";
 import {
   ContextMenu,
   ContextMenuContent,
-  ContextMenuItem,
   ContextMenuTrigger,
   useContextMenu,
 } from "@/components/ui/context-menu";
@@ -119,7 +112,6 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
-  DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { ProjectLeadingVisual } from "@/components/sidebar/project-leading-visual";
 import { useToast } from "@/contexts/toast-context";
@@ -711,170 +703,6 @@ function ProjectKebabMenu({
   );
 }
 
-type ProjectMenuSurface = "context" | "dropdown";
-
-function ProjectMenuItem({
-  surface,
-  children,
-  ...props
-}: PropsWithChildren<
-  Omit<ComponentProps<typeof DropdownMenuItem>, "children"> & {
-    surface: ProjectMenuSurface;
-  }
->) {
-  if (surface === "context") {
-    return <ContextMenuItem {...props}>{children}</ContextMenuItem>;
-  }
-  return <DropdownMenuItem {...props}>{children}</DropdownMenuItem>;
-}
-
-function FactoryProjectActions({
-  surface,
-  settingsTarget,
-  projectPath,
-}: {
-  surface: ProjectMenuSurface;
-  settingsTarget: { serverId: string; projectId: string } | null;
-  projectPath: string;
-}) {
-  const { t } = useTranslation();
-  const toast = useToast();
-  const plugins = useInstalledPlugins();
-  const factoryPlugin = plugins.find(
-    (plugin) => plugin.id === "factory" && plugin.serverId === settingsTarget?.serverId,
-  );
-  const factoryScreenAvailable = !!factoryPlugin;
-  const { open: factoryMenuOpen } = useMenuContext("ProjectMenuItems");
-  const factoryQueryClient = useQueryClient();
-  const [factoryState, setFactoryState] = useState<ProjectFactoryState | null>(null);
-  const [factoryError, setFactoryError] = useState<string | null>(null);
-  const [factoryPending, setFactoryPending] = useState(false);
-  useEffect(() => {
-    if (!factoryMenuOpen || !factoryScreenAvailable || !factoryPlugin || !settingsTarget) return;
-    setFactoryError(null);
-    let active = true;
-    void factoryPlugin
-      .invoke("factory.project.get", { projectId: settingsTarget.projectId })
-      .then((state) => {
-        if (active) setFactoryState(state as ProjectFactoryState);
-        return state;
-      })
-      .catch((error) => {
-        if (active)
-          setFactoryError(error instanceof Error ? error.message : t("projectFactory.failed"));
-      });
-    return () => {
-      active = false;
-    };
-  }, [factoryMenuOpen, factoryScreenAvailable, factoryPlugin, settingsTarget, t]);
-  const applyFactoryState = useCallback(
-    (state: ProjectFactoryState) => {
-      setFactoryState(state);
-      if (settingsTarget)
-        factoryQueryClient.setQueryData(
-          ["projectFactory", settingsTarget.serverId, settingsTarget.projectId],
-          state,
-        );
-    },
-    [settingsTarget, factoryQueryClient],
-  );
-  const factoryAction = useCallback(
-    (action: "enable" | "pause" | "resume" | "disable") => {
-      if (!factoryPlugin || !settingsTarget || factoryPending) return;
-      if (action === "enable" || action === "disable") {
-        void openFactoryDialog({
-          action,
-          ...settingsTarget,
-          projectPath,
-          repository: factoryState?.repository ?? null,
-          invoke: factoryPlugin.invoke,
-          onResult: applyFactoryState,
-        });
-        return;
-      }
-      setFactoryPending(true);
-      void factoryPlugin
-        .invoke(`factory.project.${action}`, {
-          projectId: settingsTarget.projectId,
-        })
-        .then((state) => applyFactoryState(state as ProjectFactoryState))
-        .catch((error) =>
-          toast.error(error instanceof Error ? error.message : t("projectFactory.failed")),
-        )
-        .finally(() => setFactoryPending(false));
-    },
-    [
-      factoryPlugin,
-      settingsTarget,
-      factoryPending,
-      projectPath,
-      factoryState,
-      toast,
-      t,
-      applyFactoryState,
-    ],
-  );
-  const openInstructions = useCallback(() => {
-    if (settingsTarget) openFactoryInstructions(settingsTarget);
-  }, [settingsTarget]);
-  const openModels = useCallback(() => {
-    if (settingsTarget) openFactoryInstructions({ ...settingsTarget, modelsOnly: true });
-  }, [settingsTarget]);
-  return (
-    <>
-      {settingsTarget &&
-      factoryState &&
-      (factoryState.state === "on" || factoryState.state === "paused") ? (
-        <ProjectMenuItem surface={surface} onSelect={openInstructions}>
-          {t("projectFactory.instructions")}
-        </ProjectMenuItem>
-      ) : null}
-      {settingsTarget &&
-      factoryState &&
-      factoryState.state !== "off" &&
-      factoryState.state !== "unavailable" ? (
-        <ProjectMenuItem surface={surface} onSelect={openModels}>
-          {t("projectFactory.workerModels")}
-        </ProjectMenuItem>
-      ) : null}
-      {factoryState
-        ? factoryActions(factoryState.state).map((action) => (
-            <FactoryActionItem
-              key={action}
-              surface={surface}
-              action={action}
-              pending={factoryPending}
-              onAction={factoryAction}
-            />
-          ))
-        : null}
-      {factoryError || !factoryState || factoryState.state === "unavailable" ? (
-        <ProjectMenuItem surface={surface} disabled>
-          {factoryError ?? factoryState?.reason ?? t("projectFactory.loading")}
-        </ProjectMenuItem>
-      ) : null}
-    </>
-  );
-}
-function FactoryActionItem({
-  surface,
-  action,
-  pending,
-  onAction,
-}: {
-  surface: ProjectMenuSurface;
-  action: "enable" | "pause" | "resume" | "disable";
-  pending: boolean;
-  onAction: (action: "enable" | "pause" | "resume" | "disable") => void;
-}) {
-  const { t } = useTranslation();
-  const select = useCallback(() => onAction(action), [onAction, action]);
-  return (
-    <ProjectMenuItem surface={surface} disabled={pending} onSelect={select}>
-      {t(`projectFactory.${action}Menu`)}
-    </ProjectMenuItem>
-  );
-}
 function ProjectMenuItems({
   surface,
   projectViewKey,
@@ -2414,9 +2242,19 @@ function ProjectBlock({
     [project.workspaces],
   );
   const supportsFactory = useHostFeatureMap(factoryHostIds, "factoryWorkspaceMembership");
+  const factorySnapshots = useProjectFactories(project.hosts, supportsFactory);
+  const factoryStates = factorySnapshots.flatMap((snapshot) =>
+    snapshot.data ? [snapshot.data] : [],
+  );
   const groups = useMemo(
-    () => splitFactoryWorkspaces(project.workspaces, workspaceEntriesByKey, supportsFactory),
-    [project.workspaces, workspaceEntriesByKey, supportsFactory],
+    () =>
+      splitFactoryWorkspaces(
+        project.workspaces,
+        workspaceEntriesByKey,
+        supportsFactory,
+        factoryStates,
+      ),
+    [project.workspaces, workspaceEntriesByKey, supportsFactory, factoryStates],
   );
   // Folders organize ordinary workspaces only; Factory and Standing keep their own sections.
   const workRows = useMemo(() => {

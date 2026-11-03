@@ -2,9 +2,18 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { useSendToFactory } from "./use-send-to-factory";
-const fixture = vi.hoisted(() => ({ state: "on", invoke: vi.fn(), show: vi.fn(), error: vi.fn() }));
+const fixture = vi.hoisted(() => ({
+  state: "on",
+  read: vi.fn(),
+  invoke: vi.fn(),
+  show: vi.fn(),
+  error: vi.fn(),
+}));
 vi.mock("./factory-instructions", () => ({
-  useProjectFactory: () => ({ data: { state: fixture.state } }),
+  useProjectFactory: (...args: unknown[]) => {
+    fixture.read(...args);
+    return { data: { state: fixture.state } };
+  },
 }));
 vi.mock("@/plugins/registry", () => ({
   useInstalledPlugins: () => [{ id: "factory", serverId: "host", invoke: fixture.invoke }],
@@ -32,6 +41,7 @@ vi.mock("@/contexts/toast-context", () => ({
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 beforeEach(() => {
   fixture.state = "on";
+  fixture.read.mockClear();
   fixture.invoke.mockReset();
   fixture.show.mockReset();
   fixture.error.mockReset();
@@ -52,6 +62,7 @@ it("sends the thread and confirms intake with a toast", async () => {
     projectId: "project",
     agentId: "agent",
   });
+  expect(fixture.read).toHaveBeenCalledWith("host", "project", true, { refetchInterval: false });
   expect(fixture.show).toHaveBeenCalledWith("projectFactory.sent", { variant: "success" });
 });
 

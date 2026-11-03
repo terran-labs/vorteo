@@ -62,12 +62,26 @@ describe("Factory instructions revisions and review", () => {
   it.each([true, false])("resolves the proposal with accept=%s", async (accept) => {
     const result = { ...state, revision: 8, review: { status: "none" } };
     const invoke = vi.fn().mockResolvedValue(result);
-    expect(await writeInstructions(invoke, "project", state, { accept })).toBe(result);
+    expect(
+      await writeInstructions(
+        invoke,
+        "project",
+        {
+          ...state,
+          review: {
+            status: "proposed",
+            proposal: { text: "proposal", rationale: "reason", proposedAt: "proposal-time" },
+          },
+        },
+        { accept },
+      ),
+    ).toBe(result);
     expect(invoke).toHaveBeenCalledWith("factory.project.instructions.resolve", {
       projectId: "project",
       role: "factory-builds",
       expectedRevision: 7,
       accept,
+      ...(accept ? { proposedAt: "proposal-time" } : {}),
     });
   });
   it("marks needed and proposed reviews and shows both sides of changes", () => {
@@ -125,4 +139,21 @@ describe("Factory model, status and thread routing", () => {
     invoke.mockRejectedValue(new Error("Factory is off"));
     await expect(sendThreadToFactory(invoke, "p", "a")).rejects.toThrow("Factory is off");
   });
+});
+
+it("uses the existing LCS diff and collapses unchanged charter runs", () => {
+  const lines = Array.from({ length: 20 }, (_, index) => `rule ${index}`);
+  const changed = [...lines];
+  changed[10] = "replacement rule";
+  const diff = instructionDiff(lines.join("\n"), changed.join("\n"));
+  expect(diff.filter((line) => line.kind === "removed")).toEqual([
+    { kind: "removed", text: "rule 10" },
+  ]);
+  expect(diff.filter((line) => line.kind === "added")).toEqual([
+    { kind: "added", text: "replacement rule" },
+  ]);
+  expect(diff.filter((line) => line.kind === "context")).toHaveLength(6);
+  expect(diff.filter((line) => line.kind === "collapsed").map((line) => line.count)).toEqual([
+    7, 6,
+  ]);
 });

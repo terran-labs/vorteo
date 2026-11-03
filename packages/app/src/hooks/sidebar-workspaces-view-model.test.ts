@@ -1666,6 +1666,27 @@ it("orders project Factory roles and places the system Mechanic after Releases",
     "worker",
   ]);
   expect(grouped.standing).toEqual([]);
+  // Authoritative workspace IDs win even when user-set titles no longer name the role.
+  const renamedEntries = new Map(
+    [...entries].map(([key, entry]) => [key, { ...entry, title: "Renamed role" }]),
+  );
+  const daemonOrder = [roles[3], roles[4], roles[2], roles[1], mechanic];
+  const ordered = splitFactoryWorkspaces(
+    [...roles, mechanic],
+    renamedEntries,
+    new Map([["one", true]]),
+    [
+      {
+        serverId: "one",
+        projectId: base.projectId,
+        roles: daemonOrder.map((entry) => ({ workspaceId: entry.workspaceId })),
+      },
+    ],
+  );
+  expect(ordered.factory.map((entry) => entry.workspaceId)).toEqual([
+    ...daemonOrder.map((entry) => entry.workspaceId),
+    "worker",
+  ]);
   const withoutMembers = splitFactoryWorkspaces([mechanic], entries, new Map([["one", true]]));
   expect(withoutMembers.factory).toEqual([]);
   expect(withoutMembers.standing).toEqual([mechanic]);

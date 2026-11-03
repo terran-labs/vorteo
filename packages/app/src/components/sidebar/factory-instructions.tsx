@@ -1,9 +1,10 @@
+import { PROJECT_FACTORY_ROLE_IDS } from "./factory-role-ids";
 import { FormTextInput } from "@/components/ui/form-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { StyleSheet } from "react-native-unistyles";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { FactoryModelControls } from "./factory-model-controls";
-import { useFetchQuery } from "@/data/query";
+import { useFetchQueries, useFetchQuery } from "@/data/query";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { Text, View } from "react-native";
 import { create } from "zustand";
@@ -31,7 +32,12 @@ const panel = create<{ target: Target | null }>(() => ({ target: null }));
 let nextOpenId = 0;
 export const openFactoryInstructions = (target: Target) =>
   panel.setState({ target: { ...target, openId: ++nextOpenId } });
-export function useProjectFactory(serverId: string, projectId: string, enabled: boolean) {
+export function useProjectFactory(
+  serverId: string,
+  projectId: string,
+  enabled: boolean,
+  options?: { refetchInterval: false },
+) {
   const active = useRetainedPanelActive();
   const plugin = useInstalledPlugins().find((p) => p.id === "factory" && p.serverId === serverId);
   return useFetchQuery({
@@ -39,12 +45,37 @@ export function useProjectFactory(serverId: string, projectId: string, enabled: 
     staleTimeMs: 30_000,
     queryKey: ["projectFactory", serverId, projectId],
     enabled: enabled && active && !!plugin && !!projectId,
-    refetchInterval: active ? 60_000 : false,
+    refetchInterval: options?.refetchInterval ?? (active ? 60_000 : false),
     queryFn: async () =>
       (await plugin!.invoke("factory.project.get", {
         projectId,
       })) as ProjectFactoryState,
   });
+}
+export function useProjectFactories(
+  targets: readonly { serverId: string; projectId: string }[],
+  supported: ReadonlyMap<string, boolean>,
+) {
+  const active = useRetainedPanelActive();
+  const plugins = useInstalledPlugins();
+  return useFetchQueries<ProjectFactoryState>(
+    targets.map((target) => {
+      const plugin = plugins.find(
+        (candidate) => candidate.id === "factory" && candidate.serverId === target.serverId,
+      );
+      return {
+        dataShape: "value",
+        staleTimeMs: 30_000,
+        queryKey: ["projectFactory", target.serverId, target.projectId],
+        enabled: active && !!plugin && supported.get(target.serverId) === true,
+        refetchInterval: active ? 60_000 : false,
+        queryFn: async () =>
+          (await plugin!.invoke("factory.project.get", {
+            projectId: target.projectId,
+          })) as ProjectFactoryState,
+      };
+    }),
+  );
 }
 export function FactoryInstructionsPanel() {
   const target = panel((s) => s.target);
@@ -55,7 +86,9 @@ function Panel({ target }: { target: Target }) {
   const plugin = useInstalledPlugins().find(
     (p) => p.id === "factory" && p.serverId === target.serverId,
   );
-  const [role, setRole] = useState<RoleId>(target.role ?? "factory-triage");
+  const factory = useProjectFactory(target.serverId, target.projectId, !target.modelsOnly);
+  const [selectedRole, setRole] = useState<RoleId | null>(target.role ?? null);
+  const role = selectedRole ?? factory.data?.roles?.[0]?.role ?? PROJECT_FACTORY_ROLE_IDS[0];
   const query = useFetchQuery({
     gcTime: 0,
     dataShape: "value",
@@ -66,31 +99,18 @@ function Panel({ target }: { target: Target }) {
         projectId: target.projectId,
         role,
       })) as Instructions,
-    enabled: !!plugin && !target.modelsOnly,
+    enabled: !!plugin && !target.modelsOnly && (!!target.role || !!factory.data),
   });
   const roles = useMemo(
     () =>
       !target.role ? (
         <View>
-          {(
-            [
-              "factory-triage",
-              "factory-intake",
-              "factory-builds",
-              "factory-releases",
-              "factory-mechanic",
-            ] as RoleId[]
-          ).map((id, i) => (
-            <RoleButton
-              key={id}
-              role={id}
-              label={["Triage", "Foreman", "Builds", "Releases", "Mechanic"][i]}
-              onSelect={setRole}
-            />
+          {factory.data?.roles?.map((entry) => (
+            <RoleButton key={entry.role} role={entry.role} label={entry.title} onSelect={setRole} />
           ))}
         </View>
       ) : null,
-    [target.role],
+    [target.role, factory.data?.roles],
   );
   const close = useCallback(() => panel.setState({ target: null }), []);
   const header = useMemo(() => ({ title: t("projectFactory.instructions") }), [t]);
@@ -113,7 +133,9 @@ function Panel({ target }: { target: Target }) {
   return (
     <AdaptiveModalSheet visible onClose={close} header={header}>
       {roles}
-      <Text style={textStyles.text}>{query.error?.message ?? t("projectFactory.loading")}</Text>
+      <Text style={textStyles.text}>
+        {query.error?.message ?? factory.error?.message ?? t("projectFactory.loading")}
+      </Text>
     </AdaptiveModalSheet>
   );
 }
@@ -217,6 +239,14 @@ function Editor({
           {error}
         </Text>
       ) : null}
+      {snapshot.conflict ? (
+        <>
+          <Text style={textStyles.text} accessibilityRole="alert">
+            {t("projectFactory.conflict")}
+          </Text>
+          <Diff before={state.additions} after={draft} />
+        </>
+      ) : null}
       {state.review.status !== "none" ? (
         <>
           <Text style={textStyles.text}>
@@ -253,16 +283,25 @@ function Editor({
   );
 }
 function Diff({ before, after }: { before: string; after: string }) {
+  const { t } = useTranslation();
   return (
     <View>
       {instructionDiff(before, after).map((line, i) => (
         <Text style={textStyles.text} selectable key={`${line.kind}:${line.text}:${i.toString()}`}>
-          {line.kind === "added" ? "+ " : "− "}
-          {line.text}
+          {diffPrefix(line.kind)}
+          {line.kind === "collapsed"
+            ? t("projectFactory.unchangedLines", { count: line.count })
+            : line.text}
         </Text>
       ))}
     </View>
   );
+}
+
+function diffPrefix(kind: ReturnType<typeof instructionDiff>[number]["kind"]) {
+  if (kind === "added") return "+ ";
+  if (kind === "removed") return "− ";
+  return "  ";
 }
 
 function RoleButton({
