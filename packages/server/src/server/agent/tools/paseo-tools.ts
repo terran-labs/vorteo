@@ -889,7 +889,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       features: z
         .record(z.string(), z.unknown())
         .optional()
-        .describe("Provider-specific feature values, for example { fast_mode: true } for Codex."),
+        .describe(
+          "Provider-specific feature values, for example { fast_mode: true } for Codex, or { chrome: true } to give a Claude agent the owner's Chrome through Claude in Chrome when the Host has it set up.",
+        ),
     })
     .strict();
   const UpdateAgentSettingsInputSchema = z
@@ -904,7 +906,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       features: z
         .record(z.string(), z.unknown())
         .optional()
-        .describe("Provider-specific feature values, for example { fast_mode: true } for Codex."),
+        .describe(
+          "Provider-specific feature values, for example { fast_mode: true } for Codex, or { chrome: true } to give a Claude agent the owner's Chrome through Claude in Chrome when the Host has it set up.",
+        ),
     })
     .strict();
   const InspectProviderSettingsInputSchema = z
