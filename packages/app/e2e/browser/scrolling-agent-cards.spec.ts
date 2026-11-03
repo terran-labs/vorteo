@@ -615,7 +615,7 @@ async function checkCollapsedGrid(page: Page) {
     // goal has used 14h 54m.
     if (width <= 390) await expect(elapsed).toHaveText("14h");
     // Full-width collapsed headers keep their actions (bd1db0362); compact tiles hide them.
-    await expect(page.getByTestId("checklist-add").filter({ visible: true })).toHaveCount(
+    await expect(page.getByTestId("checklist-edit-mode").filter({ visible: true })).toHaveCount(
       stacked ? 1 : 0,
     );
     if (width === 1800) {
@@ -652,7 +652,7 @@ async function checkCollapsedGrid(page: Page) {
     await expect(page.getByRole("tooltip")).toContainText("Tasks");
     await page.keyboard.press("Enter");
     await expect(task).toHaveAttribute("aria-expanded", "true");
-    await expect(page.getByTestId("checklist-add").filter({ visible: true })).toBeVisible();
+    await expect(page.getByTestId("checklist-edit-mode").filter({ visible: true })).toBeVisible();
     await task.click();
     for (const id of ids) await page.getByTestId(id).filter({ visible: true }).click();
   }
@@ -1274,7 +1274,7 @@ test("shared card group and thread resize independently and preserve saved width
     for (const id of movedToggles)
       await expect(cards.getByTestId(id)).toHaveAttribute("aria-expanded", "false");
     await expect(text.getByTestId("shared-message-queue")).toBeVisible();
-    await expect(cards.getByTestId("checklist-add")).toBeVisible();
+    await expect(cards.getByTestId("checklist-edit-mode")).toBeVisible();
     await drag("left-sidebar-resize-handle", 160);
     // Explicitly opened Files keeps the supporting group available below the
     // automatic task-card breakpoint until the layout switches to mobile.

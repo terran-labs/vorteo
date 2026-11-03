@@ -76,7 +76,7 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
   const [expanded, setExpanded] = useCardDisclosure("tasks");
   const toggleExpanded = useCallback(() => setExpanded((value) => !value), [setExpanded]);
   const [editor, setEditor] = useState<EditorState>({ open: false });
-  // Agents manage the checklist; editing, completion toggles and reordering wait for this mode.
+  // Agents manage the checklist; adding, editing, completion toggles and reordering wait for this mode.
   const [editMode, setEditMode] = useState(false);
   const toggleEditMode = useCallback(() => setEditMode((value) => !value), []);
   const { supported, supportsBlocked, supportsReview, readOnly } = useSessionStore(
@@ -169,14 +169,16 @@ export function ChecklistCard({ serverId, agentId, tasks = EMPTY_TASKS }: Checkl
             testID="checklist-toggle"
           />
           <TaskCardActions>
-            <TaskCardAction
-              iconOnly
-              disabled={!canMutate}
-              onPress={add}
-              testID="checklist-add"
-              accessibilityLabel="Add task"
-              leftIcon={Plus}
-            />
+            {editing ? (
+              <TaskCardAction
+                iconOnly
+                disabled={!canMutate}
+                onPress={add}
+                testID="checklist-add"
+                accessibilityLabel="Add task"
+                leftIcon={Plus}
+              />
+            ) : null}
             <ClearCompletedButton
               available={tasks.some(canClearTask)}
               pending={clearMutation.isPending}
