@@ -89,7 +89,9 @@ export function SettingsSection({
             <ExternalLink {...link} />
           </View>
         ) : null}
-        {scopeLabel ? <Text style={settingsStyles.rowHint}>{scopeLabel}</Text> : null}
+        {scopeLabel ? (
+          <Text style={[settingsStyles.rowHint, styles.scope]}>{scopeLabel}</Text>
+        ) : null}
         {trailing}
       </View>
       <View style={styles.content}>{children}</View>
@@ -115,6 +117,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
+  scope: { flexShrink: 1, maxWidth: "45%", textAlign: "right", marginTop: 0 },
   statusTitle: { maxWidth: "65%", flexShrink: 1 },
   title: { flexShrink: 1 },
   content: {

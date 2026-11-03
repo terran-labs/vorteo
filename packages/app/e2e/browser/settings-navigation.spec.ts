@@ -709,6 +709,7 @@ for (const width of [1280, 390]) {
       const back = await page.getByTestId("settings-back-to-workspace").boundingBox();
       expect(Math.abs(back!.y + back!.height / 2 - top!.y - top!.height / 2)).toBeLessThan(8);
     }
+    await page.screenshot({ path: test.info().outputPath(`settings-header-${width}.png`) });
     await page.keyboard.press("/");
     await expect(input).toBeFocused();
     await input.fill("data saver");

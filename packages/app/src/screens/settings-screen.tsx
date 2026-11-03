@@ -925,7 +925,7 @@ function SettingsSidebar({
   const sidebarBody = (
     <View style={sidebarStyles.list}>
       {!isDesktop ? (
-        <View style={sidebarStyles.ownerSlot}>
+        <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
           <OwnerLockBadge />
         </View>
       ) : null}
@@ -1023,7 +1023,7 @@ function SettingsSidebar({
           >
             {sidebarBody}
           </ScrollView>
-          <View style={sidebarStyles.ownerSlot}>
+          <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
             <OwnerLockBadge />
           </View>
           <InstallationRestartBanner placement="sidebar" />

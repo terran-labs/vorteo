@@ -759,8 +759,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "chat.shortcuts.list",
     pane: "chat.shortcuts",
-    label: "Shortcuts",
-    labelKey: "settings.sections.shortcuts",
+    label: "Keyboard shortcuts",
     keywords: ["keyboard shortcuts", "hotkeys", "keybindings", "rebind"],
     scope: device,
   },
