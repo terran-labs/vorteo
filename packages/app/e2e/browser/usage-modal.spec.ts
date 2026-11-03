@@ -24,12 +24,12 @@ import {
 } from "../support/helpers/usage-login";
 import {
   claudeAndCodexReports,
-  expectPinnedUsage,
+  closeUsage,
+  expectNoUsageItem,
+  expectUnpinnableRows,
   openCompactSidebar,
-  openUsageFromIcon,
-  openUsageFromItem,
-  pinRow,
-  usageItem,
+  openUsageFromQuotaCard,
+  quotaCard,
   openUsageOptions,
   closeUsageOptions,
   showUsageAs,
@@ -102,21 +102,20 @@ function installReversedUsageRefresh(page: Page) {
   });
 }
 
-async function openUsageSummaryAtWidth(page: Page, width: number) {
-  await page.setViewportSize({ width, height: 900 });
-  await gotoAppShell(page);
-  if (width === 390) await openCompactSidebar(page);
-  await expectPinnedUsage(page, ["31% Weekly", "12% Weekly"]);
-  await openUsageFromItem(page);
-}
-
-async function expectUsageProviderOrder(page: Page, summary: string[]) {
+/** Cards keep their first order, and each card shows its own current percentage. */
+async function expectUsageProviderOrder(page: Page, used: { opencode: number; openai: number }) {
   const group = page.getByTestId(`usage-host-${getServerId()}`);
   await expect(group.getByText(/^(opencode|openai) plan$/)).toHaveText([
     "opencode plan",
     "openai plan",
   ]);
-  await expectPinnedUsage(page, summary);
+  for (const [sourceId, usedPct] of Object.entries(used)) {
+    await expect(
+      group
+        .getByTestId(`usage-report-${sourceId}:a`)
+        .getByText(`${usedPct}% used`, { exact: true }),
+    ).toBeVisible();
+  }
 }
 
 async function refreshUsageAndWaitForReports(page: Page, usage: UsageReportsFixture) {
@@ -128,8 +127,12 @@ async function refreshUsageAndWaitForReports(page: Page, usage: UsageReportsFixt
   await expect(page.getByRole("button", { name: "Refresh all", exact: true })).toBeEnabled();
 }
 
+// Usage visibility policy (docs/glossary.md, "Usage (sidebar item)"): the sidebar Usage summary,
+// its footer icon and window pins are not shown. Usage opens from the full-screen /usage route or
+// the Quota card's Open Usage link. Tests that call openUsage() are direct-route coverage; tests
+// that call openUsageFromQuotaCard() cover the Quota card entry point.
 test.describe("usage screen", () => {
-  test("opens from the sidebar on the host's reports, with no host filter for one host", async ({
+  test("direct-route opens on the host's reports, with no host filter for one host", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -182,21 +185,24 @@ test.describe("usage screen", () => {
   });
 
   for (const width of [1440, 390]) {
-    test(`keeps sidebar and modal provider order across a reversed refresh at width ${width}`, async ({
+    test(`direct-route keeps provider order across a reversed refresh at width ${width}`, async ({
       page,
     }) => {
       const usage = await installReversedUsageRefresh(page);
-      await openUsageSummaryAtWidth(page, width);
-      await expectUsageProviderOrder(page, ["31% Weekly", "12% Weekly"]);
+      await page.setViewportSize({ width, height: 900 });
+      await gotoAppShell(page);
+      await expectNoUsageItem(page);
+      await openUsage(page);
+      await expectUsageProviderOrder(page, { opencode: 31, openai: 12 });
       await qaScreenshot(page, `usage-order-${width}-before-refresh`);
 
       await refreshUsageAndWaitForReports(page, usage);
-      await expectUsageProviderOrder(page, ["41% Weekly", "22% Weekly"]);
+      await expectUsageProviderOrder(page, { opencode: 41, openai: 22 });
       await qaScreenshot(page, `usage-order-${width}-after-refresh`);
     });
   }
 
-  test("refreshes one report from its card", async ({ page }) => {
+  test("direct-route refreshes one report from its card", async ({ page }) => {
     test.setTimeout(120_000);
     const serverId = getServerId();
     const beta: UsageReportEntry = {
@@ -250,10 +256,14 @@ test.describe("usage screen", () => {
     await expect(page.getByTestId("usage-freshness-tooltip")).toHaveText("Updated just now");
   });
 
-  test("shows the host once it connects after a cold load on a phone", async ({ page }) => {
+  test("the Quota card opens Usage on the host once it connects after a cold load on a phone", async ({
+    page,
+  }) => {
     test.setTimeout(120_000);
     const serverId = getServerId();
+    // The Quota card reads the provider usage list, so the fixture answers that request.
     const usage = await installUsageReportsFixture(page, {
+      providerUsageListOnly: true,
       lists: [
         [
           {
@@ -271,15 +281,17 @@ test.describe("usage screen", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await gotoAppShell(page);
     await openCompactSidebar(page);
-    await openUsageFromIcon(page);
+    await expectNoUsageItem(page);
     await usage.waitForListRequests(1);
+    await openUsageFromQuotaCard(page);
 
     const group = page.getByTestId(`usage-host-${serverId}`);
     await expect(group.getByText("Alpha plan", { exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(group.getByTestId("usage-freshness")).toHaveText("Updated 2h ago");
+    await closeUsage(page);
   });
 
-  test("tells the user to update a host without usage support", async ({ page }) => {
+  test("direct-route tells the user to update a host without usage support", async ({ page }) => {
     test.setTimeout(120_000);
     const serverId = getServerId();
     const usage = await installUsageReportsFixture(page, { usageSupported: false });
@@ -296,7 +308,7 @@ test.describe("usage screen", () => {
     expect(usage.listRequests()).toHaveLength(0);
   });
 
-  test("a host picked in the Usage modal is the sidebar's host too, after a reload", async ({
+  test("a host picked on the Usage screen is the Quota card's host too, after a reload", async ({
     page,
   }) => {
     test.setTimeout(420_000);
@@ -305,9 +317,13 @@ test.describe("usage screen", () => {
       `srv_usage_${randomUUID().replaceAll("-", "").slice(0, 12)}`,
     );
     try {
-      await installUsageReportsFixture(page, { lists: [[weeklyReport("alpha", 31)]] });
+      await installUsageReportsFixture(page, {
+        providerUsageListOnly: true,
+        lists: [[weeklyReport("alpha", 31)]],
+      });
       await installUsageReportsFixture(page, {
         port: secondary.port,
+        providerUsageListOnly: true,
         lists: [[weeklyReport("beta", 12)]],
       });
       await gotoAppShell(page);
@@ -318,8 +334,8 @@ test.describe("usage screen", () => {
       });
 
       // Nothing picked and no workspace open: the first host.
-      await expectPinnedUsage(page, ["31% Weekly"]);
-      await openUsageFromItem(page);
+      await expectQuotaAccount(page, "alpha");
+      await openUsageFromQuotaCard(page);
       await expect(page.getByTestId(`usage-host-${primaryServerId}`)).toBeVisible();
 
       await hostFilter(page).click();
@@ -329,7 +345,8 @@ test.describe("usage screen", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(hostFilter(page)).toContainText("Secondary box");
       await qaScreenshot(page, "usage-modal-picked-host");
-      await expectPinnedUsage(page, ["12% Weekly"]);
+      await closeUsage(page);
+      await expectQuotaAccount(page, "beta");
 
       // The e2e seed resets the host list on every load, so reopening re-adds the second host.
       await addConnectedHostAndReload(page, {
@@ -337,8 +354,8 @@ test.describe("usage screen", () => {
         label: "Secondary box",
         port: secondary.port,
       });
-      await expectPinnedUsage(page, ["12% Weekly"]);
-      await openUsageFromItem(page);
+      await expectQuotaAccount(page, "beta");
+      await openUsageFromQuotaCard(page);
       await expect(
         page.getByTestId(`usage-host-${secondary.serverId}`).getByText("12% used"),
       ).toBeVisible({ timeout: 30_000 });
@@ -348,6 +365,13 @@ test.describe("usage screen", () => {
   });
 });
 
+/** The Quota card lists exactly this source's account, so it reads the expected usage host. */
+async function expectQuotaAccount(page: Page, sourceId: string) {
+  const accounts = quotaCard(page).locator('[data-testid^="global-quota-account-"]');
+  await expect(accounts).toHaveCount(1, { timeout: 30_000 });
+  await expect(quotaCard(page).getByTestId(`global-quota-account-${sourceId}`)).toBeVisible();
+}
+
 const loginWindows: UsageReportEntry["report"] = {
   status: "available",
   windows: [
@@ -356,7 +380,7 @@ const loginWindows: UsageReportEntry["report"] = {
   ],
 };
 
-test("expired login refreshes to windows with visible pin toggles", async ({ page }) => {
+test("direct-route expired login refreshes to unpinnable windows", async ({ page }) => {
   const fixture = await installLoginUsage({
     status: "unavailable",
     problem: {
@@ -367,7 +391,7 @@ test("expired login refreshes to windows with visible pin toggles", async ({ pag
   });
   try {
     await gotoAppShell(page);
-    await openUsageFromIcon(page);
+    await openUsage(page);
     await expect(
       page.getByText("Claude: Login expired 1h ago. Run claude to refresh it.", { exact: true }),
     ).toBeVisible();
@@ -380,39 +404,24 @@ test("expired login refreshes to windows with visible pin toggles", async ({ pag
     ).toHaveCount(0);
     const card = page.getByTestId("usage-report-login-journey:account");
     await expect(card.getByText("Session", { exact: true })).toBeVisible();
-    await expect(card.getByText("31%", { exact: true })).toBeVisible();
+    await expect(card.getByText("31% used", { exact: true })).toBeVisible();
     await expect(card.getByText("Weekly", { exact: true })).toBeVisible();
-    await expect(card.getByText("54%", { exact: true })).toBeVisible();
-    await expect(pinRow(card, "Claude", "Session")).toBeVisible();
-    await expect(pinRow(card, "Claude", "Weekly")).toBeVisible();
+    await expect(card.getByText("54% used", { exact: true })).toBeVisible();
+    // Rows pin only for the sidebar summary, which the retained policy does not show.
+    await expectUnpinnableRows(card);
   } finally {
     await fixture.cleanup();
   }
 });
 
-test("compact usage rows always show the pin glyph", async ({ page }) => {
-  const fixture = await installLoginUsage(loginWindows);
-  try {
-    await page.setViewportSize({ width: 390, height: 844 });
-    await gotoAppShell(page);
-    await openCompactSidebar(page);
-    await openUsageFromIcon(page);
-    const card = page.getByTestId("usage-report-login-journey:account");
-    await expect(card.getByTestId("usage-pin-glyph-pinned")).toHaveCount(2);
-    await expect(card.getByTestId("usage-pin-glyph-pinned").nth(0)).toHaveCSS("opacity", "1");
-    await expect(card.getByTestId("usage-pin-glyph-pinned").nth(1)).toHaveCSS("opacity", "1");
-    await qaScreenshot(page, "usage-pin-compact");
-  } finally {
-    await fixture.cleanup();
-  }
-});
-
-// Retired 2026-10-24: 9332fbd2d and 471d7f22a removed the sidebar Usage summary, its Usage icon
-// and the Summary in sidebar switch. Usage windows are pinnable only for that summary, so the pin
-// toggle, pin glyph and sidebar-host sync tests went with it, as did usage-sidebar-item.spec.ts.
+// Retired with the sidebar summary (9332fbd2d, 471d7f22a): pin toggles, the compact pin glyph and
+// the summary's localized label. Unpinnable rows on compact and desktop are covered by
+// usage-sidebar-item.spec.ts; the Quota card covers the sidebar entry and host sync above.
 
 for (const shape of ["seven-day-only", "Spark"] as const) {
-  test(`Codex ${shape} windows use provider durations on the card`, async ({ page }) => {
+  test(`direct-route Codex ${shape} windows use provider durations on the card`, async ({
+    page,
+  }) => {
     const reset = Math.floor(Date.now() / 1000) + 5 * 86400;
     const source = await installCodexWindowUsage({
       rate_limit: {
@@ -458,7 +467,7 @@ for (const theme of ["light", "dark"] as const) {
     desktop: { width: 1440, height: 900 },
     compact: { width: 390, height: 844 },
   })) {
-    test(`Usage Settings disclosure ${size} ${theme}`, async ({ page }, testInfo) => {
+    test(`direct-route Usage Settings disclosure ${size} ${theme}`, async ({ page }, testInfo) => {
       test.setTimeout(120_000);
       await page.addInitScript((value) => {
         const key = "@paseo:app-settings";
@@ -514,7 +523,7 @@ async function captureSettingsState(
   await testInfo.attach(name, { body: await page.screenshot(), contentType: "image/png" });
 }
 
-test("an account with all logins failing shows each harness and remedy, then only usage when one succeeds", async ({
+test("direct-route account with all logins failing shows each harness and remedy, then only usage when one succeeds", async ({
   page,
 }) => {
   const fixture = await installLoginUsage([
@@ -540,7 +549,7 @@ test("an account with all logins failing shows each harness and remedy, then onl
   ]);
   try {
     await gotoAppShell(page);
-    await openUsageFromIcon(page);
+    await openUsage(page);
     await expectLoginErrors(page, [
       "Codex: Usage API returned 500. Try again.",
       "OpenCode: Login rejected (HTTP 401). Run opencode to refresh it.",
@@ -576,7 +585,7 @@ async function expectLoginUsageOnly(page: Page, percentage: string) {
 }
 
 for (const compact of [false, true]) {
-  test(`failed polls retain usage and successful freshness (${compact ? "footer" : "tooltip"})`, async ({
+  test(`direct-route failed polls retain usage and successful freshness (${compact ? "footer" : "tooltip"})`, async ({
     page,
   }) => {
     const fixture = await installLoginUsage({ status: "error", error: "Initial failure" });
@@ -586,8 +595,7 @@ for (const compact of [false, true]) {
         compact ? { width: 390, height: 844 } : { width: 1440, height: 900 },
       );
       await gotoAppShell(page);
-      if (compact) await openCompactSidebar(page);
-      await openUsageFromIcon(page);
+      await openUsage(page);
       await expectLoginErrors(page, ["Claude: Initial failure"]);
       await test.step("developer errors do not interrupt freshness inspection", async () => {
         await page.evaluate(() => console.error("E2E: developer toast while Usage is open"));
@@ -645,7 +653,6 @@ async function expectRetainedLoginUsage(page: Page, message: string) {
 }
 
 async function switchToJapanese(page: Page) {
-  await page.getByRole("button", { name: "Close", exact: true }).click();
   await openSettings(page);
   await openSettingsSection(page, "general");
   await page.getByRole("button", { name: "System", exact: true }).click();
@@ -653,12 +660,9 @@ async function switchToJapanese(page: Page) {
   await page.getByRole("button", { name: "戻る", exact: true }).click();
 }
 
-async function openJapaneseUsage(page: Page) {
-  await page.getByRole("button", { name: "使用状況", exact: true }).click();
-  await expect(page.getByTestId("usage-modal").first()).toBeVisible();
-}
-
-test("usage percentages state their meaning and follow the selected language", async ({ page }) => {
+test("direct-route usage percentages state their meaning and follow the selected language", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   const login = await installLoginUsage({
     status: "available",
@@ -666,14 +670,16 @@ test("usage percentages state their meaning and follow the selected language", a
   });
   try {
     await gotoAppShell(page);
-    await openUsageFromIcon(page);
+    await openUsage(page);
     await expect(page.getByText("70% used", { exact: true })).toBeVisible();
+    await closeUsage(page);
     await switchToJapanese(page);
-    await expect(usageItem(page)).toHaveAccessibleName(/Claude セッション 70% 使用済み/);
-    await openJapaneseUsage(page);
+    await expectNoUsageItem(page);
+    await openUsage(page);
     await expect(page.getByText("70% 使用済み", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "すべて更新", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "設定", exact: true }).last().click();
+    // The Usage screen's Settings disclosure, not the app's Settings navigation.
+    await openUsageOptions(page);
     await expect(page.getByText("割合", { exact: true })).toBeVisible();
     await expect(page.getByText("使用済み", { exact: true })).toBeVisible();
     await expect(page.getByText("残り", { exact: true })).toBeVisible();
@@ -682,7 +688,7 @@ test("usage percentages state their meaning and follow the selected language", a
   }
 });
 
-test("open usage clocks advance without refreshing or reopening", async ({ page }) => {
+test("direct-route open usage clocks advance without refreshing or reopening", async ({ page }) => {
   test.setTimeout(120_000);
   const now = new Date();
   const reset = new Date(now.getTime() + 30.5 * 60_000).toISOString();
@@ -717,15 +723,16 @@ async function openCompactUsageWithClock(page: Page, now: Date) {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.clock.install({ time: now });
   await gotoAppShell(page);
-  await openCompactSidebar(page);
-  await openUsageFromIcon(page);
+  await openUsage(page);
 }
 
 async function advanceUsageClock(page: Page, milliseconds: number) {
   await page.clock.fastForward(milliseconds);
 }
 
-test("released hosts supply source logos through the client conversion", async ({ page }) => {
+test("direct-route released hosts supply source logos through the client conversion", async ({
+  page,
+}) => {
   await installUsageReportsFixture(page, {
     lists: [() => claudeAndCodexReports()],
     providerUsageListOnly: true,

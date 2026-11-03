@@ -6,6 +6,16 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Tooling
+
+- Merged current `main` into the message queue reconnect fix before delivery.
+
+### Tests
+
+- Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - The message queue reopens its saved-queue storage after the browser closes the connection. It used to show "The database connection is closing" until the page reloaded, and Retry failed the same way.
@@ -15,6 +25,21 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Fixes
 
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Name the hosted agents holding a pending session host upgrade in the Session host card: those waiting for the owner's answer first, then those running a turn or still starting. Idle hosted agents are left out because they leave after about five quiet minutes. Interface only, with no wire change; older coordinators show no list.
+- Add `install-execution-host.mjs enable-durable-sessions` for Host setup. It refuses without Host source updates or a matching session host job, installs the job through the owner-approved request, waits until the coordinator sees its host answer, then writes `{"enabled": true}` only when no setting exists. An explicit off survives reruns, a broken setting file is reported as broken, and `--request <id>` resumes waiting on an earlier request.
+
+### Changed
+
+- The installer's removal refusal and `install` output name the durable sessions steps. The docs give the order for uninstalling or rolling back below the session host and say that turning the setting off ends no hosted session.
+
+### Maintenance
+
+- Merge current `main` into the durable sessions branch, keeping both sides' new installer tests and the browser test's mocks for the upgrade and snapshot cards.
 
 ## Unreleased - 2026-11-03
 
