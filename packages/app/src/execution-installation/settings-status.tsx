@@ -1,6 +1,7 @@
+import { reportSyncError } from "@/components/settings/sync-error-notification";
 import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useToast } from "@/contexts/toast-context";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type {
@@ -258,20 +259,10 @@ export function InstallationSettingsStatus({
 }) {
   const { installation, data, error, save } = useInstallationSettings();
   const toast = useToast();
-  const failed = useRef(false);
   useEffect(() => {
-    if (!showStatus) return;
-    if (!error) {
-      failed.current = false;
-      return;
-    }
-    if (!data || failed.current) return;
-    const timer = setTimeout(() => {
-      failed.current = true;
-      toast.error(toErrorMessage(error));
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, [error, data, toast, showStatus]);
+    if (!data || !installation) return;
+    reportSyncError(installation.installationId, error, () => toast.error(toErrorMessage(error)));
+  }, [error, data, installation, toast]);
   const [saving, setSaving] = useState(false);
   const reportActionError = useReportActionError();
   const choose = useCallback(
@@ -360,6 +351,20 @@ export function InstallationSettingsSyncStatus() {
   let message: string | null = null;
   if (sources.some((source) => source.pendingRevision !== null))
     message = "Syncing shared settings...";
+  if (
+    sources.some(
+      (source) =>
+        source.error &&
+        [
+          "read_failed",
+          "patch_failed",
+          "verification_failed",
+          "plugin_projection_failed",
+          "skill_projection_failed",
+        ].includes(source.error),
+    )
+  )
+    message = "Some environments haven't applied the latest shared settings yet.";
   if (sources.some((source) => source.error === "skill_removal_review_required"))
     message = "Open the skill selector and save again to review pending removals.";
   // Stuck account delivery outranks routine syncing: it will not finish on its own.

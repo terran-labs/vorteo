@@ -31,12 +31,16 @@ function pluralize(count: number, noun: string): string {
 function useProviderAttentionItems(): AttentionItem[] | null {
   const hosts = useHosts();
   const serverId = installationDefaultServerId(readExecutionInstallation()) ?? hosts[0]?.serverId;
-  const { entries } = useProvidersSnapshot(serverId ?? null);
+  const { entries, isLoading, error: providerError } = useProvidersSnapshot(serverId ?? null);
   const shared = useInstallationSettings();
   const detection = useProviderDetection(shared.installation?.environments ?? NO_ENVIRONMENTS);
   // Null until the first answer; afterwards a refetch keeps the last answer on screen.
   const previous = useRef<AttentionItem[] | null>(null);
-  if (!entries || !shared.data) return previous.current;
+  if (!serverId) return [];
+  const waitingForSettings = shared.installation && !shared.data && !shared.error;
+  const waitingForProviders = serverId && !entries && isLoading && !providerError;
+  if (waitingForSettings || waitingForProviders) return previous.current;
+
   const items = providersNeedingAttention({
     entries: entries ?? [],
     serverId: serverId ?? "",
@@ -111,7 +115,10 @@ export function AttentionSection({ onOpenPane }: { onOpenPane: (pane: string) =>
   else if (items.length === 1) row = <AttentionRow item={items[0]} onOpenPane={onOpenPane} />;
   else
     row = (
-      <SettingsCollapsibleRow label={`${items.length} things need attention`}>
+      <SettingsCollapsibleRow
+        label={`${items.length} things need attention`}
+        hint="Open to review each item."
+      >
         {items.map((item) => (
           <AttentionRow key={item.id} item={item} onOpenPane={onOpenPane} />
         ))}

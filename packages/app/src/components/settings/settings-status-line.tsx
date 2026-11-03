@@ -1,15 +1,33 @@
-import { Text, View } from "react-native";
+import { useMemo } from "react";
+import { Text, View, useWindowDimensions } from "react-native";
 import { settingsStyles } from "@/styles/settings";
 
-/** Always reserves one line, including when there is no status to announce. */
-export function SettingsStatusLine({ message }: { message?: string | null }) {
+/** Reserve two scaled lines, including when there is no status to announce. */
+export function SettingsStatusLine({
+  message,
+  testID,
+}: {
+  message?: string | null;
+  testID?: string;
+}) {
+  const { fontScale } = useWindowDimensions();
+  const container = useMemo(
+    () => ({ minHeight: STATUS_LINE_HEIGHT * 2 * fontScale, justifyContent: "center" as const }),
+    [fontScale],
+  );
   return (
-    <View style={reservedLayout1}>
-      <Text numberOfLines={1} accessibilityLiveRegion="polite" style={settingsStyles.rowHint}>
-        {message ?? " "}
+    <View style={container}>
+      <Text
+        testID={message ? testID : undefined}
+        numberOfLines={2}
+        accessibilityLabel={message || undefined}
+        accessibilityLiveRegion={message ? "polite" : undefined}
+        style={[settingsStyles.rowHint, lineStyle]}
+      >
+        {message || " "}
       </Text>
     </View>
   );
 }
-
-const reservedLayout1 = { height: 24, justifyContent: "center", overflow: "hidden" } as const;
+const STATUS_LINE_HEIGHT = 20;
+const lineStyle = { lineHeight: STATUS_LINE_HEIGHT, marginTop: 0 };

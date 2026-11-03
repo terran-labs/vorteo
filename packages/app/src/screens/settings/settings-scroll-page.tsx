@@ -96,6 +96,7 @@ const JUMP_INSET = 16;
 /** A programmatic scroll is over once no scroll event arrives for this long. */
 const SCROLL_SETTLE_MS = 150;
 const MAX_RESULTS_SHOWN = 8;
+const ROW_WAIT_MS = 3000;
 
 export interface SettingsSearchControls {
   query: string;
@@ -173,6 +174,24 @@ export function SettingsScrollPage({
   const [viewport, setViewport] = useState(0);
   const searching = query.trim().length > 0;
   const previousSearch = useRef(searching);
+  const waitingForLayout = useRef(false);
+  const rowDeadline = useRef(Date.now() + ROW_WAIT_MS);
+  const browserAnchoring = useRef(true);
+  const previousRequest = useRef(request);
+  // Invalidate before child layout callbacks run. A query clear and navigation request
+  // can share one render, so retain the request and wait for restored measurements.
+  if (previousSearch.current !== searching) {
+    previousSearch.current = searching;
+    sectionBoxes.current.clear();
+    paneBoxes.current.clear();
+    activeSection.current = null;
+    waitingForLayout.current = true;
+  }
+  if (previousRequest.current !== request) {
+    previousRequest.current = request;
+    pending.current = request;
+    rowDeadline.current = Date.now() + ROW_WAIT_MS;
+  }
 
   const targetIndex = Math.max(
     0,
@@ -199,7 +218,9 @@ export function SettingsScrollPage({
   useEffect(() => {
     if (!isWeb) return;
     const node = scrollRef.current?.getScrollableNode() as HTMLElement | undefined;
-    if (node) node.style.overflowAnchor = "auto";
+    browserAnchoring.current =
+      typeof CSS !== "undefined" && CSS.supports("overflow-anchor", "auto");
+    if (node && browserAnchoring.current) node.style.overflowAnchor = "auto";
   }, []);
 
   const markProgrammatic = useCallback(() => {
@@ -241,6 +262,9 @@ export function SettingsScrollPage({
         );
         if (!node || !element || element.offsetHeight === 0) return null;
         const row = requestRow(target);
+        // A pane skeleton is not the requested row. Wait briefly, without pinning after arrival.
+        if ((target.anchorId || target.entry) && !row && Date.now() < rowDeadline.current)
+          return null;
         const inset = row ? JUMP_INSET * 4 : JUMP_INSET;
         return { y: rowOffsetWithin(row ?? element, node) - inset, row };
       }
@@ -256,19 +280,42 @@ export function SettingsScrollPage({
   /** Brings the pending request into view once its target has rendered. */
   const resolvePending = useCallback(() => {
     const next = pending.current;
-    if (!next) return;
+    if (!next || searching || waitingForLayout.current) return;
+    if (!sectionBoxes.current.has(next.section)) return;
+    if (next.pane && !paneBoxes.current.has(next.pane)) return;
     const offset = targetOffset(next);
     if (!offset) return;
     pending.current = null;
     reportActive(next.section);
     scrollTo(offset.y, next.animated);
     if (offset.row) flashSettingRow(offset.row);
-  }, [reportActive, scrollTo, targetOffset]);
+  }, [reportActive, scrollTo, targetOffset, searching]);
 
   useEffect(() => {
-    pending.current = request;
     resolvePending();
+    const timer = setTimeout(
+      () => {
+        resolvePending();
+        // A missing pane must not leave a row request armed indefinitely.
+        if (pending.current === request && (request.anchorId || request.entry))
+          pending.current = null;
+      },
+      Math.max(0, rowDeadline.current - Date.now()),
+    );
+    return () => clearTimeout(timer);
   }, [request, resolvePending]);
+
+  // A reader gesture cancels a delayed row jump, rather than pulling them back later.
+  useEffect(() => {
+    if (!isWeb) return;
+    const node = scrollRef.current?.getScrollableNode() as HTMLElement | undefined;
+    const cancel = () => {
+      pending.current = null;
+    };
+    const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    events.forEach((name) => node?.addEventListener(name, cancel, { passive: true }));
+    return () => events.forEach((name) => node?.removeEventListener(name, cancel));
+  }, []);
 
   const updateActive = useCallback(() => {
     if (programmatic.current || searching) return;
@@ -289,14 +336,9 @@ export function SettingsScrollPage({
     if (current) reportActive(current);
   }, [reportActive, searching, sections]);
 
-  useEffect(() => {
-    if (previousSearch.current === searching) return;
-    previousSearch.current = searching;
+  const cancelPending = useCallback(() => {
     pending.current = null;
-    sectionBoxes.current.clear();
-    paneBoxes.current.clear();
-    activeSection.current = null;
-  }, [searching]);
+  }, []);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -318,18 +360,31 @@ export function SettingsScrollPage({
 
   const handleSectionLayout = useCallback(
     (id: SettingsSectionId, box: Box) => {
+      if (previousSearch.current !== searching) return;
+      const old = sectionBoxes.current.get(id);
+      // WebKit without overflow-anchor needs only the height delta above the reader.
+      // Native maintainVisibleContentPosition tracks whole sections, not rows within a pane.
+      if (isWeb && !browserAnchoring.current && old && !searching && !pending.current) {
+        const active = sectionBoxes.current.get(activeSection.current!);
+        if (active && old.y < active.y && old.height !== box.height) {
+          scrollY.current += box.height - old.height;
+          scrollTo(scrollY.current, false);
+        }
+      }
       sectionBoxes.current.set(id, box);
+      waitingForLayout.current = false;
       resolvePending();
     },
-    [resolvePending],
+    [resolvePending, scrollTo, searching],
   );
 
   const handlePaneLayout = useCallback(
     (id: string, box: Box) => {
+      if (previousSearch.current !== searching) return;
       paneBoxes.current.set(id, box);
       resolvePending();
     },
-    [resolvePending],
+    [resolvePending, searching],
   );
 
   // Tint matching rows while a search is active, after the panes render.
@@ -356,7 +411,7 @@ export function SettingsScrollPage({
     [matchedPanes, resultPanes, searching],
   );
 
-  const trailingSpace = viewport;
+  const trailingSpace = searching ? JUMP_INSET * 4 : viewport;
   const contentStyle = useMemo(
     () => ({ paddingBottom: trailingSpace + bottomInset }),
     [bottomInset, trailingSpace],
@@ -371,6 +426,7 @@ export function SettingsScrollPage({
       style={styles.scroll}
       contentContainerStyle={contentStyle}
       onScroll={handleScroll}
+      onScrollBeginDrag={cancelPending}
       scrollEventThrottle={16}
       onLayout={handleViewportLayout}
       onContentSizeChange={handleContentSizeChange}
@@ -410,6 +466,7 @@ export function SettingsScrollPage({
         return (
           <SectionBlock
             key={section.id}
+            layoutEpoch={searching}
             section={section}
             hidden={hidden}
             panes={section.panes}
@@ -425,6 +482,7 @@ export function SettingsScrollPage({
 }
 
 function SectionBlock({
+  layoutEpoch,
   section,
   hidden,
   panes,
@@ -433,6 +491,7 @@ function SectionBlock({
   onSectionLayout,
   onPaneLayout,
 }: {
+  layoutEpoch: boolean;
   section: SettingsPageSection;
   hidden: boolean;
   panes: readonly SettingsPaneDefinition[];
@@ -448,10 +507,17 @@ function SectionBlock({
     },
     [onSectionLayout, section.id],
   );
+  const layoutRef = useRef<View>(null);
+  useLayoutEffect(() => {
+    layoutRef.current?.measure((_x, y, _width, height) =>
+      onSectionLayout(section.id, { y, height }),
+    );
+  }, [layoutEpoch, onSectionLayout, section.id]);
   // Hidden sections stay mounted so their state survives a search.
   const style = useMemo(() => [styles.column, styles.section, hidden && styles.hidden], [hidden]);
   return (
     <View
+      ref={layoutRef}
       style={style}
       onLayout={handleLayout}
       testID={`settings-page-section-${section.id}`}
@@ -467,6 +533,7 @@ function SectionBlock({
       {panes.map((pane) => (
         <PaneBlock
           key={pane.id}
+          layoutEpoch={layoutEpoch}
           pane={pane}
           hidden={!paneVisible(pane)}
           renderPane={renderPane}
@@ -478,11 +545,13 @@ function SectionBlock({
 }
 
 function PaneBlock({
+  layoutEpoch,
   pane,
   hidden,
   renderPane,
   onPaneLayout,
 }: {
+  layoutEpoch: boolean;
   pane: SettingsPaneDefinition;
   hidden: boolean;
   renderPane: (paneId: string) => ReactNode;
@@ -495,8 +564,13 @@ function PaneBlock({
     },
     [onPaneLayout, pane.id],
   );
+  const layoutRef = useRef<View>(null);
+  useLayoutEffect(() => {
+    layoutRef.current?.measure((_x, y, _width, height) => onPaneLayout(pane.id, { y, height }));
+  }, [layoutEpoch, onPaneLayout, pane.id]);
   return (
     <View
+      ref={layoutRef}
       nativeID={settingsPaneDomId(pane.id)}
       onLayout={handleLayout}
       style={hidden ? styles.hidden : undefined}

@@ -1,18 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
-vi.mock("react-native", () => ({ Text: "text", View: "view" }));
+import { renderToStaticMarkup } from "react-dom/server";
+vi.mock("react-native", () => ({
+  Text: "text",
+  View: "view",
+  useWindowDimensions: () => ({ fontScale: 2 }),
+}));
 vi.mock("@/styles/settings", () => ({ settingsStyles: { rowHint: {} } }));
 import { SettingsStatusLine } from "./settings-status-line";
 
 describe("SettingsStatusLine", () => {
-  it("reserves the same geometry for empty, pending and error states", () => {
-    const rows = [null, "Saving...", "Account synchronization needs attention."].map((message) =>
-      SettingsStatusLine({ message }),
+  it("reserves two scaled lines and announces only non-empty messages", () => {
+    const empty = renderToStaticMarkup(<SettingsStatusLine />);
+    const full = renderToStaticMarkup(
+      <SettingsStatusLine message="An error with the full explanation" testID="status" />,
     );
-    for (const row of rows) {
-      expect(row.type).toBe("view");
-      expect(row.props.style.height).toBe(24);
-      expect(row.props.children.props.numberOfLines).toBe(1);
-    }
-    expect(rows[0].props.children.props.children).toBe(" ");
+    expect(empty).toContain("min-height:80px");
+    expect(full).toContain("min-height:80px");
+    expect(empty).not.toContain("polite");
+    expect(empty).not.toContain("accessibilityLabel");
+    expect(full).toContain('accessibilityLabel="An error with the full explanation"');
+    expect(full).toContain('numberOfLines="2"');
+    expect(full).toContain('accessibilityLiveRegion="polite"');
   });
 });
