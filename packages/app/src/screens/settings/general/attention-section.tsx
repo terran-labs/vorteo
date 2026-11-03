@@ -1,5 +1,6 @@
-import { useCallback } from "react";
-import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
+import { Text, View } from "react-native";
+import { useCallback, useRef } from "react";
+import { SettingsCard, SettingsSection } from "@/components/settings";
 import { Button } from "@/components/ui/button";
 import { useRestartsAwaitingApproval } from "@/execution-installation/panel";
 import {
@@ -33,7 +34,9 @@ function useProviderAttentionItems(): AttentionItem[] {
   const { entries } = useProvidersSnapshot(serverId ?? null);
   const shared = useInstallationSettings();
   const detection = useProviderDetection(shared.installation?.environments ?? NO_ENVIRONMENTS);
-  return providersNeedingAttention({
+  const previous = useRef<AttentionItem[]>([]);
+  if (!entries || !shared.data) return previous.current;
+  const items = providersNeedingAttention({
     entries: entries ?? [],
     serverId: serverId ?? "",
     definitions: shared.data?.settings?.providerDefinitions,
@@ -44,6 +47,8 @@ function useProviderAttentionItems(): AttentionItem[] {
     hint: entry.error ?? "This account cannot start agents.",
     pane: "accounts.providers",
   }));
+  previous.current = items;
+  return items;
 }
 
 function useAttentionItems(): AttentionItem[] {
@@ -64,44 +69,47 @@ function useAttentionItems(): AttentionItem[] {
     items.push({
       id: "update",
       label: "Vorteo update available",
-      hint: `${pluralize(update.data?.incomingCommits ?? 0, "new commit")} in ${update.data?.latestRelease ?? "main"}.`,
+      hint: `${pluralize(update.data?.incomingCommits ?? 0, "new commit")} in ${
+        update.data?.latestRelease ?? "main"
+      }.`,
       pane: "maintenance.updates",
     });
   }
   return [...items, ...providerItems];
 }
 
-function AttentionRow({
-  item,
-  onOpenPane,
-}: {
-  item: AttentionItem;
-  onOpenPane: (pane: string) => void;
-}) {
-  const open = useCallback(() => onOpenPane(item.pane), [item.pane, onOpenPane]);
-  return (
-    <SettingsRow label={item.label} hint={item.hint} testID={`settings-attention-${item.id}`}>
-      <Button variant="outline" size="sm" onPress={open}>
-        Review
-      </Button>
-    </SettingsRow>
-  );
-}
-
-/**
- * What needs the owner's action across Settings, at the top of General. Renders
- * nothing when all is well, so General leads with everyday defaults.
- */
+/** A single reserved row keeps General stable while attention checks refresh. */
 export function AttentionSection({ onOpenPane }: { onOpenPane: (pane: string) => void }) {
   const items = useAttentionItems();
-  if (items.length === 0) return null;
+  const first = items[0];
+  const open = useCallback(() => {
+    if (first) onOpenPane(first.pane);
+  }, [first, onOpenPane]);
   return (
-    <SettingsSection title="Needs attention" testID="settings-attention">
+    <SettingsSection title="Status" testID="settings-attention">
       <SettingsCard>
-        {items.map((item) => (
-          <AttentionRow key={item.id} item={item} onOpenPane={onOpenPane} />
-        ))}
+        <View style={reservedLayout1}>
+          <Text numberOfLines={1} style={reservedLayout2}>
+            {items.length ? items.map((item) => item.label).join(" · ") : "All clear"}
+          </Text>
+          {first ? (
+            <Button variant="outline" size="sm" onPress={open}>
+              Review
+            </Button>
+          ) : null}
+        </View>
       </SettingsCard>
     </SettingsSection>
   );
 }
+
+const reservedLayout1 = {
+  height: 72,
+  justifyContent: "center",
+  overflow: "hidden",
+  paddingHorizontal: 16,
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 12,
+} as const;
+const reservedLayout2 = { flex: 1 } as const;

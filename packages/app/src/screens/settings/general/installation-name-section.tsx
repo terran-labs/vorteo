@@ -1,9 +1,8 @@
+import { useToast } from "@/contexts/toast-context";
 import { useCallback, useState } from "react";
-import { Text } from "react-native";
 import { SettingsCard, SettingsRow, SettingsSection } from "@/components/settings";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
-import { settingsStyles } from "@/styles/settings";
 import { toErrorMessage } from "@/utils/error-messages";
 import {
   DEFAULT_INSTALLATION_NAME,
@@ -17,20 +16,19 @@ export function InstallationNameSection() {
   const name = useInstallationName();
   const [draft, setDraft] = useState(name);
   const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const toast = useToast();
   const save = useCallback(async () => {
     setSaving(true);
-    setNotice(null);
     try {
       const saved = await saveInstallationName(draft);
       setDraft(saved);
-      setNotice("Saved.");
+      toast.show("Saved.");
     } catch (error) {
-      setNotice(toErrorMessage(error));
+      toast.error(toErrorMessage(error));
     } finally {
       setSaving(false);
     }
-  }, [draft]);
+  }, [draft, toast]);
   const pressSave = useCallback(() => void save(), [save]);
   if (!readExecutionInstallation()) return null;
   const unchanged = draft.trim() === name || (!draft.trim() && name === DEFAULT_INSTALLATION_NAME);
@@ -63,11 +61,6 @@ export function InstallationNameSection() {
             {saving ? "Saving..." : "Save"}
           </Button>
         </SettingsRow>
-        {notice ? (
-          <Text accessibilityLiveRegion="polite" style={settingsStyles.rowHint}>
-            {notice}
-          </Text>
-        ) : null}
       </SettingsCard>
     </SettingsSection>
   );

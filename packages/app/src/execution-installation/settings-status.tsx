@@ -1,4 +1,6 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
+import { useToast } from "@/contexts/toast-context";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type {
@@ -12,7 +14,6 @@ import { settingsStyles } from "@/styles/settings";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
 import { useReportActionError } from "@/hooks/use-action-error";
 import { useInstallationSettings } from "./settings";
-import { installationHasDev } from "./policy";
 import {
   conflictFieldLabel,
   defaultConflictChoices,
@@ -198,12 +199,18 @@ function ConflictResolver({
   const resolved = useMemo(() => resolveConflicts(conflicts, choices), [conflicts, choices]);
   const chooseField = useCallback(
     (field: InstallationSettingsField, serverId: string) =>
-      setChoices((current) => ({ ...current, fields: { ...current.fields, [field]: serverId } })),
+      setChoices((current) => ({
+        ...current,
+        fields: { ...current.fields, [field]: serverId },
+      })),
     [],
   );
   const chooseSkill = useCallback(
     (name: string, identity: string) =>
-      setChoices((current) => ({ ...current, skills: { ...current.skills, [name]: identity } })),
+      setChoices((current) => ({
+        ...current,
+        skills: { ...current.skills, [name]: identity },
+      })),
     [],
   );
   const save = useCallback(() => {
@@ -240,26 +247,45 @@ function ConflictResolver({
   );
 }
 
-export function InstallationSettingsStatus({ children }: { children: ReactNode }) {
+export function InstallationSettingsStatus({
+  children,
+  showStatus = false,
+}: {
+  children: ReactNode;
+  showStatus?: boolean;
+}) {
   const { installation, data, error, save } = useInstallationSettings();
+  const toast = useToast();
+  const failed = useRef(false);
+  useEffect(() => {
+    if (!showStatus) return;
+    if (!error) {
+      failed.current = false;
+      return;
+    }
+    if (!data || failed.current) return;
+    const timer = setTimeout(() => {
+      failed.current = true;
+      toast.error(toErrorMessage(error));
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [error, data, toast, showStatus]);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const reportActionError = useReportActionError();
   const choose = useCallback(
     async (settings: Partial<InstallationSettings>) => {
       if (!data) return;
       setSaving(true);
-      setSaveError(null);
       try {
         await save({ expectedRevision: data.revision, settings });
       } catch (cause) {
         if (isConnectionError(cause)) reportActionError(cause);
-        else setSaveError(toErrorMessage(cause));
+        else toast.error(toErrorMessage(cause));
       } finally {
         setSaving(false);
       }
     },
-    [data, save, reportActionError],
+    [data, save, reportActionError, toast],
   );
   const environments = installation?.environments;
   const labels = useMemo(
@@ -274,9 +300,20 @@ export function InstallationSettingsStatus({ children }: { children: ReactNode }
   );
   const hostServerId = environments?.find((environment) => environment.kind === "host")?.serverId;
   if (!installation) return children;
-  if (error && !data) return <Alert variant="error" description={toErrorMessage(error)} />;
-  if (!data) return <Text style={settingsStyles.rowHint}>Loading shared settings...</Text>;
+  if (error && !data)
+    return (
+      <View style={reservedLayout1}>
+        <SettingsStatusLine message={toErrorMessage(error)} />
+      </View>
+    );
+  if (!data)
+    return (
+      <View style={reservedLayout2}>
+        <SettingsStatusLine message="Loading shared settings..." />
+      </View>
+    );
   if (data.conflicts) {
+    if (!showStatus) return null;
     const conflicts = data.conflicts;
     return (
       <View>
@@ -284,7 +321,6 @@ export function InstallationSettingsStatus({ children }: { children: ReactNode }
           variant="warning"
           description="Host and Dev start with different settings. Choose which value each setting should share. Environment credentials remain local."
         />
-        {saveError ? <Alert variant="error" description={saveError} /> : null}
         <ConflictResolver
           conflicts={conflicts}
           labels={labels}
@@ -297,33 +333,33 @@ export function InstallationSettingsStatus({ children }: { children: ReactNode }
   }
   if (!data.settings)
     return (
-      <Alert
-        variant="warning"
-        description={
-          installationHasDev(installation)
-            ? "Waiting to read both environments before migrating shared settings. Existing settings have not been changed."
-            : "Waiting to read the Host before migrating shared settings. Existing settings have not been changed."
-        }
-      />
+      <View style={reservedLayout3}>
+        <SettingsStatusLine message="Reading shared settings..." />
+      </View>
     );
-  const pending = Object.entries(data.sources).filter(
-    ([, source]) => source.pendingRevision !== null || source.error !== null,
-  );
-  const needsAccountBinding = pending.some(
-    ([, source]) => source.error === "account_binding_unavailable",
-  );
-  let pendingDescription = needsAccountBinding
-    ? "Shared settings are saved. An account is not yet available in every included environment. Account synchronization needs to finish."
-    : "Shared settings are saved. Some environments are still waiting to apply them.";
-  if (pending.some(([, source]) => source.error === "skill_removal_review_required")) {
-    pendingDescription =
-      "Shared settings are saved. Open the skill selector and save again to review pending removals.";
-  }
   return (
-    <View>
-      {error ? <Alert variant="error" description={toErrorMessage(error)} /> : null}
-      {pending.length ? <Alert variant="warning" description={pendingDescription} /> : null}
+    <>
+      {showStatus ? <InstallationSettingsSyncStatus /> : null}
       {children}
-    </View>
+    </>
   );
 }
+
+/** Place once in the page header, rather than once around each pane. */
+export function InstallationSettingsSyncStatus() {
+  const { data } = useInstallationSettings();
+  const stuck = Object.values(data?.sources ?? {}).some(
+    (source) => source.error === "account_binding_unavailable",
+  );
+  const pending = Object.values(data?.sources ?? {}).some(
+    (source) => source.pendingRevision !== null,
+  );
+  let message: string | null = null;
+  if (pending) message = "Syncing shared settings...";
+  if (stuck) message = "Account synchronization needs attention. Open Accounts & profiles.";
+  return <SettingsStatusLine message={message} />;
+}
+
+const reservedLayout1 = { minHeight: 160 } as const;
+const reservedLayout2 = { minHeight: 160 } as const;
+const reservedLayout3 = { minHeight: 160 } as const;
