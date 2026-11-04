@@ -10,6 +10,17 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer still receive the answer when the turn finishes. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment. Pausing the queue no longer holds an answer back from a busy thread, and a steer whose acknowledgement is lost, or that Pi or OMP received just as the turn ended, is settled from provider history instead of being sent again.
 
+### Maintenance
+
+- Merged current `main` into the open question answer delivery fix; both sides' entries are kept.
+
+## Unreleased - 2026-11-04
+
+### Features
+
+- A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
+- Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
+
 ## Unreleased - 2026-11-03
 
 ### Maintenance

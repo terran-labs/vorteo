@@ -55,6 +55,7 @@ export function workerLaunchRequestCompatible(
     | "factoryRuntimePlanSha256"
     | "factoryRuntimeRecoveryOf"
     | "engineRestartPlanSha256"
+    | "bootEntrySwitchPlanSha256"
     | "devRepairs"
   >,
 ): boolean {
@@ -67,6 +68,7 @@ export function workerLaunchRequestCompatible(
       !job.factoryRuntimePlanSha256 &&
       !job.factoryRuntimeRecoveryOf &&
       !job.engineRestartPlanSha256 &&
+      !job.bootEntrySwitchPlanSha256 &&
       !job.devRepairs?.length)
   );
 }
@@ -223,7 +225,8 @@ function admitChild(
     job.supervisorPlanSha256 ||
     job.factoryRuntimePlanSha256 ||
     job.factoryRuntimeRecoveryOf ||
-    job.engineRestartPlanSha256
+    job.engineRestartPlanSha256 ||
+    job.bootEntrySwitchPlanSha256
   )
     conflict("Worker custody requires an exact Dev worker parent");
   const phase = transitionPhase(before, after);
