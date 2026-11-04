@@ -1394,6 +1394,44 @@ test.runIf(process.platform === "darwin")(
         configurationChanges: [{ setting: "hostLauncherUpdate", value: launcherUpdate }],
       }),
     ).resolves.toBeUndefined();
+    // The Dev boot-entry switch rides an owner-reviewed renewal as a listed change, only
+    // with matching candidate bytes.
+    const bootEntrySwitch = {
+      docker: "/fixture/docker",
+      socket: "/fixture/docker.sock",
+      container: "a".repeat(64),
+      current: {
+        pointer: { path: "/etc/paseo-server-entry", sha256: "b".repeat(64) },
+        entry: { path: "/fixture/old-entry.mjs", sha256: "c".repeat(64) },
+      },
+      target: { path: "/fixture/new-entry.mjs", sha256: "d".repeat(64) },
+      node: { path: "/fixture/node", sha256: "e".repeat(64) },
+      supervisorEntry: { path: "/fixture/supervisor.mjs", sha256: "f".repeat(64) },
+      supervisor: { config: "/fixture/supervisord.conf", program: "paseo-server" },
+      expectBootForm: "launcher",
+      factoryVerify: {
+        script: "/fixture/factory-verify.sh",
+        sha256: "1".repeat(64),
+        lockInode: 3901122,
+        ownerMode: "paused",
+      },
+    };
+    const bootConfig = JSON.parse(readFileSync(candidateConfig.path, "utf8"));
+    const bootPlanned = f.save(path.join(f.root, "boot-entry-switch.json"), {
+      ...bootConfig,
+      container: { ...bootConfig.container, bootEntrySwitch },
+    });
+    const bootChange = [{ setting: "bootEntrySwitch", value: bootEntrySwitch }];
+    await expect(
+      verifyRenewalPlan(setup, { ...plan, configurationChanges: bootChange }),
+    ).rejects.toThrow("outside its approved policy");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...plan,
+        candidate: { ...f.host, configuration: bootPlanned },
+        configurationChanges: bootChange,
+      }),
+    ).resolves.toBeUndefined();
     // Release seals ride an owner-reviewed renewal as a listed change; the launcher
     // verifier binds the candidate launcher's VORTEO_RELEASE_SEALS to the same entry.
     const sealsConfig = JSON.parse(readFileSync(candidateConfig.path, "utf8"));
