@@ -111,14 +111,14 @@ for (const [label, width] of [
       await card.scrollIntoViewIfNeeded();
       await page.screenshot({ path: info.outputPath(`open-questions-${label}.png`) });
 
-      await page.getByTestId(`open-question-use-recommended-${region}`).click();
+      await page.getByTestId(`open-question-send-${region}`).click();
       // A refused answer shows as a toast since 68faa7a52, and the question stays for a retry.
       await expect(
         page.getByText("The agent withdrew this question; it no longer needs an answer.").first(),
       ).toBeVisible();
       await expect(first).toBeVisible();
       await expect(page.getByTestId("open-questions-count")).toHaveText("2");
-      await page.getByTestId(`open-question-use-recommended-${region}`).click();
+      await page.getByTestId(`open-question-send-${region}`).click();
       await expect(first).not.toBeAttached();
       await expect(page.getByTestId("open-questions-count")).toHaveText("1");
 
@@ -249,7 +249,7 @@ for (const [label, width, height] of [
       await page.screenshot({ path: info.outputPath(`global-open-questions-${label}.png`) });
 
       // Answering from the sidebar reaches the thread that asked, not the open one.
-      await page.getByTestId(`global-open-question-use-recommended-${asks[1]!.id}`).click();
+      await page.getByTestId(`global-open-question-send-${asks[1]!.id}`).click();
       await expect(
         page.getByTestId(`global-open-questions-thread-${second.agentId}`),
       ).not.toBeAttached();
@@ -274,7 +274,7 @@ for (const [label, width, height] of [
       await expect(page.getByTestId(`global-open-question-${asks[0]!.id}`)).not.toBeAttached();
       await page.getByTestId("global-open-questions-card-toggle").click();
 
-      await page.getByTestId(`global-open-question-use-recommended-${asks[0]!.id}`).click();
+      await page.getByTestId(`global-open-question-send-${asks[0]!.id}`).click();
       await expect(page.getByTestId("global-open-questions-card")).not.toBeAttached();
     } finally {
       for (const mcp of tools) await mcp.close();

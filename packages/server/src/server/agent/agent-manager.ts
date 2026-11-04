@@ -5330,7 +5330,7 @@ export class AgentManager {
   /** The owner's answer is saved, then delivered once through the durable queue. */
   async answerQuestion(
     agentId: string,
-    input: { questionId: string; answer: string; answeredBy: string },
+    input: import("./questions/model.js").OwnerAnswerInput,
   ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
     const agent = this.requireAgent(agentId);
     if (!this.messageQueueControl?.queueQuestionAnswer)
