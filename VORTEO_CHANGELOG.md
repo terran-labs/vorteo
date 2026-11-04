@@ -6,9 +6,22 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix; the changelog kept both dated entries.
+
+## Unreleased - 2026-11-04
+
 ### Fixes
 
 - Moving a workspace with the keyboard in the web sidebar now shows its drop line on the first arrow key. Previously an arrow pressed right after Space picked the row up could be lost, so the move could not be placed. The sidebar reorder browser test also opens sorting through the current View preferences menu again.
+
+## Unreleased - 2026-11-04
+
+### Features
+
+- A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
+- Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
 
 ## Unreleased - 2026-11-03
 

@@ -7,6 +7,7 @@ import path from "node:path";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import {
+  BootEntrySwitchConfigurationSchema,
   EngineRestartConfigurationSchema,
   EngineRecoveryConfigurationSchema,
   RecoveryOriginSchema,
@@ -68,6 +69,8 @@ const ContainerDaemonSchema = DaemonConnectionSchema.extend({
   factoryRuntimeAdoption: FactoryRuntimeAdoptionConfigurationSchema.optional(),
   engineRestart: EngineRestartConfigurationSchema.optional(),
   engineRecovery: EngineRecoveryConfigurationSchema.optional(),
+  /** Coordinator-tracked switch of Dev's daemon boot entry; refused with persistentRegistration. */
+  bootEntrySwitch: BootEntrySwitchConfigurationSchema.optional(),
   factoryGate: FactoryGateConfigurationSchema.optional(),
   supervisorMaintenance: z
     .strictObject({
