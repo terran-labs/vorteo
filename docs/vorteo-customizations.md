@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): prepared beta release 26.11.302 for the VortLab bootstrap, superseding the untagged 26.11.301 with the settings catalog and usage test fixes. Version and changelog only. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): the restarted-daemon usage test expects the last successful reading stamped at fetch completion, matching the registry, which removes a one-millisecond race on slow CI runners. Test only; behavior unchanged. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the settings catalog gains the Delivery mode row from live dev mode, so settings search reaches it and the catalog coverage test passes. README overview and onboarding are unchanged.
