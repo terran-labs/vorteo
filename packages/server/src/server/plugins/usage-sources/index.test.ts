@@ -732,8 +732,10 @@ test("a restarted daemon shows the last successful poll while the account is rat
     const after = new UsageSourceRegistry(Date.now, 300_000, undefined, undefined, undefined, path);
     after.register(quota());
     const [limited] = await after.listReports();
+    // The registry stamps a successful reading when its fetch completes (successfulAt), not
+    // when it starts (fetchedAt); the two differ by a millisecond on slow runners.
     expect(limited?.lastSuccessful).toEqual({
-      fetchedAt: success!.fetchedAt,
+      fetchedAt: success!.successfulAt,
       report: success!.report,
     });
   } finally {
