@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): steering a Claude turn in the durable session host works again. The session host contract now accepts the steered message id that upstream Paseo added for rewind, and an accepted steer whose result is malformed is reported as accepted rather than failed, since the provider already has the message. A failed send now puts the message back above anything typed meanwhile instead of replacing it. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): the delivery guide asks Builds to state what each long wait watches, its start, usual duration and ending condition, and to reconcile its checklist after each install receipt. Instructions only; functionality, README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): heavy work now goes through one queued slot with a memory guard and background priority, replacing per-thread grants from Builds and the load-average limit. The agent, development and delivery guides point to it. Source only; not installed. README overview and onboarding are unchanged.
