@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): steering a Claude turn in the durable session host works again. The session host contract now accepts the steered message id that upstream Paseo added for rewind, and an accepted steer whose result is malformed is reported as accepted rather than failed, since the provider already has the message. A failed send now puts the message back above anything typed meanwhile instead of replacing it. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): prepared beta release 26.11.302 for the VortLab bootstrap, superseding the untagged 26.11.301 with the settings catalog and usage test fixes. Version and changelog only. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the restarted-daemon usage test expects the last successful reading stamped at fetch completion, matching the registry, which removes a one-millisecond race on slow CI runners. Test only; behavior unchanged. README overview and onboarding are unchanged.

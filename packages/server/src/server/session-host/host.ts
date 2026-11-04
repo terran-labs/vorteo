@@ -244,6 +244,12 @@ function errorMessage(error: unknown): string {
     : message;
 }
 
+function isAcceptedSteer(value: unknown): boolean {
+  return (
+    typeof value === "object" && value !== null && "status" in value && value.status === "accepted"
+  );
+}
+
 /** JSON.stringify drops Error fields; keep a provider error's name and message. */
 function preserveErrors(_key: string, value: unknown): unknown {
   return value instanceof Error ? { name: value.name, message: value.message } : value;
@@ -461,7 +467,14 @@ export async function startSessionHost(options: SessionHostOptions): Promise<Ses
       // Count before entering provider code: startTurn may await before publishing its turn id.
       state.activeCalls++;
       try {
-        const checked = parseCallResult(request.method, await state.port.call(request));
+        const value = await state.port.call(request);
+        const checked = parseCallResult(request.method, value);
+        // An accepted steer has already reached the provider. Reporting it as failed makes the
+        // client offer the message again, and every retry delivers another copy.
+        if (!checked.success && request.method === "steerActiveTurn" && isAcceptedSteer(value)) {
+          audit({ event: "steer_result_coerced", connectionId: connection.id, sessionId });
+          return { status: "accepted" };
+        }
         if (!checked.success)
           throw new HostError(
             "failed",
