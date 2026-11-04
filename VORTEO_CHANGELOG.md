@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Changes
 
+- Each release now ships Claude Code 2.1.311 instead of 2.1.284, so the Host and Dev daemons can offer Haiku 5.5, which needs 2.1.293 or later. Its Keychain item naming, credentials file and storage lock match 2.1.284.
+
+## Unreleased - 2026-11-04
+
+### Changes
+
 - Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
 
 ## Unreleased - 2026-11-04
