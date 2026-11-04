@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
+
+## Unreleased - 2026-11-03
+
 ### Fixed
 
 - Add profile and Edit on a provider page no longer crash Settings with "Couldn't find a navigation object". The profile page now reads navigation from the expo-router copy the app runs on, and still guards unsaved edits; opened outside a navigator, as the chat composer's centered window will be, it simply skips that guard.
