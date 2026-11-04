@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Added
 
+- Agent grants for service principals: give a credential read, steering-message or cancel access to specific agents, or to every agent in a workspace, without any other write access. Use `paseo access service create --grants-file` or `set-grants`; changing grants reconnects the credential's sessions. Granted messages steer with text only, and service sessions receive only data about agents they were allowed to address.
+
+## Unreleased - 2026-11-03
+
+### Added
+
 - Service principals: issue a credential with only the permissions you choose, such as read-only access for a personal dashboard, with `paseo access service create --read-only` or in host Settings under Service access. Only read-only access is issuable for now; service sessions cannot read files, run git or terminal requests, or route to other hosts. Tokens are shown once and stored as hashes, and revoking a principal disconnects it immediately. Clients connect with the new `serviceCredential` option on daemons advertising `servicePrincipals`.
 - One read-only view of the installation: the Host coordinator's overview route returns projects, workspaces and agents from Host and Dev in one call, with each environment's status and errors. It reads each daemon through a read-only principal and accepts observer tokens that authorize nothing else. Host agents use `installation-agent.mjs overview` and `overview-observers`.
 

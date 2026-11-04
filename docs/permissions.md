@@ -59,9 +59,35 @@ Revocation is immediate: the daemon removes the principal's authority from its l
 
 A daemon without a password admits any client that presents no credential as owner, so it refuses to issue service credentials.
 
+### Agent grants
+
+A service principal can also hold agent grants: resource-scoped authority over specific agents, separate from daemon-wide permissions. Each grant lists actions and the agents it covers, by exact agent ID or by owning workspace:
+
+```json
+[
+  {
+    "actions": ["agent.read", "agent.message", "agent.cancel"],
+    "workspaceIds": ["<lanes workspace>"]
+  },
+  { "actions": ["agent.read", "agent.message"], "agentIds": ["<agent id>"] }
+]
+```
+
+| Action          | Operations                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `agent.read`    | `fetch_agent_request`, `fetch_agent_timeline_request`, `agent.timeline.set_subscription.request` |
+| `agent.message` | `send_agent_message_request` with `activeTurnBehavior: "steer"` and text only                    |
+| `agent.cancel`  | `cancel_agent_request`                                                                           |
+
+Pass grants with `paseo access service create --grants-file <json>` and replace them with `paseo access service set-grants <id> --grants-file <json>`. Changing grants disconnects the principal's sessions so they reconnect with the new grants. Issuing grants requires the issuer to hold `workspace.read` and `workspace.write`. Daemons that support grants advertise `server_info.features.serviceAgentGrants`.
+
+Grant checks use exact agent IDs; prefix and title resolution would reveal other agents. A granted message cannot set a session mode, attachments, images or sender attribution, and it is never recorded as owner evidence. A granted message steers without answering the owner's pending approvals, cannot reach archived or internal agents, and does not set the agent's title. Messaging an idle agent starts a turn.
+
+`agent.message` carries the target agent's own authority: the agent can use its tools, including creating or prompting other agents and running commands, on the caller's text. Grant it only on agents whose tools you would let the caller direct. Prefer exact agent IDs over workspace grants, because an agent created in a granted workspace, including one a granted agent creates, is covered automatically. Agent grants authorize no other operation: listing agents, workspaces, files and every other operation still need daemon-wide permissions, and path-addressed operations stay refused. A service session must advertise `owned_subscriptions` and `selective_agent_timeline`, so it receives only replies to its own requests and its own subscriptions. The transport delivers a message to it only when every agent the message names is one the session was allowed to address.
+
 ## Resources
 
-Permissions are daemon-wide today. Future grants may select workspaces or agents, but operation classification remains inside the authorization module:
+Permissions are daemon-wide. [Agent grants](#agent-grants) are the first resource-scoped authority; they cover agent operations only. Broader workspace-scoped grants remain future work, and operation classification remains inside the authorization module:
 
 ```ts
 type Grant = {

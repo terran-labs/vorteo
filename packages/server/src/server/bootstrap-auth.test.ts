@@ -518,6 +518,76 @@ describe("service principals", () => {
     }
   });
 
+  test("agent grants allow only their actions on their agents", async () => {
+    const daemonHandle = await createTestPaseoDaemon({
+      auth: { password: CORRECT_PASSWORD_HASH },
+      mcpEnabled: false,
+    });
+    const owner = connectClient(daemonHandle.port, { password: "correct-password" });
+    let service: DaemonClient | null = null;
+    try {
+      await owner.connect();
+      const lane = await owner.createAgent({
+        provider: "codex",
+        cwd: daemonHandle.staticDir,
+        title: "Lane",
+      });
+      const other = await owner.createAgent({
+        provider: "codex",
+        cwd: daemonHandle.staticDir,
+        title: "Other",
+      });
+      const created = await owner.createServicePrincipal({
+        label: "Council bridge",
+        permissions: [],
+        grants: [{ actions: ["agent.read", "agent.message"], agentIds: [lane.id] }],
+      });
+      expect(created.error).toBeNull();
+
+      service = connectClient(daemonHandle.port, { serviceCredential: created.token! });
+      await service.connect();
+      await expect(service.fetchAgent(lane.id)).resolves.toMatchObject({ agent: { id: lane.id } });
+      await expect(
+        service.sendAgentMessage(lane.id, "steer", { activeTurnBehavior: "steer" }),
+      ).resolves.toBeDefined();
+      const denied = [
+        service.fetchAgent(other.id),
+        // Prefix and title resolution would reveal other agents; only exact IDs pass.
+        service.fetchAgent(lane.id.slice(0, 8)),
+        service.sendAgentMessage(lane.id, "interrupt", { activeTurnBehavior: "interrupt" }),
+        service.sendAgentMessage(lane.id, "mode", {
+          activeTurnBehavior: "steer",
+          sessionMode: "full-access",
+        }),
+        service.sendAgentMessage(other.id, "steer", { activeTurnBehavior: "steer" }),
+        service.cancelAgent(lane.id),
+        service.fetchAgents(),
+      ];
+      for (const request of denied) await expect(request).rejects.toThrow(/not authorized/);
+
+      // Workspace grants match agents by their owning workspace; changing grants reconnects.
+      const workspaceId = (await owner.fetchAgent(lane.id))!.agent.workspaceId!;
+      const closed = new Promise<void>((resolve) => {
+        service!.subscribeConnectionStatus((status) => {
+          if (status.status === "disconnected") resolve();
+        });
+      });
+      await owner.setServicePrincipalGrants(created.principal!.id, [
+        { actions: ["agent.cancel"], workspaceIds: [workspaceId] },
+      ]);
+      await closed;
+      await service.close();
+      service = connectClient(daemonHandle.port, { serviceCredential: created.token! });
+      await service.connect();
+      await expect(service.cancelAgent(lane.id)).resolves.toBeUndefined();
+      await expect(service.fetchAgent(lane.id)).rejects.toThrow(/not authorized/);
+    } finally {
+      await service?.close();
+      await owner.close();
+      await daemonHandle.close();
+    }
+  });
+
   test("a service token gives no authority as a header bearer", async () => {
     const daemonHandle = await createTestPaseoDaemon({ auth: { password: CORRECT_PASSWORD_HASH } });
     const owner = connectClient(daemonHandle.port, { password: "correct-password" });

@@ -1,6 +1,12 @@
 import { Command } from "commander";
-import type { ServicePrincipal } from "@getpaseo/protocol/messages";
-import { DAEMON_PERMISSIONS, type DaemonPermission } from "@getpaseo/protocol/messages";
+import { readFileSync } from "node:fs";
+import { z } from "zod";
+import type { AgentGrant, ServicePrincipal } from "@getpaseo/protocol/messages";
+import {
+  AgentGrantSchema,
+  DAEMON_PERMISSIONS,
+  type DaemonPermission,
+} from "@getpaseo/protocol/messages";
 import {
   withOutput,
   type ListResult,
@@ -20,12 +26,18 @@ interface CreateOptions extends AccessOptions {
   label: string;
   permission: string[];
   readOnly?: boolean;
+  grantsFile?: string;
+}
+
+interface SetGrantsOptions extends AccessOptions {
+  grantsFile: string;
 }
 
 interface PrincipalRow {
   id: string;
   label: string;
   permissions: string;
+  grants: string;
   status: string;
   createdAt: string;
   token?: string;
@@ -40,6 +52,7 @@ const schema: OutputSchema<PrincipalRow> = {
     { header: "ID", field: "id" },
     { header: "LABEL", field: "label" },
     { header: "PERMISSIONS", field: "permissions" },
+    { header: "GRANTS", field: "grants" },
     { header: "STATUS", field: "status" },
     { header: "CREATED", field: "createdAt" },
   ],
@@ -62,6 +75,15 @@ function toRow(principal: ServicePrincipal): PrincipalRow {
     id: principal.id,
     label: principal.label,
     permissions: principal.permissions.join(","),
+    grants: (principal.grants ?? [])
+      .map(
+        (grant) =>
+          `${grant.actions.join("+")} on ${[
+            ...(grant.agentIds ?? []).map((id) => `agent:${id}`),
+            ...(grant.workspaceIds ?? []).map((id) => `workspace:${id}`),
+          ].join(",")}`,
+      )
+      .join("; "),
     status: principal.revokedAt ? `revoked ${principal.revokedAt}` : "active",
     createdAt: principal.createdAt,
   };
@@ -77,6 +99,14 @@ function parsePermissions(values: readonly string[]): DaemonPermission[] {
     };
   }
   return [...new Set(values)] as DaemonPermission[];
+}
+
+/** Reads a JSON array of agent grants, e.g. [{"actions":["agent.read"],"agentIds":["..."]}]. */
+function readGrants(path: string): AgentGrant[] {
+  const parsed = z.array(AgentGrantSchema).safeParse(JSON.parse(readFileSync(path, "utf8")));
+  if (!parsed.success)
+    throw { code: "INVALID_GRANTS", message: `Invalid grants file: ${parsed.error.message}` };
+  return parsed.data;
 }
 
 async function withDaemon<T>(
@@ -131,7 +161,11 @@ export function createAccessCommand(): Command {
         collectMultiple,
         [],
       )
-      .option("--read-only", `Grant ${READ_ONLY_SERVICE_PERMISSIONS.join(" and ")}`),
+      .option("--read-only", `Grant ${READ_ONLY_SERVICE_PERMISSIONS.join(" and ")}`)
+      .option(
+        "--grants-file <path>",
+        "JSON array of agent grants (actions plus agentIds or workspaceIds)",
+      ),
   ).action(
     withOutput(async (...args): Promise<SingleResult<PrincipalRow>> => {
       const options = args.at(-2) as CreateOptions;
@@ -139,17 +173,44 @@ export function createAccessCommand(): Command {
         ...(options.readOnly ? READ_ONLY_SERVICE_PERMISSIONS : []),
         ...options.permission,
       ]);
-      if (permissions.length === 0) {
-        throw { code: "PERMISSION_REQUIRED", message: "Pass --read-only or --permission." };
+      const grants = options.grantsFile ? readGrants(options.grantsFile) : [];
+      if (permissions.length === 0 && grants.length === 0) {
+        throw {
+          code: "PERMISSION_REQUIRED",
+          message: "Pass --read-only, --permission or --grants-file.",
+        };
       }
       return withDaemon(options.daemonTarget, async (client) => {
-        const response = await client.createServicePrincipal({ label: options.label, permissions });
+        const response = await client.createServicePrincipal({
+          label: options.label,
+          permissions,
+          grants,
+        });
         failIf(response.error);
         return {
           type: "single",
           data: { ...toRow(response.principal!), token: response.token! },
           schema: createdSchema,
         };
+      });
+    }),
+  );
+
+  addJsonAndDaemonHostOptions(
+    service
+      .command("set-grants")
+      .description("Replace a service principal's agent grants and reconnect its sessions")
+      .argument("<id>", "Service principal ID")
+      .requiredOption("--grants-file <path>", "JSON array of agent grants; [] removes all"),
+  ).action(
+    withOutput(async (...args): Promise<SingleResult<PrincipalRow>> => {
+      const id = args[0] as string;
+      const options = args.at(-2) as SetGrantsOptions;
+      const grants = readGrants(options.grantsFile);
+      return withDaemon(options.daemonTarget, async (client) => {
+        const response = await client.setServicePrincipalGrants(id, grants);
+        failIf(response.error);
+        return { type: "single", data: toRow(response.principal!), schema };
       });
     }),
   );

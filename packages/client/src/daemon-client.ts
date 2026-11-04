@@ -146,6 +146,8 @@ import type {
   AccessServicePrincipalsListResponse,
   AccessServicePrincipalsCreateResponse,
   AccessServicePrincipalsRevokeResponse,
+  AccessServicePrincipalsSetGrantsResponse,
+  AgentGrant,
   DaemonPermission,
   DaemonConfigReloadResponse,
   DaemonOriginAdmissionResponse,
@@ -6603,17 +6605,35 @@ export class DaemonClient {
   }
 
   async createServicePrincipal(
-    input: { label: string; permissions: DaemonPermission[] },
+    input: { label: string; permissions: DaemonPermission[]; grants?: AgentGrant[] },
     options?: { requestId?: string; timeout?: number },
   ): Promise<AccessServicePrincipalsCreateResponse["payload"]> {
+    if (input.grants?.length && this.lastServerInfoMessage?.features?.serviceAgentGrants !== true)
+      throw new Error("Update the Paseo host to issue agent grants.");
     return this.sendCorrelatedSessionRequest({
       requestId: options?.requestId,
       message: {
         type: "access.service_principals.create.request",
         label: input.label,
         permissions: input.permissions,
+        ...(input.grants?.length ? { grants: input.grants } : {}),
       },
       responseType: "access.service_principals.create.response",
+      timeout: options?.timeout,
+    });
+  }
+
+  async setServicePrincipalGrants(
+    principalId: string,
+    grants: AgentGrant[],
+    options?: { requestId?: string; timeout?: number },
+  ): Promise<AccessServicePrincipalsSetGrantsResponse["payload"]> {
+    if (this.lastServerInfoMessage?.features?.serviceAgentGrants !== true)
+      throw new Error("Update the Paseo host to change agent grants.");
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: { type: "access.service_principals.set_grants.request", principalId, grants },
+      responseType: "access.service_principals.set_grants.response",
       timeout: options?.timeout,
     });
   }

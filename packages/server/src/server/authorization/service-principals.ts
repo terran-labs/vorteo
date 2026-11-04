@@ -2,8 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import type { ServicePrincipal } from "@getpaseo/protocol/messages";
-import { DaemonPermissionSchema } from "@getpaseo/protocol/messages";
+import type { AgentGrant, ServicePrincipal } from "@getpaseo/protocol/messages";
+import { AgentGrantSchema, DaemonPermissionSchema } from "@getpaseo/protocol/messages";
 import { writePrivateFileAtomic } from "../private-files.js";
 import { parseDaemonPermissions, type DaemonPermission } from "./index.js";
 import { GRANTABLE_SERVICE_PERMISSIONS } from "./service-restrictions.js";
@@ -17,6 +17,7 @@ const StoredPrincipalSchema = z.object({
   id: z.string().regex(ID_PATTERN),
   label: z.string().min(1),
   permissions: z.array(DaemonPermissionSchema),
+  grants: z.array(AgentGrantSchema).default([]),
   createdAt: z.string(),
   revokedAt: z.string().nullable(),
   // SHA-256 of the secret. Secrets are 256 random bits, so a slow hash adds nothing.
@@ -35,6 +36,26 @@ export class ServicePrincipalError extends Error {}
 export interface ServicePrincipalAdmission {
   principalId: string;
   permissions: readonly DaemonPermission[];
+  grants: readonly AgentGrant[];
+}
+
+const MAX_GRANT_TARGETS = 100;
+
+/** Rejects grants that name no agent or workspace, or that would be unbounded. */
+function validateGrants(grants: readonly AgentGrant[]): AgentGrant[] {
+  return grants.map((grant) => {
+    const agentIds = [...new Set(grant.agentIds ?? [])];
+    const workspaceIds = [...new Set(grant.workspaceIds ?? [])];
+    if (agentIds.length + workspaceIds.length === 0)
+      throw new ServicePrincipalError("Each grant must name at least one agent or workspace");
+    if (agentIds.length + workspaceIds.length > MAX_GRANT_TARGETS)
+      throw new ServicePrincipalError(`A grant can name at most ${MAX_GRANT_TARGETS} targets`);
+    return {
+      actions: [...new Set(grant.actions)],
+      ...(agentIds.length ? { agentIds } : {}),
+      ...(workspaceIds.length ? { workspaceIds } : {}),
+    };
+  });
 }
 
 /** Session principal IDs are namespaced so a service ID can never collide with "owner" or a Hub principal. */
@@ -64,6 +85,7 @@ export class ServicePrincipalStore {
   create(input: {
     label: string;
     permissions: readonly DaemonPermission[];
+    grants?: readonly AgentGrant[];
   }): Promise<{ principal: ServicePrincipal; token: string }> {
     return this.serialize(async (principals) => {
       const label = input.label.trim();
@@ -72,8 +94,9 @@ export class ServicePrincipalStore {
           "A service principal needs a label of up to 120 characters",
         );
       const permissions = parseDaemonPermissions(input.permissions);
-      if (permissions.length === 0)
-        throw new ServicePrincipalError("A service principal needs at least one permission");
+      const grants = validateGrants(input.grants ?? []);
+      if (permissions.length === 0 && grants.length === 0)
+        throw new ServicePrincipalError("A service principal needs a permission or a grant");
       const forbidden = permissions.filter((p) => !GRANTABLE_SERVICE_PERMISSIONS.includes(p));
       if (forbidden.length > 0)
         throw new ServicePrincipalError(
@@ -85,6 +108,7 @@ export class ServicePrincipalStore {
         id,
         label,
         permissions,
+        grants,
         createdAt: new Date().toISOString(),
         revokedAt: null,
         secretHash: hashSecret(secret),
@@ -107,6 +131,20 @@ export class ServicePrincipalStore {
     });
   }
 
+  /** Replaces a principal's agent grants. Live sessions keep their grants until they reconnect. */
+  setGrants(id: string, grants: readonly AgentGrant[]): Promise<ServicePrincipal> {
+    return this.serialize(async (principals) => {
+      const existing = principals.find((principal) => principal.id === id);
+      if (!existing) throw new ServicePrincipalError(`Unknown service principal ${id}`);
+      if (existing.revokedAt) throw new ServicePrincipalError("This service principal is revoked");
+      const updated = { ...existing, grants: validateGrants(grants) };
+      await this.persist(
+        principals.map((principal) => (principal.id === id ? updated : principal)),
+      );
+      return toPublic(updated);
+    });
+  }
+
   /** Resolves a presented token to its principal, or null for malformed, unknown or revoked tokens. */
   authenticate(token: string): Promise<ServicePrincipalAdmission | null> {
     const [prefix, id, secret, ...rest] = token.split(".");
@@ -123,6 +161,7 @@ export class ServicePrincipalStore {
       return {
         principalId: servicePrincipalSessionId(record.id),
         permissions: record.permissions.filter((p) => GRANTABLE_SERVICE_PERMISSIONS.includes(p)),
+        grants: record.grants,
       };
     });
   }
@@ -170,6 +209,7 @@ function toPublic(record: StoredPrincipal): ServicePrincipal {
     id: record.id,
     label: record.label,
     permissions: [...record.permissions],
+    grants: record.grants.map((grant) => ({ ...grant })),
     createdAt: record.createdAt,
     revokedAt: record.revokedAt,
   };

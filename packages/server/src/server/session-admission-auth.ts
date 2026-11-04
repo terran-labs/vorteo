@@ -20,7 +20,15 @@ export async function resolveSessionAdmission(input: {
   // password, so a scoped client never silently runs as owner.
   if (credential?.kind === "serviceCredential") {
     const admission = (await input.servicePrincipals?.authenticate(credential.token)) ?? null;
-    return admission ? { admission } : { rejection: "incorrect_password" };
+    return admission
+      ? {
+          admission: {
+            principalId: admission.principalId,
+            permissions: admission.permissions,
+            agentGrants: admission.grants,
+          },
+        }
+      : { rejection: "incorrect_password" };
   }
   if (!passwordHash) {
     return { admission: { principalId: "owner", permissions: OWNER_PERMISSIONS } };

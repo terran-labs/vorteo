@@ -251,6 +251,8 @@ import type { HubRelationshipManagement } from "./hub/relationship-controller.js
 import type { ServicePrincipal } from "@getpaseo/protocol/messages";
 import { ServicePrincipalError } from "./authorization/service-principals.js";
 import { sessionRestrictionsFor } from "./authorization/service-restrictions.js";
+import { AgentGrantGuard } from "./authorization/agent-grants.js";
+import type { AgentGrant } from "@getpaseo/protocol/messages";
 import { HubExecutionController } from "./hub/execution-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
@@ -512,8 +514,10 @@ export interface ServicePrincipalManagement {
   create(input: {
     label: string;
     permissions: readonly DaemonPermission[];
+    grants?: readonly AgentGrant[];
   }): Promise<{ principal: ServicePrincipal; token: string }>;
   revoke(id: string): Promise<ServicePrincipal>;
+  setGrants(id: string, grants: readonly AgentGrant[]): Promise<ServicePrincipal>;
 }
 
 export interface SessionOptions {
@@ -642,6 +646,8 @@ export interface SessionOptions {
   hubExecutionAgents?: HubExecutionAgents;
   hubRelationships?: HubRelationshipManagement;
   servicePrincipals?: ServicePrincipalManagement;
+  /** Resource-scoped agent authority of a service principal. */
+  agentGrants?: readonly AgentGrant[];
   serviceProxy?: ServiceProxySubsystem;
   scriptRuntimeStore?: WorkspaceScriptRuntimeStore;
   workspaceSetupObservation?: WorkspaceSetupObservation;
@@ -945,6 +951,7 @@ export class Session {
   private readonly daemonSession: DaemonSession;
   private readonly hubExecutionController: HubExecutionController | null;
   private readonly servicePrincipals: ServicePrincipalManagement | null;
+  private agentGrants: AgentGrantGuard | null = null;
   private readonly workspaceScripts: WorkspaceScriptsService;
   private readonly messageReceipts: Pick<MessageReceipts, "send">;
   private readonly agentMessages: AgentMessageDelivery;
@@ -1077,6 +1084,7 @@ export class Session {
     });
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
+    this.setAgentGrants(options.agentGrants);
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
     this.directorySync = resolveDirectorySync(directorySync);
@@ -2410,7 +2418,7 @@ export class Session {
           },
           "agent.session.inbound",
         );
-      if (!this.authorization.allowsInbound(msg)) {
+      if (!(await this.allowsInboundMessage(msg))) {
         const requestId = sessionRequestId(msg);
         if (requestId) {
           this.emit({
@@ -2464,6 +2472,33 @@ export class Session {
     }
   }
 
+  public setAgentGrants(grants: readonly AgentGrant[] | undefined): void {
+    this.agentGrants = grants?.length
+      ? new AgentGrantGuard(grants, async (agentId) => {
+          const live = this.agentManager.getAgent(agentId);
+          const stored = await this.agentStorage.get(agentId);
+          if (!live && !stored) return null;
+          return {
+            workspaceId: live?.workspaceId ?? stored?.workspaceId,
+            internal: live?.internal === true || stored?.internal === true,
+            archived: !!stored?.archivedAt,
+          };
+        })
+      : null;
+    const guard = this.agentGrants;
+    this.authorization.setOutboundExtension(
+      guard ? (message) => guard.allowsOutbound(message) : null,
+    );
+  }
+
+  private isServicePrincipal(): boolean {
+    return this.principalId?.startsWith("service:") === true;
+  }
+
+  public allowsOutbound(message: SessionOutboundMessage): boolean {
+    return this.authorization.allowsOutbound(message);
+  }
+
   public setPermissions(permissions: readonly DaemonPermission[]): void {
     this.authorization.replacePermissions(permissions);
     this.connectedHostSession?.revoke();
@@ -2496,6 +2531,7 @@ export class Session {
       case "access.service_principals.list.request":
       case "access.service_principals.create.request":
       case "access.service_principals.revoke.request":
+      case "access.service_principals.set_grants.request":
         return this.handleServicePrincipalRequest(msg);
       default:
         return undefined;
@@ -2509,7 +2545,8 @@ export class Session {
         type:
           | "access.service_principals.list.request"
           | "access.service_principals.create.request"
-          | "access.service_principals.revoke.request";
+          | "access.service_principals.revoke.request"
+          | "access.service_principals.set_grants.request";
       }
     >,
   ): Promise<void> {
@@ -2539,10 +2576,12 @@ export class Session {
           token: string | null;
           error: string | null;
         };
-        // An issuer can delegate only authority its own session holds.
-        const exceeding = msg.permissions.filter(
-          (permission) => !this.authorization.allowsPermission(permission),
-        );
+        // An issuer can delegate only authority its own session holds; agent
+        // grants need the workspace authority they narrow.
+        const exceeding = [
+          ...msg.permissions,
+          ...(msg.grants?.length ? (["workspace.read", "workspace.write"] as const) : []),
+        ].filter((permission) => !this.authorization.allowsPermission(permission));
         if (!store) {
           result = { principal: null, token: null, error: "Service principals are unavailable" };
         } else if (exceeding.length > 0) {
@@ -2554,7 +2593,11 @@ export class Session {
         } else {
           try {
             result = {
-              ...(await store.create({ label: msg.label, permissions: msg.permissions })),
+              ...(await store.create({
+                label: msg.label,
+                permissions: msg.permissions,
+                grants: msg.grants,
+              })),
               error: null,
             };
             this.sessionLogger.info(
@@ -2571,26 +2614,70 @@ export class Session {
         });
         return;
       }
-      case "access.service_principals.revoke.request": {
-        let principal: ServicePrincipal | null = null;
-        let error: string | null = null;
-        try {
-          if (!store) throw new ServicePrincipalError("Service principals are unavailable");
-          principal = await store.revoke(msg.principalId);
-          this.sessionLogger.info(
-            { servicePrincipalId: msg.principalId },
-            "Revoked service principal",
-          );
-        } catch (caught) {
-          error = failure(caught);
-        }
-        this.emit({
-          type: "access.service_principals.revoke.response",
-          payload: { requestId: msg.requestId, principal, error },
-        });
-        return;
-      }
+      case "access.service_principals.set_grants.request":
+        return this.handleSetServicePrincipalGrants(msg, store, failure);
+      case "access.service_principals.revoke.request":
+        return this.handleRevokeServicePrincipal(msg, store, failure);
     }
+  }
+
+  private async handleSetServicePrincipalGrants(
+    msg: Extract<SessionInboundMessage, { type: "access.service_principals.set_grants.request" }>,
+    store: ServicePrincipalManagement | null,
+    failure: (error: unknown) => string,
+  ): Promise<void> {
+    let principal: ServicePrincipal | null = null;
+    let error: string | null = null;
+    try {
+      if (!store) throw new ServicePrincipalError("Service principals are unavailable");
+      if (
+        msg.grants.length > 0 &&
+        !(
+          this.authorization.allowsPermission("workspace.read") &&
+          this.authorization.allowsPermission("workspace.write")
+        )
+      )
+        throw new ServicePrincipalError("This session cannot grant agent access");
+      principal = await store.setGrants(msg.principalId, msg.grants);
+      this.sessionLogger.info(
+        { servicePrincipalId: msg.principalId, grants: msg.grants },
+        "Changed service principal grants",
+      );
+    } catch (caught) {
+      error = failure(caught);
+    }
+    this.emit({
+      type: "access.service_principals.set_grants.response",
+      payload: { requestId: msg.requestId, principal, error },
+    });
+  }
+
+  private async handleRevokeServicePrincipal(
+    msg: Extract<SessionInboundMessage, { type: "access.service_principals.revoke.request" }>,
+    store: ServicePrincipalManagement | null,
+    failure: (error: unknown) => string,
+  ): Promise<void> {
+    let principal: ServicePrincipal | null = null;
+    let error: string | null = null;
+    try {
+      if (!store) throw new ServicePrincipalError("Service principals are unavailable");
+      principal = await store.revoke(msg.principalId);
+      this.sessionLogger.info({ servicePrincipalId: msg.principalId }, "Revoked service principal");
+    } catch (caught) {
+      error = failure(caught);
+    }
+    this.emit({
+      type: "access.service_principals.revoke.response",
+      payload: { requestId: msg.requestId, principal, error },
+    });
+  }
+
+  private async allowsInboundMessage(message: SessionInboundMessage): Promise<boolean> {
+    if (this.authorization.allowsInbound(message)) return true;
+    // Agent grants authorize only their own operations, on resolved exact agent IDs.
+    if (this.agentGrants?.handlesInbound(message.type))
+      return this.agentGrants.allowsInbound(message);
+    return false;
   }
 
   public allowsInbound(message: SessionInboundMessage): boolean {
@@ -9867,7 +9954,8 @@ export class Session {
       const agentId = resolved.agentId;
 
       const recordOwnerMessage = async () => {
-        if (!msg.origin && !msg.sourceAgentId) {
+        // Service principals never acquire owner provenance for their messages.
+        if (!msg.origin && !msg.sourceAgentId && !this.isServicePrincipal()) {
           await this.ownerEvidence.record({
             taskId: agentId,
             principalId: this.principalId,
@@ -9924,7 +10012,8 @@ export class Session {
           activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
           runOptions: msg.origin ? { origin: msg.origin } : undefined,
           sessionMode: msg.sessionMode,
-          clearPendingPermissions: true,
+          // A service message must not answer the owner's pending approvals for them.
+          clearPendingPermissions: !this.isServicePrincipal(),
           logger: this.sessionLogger,
         });
         if (result.disposition === "turn_started") {
@@ -9949,7 +10038,8 @@ export class Session {
                 msg.activeTurnBehavior ?? (msg.sourceAgentId ? "steer" : "interrupt"),
             },
             prepare: async () => {
-              if (!msg.sourceAgentId) {
+              // Service messages neither title the agent nor count as owner evidence.
+              if (!msg.sourceAgentId && !this.isServicePrincipal()) {
                 await this.prepareAgentMessage(agentId, msg.text);
                 await recordOwnerMessage();
               }

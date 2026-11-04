@@ -30,6 +30,7 @@ export interface SessionRestrictions {
 export class SessionAuthorization {
   private permissions: ReadonlySet<DaemonPermission>;
   private readonly restrictions: SessionRestrictions | null;
+  private outboundExtension: ((message: SessionOutboundMessage) => boolean) | null = null;
 
   constructor(permissions: readonly DaemonPermission[], restrictions?: SessionRestrictions) {
     this.permissions = new Set(permissions);
@@ -42,7 +43,15 @@ export class SessionAuthorization {
   }
 
   allowsOutbound(message: SessionOutboundMessage): boolean {
-    return this.allows(requiredPermissionForOutbound(message));
+    return (
+      this.allows(requiredPermissionForOutbound(message)) ||
+      this.outboundExtension?.(message) === true
+    );
+  }
+
+  /** Additional resource-scoped delivery, such as agent grants, beyond daemon-wide permissions. */
+  setOutboundExtension(extension: ((message: SessionOutboundMessage) => boolean) | null): void {
+    this.outboundExtension = extension;
   }
 
   replacePermissions(permissions: readonly DaemonPermission[]): void {
