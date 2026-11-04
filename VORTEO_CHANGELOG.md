@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Security
 
+- Close the re-review's findings on service messages. A leading `@` in service text is neutralized, because Claude reads `@path` files without a tool. Messages end with a closing marker the text cannot forge. Expired credentials disconnect their live sessions. Tool-less agents never adopt a hosted session, and resuming with `toolAccess` is owner-only.
+
+## Unreleased - 2026-11-04
+
+### Security
+
 - The owner can create a Claude thread that cannot call any tool by setting `toolAccess: "none"` at creation. The daemon attaches no Vorteo tools, MCP servers or plugin tools, and Claude launches with built-in tools disabled, no MCP, plugins, skills, subagents or filesystem settings, and a permission handler that refuses every request. Only the owner can set it, nothing can clear it later, and it is refused for non-Claude providers. Daemons advertise it as `agentToolAccess`. This is the basis for granting service credentials message access to an agent.
 
 ## Unreleased - 2026-11-04

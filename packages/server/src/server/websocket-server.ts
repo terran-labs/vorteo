@@ -172,6 +172,8 @@ export interface SessionAdmission {
   /** Resource-scoped agent authority held by a service principal. */
   agentGrants?: readonly AgentGrant[];
   principalLabel?: string;
+  /** When a service principal's token expires; its sessions end then. */
+  expiresAt?: string | null;
   hubExecutionAgents?: HubExecutionAgents;
 }
 
@@ -1301,6 +1303,19 @@ export class VoiceAssistantWebSocketServer {
     return connection.session.allowsOutbound(msg);
   }
 
+  /** Ends a service principal's sessions when its token expires, not only at its next connect. */
+  private scheduleAdmissionExpiry(admission: SessionAdmission): void {
+    if (!admission.expiresAt) return;
+    const remaining = Date.parse(admission.expiresAt) - Date.now();
+    // setTimeout overflows past about 24.8 days; a later reconnect reschedules.
+    if (!(remaining < 2 ** 31 - 1)) return;
+    const timer = setTimeout(
+      () => this.disconnectPrincipal(admission.principalId),
+      Math.max(0, remaining),
+    );
+    timer.unref?.();
+  }
+
   /** Removes all authority from a principal's live sessions and closes their sockets. */
   private disconnectPrincipal(principalId: string): void {
     this.updatePrincipalPermissions(principalId, []);
@@ -2129,6 +2144,7 @@ export class VoiceAssistantWebSocketServer {
         return false;
       }
       pending.admission = resolved.admission;
+      this.scheduleAdmissionExpiry(resolved.admission);
       return true;
     } catch (error) {
       pending.connectionLogger.error({ err: error }, "Failed to resolve hello credential");

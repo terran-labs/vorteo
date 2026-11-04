@@ -358,6 +358,9 @@ export function createHostedAgentClient(input: {
     const agentId = launchContext?.agentId;
     const adoption = agentId ? routing.adoptions?.get(agentId) : undefined;
     if (!agentId || !adoption) return null;
+    // A hosted session was launched with whatever tools its host gave it; a tool-less
+    // agent never adopts one and launches locally instead.
+    if (config.toolAccess === "none") return null;
     routing.adoptions?.delete(agentId);
     const session = hostedSession({
       channel: adoption.channel,

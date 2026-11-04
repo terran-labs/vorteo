@@ -41,6 +41,7 @@ export interface ServicePrincipalAdmission {
   permissions: readonly DaemonPermission[];
   grants: readonly AgentGrant[];
   label: string;
+  expiresAt: string | null;
 }
 
 const MAX_GRANT_TARGETS = 100;
@@ -188,6 +189,7 @@ export class ServicePrincipalStore {
         permissions: record.permissions.filter((p) => GRANTABLE_SERVICE_PERMISSIONS.includes(p)),
         grants: record.grants,
         label: record.label,
+        expiresAt: record.expiresAt,
       };
     });
   }

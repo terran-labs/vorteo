@@ -2509,8 +2509,7 @@ export class Session {
    * agent nor the timeline can mistake it for the owner's words.
    */
   private attributeServiceText(text: string): string {
-    const label = (this.principalLabel ?? "service").replace(/[\r\n"]/g, " ");
-    return `[Message from service credential "${label}", not from the owner]\n\n${text}`;
+    return attributeServiceMessage(this.principalLabel ?? "service", text);
   }
 
   /** The principal recorded as issuer of service principals this session creates. */
@@ -5828,6 +5827,7 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "resume_agent_request" }>,
   ): Promise<void> {
     const { handle, overrides, requestId } = msg;
+    this.assertMayRequestToolAccess(overrides ?? {});
     if (!handle) {
       this.sessionLogger.warn("Resume request missing persistence handle");
       if (requestId) {
@@ -10629,4 +10629,21 @@ function createHostSession(options: SessionOptions, session: Session): Connected
 
 function hostSource(options: SessionOptions): string {
   return options.sourceId ?? "owner";
+}
+
+const SERVICE_MESSAGE_END = "[End of service credential message]";
+
+/**
+ * Wraps service text in daemon-written markers. The label loses every control and
+ * line-separator character and brackets, text cannot forge either marker, and
+ * `@` mentions are neutralized because Claude expands `@path` into file contents
+ * without a tool call.
+ */
+export function attributeServiceMessage(label: string, text: string): string {
+  const safeLabel = label.replace(/[\p{Cc}\p{Zl}\p{Zp}\u0085"[\]]/gu, " ").trim() || "service";
+  const header = `[Message from service credential "${safeLabel}", not from the owner]`;
+  const body = text
+    .replace(/\[(?=\s*(Message from service credential|End of service credential message))/gi, "(")
+    .replace(/(^|[^\p{L}\p{N}_.+-])@(?=[^\s@])/gu, "$1\uFF20");
+  return `${header}\n\n${body}\n\n${SERVICE_MESSAGE_END}`;
 }
