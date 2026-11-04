@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Tooling
+
+- Merged current `main` into the service principals branch for handback.
+
+## Unreleased - 2026-11-04
+
 ### Security
 
 - Cancel grants, like message grants, now apply only to tool-less agents. Service sessions read single agents and timelines only through agent grants. Directory data they receive with daemon-wide read, and the installation overview, is projected to identity, status and timestamps, without paths, scripts, terminals, git, forge or permission data.
@@ -203,6 +209,13 @@ Prepared but never tagged; superseded by 26.11.301.
 - Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
 
 ## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Main CI runs now finish instead of being cancelled by the next merge. Merges landed faster than a full run, so no recent main run completed its slowest browser shard. Pull request runs still cancel when superseded, and main keeps at most one queued run.
+- The container smoke frees unused preinstalled SDKs before building, after one run exhausted the runner disk while copying the web interface.
 
 ## Unreleased - 2026-11-03
 
