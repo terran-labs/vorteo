@@ -504,15 +504,23 @@ test.describe("Mobile sidebar panelState transition", () => {
     await expectMobileAgentSidebarHidden(page);
   });
 
-  test("places the close button beside the first nav row instead of over it", async ({ page }) => {
+  // Vorteo closes the phone sidebar from the first toolbar button and keeps New workspace in the
+  // More menu, so the toggle must sit beside the next toolbar action rather than over it.
+  test("places the close button beside the first toolbar action instead of over it", async ({
+    page,
+  }) => {
     await gotoAppShell(page);
     await openMobileAgentSidebar(page);
     await expectMobileAgentSidebarVisible(page);
 
-    const firstRow = await page.getByTestId("sidebar-global-new-workspace").boundingBox();
-    const closeButton = await page.getByTestId("sidebar-close").boundingBox();
-    if (!firstRow || !closeButton) throw new Error("first nav row and close button must render");
-    expect(closeButton.x).toBeGreaterThanOrEqual(firstRow.x + firstRow.width);
+    const toolbar = page.locator('[data-testid="sidebar-toolbar"]:visible').first();
+    const close = toolbar.getByTestId("sidebar-collapse");
+    await expect(close).toBeInViewport({ ratio: 1 });
+    const firstAction = await toolbar.getByTestId("sidebar-search").boundingBox();
+    const closeButton = await close.boundingBox();
+    if (!firstAction || !closeButton)
+      throw new Error("toolbar action and close button must render");
+    expect(firstAction.x).toBeGreaterThanOrEqual(closeButton.x + closeButton.width);
   });
 
   test("keeps a pinned workspace rendered while the retained sidebar is closed", async ({
@@ -638,13 +646,14 @@ test.describe("Half-screen desktop layout", () => {
       await waitForSidebarProject(page, path.basename(workspace.repoPath));
       await openWorkspaceFromSidebar(page, workspace.workspaceId);
 
-      // Explorer shows Files as a card beside the conversation; the sidebar stays beside it.
+      // Half-screen width cannot fit navigation, Explorer and the workspace, so navigation yields
+      // while Explorer is open (docs/explorer-sidebar.md) and returns when it closes.
       await openFilesPanel(page);
       const explorerToggle = page.getByTestId("workspace-explorer-toggle").first();
       const files = page.getByTestId("file-explorer-tree-scroll").filter({ visible: true });
       await expect(files).toBeVisible();
       await expect(explorerToggle).toHaveAccessibleName("Close Explorer sidebar");
-      await expect(page.locator('[data-testid="sidebar-collapse"]:visible')).toHaveCount(1);
+      await expect(page.locator('[data-testid="sidebar-collapse"]:visible')).toHaveCount(0);
       await expect(page.getByTestId("sidebar-global-new-workspace")).not.toBeVisible();
       await expect(page.getByTestId("workspace-supporting-cards")).toBeVisible();
       await expect(

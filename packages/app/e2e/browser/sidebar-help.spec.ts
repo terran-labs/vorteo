@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseChangelog } from "../../src/changelog/internal/parse-changelog";
+import type { Locator } from "@playwright/test";
 import { expect, test, type Page } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
 import { openSettingsSection } from "../support/helpers/settings";
@@ -209,10 +210,23 @@ async function expectFingerSizedToolbarTargets(page: Page): Promise<void> {
     // Flex layout can report a 44px box as 43.99999px; round to a hundredth before comparing.
     expect(Math.round(bounds.width * 100) / 100).toBeGreaterThanOrEqual(44);
     expect(Math.round(bounds.height * 100) / 100).toBeGreaterThanOrEqual(44);
-    expect(Number(await button.locator("svg").first().getAttribute("width"))).toBeLessThanOrEqual(
-      20,
-    );
+    expect(await renderedGlyphWidth(button)).toBeLessThanOrEqual(20);
   }
+}
+
+// The phone menu toggle draws its glyph from views while the other buttons use an SVG, so measure
+// the drawn marks rather than reading an SVG width attribute.
+async function renderedGlyphWidth(button: Locator): Promise<number> {
+  return button.evaluate((element) => {
+    const marks = [...element.querySelectorAll("*")]
+      .filter((node) => node.childElementCount === 0)
+      .map((node) => node.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0);
+    if (marks.length === 0) throw new Error("toolbar button draws no glyph");
+    return (
+      Math.max(...marks.map((rect) => rect.right)) - Math.min(...marks.map((rect) => rect.left))
+    );
+  });
 }
 
 /** Help and support opens from More; a tap near the target's corner still lands. */

@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Tests
+
+- Sidebar browser tests now follow Vorteo's sidebar after the Paseo merge. They open View preferences from the More menu, mark compact rows unread through the row context menu, open grouped workspaces by row instead of by name, measure the drawn toolbar glyph, expect navigation to yield to Explorer at half-screen width, and check the phone close button against the toolbar.
+
+## Unreleased - 2026-11-03
+
 ### Tooling
 
 - Merged current `main` into the message queue reconnect fix before delivery.

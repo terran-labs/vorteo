@@ -136,16 +136,19 @@ export async function expectProjectSettingsName(page: Page, projectName: string)
   });
 }
 
+// A sortable row wraps its pressable row in a draggable element that also has the button role, so
+// a name filter matches both. Target the row by its test ID instead.
 export async function openGroupedProjectWorkspace(
   page: Page,
   projectName: string,
-  workspaceName: string,
+  workspace: { serverId: string; workspaceId: string; workspaceName: string },
 ): Promise<void> {
-  await projectGroup(page, projectName)
-    .getByRole("button")
-    .filter({ hasText: workspaceName })
-    .click();
-  await expect(page).toHaveURL(/\/workspace\//);
+  const row = projectGroup(page, projectName).getByTestId(
+    `sidebar-workspace-row-${workspace.serverId}:${workspace.workspaceId}`,
+  );
+  await expect(row).toContainText(workspace.workspaceName);
+  await row.click();
+  await expect(page).toHaveURL(new RegExp(`/workspace/${workspace.workspaceId}`));
 }
 
 export async function expectWorkspaceHost(page: Page, hostName: string): Promise<void> {

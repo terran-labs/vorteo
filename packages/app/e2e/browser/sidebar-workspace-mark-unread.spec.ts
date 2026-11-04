@@ -62,6 +62,16 @@ async function markAsUnread(page: Page, workspaceId: string) {
   await expectStatus(page, workspaceId, "attention");
 }
 
+// Compact rows have no overflow button; their context menu, a sheet at this
+// width, carries the same workspace actions.
+async function markAsUnreadFromContextMenu(page: Page, workspaceId: string) {
+  await workspaceRow(page, workspaceId).click({ button: "right" });
+  const item = page.getByRole("menuitem", { name: "Mark as unread", exact: true });
+  await expect(item).toBeVisible();
+  await item.click();
+  await expectStatus(page, workspaceId, "attention");
+}
+
 async function markAsRead(page: Page, workspaceId: string) {
   await chooseReadAction(page, workspaceId, "read");
   await expectStatus(page, workspaceId, "done");
@@ -241,7 +251,7 @@ test("reopening a marked unread workspace restores only its agent tab and curren
   });
   await test.step("mark the current workspace unread, then close and reopen the app", async () => {
     await openMobileAgentSidebar(page);
-    await markAsUnread(page, workspaces.subject.workspaceId);
+    await markAsUnreadFromContextMenu(page, workspaces.subject.workspaceId);
     await reopenMarkedWorkspaceAfterBackgroundTurn(page, workspaces.subject);
   });
   await test.step("restore the main tab without Explorer entries and load its latest history", async () => {

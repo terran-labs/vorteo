@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): test change. Sidebar browser tests that came in with the Paseo merge now match the Vorteo sidebar. View preferences opens from the More menu, compact rows have no overflow button, sortable rows have a draggable wrapper, and the phone close button sits in the toolbar. Navigation yields to Explorer at half-screen width, as the Explorer document says. Known gap: the project folder tree shows 20 rows before Show more and lacks Paseo's seven-row limit with active overflow, so three reorder cases still fail. Functionality is unchanged. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): merged current `main` into the message queue reconnect fix for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the browser message queue now reopens its local storage when the browser closes the connection, instead of failing every read, including Retry, until reload. A browser regression test covers it. The replica cache, project icon cache and plugin bundle cache keep the same single-connection pattern and are not changed here. README overview and onboarding are unchanged.

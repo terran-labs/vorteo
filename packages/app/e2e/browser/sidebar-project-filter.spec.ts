@@ -30,7 +30,7 @@ test.describe("Sidebar project filter", () => {
       await expect(alphaRow).toBeVisible({ timeout: 30_000 });
       await expect(betaRow).toBeVisible({ timeout: 30_000 });
 
-      await page.getByTestId("sidebar-display-preferences-menu").click();
+      await openSidebarDisplayPreferences(page);
       await expect(page.getByRole("menuitem")).toHaveText([
         /^Grouping/,
         /^Sort/,

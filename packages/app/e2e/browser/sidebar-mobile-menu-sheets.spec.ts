@@ -3,6 +3,7 @@ import { gotoAppShell } from "../support/helpers/app";
 import { projectEquivalenceViewKey } from "../support/helpers/project-view-key";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { getServerId } from "../support/helpers/server-id";
+import { openSidebarDisplayPreferences } from "../support/helpers/sidebar";
 import { waitForSidebarHydration } from "../support/helpers/workspace-ui";
 
 test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
@@ -24,7 +25,7 @@ test("touch workspace rows have no kebab and the title menu contains workspace a
     await page.getByRole("button", { name: "Open menu", exact: true }).click();
     await waitForSidebarHydration(page);
 
-    await page.getByTestId("sidebar-display-preferences-menu").click();
+    await openSidebarDisplayPreferences(page);
     await expect(page.getByRole("menuitem")).toHaveText([
       /^Grouping/,
       /^Sort/,

@@ -450,7 +450,7 @@ test.describe("Sidebar project grouping", () => {
     crossHostProject,
   }) => {
     await openScenario(page, crossHostProject);
-    await openGroupedProjectWorkspace(page, GROUPED_PROJECT_NAME, "Secondary workspace");
+    await openGroupedProjectWorkspace(page, GROUPED_PROJECT_NAME, crossHostProject.workspaces[1]!);
     await beginWorkspaceFromProject(page, GROUPED_PROJECT_NAME);
     await expectWorkspaceHost(page, SECONDARY_HOST_LABEL);
     await createWorkspaceWithoutAgent(page);
@@ -460,7 +460,7 @@ test.describe("Sidebar project grouping", () => {
       count: 2,
     });
 
-    await openGroupedProjectWorkspace(page, GROUPED_PROJECT_NAME, "Primary workspace");
+    await openGroupedProjectWorkspace(page, GROUPED_PROJECT_NAME, crossHostProject.workspaces[0]!);
     await beginWorkspaceFromProject(page, GROUPED_PROJECT_NAME);
     await expectWorkspaceHost(page, PRIMARY_HOST_LABEL);
     await createWorkspaceWithoutAgent(page);
