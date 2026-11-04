@@ -67,7 +67,7 @@ A daemon without a password admits any client that presents no credential as own
 
 ### Agent grants
 
-A service principal can also hold agent grants: resource-scoped authority over specific agents, separate from daemon-wide permissions. Each grant lists actions and the agents it covers. `agent.message` and `agent.cancel` name exact agent IDs only. `agent.read` may also name workspaces, covering every agent they own:
+A service principal can also hold agent grants: resource-scoped authority over specific agents, separate from daemon-wide permissions. Each grant lists actions and the agents it covers. `agent.message` and `agent.cancel` name exact agent IDs only. `agent.read` may also name workspaces, covering every agent they own, including full-tool agents created there later, with their pending permission requests and timelines. Prefer exact agent IDs; Vorton's grants use exact IDs only:
 
 ```json
 [

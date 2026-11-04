@@ -1826,6 +1826,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 4, 2026: Projects emptied-project data on workspace removals sent to service sessions and warns about workspace read grants. README unchanged.
+
 November 4, 2026: Merged current `main` into the service principals branch for handback; clean merge, no feature changes.
 
 November 4, 2026: Builds re-review fixes: cancel grants need tool-less targets, service directory data and the overview use fixed projections, and service sessions read single agents only through grants. README unchanged.

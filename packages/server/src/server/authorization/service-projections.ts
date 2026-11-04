@@ -136,12 +136,20 @@ export function projectServiceDirectoryMessage(
             : {}),
         },
       } as unknown as SessionOutboundMessage;
-    case "workspace_update":
-      if (m.payload.kind !== "upsert") return message;
+    case "workspace_update": {
+      // A removal can carry the emptied project, which includes its root path.
+      if (m.payload.kind !== "upsert") {
+        if (!m.payload.emptyProject) return message;
+        return {
+          ...m,
+          payload: { ...m.payload, emptyProject: projectProject(m.payload.emptyProject) },
+        } as unknown as SessionOutboundMessage;
+      }
       return {
         ...m,
         payload: { ...m.payload, workspace: projectWorkspace(m.payload.workspace) },
       } as unknown as SessionOutboundMessage;
+    }
     case "project.list.response":
       return {
         ...m,

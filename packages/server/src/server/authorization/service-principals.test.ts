@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { ServicePrincipalStore } from "./service-principals.js";
 import { SERVICE_ALLOWED_OPERATIONS, SERVICE_DENIED_OPERATIONS } from "./service-restrictions.js";
+import { projectServiceDirectoryMessage } from "./service-projections.js";
 
 describe("service principal store", () => {
   const dirs: string[] = [];
@@ -113,5 +114,32 @@ describe("service session operations", () => {
       "agent_permission_response",
     ])
       expect(SERVICE_ALLOWED_OPERATIONS.has(operation)).toBe(false);
+  });
+});
+
+describe("service directory projection", () => {
+  test("a workspace removal never carries the emptied project's root path or custom name", () => {
+    const projected = projectServiceDirectoryMessage({
+      type: "workspace_update",
+      payload: {
+        kind: "remove",
+        id: "w1",
+        emptyProject: {
+          projectId: "p1",
+          projectKey: "k",
+          projectDisplayName: "Secret",
+          projectCustomName: "Private name",
+          projectRootPath: "/Users/owner/secret",
+          projectKind: "git",
+        },
+      },
+    } as never) as unknown as { payload: { emptyProject: Record<string, unknown> } };
+    expect(projected.payload.emptyProject).toEqual({
+      projectId: "p1",
+      projectKey: "k",
+      projectDisplayName: "Secret",
+      projectKind: "git",
+      projectRootPath: "",
+    });
   });
 });

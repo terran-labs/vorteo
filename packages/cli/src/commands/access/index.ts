@@ -169,7 +169,7 @@ export function createAccessCommand(): Command {
       .option("--expires-at <iso>", "Refuse the token after this ISO time")
       .option(
         "--grants-file <path>",
-        "JSON array of agent grants (actions plus agentIds or workspaceIds)",
+        "JSON array of agent grants. Prefer agentIds: a workspace read grant also covers full-tool agents created there later",
       ),
   ).action(
     withOutput(async (...args): Promise<SingleResult<PrincipalRow>> => {

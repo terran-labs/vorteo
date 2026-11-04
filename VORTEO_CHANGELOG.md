@@ -14,7 +14,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Security
 
-- Cancel grants, like message grants, now apply only to tool-less agents. Service sessions read single agents and timelines only through agent grants. Directory data they receive with daemon-wide read, and the installation overview, is projected to identity, status and timestamps, without paths, scripts, terminals, git, forge or permission data.
+- Cancel grants, like message grants, now apply only to tool-less agents. Service sessions read single agents and timelines only through agent grants. Directory data they receive with daemon-wide read, and the installation overview, is projected to identity, status and timestamps, without paths, scripts, terminals, git, forge or permission data. Workspace removals that carry an emptied project are projected too. The grant docs and CLI help warn that a workspace read grant covers agents created there later.
 
 ## Unreleased - 2026-11-04
 
