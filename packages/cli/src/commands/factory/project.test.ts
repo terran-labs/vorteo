@@ -76,10 +76,15 @@ afterEach(() => {
 });
 
 describe("paseo factory project", () => {
-  it("shows the worker and reviewer profiles the Foreman reads", async () => {
-    invoke.mockResolvedValue(state);
+  it("shows the stage profiles and planning setting the Foreman reads", async () => {
+    invoke.mockResolvedValue({
+      ...state,
+      workers: { ...state.workers, plannerProfileId: "planner-p", planning: false },
+    });
     await run("show", "prj_app");
     expect(invoke).toHaveBeenCalledWith("factory", "factory.project.get", { projectId: "prj_app" });
+    expect(stdout.join("")).toContain("Planner profile: planner-p");
+    expect(stdout.join("")).toContain("Planning: off");
     expect(stdout.join("")).toContain("Worker profile: worker-p");
     expect(stdout.join("")).toContain("Reviewer profile: default");
     expect(stdout.join("")).toContain("Drain: none");
@@ -114,6 +119,10 @@ describe("paseo factory project", () => {
       "factory-intake",
       "--provider",
       "codex",
+      "--planner-profile",
+      "none",
+      "--planning",
+      "off",
       "--reviewer-profile",
       "none",
     );
@@ -121,6 +130,8 @@ describe("paseo factory project", () => {
       projectId: "prj_app",
       role: "factory-intake",
       provider: "codex",
+      plannerProfileId: null,
+      planning: false,
       reviewerProfileId: null,
     });
   });

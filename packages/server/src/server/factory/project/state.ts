@@ -52,7 +52,12 @@ const ProjectStateSchema = z.object({
   repository: z.string(),
   enabled: z.boolean(),
   paused: z.boolean(),
-  workers: z.object({ workerProfileId: nullableId, reviewerProfileId: nullableId }),
+  workers: z.object({
+    plannerProfileId: nullableId.default(null),
+    planning: z.boolean().default(true),
+    workerProfileId: nullableId,
+    reviewerProfileId: nullableId,
+  }),
   roles: z.partialRecord(ProjectFactoryRoleIdSchema, RoleStateSchema),
   /**
    * The Optimizer review heartbeat Factory owns pausing. Recorded before the pause and kept

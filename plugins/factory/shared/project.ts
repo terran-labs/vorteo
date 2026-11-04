@@ -54,7 +54,12 @@ export const ProjectFactoryStateSchema = z.object({
   repository: ProjectFactoryRepositorySchema.nullable(),
   /** Human-readable; set for "unavailable". */
   reason: z.string().nullable(),
-  workers: z.object({ workerProfileId: nullableId, reviewerProfileId: nullableId }),
+  workers: z.object({
+    plannerProfileId: nullableId.optional(),
+    planning: z.boolean().optional(),
+    workerProfileId: nullableId,
+    reviewerProfileId: nullableId,
+  }),
   /** The current pause_all drain, if any. Optional so older daemons still parse. */
   drain: ProjectFactoryDrainSchema.nullable().optional(),
   roles: z.array(
@@ -81,6 +86,42 @@ export const factoryProjectGet = defineRpc({
   name: "factory.project.get",
   input: projectInput,
   output: ProjectFactoryStateSchema,
+});
+
+export const ProjectFactoryQueueSchema = z.object({
+  fetchedAt: z.string(),
+  error: z.string().nullable(),
+  issues: z.array(
+    z.object({
+      number: z.number().int(),
+      title: z.string(),
+      url: z.string(),
+      label: z.enum(["ready", "running", "blocked", "human-review"]),
+      stage: z.enum(["queued", "planning", "building", "review", "repair", "merging", "blocked"]),
+      pr: z
+        .object({
+          number: z.number().int(),
+          url: z.string(),
+          headSha: z.string(),
+          checks: z.enum(["pending", "passing", "failing"]).nullable(),
+          reviewDecision: z.string().nullable(),
+        })
+        .nullable(),
+      agents: z.array(
+        z.object({
+          role: z.enum(["lead", "worker", "reviewer"]),
+          agentId: z.string(),
+          status: z.string(),
+        }),
+      ),
+    }),
+  ),
+});
+export type ProjectFactoryQueue = z.infer<typeof ProjectFactoryQueueSchema>;
+export const factoryProjectQueue = defineRpc({
+  name: "factory.project.queue",
+  input: projectInput,
+  output: ProjectFactoryQueueSchema,
 });
 
 export const factoryProjectEnable = defineRpc({
@@ -120,6 +161,8 @@ export const factoryProjectConfigure = defineRpc({
     role: ProjectFactoryRoleIdSchema.optional(),
     provider: nullableId.optional(),
     profileId: nullableId.optional(),
+    plannerProfileId: nullableId.optional(),
+    planning: z.boolean().optional(),
     workerProfileId: nullableId.optional(),
     reviewerProfileId: nullableId.optional(),
   }),
@@ -264,6 +307,7 @@ export const factoryProjectInstructionsResolve = defineRpc({
 /** Every per-project Factory method the daemon serves natively. */
 export const PROJECT_FACTORY_RPCS = [
   factoryProjectGet,
+  factoryProjectQueue,
   factoryProjectEnable,
   factoryProjectPause,
   factoryProjectResume,

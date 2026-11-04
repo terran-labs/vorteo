@@ -22,6 +22,8 @@ import {
 import { charterVersion } from "./instructions.js";
 import { PROJECT_FACTORY_ROLE_LABEL, PROJECT_FACTORY_ROLES } from "./roles.js";
 import { DRAIN_ENDED, drainNotice, ProjectFactoryService, type PromptOutcome } from "./service.js";
+import { factoryProjectQueue } from "@getpaseo/server/factory-project";
+import type { GhRunner } from "./tick-gate.js";
 import { projectFactoryStatePath } from "./state.js";
 
 const T0 = "2026-11-03T12:00:00.000Z";
@@ -69,6 +71,7 @@ class FakeAgents {
       createdAt: T0,
       updatedAt: T0,
       archivedAt: null,
+      lastStatus: "idle",
     } as unknown as StoredAgentRecord;
     this.records.set(input.id, record);
     return record;
@@ -148,7 +151,7 @@ class FakeSchedules {
   };
 }
 
-function service(): ProjectFactoryService {
+function service(gh?: GhRunner): ProjectFactoryService {
   const instance = new ProjectFactoryService({
     paseoHome: home,
     serverId: "srv_test",
@@ -174,6 +177,7 @@ function service(): ProjectFactoryService {
     defaultLaunch: async () => ({ provider: "claude", profileId: "default-profile" }),
     profileProvider: (profileId) => (profileId === "local-fast" ? "opencode" : null),
     schedules,
+    gh,
     fingerprint: async (role) => fingerprints.get(role) ?? null,
     logger,
     now: () => clock,
@@ -698,6 +702,8 @@ describe("configure, status and send thread", () => {
       reviewerProfileId: "reviewer-profile",
     })) as Awaited<ReturnType<typeof enable>>;
     expect(configured.workers).toEqual({
+      plannerProfileId: null,
+      planning: true,
       workerProfileId: "worker-profile",
       reviewerProfileId: "reviewer-profile",
     });
@@ -1201,5 +1207,179 @@ describe("list, pause_all and resume_all", () => {
     expect(resumed[PROJECT]).toMatchObject({ state: "on", drain: null });
     expect(resumed.prj_paused).toMatchObject({ state: "paused" });
     expect(restarted.hasTimer(PROJECT, "factory-intake")).toBe(true);
+  });
+});
+
+describe("issue queue and planning compatibility", () => {
+  test("old files load without rewriting and planning settings survive restart", async () => {
+    const factory = service();
+    await addProject();
+    await enable(factory);
+    const file = projectFactoryStatePath(home);
+    const legacy = JSON.parse(readFileSync(file, "utf8"));
+    delete legacy.projects[PROJECT].workers.plannerProfileId;
+    delete legacy.projects[PROJECT].workers.planning;
+    const original = JSON.stringify(legacy);
+    writeFileSync(file, original);
+    expect((await factory.get(PROJECT)).workers).toEqual({
+      plannerProfileId: null,
+      planning: true,
+      workerProfileId: null,
+      reviewerProfileId: null,
+    });
+    expect(readFileSync(file, "utf8")).toBe(original);
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      plannerProfileId: "planner",
+      planning: false,
+    });
+    expect((await service().get(PROJECT)).workers).toMatchObject({
+      plannerProfileId: "planner",
+      planning: false,
+    });
+  });
+
+  test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
+    const pageInfo = { hasNextPage: false, endCursor: null };
+    const head = "a".repeat(40);
+    const issue = (number: number, label = "running") => ({
+      number,
+      title: `Issue ${number}`,
+      url: `https://github.com/acme/app/issues/${number}`,
+      labels: { nodes: [{ name: `factory:${label}` }], pageInfo },
+    });
+    const pr = (number: number, state: string, approval = "", decision: string | null = null) => ({
+      number: number + 100,
+      url: `https://github.com/acme/app/pull/${number + 100}`,
+      headRefName: `feat/factory-issue-${number}`,
+      headRefOid: head,
+      reviewDecision: decision,
+      commits: { nodes: [{ commit: { statusCheckRollup: { state } } }] },
+      latestReviews: { nodes: [], pageInfo: { hasPreviousPage: false } },
+      comments: {
+        nodes: [{ body: `(AI Generated).\n\n${approval}` }],
+        pageInfo: { hasPreviousPage: false },
+      },
+    });
+    let fail = false;
+    let apiFailure = false;
+    const graphql = vi.fn(async (query: string, variables: Record<string, unknown>) => {
+      if (apiFailure)
+        return {
+          data: { repository: null },
+          errors: [{ message: "Repository access denied\nMore detail" }],
+        };
+      if (fail) throw new Error("GitHub unavailable\nprivate diagnostic details");
+      if (query.includes("issues(first:")) {
+        const nodes = variables.cursor
+          ? [issue(8), issue(9), issue(10, "human-review"), issue(11), issue(12)]
+          : [
+              issue(1, "ready"),
+              issue(2),
+              issue(3),
+              issue(4),
+              issue(5),
+              issue(6),
+              issue(7, "blocked"),
+            ];
+        return {
+          data: {
+            repository: {
+              issues: {
+                nodes,
+                pageInfo: variables.cursor ? pageInfo : { hasNextPage: true, endCursor: "next" },
+              },
+            },
+          },
+        };
+      }
+      return {
+        data: {
+          repository: {
+            pullRequests: {
+              nodes: [
+                pr(3, "PENDING"),
+                pr(4, "FAILURE"),
+                pr(5, "SUCCESS", `APPROVE ${"b".repeat(40)}`),
+                pr(6, "SUCCESS", `APPROVE ${head}`),
+                pr(7, "SUCCESS", `APPROVE ${head}`),
+                pr(8, "SUCCESS", `APPROVE ${head}`, "CHANGES_REQUESTED"),
+                pr(9, "SUCCESS", `APPROVE ${head}`),
+                {
+                  ...pr(11, "SUCCESS"),
+                  latestReviews: {
+                    nodes: [{ state: "APPROVED", commit: { oid: head } }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                pr(12, "SUCCESS", `Review ${head}\n1. Fix the defect.`),
+              ],
+              pageInfo,
+            },
+          },
+        },
+      };
+    });
+    const factory = service({ graphql });
+    await addProject();
+    const configured = await enable(factory);
+    const workspaceId = configured.roles[1]!.workspaceId!;
+    agents.add({
+      id: "lead",
+      workspaceId,
+      labels: { "factory.issue": "2", "factory.role": "lead" },
+    });
+    agents.add({
+      id: "foreign-worker",
+      workspaceId: "another-project",
+      labels: { "factory.issue": "2", "factory.role": "worker" },
+    });
+    const worker = agents.add({
+      id: "worker",
+      workspaceId,
+      labels: { "factory.issue": "9", "factory.role": "worker" },
+    });
+    worker.lastStatus = "running";
+    const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
+    const result = factoryProjectQueue.output.parse(await read());
+    expect(result).toMatchObject({
+      error: null,
+      fetchedAt: T0,
+      issues: [
+        { number: 1, stage: "queued", pr: null },
+        { number: 2, stage: "planning", agents: [{ agentId: "lead", role: "lead" }] },
+        { number: 3, stage: "building" },
+        { number: 4, stage: "repair" },
+        { number: 5, stage: "review" },
+        { number: 6, stage: "merging" },
+        { number: 7, stage: "blocked" },
+        { number: 8, stage: "repair" },
+        { number: 9, stage: "building" },
+        { number: 10, stage: "review" },
+        { number: 11, stage: "merging" },
+        { number: 12, stage: "repair" },
+      ],
+    });
+    expect(await read()).toEqual(result);
+    expect(graphql).toHaveBeenCalledTimes(3);
+    clock = new Date(clock.getTime() + 30_000);
+    fail = true;
+    const failure = await read();
+    expect(failure).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "GitHub unavailable",
+      issues: [],
+    });
+    expect(await read()).toEqual(failure);
+    expect(graphql).toHaveBeenCalledTimes(4);
+    clock = new Date(clock.getTime() + 30_000);
+    fail = false;
+    apiFailure = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Repository access denied",
+      issues: [],
+    });
+    expect(graphql).toHaveBeenCalledTimes(5);
   });
 });

@@ -8,6 +8,7 @@ import {
   factoryProjectDisable,
   factoryProjectEnable,
   factoryProjectGet,
+  factoryProjectQueue,
   factoryProjectInstructionsAcknowledge,
   factoryProjectInstructionsGet,
   factoryProjectInstructionsPropose,
@@ -24,6 +25,7 @@ import {
   type ProjectFactoryList,
   type ProjectFactoryRoleId,
   type ProjectFactoryState,
+  type ProjectFactoryQueue,
 } from "@getpaseo/server/factory-project";
 
 import type { AgentStorage, StoredAgentRecord } from "../../agent/agent-storage.js";
@@ -67,7 +69,15 @@ import {
   type ProjectState,
   type RoleState,
 } from "./state.js";
-import { computeFingerprint, defaultGhRunner, shouldWake, type GatedRole } from "./tick-gate.js";
+import {
+  computeFingerprint,
+  defaultGhRunner,
+  shouldWake,
+  type GatedRole,
+  type GhRunner,
+} from "./tick-gate.js";
+
+import { readIssueQueue } from "./queue.js";
 
 /** Sent to a paused project's Foreman by pause_all, and its counterpart from resume_all. */
 export function drainNotice(id: string): string {
@@ -80,6 +90,12 @@ const GATED_ROLES: ReadonlySet<string> = new Set([
   "factory-triage",
   "factory-builds",
 ]);
+
+interface QueueCache {
+  repository: string;
+  expiresAt: number;
+  result: Promise<ProjectFactoryQueue>;
+}
 
 export type PromptOutcome = "sent" | "busy";
 
@@ -121,6 +137,8 @@ export interface ProjectFactoryServiceInput {
   /** The provider a profile launches with, for a launch configured by profile alone. */
   profileProvider?: (profileId: string) => string | null;
   schedules: Pick<ScheduleService, "list" | "pause" | "resume">;
+  /** GitHub reader shared with the tick gate; injectable for queue tests. */
+  gh?: GhRunner;
   /** Hash of the GitHub state a gated role reacts to; null wakes the agent. */
   fingerprint?: (role: GatedRole, repository: string) => Promise<string | null>;
   onWorkspacesChanged?: (workspaceIds: string[]) => void;
@@ -154,6 +172,7 @@ export class ProjectFactoryService {
   private readonly timerGenerations = new Map<string, number>();
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
+  private readonly issueQueues = new Map<string, QueueCache>();
 
   static supports(method: string): boolean {
     return PROJECT_FACTORY_RPCS.some((rpc) => rpc.name === method);
@@ -188,6 +207,8 @@ export class ProjectFactoryService {
 
   async invoke(method: string, rawInput: unknown): Promise<unknown> {
     switch (method) {
+      case factoryProjectQueue.name:
+        return this.getQueue(factoryProjectQueue.input.parse(rawInput).projectId);
       case factoryProjectGet.name:
         return this.get(factoryProjectGet.input.parse(rawInput).projectId);
       case factoryProjectEnable.name:
@@ -231,6 +252,31 @@ export class ProjectFactoryService {
     }
   }
 
+  private async getQueue(projectId: string): Promise<ProjectFactoryQueue> {
+    await this.requireProject(projectId);
+    const project = await this.requireConfiguredProject(projectId);
+    const now = this.now();
+    const cached = this.issueQueues.get(projectId);
+    if (cached && cached.repository === project.repository && cached.expiresAt > now.getTime())
+      return cached.result;
+    const workspaceIds = new Set(
+      Object.values(project.roles).flatMap((role) => (role?.workspaceId ? [role.workspaceId] : [])),
+    );
+    const result = readIssueQueue({
+      repository: project.repository,
+      gh: this.input.gh ?? defaultGhRunner,
+      agents: () => this.input.agentStorage.list(),
+      workspaceIds,
+      now,
+    });
+    this.issueQueues.set(projectId, {
+      repository: project.repository,
+      expiresAt: now.getTime() + 30_000,
+      result,
+    });
+    return result;
+  }
+
   async get(projectId: string): Promise<ProjectFactoryState> {
     const record = await this.requireProject(projectId);
     let project: ProjectState | undefined;
@@ -259,7 +305,12 @@ export class ProjectFactoryService {
         const current = file.projects[request.projectId];
         file.projects[request.projectId] = {
           repository: repository.data,
-          workers: current?.workers ?? { workerProfileId: null, reviewerProfileId: null },
+          workers: current?.workers ?? {
+            plannerProfileId: null,
+            planning: true,
+            workerProfileId: null,
+            reviewerProfileId: null,
+          },
           roles: current?.roles ?? {},
           ...(current?.pausedOptimizerScheduleId
             ? { pausedOptimizerScheduleId: current.pausedOptimizerScheduleId }
@@ -423,6 +474,8 @@ export class ProjectFactoryService {
     role?: ProjectFactoryRoleId;
     provider?: string | null;
     profileId?: string | null;
+    plannerProfileId?: string | null;
+    planning?: boolean;
     workerProfileId?: string | null;
     reviewerProfileId?: string | null;
   }): Promise<ProjectFactoryState> {
@@ -431,6 +484,9 @@ export class ProjectFactoryService {
       if (!request.role && (request.provider !== undefined || request.profileId !== undefined))
         throw new ProjectFactoryError("Name the role whose provider or profile you are setting.");
       const project = await this.mutateProject(request.projectId, (current) => {
+        if (request.plannerProfileId !== undefined)
+          current.workers.plannerProfileId = request.plannerProfileId;
+        if (request.planning !== undefined) current.workers.planning = request.planning;
         if (request.workerProfileId !== undefined)
           current.workers.workerProfileId = request.workerProfileId;
         if (request.reviewerProfileId !== undefined)
@@ -1147,7 +1203,12 @@ export class ProjectFactoryService {
       state,
       repository: project?.repository || null,
       reason: unavailable,
-      workers: project?.workers ?? { workerProfileId: null, reviewerProfileId: null },
+      workers: project?.workers ?? {
+        plannerProfileId: null,
+        planning: true,
+        workerProfileId: null,
+        reviewerProfileId: null,
+      },
       drain: project?.drain
         ? { id: project.drain.id, reason: project.drain.reason, pausedAt: project.drain.pausedAt }
         : null,

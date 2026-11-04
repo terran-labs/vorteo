@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import {
   factoryProjectConfigure,
   factoryProjectDisable,
@@ -62,6 +62,8 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Project: ${state.projectId}`,
       `Factory: ${state.state}${state.reason ? ` (${state.reason})` : ""}`,
       `Repository: ${state.repository ?? "none"}`,
+      `Planner profile: ${state.workers.plannerProfileId ?? "default"}`,
+      `Planning: ${state.workers.planning === false ? "off" : "on"}`,
       `Worker profile: ${state.workers.workerProfileId ?? "default"}`,
       `Reviewer profile: ${state.workers.reviewerProfileId ?? "default"}`,
       `Drain: ${state.drain ? `${state.drain.id} (${state.drain.reason}, ${state.drain.pausedAt})` : "none"}`,
@@ -282,12 +284,14 @@ export function createFactoryProjectCommand(): Command {
         for (const [key, option] of [
           ["provider", "provider"],
           ["profileId", "profile"],
+          ["plannerProfileId", "plannerProfile"],
           ["workerProfileId", "workerProfile"],
           ["reviewerProfileId", "reviewerProfile"],
         ] as const) {
           const value = optionalId(options[option]);
           if (value !== undefined) input[key] = value;
         }
+        if (options.planning !== undefined) input.planning = options.planning === "on";
         return input;
       },
       (command) =>
@@ -295,6 +299,13 @@ export function createFactoryProjectCommand(): Command {
           .option("--role <role-id>", "Role whose launch to set")
           .option("--provider <provider>", "Provider for the role")
           .option("--profile <profile-id>", "Profile for the role")
+          .option("--planner-profile <id|none>", "Profile for issue planning and supervision")
+          .addOption(
+            new Option("--planning <on|off>", "Plan and supervise new issues").choices([
+              "on",
+              "off",
+            ]),
+          )
           .option("--worker-profile <profile-id>", "Profile the Foreman gives workers")
           .option("--reviewer-profile <profile-id>", "Profile the Foreman gives reviewers"),
     ),

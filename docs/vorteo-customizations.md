@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): Factory issues gain an optional Plan stage with one lead supervising the worker. Planner profile and planning settings are configurable through the project RPC and CLI; old state files read without a rewrite. The queue RPC caches GitHub evidence for 30 seconds, reports failures and shows issue stages, PR checks and labeled agents in role workspaces. Foreman records independent review results for display; merge authority is unchanged. Source only, not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): Factory drains for updates. `paseo factory project list`, `pause-all` and `resume-all` pause every active project's Factory before a restart or upgrade and resume only what they paused; each drain has an id that the Foreman's drain notice and its "Drained <id>" acknowledgment carry, and a damaged state file refuses instead of reporting success. The Mechanic charter reads update status and the Builds charter drains before restarts; every role gains the operating rules Builds learned running delivery. This source is not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): CI change. Unlike upstream Paseo, main CI runs are no longer cancelled by a newer merge, so main produces complete browser results; pull request runs still cancel when superseded. The container smoke frees unused runner SDKs after a disk exhaustion. Product functionality is unchanged. README overview and onboarding are unchanged.
