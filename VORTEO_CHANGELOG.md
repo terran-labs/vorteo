@@ -157,6 +157,13 @@ Prepared but never tagged; superseded by 26.11.301.
 
 ### Tooling
 
+- Main CI runs now finish instead of being cancelled by the next merge. Merges landed faster than a full run, so no recent main run completed its slowest browser shard. Pull request runs still cancel when superseded, and main keeps at most one queued run.
+- The container smoke frees unused preinstalled SDKs before building, after one run exhausted the runner disk while copying the web interface.
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
 - Merged current `main` into the message queue reconnect fix before delivery.
 - Merged current `main`, including the message queue reconnect fix, into the provider account connection fixes before delivery.
 
