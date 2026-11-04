@@ -8,7 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Security
 
-- Tighten service principals after review. Message and cancel grants name exact agents only. Service sessions may use only an explicit list of operations. Service text starting with `/` is refused, and messages reach agents labeled as coming from the service credential. Credentials can expire, and only their issuer or the owner can change them. An unreadable principal store admits nobody and is never overwritten. The installation overview returns a fixed agent projection and strips credentials from URLs.
+- Tighten service principals after review. Message and cancel grants name exact agents only. Service sessions may use only an explicit list of operations. Service text starting with `/` is refused, and messages reach agents labeled as coming from the service credential. Credentials can expire, and only their issuer or the owner can change them. An unreadable principal store admits nobody and is never overwritten. The installation overview returns a fixed agent projection and strips credentials from URLs. `paseo access service create --expires-at` sets an expiry. Tests cover issuer and expiry limits, the fail-closed store, the operation allowlist and the overview route's token rules.
 
 ### Tooling
 

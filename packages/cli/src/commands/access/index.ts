@@ -27,6 +27,7 @@ interface CreateOptions extends AccessOptions {
   permission: string[];
   readOnly?: boolean;
   grantsFile?: string;
+  expiresAt?: string;
 }
 
 interface SetGrantsOptions extends AccessOptions {
@@ -162,6 +163,7 @@ export function createAccessCommand(): Command {
         [],
       )
       .option("--read-only", `Grant ${READ_ONLY_SERVICE_PERMISSIONS.join(" and ")}`)
+      .option("--expires-at <iso>", "Refuse the token after this ISO time")
       .option(
         "--grants-file <path>",
         "JSON array of agent grants (actions plus agentIds or workspaceIds)",
@@ -185,6 +187,7 @@ export function createAccessCommand(): Command {
           label: options.label,
           permissions,
           grants,
+          ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
         });
         failIf(response.error);
         return {

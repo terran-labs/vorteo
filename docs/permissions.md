@@ -49,27 +49,28 @@ paseo access service list
 paseo access service revoke <id>
 ```
 
+Pass `--expires-at <ISO time>` to make a credential stop working at that time. Only the principal that issued a service principal, or the owner, can change its grants or revoke it.
+
 `--read-only` grants `workspace.read`, the only permission a service principal can hold today. The others are refused until [resource-scoped grants](#resources) exist: `daemon.read` returns daemon configuration, which carries provider environment variables such as API keys, and the write, manage and access permissions are owner-equivalent because agents and terminals execute code. The issuer can grant only permissions its own session holds.
 
-Daemon-wide `workspace.read` is also narrowed for service sessions. File, git, terminal and other operations address the filesystem by an arbitrary `cwd` or `path`, so they would read any file the daemon can, including its own owner credential. Service sessions are refused every inbound operation whose request carries a path-addressing field, computed from the request schemas, every terminal operation, because scrollback can show secrets, and every `hosts.*` routing operation, because routed sessions carry permissions but not this restriction. They are also refused presence heartbeats and push registration, which would suppress or redirect the owner's notifications, forge repository search, which uses the owner's sign-in, and project suggestions, which reveal provider history. They can still list projects, workspaces and agents and read agent timelines, which can contain anything an agent printed.
+Service sessions may send only an explicit list of operations: `project.list.request`, `fetch_workspaces_request` and `fetch_agents_request` for observation, the five agent-grant operations below, and `subscription.release.request`. Every other operation is refused before permissions are considered, so a new operation stays closed to service principals until it is reviewed and added in `authorization/service-restrictions.ts`.
+
+A second, computed layer also refuses any operation whose request carries a path-addressing field, every terminal operation and every `hosts.*` routing operation, because file, git and terminal requests take an arbitrary `cwd` or `path` and would read any file the daemon can, including its owner credential. Allowed observation still returns agent timelines, which can contain anything an agent printed.
 
 Creation prints a token once. The daemon stores only its SHA-256 hash in `$PASEO_HOME/service-principals.json` (mode 0600). A client presents it in `hello.auth` as `{kind: "serviceCredential", token}`; with `@getpaseo/client`, pass `serviceCredential` to `DaemonClient`. Daemons that support this advertise `server_info.features.servicePrincipals`. The session holds exactly the principal's permissions and every operation is checked against them. Service tokens grant nothing as an HTTP or WebSocket header bearer.
 
-Revocation is immediate: the daemon removes the principal's authority from its live sessions, closes their sockets and refuses the token afterwards. Revoked principals stay listed for audit.
+Revocation is immediate: the daemon removes the principal's authority from its live sessions, closes their sockets and refuses the token afterwards. Revoked principals stay listed for audit. If `service-principals.json` cannot be parsed, the daemon admits no service principal and refuses changes rather than overwriting the file, so its revocation history survives until it is repaired.
 
 A daemon without a password admits any client that presents no credential as owner, so it refuses to issue service credentials.
 
 ### Agent grants
 
-A service principal can also hold agent grants: resource-scoped authority over specific agents, separate from daemon-wide permissions. Each grant lists actions and the agents it covers, by exact agent ID or by owning workspace:
+A service principal can also hold agent grants: resource-scoped authority over specific agents, separate from daemon-wide permissions. Each grant lists actions and the agents it covers. `agent.message` and `agent.cancel` name exact agent IDs only. `agent.read` may also name workspaces, covering every agent they own:
 
 ```json
 [
-  {
-    "actions": ["agent.read", "agent.message", "agent.cancel"],
-    "workspaceIds": ["<lanes workspace>"]
-  },
-  { "actions": ["agent.read", "agent.message"], "agentIds": ["<agent id>"] }
+  { "actions": ["agent.read", "agent.message", "agent.cancel"], "agentIds": ["<lane agent id>"] },
+  { "actions": ["agent.read", "agent.message"], "agentIds": ["<intake agent id>"] }
 ]
 ```
 
@@ -81,9 +82,9 @@ A service principal can also hold agent grants: resource-scoped authority over s
 
 Pass grants with `paseo access service create --grants-file <json>` and replace them with `paseo access service set-grants <id> --grants-file <json>`. Changing grants disconnects the principal's sessions so they reconnect with the new grants. Issuing grants requires the issuer to hold `workspace.read` and `workspace.write`. Daemons that support grants advertise `server_info.features.serviceAgentGrants`.
 
-Grant checks use exact agent IDs; prefix and title resolution would reveal other agents. A granted message cannot set a session mode, attachments, images or sender attribution, and it is never recorded as owner evidence. A granted message steers without answering the owner's pending approvals, cannot reach archived or internal agents, and does not set the agent's title. Messaging an idle agent starts a turn.
+Grant checks use exact agent IDs; prefix and title resolution would reveal other agents. A granted message is plain steering text: it cannot set a session mode, attachments, images, `origin` or sender attribution, and text starting with `/` is refused because it would run provider commands and skills, such as `/rewind`. The daemon prefixes every service message with `[Message from service credential "<label>", not from the owner]`, which the agent and the timeline both show, and never records it as owner evidence. A granted message steers without answering the owner's pending approvals, cannot reach archived or internal agents, and does not set the agent's title. Messaging an idle agent starts a turn.
 
-`agent.message` is delegated action, not read access. The target agent acts on the caller's text with its own tools, which can include running commands, editing files and creating or prompting other agents. A message grant on a full-tool agent therefore lets the credential make that agent do anything it can do. Grant `agent.message` on dedicated agents whose built-in and Paseo tools are disabled. Grant it on a full-tool agent only as an explicit owner decision, and treat text arriving from a service credential as untrusted input. Use exact agent IDs rather than workspace grants, because an agent created in a granted workspace is covered automatically.
+`agent.message` is delegated action, not read access. The target agent acts on the caller's text with its own tools, which can include running commands, editing files and creating or prompting other agents. A message grant on a full-tool agent therefore lets the credential make that agent do anything it can do. The daemon therefore allows `agent.message` only on agents created with `toolAccess: "none"` (see below), and rechecks that on every message.
 
 Agent grants authorize no other operation: listing agents, workspaces, files and every other operation still need daemon-wide permissions, and path-addressed operations stay refused. A service session must advertise `owned_subscriptions` and `selective_agent_timeline`, so it receives only replies to its own requests and its own subscriptions. The transport delivers a message to it only when every agent the message names is one the session was allowed to address.
 

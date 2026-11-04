@@ -6621,7 +6621,13 @@ export class DaemonClient {
   }
 
   async createServicePrincipal(
-    input: { label: string; permissions: DaemonPermission[]; grants?: AgentGrant[] },
+    input: {
+      label: string;
+      permissions: DaemonPermission[];
+      grants?: AgentGrant[];
+      /** ISO time after which the token is refused. */
+      expiresAt?: string;
+    },
     options?: { requestId?: string; timeout?: number },
   ): Promise<AccessServicePrincipalsCreateResponse["payload"]> {
     if (input.grants?.length && this.lastServerInfoMessage?.features?.serviceAgentGrants !== true)
@@ -6633,6 +6639,7 @@ export class DaemonClient {
         label: input.label,
         permissions: input.permissions,
         ...(input.grants?.length ? { grants: input.grants } : {}),
+        ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
       },
       responseType: "access.service_principals.create.response",
       timeout: options?.timeout,

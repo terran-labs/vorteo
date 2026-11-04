@@ -1822,6 +1822,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 4, 2026: Documents the service operation allowlist, expiry, issuer limits, attribution and overview projection, and adds their tests. README unchanged.
+
 November 4, 2026: Service principals tightened after the Builds security review: exact-agent message and cancel grants, an operation allowlist, slash refusal, daemon attribution, expiry, issuer limits, a fail-closed store and an overview projection. README unchanged.
 
 November 4, 2026: Merged current `main` into the service principals branch before fixing review findings; only the changelog conflicted, and both sides were kept. No feature or limitation changes.

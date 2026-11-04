@@ -1,4 +1,8 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import pino from "pino";
+import { hashDaemonPassword } from "../auth.js";
+import { createInstallationServer } from "./server.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -44,7 +48,23 @@ describe("installation overview", () => {
           getLastServerInfoMessage: () => null,
           listProjects: async () => ({ projects: [{ projectKey: "remote:vorteo" }] }) as never,
           fetchWorkspaces: async () => page([{ id: "ws1" }]) as never,
-          fetchAgents: async () => page([{ agent: { id: "a1" } }]) as never,
+          fetchAgents: async () =>
+            page([
+              {
+                agent: {
+                  id: "a1",
+                  status: "running",
+                  pendingPermissions: [{ id: "p" }],
+                  journal: [{ text: "secret" }],
+                  lastError: "token=abc",
+                  runtimeInfo: { extra: { k: "v" } },
+                },
+                project: {
+                  projectKey: "k",
+                  checkout: { remoteUrl: "https://user:tok@github.com/o/r.git" },
+                },
+              },
+            ]) as never,
           close: async () => undefined,
         };
       },
@@ -60,7 +80,13 @@ describe("installation overview", () => {
         status: "ok",
         projects: [{ projectKey: "remote:vorteo" }],
         workspaces: [{ id: "ws1" }],
-        agents: [{ agent: { id: "a1" } }],
+        // Only projected agent fields leave Vorteo, and URL credentials are stripped.
+        agents: [
+          {
+            agent: { id: "a1", status: "running" },
+            project: { projectKey: "k", checkout: { remoteUrl: "https://github.com/o/r.git" } },
+          },
+        ],
       }),
       expect.objectContaining({
         kind: "container",
@@ -79,4 +105,104 @@ describe("installation overview", () => {
     expect(new Set(serviceTokens)).toEqual(new Set(["token-host", "token-container"]));
     expect(statSync(join(stateDir, "overview-daemon-credentials.json")).mode & 0o777).toBe(0o600);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "the HTTP route admits only observer or Host agent tokens, and observers manage nothing",
+    async () => {
+      const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "overview-http-")));
+      dirs.push(stateDir);
+      writeFileSync(join(stateDir, "index.html"), "<html><head></head></html>");
+      const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+      const config = {
+        public: {
+          version: 1,
+          installationId: randomUUID(),
+          origin: "https://owner.example.test",
+          environments: [
+            { kind: "host", serverId: "host", endpoint: "host.example.test", useTls: true },
+          ],
+        },
+        listenPort: 6770,
+        webDistDir: stateDir,
+        stateDir,
+        ownerPasswordHash: hashDaemonPassword("owner"),
+        hostAgentTokenHash: digest("host"),
+        containerAgentTokenHash: digest("guest"),
+        host: {
+          endpoint: "127.0.0.1:6771",
+          password: "host-pass",
+          launchdService: "gui/501/local.vorteo.test.host",
+        },
+      } as unknown as InstallationConfig;
+      const offline: OverviewDependencies = {
+        connectOwner: async () => {
+          throw new Error("offline");
+        },
+        connectService: async () => {
+          throw new Error("offline");
+        },
+      };
+      const app = createInstallationServer(
+        config,
+        {
+          restart: async () => {
+            throw Error("No daemon restart");
+          },
+        } as never,
+        pino({ level: "silent" }),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        offline,
+      );
+      const listener = app.listen(0, "127.0.0.1");
+      await new Promise<void>((resolve) => listener.once("listening", resolve));
+      const address = listener.address();
+      if (!address || typeof address === "string") throw Error("Missing test address");
+      config.listenPort = address.port;
+      const request = (route: string, token?: string, body?: unknown) =>
+        fetch(`http://127.0.0.1:${address.port}/api/installation/${route}`, {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+            origin: `http://127.0.0.1:${address.port}`,
+            "content-type": "application/json",
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      try {
+        expect((await request("overview")).status).toBe(401);
+        expect((await request("overview", "guest")).status).toBe(401);
+        const created = await request("overview/observers", "host", { label: "Vorton" });
+        expect(created.status).toBe(200);
+        const { principal, token } = (await created.json()) as {
+          principal: { id: string };
+          token: string;
+        };
+        const read = await request("overview", token);
+        expect(read.status).toBe(200);
+        expect(
+          ((await read.json()) as { environments: { status: string }[] }).environments[0]?.status,
+        ).toBe("unavailable");
+        // Observer tokens authorize the overview only.
+        expect((await request("overview/observers", token)).status).toBe(403);
+        expect((await request(`overview/observers/${principal.id}/revoke`, token, {})).status).toBe(
+          403,
+        );
+        expect(
+          (await request(`overview/observers/${principal.id}/revoke`, "host", {})).status,
+        ).toBe(200);
+        expect((await request("overview", token)).status).toBe(401);
+      } finally {
+        await new Promise((resolve) => listener.close(resolve));
+      }
+    },
+  );
 });
