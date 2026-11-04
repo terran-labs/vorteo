@@ -186,11 +186,12 @@ export const RESTART_OPERATIONS: readonly ReviewedRestartOperation[] = [
   },
   {
     field: "bootEntrySwitchPlanSha256",
-    delegable: true,
     target: "container-daemon",
     label: "Dev boot-entry switch",
     planLabel: "Dev boot-entry switch plan",
-    // It replaces Dev's boot path and restarts all of Dev; only an owner or delegate approves it.
+    // It replaces Dev's boot path and restarts all of Dev, so only the owner approves it:
+    // never automatic and, unlike the other plans, not delegable under full delegation.
+    // That makes owner review implicit, so an explicit requireOwnerApproval is redundant.
     automatic: "never",
     refusesRedundantOwnerApproval: true,
     reviewMessage: "Review this exact Dev boot-entry switch before approval",

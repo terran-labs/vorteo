@@ -24,7 +24,7 @@ export interface BootEntrySwitchDependencies {
 export interface BootEntrySwitchPreflight {
   containerStartedAt: string;
   supervisorPid: number;
-  factory: FactoryFacts | null;
+  factory: FactoryFacts;
 }
 
 function canonicalJson(value: unknown): string {
@@ -76,12 +76,36 @@ export function bootEntrySwitchPlanDigest(
   try {
     accessSync(plan.docker, constants.X_OK);
     readTargetSource(plan);
-    if (plan.factoryVerify) assertFactoryVerifyScript(plan.factoryVerify);
+    assertFactoryVerifyScript(plan.factoryVerify);
     if (plan.current.entry.path === plan.target.path) return undefined;
     return sha256(canonicalJson({ kind: "dev-boot-entry-switch-v1", plan }));
   } catch {
     return undefined;
   }
+}
+
+/** The Factory check script digest each coordinator gate pins; absent gates are omitted. */
+export interface FactoryCheckPins {
+  factoryGate?: string;
+  engineRestart?: string;
+  engineRecovery?: string;
+}
+
+/**
+ * Why the switch must not run yet, or null. Every configured Factory gate must already pin the
+ * switch's own check (version 4 or later): an older check refuses every restart after a plain
+ * boot, so a forgotten re-pin would leave Dev switched with each later restart refused.
+ */
+export function bootEntrySwitchPinProblem(
+  plan: BootEntrySwitchConfiguration,
+  pins: FactoryCheckPins,
+): string | null {
+  const stale = Object.entries(pins)
+    .filter(([, sha]) => sha !== undefined && sha !== plan.factoryVerify.sha256)
+    .map(([gate]) => gate);
+  return stale.length
+    ? `${stale.join(", ")} must pin the same Factory check as the switch before it runs`
+    : null;
 }
 
 /** The first line of a failed command's stderr or message, bounded for a refusal detail. */
@@ -186,10 +210,30 @@ function factoryCheck(plan: BootEntrySwitchConfiguration, run: EngineCommand) {
       docker: plan.docker,
       socket: plan.socket,
       container: plan.container,
-      verify: plan.factoryVerify!,
+      verify: plan.factoryVerify,
     },
     run,
   );
+}
+
+/**
+ * Root writes the pointer and, with a source, the target: no other user may control either
+ * directory or any directory above it.
+ */
+async function assertSafeDirectories(
+  plan: BootEntrySwitchConfiguration,
+  run: EngineCommand,
+  refuse: (detail: string) => never,
+): Promise<void> {
+  const paths: [string, string][] = [[plan.current.pointer.path, "boot pointer"]];
+  if (plan.target.source) paths.push([plan.target.path, "target entry"]);
+  for (const [path, label] of paths) {
+    const verdict = await inDev(plan, run, "0", TARGET_DIRECTORY_CHECK, [path, "0"]).catch(
+      (error: unknown) =>
+        refuse(`the ${label} directory could not be checked (${commandError(error)})`),
+    );
+    if (verdict.trim() !== "safe") refuse(`the ${label} directory is unsafe (${verdict.trim()})`);
+  }
 }
 
 /** Read-only. Refuses before any effect unless the plan matches Dev exactly and Dev is healthy. */
@@ -238,37 +282,84 @@ export async function bootEntrySwitchPreflight(
   }
   for (const [path, expected, label] of files)
     if (found.get(path) !== expected) refuse(`the ${label} differs from the plan`);
+  await assertSafeDirectories(plan, run, refuse);
+
   const pid = await supervisorPid(plan, run).catch(() => null);
   if (pid === null) refuse(`supervisord program "${plan.supervisor.program}" is not running`);
-  let factory: FactoryFacts | null = null;
-  if (plan.factoryVerify) {
-    factory = await factoryCheck(plan, run);
-    if (!factory.ok) refuse(`Factory check "${factory.check}" failed`);
-    if ((factory.bootForm ?? "launcher") === plan.expectBootForm)
-      refuse(`Dev already boots in the ${plan.expectBootForm} form`);
-  }
+  const factory = await factoryCheck(plan, run);
+  if (!factory.ok) refuse(`Factory check "${factory.check}" failed`);
+  if ((factory.bootForm ?? "launcher") === plan.expectBootForm)
+    refuse(`Dev already boots in the ${plan.expectBootForm} form`);
   if (bootEntrySwitchPlanDigest(plan) !== expectedDigest)
     refuse("the reviewed plan changed during preflight");
   return { containerStartedAt: state.startedAt, supervisorPid: pid!, factory };
 }
 
-// $1 target, $2 expected sha256, $3 base64 bytes. Root-owned 0644 file via same-directory rename.
-const INSTALL_TARGET = `set -eu
-dir=$(dirname "$1"); install -d -o root -g root -m 0755 "$dir"
-tmp="$1.tmp.$$"; trap 'rm -f "$tmp"' EXIT
+/**
+ * The scripts run as root but take the owner as arguments: the coordinator always passes
+ * uid and gid 0, and tests pass their own so the real scripts run without root.
+ *
+ * safe_ancestors <dir> <uid>: every existing directory from <dir> up to / is a real
+ * directory (not a symlink) owned by root or <uid> and not writable by group or others,
+ * unless sticky like /tmp, where others cannot replace entries they do not own. No other
+ * user can then redirect a root write. `ls -ldn` reads the same on GNU and BSD.
+ */
+const SAFE_ANCESTORS = `safe_ancestors() {
+  p=$1
+  while :; do
+    if [ -L "$p" ]; then echo "$p is a symlink"; return 1; fi
+    if [ -e "$p" ]; then
+      [ -d "$p" ] || { echo "$p is not a directory"; return 1; }
+      info=$(ls -ldn "$p")
+      owner=$(printf '%s\n' "$info" | awk '{ print $3 }')
+      [ "$owner" = 0 ] || [ "$owner" = "$2" ] || { echo "$p is owned by uid $owner"; return 1; }
+      case $(printf '%s' "$info" | cut -c1-10) in
+        ?????????t) ;;
+        ?????w* | ????????w*) echo "$p is writable by group or others"; return 1 ;;
+      esac
+    fi
+    [ "$p" = / ] && return 0
+    p=$(dirname "$p")
+  done
+}`;
+
+/** $1 target path, $2 expected owner uid. Prints "safe" or why the target directory is not. */
+export const TARGET_DIRECTORY_CHECK = `${SAFE_ANCESTORS}
+if reason=$(safe_ancestors "$(dirname "$1")" "$2"); then echo safe; else echo "$reason"; fi`;
+
+/**
+ * $1 target, $2 expected sha256, $3 base64 bytes, $4 uid, $5 gid. A 0644 file via an
+ * unpredictable temporary file and a same-directory rename, in a re-checked directory.
+ */
+export const INSTALL_TARGET = `set -eu
+${SAFE_ANCESTORS}
+dir=$(dirname "$1")
+safe_ancestors "$dir" "$4" >&2 || { echo "target directory is unsafe" >&2; exit 1; }
+install -d -o "$4" -g "$5" -m 0755 "$dir"
+safe_ancestors "$dir" "$4" >&2 || { echo "target directory is unsafe" >&2; exit 1; }
+tmp=$(mktemp "$dir/.boot-entry.XXXXXX"); trap 'rm -f "$tmp"' EXIT
 printf '%s' "$3" | base64 -d > "$tmp"
-chown root:root "$tmp"; chmod 0644 "$tmp"; sync "$tmp"
+chown "$4:$5" "$tmp"; chmod 0644 "$tmp"; sync "$tmp"
 [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$2" ] || { echo "target entry digest differs after copy" >&2; exit 1; }
 mv -f "$tmp" "$1"; sync "$dir"; trap - EXIT`;
 
-// $1 pointer, $2 expected current sha256, $3 backup suffix, $4 new pointer bytes, $5 expected new sha256.
-const SWAP_POINTER = `set -eu
+/**
+ * $1 pointer, $2 expected current sha256, $3 backup suffix, $4 new pointer bytes,
+ * $5 expected new sha256, $6 uid, $7 gid. The backup must not exist yet, and the new
+ * pointer goes through an unpredictable temporary file and a same-directory rename.
+ */
+export const SWAP_POINTER = `set -eu
+${SAFE_ANCESTORS}
+dir=$(dirname "$1"); backup="$1.before-boot-switch-$3"
+safe_ancestors "$dir" "$6" >&2 || { echo "boot pointer directory is unsafe" >&2; exit 1; }
+{ [ -f "$1" ] && [ ! -L "$1" ]; } || { echo "boot pointer is not a regular file" >&2; exit 1; }
 [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$2" ] || { echo "boot pointer changed before the swap" >&2; exit 1; }
-cp -p "$1" "$1.before-boot-switch-$3"
-tmp="$1.tmp.$$"; trap 'rm -f "$tmp"' EXIT
-printf '%s' "$4" > "$tmp"; chown root:root "$tmp"; chmod 0644 "$tmp"; sync "$tmp"
+{ [ ! -e "$backup" ] && [ ! -L "$backup" ]; } || { echo "boot pointer backup already exists" >&2; exit 1; }
+cp -p "$1" "$backup"
+tmp=$(mktemp "$dir/.boot-pointer.XXXXXX"); trap 'rm -f "$tmp"' EXIT
+printf '%s' "$4" > "$tmp"; chown "$6:$7" "$tmp"; chmod 0644 "$tmp"; sync "$tmp"
 [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$5" ] || { echo "new boot pointer digest differs" >&2; exit 1; }
-mv -f "$tmp" "$1"; sync "$(dirname "$1")"; trap - EXIT`;
+mv -f "$tmp" "$1"; sync "$dir"; trap - EXIT`;
 
 /**
  * The effects, in order: install the target entry when the plan carries it, then swap the
@@ -287,6 +378,8 @@ export async function applyBootEntrySwitch(
       plan.target.path,
       plan.target.sha256,
       source.toString("base64"),
+      "0",
+      "0",
     ]).catch((error: unknown) => {
       throw new Error(
         `Dev boot-entry switch could not install the target entry (${commandError(error)}). The boot pointer was not changed.`,
@@ -299,6 +392,8 @@ export async function applyBootEntrySwitch(
     jobId.replace(/[^A-Za-z0-9-]/g, ""),
     pointer,
     sha256(pointer),
+    "0",
+    "0",
   ]).catch((error: unknown) => {
     throw new Error(
       `Dev boot-entry switch could not swap the boot pointer (${commandError(error)}). Inspect it before any new request; nothing will be retried.`,
@@ -418,8 +513,7 @@ export async function verifyFactoryAfterBootSwitch(
   plan: BootEntrySwitchConfiguration,
   preflight: BootEntrySwitchPreflight,
   dependencies: BootEntrySwitchDependencies = {},
-): Promise<string | null> {
-  if (!plan.factoryVerify || !preflight.factory) return null;
+): Promise<string> {
   const after = await factoryCheck(plan, dependencies.run ?? defaultRun);
   if (!after.ok)
     throw new Error(

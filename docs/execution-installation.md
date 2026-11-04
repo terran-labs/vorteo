@@ -480,7 +480,7 @@ Builds runs these steps on the Host with the installed Host client (`<client>` b
 
 ## Full maintenance delegation
 
-Installation controls let an owner explicitly delegate supported maintenance to authenticated Host requests on a never-enrolled installation. Revoking the full grant restores the existing per-service choices; those choices remain visible but cannot override an active full grant. This separate grant covers daemon updates and restarts, exact coordinator configuration and tooling changes (including the coordinator `releaseSeals` change and its launcher), supervisor and Factory plans, Docker restart and degraded recovery plans, Host launcher updates (including the release seal variant), native helpers, the preview monitor and the session host. Ordinary service permissions retain their narrower scope. The manual approval rules below apply unless this full grant is active. A new operation is excluded until its executor explicitly supports delegation. The grant also includes [installation management](#delegated-installation-management), which can only cancel retained requests.
+Installation controls let an owner explicitly delegate supported maintenance to authenticated Host requests on a never-enrolled installation. Revoking the full grant restores the existing per-service choices; those choices remain visible but cannot override an active full grant. This separate grant covers daemon updates and restarts, exact coordinator configuration and tooling changes (including the coordinator `releaseSeals` change and its launcher), supervisor and Factory plans, Docker restart and degraded recovery plans, Host launcher updates (including the release seal variant), native helpers, the preview monitor and the session host. It never covers the [Dev boot-entry switch](#dev-boot-entry-switch), which always needs the owner's own approval. Ordinary service permissions retain their narrower scope. The manual approval rules below apply unless this full grant is active. A new operation is excluded until its executor explicitly supports delegation. The grant also includes [installation management](#delegated-installation-management), which can only cancel retained requests.
 
 The owner-authenticated `maintenance-delegation/query` and `maintenance-delegation/change` routes under `/api/installation/owner/` expose the current revision and accept `{expectedRevision, enabled}`. Both require an allowed Origin and owner authentication. Scoped agent credentials cannot enable delegation. The coordinator stores the grant in protected state, preserves existing delegation settings and rejects unsafe files or stale revisions. Host capabilities advertise `maintenanceDelegation.available` and `enabled`; clients must check availability before offering this control.
 
@@ -576,20 +576,21 @@ A trusted Host operator prepares `container.bootEntrySwitch` and sets it through
 - `current.pointer` and `current.entry`: the pointer file and the entry it names, each by path and `sha256`;
 - `target`: the new entry's container path and `sha256`, with `source`, an owner-controlled Host file that is not group or other writable, when the entry must be copied in. A rollback names the retained entry and omits `source`;
 - `node` and `supervisorEntry` by path and `sha256`, and the supervisord `config` and `program`;
-- `expectBootForm`, `plain` or `launcher`, and an optional `factoryVerify` with the same fields as the Docker restart's.
+- `expectBootForm`, `plain` or `launcher`, and the required `factoryVerify`, with the same fields as the Docker restart's.
 
-The Host client discovers `bootEntrySwitch` through `capabilities` and submits `request-restart --target container-daemon --boot-entry-switch-plan <sha256> --reason-file <file>`. The owner or a delegated lead reviews **Dev boot entry** and chooses **Finish turns and switch the Dev boot entry**. Automatic approval never applies. After the held turns finish, the coordinator:
+The Host client discovers `bootEntrySwitch` through `capabilities` and submits `request-restart --target container-daemon --boot-entry-switch-plan <sha256> --reason-file <file>`. The owner reviews **Dev boot entry** and chooses **Finish turns and switch the Dev boot entry**. Neither automatic approval, standing decisions nor [full maintenance delegation](#full-maintenance-delegation) applies, so owner review is implicit and `--require-owner-approval` is refused as redundant. After the held turns finish, the coordinator:
 
-1. Checks, without effects, that Dev runs healthy under its ID, the pointer holds exactly the current entry path, every pinned file matches, supervisord reports the program's pid, and Factory's check passes in the other boot form. Any difference refuses the job and nothing changes.
-2. Copies the target in as `root` with mode 0644 when `source` is set, checking its digest before the atomic rename.
-3. Saves the pointer as `<pointer>.before-boot-switch-<job id>`, then replaces it atomically after checking that it still holds the expected bytes.
-4. Restarts the supervisord program once.
-5. Requires a new supervisor process running the pinned node and supervisor entry, with the managed-release variables, and with Factory's runtime absent for `plain` or present for `launcher`. It also requires Dev to be healthy, the pointer to name the target, and a new Dev worker under the pinned server ID.
-6. Runs Factory's check again: it must report the expected form with the owner pause and custody unchanged.
+1. Refuses unless `container.factoryGate`, `engineRestart.factoryVerify` and `engineRecovery.factoryVerify`, where configured, pin the same check as the plan.
+2. Checks, without effects, that Dev runs healthy under its ID, the pointer holds exactly the current entry path, every pinned file matches, and supervisord reports the program's pid. Every existing directory above the pointer, and above the target when `source` is set, must be a real directory owned by root and not writable by group or others, unless sticky. Factory's check must pass in the other boot form. Any difference refuses the job and nothing changes.
+3. Copies the target in as `root` with mode 0644 when `source` is set, re-checking the directory, writing through a `mktemp` file and checking its digest before the atomic rename.
+4. Saves the pointer as `<pointer>.before-boot-switch-<job id>`, refusing if that name exists, then replaces the pointer atomically after checking that it still holds the expected bytes.
+5. Restarts the supervisord program once.
+6. Requires a new supervisor process running the pinned node and supervisor entry, with the managed-release variables, and with Factory's runtime absent for `plain` or present for `launcher`. It also requires Dev to be healthy, the pointer to name the target, and a new Dev worker under the pinned server ID.
+7. Runs Factory's check again: it must report the expected form with the owner pause and custody unchanged.
 
 A failure after the swap is not retried and not reverted automatically; the detail names the saved pointer. Roll back with a second reviewed plan whose current and target entries are swapped. A rollback to the launcher can meet the same lock refusal and then needs Factory's lock recovery.
 
-Factory's checks need version 4 of the lock acceptance script, which reports `bootForm`. Pin it in `container.factoryGate` and `engineRestart.factoryVerify` in the same renewal that adds the switch plan. Version 3 fails every check after a plain boot.
+Factory's checks need version 4 of the lock acceptance script, which reports `bootForm`. Pin it in `container.factoryGate`, `engineRestart.factoryVerify` and `engineRecovery.factoryVerify` in the same renewal that adds the switch plan. Version 3 fails every check after a plain boot, so the switch refuses to run until each configured gate pins its own check.
 
 ### Recovery when Docker does not answer
 

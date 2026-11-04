@@ -139,8 +139,12 @@ export const BootEntrySwitchConfigurationSchema = z.strictObject({
   }),
   /** Which boot form Factory's check must report afterwards: no launcher, or the launcher. */
   expectBootForm: z.enum(["plain", "launcher"]),
-  /** Factory's read-only check, run before and after; its boot form must change as expected. */
-  factoryVerify: FactoryVerifyConfigurationSchema.optional(),
+  /**
+   * Factory's read-only check (version 4 or later), run before and after; its boot form must
+   * change as expected. Required: without it nothing proves the boot form changed, and the
+   * coordinator's Factory gates must already pin the same script.
+   */
+  factoryVerify: FactoryVerifyConfigurationSchema,
   /** Bound on the supervisor restart and readiness checks. */
   deadlineSeconds: z.number().int().min(60).max(1800).optional(),
 });

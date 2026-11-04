@@ -26,6 +26,7 @@ import {
   verifyFactoryAfterRestart,
 } from "./engine-restart.js";
 import {
+  bootEntrySwitchPinProblem,
   bootEntrySwitchPlanDigest,
   bootEntrySwitchPreflight,
   applyBootEntrySwitch,
@@ -617,6 +618,12 @@ export function createInstallationRestartExecutor(
         job.bootEntrySwitchPlanSha256 !== bootEntrySwitchPlanDigest(plan)
       )
         throw new Error("Dev boot-entry switch plan is unavailable or changed");
+      const pins = bootEntrySwitchPinProblem(plan, {
+        factoryGate: config.container?.factoryGate?.verify.sha256,
+        engineRestart: config.container?.engineRestart?.factoryVerify?.sha256,
+        engineRecovery: config.container?.engineRecovery?.factoryVerify.sha256,
+      });
+      if (pins) throw new Error(`Dev boot-entry switch refused: ${pins}. Nothing was changed.`);
       const previousPid = await probeDaemonPid("container");
       const preflight = await bootEntrySwitchPreflight(plan, job.bootEntrySwitchPlanSha256);
       assertReady("container-daemon");

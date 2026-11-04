@@ -1,5 +1,18 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -8,8 +21,12 @@ import {
   applyBootEntrySwitch,
   awaitBootEntryReadiness,
   bootEntryPointerBytes,
+  bootEntrySwitchPinProblem,
   bootEntrySwitchPlanDigest,
   bootEntrySwitchPreflight,
+  INSTALL_TARGET,
+  SWAP_POINTER,
+  TARGET_DIRECTORY_CHECK,
   restartBootProgram,
   verifyFactoryAfterBootSwitch,
 } from "./boot-entry-switch.js";
@@ -22,6 +39,7 @@ const PLAIN_ENTRY = "/opt/vorteo-boot/plain-supervisor-entry.mjs";
 const NODE = "/tmp/node-v22/bin/node";
 const SUPERVISOR = "/opt/vorteo-managed-releases/r/supervisor-entrypoint.js";
 const roots: string[] = [];
+const execFileAsync = promisify(execFile);
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 afterEach(() => {
@@ -40,9 +58,7 @@ function hostFile(name: string, body: string, mode = 0o644) {
 const plainBody = "// plain entry\n";
 const factoryBody = "// factory entry\n";
 
-function plan(
-  options: { rollback?: boolean; factory?: boolean } = {},
-): BootEntrySwitchConfiguration {
+function plan(options: { rollback?: boolean } = {}): BootEntrySwitchConfiguration {
   const forward = !options.rollback;
   const verifyBody = "#!/bin/sh\nexit 0\n";
   return {
@@ -66,16 +82,12 @@ function plan(
     supervisor: { config: "/etc/personal-tailscale/supervisord.conf", program: "paseo" },
     expectBootForm: forward ? "plain" : "launcher",
     deadlineSeconds: 60,
-    ...(options.factory === false
-      ? {}
-      : {
-          factoryVerify: {
-            script: hostFile("verify.sh", verifyBody, 0o755),
-            sha256: sha(verifyBody),
-            lockInode: 3901122,
-            ownerMode: "paused" as const,
-          },
-        }),
+    factoryVerify: {
+      script: hostFile("verify.sh", verifyBody, 0o755),
+      sha256: sha(verifyBody),
+      lockInode: 3901122,
+      ownerMode: "paused" as const,
+    },
   };
 }
 
@@ -86,6 +98,8 @@ interface FakeDevOptions {
   /** Environment the restarted supervisor reports; defaults to the plain boot. */
   governedAfterRestart?: boolean;
   factory?: Record<string, unknown>[];
+  /** What the directory check reports for the pointer and target directories. */
+  directory?: string;
 }
 
 /** A fake Dev behind `docker exec`: pointer, file digests, supervisord and Factory's check. */
@@ -127,15 +141,22 @@ function fakeDev(options: FakeDevOptions = {}) {
     if (script === 'cat "$1"') return { stdout: pointer };
     if (script.includes('status "$2"')) return { stdout: `${pid}\n` };
     if (script.includes("base64 -d")) {
+      // The coordinator always installs as root.
+      expect(params.slice(3)).toEqual(["0", "0"]);
       effects.push(`install ${params[0]}`);
       files[params[0]!] = sha(Buffer.from(params[2]!, "base64").toString());
       return { stdout: "" };
     }
     if (script.includes("before-boot-switch")) {
+      expect(params.slice(5)).toEqual(["0", "0"]);
       effects.push(`swap ${params[3]!.trim()}`);
       if (sha(pointer) !== params[1]) throw new Error("boot pointer changed before the swap");
       pointer = params[3]!;
       return { stdout: "" };
+    }
+    if (script.includes("echo safe")) {
+      expect(params[1]).toBe("0");
+      return { stdout: `${options.directory ?? "safe"}\n` };
     }
     if (script.includes('restart "$2"')) {
       effects.push("restart paseo");
@@ -183,18 +204,50 @@ test("the plan digest is withheld when its Host-side inputs are unsafe", () => {
   expect(bootEntrySwitchPlanDigest(writable)).toBeUndefined();
 });
 
-test("preflight refuses before any effect when Dev differs from the plan", async () => {
-  const p = plan();
-  const digest = bootEntrySwitchPlanDigest(p)!;
-  const changed = fakeDev({ files: { [FACTORY_ENTRY]: sha("edited") }, factory: [launcherFacts] });
-  await expect(bootEntrySwitchPreflight(p, digest, { run: changed.run })).rejects.toThrow(
-    "the current boot entry differs from the plan. Nothing was changed.",
-  );
-  const already = fakeDev({ factory: [plainFacts] });
-  await expect(bootEntrySwitchPreflight(p, digest, { run: already.run })).rejects.toThrow(
+test.each([
+  [
+    "a changed current entry",
+    { files: { [FACTORY_ENTRY]: sha("edited") } },
+    "the current boot entry differs",
+  ],
+  [
+    "a pointer naming another entry",
+    { pointsTo: "/opt/other.mjs" },
+    "the boot pointer does not name the expected current entry",
+  ],
+  ["a different node", { files: { [NODE]: sha("other node") } }, "the node runtime differs"],
+  [
+    "a different supervisor entry",
+    { files: { [SUPERVISOR]: sha("other") } },
+    "the supervisor entry differs",
+  ],
+  [
+    "a directory another user controls",
+    { directory: "/opt/vorteo-boot is owned by uid 1000" },
+    "the boot pointer directory is unsafe (/opt/vorteo-boot is owned by uid 1000)",
+  ],
+  [
+    "Dev already in the plain form",
+    { factory: [plainFacts] },
     "Dev already boots in the plain form",
+  ],
+] as const)("preflight refuses %s before any effect", async (_name, options, message) => {
+  const p = plan();
+  const dev = fakeDev({ factory: [launcherFacts], ...options });
+  await expect(
+    bootEntrySwitchPreflight(p, bootEntrySwitchPlanDigest(p)!, { run: dev.run }),
+  ).rejects.toThrow(`${message}`);
+  expect(dev.effects).toEqual([]);
+});
+
+test("the switch waits until every coordinator Factory gate pins its own check", () => {
+  const p = plan();
+  const own = p.factoryVerify.sha256;
+  expect(bootEntrySwitchPinProblem(p, { factoryGate: own, engineRestart: own })).toBeNull();
+  expect(bootEntrySwitchPinProblem(p, {})).toBeNull();
+  expect(bootEntrySwitchPinProblem(p, { factoryGate: own, engineRestart: "3".repeat(64) })).toBe(
+    "engineRestart must pin the same Factory check as the switch before it runs",
   );
-  expect([...changed.effects, ...already.effects]).toEqual([]);
 });
 
 test("the switch installs the target, swaps the pointer, restarts and verifies the plain boot", async () => {
@@ -215,8 +268,8 @@ test("the switch installs the target, swaps the pointer, restarts and verifies t
 });
 
 test("readiness fails when the restarted supervisor still loads Factory's runtime", async () => {
-  const p = plan({ factory: false });
-  const dev = fakeDev({ governedAfterRestart: true });
+  const p = plan();
+  const dev = fakeDev({ governedAfterRestart: true, factory: [launcherFacts] });
   const preflight = await bootEntrySwitchPreflight(p, bootEntrySwitchPlanDigest(p)!, {
     run: dev.run,
   });
@@ -263,4 +316,64 @@ test("rollback selects the retained Factory entry without copying anything", asy
     "accepted its lock again (epoch 55)",
   );
   expect(dev.effects).toEqual([`swap ${FACTORY_ENTRY}`, "restart paseo"]);
+});
+
+/** Runs one of the real effect scripts under /bin/sh with the test user as the owner. */
+async function sh(script: string, args: string[]) {
+  const ids = [String(process.getuid!()), String(process.getgid!())];
+  return execFileAsync("/bin/sh", ["-c", script, "sh", ...args, ...ids]).then(
+    ({ stdout }) => ({ ok: true, out: stdout }),
+    (error: { stderr?: string }) => ({ ok: false, out: error.stderr ?? "" }),
+  );
+}
+
+test("the real install and swap scripts replace files atomically and refuse unsafe states", async () => {
+  // On Linux this is under the sticky /tmp, which the ancestor check accepts.
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "boot-entry-scripts-")));
+  roots.push(root);
+  const target = path.join(root, "boot", "plain.mjs");
+  const install = (file: string) =>
+    sh(INSTALL_TARGET, [file, sha(plainBody), Buffer.from(plainBody).toString("base64")]);
+  // The target directory is created owner-only-writable and the entry lands whole.
+  expect(await install(target)).toEqual({ ok: true, out: "" });
+  expect(readFileSync(target, "utf8")).toBe(plainBody);
+  expect(statSync(target).mode & 0o777).toBe(0o644);
+  expect(readdirSync(path.dirname(target))).toEqual(["plain.mjs"]);
+  // A symlinked or group-writable directory is refused before anything is written.
+  const elsewhere = path.join(root, "elsewhere");
+  mkdirSync(elsewhere);
+  symlinkSync(elsewhere, path.join(root, "linked"));
+  expect((await install(path.join(root, "linked", "plain.mjs"))).out).toContain("is a symlink");
+  expect(readdirSync(elsewhere)).toEqual([]);
+  const shared = path.join(root, "shared");
+  mkdirSync(shared);
+  chmodSync(shared, 0o775);
+  expect((await install(path.join(shared, "plain.mjs"))).out).toContain("writable by group");
+  expect((await sh(TARGET_DIRECTORY_CHECK, [path.join(shared, "x")])).out).toContain(
+    "writable by group or others",
+  );
+
+  const pointer = path.join(root, "boot", "paseo-server-entry");
+  writeFileSync(pointer, bootEntryPointerBytes(FACTORY_ENTRY));
+  const next = bootEntryPointerBytes(target);
+  const swap = (current: string, suffix: string) =>
+    sh(SWAP_POINTER, [pointer, current, suffix, next, sha(next)]);
+  // A pointer that changed since preflight is left alone.
+  expect((await swap(sha("other"), "job-a")).out).toContain("boot pointer changed before the swap");
+  expect(readFileSync(pointer, "utf8")).toBe(bootEntryPointerBytes(FACTORY_ENTRY));
+  // The swap keeps the old bytes as the job's backup and leaves no temporary file.
+  const current = sha(bootEntryPointerBytes(FACTORY_ENTRY));
+  expect(await swap(current, "job-b")).toEqual({ ok: true, out: "" });
+  expect(readFileSync(pointer, "utf8")).toBe(next);
+  expect(readFileSync(`${pointer}.before-boot-switch-job-b`, "utf8")).toBe(
+    bootEntryPointerBytes(FACTORY_ENTRY),
+  );
+  expect(readdirSync(path.dirname(pointer)).sort()).toEqual([
+    "paseo-server-entry",
+    "paseo-server-entry.before-boot-switch-job-b",
+    "plain.mjs",
+  ]);
+  // An existing backup name is never overwritten.
+  writeFileSync(pointer, bootEntryPointerBytes(FACTORY_ENTRY));
+  expect((await swap(current, "job-b")).out).toContain("backup already exists");
 });

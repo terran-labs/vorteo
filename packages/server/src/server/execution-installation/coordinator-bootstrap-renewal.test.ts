@@ -1409,6 +1409,12 @@ test.runIf(process.platform === "darwin")(
       supervisorEntry: { path: "/fixture/supervisor.mjs", sha256: "f".repeat(64) },
       supervisor: { config: "/fixture/supervisord.conf", program: "paseo-server" },
       expectBootForm: "launcher",
+      factoryVerify: {
+        script: "/fixture/factory-verify.sh",
+        sha256: "1".repeat(64),
+        lockInode: 3901122,
+        ownerMode: "paused",
+      },
     };
     const bootConfig = JSON.parse(readFileSync(candidateConfig.path, "utf8"));
     const bootPlanned = f.save(path.join(f.root, "boot-entry-switch.json"), {
