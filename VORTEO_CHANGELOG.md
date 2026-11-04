@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Update the sidebar projection test's Factory fixture to a per-project Factory member, matching the Factory folder's grouping rule.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Changing a Factory role's provider or profile no longer drops its charter. The new session starts with the role's instructions ahead of the carried context, and the next prompt, sent right away, repeats them in full.
