@@ -6,6 +6,23 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Added
+
+- Hovering a workspace in the sidebar shows where it lives: its root folders, project and project folders as a breadcrumb, so pinned workspaces say which project they belong to.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Pinned in the sidebar now looks and behaves like a root folder: a pin icon, the same title size as folders, and the whole row folds it. Pinned workspaces indent under it.
+- Pinned workspaces also stay in their project or status group, marked with a pin icon before their right-side icons, so pinning no longer moves them out of place.
+
+### Added
+
+- Focus into Pinned with its Focus button to see only pinned workspaces.
+
+## Unreleased - 2026-11-03
+
 ### Changed
 
 - Show working subagents in the collapsed Subagents tile as their count inside a spinning ring. When every subagent is idle, the tile keeps its icon above the count.

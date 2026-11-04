@@ -280,6 +280,45 @@ export function listSidebarFolderDestinations(input: {
   return destinations;
 }
 
+/** Folder names from the outermost folder down to `folderId`, stopping at a missing parent or a cycle. */
+function folderNamePath(state: SidebarFolderState, folderId: string | null): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current = folderId;
+  while (current !== null && !seen.has(current)) {
+    const folder = state.sidebarFolders[current];
+    if (!folder) break;
+    seen.add(current);
+    names.unshift(folder.name);
+    current = folder.parentId;
+  }
+  return names;
+}
+
+/**
+ * Where a workspace lives in the sidebar, outermost first: the root folders holding its project,
+ * the project, then the project folders holding the workspace.
+ */
+export function sidebarWorkspaceAncestry(input: {
+  state: SidebarFolderState;
+  projectKey: string;
+  projectName: string;
+  workspaceKey: string;
+}): string[] {
+  const { state, projectKey, projectName, workspaceKey } = input;
+  const rootFolderId = itemParent({ state, scope: ROOT_FOLDER_SCOPE, key: projectKey });
+  const projectFolderId = itemParent({
+    state,
+    scope: projectFolderScope(projectKey),
+    key: workspaceKey,
+  });
+  return [
+    ...folderNamePath(state, rootFolderId),
+    projectName,
+    ...folderNamePath(state, projectFolderId),
+  ];
+}
+
 export function sidebarEntryParent(input: {
   state: SidebarFolderState;
   scope: SidebarFolderScope;
