@@ -167,3 +167,43 @@ test("snapshots omit withdrawn questions", () => {
   expect(snapshotQuestions(asked())).toHaveLength(1);
   expect(snapshotQuestions(undefined)).toBeUndefined();
 });
+
+test("typed questions need a valid recommendation and answers must fit their options", () => {
+  const confirm = { ...ask, input: { kind: "confirm" as const }, recommendedOptionIds: ["yes"] };
+  expect(() =>
+    mutateQuestions([], { ...confirm, recommendedOptionIds: undefined }, context),
+  ).toThrow(QuestionError);
+  expect(() =>
+    mutateQuestions([], { ...confirm, recommendedOptionIds: ["maybe"] }, context),
+  ).toThrow(QuestionError);
+  const questions = mutateQuestions([], confirm, context);
+  const owner = { questionId: id, answeredBy: "browser:1", now: context.now };
+  expect(() =>
+    answerQuestion(questions, {
+      ...owner,
+      answer: "Maybe",
+      optionIds: ["maybe"],
+      source: "option",
+    }),
+  ).toThrow(QuestionError);
+  // Older apps answer typed questions with text only; that must keep working.
+  expect(
+    answerQuestion(questions, { ...owner, answer: "Ship tomorrow morning" }).answered.answer,
+  ).toBe("Ship tomorrow morning");
+  const { answered } = answerQuestion(questions, {
+    ...owner,
+    answer: "No. Note: wait for QA",
+    optionIds: ["no"],
+    note: "wait for QA",
+    source: "option",
+  });
+  expect(answered).toMatchObject({ answerOptionIds: ["no"], answerNote: "wait for QA" });
+  const closed = mutateQuestions(
+    [],
+    { ...confirm, input: { kind: "confirm" as const, allowOther: false } },
+    context,
+  );
+  expect(() => answerQuestion(closed, { ...owner, answer: "Neither", source: "other" })).toThrow(
+    QuestionError,
+  );
+});
