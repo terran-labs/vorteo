@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): the install tests' upgrade jobs install old releases from a checkout of their tag, because the old installers' GitHub API lookup was refused on shared macOS runners. Test only; installer behavior unchanged. README unchanged.
+
 Maintenance review (2026-11-04): the installer upgrades installations it made. Rerunning `install.sh` fetches the target release first, shows the installed and latest versions, and offers an in-place upgrade with an optional name and update policy change, built beside the running release with a snapshot, per-service rollback and a resumable journal. It supports every installer release since 26.11.103. Not yet released. README onboarding updated.
 
 Maintenance review (2026-11-04): trackpad dictation. A triple click anywhere in the window toggles dictation into the active message field and stops without sending, so a lone Magic Trackpad can drive dictation. Not yet installed. README overview and onboarding are unchanged.

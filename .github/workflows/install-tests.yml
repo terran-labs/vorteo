@@ -141,6 +141,7 @@ jobs:
     env:
       VORTEO_E2E_STATE: ${{ github.workspace }}/.runtime/vorteo-e2e
       VORTEO_E2E_OLD_DEV_IMAGE: vorteo-old:upgrade-tests
+      VORTEO_E2E_OLD_SOURCE: ${{ github.workspace }}/../old-source
     steps:
       - uses: actions/checkout@v4
         with:
@@ -155,12 +156,12 @@ jobs:
         run: bash scripts/release/e2e/linux-user-systemd.sh
       - uses: docker/setup-buildx-action@v4
       - name: Check out the old release
-        run: git worktree add --detach "$RUNNER_TEMP/old-source" "${{ matrix.from }}"
+        run: git worktree add --detach "$VORTEO_E2E_OLD_SOURCE" "${{ matrix.from }}"
       - name: Build the old release's Dev image with cached layers
         uses: docker/build-push-action@v7
         with:
-          context: ${{ runner.temp }}/old-source
-          file: ${{ runner.temp }}/old-source/docker/base/Dockerfile
+          context: ${{ env.VORTEO_E2E_OLD_SOURCE }}
+          file: ${{ env.VORTEO_E2E_OLD_SOURCE }}/docker/base/Dockerfile
           build-args: PASEO_BUILD_COMMIT=${{ matrix.from }}
           tags: ${{ env.VORTEO_E2E_OLD_DEV_IMAGE }}
           load: true
@@ -197,15 +198,19 @@ jobs:
         from: [release-26.11.103, release-26.11.206]
     env:
       VORTEO_E2E_STATE: ${{ github.workspace }}/.runtime/vorteo-e2e
+      VORTEO_E2E_OLD_SOURCE: ${{ github.workspace }}/../old-source
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
+      - name: Check out the old release
+        run: git worktree add --detach "$VORTEO_E2E_OLD_SOURCE" "${{ matrix.from }}"
       - name: Install the old release with its own installer
         run: node scripts/release/e2e/install-e2e.mjs install-release "${{ matrix.from }}" host-only
       - run: node scripts/release/e2e/install-e2e.mjs wait-ready host-only

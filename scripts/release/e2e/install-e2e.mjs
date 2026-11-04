@@ -172,10 +172,16 @@ const INSTALL_ASSET = (tag) =>
 function installRelease(tag, scenario) {
   const args = CONTRACT.installArgs[scenario] ?? fail(`Unknown scenario ${scenario}`);
   mkdirSync(CONTRACT.projectsFolder, { recursive: true });
-  const script = run("curl", ["-fsSL", "--retry", "3", INSTALL_ASSET(tag)]).stdout;
+  // A checkout of the tag installs through that release's own install.sh and engine without
+  // GitHub's API, whose unauthenticated limit shared CI runners exhaust.
+  const checkout = process.env.VORTEO_E2E_OLD_SOURCE;
+  const script = checkout
+    ? readFileSync(path.join(checkout, "install.sh"), "utf8")
+    : run("curl", ["-fsSL", "--retry", "3", INSTALL_ASSET(tag)]).stdout;
   const env = {
     ...process.env,
     VORTEO_VERSION: tag,
+    ...(checkout ? { VORTEO_INSTALL_SOURCE: checkout } : {}),
     ...(process.env.VORTEO_E2E_OLD_DEV_IMAGE
       ? { VORTEO_DEV_IMAGE: process.env.VORTEO_E2E_OLD_DEV_IMAGE }
       : {}),
@@ -183,7 +189,7 @@ function installRelease(tag, scenario) {
       ? { VORTEO_SERVICE_MANAGER: "process" }
       : {}),
   };
-  delete env.VORTEO_INSTALL_SOURCE;
+  if (!checkout) delete env.VORTEO_INSTALL_SOURCE;
   step(`install.sh from ${tag} ${args.join(" ")}`);
   run("bash", ["-s", "--", ...args], { input: script, env, stdio: ["pipe", "inherit", "inherit"] });
   saveState("old-release.json", { tag, journal: readFileSync(installJournal(), "utf8") });
