@@ -8,7 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Added
 
-- Agent grants for service principals: give a credential read, steering-message or cancel access to specific agents, or to every agent in a workspace, without any other write access. Use `paseo access service create --grants-file` or `set-grants`; changing grants reconnects the credential's sessions. Granted messages steer with text only, and service sessions receive only data about agents they were allowed to address.
+- Agent grants for service principals: give a credential read, steering-message or cancel access to specific agents, or to every agent in a workspace, without any other write access. Use `paseo access service create --grants-file` or `set-grants`; changing grants reconnects the credential's sessions. Granted messages steer with text only, and service sessions receive only data about agents they were allowed to address. A message grant is delegated action: the target agent acts with its own tools, so the docs recommend it only on agents with tools disabled.
 
 ## Unreleased - 2026-11-03
 

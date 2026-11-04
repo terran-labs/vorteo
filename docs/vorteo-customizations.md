@@ -1786,6 +1786,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 3, 2026: The permissions reference states that an agent message grant is delegated action and recommends it only on agents with tools disabled. Documentation only; README unchanged.
+
 November 3, 2026: Adds agent grants for service principals, the first resource-scoped authority. No upstream equivalent. README overview and onboarding are unchanged.
 
 November 3, 2026: Merged current `main` into the service principals branch before delivery; only the changelog conflicted, and both sides were kept. No feature or limitation changes.
