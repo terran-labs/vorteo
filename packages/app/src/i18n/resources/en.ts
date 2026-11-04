@@ -1,4 +1,47 @@
 export const en = {
+  projectFactory: {
+    workerModels: "Worker and reviewer models…",
+    model: "Model",
+    workerModel: "Worker model",
+    reviewerModel: "Reviewer model",
+    defaultModel: "Default",
+    nextTurn: "Model changes apply on the next turn.",
+    send: "Send to Factory",
+    sent: "Sent to Triage. It will open an issue.",
+    instructions: "Instructions",
+    shippedCharter: "Shipped charter",
+    projectInstructions: "Project instructions",
+    revision: "Revision {{revision}} · {{updatedAt}}",
+    never: "Not yet updated",
+    history: "History",
+    accept: "Accept",
+    dismiss: "Dismiss",
+    reviewNeeded:
+      "The shipped charter changed in an update. The Mechanic is reviewing your project instructions.",
+    reviewProposed:
+      "The Mechanic proposed updated project instructions. Review the changes before accepting.",
+    reviewBadge: "Instructions need review",
+    saveFailed:
+      "Could not save instructions. Your draft is still here. Retry when the problem is resolved.",
+    conflict:
+      "Another revision or proposal landed. The latest instructions are shown below against your draft. Review the changes, then save or resolve again.",
+    unchangedLines_one: "{{count}} unchanged line",
+    unchangedLines_other: "{{count}} unchanged lines",
+
+    folder: "Factory",
+    open: "Open Factory",
+    loading: "Loading Factory…",
+    failed: "Could not update Factory",
+    enableMenu: "Turn on Factory…",
+    pauseMenu: "Pause Factory",
+    resumeMenu: "Resume Factory",
+    disableMenu: "Turn off Factory…",
+    enable: "Turn on Factory",
+    disable: "Turn off Factory",
+    repository: "GitHub repository",
+    invalid: "Enter a GitHub repository as owner/name.",
+    retained: "Factory heartbeats will be removed. Workspaces, agents and history stay.",
+  },
   paneFind: {
     connectionFailure: "Could not search this chat. Check the host connection and retry.",
     historyChangedFailure: "The chat changed while searching. Search again.",
@@ -1812,7 +1855,10 @@ export const en = {
           connectDocs: "Docs",
           openConnectDocs: "Open connectivity documentation",
           recommended: "Recommended",
-          relay: { title: "Relay", hint: "End-to-end encrypted, scan a QR code" },
+          relay: {
+            title: "Relay",
+            hint: "End-to-end encrypted, scan a QR code",
+          },
           tailscale: { title: "Tailscale", hint: "Requires some setup" },
         },
       },
@@ -3358,7 +3404,7 @@ export const en = {
       system: {
         title: "About Vorteo System",
         description:
-          "This project is for evolving this Vorteo installation. It is backed by the checkout the installation was built from, and it also holds upkeep workspaces the daemon manages, such as the Vorteo :: Optimizer. The daemon recreates and relies on it, so it can't be removed or renamed.",
+          "This project is for evolving this Vorteo installation. It is backed by the checkout the installation was built from, and it also holds upkeep workspaces the daemon manages, such as the Vorteo :: Mechanic. The daemon recreates and relies on it, so it can't be removed or renamed.",
       },
       readFailures: {
         invalidTitle: "paseo.json couldn't be parsed",

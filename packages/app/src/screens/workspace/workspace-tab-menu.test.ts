@@ -367,3 +367,34 @@ describe("buildWorkspaceTabMenuEntries", () => {
     expect(terminalSeparator?.key).toBe("rename-separator");
   });
 });
+
+it("offers Send to Factory only when a running Factory provides a handler", () => {
+  const send = vi.fn();
+  const noop = vi.fn();
+  const input = {
+    surface: "desktop" as const,
+    tab: createAgentTab(),
+    index: 0,
+    tabCount: 1,
+    menuTestIDBase: "tab",
+    onCopyResumeCommand: noop,
+    onCopyAgentId: noop,
+    onCopyTerminalId: noop,
+    onCopyFilePath: noop,
+    onReloadAgent: noop,
+    onRenameTab: noop,
+    onCloseTab: noop,
+    onCloseTabsBefore: noop,
+    onCloseTabsAfter: noop,
+    onCloseOtherTabs: noop,
+  };
+  expect(buildWorkspaceTabMenuEntries(input).some((entry) => entry.key === "send-to-factory")).toBe(
+    false,
+  );
+  const entry = buildWorkspaceTabMenuEntries({ ...input, onSendToFactory: send }).find(
+    (candidate) => candidate.key === "send-to-factory",
+  );
+  expect(entry?.kind).toBe("item");
+  if (entry?.kind === "item") entry.onSelect();
+  expect(send).toHaveBeenCalledOnce();
+});

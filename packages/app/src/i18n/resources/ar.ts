@@ -2,6 +2,7 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
+  projectFactory: en.projectFactory,
   paneFind: {
     connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
     historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",
@@ -1745,7 +1746,10 @@ export const ar: TranslationResources = {
           connectDocs: "الوثائق",
           openConnectDocs: "افتح وثائق الاتصال",
           recommended: "موصى به",
-          relay: { title: "التتابع", hint: "مشفّر من طرف إلى طرف، امسح رمز QR" },
+          relay: {
+            title: "التتابع",
+            hint: "مشفّر من طرف إلى طرف، امسح رمز QR",
+          },
           tailscale: { title: "Tailscale", hint: "يتطلب بعض الإعداد" },
         },
       },
@@ -3165,7 +3169,7 @@ export const ar: TranslationResources = {
       system: {
         title: "حول Vorteo System",
         description:
-          "هذا المشروع مخصص لتطوير تثبيت Vorteo هذا. يعتمد على النسخة المصدرية التي بُني منها التثبيت، ويحتوي أيضًا على مساحات عمل الصيانة التي يديرها البرنامج الخفي، مثل Vorteo :: Optimizer. يعيد البرنامج الخفي إنشاءه ويعتمد عليه، لذا لا يمكن إزالته أو إعادة تسميته.",
+          "هذا المشروع مخصص لتطوير تثبيت Vorteo هذا. يعتمد على النسخة المصدرية التي بُني منها التثبيت، ويحتوي أيضًا على مساحات عمل الصيانة التي يديرها البرنامج الخفي، مثل Vorteo :: Mechanic. يعيد البرنامج الخفي إنشاءه ويعتمد عليه، لذا لا يمكن إزالته أو إعادة تسميته.",
       },
       readFailures: {
         invalidTitle: "تعذر تحليل paseo.json",

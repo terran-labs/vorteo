@@ -17,6 +17,9 @@ export interface AgentInputSubmitActionInput<TAttachment> {
   clearDraft: (lifecycle: "sent" | "abandoned") => void;
   setUserInput: (text: string) => void;
   setAttachments: (attachments: TAttachment[]) => void;
+  /** Reads what the user typed while the submit was in flight, so a failure keeps it. */
+  getUserInput?: () => string;
+  getAttachments?: () => TAttachment[];
   setSendError: (message: string | null) => void;
   /** Reports a send that failed because the connection dropped; it leaves no inline error. */
   reportConnectionError: (error: unknown) => void;
@@ -65,8 +68,13 @@ export async function submitAgentInput<TAttachment>(
   } catch (error) {
     input.onSubmitError?.(error);
     if (shouldClearOnSubmit) {
-      input.setUserInput(trimmedMessage);
-      input.setAttachments(attachments);
+      // The composer was cleared on submit, so anything in it now is a newer draft. Put the
+      // failed message back above it instead of replacing it.
+      const draft = input.getUserInput?.() ?? "";
+      input.setUserInput(
+        draft.trim() && trimmedMessage ? `${trimmedMessage}\n\n${draft}` : trimmedMessage || draft,
+      );
+      input.setAttachments([...attachments, ...(input.getAttachments?.() ?? [])]);
     }
     reportSendFailure(input, error);
     input.setIsProcessing(false);

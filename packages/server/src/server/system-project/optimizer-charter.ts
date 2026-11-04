@@ -1,5 +1,5 @@
 /**
- * Standing instructions for the agent the daemon creates in the Vorteo :: Optimizer
+ * Standing instructions for the agent the daemon creates in the Vorteo :: Mechanic
  * workspace. They ride in the agent's system prompt, after the daemon's own checklist,
  * journal and question guidance, so they name those tools rather than repeat them.
  */

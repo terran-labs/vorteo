@@ -11,6 +11,59 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
 - Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
 
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- The Vorteo System browser test, the README and a charter comment now name the Vorteo :: Mechanic workspace instead of the Optimizer.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Update the sidebar projection test's Factory fixture to a per-project Factory member, matching the Factory folder's grouping rule.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Changing a Factory role's provider or profile no longer drops its charter. The new session starts with the role's instructions ahead of the carried context, and the next prompt, sent right away, repeats them in full.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Turning Factory on again with a new repository, or any other change to a role's charter inputs, now updates each role agent's instructions and sends them once with its next heartbeat. Previously the agents kept the old repository's instructions.
+- A heartbeat that fired while Factory was being paused or turned off could rearm itself; it now stays off.
+- Clearing a role's provider or profile now switches the agent back to the default launch, and a launch set by profile alone uses that profile's provider.
+- Factory now records that it owns the Optimizer review pause before pausing it, and keeps the record until a resume succeeds, so a crash or failed resume is finished at the next start.
+- A charter-change notice that fails to reach the Mechanic is retried on the next start or Mechanic heartbeat instead of being dropped.
+- Ordinary projects no longer read Factory state every minute: the sidebar asks only for projects with Factory role workspaces, and its Factory list no longer changes identity on every render.
+- Instruction conflicts are recognized by the exact daemon conflict messages, which the app and daemon now share, instead of by keywords.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Add per-project Factory. Turning Factory on for a project creates, or adopts, five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a heartbeat; reruns, restarts and a lost state file never create a second. Pause, resume and turn off control the heartbeats, and turning off releases the workspaces while keeping agents and history. On Vorteo System the Mechanic adopts the existing Optimizer agent.
+- Add the project menu's Factory controls: turn on with a GitHub repository, pause, resume and turn off. Role workspaces group in the sidebar's Factory folder in role order, and fresh role status lines appear beneath them.
+- Add editable per-role project instructions with revision checks, history and charter review: when a Vorteo update changes a role's shipped charter, the Mechanic reviews it and the operator accepts or dismisses its proposal. A revision conflict keeps the draft and shows the latest instructions beside it, review diffs show the changed lines in context, and accepting applies only the proposal the operator saw.
+- Choose each role's provider and profile, and the profiles the Foreman gives workers and reviewers, with the existing profile controls.
+- Send a thread to Factory from the tab menu. Triage turns it into one issue, routed through the thread's owning environment and project.
+- Gate Triage, Foreman and Builds heartbeats on a GitHub fingerprint, so an unchanged repository does not wake them; missing evidence always wakes.
+- Add `paseo factory project show|enable|pause|resume|disable|configure`, `paseo factory project status set` and `paseo factory project instructions show|set|propose|acknowledge|resolve`. The daemon serves these RPCs natively through the bundled Factory plugin and advertises Factory workspace membership.
+- `VORTEO_RELEASES=1` admits only `scripts/vorteo-release.mjs tag` and its release tag push, so a Factory Releases thread can tag without Builds rights.
+
+### Changed
+
+- The Vorteo :: Optimizer workspace and newly created Optimizer agents are now titled Mechanic; the stored role and label are unchanged.
+
+## Unreleased - 2026-11-04
+
+### Fixed
+
+- Messages sent into a running Claude turn no longer fail with "The provider returned an invalid steerActiveTurn result." The message had already reached Claude, so the error put it back in the composer and every resend delivered another copy. A send that does fail now keeps anything typed meanwhile below the restored message instead of overwriting it.
+
 ## 26.11.302 - 2026-11-03
 
 Fix-forward beta for the VortLab bootstrap. 26.11.301 merged but was never tagged because its full checks were not green.
@@ -106,6 +159,13 @@ Prepared but never tagged; superseded by 26.11.301.
 - Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
 
 ## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Main CI runs now finish instead of being cancelled by the next merge. Merges landed faster than a full run, so no recent main run completed its slowest browser shard. Pull request runs still cancel when superseded, and main keeps at most one queued run.
+- The container smoke frees unused preinstalled SDKs before building, after one run exhausted the runner disk while copying the web interface.
 
 ## Unreleased - 2026-11-03
 
