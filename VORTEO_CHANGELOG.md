@@ -6,11 +6,19 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge current `main` into the release updates branch, keeping both sides' changelog and inventory entries.
+
 ### Added
 
 - Installations update themselves from GitHub Releases. Each installation chooses manual or automatic updates and the stable or beta channel in Settings. The coordinator checks hourly and offers each new release once in the sidebar's Open questions card, with its summary, a security marker, changed Factory charters and the rollback path. Install after current work holds new Host turns and waits for running turns and Dev agents before restarting; automatic mode installs that way without asking. Agents read the policy with `installation-agent.mjs update-status`. Older coordinators keep the previous Settings behavior.
 - While a release upgrade waits for current work, Install now ends the wait from Open questions or Settings, and turning automatic updates off stops an automatic upgrade before its Host restart.
 - The restart queue lets the owner approve a single reviewed source update to finish current turns first when the decision names its exact digest, as automatic Host updates already do. Combined batches still restart at once.
+
+### Tests
+
+- Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.
 
 ## Unreleased - 2026-11-03
 
