@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): third review round: the installer upgrade lock is linked into place complete, released on exit, and never reclaimed automatically. README unchanged.
+
 Maintenance review (2026-11-04): second review round for installer upgrades: the Dev recheck moved after the image build, immediately before `update.sh`, and the upgrade lock is created exclusively with owner-checked release. README unchanged.
 
 Maintenance review (2026-11-04): review fixes for installer upgrades: rollback covers failed restarts, Dev resume compares the running container's image, interface upgrades are rechecked before each restart, and a lock refuses concurrent installer upgrades. README unchanged.

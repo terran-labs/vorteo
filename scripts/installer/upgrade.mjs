@@ -9,7 +9,7 @@
 // agents, ports, routes and data stay where they are; the previous release stays in
 // host/releases, so a rollback only repoints a link. The journal at state/upgrade.json
 // lets a rerun resume at the step that failed.
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServiceManager, installResult, runSteps } from "./apply.mjs";
@@ -981,43 +981,45 @@ export async function applyUpgrade(plan, context, emit) {
 }
 
 /**
- * One installer upgrade at a time per installation. The lock file is created exclusively;
- * one left by a process that no longer runs is removed and taken once more.
+ * One installer upgrade at a time per installation. The lock appears complete in one step,
+ * a hard link of a written file, and is never taken from another run: one left by a run
+ * that was killed outright is reported with the file to remove. It is released on any exit
+ * of this process, including Ctrl-C, which main.mjs turns into process.exit.
  */
 function lockUpgrade(root) {
   const file = path.join(root, "state", "upgrade.lock");
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; ; attempt += 1) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify({ pid: process.pid }) + "\n", { mode: 0o600 });
+  try {
+    linkSync(temporary, file);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const holder = readJson(file)?.pid;
+    let alive = true;
     try {
-      writeFileSync(file, JSON.stringify({ pid: process.pid }) + "\n", { flag: "wx", mode: 0o600 });
-      break;
-    } catch (error) {
-      if (error.code !== "EEXIST" || attempt > 0) {
-        const holder = readJson(file)?.pid;
-        throw new InstallerError(
-          `Another installer${holder ? ` (process ${holder})` : ""} is upgrading ${root}.`,
-          `Wait for it to finish, then rerun the installer. If none runs, remove ${file}.`,
-        );
-      }
-      const holder = readJson(file)?.pid;
-      let alive = false;
-      try {
-        if (holder) process.kill(holder, 0);
-        alive = Boolean(holder);
-      } catch {
-        /* the holder has exited */
-      }
-      if (alive)
-        throw new InstallerError(
-          `Another installer (process ${holder}) is upgrading ${root}.`,
-          "Wait for it to finish, then rerun the installer.",
-        );
-      rmSync(file, { force: true });
+      process.kill(holder, 0);
+    } catch {
+      alive = false;
     }
+    throw new InstallerError(
+      alive
+        ? `Another installer (process ${holder}) is upgrading ${root}.`
+        : `An earlier installer run${holder ? ` (process ${holder})` : ""} stopped without releasing ${file}.`,
+      alive
+        ? "Wait for it to finish, then rerun the installer."
+        : `Check that no installer is running, remove ${file}, then rerun the installer to resume.`,
+    );
+  } finally {
+    rmSync(temporary, { force: true });
   }
-  // Released only by its owner, so a run never removes another run's lock.
-  return () => {
+  const release = () => {
     if (readJson(file)?.pid === process.pid) rmSync(file, { force: true });
+  };
+  process.once("exit", release);
+  return () => {
+    process.removeListener("exit", release);
+    release();
   };
 }
 

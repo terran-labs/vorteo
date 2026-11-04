@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- The installer upgrade lock appears complete in one step and is never taken from another run, so two runs cannot both reclaim it; it is released on every exit, including Ctrl-C, and a lock left by a killed run names the file to remove.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
 - An installer upgrade checks for an interface upgrade again after building Dev's image, right before recreating Dev, and takes its lock atomically, so two installer runs can no longer both proceed.
 
 ## Unreleased - 2026-11-04

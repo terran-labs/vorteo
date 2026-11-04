@@ -543,15 +543,25 @@ describe("upgrade", () => {
     expect(context.run.commands()).toContainEqual(expect.stringMatching(/update\.sh sha256:new$/));
   });
 
-  test("a second installer upgrade waits for a running one, and a dead one's lock is taken", async () => {
+  test.each([
+    ["a running installer", () => process.ppid, /Another installer/],
+    ["a killed installer", () => 999_999_999, /without releasing .*upgrade\.lock/],
+    ["a lock still being written", () => undefined, /without releasing .*upgrade\.lock/],
+  ])("an upgrade lock held by %s is never taken over", async (_name, pid, message) => {
     const { context } = machine();
     const { plan } = await upgradePlan(context);
     const lock = path.join(context.root, "state", "upgrade.lock");
-    writeJson(lock, { pid: process.ppid });
-    await expect(applyUpgrade(plan, context, () => {})).rejects.toThrow(/Another installer/);
-    writeJson(lock, { pid: 999_999_999 });
+    mkdirSync(path.dirname(lock), { recursive: true });
+    writeFileSync(lock, pid() ? JSON.stringify({ pid: pid() }) : "");
+    await expect(applyUpgrade(plan, context, () => {})).rejects.toThrow(message);
+    expect(existsSync(lock)).toBe(true);
+  });
+
+  test("a finished upgrade releases its lock", async () => {
+    const { context } = machine();
+    const { plan } = await upgradePlan(context);
     expect((await apply(context, plan)).ok).toBe(true);
-    expect(existsSync(lock)).toBe(false);
+    expect(existsSync(path.join(context.root, "state", "upgrade.lock"))).toBe(false);
   });
 
   test("a release without update offers upgrades and says so", async () => {
