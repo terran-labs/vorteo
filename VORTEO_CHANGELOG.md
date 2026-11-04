@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Maintenance
+
+- Merge current `main`, which now carries the release updates branch, into the installer upgrade branch. No conflicts.
+
+## Unreleased - 2026-11-04
+
 ### Fixes
 
 - The installer upgrade lock appears complete in one step and is never taken from another run, so two runs cannot both reclaim it; it is released on every exit, including Ctrl-C, and a lock left by a killed run names the file to remove.
@@ -169,6 +175,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Fixes
 
 - Moving a workspace with the keyboard in the web sidebar now shows its drop line on the first arrow key. Previously an arrow pressed right after Space picked the row up could be lost, so the move could not be placed. The sidebar reorder browser test also opens sorting through the current View preferences menu again.
+
+## Unreleased - 2026-11-04
+
+### Changes
+
+- Each release now ships Claude Code 2.1.311 instead of 2.1.284, so the Host and Dev daemons can offer Haiku 5.5, which needs 2.1.293 or later. Its Keychain item naming, credentials file and storage lock match 2.1.284.
 
 ## Unreleased - 2026-11-04
 

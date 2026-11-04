@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): merged current `main` (release updates, #114) into the installer upgrade branch without conflicts; functionality unchanged by the merge. README unchanged.
+
 Maintenance review (2026-11-04): third review round: the installer upgrade lock is linked into place complete, released on exit, and never reclaimed automatically. README unchanged.
 
 Maintenance review (2026-11-04): second review round for installer upgrades: the Dev recheck moved after the image build, immediately before `update.sh`, and the upgrade lock is created exclusively with owner-checked release. README unchanged.
@@ -18,6 +20,8 @@ Maintenance review (2026-11-04): merged main into the sidebar keyboard move fix 
 Maintenance review (2026-11-04): merged main into the sidebar keyboard move fix. The only conflict was the changelog, which keeps both dated entries. Functionality is unchanged beyond the two merged changes. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): keyboard moves in the web sidebar listen for arrow keys as soon as Space picks a row up. dnd-kit's keyboard sensor attached its key listener on a timer, so an arrow pressed in that gap was lost and a workspace move showed no drop line. The sidebar reorder browser test opens sorting through the toolbar's More menu, matching the current View preferences entry. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): the packaged Claude CLI moves from 2.1.284 to 2.1.311, the current stable channel, which Haiku 5.5 needs. Static analysis of the new binary found the Keychain service and account naming, the empty `CLAUDE_SECURESTORAGE_CONFIG_DIR` mapping, `.credentials.json` and the `.storage-write` lock unchanged; its new lock bypass applies only to diskless hosted sessions, which Vorteo does not launch. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): CI change. Unlike upstream Paseo, main CI runs are no longer cancelled by a newer merge, so main produces complete browser results; pull request runs still cancel when superseded. The container smoke frees unused runner SDKs after a disk exhaustion. Product functionality is unchanged. README overview and onboarding are unchanged.
 
