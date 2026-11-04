@@ -131,7 +131,8 @@ export async function navigateAddProjectResults(
 
 export async function expectAddProjectResultVisible(page: Page, text: string): Promise<void> {
   const results = page.getByTestId("add-project-flow-results");
-  const row = results.getByRole("button").filter({ has: page.getByText(text, { exact: true }) });
+  const row = results.getByTestId(`add-project-flow-path-${encodeURIComponent(text)}`);
+  await expect(row).toHaveAttribute("aria-selected", "true");
   await expect
     .poll(async () => {
       const viewport = await results.boundingBox();

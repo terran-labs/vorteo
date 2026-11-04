@@ -20,22 +20,19 @@ for (const [width, height] of [[390, 844]]) {
         name: workspace.projectDisplayName,
       });
       await page.goto(`/new?${query}`);
-      const title = page.getByTestId("new-workspace-header-title");
       const project = page.getByTestId("new-workspace-project-picker-trigger");
-      await expect(title).toBeVisible();
+      await expect(project).toBeVisible();
       await expect(project).toContainText(workspace.projectDisplayName);
-      const menu = page.getByTestId("menu-button").filter({ visible: true }).first();
-      const titleBox = (await title.boundingBox())!;
-      const menuBox = (await menu.boundingBox())!;
-      expect(titleBox.x).toBeGreaterThanOrEqual(menuBox.x + menuBox.width);
-      const header = (await page
-        .getByTestId("screen-header")
-        .filter({ visible: true })
-        .first()
-        .boundingBox())!;
+      const menu = page.getByRole("button", { name: "Open menu", exact: true });
+      const importSession = page.getByTestId("new-workspace-import-session");
+      await expect(menu).toBeVisible();
+      await expect(importSession).toHaveAccessibleName("Import session");
+      const header = page.getByTestId("screen-header").filter({ visible: true }).first();
+      await expect(header.getByRole("button", { name: "Open menu", exact: true })).toBeVisible();
+      await expect(header.getByTestId("new-workspace-import-session")).toBeVisible();
+      const headerBox = (await header.boundingBox())!;
       const projectBox = (await project.boundingBox())!;
-      expect(projectBox.y).toBeGreaterThanOrEqual(header.y);
-      expect(projectBox.y + projectBox.height).toBeLessThanOrEqual(header.y + header.height + 1);
+      expect(projectBox.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height);
       const composer = page.getByTestId("composer-input-area").filter({ visible: true });
       await expect(composer).toBeVisible();
       const composerBox = (await composer.boundingBox())!;

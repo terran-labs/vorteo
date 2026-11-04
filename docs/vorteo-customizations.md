@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): restored the upstream New workspace header and composer dock contracts lost during integration, including Import session placement and fullscreen layout. Vorteo's profile-first controls and project fields remain; compact title removal is intentional. Folder keyboard coverage uses the encoded path identity instead of unshortened display text, adds selected-row verification, and keeps full viewport containment. Deferred-draft coverage selects the same slow mock model through a profile. Browser validation is pending the lead's load-controlled slot. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): merged current `main` into the message queue reconnect fix for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the browser message queue now reopens its local storage when the browser closes the connection, instead of failing every read, including Retry, until reload. A browser regression test covers it. The replica cache, project icon cache and plugin bundle cache keep the same single-connection pattern and are not changed here. README overview and onboarding are unchanged.

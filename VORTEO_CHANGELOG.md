@@ -6,6 +6,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Restore the New workspace navigation header, Import session action and composer dock after upstream integration. Compact layout coverage follows the intentional removal of the title while retaining navigation, project selection and bottom alignment checks.
+- Browser checks use the stable folder identity when paths are shortened and select the delayed mock model through its profile.
+
+## Unreleased - 2026-11-03
+
 ### Tooling
 
 - Merged current `main` into the message queue reconnect fix before delivery.

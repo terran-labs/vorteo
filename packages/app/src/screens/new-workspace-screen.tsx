@@ -22,9 +22,6 @@ import {
   installationDefaultServerId,
 } from "@/execution-installation/policy";
 
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { KeyboardTranslateView } from "@/keyboard/shift";
-import { HEADER_INNER_HEIGHT } from "@/constants/layout";
 import type {
   CreateAgentRequestOptions,
   CreateWorkspaceRequestOptions,
@@ -41,6 +38,9 @@ import { StyleSheet } from "react-native-unistyles";
 import { createNameId } from "mnemonic-id";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Composer } from "@/composer";
+import { ComposerDock } from "@/composer/dock";
+import { MenuHeader } from "@/components/headers/menu-header";
+import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 
 import { useComposerEditingSession, useComposerFullscreen } from "@/composer/editing-session";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
@@ -55,7 +55,6 @@ import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-import { isNative } from "@/constants/platform";
 import { ScreenTitle } from "@/components/headers/screen-title";
 
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -2475,6 +2474,7 @@ function useNewWorkspaceComposerEditing() {
 
 function NewWorkspaceLayout({
   isCompact,
+  fullscreen,
   title,
   formStack,
   onImportSession,
@@ -2488,8 +2488,7 @@ function NewWorkspaceLayout({
   onImportSession: () => void;
   children: ReactNode;
 }) {
-  const insets = useSafeAreaInsets();
-  // At the top of the screen on compact layouts, under the composer otherwise.
+  // In the header on compact layouts, under the composer otherwise.
   const importSessionButton = <ImportSessionButton compact={isCompact} onPress={onImportSession} />;
   // Compact has no title: the fields name themselves. The free space above pushes them down onto
   // the composer, where the thumb is.
@@ -2500,31 +2499,28 @@ function NewWorkspaceLayout({
     </>
   ) : (
     <>
-      {isCompact ? <View style={styles.compactTopActions}>{importSessionButton}</View> : null}
-      {!isCompact ? (
-        <View style={styles.composerTitleContainer} pointerEvents="none">
-          <Text style={styles.composerTitle}>{title}</Text>
-        </View>
-      ) : null}
+      <View style={styles.composerTitleContainer} pointerEvents="none">
+        <Text style={styles.composerTitle}>{title}</Text>
+      </View>
       {formStack}
     </>
   );
-
   return (
-    <View
-      style={[
-        styles.content,
-        styles.vortonContent,
-        isCompact
-          ? [styles.contentCompact, { paddingBottom: isNative ? insets.bottom : 0 }]
-          : styles.contentCentered,
-      ]}
-    >
-      <KeyboardTranslateView style={[styles.centered, isCompact && styles.centeredCompact]}>
-        {setupFields}
-        {children}
-      </KeyboardTranslateView>
-    </View>
+    <>
+      {fullscreen ? null : (
+        <MenuHeader borderless rightContent={isCompact ? importSessionButton : undefined} />
+      )}
+      <View style={styles.content}>
+        <TitlebarDragRegion />
+        <ComposerDock centered={!isCompact} fullscreen={fullscreen}>
+          {setupFields}
+          <>
+            {children}
+            {isCompact || fullscreen ? null : importSessionButton}
+          </>
+        </ComposerDock>
+      </View>
+    </>
   );
 }
 
@@ -2547,8 +2543,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     borderRadius: theme.borderRadius.full,
   },
-  centeredCompact: { flex: 1, minHeight: 0, justifyContent: "flex-end" },
-  centered: { width: "100%", maxWidth: theme.contentMaxWidth },
   container: {
     flex: 1,
     backgroundColor: theme.colors.surface0,
@@ -2558,16 +2552,6 @@ const styles = StyleSheet.create((theme) => ({
     position: "relative",
     flex: 1,
     minHeight: 0,
-  },
-  vortonContent: { alignItems: "center" },
-  contentCentered: {
-    justifyContent: "center",
-    paddingBottom: HEADER_INNER_HEIGHT + theme.spacing[6],
-  },
-  contentCompact: { justifyContent: "flex-end" },
-  // Align the import action with the setup controls without reserving blank rows.
-  compactTopActions: {
-    paddingHorizontal: theme.spacing[3],
   },
   composerTitleContainer: {
     marginBottom: theme.spacing[8],
