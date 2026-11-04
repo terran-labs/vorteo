@@ -2590,6 +2590,17 @@ describe("PiRpcAgentSession steering", () => {
     const idle = await session.steerActiveTurn("steer", { expectedTurnId: turnId });
     expect(idle).toEqual({ status: "unavailable" });
     expect(fakeSession.steerCalls).toEqual([]);
+
+    // Pi already holds a steer whose turn ends before it applies; it is not a refusal.
+    const next = await session.startTurn("run again");
+    const steer = fakeSession.steer.bind(fakeSession);
+    fakeSession.steer = async (...args) => {
+      await steer(...args);
+      fakeSession.finishTurn();
+      await flushTurnScheduling();
+    };
+    const submitted = await session.steerActiveTurn("steer", { expectedTurnId: next.turnId });
+    expect(submitted).toEqual({ status: "unavailable", submitted: true });
   });
 
   test("keeps slash-command steers on the interrupt fallback", async () => {

@@ -956,8 +956,9 @@ export class OmpAgentSession implements AgentSession {
       if (isOmpSteerTransportFailure(error)) throw error;
       return { status: "unavailable" };
     }
+    // OMP already holds the steer, so a turn that moved on leaves its fate ambiguous.
     if (this.closed || this.activeTurnId !== options.expectedTurnId)
-      return { status: "unavailable" };
+      return { status: "unavailable", submitted: true };
     if (options.clearPendingPermissions) {
       for (const requestId of this.pendingExtensionUiRequests.keys()) {
         await this.respondToPermission(requestId, {

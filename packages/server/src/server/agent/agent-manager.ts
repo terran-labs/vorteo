@@ -279,6 +279,14 @@ export class SteerNotAdmittedError extends Error {
   }
 }
 
+/** The provider received the steer but the turn moved on before it applied; it may still act. */
+export class SteerSubmissionUncertainError extends Error {
+  constructor() {
+    super("The provider received the steer, but the turn changed before it was confirmed");
+    this.name = "SteerSubmissionUncertainError";
+  }
+}
+
 export class AgentRunCancellationError extends Error {
   constructor(agentId: string, action: "reload" | "replace" | "rewind" | "stop") {
     super(
@@ -5395,7 +5403,9 @@ export class AgentManager {
       } catch {
         return null;
       }
-      // Null only for a certain refusal; any other failure is left to provider history.
+      // Null only for a certain refusal before submission. A submitted steer whose turn
+      // moved on throws SteerSubmissionUncertainError and, like any other failure, is
+      // left to provider history.
       try {
         const result = await this.steerAgentRun(agentId, item.text, { clientMessageId: item.id });
         return result.status === "accepted" ? { turnId } : null;
@@ -5836,6 +5846,9 @@ export class AgentManager {
       }
       return admission;
     });
+    // A submitted steer may still be acted on, so it must never be retried as unsent.
+    if (result.status === "unavailable" && result.submitted)
+      throw new SteerSubmissionUncertainError();
     // An unavailable answer is only safe to fall back from while this admission
     // still owns the active turn. Never let an A admission replace a later B.
     if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
@@ -5882,6 +5895,8 @@ export class AgentManager {
     if (result.status === "accepted") {
       return { status: "steered" };
     }
+    // Starting or replacing a turn with a submitted steer would deliver it twice.
+    if ("submitted" in result && result.submitted) throw new SteerSubmissionUncertainError();
 
     // Providers without autonomous steering keep their existing dispatch behavior. The shared
     // admission may recognize the turn, but only an accepted steer can own it without replacement.

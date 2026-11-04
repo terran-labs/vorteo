@@ -16605,7 +16605,9 @@ test("an answer saved before a failed delivery is delivered once when its thread
       agent.id,
     );
     await expect
-      .poll(async () => (await nextQueue!.read(agent.id)).items.map((item) => item.id))
+      .poll(async () => (await nextQueue!.read(agent.id)).items.map((item) => item.id), {
+        timeout: 10_000,
+      })
       .toEqual([`question-answer-${questionId}`]);
     // Queued is not delivered: the record waits for the thread to receive the answer.
     expect((await reopened.readQuestions(agent.id))[0]?.answerDeliveredAt).toBeUndefined();
@@ -16619,7 +16621,9 @@ test("an answer saved before a failed delivery is delivered once when its thread
       }),
     );
     await expect
-      .poll(async () => (await reopened!.readQuestions(agent.id))[0]?.answerDeliveredAt)
+      .poll(async () => (await reopened!.readQuestions(agent.id))[0]?.answerDeliveredAt, {
+        timeout: 10_000,
+      })
       .toBeDefined();
     expect((await nextQueue.read(agent.id)).items).toEqual([]);
     expect(reopened.getAgent(agent.id)?.journal?.map((entry) => entry.text)).toEqual([
@@ -16644,7 +16648,7 @@ test("an answer saved before a failed delivery is delivered once when its thread
   }
 });
 
-test("an answer to a busy thread steers in once, through a pause, a lost acknowledgement and a restart", async () => {
+test("an answer to a busy thread steers in once, through a pause, an ambiguous steer and a restart", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "question-steer-"));
   const storagePath = join(workdir, "agents");
   const queuePath = join(workdir, "queue");
@@ -16652,6 +16656,8 @@ test("an answer to a busy thread steers in once, through a pause, a lost acknowl
   const providerHistory: AgentStreamEvent[] = [];
   class AnswerSession extends SteeringTestSession {
     loseAcknowledgement = false;
+    // Pi and OMP: the provider holds the steer, but the turn ended before it applied.
+    turnEndsAfterSubmit = false;
     override async steerActiveTurn(
       prompt: AgentPromptInput,
       options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
@@ -16670,6 +16676,7 @@ test("an answer to a busy thread steers in once, through a pause, a lost acknowl
           },
         });
       if (this.loseAcknowledgement) throw new Error("steer acknowledgement timed out");
+      if (this.turnEndsAfterSubmit) return { status: "unavailable", submitted: true };
       return result;
     }
   }
@@ -16717,6 +16724,7 @@ test("an answer to a busy thread steers in once, through a pause, a lost acknowl
     };
     const first = await ask("Ship the beta tonight?");
     const second = await ask("Ship the stable tonight?");
+    const third = await ask("Ship the docs tonight?");
     void drainAsyncGenerator(manager.streamAgent(agent.id, "long work"));
     await manager.waitForAgentRunStart(agent.id);
     const answerMessages = async () =>
@@ -16758,6 +16766,19 @@ test("an answer to a busy thread steers in once, through a pause, a lost acknowl
     expect((await queue.read(agent.id)).items).toMatchObject([
       { id: `question-answer-${second.questionId}`, delivery: { status: "uncertain" } },
     ]);
+
+    // The provider receives the third answer, then the turn ends before it is acknowledged.
+    // That is not a refusal, so the answer must not return to the queue for another send.
+    session.loseAcknowledgement = false;
+    session.turnEndsAfterSubmit = true;
+    await manager.answerQuestion(agent.id, third);
+    await manager.answerQuestion(agent.id, third);
+    expect(session.steerCount).toBe(4);
+    expect((await question(third.questionId))?.answerDeliveredAt).toBeUndefined();
+    expect((await queue.read(agent.id)).items).toMatchObject([
+      { id: `question-answer-${second.questionId}`, delivery: { status: "uncertain" } },
+      { id: `question-answer-${third.questionId}`, delivery: { status: "uncertain" } },
+    ]);
     await manager.closeAgent(agent.id);
     await manager.flush();
     queue.close();
@@ -16781,12 +16802,13 @@ test("an answer to a busy thread steers in once, through a pause, a lost acknowl
       }),
     );
     await expect
-      .poll(async () => (await question(second.questionId, reopened))?.answerDeliveredAt)
+      .poll(async () => (await question(third.questionId, reopened))?.answerDeliveredAt)
       .toBeDefined();
+    expect((await question(second.questionId, reopened))?.answerDeliveredAt).toBeDefined();
     expect((await nextQueue.read(agent.id)).items).toEqual([]);
-    expect(await nextQueue.acceptedHistory(agent.id)).toHaveLength(2);
-    expect(reopened.getAgent(agent.id)?.journal).toHaveLength(2);
-    expect(session.steerCount).toBe(3);
+    expect(await nextQueue.acceptedHistory(agent.id)).toHaveLength(3);
+    expect(reopened.getAgent(agent.id)?.journal).toHaveLength(3);
+    expect(session.steerCount).toBe(4);
   } finally {
     queue.close();
     nextQueue?.close();

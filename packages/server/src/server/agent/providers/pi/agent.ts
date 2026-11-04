@@ -1420,7 +1420,7 @@ export class PiRpcAgentSession implements AgentSession {
     // The steer is already queued inside pi; if the turn moved on meanwhile its fate
     // is ambiguous, so surface it instead of replacing the wrong turn.
     if (this.closed || this.activeTurnId !== options.expectedTurnId) {
-      return { status: "unavailable" };
+      return { status: "unavailable", submitted: true };
     }
     this.pendingSteerSubmissions.push({
       text: payload.text,

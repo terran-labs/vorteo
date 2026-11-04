@@ -247,7 +247,12 @@ export interface AgentSteerOptions extends AgentRunOptions {
 // mints one. Rewinding to the message needs it.
 export type SteerResult =
   | { status: "accepted"; providerMessageId?: string }
-  | { status: "unavailable" };
+  /**
+   * `submitted` means the provider received the message before the steer stopped
+   * applying, for example because the turn ended first, so it may still act on it.
+   * Without it, `unavailable` promises the provider never took the message.
+   */
+  | { status: "unavailable"; submitted?: true };
 
 export interface SteerActiveTurnOptions extends AgentSteerOptions {
   expectedTurnId: string;
