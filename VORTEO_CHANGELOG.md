@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Fixes
+
+- Live dev mode's first tweak commit no longer fails its typecheck. Preparing the live checkout now builds the server stack, whose declarations the command-line package typechecks against.
+
+## Unreleased - 2026-11-04
+
 ### Changes
 
 - Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
