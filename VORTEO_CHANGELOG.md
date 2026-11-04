@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge current `main` into the release updates branch, keeping both sides' changelog and inventory entries.
+
+### Added
+
+- Installations update themselves from GitHub Releases. Each installation chooses manual or automatic updates and the stable or beta channel in Settings. The coordinator checks hourly and offers each new release once in the sidebar's Open questions card, with its summary, a security marker, changed Factory charters and the rollback path. Install after current work holds new Host turns and waits for running turns and Dev agents before restarting; automatic mode installs that way without asking. Agents read the policy with `installation-agent.mjs update-status`. Older coordinators keep the previous Settings behavior.
+- While a release upgrade waits for current work, Install now ends the wait from Open questions or Settings, and turning automatic updates off stops an automatic upgrade before its Host restart.
+- The restart queue lets the owner approve a single reviewed source update to finish current turns first when the decision names its exact digest, as automatic Host updates already do. Combined batches still restart at once.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Synchronize projects across the Host and Dev. The installation coordinator joins each environment's projects by their folder in the shared Projects folder, gives each one fixed key that git no longer re-derives, and registers a project on every environment where its folder exists. Git remotes no longer join different folders. Vorteo System gets one identity, and Vorton appears on the Host.
