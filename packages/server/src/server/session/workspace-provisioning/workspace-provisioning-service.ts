@@ -17,10 +17,14 @@ import {
 } from "../../workspace-registry.js";
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.js";
-import { deriveProjectKey } from "../../project-key.js";
-import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../../../utils/path.js";
+import { deriveProjectKey, retainedProjectKey } from "../../project-key.js";
+import {
+  areEquivalentPaths,
+  createRealpathAwarePathMatcher,
+  isPathInsideRoot,
+} from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
-import { logicalProjectsPath } from "../../projects-folder.js";
+import { logicalProjectsPath, projectsFolderLocation } from "../../projects-folder.js";
 import { trustProjectsFolderRepositoryForAgents } from "../../projects-folder-agent-git-trust.js";
 
 /** Requested directories may arrive through a Projects folder alias; records use the logical path. */
@@ -334,7 +338,15 @@ export function createWorkspaceProvisioningService(deps: {
     repoRoot: string;
   }): Promise<PersistedProjectRecord> {
     if (input.projectId) {
-      return refreshProjectKind(await requireActiveProject(input.projectId));
+      const requested = await requireActiveProject(input.projectId);
+      // A worktree belongs to its own repository's project. A caller's project for another
+      // folder, such as the Vorteo System project of the thread that asked, only names
+      // where it wants the work grouped, which membership records.
+      if (isRepositoryProject(input.repoRoot, requested)) return refreshProjectKind(requested);
+      logger.warn(
+        { requestedProjectId: requested.projectId, repoRoot: input.repoRoot },
+        "Worktree project belongs to another folder; using the repository's project",
+      );
     }
 
     const workspaces = await workspaceRegistry.list();
@@ -347,10 +359,22 @@ export function createWorkspaceProvisioningService(deps: {
       );
     if (sourceWorkspace) {
       const project = await projectRegistry.get(sourceWorkspace.projectId);
-      if (project) return refreshProjectKind(project);
+      // A source workspace filed under another folder's project does not pass that on.
+      if (project && isRepositoryProject(input.repoRoot, project))
+        return refreshProjectKind(project);
       // COMPAT(worktreeMissingSourceProject): added in v0.1.107, remove after 2027-01-15.
       // Orphaned legacy workspace FKs fall through to exact-root allocation.
     }
+
+    // A project at the repository root may be recorded at a kept alias path, as a Factory
+    // checkout is; reuse it rather than allocating a second project for the same folder.
+    const repoLocation = projectsFolderLocation(input.repoRoot);
+    const atRoot = (await projectRegistry.list()).find(
+      (project) =>
+        !project.archivedAt &&
+        areEquivalentPaths(projectsFolderLocation(project.rootPath), repoLocation),
+    );
+    if (atRoot) return refreshProjectKind(atRoot);
 
     const checkout = await workspaceGitService.getCheckout(input.repoRoot);
     const project = await projectRegistry.getOrCreateActiveByRoot({
@@ -460,7 +484,7 @@ export function createWorkspaceProvisioningService(deps: {
         mainRepoRoot: projectCheckout.mainRepoRoot,
         serverId,
       });
-      const nextKey = project.systemProject ? project.projectKey : projectKey;
+      const nextKey = retainedProjectKey(project, projectKey);
       if (project.archivedAt || project.kind !== kind || project.projectKey !== nextKey) {
         await projectRegistry.upsert({
           ...project,
@@ -511,8 +535,8 @@ export function createWorkspaceProvisioningService(deps: {
       mainRepoRoot: projectCheckout.mainRepoRoot,
       serverId,
     });
-    // The system project's key is daemon-owned; only its kind follows the checkout.
-    const nextKey = project.systemProject ? project.projectKey : projectKey;
+    // Daemon-owned and synchronized keys stay; only the kind follows the checkout.
+    const nextKey = retainedProjectKey(project, projectKey);
     if (project.kind === kind && project.projectKey === nextKey) return project;
     const refreshed = {
       ...project,
@@ -533,4 +557,12 @@ export function createWorkspaceProvisioningService(deps: {
     findOrCreateProjectForDirectory,
     ensureWorkspaceRecordUnarchived,
   };
+}
+
+/** Whether `project` is the repository's own project: its folder is the repository or inside it. */
+function isRepositoryProject(repoRoot: string, project: PersistedProjectRecord): boolean {
+  return isPathInsideRoot(
+    projectsFolderLocation(repoRoot),
+    projectsFolderLocation(project.rootPath),
+  );
 }

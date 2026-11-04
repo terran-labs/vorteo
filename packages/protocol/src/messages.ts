@@ -1353,6 +1353,89 @@ export const WorkspaceProjectSetResponseSchema = z.object({
   }),
 });
 
+/**
+ * Installation project synchronization. The installation coordinator lists each daemon's
+ * projects and applies the changes that give one project the same key on every host.
+ */
+export const ProjectSyncListRequestSchema = z.object({
+  type: z.literal("project.sync.list.request"),
+  requestId: z.string(),
+});
+
+export const ProjectSyncEntrySchema = z.object({
+  projectId: z.string(),
+  projectKey: z.string().nullable(),
+  projectKeyPinned: z.boolean(),
+  rootPath: z.string(),
+  /** The root inside the shared Projects folder, even when the record keeps an alias path. */
+  logicalRootPath: z.string(),
+  kind: z.enum(["git", "non_git"]),
+  displayName: z.string(),
+  customName: z.string().nullable(),
+  archived: z.boolean(),
+  system: z.boolean(),
+  /** Factory bindings compare this project's key, so synchronization never changes it. */
+  factory: z.boolean(),
+  /** Keys synchronization replaced, so memberships still under them can follow. */
+  previousKeys: z.array(z.string()).optional(),
+  createdAt: z.string(),
+});
+
+export const ProjectSyncListResponseSchema = z.object({
+  type: z.literal("project.sync.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectsRoot: z.string().nullable(),
+    projects: z.array(ProjectSyncEntrySchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const ProjectSyncChangeSchema = z.discriminatedUnion("kind", [
+  /** Assign and pin a project's synchronized key. */
+  z.object({
+    kind: z.literal("set_key"),
+    projectId: z.string().min(1),
+    projectKey: z.string().min(1).max(2048),
+  }),
+  /** Point workspace memberships and saved sidebar keys at a project's new key. */
+  z.object({
+    kind: z.literal("rename_key"),
+    from: z.string().min(1).max(2048),
+    to: z.string().min(1).max(2048),
+  }),
+  /** Register the project at an existing folder on this host, with its synchronized key. */
+  z.object({
+    kind: z.literal("create"),
+    rootPath: z.string().min(1),
+    projectKey: z.string().min(1).max(2048),
+    displayName: z.string().min(1).max(256),
+    customName: z.string().min(1).max(256).nullable(),
+  }),
+]);
+
+export const ProjectSyncApplyRequestSchema = z.object({
+  type: z.literal("project.sync.apply.request"),
+  changes: z.array(ProjectSyncChangeSchema).max(500),
+  requestId: z.string(),
+});
+
+export const ProjectSyncApplyResponseSchema = z.object({
+  type: z.literal("project.sync.apply.response"),
+  payload: z.object({
+    requestId: z.string(),
+    /** One result per change, in request order. */
+    results: z.array(
+      z.object({
+        applied: z.boolean(),
+        projectId: z.string().nullable(),
+        error: z.string().nullable(),
+      }),
+    ),
+    error: z.string().nullable(),
+  }),
+});
+
 export const WorkspaceTitleSetRequestSchema = z.object({
   type: z.literal("workspace.title.set.request"),
   workspaceId: z.string(),
@@ -3697,6 +3780,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceTitleSuggestRequestSchema,
   WorkspaceTitleSetRequestSchema,
   WorkspaceProjectSetRequestSchema,
+  ProjectSyncListRequestSchema,
+  ProjectSyncApplyRequestSchema,
   WorkspacePinSetRequestSchema,
   WorkspaceLifecycleSetRequestSchema,
   SystemSourceSetupRequestSchema,
@@ -4234,6 +4319,8 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceProjectPlacement: z.boolean().optional(),
         // COMPAT(workspaceCreateProjectMembership): added in v0.11.0-beta.3.vorteo.280; retain until all supported daemons assign membership atomically.
         workspaceCreateProjectMembership: z.boolean().optional(),
+        // COMPAT(projectSync): added 2026-11-03; the coordinator skips daemons without it.
+        projectSync: z.boolean().optional(),
         // COMPAT(workspaceTaskEnvironments): gate bindings on daemons that persist them.
         workspaceTaskEnvironments: z.boolean().optional(),
         // COMPAT(idleRestart): added in v0.11.0-beta.3.vorteo.131; retain until the daemon floor supports the admission barrier.
@@ -4334,6 +4421,8 @@ export const ServerInfoStatusPayloadSchema = z
         sidebarState: z.boolean().optional(),
         // COMPAT(sidebarFolders): added 2026-10-22; gate folder writes until the daemon floor includes them.
         sidebarFolders: z.boolean().optional(),
+        // COMPAT(sidebarPlacement): added 2026-11-03; gate placeFirst writes until the daemon floor includes them.
+        sidebarPlacement: z.boolean().optional(),
         checklistReviewStatus: z.boolean().optional(),
         // COMPAT(checklistProgress): added October 2026; send progress and checks only when advertised.
         checklistProgress: z.boolean().optional(),
@@ -7880,6 +7969,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceTitleSuggestResponseSchema,
   WorkspaceTitleSetResponseSchema,
   WorkspaceProjectSetResponseSchema,
+  ProjectSyncListResponseSchema,
+  ProjectSyncApplyResponseSchema,
   WorkspacePinSetResponseSchema,
   WorkspaceLifecycleSetResponseSchema,
   SystemSourceSetupResponseSchema,
