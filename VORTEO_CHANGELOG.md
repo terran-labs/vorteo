@@ -12,7 +12,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
-- Merged current `main` into the open question answer delivery fix; both sides' entries are kept.
+- Merged current `main` into the open question answer delivery fix twice; both sides' entries are kept.
+
+## Unreleased - 2026-11-04
+
+### Changes
+
+- Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
 
 ## Unreleased - 2026-11-04
 
@@ -20,6 +26,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
 - Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
+
+### Fixes
+
+- The Dev boot-entry switch reads and hashes its pinned files as paseo. Dev's root has no capabilities, so it could not read the paseo-private Factory entry or the managed releases, and the switch's checks would have refused every plan. A file paseo cannot read is now reported as unreadable rather than changed.
 
 ## Unreleased - 2026-11-03
 
