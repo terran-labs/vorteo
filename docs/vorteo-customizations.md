@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): prepared beta release 26.11.301 for the VortLab bootstrap, superseding the untagged 26.11.300 preparation after the AGENTS.md size fix. Version and changelog only; no behavior changed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): the live dev mode section in AGENTS.md became a pointer to the task delivery guide, which already holds the full workflow, so AGENTS.md stays within its 32 KiB budget. Documentation only; no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): prepared beta release 26.11.300, the VortLab bootstrap release carrying live dev mode, typed questions, the installer upgrade fix, the provider account connection fixes and the server test repairs. Version and changelog only; no behavior changed in this commit. README overview and onboarding are unchanged.
