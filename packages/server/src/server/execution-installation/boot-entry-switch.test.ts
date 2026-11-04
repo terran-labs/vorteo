@@ -100,7 +100,16 @@ interface FakeDevOptions {
   factory?: Record<string, unknown>[];
   /** What the directory check reports for the pointer and target directories. */
   directory?: string;
+  /** Files no Dev user can read. */
+  unreadable?: string[];
 }
+
+/**
+ * Like live Dev, which drops every capability: its root cannot read the paseo-private
+ * Factory entry (0600) or anything under the managed releases (0700). The pointer, node and
+ * installed plain entry are world-readable.
+ */
+const PASEO_PRIVATE = new Set([FACTORY_ENTRY, SUPERVISOR]);
 
 /** A fake Dev behind `docker exec`: pointer, file digests, supervisord and Factory's check. */
 function fakeDev(options: FakeDevOptions = {}) {
@@ -130,12 +139,18 @@ function fakeDev(options: FakeDevOptions = {}) {
       return { stdout: `${DEV}|${JSON.stringify(state)}\n` };
     }
     expect(args.slice(2, 4)).toEqual(["exec", "--user"]);
+    const user = args[4]!;
     const script = args[8]!;
     const params = args.slice(10);
     if (script.includes('sha256sum "$f"'))
       return {
         stdout: params
-          .map((p) => `${p === POINTER ? sha(pointer) : (files[p] ?? "missing")} ${p}\n`)
+          .map((p) => {
+            const blocked =
+              options.unreadable?.includes(p) || (user === "0" && PASEO_PRIVATE.has(p));
+            const digest = p === POINTER ? sha(pointer) : (files[p] ?? "missing");
+            return `${blocked ? "unreadable" : digest} ${p}\n`;
+          })
           .join(""),
       };
     if (script === 'cat "$1"') return { stdout: pointer };
@@ -225,6 +240,11 @@ test.each([
     "a directory another user controls",
     { directory: "/opt/vorteo-boot is owned by uid 1000" },
     "the boot pointer directory is unsafe (/opt/vorteo-boot is owned by uid 1000)",
+  ],
+  [
+    "a pinned file paseo cannot read",
+    { unreadable: [NODE] },
+    "the node runtime is not readable by paseo",
   ],
   [
     "Dev already in the plain form",
