@@ -14,6 +14,10 @@ Maintenance review (2026-11-03): added live dev mode, an owner-only Delivery mod
 
 Maintenance review (2026-11-03): restored the failing server tests. Claude usage-limit recording moved from the daemon bootstrap into the provider usage service, so the bootstrap stays provider-neutral as the upstream hook test requires; usage readings are unchanged. Session, wire compatibility and coordinator ledger tests now stub the history reload check and expect the read-only lifecycle view and dispatch status feature added earlier. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-03): merged current `main`, including the message queue reconnect fix, into the provider account connection fixes for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): account connection fixes. An outdated provider CLI turns the whole profile card into the warning, with an Upgrade button that drafts a Host task in the current project. The permission warning waits for an open permission request instead of offering a switch the daemon refuses. Installation authority reads repeat when local settings change mid-read, so concurrent account sync no longer fails a sign-in. The Dev image daemon adopts a pairing client written after its launcher started, which unblocks Claude account sync to Dev after its next daemon start. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): merged current `main` into the message queue reconnect fix for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the browser message queue now reopens its local storage when the browser closes the connection, instead of failing every read, including Retry, until reload. A browser regression test covers it. The replica cache, project icon cache and plugin bundle cache keep the same single-connection pattern and are not changed here. README overview and onboarding are unchanged.

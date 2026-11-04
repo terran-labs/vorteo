@@ -30,12 +30,20 @@ export function ProfilePermissionWarning({
   const { entries } = useProvidersSnapshot(serverId, { cwd: null });
   const agent = useSessionStore(
     useShallow((state) => {
-      const session = state.sessions[serverId]?.agents.get(agentId);
+      const sessionState = state.sessions[serverId];
+      const session = sessionState?.agents.get(agentId);
+      let awaitingPermission = (session?.pendingPermissions.length ?? 0) > 0;
+      for (const pending of sessionState?.pendingPermissions.values() ?? []) {
+        if (pending.agentId === agentId) awaitingPermission = true;
+      }
       return {
         profileId: session?.profile?.id,
         provider: session?.provider,
         mode: session?.currentModeId,
         running: session?.status === "running" || session?.turn.phase === "open",
+        // The daemon refuses to switch while a permission request is open, even
+        // without a running turn, so the action waits for it to be answered.
+        awaitingPermission,
       };
     }),
   );
@@ -64,6 +72,7 @@ export function ProfilePermissionWarning({
       profileId={profile.id}
       provider={agent.provider}
       running={agent.running}
+      awaitingPermission={agent.awaitingPermission}
       current={mismatch.current}
       expected={mismatch.expected}
     />
@@ -76,6 +85,7 @@ interface PermissionWarningActionProps {
   profileId: string;
   provider: string;
   running: boolean;
+  awaitingPermission: boolean;
   current: string;
   expected: string;
 }
@@ -86,6 +96,7 @@ function PermissionWarningAction({
   profileId,
   provider,
   running,
+  awaitingPermission,
   current,
   expected,
 }: PermissionWarningActionProps) {
@@ -99,7 +110,10 @@ function PermissionWarningAction({
     () => picker?.applyProfile(profileId, { provider }),
     [picker, profileId, provider],
   );
-  const runningHint = running ? " Stop this chat before recreating it." : "";
+  let runningHint = "";
+  if (awaitingPermission) runningHint = " Answer the open permission request first.";
+  else if (running) runningHint = " Stop this chat before recreating it.";
+  const blocked = running || awaitingPermission;
   const description = useMemo(
     () => (
       <>
@@ -110,14 +124,14 @@ function PermissionWarningAction({
           variant="outline"
           size="md"
           onPress={recreate}
-          disabled={running || !picker || Boolean(picker.isApplying)}
+          disabled={blocked || !picker || Boolean(picker.isApplying)}
           testID="profile-permission-recreate"
         >
           {picker?.isApplying ? "Preparing..." : "Recreate chat"}
         </Button>
       </>
     ),
-    [current, expected, runningHint, recreate, running, picker],
+    [current, expected, runningHint, recreate, blocked, picker],
   );
   return (
     <>

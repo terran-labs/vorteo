@@ -6,6 +6,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- When a provider CLI is too old for its models, the whole profile card now shows the warning border and carries the update notice, instead of nesting a second warning card inside it. An **Upgrade** button opens a new Host workspace in the current project with an editable upgrade task; nothing runs until the owner submits it.
+- The **Profile permissions changed** prompt no longer offers **Recreate chat** while the chat still has an open permission request, which the daemon refuses. It asks the owner to answer that request first.
+- Connecting a Claude or Codex account no longer fails with "Daemon settings changed while verifying installation authority" when account sync writes local settings during the sign-in. The authority read repeats, up to three attempts, against the new settings.
+- A Dev container paired after its daemon started now finds the pairing client when its daemon next starts. Before this, the Dev daemon refused every shared settings request, so Claude accounts connected on the Host never synchronized to Dev.
+
 ### Tooling
 
 - Merged current `main` into typed questions before delivery.
@@ -41,6 +48,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Tooling
 
 - Merged current `main` into the message queue reconnect fix before delivery.
+- Merged current `main`, including the message queue reconnect fix, into the provider account connection fixes before delivery.
 
 ### Tests
 
