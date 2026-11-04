@@ -36,7 +36,7 @@ export async function sendThreadToFactory(
 }
 export function factoryModelConfiguration(
   projectId: string,
-  field: "role" | "workerProfileId" | "reviewerProfileId",
+  field: "role" | "plannerProfileId" | "workerProfileId" | "reviewerProfileId",
   profileId: string | null,
   role?: import("./factory-instructions-model").RoleId,
   provider?: string | null,

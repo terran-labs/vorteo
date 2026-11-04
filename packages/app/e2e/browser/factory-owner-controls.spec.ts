@@ -102,3 +102,30 @@ export default function contribute(server) {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("per-project Factory Overview opens on desktop and compact", async ({ page }, testInfo) => {
+  const { seedWorkspace } = await import("../support/helpers/seed-client");
+  const workspace = await seedWorkspace({ repoPrefix: "factory-overview-" });
+  const client = await connectNewWorkspaceDaemonClient({ ownProjects: false });
+  const previous = await client.getDaemonConfig();
+  try {
+    await client.patchDaemonConfig({ pluginsEnabled: true });
+    for (const width of [1100, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(`/h/${getServerId()}/factory/${workspace.projectId}`);
+      const overview = page.getByTestId("factory-overview");
+      await expect(overview).toBeVisible();
+      await expect(
+        overview.getByRole("button", { name: "Default", exact: true }).first(),
+      ).toBeVisible();
+      await page.screenshot({
+        path: testInfo.outputPath(`factory-overview-${width}.png`),
+        fullPage: true,
+      });
+    }
+  } finally {
+    await client.patchDaemonConfig({ pluginsEnabled: previous.config.pluginsEnabled });
+    await client.close();
+    await workspace.cleanup();
+  }
+});

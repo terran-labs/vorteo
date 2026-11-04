@@ -110,6 +110,10 @@ describe("Factory model, status and thread routing", () => {
       provider: null,
       profileId: null,
     });
+    expect(factoryModelConfiguration("p", "plannerProfileId", "planner")).toEqual({
+      projectId: "p",
+      plannerProfileId: "planner",
+    });
     expect(factoryModelConfiguration("p", "workerProfileId", "worker")).toEqual({
       projectId: "p",
       workerProfileId: "worker",

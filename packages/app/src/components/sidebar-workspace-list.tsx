@@ -523,31 +523,34 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
 
 function FactoryOverviewRow({
   target,
-  multiple,
   level,
 }: {
-  target: { serverId: string; projectId: string };
-  multiple: boolean;
+  target: { serverId: string; projectId: string; installationId: string };
   /** The Factory section's workspace level, so Overview lines up with them. */
   level: number;
 }) {
+  const { t } = useTranslation();
   const openOverview = useCallback(
     () =>
       router.navigate(
-        buildPluginSurfaceRoute(
-          target.serverId,
-          "factory",
-          { kind: "surface", id: "overview" },
-          { projectId: target.projectId },
-        ),
+        target.installationId.startsWith("project-factory:")
+          ? {
+              pathname: "/h/[serverId]/factory/[projectId]",
+              params: { serverId: target.serverId, projectId: target.projectId },
+            }
+          : buildPluginSurfaceRoute(
+              target.serverId,
+              "factory",
+              { kind: "surface", id: "overview" },
+              { projectId: target.projectId },
+            ),
       ),
-    [target.serverId, target.projectId],
+    [target.serverId, target.projectId, target.installationId],
   );
   return (
     <SidebarListActionRow
       icon={Factory}
-      label={multiple ? `Overview (${target.serverId.slice(-8)})` : "Overview"}
-      accessibilityLabel={`Factory overview for host ${target.serverId} project ${target.projectId}`}
+      label={t("projectFactory.overview")}
       level={level}
       testID={`sidebar-factory-overview-${target.serverId}-${target.projectId}`}
       onPress={openOverview}
@@ -1982,7 +1985,7 @@ function ProjectSection({
       ) : null,
     [focusAction, hoverUnavailable, title, testID],
   );
-  if (items.length === 0 || !isSidebarSectionShown(focus, section)) return null;
+  if ((items.length === 0 && !beforeList) || !isSidebarSectionShown(focus, section)) return null;
   // A focused section is the top level: its heading gives way to the breadcrumb and its
   // workspaces stay open.
   const collapsed = level !== null && storedCollapsed;
@@ -2252,7 +2255,7 @@ function ProjectBlock({
     () => projectFactoryTargets(project.hosts, project.workspaces, workspaceEntriesByKey),
     [project.hosts, project.workspaces, workspaceEntriesByKey],
   );
-  const factoryStates = useProjectFactories(factoryTargets, supportsFactory);
+  const factoryStates = useProjectFactories(project.hosts, supportsFactory, factoryTargets);
   const groups = useMemo(
     () =>
       splitFactoryWorkspaces(
@@ -2288,15 +2291,12 @@ function ProjectBlock({
         workspaceEntriesByKey,
         new Set(
           installedPlugins
-            .filter(
-              (plugin) =>
-                plugin.id === "factory" &&
-                plugin.surfaces.some((surface) => surface.id === "overview"),
-            )
+            .filter((plugin) => plugin.id === "factory")
             .map((plugin) => plugin.serverId),
         ),
+        factoryStates,
       ),
-    [groups.factory, workspaceEntriesByKey, installedPlugins],
+    [groups.factory, workspaceEntriesByKey, installedPlugins, factoryStates],
   );
 
   const {
@@ -2571,14 +2571,17 @@ function ProjectBlock({
             focus={focus}
             level={sectionLevel}
             itemLevel={sectionItemLevel}
-            beforeList={overviewTargets.map((target) => (
-              <FactoryOverviewRow
-                key={`${target.serverId}:${target.projectId}`}
-                target={target}
-                multiple={overviewTargets.length > 1}
-                level={sectionItemLevel}
-              />
-            ))}
+            beforeList={
+              overviewTargets.length > 0
+                ? overviewTargets.map((target) => (
+                    <FactoryOverviewRow
+                      key={`${target.serverId}:${target.projectId}`}
+                      target={target}
+                      level={sectionItemLevel}
+                    />
+                  ))
+                : null
+            }
             renderList={renderFactoryList}
           />
           <ProjectSection
