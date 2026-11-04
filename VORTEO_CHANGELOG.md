@@ -4,6 +4,13 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-04
+
+### Added
+
+- Rerunning the installer upgrades an installation it made. It fetches the latest release first, shows the installed and latest versions, and asks to upgrade in place and whether to change the installation name or in-app update policy meanwhile. The upgrade builds the release beside the running one, takes a snapshot, then restarts the Host daemon, coordinator and Dev on it; each returns to its previous release if it does not come back healthy, and a rerun resumes a stopped upgrade. Installations from release 26.11.103 on can upgrade this way, including those whose in-app upgrade never finished. `--repair` still repairs offline without upgrading.
+- The install tests workflow gains upgrade jobs that install releases 26.11.103 and 26.11.206 with their own installers on Linux with Dev and on macOS, then upgrade them with the commit under test and check that the upgraded installation offers in-app updates.
+
 ## Unreleased - 2026-11-03
 
 ### Maintenance
