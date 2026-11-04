@@ -16644,73 +16644,155 @@ test("an answer saved before a failed delivery is delivered once when its thread
   }
 });
 
-test("an answer to a busy thread waits queued until the provider takes the steer, then delivers once", async () => {
+test("an answer to a busy thread steers in once, through a pause, a lost acknowledgement and a restart", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "question-steer-"));
-  const session = new SteeringTestSession({ provider: "codex", cwd: workdir });
+  const storagePath = join(workdir, "agents");
+  const queuePath = join(workdir, "queue");
+  // Provider history the restarted daemon reads; the first daemon's session records steers.
+  const providerHistory: AgentStreamEvent[] = [];
+  class AnswerSession extends SteeringTestSession {
+    loseAcknowledgement = false;
+    override async steerActiveTurn(
+      prompt: AgentPromptInput,
+      options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
+    ): Promise<import("./agent-sdk-types.js").SteerResult> {
+      const result = await super.steerActiveTurn(prompt, options);
+      if (result.status === "accepted")
+        providerHistory.push({
+          type: "timeline",
+          provider: "codex",
+          turnId: `active-turn-${this.startCount}`,
+          item: {
+            type: "user_message",
+            text: typeof prompt === "string" ? prompt : "structured",
+            clientMessageId: options.clientMessageId,
+            messageId: `provider-${options.clientMessageId}`,
+          },
+        });
+      if (this.loseAcknowledgement) throw new Error("steer acknowledgement timed out");
+      return result;
+    }
+  }
+  const session = new AnswerSession({ provider: "codex", cwd: workdir });
   const client = new (class extends TestAgentClient {
     override async createSession(): Promise<AgentSession> {
       return session;
     }
+    override async resumeSession(): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        override async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
+          yield* providerHistory;
+        }
+      })({ provider: "codex", cwd: workdir });
+    }
   })();
   const manager = new AgentManager({
     clients: { codex: client },
-    registry: new AgentStorage(join(workdir, "agents"), logger),
+    registry: new AgentStorage(storagePath, logger),
     logger,
   });
   const queue = new MessageQueueService(
-    new MessageQueueStore(join(workdir, "queue")),
-    new QueueAttachmentStore(join(workdir, "queue")),
+    new MessageQueueStore(queuePath),
+    new QueueAttachmentStore(queuePath),
   );
   manager.setMessageQueueControl(queue);
+  let reopened: AgentManager | undefined;
+  let nextQueue: MessageQueueService | undefined;
   let agentId: string | undefined;
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
     agentId = agent.id;
-    const questionId = randomUUID();
-    await manager.mutateQuestions(agent.id, {
-      operation: "ask",
-      id: questionId,
-      question: "Ship the beta tonight?",
-      why: "Release notes wait for this decision.",
-      recommendedDefault: "Ship tomorrow",
-    });
+    const ask = async (question: string) => {
+      const id = randomUUID();
+      await manager.mutateQuestions(agent.id, {
+        operation: "ask",
+        id,
+        question,
+        why: "Release notes wait for this decision.",
+        recommendedDefault: "Ship tomorrow",
+      });
+      return { questionId: id, answer: "Ship tomorrow", answeredBy: "mobile:owner-app" };
+    };
+    const first = await ask("Ship the beta tonight?");
+    const second = await ask("Ship the stable tonight?");
     void drainAsyncGenerator(manager.streamAgent(agent.id, "long work"));
     await manager.waitForAgentRunStart(agent.id);
-    const answer = { questionId, answer: "Ship tomorrow", answeredBy: "mobile:owner-app" };
     const answerMessages = async () =>
       (await manager.getTimelineRows(agent.id)).filter(
         (row) =>
           row.item.type === "user_message" && row.item.text.includes("Answer: Ship tomorrow"),
       ).length;
+    const question = async (id: string, owner = manager) =>
+      (await owner.readQuestions(agent.id)).find((entry) => entry.id === id);
 
     session.steerResult = "unavailable";
-    const queued = await manager.answerQuestion(agent.id, answer);
-    expect(queued[0]).toMatchObject({ status: "answered" });
-    expect(queued[0]?.answerDeliveredAt).toBeUndefined();
+    await manager.answerQuestion(agent.id, first);
+    expect((await question(first.questionId))?.answerDeliveredAt).toBeUndefined();
     expect((await queue.read(agent.id)).items).toMatchObject([
-      { id: `question-answer-${questionId}`, delivery: { status: "queued" } },
+      { id: `question-answer-${first.questionId}`, delivery: { status: "queued" } },
     ]);
     expect(manager.getAgent(agent.id)?.journal ?? []).toEqual([]);
     expect(await answerMessages()).toBe(0);
 
-    // The turn is still busy; the answer steers into it instead of waiting for it to end.
+    // The turn is still busy; the answer steers into it, and a queue pause does not hold it.
+    await queue.pause(agent.id);
     session.steerResult = "accepted";
-    const delivered = await manager.answerQuestion(agent.id, answer);
-    expect(delivered[0]?.answerDeliveredAt).toBeDefined();
+    await manager.answerQuestion(agent.id, first);
+    expect((await question(first.questionId))?.answerDeliveredAt).toBeDefined();
     expect(manager.getAgent(agent.id)?.lifecycle).toBe("running");
     expect((await queue.read(agent.id)).items).toEqual([]);
     expect(manager.getAgent(agent.id)?.journal).toHaveLength(1);
     expect(await answerMessages()).toBe(1);
-    await manager.answerQuestion(agent.id, answer);
+    await manager.answerQuestion(agent.id, first);
     expect(session.steerCount).toBe(2);
-    expect(await queue.acceptedHistory(agent.id)).toHaveLength(1);
-    expect(manager.getAgent(agent.id)?.journal).toHaveLength(1);
+
+    // The provider takes the second answer but its acknowledgement is lost: only provider
+    // history may settle it, so a retry must not steer it again.
+    session.loseAcknowledgement = true;
+    await manager.answerQuestion(agent.id, second);
+    await manager.answerQuestion(agent.id, second);
+    expect(session.steerCount).toBe(3);
+    expect((await question(second.questionId))?.answerDeliveredAt).toBeUndefined();
+    expect((await queue.read(agent.id)).items).toMatchObject([
+      { id: `question-answer-${second.questionId}`, delivery: { status: "uncertain" } },
+    ]);
+    await manager.closeAgent(agent.id);
+    await manager.flush();
+    queue.close();
+
+    const nextStorage = new AgentStorage(storagePath, logger);
+    reopened = new AgentManager({ clients: { codex: client }, registry: nextStorage, logger });
+    const attachments = new QueueAttachmentStore(queuePath);
+    nextQueue = new MessageQueueService(new MessageQueueStore(queuePath), attachments);
+    reopened.setMessageQueueControl(nextQueue);
+    await reopened.resumeAgentFromPersistence(
+      { provider: "codex", sessionId: "question-steer" },
+      { cwd: workdir },
+      agent.id,
+    );
+    await nextQueue.startDelivery(
+      createAgentQueueDelivery({
+        attachments,
+        agentManager: reopened,
+        agentStorage: nextStorage,
+        logger,
+      }),
+    );
+    await expect
+      .poll(async () => (await question(second.questionId, reopened))?.answerDeliveredAt)
+      .toBeDefined();
+    expect((await nextQueue.read(agent.id)).items).toEqual([]);
+    expect(await nextQueue.acceptedHistory(agent.id)).toHaveLength(2);
+    expect(reopened.getAgent(agent.id)?.journal).toHaveLength(2);
+    expect(session.steerCount).toBe(3);
   } finally {
     queue.close();
-    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    nextQueue?.close();
+    if (agentId) await reopened?.closeAgent(agentId).catch(() => undefined);
     await manager.flush();
+    await reopened?.flush();
     rmSync(workdir, { recursive: true, force: true });
   }
 });

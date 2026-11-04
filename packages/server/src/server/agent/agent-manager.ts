@@ -271,6 +271,14 @@ export class RestartInterruptionError extends Error {
   }
 }
 
+/** The steer was refused before the provider could hold the message. */
+export class SteerNotAdmittedError extends Error {
+  constructor() {
+    super("Active turn changed before steering could be delivered");
+    this.name = "SteerNotAdmittedError";
+  }
+}
+
 export class AgentRunCancellationError extends Error {
   constructor(agentId: string, action: "reload" | "replace" | "rewind" | "stop") {
     super(
@@ -5382,8 +5390,19 @@ export class AgentManager {
       const agent = this.agents.get(agentId);
       const turnId = agent?.activeForegroundTurnId ?? agent?.activeTurnId;
       if (!turnId || !agent?.session?.steerActiveTurn) return null;
-      const result = await this.steerAgentRun(agentId, item.text, { clientMessageId: item.id });
-      return result.status === "accepted" ? { turnId } : null;
+      try {
+        this.assertQuotaNotPaused(agentId);
+      } catch {
+        return null;
+      }
+      // Null only for a certain refusal; any other failure is left to provider history.
+      try {
+        const result = await this.steerAgentRun(agentId, item.text, { clientMessageId: item.id });
+        return result.status === "accepted" ? { turnId } : null;
+      } catch (error) {
+        if (error instanceof SteerNotAdmittedError) return null;
+        throw error;
+      }
     });
     if (steered === "accepted") return this.recordAnswerReceived(agentId, question.id);
     return structuredClone(this.requireAgent(agentId).questions ?? []);
@@ -5820,7 +5839,7 @@ export class AgentManager {
     // An unavailable answer is only safe to fall back from while this admission
     // still owns the active turn. Never let an A admission replace a later B.
     if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      throw new SteerNotAdmittedError();
     }
     return result;
   }
@@ -5885,7 +5904,7 @@ export class AgentManager {
 
   private assertSteerAdmissionOwnsTurn(agent: ActiveManagedAgent, expectedTurnId: string): void {
     if (agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      throw new SteerNotAdmittedError();
     }
   }
 

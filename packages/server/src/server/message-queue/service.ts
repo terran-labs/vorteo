@@ -133,8 +133,10 @@ export class MessageQueueService {
 
   /**
    * Steers one queued message into the active turn under a persisted claim, so a restart
-   * mid-steer reconciles it from provider history like any other dispatch. A steer the
-   * provider cannot take returns the message to the queue for normal delivery.
+   * mid-steer reconciles it from provider history like any other dispatch. `steer` returns
+   * null only when the provider certainly did not take the message, which returns it to the
+   * queue for normal delivery; a thrown steer is uncertain until provider history decides.
+   * The named claim ignores a queue pause, which holds back only ordinary delivery.
    */
   async steerQueuedMessage(
     agentId: string,
@@ -145,11 +147,23 @@ export class MessageQueueService {
     const item = await this.store.claim(agentId, messageId);
     if (item?.delivery.status !== "dispatching") return "queued";
     this.publish(await this.store.read(agentId));
-    let accepted: { turnId: string } | null = null;
+    let accepted: { turnId: string } | null;
     try {
       accepted = await steer(item);
-    } catch {
-      // Like a failed start admission, a refused steer leaves the message for queue delivery.
+    } catch (error) {
+      // The provider may hold the message even though its acknowledgement failed, so only
+      // provider history may decide. A confirmed refusal returns null instead of throwing.
+      const reason = error instanceof Error ? error.message : "The steer could not be confirmed.";
+      this.publish(
+        await this.store.settle({
+          agentId,
+          messageId,
+          attemptId: item.delivery.attemptId,
+          outcome: { status: "uncertain", reason: reason.slice(0, 4000) },
+        }),
+      );
+      this.wake(agentId);
+      return "queued";
     }
     if (accepted) {
       this.publish(

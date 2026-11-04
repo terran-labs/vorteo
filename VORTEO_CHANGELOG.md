@@ -8,7 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
-- Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer still receive the answer when the turn finishes. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment.
+- Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer still receive the answer when the turn finishes. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment. Pausing the queue no longer holds an answer back from a busy thread, and a steer whose acknowledgement is lost is settled from provider history instead of being sent again.
 
 ## Unreleased - 2026-11-03
 

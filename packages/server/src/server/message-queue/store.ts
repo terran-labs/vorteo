@@ -287,8 +287,9 @@ export class MessageQueueStore {
         ? record.snapshot.items.find((item) => item.id === messageId)
         : record.snapshot.items[0];
       if (record.restartContinuation?.phase === "held") return null;
-      if (!head || (record.snapshot.paused && !head.sendNow) || head.delivery.status !== "queued")
-        return null;
+      // A pause holds back ordinary delivery, not a named item steered into an active turn.
+      const paused = record.snapshot.paused && !head?.sendNow && !messageId;
+      if (!head || paused || head.delivery.status !== "queued") return null;
       head.delivery = {
         status: "dispatching",
         attemptId: randomUUID(),
