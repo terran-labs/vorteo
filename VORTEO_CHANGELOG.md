@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Fixes
+
+- Installer upgrades roll a service back even when its restart itself fails, recreate Dev after an interrupted image switch by checking the image the container runs, check again for an interface upgrade before each restart, and refuse a second concurrent installer upgrade.
+
+## Unreleased - 2026-11-04
+
 ### Tests
 
 - The install tests' upgrade jobs install each old release from a checkout of its tag, running that release's own installer without GitHub API calls, which shared macOS runners had exhausted.

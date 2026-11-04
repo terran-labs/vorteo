@@ -186,7 +186,10 @@ function machine({
         "launchctl kickstart",
         (args) => {
           state.restarts.push(args[2]);
-          if (args[2].endsWith(".installation") && state.coordinatorStarts) state.pid += 1;
+          // Only the new release can be broken: the previous one always starts again.
+          const onPrevious = realpathSync(paths.coordinatorReleaseLink).endsWith(OLD);
+          if (args[2].endsWith(".installation") && (state.coordinatorStarts || onPrevious))
+            state.pid += 1;
         },
       ],
       ["docker info", "27.0.0"],
@@ -196,7 +199,9 @@ function machine({
       [
         "launchctl bootstrap",
         (args) => {
-          if (args[2].endsWith(".installation.plist") && state.coordinatorStarts) state.pid += 1;
+          const onPrevious = realpathSync(paths.coordinatorReleaseLink).endsWith(OLD);
+          if (args[2].endsWith(".installation.plist") && (state.coordinatorStarts || onPrevious))
+            state.pid += 1;
         },
       ],
       ["docker image inspect", new Error("No such image")],
@@ -502,6 +507,40 @@ describe("upgrade", () => {
       expect(failure.message).toMatch(/started from the interface is running/);
       expect(record.status).toBe("running");
     }
+  });
+
+  test("a resumed Dev step recreates Dev when only its .env names the new image", async () => {
+    const { context, state, paths } = machine({ devContainer: true });
+    // update.sh wrote .env, then stopped before recreating the container.
+    writeFileSync(
+      path.join(paths.container, ".env"),
+      "PASEO_INSTANCE=paseo-old\nPASEO_IMAGE=sha256:new\n",
+    );
+    context.run = fakeRunner([
+      ["docker inspect", () => state.devImage],
+      ["docker image inspect", (args) => args.at(-1)],
+      ...context.run.rules,
+    ]);
+    const { plan } = await upgradePlan(context);
+    writeJson(path.join(context.root, UPGRADE_JOURNAL), {
+      version: 1,
+      installationId: ID,
+      startedAt: "2026-11-04T00:00:00.000Z",
+      plan,
+      steps: Object.fromEntries(
+        [
+          "upgrade-check",
+          "upgrade-release",
+          "upgrade-snapshot",
+          "upgrade-host",
+          "upgrade-coordinator",
+        ].map((step) => [step, { status: "done" }]),
+      ),
+      outputs: { devPreviousImage: "sha256:old", devImage: "sha256:new" },
+    });
+    const { events } = await apply(context, plan);
+    expect(events).toContainEqual(expect.objectContaining({ step: "upgrade-dev", status: "done" }));
+    expect(context.run.commands()).toContainEqual(expect.stringMatching(/update\.sh sha256:new$/));
   });
 
   test("a release without update offers upgrades and says so", async () => {

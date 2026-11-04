@@ -397,13 +397,30 @@ async function stuckInterfaceUpgrade(s) {
   }
 }
 
+const activeInterfaceUpgrades = (s) =>
+  (readJson(interfaceJournal(s))?.upgrades ?? []).filter(
+    (item) =>
+      ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
+  );
+
+/**
+ * An interface upgrade approved while this one built would change the same links. Old
+ * coordinators cannot be told to hold off, so each restart checks again first.
+ */
+function assertNoInterfaceUpgrade(s) {
+  const [active] = activeInterfaceUpgrades(s);
+  if (active)
+    throw new InstallerError(
+      `An upgrade to ${active.release} was started from the interface and is ${active.status}.`,
+      "Wait for it to finish or cancel it in Settings, then rerun the installer to resume.",
+    );
+}
+
 async function check(s) {
   const { install, context } = s;
   // Two upgrades at once would fight over the links; the interface's goes first, unless
   // it is stuck, when this upgrade replaces it.
-  const active = (readJson(interfaceJournal(s))?.upgrades ?? []).filter((item) =>
-    ["approved", "running"].includes(item.status),
-  );
+  const active = activeInterfaceUpgrades(s);
   if (active.length && !(await stuckInterfaceUpgrade(s)))
     throw new InstallerError(
       `An upgrade to ${active[0].release} started from the interface is ${active[0].status}.`,
@@ -520,28 +537,37 @@ async function switchService(s, { link, service, output, ready, name, between })
   const current = realpathSync(link);
   if (!s.outputs[output] && current !== target) journal.output({ [output]: current });
   const previous = s.outputs[output];
-  pointLink(link, plan.release);
-  if (between) {
-    await manager.stop(service);
-    // launchd unloads after bootout returns; bootstrapping the label sooner fails.
-    for (
-      let wait = 0;
-      manager.kind === "launchd" && wait < 40 && (await manager.isRegistered(service));
-      wait += 1
-    )
-      await s.context.sleep(250);
-    between();
-    await manager.start(service);
-  } else await manager.restart(service);
   try {
+    pointLink(link, plan.release);
+    if (between) {
+      await manager.stop(service);
+      // launchd unloads after bootout returns; bootstrapping the label sooner fails.
+      for (
+        let wait = 0;
+        manager.kind === "launchd" && wait < 40 && (await manager.isRegistered(service));
+        wait += 1
+      )
+        await s.context.sleep(250);
+      between();
+      await manager.start(service);
+    } else await manager.restart(service);
     await ready();
   } catch (error) {
+    let restored = "";
     if (previous && previous !== target) {
-      pointLink(link, previous);
-      await manager.restart(service);
+      try {
+        pointLink(link, previous);
+        // A stop that succeeded before the failure left launchd without the job.
+        if (await manager.isRegistered(service)) await manager.restart(service);
+        else await manager.start(service);
+        await ready();
+        restored = ` It runs ${previous} again.`;
+      } catch (rollbackError) {
+        restored = ` Returning it to ${previous} failed too (${rollbackError.message}); run the installer with --repair.`;
+      }
     }
     throw new InstallerError(
-      `The ${name} did not become ready on ${label(plan.to)}: ${error.message}.${previous ? ` It runs ${previous} again.` : ""}`,
+      `The ${name} did not become ready on ${label(plan.to)}: ${error.message}.${restored}`,
       `Its logs are in ${s.install.plan.paths.logs}. Fix the problem, then rerun the installer to resume the upgrade.`,
       { cause: error },
     );
@@ -563,6 +589,7 @@ async function waitFor(s, probe, timeoutMs) {
 }
 
 async function hostStep(s) {
+  assertNoInterfaceUpgrade(s);
   const { connectInstallationDaemon } = await modules(s);
   const current = config(s);
   await switchService(s, {
@@ -614,6 +641,7 @@ function supersede(s) {
 }
 
 async function coordinatorStep(s) {
+  assertNoInterfaceUpgrade(s);
   const port = s.install.plan.ports.coordinator;
   let before = null;
   try {
@@ -656,6 +684,37 @@ const devImage = (s) =>
   readEnvFile(path.join(s.install.plan.paths.container, ".env")).PASEO_IMAGE ?? null;
 
 /**
+ * The image ID Dev's container runs, or null. update.sh writes .env before it recreates
+ * the container, so after an interruption only the container tells what runs.
+ */
+async function runningImage(s) {
+  try {
+    return await s.context.run(s.install.plan.executables.docker, [
+      "inspect",
+      "--format",
+      "{{.Image}}",
+      `${s.install.outputs.instance}-paseo-1`,
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+async function imageId(s, reference) {
+  try {
+    return await s.context.run(s.install.plan.executables.docker, [
+      "image",
+      "inspect",
+      "--format",
+      "{{.Id}}",
+      reference,
+    ]);
+  } catch {
+    return reference;
+  }
+}
+
+/**
  * Builds Dev's image from the release and recreates Dev with the deployment's update.sh,
  * which waits for health and restores the previous image itself when the new one fails;
  * the same commands as the interface upgrade (release-upgrade-runtime.ts).
@@ -664,6 +723,7 @@ async function devStep(s) {
   const { plan, install, context, journal } = s;
   const docker = install.plan.executables.docker;
   const deployment = install.plan.paths.container;
+  assertNoInterfaceUpgrade(s);
   if (!s.outputs.devPreviousImage) journal.output({ devPreviousImage: devImage(s) });
   const previous = s.outputs.devPreviousImage;
   let image = s.outputs.devImage;
@@ -715,7 +775,7 @@ async function devStep(s) {
   const { connectInstallationDaemon } = await modules(s);
   const current = config(s);
   try {
-    if (devImage(s) !== image)
+    if ((await runningImage(s)) !== (await imageId(s, image)))
       await context.run("/bin/bash", [path.join(deployment, "update.sh"), image], {
         env: devEnvironment(s),
         timeout: 15 * 60_000,
@@ -735,7 +795,7 @@ async function devStep(s) {
   } catch (error) {
     let restored = "Dev runs the previous image again.";
     try {
-      if (previous && devImage(s) !== previous)
+      if (previous && (await runningImage(s)) !== (await imageId(s, previous)))
         await context.run("/bin/bash", [path.join(deployment, "update.sh"), previous], {
           env: devEnvironment(s),
           timeout: 15 * 60_000,
@@ -910,6 +970,36 @@ export async function applyUpgrade(plan, context, emit) {
       "Plan again for this installation.",
     );
   const installJournal = createJournalHandle(install.file, install.data, context.now);
+  const release = lockUpgrade(context.root);
+  try {
+    return await runUpgrade(plan, context, emit, install, installJournal);
+  } finally {
+    release();
+  }
+}
+
+/** One installer upgrade at a time per installation; a lock left by a dead process is taken over. */
+function lockUpgrade(root) {
+  const file = path.join(root, "state", "upgrade.lock");
+  const holder = readJson(file)?.pid;
+  if (holder && holder !== process.pid) {
+    let alive = true;
+    try {
+      process.kill(holder, 0);
+    } catch {
+      alive = false;
+    }
+    if (alive)
+      throw new InstallerError(
+        `Another installer (process ${holder}) is upgrading ${root}.`,
+        "Wait for it to finish, then rerun the installer.",
+      );
+  }
+  writeJson(file, { pid: process.pid });
+  return () => rmSync(file, { force: true });
+}
+
+async function runUpgrade(plan, context, emit, install, installJournal) {
   const journal = openUpgradeJournal(plan, context);
   const state = {
     plan: journal.data.plan,
