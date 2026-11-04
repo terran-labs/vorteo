@@ -8,7 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Features
 
-- A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it: neither automatic approval nor full maintenance delegation applies, and it refuses to run until every Factory gate pins the matching check.
+- A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check.
 - Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
 
 ## 26.11.302 - 2026-11-03

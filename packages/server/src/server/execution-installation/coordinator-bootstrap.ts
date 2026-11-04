@@ -1,4 +1,7 @@
-import { plansConfigurationChange } from "@getpaseo/protocol/coordinator-configuration-settings";
+import {
+  plansConfigurationChange,
+  plansOwnerReviewOnlyChange,
+} from "@getpaseo/protocol/coordinator-configuration-settings";
 import {
   BootstrapRequestConflict,
   BootstrapAuthenticationRequired,
@@ -421,6 +424,8 @@ function assertAutomaticCoordinatorPlan(
     plan.compatibleRecovery.configuration.sha256 !== plan.previous.configuration.sha256 ||
     (plan.recoveredFrom && !preFreezeRecovery) ||
     plan.supervisionRecovery ||
+    // Full delegation never admits a setting the owner approves later by digest alone.
+    plansOwnerReviewOnlyChange(plan) ||
     (!delegatedMaintenance &&
       (plan.candidate.configuration.sha256 !== plan.previous.configuration.sha256 ||
         plan.sourceUpdateTooling ||

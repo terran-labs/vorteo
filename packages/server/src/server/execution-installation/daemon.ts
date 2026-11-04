@@ -38,6 +38,7 @@ import { WebSocket } from "ws";
 import type { Logger } from "pino";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type {
+  BootEntrySwitchConfiguration,
   RestartImpact,
   RestartJob,
   ExecutionEnvironmentKind,
@@ -293,6 +294,13 @@ export function createInstallationRestartExecutor(
     connectInstallationDaemon(config, kind),
 ): RestartExecutor {
   const assertReady = createInstallationRegistrationAdmission(config, assertRegistrationReadiness);
+  function bootEntrySwitchPins(plan: BootEntrySwitchConfiguration): string | null {
+    return bootEntrySwitchPinProblem(plan, {
+      factoryGate: config.container?.factoryGate?.verify.sha256,
+      engineRestart: config.container?.engineRestart?.factoryVerify?.sha256,
+      engineRecovery: config.container?.engineRecovery?.factoryVerify.sha256,
+    });
+  }
   function retainedHeldRestart(job: RestartJob) {
     const current = new FileBootstrapRequestJournal(config.stateDir)
       .readLifecycle()
@@ -602,10 +610,14 @@ export function createInstallationRestartExecutor(
         replacement,
       ].join(" ");
     },
-    bootEntrySwitchPlan: () =>
-      config.container?.persistentRegistration
-        ? undefined
-        : bootEntrySwitchPlanDigest(config.container?.bootEntrySwitch),
+    // Withheld while a Factory gate pins another check, so the owner never approves a
+    // switch that would refuse at dispatch.
+    bootEntrySwitchPlan: () => {
+      const plan = config.container?.bootEntrySwitch;
+      if (config.container?.persistentRegistration || !plan || bootEntrySwitchPins(plan))
+        return undefined;
+      return bootEntrySwitchPlanDigest(plan);
+    },
     async switchBootEntry(job) {
       assertReady("container-daemon");
       if (config.container?.persistentRegistration)
@@ -618,11 +630,7 @@ export function createInstallationRestartExecutor(
         job.bootEntrySwitchPlanSha256 !== bootEntrySwitchPlanDigest(plan)
       )
         throw new Error("Dev boot-entry switch plan is unavailable or changed");
-      const pins = bootEntrySwitchPinProblem(plan, {
-        factoryGate: config.container?.factoryGate?.verify.sha256,
-        engineRestart: config.container?.engineRestart?.factoryVerify?.sha256,
-        engineRecovery: config.container?.engineRecovery?.factoryVerify.sha256,
-      });
+      const pins = bootEntrySwitchPins(plan);
       if (pins) throw new Error(`Dev boot-entry switch refused: ${pins}. Nothing was changed.`);
       const previousPid = await probeDaemonPid("container");
       const preflight = await bootEntrySwitchPreflight(plan, job.bootEntrySwitchPlanSha256);

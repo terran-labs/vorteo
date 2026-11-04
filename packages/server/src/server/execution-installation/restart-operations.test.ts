@@ -220,6 +220,8 @@ test("the Dev boot-entry switch refuses another plan, registration-bound Dev and
     container: "a".repeat(64),
     verify: { ...sample.factoryVerify, sha256: "9".repeat(64) },
   };
+  // A stale pin withholds the capability, and dispatch refuses it again.
+  expect(executorFor(stale).bootEntrySwitchPlan!()).toBeUndefined();
   await expect(executorFor(stale).switchBootEntry!(switchJob(digest))).rejects.toThrow(
     "factoryGate must pin the same Factory check as the switch before it runs",
   );
