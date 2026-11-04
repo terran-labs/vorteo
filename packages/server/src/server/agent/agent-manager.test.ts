@@ -16594,15 +16594,10 @@ test("an answer saved before a failed delivery is delivered once when its thread
     await manager.flush();
     queue.close();
 
-    reopened = new AgentManager({
-      clients: { codex: client },
-      registry: new AgentStorage(storagePath, logger),
-      logger,
-    });
-    nextQueue = new MessageQueueService(
-      new MessageQueueStore(queuePath),
-      new QueueAttachmentStore(queuePath),
-    );
+    const nextStorage = new AgentStorage(storagePath, logger);
+    reopened = new AgentManager({ clients: { codex: client }, registry: nextStorage, logger });
+    const attachments = new QueueAttachmentStore(queuePath);
+    nextQueue = new MessageQueueService(new MessageQueueStore(queuePath), attachments);
     reopened.setMessageQueueControl(nextQueue);
     await reopened.resumeAgentFromPersistence(
       { provider: "codex", sessionId: "question-delivery" },
@@ -16610,10 +16605,23 @@ test("an answer saved before a failed delivery is delivered once when its thread
       agent.id,
     );
     await expect
+      .poll(async () => (await nextQueue!.read(agent.id)).items.map((item) => item.id))
+      .toEqual([`question-answer-${questionId}`]);
+    // Queued is not delivered: the record waits for the thread to receive the answer.
+    expect((await reopened.readQuestions(agent.id))[0]?.answerDeliveredAt).toBeUndefined();
+    expect(reopened.getAgent(agent.id)?.journal ?? []).toEqual([]);
+    await nextQueue.startDelivery(
+      createAgentQueueDelivery({
+        attachments,
+        agentManager: reopened,
+        agentStorage: nextStorage,
+        logger,
+      }),
+    );
+    await expect
       .poll(async () => (await reopened!.readQuestions(agent.id))[0]?.answerDeliveredAt)
       .toBeDefined();
-    const items = (await nextQueue.read(agent.id)).items;
-    expect(items.map((item) => item.id)).toEqual([`question-answer-${questionId}`]);
+    expect((await nextQueue.read(agent.id)).items).toEqual([]);
     expect(reopened.getAgent(agent.id)?.journal?.map((entry) => entry.text)).toEqual([
       'Owner answered "Ship the beta tonight?": Ship tomorrow',
     ]);
@@ -16623,7 +16631,8 @@ test("an answer saved before a failed delivery is delivered once when its thread
       answer: "Ship tomorrow",
       answeredBy: "mobile:owner-app",
     });
-    expect((await nextQueue.read(agent.id)).items).toHaveLength(1);
+    expect((await nextQueue.read(agent.id)).items).toEqual([]);
+    expect(await nextQueue.acceptedHistory(agent.id)).toHaveLength(1);
     expect(reopened.getAgent(agent.id)?.journal).toHaveLength(1);
   } finally {
     queue.close();
@@ -16631,6 +16640,77 @@ test("an answer saved before a failed delivery is delivered once when its thread
     if (agentId) await reopened?.closeAgent(agentId);
     await manager.flush();
     await reopened?.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("an answer to a busy thread waits queued until the provider takes the steer, then delivers once", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "question-steer-"));
+  const session = new SteeringTestSession({ provider: "codex", cwd: workdir });
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: new AgentStorage(join(workdir, "agents"), logger),
+    logger,
+  });
+  const queue = new MessageQueueService(
+    new MessageQueueStore(join(workdir, "queue")),
+    new QueueAttachmentStore(join(workdir, "queue")),
+  );
+  manager.setMessageQueueControl(queue);
+  let agentId: string | undefined;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    const questionId = randomUUID();
+    await manager.mutateQuestions(agent.id, {
+      operation: "ask",
+      id: questionId,
+      question: "Ship the beta tonight?",
+      why: "Release notes wait for this decision.",
+      recommendedDefault: "Ship tomorrow",
+    });
+    void drainAsyncGenerator(manager.streamAgent(agent.id, "long work"));
+    await manager.waitForAgentRunStart(agent.id);
+    const answer = { questionId, answer: "Ship tomorrow", answeredBy: "mobile:owner-app" };
+    const answerMessages = async () =>
+      (await manager.getTimelineRows(agent.id)).filter(
+        (row) =>
+          row.item.type === "user_message" && row.item.text.includes("Answer: Ship tomorrow"),
+      ).length;
+
+    session.steerResult = "unavailable";
+    const queued = await manager.answerQuestion(agent.id, answer);
+    expect(queued[0]).toMatchObject({ status: "answered" });
+    expect(queued[0]?.answerDeliveredAt).toBeUndefined();
+    expect((await queue.read(agent.id)).items).toMatchObject([
+      { id: `question-answer-${questionId}`, delivery: { status: "queued" } },
+    ]);
+    expect(manager.getAgent(agent.id)?.journal ?? []).toEqual([]);
+    expect(await answerMessages()).toBe(0);
+
+    // The turn is still busy; the answer steers into it instead of waiting for it to end.
+    session.steerResult = "accepted";
+    const delivered = await manager.answerQuestion(agent.id, answer);
+    expect(delivered[0]?.answerDeliveredAt).toBeDefined();
+    expect(manager.getAgent(agent.id)?.lifecycle).toBe("running");
+    expect((await queue.read(agent.id)).items).toEqual([]);
+    expect(manager.getAgent(agent.id)?.journal).toHaveLength(1);
+    expect(await answerMessages()).toBe(1);
+    await manager.answerQuestion(agent.id, answer);
+    expect(session.steerCount).toBe(2);
+    expect(await queue.acceptedHistory(agent.id)).toHaveLength(1);
+    expect(manager.getAgent(agent.id)?.journal).toHaveLength(1);
+  } finally {
+    queue.close();
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    await manager.flush();
     rmSync(workdir, { recursive: true, force: true });
   }
 });

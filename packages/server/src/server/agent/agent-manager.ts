@@ -10,6 +10,8 @@ import {
   answerJournalEntryId,
   answerJournalText,
   answerMessage,
+  answerMessageId,
+  answeredQuestionId,
   QuestionError,
 } from "./questions/model.js";
 import { editThreadGoal, type ThreadGoalEdit } from "./agent-goal.js";
@@ -1558,6 +1560,8 @@ export class AgentManager {
             MessageQueueService,
             | "withIdleQueue"
             | "queueQuestionAnswer"
+            | "steerQueuedMessage"
+            | "onMessageAccepted"
             | "captureRestartContinuation"
             | "releaseRestartContinuation"
             | "wakeRestartContinuation"
@@ -1570,6 +1574,7 @@ export class AgentManager {
           >
         >)
     | null = null;
+  private messageQueueAcceptedSubscription: (() => void) | null = null;
   private readonly queueGoalMutationTails = new Map<string, Promise<void>>();
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
@@ -1825,6 +1830,8 @@ export class AgentManager {
           MessageQueueService,
           | "withIdleQueue"
           | "queueQuestionAnswer"
+          | "steerQueuedMessage"
+          | "onMessageAccepted"
           | "captureRestartContinuation"
           | "releaseRestartContinuation"
           | "wakeRestartContinuation"
@@ -1835,7 +1842,19 @@ export class AgentManager {
         >
       >,
   ): void {
+    this.messageQueueAcceptedSubscription?.();
     this.messageQueueControl = control;
+    this.messageQueueAcceptedSubscription =
+      control.onMessageAccepted?.((agentId, item) => {
+        const questionId = answeredQuestionId(item.id);
+        if (!questionId) return;
+        void this.recordAnswerReceived(agentId, questionId).catch((error: unknown) => {
+          this.logger.warn(
+            { err: error, agentId },
+            "Received open question answer was not recorded",
+          );
+        });
+      }) ?? null;
   }
 
   /** Review one existing idle thread; never steer, replace, or resume a goal implicitly. */
@@ -5342,7 +5361,11 @@ export class AgentManager {
     return this.deliverAnswer(agentId, answered);
   }
 
-  /** The stable queue operation ID keeps delivery exactly once across retries and reloads. */
+  /**
+   * The answer is enqueued under a stable ID first, so retries and reloads deliver it once.
+   * It then steers into an active turn like a peer message; a provider that cannot steer
+   * leaves it queued until the turn ends. Only the queue's acceptance marks it delivered.
+   */
   private async deliverAnswer(
     agentId: string,
     question: import("@getpaseo/protocol/agent-questions").AgentQuestion,
@@ -5350,19 +5373,49 @@ export class AgentManager {
     const queue = this.messageQueueControl;
     if (!queue?.queueQuestionAnswer)
       throw new QuestionError("unavailable", "This daemon cannot deliver answers to the thread.");
+    const messageId = answerMessageId(question.id);
+    // An acceptance committed before a crash cut off its record needs only the record.
+    if ((await queue.acceptedHistory(agentId)).some((entry) => entry.item.id === messageId))
+      return this.recordAnswerReceived(agentId, question.id);
     await queue.queueQuestionAnswer(agentId, question.id, answerMessage(question));
-    const questions = await this.requireRegistry().markAnswerDelivered(agentId, question.id);
-    const agent = this.requireAgent(agentId);
-    agent.questions = questions;
-    this.emitState(agent, { persist: false });
+    const steered = await queue.steerQueuedMessage?.(agentId, messageId, async (item) => {
+      const agent = this.agents.get(agentId);
+      const turnId = agent?.activeForegroundTurnId ?? agent?.activeTurnId;
+      if (!turnId || !agent?.session?.steerActiveTurn) return null;
+      const result = await this.steerAgentRun(agentId, item.text, { clientMessageId: item.id });
+      return result.status === "accepted" ? { turnId } : null;
+    });
+    if (steered === "accepted") return this.recordAnswerReceived(agentId, question.id);
+    return structuredClone(this.requireAgent(agentId).questions ?? []);
+  }
+
+  /** Mark the answer delivered and journal it once the agent has actually received it. */
+  private async recordAnswerReceived(
+    agentId: string,
+    questionId: string,
+  ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
+    const registry = this.requireRegistry();
+    const questions = await registry.markAnswerDelivered(agentId, questionId);
+    const question = questions.find((candidate) => candidate.id === questionId);
+    const agent = this.agents.get(agentId);
+    if (agent) {
+      agent.questions = questions;
+      this.emitState(agent, { persist: false });
+    }
+    if (!question) return structuredClone(questions);
     try {
-      await this.appendJournal(agentId, {
+      await registry.appendJournal(agentId, {
         entryId: answerJournalEntryId(question.id),
         text: answerJournalText(question),
         machineContext: `questionId=${question.id}\nansweredBy=${question.answeredBy}`,
       });
+      const loaded = this.agents.get(agentId);
+      if (loaded) {
+        loaded.journal = await this.readJournal(agentId);
+        this.emitState(loaded, { persist: false });
+      }
     } catch (error) {
-      // The durable message already carries the answer; the journal is a record of it.
+      // The delivered message already carries the answer; the journal is a record of it.
       this.logger.warn({ err: error, agentId }, "Delivered open question answer was not journaled");
     }
     return structuredClone(questions);

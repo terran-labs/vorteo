@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer still receive the answer when the turn finishes. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment.
+
 ## Unreleased - 2026-11-03
 
 ### Maintenance

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { QueueOperation, QueueSnapshot } from "@getpaseo/protocol/message-queue";
+import type { QueueItem, QueueOperation, QueueSnapshot } from "@getpaseo/protocol/message-queue";
 import { QueueAttachmentStore } from "./attachments.js";
 import { MessageQueueStore, QueueStoreError } from "./store.js";
 import { QueueDeliveryWorker, type QueueDeliveryPort } from "./delivery.js";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
+import { answerMessageId } from "../agent/questions/model.js";
 
 type QueueListener = (snapshot: QueueSnapshot) => void;
 
@@ -19,10 +20,21 @@ export class MessageQueueService {
   private delivery: QueueDeliveryWorker | null = null;
   private deliveryPort: Omit<QueueDeliveryPort, "changed"> | null = null;
   private readonly stopGenerations = new Map<string, number>();
+  private readonly acceptedListeners = new Set<(agentId: string, item: QueueItem) => void>();
   constructor(
     private readonly store: MessageQueueStore,
     private readonly attachments: QueueAttachmentStore,
-  ) {}
+  ) {
+    store.onAccepted = (agentId, item) => {
+      for (const listener of this.acceptedListeners) listener(agentId, item);
+    };
+  }
+
+  /** Observe every committed acceptance, including steered items and repaired restarts. */
+  onMessageAccepted(listener: (agentId: string, item: QueueItem) => void): () => void {
+    this.acceptedListeners.add(listener);
+    return () => this.acceptedListeners.delete(listener);
+  }
 
   async startDelivery(port: Omit<QueueDeliveryPort, "changed">): Promise<void> {
     await this.initialize();
@@ -109,7 +121,7 @@ export class MessageQueueService {
 
   /** The stable operation ID makes a retried answer enqueue at most once. */
   async queueQuestionAnswer(agentId: string, questionId: string, text: string): Promise<void> {
-    const id = `question-answer-${questionId}`;
+    const id = answerMessageId(questionId);
     await this.mutate(agentId, {
       kind: "enqueue",
       operationId: id,
@@ -117,6 +129,42 @@ export class MessageQueueService {
       attachments: [],
       text,
     });
+  }
+
+  /**
+   * Steers one queued message into the active turn under a persisted claim, so a restart
+   * mid-steer reconciles it from provider history like any other dispatch. A steer the
+   * provider cannot take returns the message to the queue for normal delivery.
+   */
+  async steerQueuedMessage(
+    agentId: string,
+    messageId: string,
+    steer: (item: QueueItem) => Promise<{ turnId: string } | null>,
+  ): Promise<"accepted" | "queued"> {
+    await this.initialize();
+    const item = await this.store.claim(agentId, messageId);
+    if (item?.delivery.status !== "dispatching") return "queued";
+    this.publish(await this.store.read(agentId));
+    let accepted: { turnId: string } | null = null;
+    try {
+      accepted = await steer(item);
+    } catch {
+      // Like a failed start admission, a refused steer leaves the message for queue delivery.
+    }
+    if (accepted) {
+      this.publish(
+        await this.store.settle({
+          agentId,
+          messageId,
+          attemptId: item.delivery.attemptId,
+          outcome: { status: "accepted", turnId: accepted.turnId },
+        }),
+      );
+      return "accepted";
+    }
+    this.publish(await this.store.release(agentId, item));
+    this.wake(agentId);
+    return "queued";
   }
 
   async queueRestartContinuation(agentId: string, requestId: string): Promise<void> {
