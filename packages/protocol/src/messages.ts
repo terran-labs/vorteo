@@ -1750,6 +1750,8 @@ export const AccessServicePrincipalsCreateRequestSchema = z.object({
   permissions: z.array(DaemonPermissionSchema),
   // COMPAT(serviceAgentGrants): added 2026-11-03, remove gate after 2027-05-03.
   grants: z.array(AgentGrantSchema).optional(),
+  /** Optional ISO time after which the token is refused. */
+  expiresAt: z.string().optional(),
 });
 
 export const AccessServicePrincipalsSetGrantsRequestSchema = z.object({
@@ -5905,6 +5907,8 @@ export const ServicePrincipalSchema = z.object({
   grants: z.array(AgentGrantSchema).optional(),
   createdAt: z.string(),
   revokedAt: z.string().nullable(),
+  // COMPAT(serviceAgentGrants): absent on daemons without expiry.
+  expiresAt: z.string().nullable().optional(),
 });
 
 export const AccessServicePrincipalsListResponseSchema = z.object({

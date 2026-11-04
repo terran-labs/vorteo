@@ -79,6 +79,8 @@ function isPlainSteeringMessage(
 ): boolean {
   return (
     message.activeTurnBehavior === "steer" &&
+    // Slash text runs provider commands and skills (for example /rewind writes files).
+    !message.text.trimStart().startsWith("/") &&
     message.origin === undefined &&
     message.sessionMode === undefined &&
     message.sourceAgentId === undefined &&

@@ -23,6 +23,8 @@ export function parseDaemonPermissions(values: readonly string[]): DaemonPermiss
 export const OWNER_PERMISSIONS: readonly DaemonPermission[] = DAEMON_PERMISSIONS;
 
 export interface SessionRestrictions {
+  /** When set, the only inbound operation types the session may send. */
+  allowedInbound?: ReadonlySet<string>;
   /** Inbound operation types denied even when the permission allows them. */
   deniedInbound: ReadonlySet<string>;
 }
@@ -38,7 +40,7 @@ export class SessionAuthorization {
   }
 
   allowsInbound(message: SessionInboundMessage): boolean {
-    if (this.restrictions?.deniedInbound.has(message.type)) return false;
+    if (this.restrictsOperation(message.type)) return false;
     return this.allows(requiredPermissionForInbound(message.type));
   }
 
@@ -47,6 +49,14 @@ export class SessionAuthorization {
       this.allows(requiredPermissionForOutbound(message)) ||
       this.outboundExtension?.(message) === true
     );
+  }
+
+  /** True when restrictions refuse an operation type regardless of permissions or grants. */
+  restrictsOperation(type: string): boolean {
+    if (!this.restrictions) return false;
+    if (this.restrictions.allowedInbound && !this.restrictions.allowedInbound.has(type))
+      return true;
+    return this.restrictions.deniedInbound.has(type);
   }
 
   /** Additional resource-scoped delivery, such as agent grants, beyond daemon-wide permissions. */

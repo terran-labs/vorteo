@@ -1972,16 +1972,18 @@ export function createInstallationServer(
   });
   app.post("/api/installation/overview/observers", requireHostAgent, (req, res) => {
     const label = typeof req.body?.label === "string" ? req.body.label : "";
-    observers.create({ label, permissions: ["workspace.read"] }).then(
-      (created) => res.json(created),
-      (error: unknown) =>
-        res
-          .status(400)
-          .json({ error: error instanceof Error ? error.message : "Invalid observer" }),
-    );
+    observers
+      .create({ label, permissions: ["workspace.read"], issuerPrincipalId: "host-agent" })
+      .then(
+        (created) => res.json(created),
+        (error: unknown) =>
+          res
+            .status(400)
+            .json({ error: error instanceof Error ? error.message : "Invalid observer" }),
+      );
   });
   app.post("/api/installation/overview/observers/:id/revoke", requireHostAgent, (req, res) => {
-    observers.revoke(String(req.params.id)).then(
+    observers.revoke(String(req.params.id), "host-agent").then(
       (observer) => res.json({ observer }),
       (error: unknown) =>
         res

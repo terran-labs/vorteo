@@ -515,9 +515,15 @@ export interface ServicePrincipalManagement {
     label: string;
     permissions: readonly DaemonPermission[];
     grants?: readonly AgentGrant[];
+    expiresAt?: string | null;
+    issuerPrincipalId: string;
   }): Promise<{ principal: ServicePrincipal; token: string }>;
-  revoke(id: string): Promise<ServicePrincipal>;
-  setGrants(id: string, grants: readonly AgentGrant[]): Promise<ServicePrincipal>;
+  revoke(id: string, actorPrincipalId: string): Promise<ServicePrincipal>;
+  setGrants(
+    id: string,
+    grants: readonly AgentGrant[],
+    actorPrincipalId: string,
+  ): Promise<ServicePrincipal>;
 }
 
 export interface SessionOptions {
@@ -648,6 +654,8 @@ export interface SessionOptions {
   servicePrincipals?: ServicePrincipalManagement;
   /** Resource-scoped agent authority of a service principal. */
   agentGrants?: readonly AgentGrant[];
+  /** Display label of a service principal, used for message attribution. */
+  principalLabel?: string;
   serviceProxy?: ServiceProxySubsystem;
   scriptRuntimeStore?: WorkspaceScriptRuntimeStore;
   workspaceSetupObservation?: WorkspaceSetupObservation;
@@ -952,6 +960,7 @@ export class Session {
   private readonly hubExecutionController: HubExecutionController | null;
   private readonly servicePrincipals: ServicePrincipalManagement | null;
   private agentGrants: AgentGrantGuard | null = null;
+  private readonly principalLabel: string | undefined;
   private readonly workspaceScripts: WorkspaceScriptsService;
   private readonly messageReceipts: Pick<MessageReceipts, "send">;
   private readonly agentMessages: AgentMessageDelivery;
@@ -1037,6 +1046,7 @@ export class Session {
       sessionRestrictionsFor(options.principalId),
     );
     this.servicePrincipals = options.servicePrincipals ?? null;
+    this.principalLabel = options.principalLabel;
     this.principalId = options.principalId;
     this.clientType = options.clientType;
     this.ownerEvidence = new TaskOwnerEvidenceStore(paseoHome);
@@ -2491,6 +2501,20 @@ export class Session {
     );
   }
 
+  /**
+   * Service text reaches the agent with daemon-written attribution, so neither the
+   * agent nor the timeline can mistake it for the owner's words.
+   */
+  private attributeServiceText(text: string): string {
+    const label = (this.principalLabel ?? "service").replace(/[\r\n"]/g, " ");
+    return `[Message from service credential "${label}", not from the owner]\n\n${text}`;
+  }
+
+  /** The principal recorded as issuer of service principals this session creates. */
+  private actorPrincipalId(): string {
+    return this.principalId ?? "owner";
+  }
+
   private isServicePrincipal(): boolean {
     return this.principalId?.startsWith("service:") === true;
   }
@@ -2597,6 +2621,8 @@ export class Session {
                 label: msg.label,
                 permissions: msg.permissions,
                 grants: msg.grants,
+                expiresAt: msg.expiresAt ?? null,
+                issuerPrincipalId: this.actorPrincipalId(),
               })),
               error: null,
             };
@@ -2638,7 +2664,7 @@ export class Session {
         )
       )
         throw new ServicePrincipalError("This session cannot grant agent access");
-      principal = await store.setGrants(msg.principalId, msg.grants);
+      principal = await store.setGrants(msg.principalId, msg.grants, this.actorPrincipalId());
       this.sessionLogger.info(
         { servicePrincipalId: msg.principalId, grants: msg.grants },
         "Changed service principal grants",
@@ -2661,7 +2687,7 @@ export class Session {
     let error: string | null = null;
     try {
       if (!store) throw new ServicePrincipalError("Service principals are unavailable");
-      principal = await store.revoke(msg.principalId);
+      principal = await store.revoke(msg.principalId, this.actorPrincipalId());
       this.sessionLogger.info({ servicePrincipalId: msg.principalId }, "Revoked service principal");
     } catch (caught) {
       error = failure(caught);
@@ -2673,6 +2699,7 @@ export class Session {
   }
 
   private async allowsInboundMessage(message: SessionInboundMessage): Promise<boolean> {
+    if (this.authorization.restrictsOperation(message.type)) return false;
     if (this.authorization.allowsInbound(message)) return true;
     // Agent grants authorize only their own operations, on resolved exact agent IDs.
     if (this.agentGrants?.handlesInbound(message.type))
@@ -9968,7 +9995,11 @@ export class Session {
           });
         }
       };
-      const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
+      const prompt = buildAgentPrompt(
+        this.isServicePrincipal() ? this.attributeServiceText(msg.text) : msg.text,
+        msg.images,
+        msg.attachments,
+      );
       this.sessionLogger.trace(
         {
           agentId,

@@ -63,11 +63,32 @@ function computeServiceDeniedOperations(): ReadonlySet<string> {
 /** Inbound operations a service principal can never perform, regardless of its permissions. */
 export const SERVICE_DENIED_OPERATIONS = computeServiceDeniedOperations();
 
-/** Service principals never reach path-addressed, routed or owner-state operations. */
+/**
+ * The only inbound operations a service session may send. Everything else is
+ * refused before permissions are considered, so a new operation stays closed to
+ * service principals until it is reviewed and added here. Permissions or agent
+ * grants still decide each allowed operation.
+ */
+export const SERVICE_ALLOWED_OPERATIONS: ReadonlySet<string> = new Set([
+  // Observation with workspace.read.
+  "project.list.request",
+  "fetch_workspaces_request",
+  "fetch_agents_request",
+  // Agent grants: agent.read, agent.message and agent.cancel.
+  "fetch_agent_request",
+  "fetch_agent_timeline_request",
+  "agent.timeline.set_subscription.request",
+  "send_agent_message_request",
+  "cancel_agent_request",
+  // Releasing the session's own subscriptions.
+  "subscription.release.request",
+]);
+
+/** Service sessions reach only allowlisted operations, never path-addressed, routed or owner-state ones. */
 export function sessionRestrictionsFor(
   principalId: string | null | undefined,
 ): SessionRestrictions | undefined {
   return principalId?.startsWith("service:")
-    ? { deniedInbound: SERVICE_DENIED_OPERATIONS }
+    ? { allowedInbound: SERVICE_ALLOWED_OPERATIONS, deniedInbound: SERVICE_DENIED_OPERATIONS }
     : undefined;
 }

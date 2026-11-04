@@ -126,9 +126,9 @@ export class InstallationOverviewReader {
           serverId,
           status: "ok",
           observedAt: now().toISOString(),
-          projects: projects.projects,
-          workspaces: workspaces.entries,
-          agents: agents.entries,
+          projects: projects.projects.map(redactCredentials),
+          workspaces: workspaces.entries.map(redactCredentials),
+          agents: agents.entries.map(projectAgentEntry),
           truncated: workspaces.truncated || agents.truncated,
         };
       } finally {
@@ -220,4 +220,62 @@ async function collectPages<T>(
 function describeError(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return "Environment could not be read";
+}
+
+/**
+ * Agent fields the overview exposes. Permission requests, journals, questions,
+ * errors and runtime or persistence metadata stay inside Vorteo.
+ */
+export const OVERVIEW_AGENT_FIELDS = [
+  "id",
+  "shortId",
+  "title",
+  "provider",
+  "model",
+  "status",
+  "cwd",
+  "workspaceId",
+  "labels",
+  "createdAt",
+  "updatedAt",
+  "lastUserMessageAt",
+  "archivedAt",
+  "requiresAttention",
+  "attentionReason",
+  "attentionTimestamp",
+] as const;
+
+function projectAgentEntry(entry: unknown): unknown {
+  const { agent, project } = (entry ?? {}) as {
+    agent?: Record<string, unknown>;
+    project?: unknown;
+  };
+  const projected: Record<string, unknown> = {};
+  for (const field of OVERVIEW_AGENT_FIELDS) {
+    if (agent && field in agent) projected[field] = agent[field];
+  }
+  return { agent: projected, project: redactCredentials(project) };
+}
+
+/** Deep copy with credentials removed from any URL, such as a git remote with a token. */
+function redactCredentials(value: unknown): unknown {
+  if (typeof value === "string") return stripUrlUserinfo(value);
+  if (Array.isArray(value)) return value.map(redactCredentials);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, redactCredentials(entry)]),
+    );
+  return value;
+}
+
+function stripUrlUserinfo(value: string): string {
+  if (!/^[a-z][a-z0-9+.-]*:\/\/[^/@\s]+@/i.test(value)) return value;
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/i, "$1");
+  }
 }

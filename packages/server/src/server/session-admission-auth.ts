@@ -26,6 +26,7 @@ export async function resolveSessionAdmission(input: {
             principalId: admission.principalId,
             permissions: admission.permissions,
             agentGrants: admission.grants,
+            principalLabel: admission.label,
           },
         }
       : { rejection: "incorrect_password" };

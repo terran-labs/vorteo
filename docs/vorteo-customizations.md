@@ -1822,6 +1822,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 4, 2026: Service principals tightened after the Builds security review: exact-agent message and cancel grants, an operation allowlist, slash refusal, daemon attribution, expiry, issuer limits, a fail-closed store and an overview projection. README unchanged.
+
 November 4, 2026: Merged current `main` into the service principals branch before fixing review findings; only the changelog conflicted, and both sides were kept. No feature or limitation changes.
 
 November 3, 2026: The permissions reference states that an agent message grant is delegated action and recommends it only on agents with tools disabled. Documentation only; README unchanged.

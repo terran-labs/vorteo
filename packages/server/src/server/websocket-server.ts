@@ -171,6 +171,7 @@ export interface SessionAdmission {
   permissions: readonly DaemonPermission[];
   /** Resource-scoped agent authority held by a service principal. */
   agentGrants?: readonly AgentGrant[];
+  principalLabel?: string;
   hubExecutionAgents?: HubExecutionAgents;
 }
 
@@ -528,6 +529,7 @@ interface SocketSessionOptions {
   hubRelationships?: HubRelationshipManagement;
   servicePrincipals?: ServicePrincipalManagement;
   agentGrants?: readonly AgentGrant[];
+  principalLabel?: string;
 }
 
 interface ClosePhysicalSocketParams {
@@ -857,14 +859,14 @@ export class VoiceAssistantWebSocketServer {
           );
         return this.servicePrincipals.create(input);
       },
-      setGrants: async (id, grants) => {
-        const principal = await this.servicePrincipals.setGrants(id, grants);
+      setGrants: async (id, grants, actor) => {
+        const principal = await this.servicePrincipals.setGrants(id, grants, actor);
         // Reconnecting picks up the new grants; narrowing must not wait for that.
         this.disconnectPrincipal(servicePrincipalSessionId(id));
         return principal;
       },
-      revoke: async (id) => {
-        const principal = await this.servicePrincipals.revoke(id);
+      revoke: async (id, actor) => {
+        const principal = await this.servicePrincipals.revoke(id, actor);
         this.disconnectPrincipal(servicePrincipalSessionId(id));
         return principal;
       },
@@ -1810,6 +1812,7 @@ export class VoiceAssistantWebSocketServer {
       hubRelationships: this.hubRelationships ?? undefined,
       servicePrincipals: this.servicePrincipalManagement,
       agentGrants: admission.agentGrants,
+      principalLabel: admission.principalLabel,
     });
 
     const base: SessionConnectionBase = {
@@ -1918,6 +1921,7 @@ export class VoiceAssistantWebSocketServer {
       hubRelationships: options.hubRelationships,
       servicePrincipals: options.servicePrincipals,
       agentGrants: options.agentGrants,
+      principalLabel: options.principalLabel,
       serviceProxy: this.serviceProxy ?? undefined,
       scriptRuntimeStore: this.scriptRuntimeStore ?? undefined,
       workspaceSetupObservation: this.workspaceSetupObservation,
