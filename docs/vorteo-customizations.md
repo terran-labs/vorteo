@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): prepared beta release 26.11.300, the VortLab bootstrap release carrying live dev mode, typed questions, the installer upgrade fix, the provider account connection fixes and the server test repairs. Version and changelog only; no behavior changed in this commit. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): release upgrades on installer-made Hosts record the direct Host build ID (`installer-<upgrade id>`), which the upgrade journal had refused. Every save failed, so the coordinator relaunched the Host build on each tick and the upgrade never finished. A resumed upgrade now reads the existing build outcome instead of building again. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): merged live dev mode into typed questions for the VortLab bootstrap release; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.

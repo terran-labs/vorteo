@@ -4,6 +4,22 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.300 - 2026-11-03
+
+Beta bootstrap release for installer-made installations. It carries every change listed below since 26.11.206.
+
+### Features
+
+- Live dev mode: an owner-only Delivery mode in Installation settings that serves the signed-in owner the interface from a live checkout on the Host, with Fast Refresh and a safe link to the published interface.
+- Typed questions: agents can ask yes or no, single-choice and multiple-choice questions answered in one click.
+
+### Fixes
+
+- Upgrades from Installation controls finish on installer-made installations instead of staying "running" with a failed Host build.
+- Provider account connections survive concurrent settings writes, and a Dev container paired after its daemon started syncs accounts after its next daemon start.
+- The message queue reopens its browser storage after the browser closes it.
+- Server tests are green again; the daemon bootstrap no longer names a specific provider.
+
 ## Unreleased - 2026-11-03
 
 ### Fixes
