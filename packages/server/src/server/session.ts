@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { normalizeGitOptions } from "./worktree-session.js";
 import type { AgentQuestion } from "@getpaseo/protocol/agent-questions";
 import type { UsageLimitHold } from "@getpaseo/protocol/usage-limit";
@@ -10631,19 +10632,18 @@ function hostSource(options: SessionOptions): string {
   return options.sourceId ?? "owner";
 }
 
-const SERVICE_MESSAGE_END = "[End of service credential message]";
-
 /**
- * Wraps service text in daemon-written markers. The label loses every control and
- * line-separator character and brackets, text cannot forge either marker, and
+ * Wraps service text in daemon-written markers carrying a random per-message tag,
+ * so text cannot imitate either marker. The label loses control, format (including
+ * zero-width and direction marks), line-separator, quote and bracket characters.
  * `@` mentions are neutralized because Claude expands `@path` into file contents
  * without a tool call.
  */
 export function attributeServiceMessage(label: string, text: string): string {
-  const safeLabel = label.replace(/[\p{Cc}\p{Zl}\p{Zp}\u0085"[\]]/gu, " ").trim() || "service";
-  const header = `[Message from service credential "${safeLabel}", not from the owner]`;
-  const body = text
-    .replace(/\[(?=\s*(Message from service credential|End of service credential message))/gi, "(")
-    .replace(/(^|[^\p{L}\p{N}_.+-])@(?=[^\s@])/gu, "$1\uFF20");
-  return `${header}\n\n${body}\n\n${SERVICE_MESSAGE_END}`;
+  const safeLabel =
+    label.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u0085"[\]]/gu, " ").trim() || "service";
+  const tag = randomBytes(4).toString("hex");
+  const header = `[Message ${tag} from service credential "${safeLabel}", not from the owner]`;
+  const body = text.replace(/(^|[^\p{L}\p{N}_.+-])@(?=[^\s@])/gu, "$1\uFF20");
+  return `${header}\n\n${body}\n\n[End of service credential message ${tag}]`;
 }

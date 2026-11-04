@@ -8,7 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Security
 
-- Close the re-review's findings on service messages. A leading `@` in service text is neutralized, because Claude reads `@path` files without a tool. Messages end with a closing marker the text cannot forge. Expired credentials disconnect their live sessions. Tool-less agents never adopt a hosted session, and resuming with `toolAccess` is owner-only.
+- Close the re-review's findings on service messages. A leading `@` in service text is neutralized, because Claude reads `@path` files without a tool. Messages are wrapped in markers with a random per-message tag that the text cannot imitate, and labels lose invisible formatting characters. Expired credentials disconnect their live sessions, including expiries more than 24 days out. Tool-less agents never adopt a hosted session, and resuming with `toolAccess` is owner-only.
 
 ## Unreleased - 2026-11-04
 

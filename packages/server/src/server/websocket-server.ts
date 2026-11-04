@@ -1306,14 +1306,21 @@ export class VoiceAssistantWebSocketServer {
   /** Ends a service principal's sessions when its token expires, not only at its next connect. */
   private scheduleAdmissionExpiry(admission: SessionAdmission): void {
     if (!admission.expiresAt) return;
-    const remaining = Date.parse(admission.expiresAt) - Date.now();
-    // setTimeout overflows past about 24.8 days; a later reconnect reschedules.
-    if (!(remaining < 2 ** 31 - 1)) return;
-    const timer = setTimeout(
-      () => this.disconnectPrincipal(admission.principalId),
-      Math.max(0, remaining),
-    );
-    timer.unref?.();
+    const expiresAt = Date.parse(admission.expiresAt);
+    // setTimeout overflows past about 24.8 days, so long expiries re-arm in steps.
+    const MAX_STEP = 20 * 24 * 60 * 60 * 1000;
+    const arm = () => {
+      const remaining = expiresAt - Date.now();
+      const timer =
+        remaining > MAX_STEP
+          ? setTimeout(arm, MAX_STEP)
+          : setTimeout(
+              () => this.disconnectPrincipal(admission.principalId),
+              Math.max(0, remaining),
+            );
+      timer.unref?.();
+    };
+    arm();
   }
 
   /** Removes all authority from a principal's live sessions and closes their sockets. */

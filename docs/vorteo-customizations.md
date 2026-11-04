@@ -1822,6 +1822,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 4, 2026: Service message markers carry a random per-message tag, labels drop format characters, and long expiries re-arm their disconnect timer. README unchanged.
+
 November 4, 2026: Neutralizes `@` mentions and closes attribution in service messages, disconnects expired service sessions, and keeps tool-less agents out of hosted sessions. README unchanged.
 
 November 4, 2026: Adds owner-only `toolAccess: "none"` for Claude-family threads, enforced at daemon launch and in the Claude provider, as the basis for service message grants. No upstream equivalent. README unchanged.
