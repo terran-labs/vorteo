@@ -117,6 +117,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Live tweaks
+
+- Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
+
+## Unreleased - 2026-11-04
+
 ### Changes
 
 - Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.

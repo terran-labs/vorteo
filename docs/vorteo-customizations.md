@@ -1,6 +1,7 @@
 # Vorteo customizations beyond Paseo
 
 Maintenance review (2026-11-04): trackpad dictation. A triple click anywhere in the window toggles dictation into the active message field and stops without sending, so a lone Magic Trackpad can drive dictation. Not yet installed. README overview and onboarding are unchanged.
+Maintenance review (2026-11-04): live tweak by builds: Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
 
 Maintenance review (2026-11-03): CI change. Unlike upstream Paseo, main CI runs are no longer cancelled by a newer merge, so main produces complete browser results; pull request runs still cancel when superseded. The container smoke frees unused runner SDKs after a disk exhaustion. Product functionality is unchanged. README overview and onboarding are unchanged.
 
