@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): restored the failing server tests. Claude usage-limit recording moved from the daemon bootstrap into the provider usage service, so the bootstrap stays provider-neutral as the upstream hook test requires; usage readings are unchanged. Session, wire compatibility and coordinator ledger tests now stub the history reload check and expect the read-only lifecycle view and dispatch status feature added earlier. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): merged current `main` into the message queue reconnect fix for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the browser message queue now reopens its local storage when the browser closes the connection, instead of failing every read, including Retry, until reload. A browser regression test covers it. The replica cache, project icon cache and plugin bundle cache keep the same single-connection pattern and are not changed here. README overview and onboarding are unchanged.

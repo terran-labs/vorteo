@@ -6,6 +6,16 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- The daemon bootstrap no longer names a provider. Claude usage-limit stops are now recorded by the provider usage service, which restores the upstream rule that keeps the generic bootstrap provider-neutral. Account usage behavior is unchanged.
+
+### Tests
+
+- Server test stubs follow two recent changes: agent manager stubs answer the new history reload check, and the coordinator ledger tests expect its read-only lifecycle view and dispatch status feature. These were the 13 server test failures on Ubuntu and Windows CI.
+
+## Unreleased - 2026-11-03
+
 ### Tooling
 
 - Merged current `main` into the message queue reconnect fix before delivery.
