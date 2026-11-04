@@ -9,6 +9,11 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Tooling
 
 - Merged current `main` into typed questions before delivery.
+- Merged live dev mode into typed questions for the VortLab bootstrap release.
+
+### Fixes
+
+- Harden live dev mode after an independent security review. The proxy no longer forwards your session to the dev server, refuses encoded and dotted paths, never redirects off-site, and keeps a failed live page's assets static. The supervisor only signals its own dev server, stops orphaned watchers and stays stopped after you switch to Reliable. The live checkout tool takes its lock atomically, promotes only local branches, checks merges before touching the tree, merges changelog entries as a union and writes its own changelog entry for tweaks.
 
 ## Unreleased - 2026-11-03
 
@@ -16,6 +21,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Ask typed questions. Agents can offer Yes and No, a choice of options or checkboxes, and you answer in one click, with an optional note or your own answer when none fit. Free-text questions now show one editable field pre-filled with the recommendation.
 - Make every line in the Open questions cards the same size as normal sidebar text.
+- Add a Delivery mode to Installation settings. Reliable, the default, serves the published interface. Live dev serves your signed-in browser the interface from a live checkout on the Host, so agents' edits appear within seconds through Fast Refresh. A Live dev marker and a safe interface link keep the published interface one click away, and other browsers and the recovery address always get it.
+- Add a live checkout tool for agents: one-off tweaks with claims and commits, branch promotion and syncing with main, each under a lock that refuses conflicts.
+
+## Unreleased - 2026-11-03
 
 ### Tests
 
