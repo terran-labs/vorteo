@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): per-project Factory. Turning it on from the project menu or `paseo factory project enable` creates or adopts five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a service-owned heartbeat gated on GitHub changes; the daemon records them in `$PASEO_HOME/factory/projects.json` and never creates a second. Factory folders order role workspaces and include the system Mechanic, which adopts the Optimizer. Role instructions support revision checks, history and charter review proposals. Triage receives threads from the tab menu through each thread's owning environment and project; roles and workers use existing profile controls, and fresh role status appears in the sidebar. `VORTEO_RELEASES=1` admits only the release tag command. Instruction conflicts refresh the revision and proposal while keeping the draft, review diffs show collapsed context, and accepting binds to the displayed proposal. This source is not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): steering a Claude turn in the durable session host works again. The session host contract now accepts the steered message id that upstream Paseo added for rewind, and an accepted steer whose result is malformed is reported as accepted rather than failed, since the provider already has the message. A failed send now puts the message back above anything typed meanwhile instead of replacing it. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): prepared beta release 26.11.302 for the VortLab bootstrap, superseding the untagged 26.11.301 with the settings catalog and usage test fixes. Version and changelog only. README overview and onboarding are unchanged.
@@ -1821,6 +1823,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+November 4, 2026: Merged current `main` into the service principals branch before handing it back to Builds; the merge was clean. No feature or limitation changes.
 
 November 4, 2026: Service message markers carry a random per-message tag, labels drop format characters, and long expiries re-arm their disconnect timer. README unchanged.
 

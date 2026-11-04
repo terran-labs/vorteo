@@ -1,8 +1,30 @@
-# Bundled Factory
+# Factory
 
-The first source candidate bundles a read-only Factory observer in `plugins/factory/`.
-It does not install or adopt a controller, create coordinators, launch workers or change
-schedules. Live installation requires an independent review and coordinated deployment.
+Factory runs a project's GitHub repository with five standing role agents. Turn it on from the project menu or with `paseo factory project enable <project-id> --repository owner/name`. The daemon then creates, or adopts, one workspace per role in that project, each with one chartered agent and one heartbeat:
+
+| Role ID            | Role     | Workspace               | Heartbeat      | Job                                                              |
+| ------------------ | -------- | ----------------------- | -------------- | ---------------------------------------------------------------- |
+| `factory-triage`   | Triage   | `<Project> :: Triage`   | `0 8 * * *`    | Decides which issues are ready and helps unready ones get ready. |
+| `factory-intake`   | Foreman  | `<Project> :: Foreman`  | `*/10 * * * *` | Turns ready issues into reviewed, merged pull requests.          |
+| `factory-builds`   | Builds   | `<Project> :: Builds`   | `*/15 * * * *` | Deploys merged commits and verifies them where they run.         |
+| `factory-releases` | Releases | `<Project> :: Releases` | `0 9 * * *`    | Tags accepted commits and writes release notes.                  |
+| `factory-mechanic` | Mechanic | `<Project> :: Mechanic` | `0 * * * *`    | Sets the Factory up, then keeps it stable and efficient.         |
+
+The charters ship in [`packages/server/src/server/factory/project/charters/`](../packages/server/src/server/factory/project/charters/) and become each agent's system prompt. The daemon itself never merges, deploys, tags, installs or restarts anything; the agents do that through their charters and the repository's own tools.
+
+**State.** The daemon records role agents, workspaces, the repository, enablement, launches, status lines, project instructions and heartbeat memory in `$PASEO_HOME/factory/projects.json`, written atomically. Each role agent is also labelled `vorteo.factory-role=<projectId>:<roleId>`. Enable looks for a role's agent in the state file, then by that label, then in `--adopt <role>=<agentId>`, and creates one only when all three come up empty, so reruns, restarts and a lost state file never produce a second agent. Adopting labels the existing agent, binds its workspace and sends it the charter. A damaged state file makes the project report `unavailable` and refuses changes until it is fixed or removed.
+
+**Membership.** Role workspaces carry `factoryMembership` with installation `project-factory:<projectId>`, so they show in the sidebar's Factory folder and refuse archive and removal. The wire role enum stays `factory | builds | worker`: Builds travels as `builds` and the other roles as `factory`; the state file keeps the real role. On Vorteo System the Mechanic adopts the existing Optimizer agent, whose workspace keeps only its system membership, and the Optimizer's daily review heartbeat is paused while Factory is on. The state file records that Factory owns the pause before pausing, so startup finishes a pause or resume that a crash or failure interrupted.
+
+**Heartbeats.** The Factory service owns its heartbeat timers instead of adding entries to Schedules, because a Schedules heartbeat cannot skip an unchanged tick or carry changed instructions once. Triage, Foreman and Builds wake only when the GitHub state they react to has changed, when something is pending for them, or at least every six hours; GitHub errors always wake. Releases and Mechanic always wake. A busy agent is left alone until its next tick. Pause stops the heartbeats and resume restarts them. Turning Factory off stops them and removes membership; workspaces, agents and history stay, and turning it on again reuses them.
+
+**Project instructions.** Operators can add instructions per role with `paseo factory project instructions set <project-id> <role-id> --file <path>`. They follow the shipped charter in the agent's system prompt. Effective instructions depend on every charter input (repository, project name and kind) as well as the additions, so any change, such as turning Factory on again with a new repository, updates the stored system prompt and is sent once with the next heartbeat. When a Vorteo update changes a role's shipped charter, the role is flagged for review and its Mechanic is told; a notice that fails to reach it is retried on the next start or Mechanic heartbeat. it acknowledges or proposes revised instructions, and the operator accepts or dismisses the proposal with `instructions resolve`. Until then the agent runs the new charter with the old instructions.
+
+**Configuration.** `paseo factory project configure` sets a role's provider and profile and the profiles the Foreman gives workers and reviewers. An unset role launch uses the same default the Optimizer uses; clearing a configured launch switches the agent to that default once. A launch set by profile alone uses that profile's provider. A switch starts the new session with the role's instructions ahead of the carried context and sends them again in full with the next prompt, which follows the switch right away. `paseo factory project status set <project-id> <role-id> "<line>"` records a one-line role status without waking anyone. Sending a thread to the Factory asks Triage to turn it into one issue.
+
+**Release tags.** `VORTEO_RELEASES=1` admits only `scripts/vorteo-release.mjs tag` and the release tag push it makes. Everything else that writes shared state still requires `VORTEO_BUILDS=1`.
+
+The sections below describe the earlier read-only observer and controller boundary. They remain until that code is removed.
 
 ## Observation contract
 

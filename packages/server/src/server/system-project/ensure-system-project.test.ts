@@ -91,7 +91,7 @@ describe("startup seeding", () => {
       projectId: result.projectId,
       kind: "directory",
       cwd: systemPaths(home).runner("optimization-runner"),
-      title: "Vorteo :: Optimizer",
+      title: "Vorteo :: Mechanic",
       standing: true,
       protected: true,
     });
@@ -127,7 +127,7 @@ describe("startup seeding", () => {
     expect(result.retitled).toEqual([created.workspaceId]);
     expect(await runner()).toMatchObject({
       workspaceId: created.workspaceId,
-      title: "Vorteo :: Optimizer",
+      title: "Vorteo :: Mechanic",
       standing: true,
       protected: true,
     });
@@ -248,7 +248,7 @@ describe("adoption", () => {
       branch: null,
       worktreeRoot: null,
       createdAt: T0,
-      title: "Vorteo :: Optimizer",
+      title: "Vorteo :: Mechanic",
       systemMembership: { role: "optimization-runner" },
       standing: true,
       protected: true,

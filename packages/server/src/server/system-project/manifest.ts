@@ -25,7 +25,7 @@ export const OPTIMIZER_ROLE = "optimization-runner";
  * until monitoring ships its collector.
  */
 export const SYSTEM_ROLES: readonly SystemRole[] = [
-  { role: OPTIMIZER_ROLE, title: "Vorteo :: Optimizer", environments: ["host", "single"] },
+  { role: OPTIMIZER_ROLE, title: "Vorteo :: Mechanic", environments: ["host", "single"] },
 ];
 
 export function rolesForEnvironment(environment: SystemEnvironment): SystemRole[] {

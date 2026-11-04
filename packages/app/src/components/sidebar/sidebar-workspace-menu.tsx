@@ -1,3 +1,5 @@
+import { openFactoryInstructions, useProjectFactory } from "./factory-instructions";
+import { selectWorkspace } from "@/stores/session-store-hooks/selectors";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVortonTouch } from "@/vorton-touch";
 import { useWorkspaceArchiveBlockReason } from "@/workspace/lifecycle/archive";
@@ -79,7 +81,9 @@ import {
   type WorkspaceLabelTarget,
 } from "@/workspace-labels/picker";
 
-const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+const foregroundColorMapping = (theme: Theme) => ({
+  color: theme.colors.foreground,
+});
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
@@ -170,7 +174,9 @@ function WorkspaceMenuItem({
   children,
   ...props
 }: PropsWithChildren<
-  Omit<ComponentProps<typeof DropdownMenuItem>, "children"> & { surface: MenuSurface }
+  Omit<ComponentProps<typeof DropdownMenuItem>, "children"> & {
+    surface: MenuSurface;
+  }
 >) {
   if (surface === "context") {
     return <ContextMenuItem {...props}>{children}</ContextMenuItem>;
@@ -466,6 +472,27 @@ function FactoryWorkspaceMenuActions({
   archivePendingLabel,
   archiveShortcutKeys,
 }: FactoryWorkspaceMenuActionsProps) {
+  const roleWorkspace = useSessionStore((state) =>
+    selectWorkspace(state, serverId ?? "", workspaceId ?? ""),
+  );
+  const roleState = useProjectFactory(
+    serverId ?? "",
+    roleWorkspace?.projectId ?? "",
+    Boolean(
+      roleWorkspace?.factoryMembership?.installationId.startsWith("project-factory:") ||
+      roleWorkspace?.systemMembership?.role === "optimization-runner",
+    ),
+  );
+  const instructionRole = roleState.data?.roles.find((role) => role.workspaceId === workspaceId);
+  const { t } = useTranslation();
+  const openInstructions = useCallback(() => {
+    if (instructionRole && serverId && roleWorkspace)
+      openFactoryInstructions({
+        serverId,
+        projectId: roleWorkspace.projectId,
+        role: instructionRole.role,
+      });
+  }, [instructionRole, serverId, roleWorkspace]);
   const plugins = useInstalledPlugins();
   const hasOverview = plugins.some(
     (plugin) =>
@@ -494,6 +521,12 @@ function FactoryWorkspaceMenuActions({
   }, [serverId, workspaceId, membership, hasOverview]);
   return (
     <>
+      {instructionRole && serverId && roleWorkspace ? (
+        <WorkspaceMenuItem surface={surface} onSelect={openInstructions}>
+          {t("projectFactory.instructions")}
+        </WorkspaceMenuItem>
+      ) : null}
+
       {membership ? (
         <WorkspaceMenuItem
           surface={surface}
@@ -697,7 +730,9 @@ export function SidebarWorkspaceContextMenu({
     hostBadgeLabel,
     pullRequestLabel,
     serviceLabel: serviceSummary
-      ? t(workspaceServiceLabelKey(serviceSummary), { name: serviceSummary.name })
+      ? t(workspaceServiceLabelKey(serviceSummary), {
+          name: serviceSummary.name,
+        })
       : null,
     t,
   });
@@ -760,7 +795,9 @@ export function SidebarWorkspaceContextMenu({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  backdrop: (backdrop: SidebarSurfaceBackdrop) => ({ backgroundColor: theme.colors[backdrop] }),
+  backdrop: (backdrop: SidebarSurfaceBackdrop) => ({
+    backgroundColor: theme.colors[backdrop],
+  }),
   alignedTrigger: {
     marginLeft: 0,
     marginRight: 0,
