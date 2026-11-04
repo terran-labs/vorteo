@@ -3,6 +3,7 @@ import { PreviewBrokerConfigurationSchema } from "./preview-broker-maintenance.j
 import { z } from "zod";
 import type { CoordinatorBootstrapPlan } from "./coordinator-bootstrap.js";
 import {
+  BootEntrySwitchConfigurationSchema,
   EngineRestartConfigurationSchema,
   EngineRecoveryConfigurationSchema,
   RecoveryOriginSchema,
@@ -117,6 +118,11 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
     value: HostLauncherUpdateConfigurationSchema,
     renewal: true,
     legacyField: "hostLauncherUpdateConfiguration",
+  },
+  bootEntrySwitch: {
+    path: ["container", "bootEntrySwitch"],
+    value: BootEntrySwitchConfigurationSchema,
+    renewal: true,
   },
   // Records that the coordinator launcher sets VORTEO_RELEASE_SEALS=enabled. The same
   // change lets the candidate launcher add (or, with null, remove) exactly that variable;

@@ -229,6 +229,7 @@ function restartReply(
   engineRestart?: boolean,
   hostLauncherUpdate?: boolean,
   engineRecovery?: boolean,
+  bootEntrySwitch?: boolean,
 ) {
   // Captures are retained in the protected journal, not sent to legacy strict clients.
   // COMPAT(workerLaunchReply): added in v674; remove after 2027-04-17 once requester floor >= v674.
@@ -257,6 +258,7 @@ function restartReply(
     engineRestart,
     hostLauncherUpdate,
     engineRecovery,
+    bootEntrySwitch,
   });
   if (!hostAutomaticRestarts) {
     const { automaticApproval: _approval, ...compatible } = job;
@@ -1268,6 +1270,7 @@ export function createInstallationServer(
             req.query.engineRestart === "1",
             req.query.hostLauncherUpdate === "1",
             req.query.engineRecovery === "1",
+            req.query.bootEntrySwitch === "1",
           ),
         });
         void drainRestarts();
@@ -1289,6 +1292,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
           );
     },
@@ -1316,6 +1320,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     });
   });
@@ -1825,6 +1830,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
       );
   });
@@ -1869,6 +1875,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     );
   });
@@ -2340,6 +2347,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
             job,
             delegation,
@@ -2393,6 +2401,7 @@ export function createInstallationServer(
       decision.engineRestartPlanSha256,
       decision.hostLauncherPlanSha256,
       decision.engineRecoveryPlanSha256,
+      decision.bootEntrySwitchPlanSha256,
     );
     res.json(
       withDelegation(
@@ -2410,6 +2419,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
         job,
         requestedDelegation(config.stateDir, req.query.delegatedRequests === "1"),

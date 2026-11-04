@@ -9,7 +9,13 @@ import {
 } from "@getpaseo/protocol/coordinator-configuration-settings";
 import type { InstallationConfig } from "./config.js";
 import { createInstallationRestartExecutor, hostLauncherTarget } from "./daemon.js";
-import { automaticPermitted, RESTART_OPERATIONS } from "./restart-operations.js";
+import type { RestartJob } from "@getpaseo/protocol/execution-installation";
+import {
+  automaticPermitted,
+  legacyOperationReplies,
+  operationFor,
+  RESTART_OPERATIONS,
+} from "./restart-operations.js";
 
 /** Supervisor maintenance is configured through Dev registration, not a reviewed setting. */
 const UNREGISTERED_OPERATIONS = ["supervisorMaintenance"];
@@ -79,7 +85,24 @@ function samples(): Partial<Record<ReviewedConfigurationSetting, unknown>> {
       },
     },
     hostLauncherUpdate: { candidate: path.join(root, "candidate.plist"), sha256: "c".repeat(64) },
+    bootEntrySwitch: {
+      docker: process.execPath,
+      socket: path.join(root, "docker.sock"),
+      container: "a".repeat(64),
+      current: { pointer: pinned(root, "pointer", "/old/entry\n"), entry: pinned(root, "old") },
+      target: pinned(root, "new"),
+      node: pinned(root, "node"),
+      supervisorEntry: pinned(root, "supervisor"),
+      supervisor: { config: path.join(root, "supervisord.conf"), program: "paseo-server" },
+      expectBootForm: "launcher",
+    },
   };
+}
+
+function pinned(root: string, name: string, bytes = `// ${name}\n`) {
+  const file = path.join(root, name);
+  writeFileSync(file, bytes, { mode: 0o600 });
+  return { path: file, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
 function baseConfig(): Record<string, unknown> {
@@ -157,5 +180,27 @@ test("full owner delegation permits only explicitly delegable exact maintenance 
         true,
       ),
     ).toBe(false);
+  }
+});
+
+test("the Dev boot-entry switch is never automatic, even under a standing owner decision", () => {
+  const job = { bootEntrySwitchPlanSha256: "a".repeat(64) };
+  expect(operationFor("bootEntrySwitchPlanSha256").automatic).toBe("never");
+  expect(automaticPermitted(job, true)).toBe(false);
+});
+
+test("a client that did not negotiate an operation sees an ordinary restart it can only cancel", () => {
+  for (const operation of RESTART_OPERATIONS) {
+    if (!operation.legacyReply) continue;
+    const job = {
+      id: "job",
+      target: operation.target,
+      reason: "Reviewed",
+      [operation.field]: "a".repeat(64),
+    } as unknown as RestartJob;
+    const legacy = legacyOperationReplies(job, {});
+    expect(legacy[operation.field], operation.capability).toBeUndefined();
+    expect(legacy.reason).toBe(operation.legacyReply.reason);
+    expect(legacyOperationReplies(job, { [operation.capability]: true })).toBe(job);
   }
 });

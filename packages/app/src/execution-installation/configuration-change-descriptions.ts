@@ -71,6 +71,10 @@ const DESCRIPTIONS: Descriptions = {
     config === null
       ? "Remove the Host launcher update plan."
       : `Allow a one-time Host launcher update, which you approve separately: managed release selection, or release seals on or off. Candidate launcher ${config.sha256.slice(0, 12)}.`,
+  bootEntrySwitch: (config) =>
+    config === null
+      ? "Remove the Dev boot-entry switch plan."
+      : `Allow a Dev boot-entry switch, which you approve separately. Dev restarts once and then starts from ${config.target.path} (${config.target.sha256.slice(0, 12)}) instead of ${config.current.entry.path}.`,
   releaseSeals: (config) =>
     config === null
       ? "Turn off release seals for the coordinator. Its launcher drops VORTEO_RELEASE_SEALS, so later Host builds are not sealed and installs check release bytes in full. Existing sealed releases keep their flags."

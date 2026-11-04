@@ -566,6 +566,31 @@ After the held turns finish, the coordinator:
 
 The Docker restart also requires Factory's supervisor to be a new process. The detail names each passed check, or the exact unmet one. A failure after the restart is never retried, and an interrupted run is recorded as failed without replay. The turns hold releases through the normal path once Dev answers. Changes to stored container settings, such as Factory's SecurityOpt edit, are separate operator steps taken before submitting the restart.
 
+### Dev boot-entry switch
+
+Dev's supervisord program starts the file named in `/etc/paseo-server-entry`. Until the owner retired the Freed Factory pilot on 2026-11-04, that file was Factory's launcher. The launcher refuses to start Dev whenever its controller lock's device number changes, which happens across Docker restarts. The boot-entry switch points Dev at a reviewed entry that starts the same pinned node and managed-release supervisor without the launcher. The same operation, with the two entries swapped, is the rollback.
+
+A trusted Host operator prepares `container.bootEntrySwitch` and sets it through an owner-reviewed coordinator renewal with `configurationChanges: [{ "setting": "bootEntrySwitch", "value": ... }]`; `null` removes it. The plan pins:
+
+- the pinned `docker` binary, the socket path and the Dev container's full ID;
+- `current.pointer` and `current.entry`: the pointer file and the entry it names, each by path and `sha256`;
+- `target`: the new entry's container path and `sha256`, with `source`, an owner-controlled Host file that is not group or other writable, when the entry must be copied in. A rollback names the retained entry and omits `source`;
+- `node` and `supervisorEntry` by path and `sha256`, and the supervisord `config` and `program`;
+- `expectBootForm`, `plain` or `launcher`, and an optional `factoryVerify` with the same fields as the Docker restart's.
+
+The Host client discovers `bootEntrySwitch` through `capabilities` and submits `request-restart --target container-daemon --boot-entry-switch-plan <sha256> --reason-file <file>`. The owner or a delegated lead reviews **Dev boot entry** and chooses **Finish turns and switch the Dev boot entry**. Automatic approval never applies. After the held turns finish, the coordinator:
+
+1. Checks, without effects, that Dev runs healthy under its ID, the pointer holds exactly the current entry path, every pinned file matches, supervisord reports the program's pid, and Factory's check passes in the other boot form. Any difference refuses the job and nothing changes.
+2. Copies the target in as `root` with mode 0644 when `source` is set, checking its digest before the atomic rename.
+3. Saves the pointer as `<pointer>.before-boot-switch-<job id>`, then replaces it atomically after checking that it still holds the expected bytes.
+4. Restarts the supervisord program once.
+5. Requires a new supervisor process running the pinned node and supervisor entry, with the managed-release variables, and with Factory's runtime absent for `plain` or present for `launcher`. It also requires Dev to be healthy, the pointer to name the target, and a new Dev worker under the pinned server ID.
+6. Runs Factory's check again: it must report the expected form with the owner pause and custody unchanged.
+
+A failure after the swap is not retried and not reverted automatically; the detail names the saved pointer. Roll back with a second reviewed plan whose current and target entries are swapped. A rollback to the launcher can meet the same lock refusal and then needs Factory's lock recovery.
+
+Factory's checks need version 4 of the lock acceptance script, which reports `bootForm`. Pin it in `container.factoryGate` and `engineRestart.factoryVerify` in the same renewal that adds the switch plan. Version 3 fails every check after a plain boot.
+
 ### Recovery when Docker does not answer
 
 A separate `container.engineRecovery` plan covers the degraded engine case. It pins the Docker executable digest, container IDs, Factory verification script, and a retained healthy baseline with its timestamp and evidence digest. The initial contract requires paused Factory ownership and exact custody preservation. A retained observation does not establish current idleness or creation continuity.
@@ -608,11 +633,13 @@ Before the first effect, the script must pass and writes the custody list to a p
 - **Paused Factory:** it stays paused, with the same owner sequence and the same custody digest.
 - **Running Factory:** the owner sequence never decreases, the mode may change only to paused, and earlier custody records stay unchanged while new ones may appear.
 
+- **Boot form:** a check that reports `bootForm: "plain"` means Dev booted without the launcher. Only the boot-entry switch may change the form; every other restart fails if it changes. After a plain boot, the epoch and supervisor rules are skipped, because no launcher records them, and the owner and custody rules still apply.
+
 A failure after the restart names the difference and needs Factory's review. Nothing is retried, and the coordinator never edits Factory state. The check deliberately ignores `paseo factory setup`, which can report a latched error that only the restart clears.
 
 ### Reviewed coordinator configuration changes
 
-A reviewed coordinator plan or renewal changes a registered coordinator setting with `configurationChanges`: a list of `{ "setting": <name>, "value": <value> }`, where a `null` value removes the setting. The registry in `packages/protocol/src/coordinator-configuration-settings.ts` names each setting, its configuration path, its value schema and whether a runner renewal may carry it. It includes `factoryRuntimeAdoption`, `previewMonitor`, `claudeHostRefresh`, `engineRestart`, `engineRecovery`, `recoveryOrigin`, `factoryGate`, `hostLauncherUpdate` and `releaseSeals`. `releaseSeals` is the only setting that also changes the coordinator launcher, by exactly `VORTEO_RELEASE_SEALS=enabled`. The candidate configuration must differ from the live one by exactly the listed changes. Unknown settings, invalid values and a setting named twice are refused. Automatic coordinator plans refuse every configuration change.
+A reviewed coordinator plan or renewal changes a registered coordinator setting with `configurationChanges`: a list of `{ "setting": <name>, "value": <value> }`, where a `null` value removes the setting. The registry in `packages/protocol/src/coordinator-configuration-settings.ts` names each setting, its configuration path, its value schema and whether a runner renewal may carry it. It includes `factoryRuntimeAdoption`, `previewMonitor`, `claudeHostRefresh`, `engineRestart`, `engineRecovery`, `recoveryOrigin`, `factoryGate`, `hostLauncherUpdate`, `bootEntrySwitch` and `releaseSeals`. `releaseSeals` is the only setting that also changes the coordinator launcher, by exactly `VORTEO_RELEASE_SEALS=enabled`. The candidate configuration must differ from the live one by exactly the listed changes. Unknown settings, invalid values and a setting named twice are refused. Automatic coordinator plans refuse every configuration change.
 
 Clients negotiate review by setting name, behind `coordinatorBootstrapConfigurationChanges`. A client that does not name every listed setting sees the request without the list, with a reload reason, and cannot approve it. Cancellation stays available. Adding a setting takes one registry entry, its review text in the app and a test.
 
