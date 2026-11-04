@@ -2,6 +2,7 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
+  projectFactory: en.projectFactory,
   paneFind: {
     connectionFailure:
       "このチャットを検索できませんでした。ホストへの接続を確認して再試行してください。",
@@ -1140,7 +1141,10 @@ export const ja: TranslationResources = {
     creating: "作成中…",
     name: "ラベル名",
     updateHostUse: "ラベルを使用するにはホストを更新してください。",
-    errors: { update: "ラベルを更新できません", load: "ラベルを読み込めません" },
+    errors: {
+      update: "ラベルを更新できません",
+      load: "ラベルを読み込めません",
+    },
     colors: {
       violet: "紫",
       sky: "空色",
@@ -1764,7 +1768,10 @@ export const ja: TranslationResources = {
           connectDocs: "ドキュメント",
           openConnectDocs: "接続のドキュメントを開く",
           recommended: "おすすめ",
-          relay: { title: "リレー", hint: "エンドツーエンド暗号化、QR コードをスキャン" },
+          relay: {
+            title: "リレー",
+            hint: "エンドツーエンド暗号化、QR コードをスキャン",
+          },
           tailscale: { title: "Tailscale", hint: "少し設定が必要です" },
         },
       },
@@ -3160,7 +3167,7 @@ export const ja: TranslationResources = {
       system: {
         title: "Vorteo System について",
         description:
-          "このプロジェクトは、この Vorteo インストールを改良するためのものです。インストールのビルド元となったチェックアウトを基にしており、Vorteo :: Optimizer など、デーモンが管理する保守用ワークスペースも含みます。デーモンが再作成し、依存しているため、削除や名前の変更はできません。",
+          "このプロジェクトは、この Vorteo インストールを改良するためのものです。インストールのビルド元となったチェックアウトを基にしており、Vorteo :: Mechanic など、デーモンが管理する保守用ワークスペースも含みます。デーモンが再作成し、依存しているため、削除や名前の変更はできません。",
       },
       readFailures: {
         invalidTitle: "paseo.jsonを解析できませんでした",

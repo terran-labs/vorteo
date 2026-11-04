@@ -26,7 +26,12 @@ beforeEach(() => {
 
 describe("Factory CLI observation", () => {
   it("exposes only supported status, setup and guarded initial install commands", () => {
-    expect(command.commands.map((entry) => entry.name())).toEqual(["status", "setup", "install"]);
+    expect(command.commands.map((entry) => entry.name())).toEqual([
+      "status",
+      "setup",
+      "install",
+      "project",
+    ]);
     expect(command.commands[0]?.helpInformation()).toContain("--host <host>");
   });
 
