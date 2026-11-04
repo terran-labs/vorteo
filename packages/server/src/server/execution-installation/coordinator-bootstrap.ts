@@ -1,4 +1,7 @@
-import { plansConfigurationChange } from "@getpaseo/protocol/coordinator-configuration-settings";
+import {
+  plansConfigurationChange,
+  plansOwnerOnlyConfigurationChange,
+} from "@getpaseo/protocol/coordinator-configuration-settings";
 import {
   BootstrapRequestConflict,
   BootstrapAuthenticationRequired,
@@ -421,6 +424,8 @@ function assertAutomaticCoordinatorPlan(
     plan.compatibleRecovery.configuration.sha256 !== plan.previous.configuration.sha256 ||
     (plan.recoveredFrom && !preFreezeRecovery) ||
     plan.supervisionRecovery ||
+    // Settings marked ownerOnly in the registry always need exact owner review.
+    plansOwnerOnlyConfigurationChange(plan) ||
     (!delegatedMaintenance &&
       (plan.candidate.configuration.sha256 !== plan.previous.configuration.sha256 ||
         plan.sourceUpdateTooling ||
