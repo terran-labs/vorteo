@@ -51,7 +51,7 @@ export const RESTART_OPERATION_VIEWS: readonly RestartOperationView[] = [
     target: "Host launcher",
     finishLabel: "Finish turns and update the Host launcher",
     detail: (sha256) =>
-      `Add the managed release link and root to the Host launch settings and restart the whole Host once, so later restarts always load the selected build. The previous settings are kept and restored if the check fails. Reviewed plan: ${sha256}`,
+      `Apply the reviewed Host launch settings change and restart the whole Host once. It either adds managed release selection, so later restarts always load the selected build, or turns release seals on or off. The previous settings are kept and restored if the check fails. Reviewed plan: ${sha256}`,
   },
 ];
 
