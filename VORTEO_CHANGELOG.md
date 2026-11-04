@@ -6,6 +6,16 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Added
+
+- Recover a wedged Dev through the tracked supervisor maintenance route. `supervisorMaintenance` is a registered coordinator setting that an owner-reviewed renewal can carry, and `scripts/maintenance/dev-supervisor-recovery.mjs` prepares a protected plan for it. After a failed Dev source activation leaves the `paseo` program FATAL or its worker failing, the plan selects the previous release named by the protected Host receipts, starts only `paseo`, and verifies a replacement worker and container health, with intent, rollback and result records. It refuses anything else and never replays.
+
+### Changed
+
+- Supervisor maintenance runs when Dev does not answer and then accepts any worker that answers. The review of such a request offers **Repair Dev supervisor now, Dev is not answering**, an immediate approval of the exact plan, in place of a finish-turns choice it cannot honor.
+
+## Unreleased - 2026-11-03
+
 ### Maintenance
 
 - Record in the customizations inventory that the Codex Chrome toggle launches Chrome DevTools MCP with its usage statistics and CrUX lookups off.
