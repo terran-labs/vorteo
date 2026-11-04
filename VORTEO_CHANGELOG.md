@@ -10,6 +10,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Settings search finds the Delivery mode row in Installation settings. Live dev mode added the row without a settings catalog entry, which failed the app tests.
 
+### Tests
+
+- The restarted-daemon usage test compares the saved reading with the time its fetch completed, which the registry records, instead of the start time. It failed intermittently on slower runners.
+
 ## 26.11.301 - 2026-11-03
 
 Beta bootstrap release for installer-made installations. It carries every change listed below since 26.11.206; 26.11.300 was prepared but never tagged.
