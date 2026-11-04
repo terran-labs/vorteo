@@ -1,0 +1,41 @@
+# Live dev mode
+
+Every installation has a delivery mode. **Reliable** is the default and serves the published static interface. **Live dev** serves the interface from the Expo web dev server running in a persistent source checkout on Host, so an edit reaches the owner's open tab through Fast Refresh in seconds. Only the owner can change the mode, in Installation settings.
+
+Live dev trades provenance for speed. In Reliable mode every served byte traces to a published commit. In Live dev mode the owner's browser runs whatever the live checkout contains right now, including uncommitted edits by Host agents. That code runs on the coordinator's origin with the owner's session, so it can call owner routes, including approvals, without the owner clicking anything. Host agents can already read the owner password file (see [host and container execution](execution-installation.md)), so this is not new capability, but it is a new silent path that removes the publication gate between their edits and the owner's authenticated browser. Metro never receives the owner's cookie or authorization header. Dev container agents cannot write the live checkout: it lives on Host, outside guest-writable mounts, and `promote` accepts only local branches, so Dev work reaches it only after a Host thread chooses to bring it in.
+
+## What serves the interface
+
+The coordinator serves the interface and Installation controls, so live mode lives in the coordinator.
+
+- **State.** The owner's choice is stored in `<stateDir>/live-dev.json` as `{mode, revision, changedAt}`. It is owner state, not coordinator configuration, so switching modes needs no configuration change or restart. Owner routes `POST /api/installation/owner/live-dev/query` and `/change` (`{expectedRevision, mode}`) read and change it behind the existing owner session check. A stale revision is refused.
+- **Paths.** The live checkout is `<host>/live/source`, beside `host/releases`, derived from `deployment.hostReleaseLink`. An installation without that link reports live mode unavailable. The checkout is a Git worktree of the installation's source repository on branch `live/main`, so its commits are visible to Builds without a push.
+- **Dev server.** While the mode is Live dev, the coordinator supervises one child: `expo start --web --localhost` in the checkout's `packages/app`, on a loopback port it chooses, with `PASEO_LIVE_PREVIEW_ORIGIN` and `EXPO_PACKAGER_PROXY_URL` set to the installation's public origin. The repository's Expo patch then binds loopback and rejects any Host or Origin other than that origin or loopback. The coordinator writes a pidfile, restarts a crashed child with backoff and logs to `<stateDir>/live-dev/metro.log`. Switching to Reliable stops the child and verifies it exited. The public origin must be a `*.ts.net` HTTPS origin, which the patch requires; other origins report live mode unavailable.
+- **Proxy.** The web UI middleware sends a request to the dev server only when the mode is Live dev, the dev server is ready, the browser holds a valid owner session for this origin, and the browser has not chosen the safe interface. Everyone else gets the static interface. Only GET and HEAD requests pass, and only these: a page navigation, which always fetches Metro's `/` whatever the client asked for; `*.bundle` and `*.map` files; `/assets/`; and the `/hot` WebSocket. Asset paths with encoded characters, backslashes or dot segments are refused, because Metro would normalize them into other routes. No other Metro path is reachable, including the editor launchers (`/open-stack-frame`, `/open-url`, `/_expo/open`), the debugger (`/inspector`, `/json`, `/_expo/debugger`) and `/message`. Proxied responses carry `Cross-Origin-Resource-Policy: same-origin`, because sibling `*.ts.net` hosts count as same-site. The proxied HTML gets the same installation hint injection as the static page. Metro itself still listens on loopback, where any Host process can reach it directly, as with any local dev server.
+
+## The safe interface
+
+A broken live edit must never lock the owner out of the interface they use to fix it.
+
+- `/?interface=safe` sets a session cookie that serves the static interface for this browser until `/?interface=live` clears it. The static interface is the last release the coordinator installed, which live edits never touch.
+- If the dev server is stopped, starting or not answering within five seconds, the page falls back to the static interface automatically, and a one-minute cookie keeps that page's assets static too.
+- The coordinator injects a small **Live dev** marker into the proxied HTML, outside the app bundle, with a **Safe interface** link. Because it is not part of the live code, it survives a bundle that fails to compile.
+- From the safe interface the owner can switch the installation back to Reliable in Installation settings.
+
+## Changing the live checkout
+
+`node scripts/live-dev.mjs <command>` is the only supported way to change the live checkout's Git state. Each command takes an exclusive lock under `<host>/live/lock`, held for the whole command including any dependency reinstall, and refuses rather than guessing.
+
+- **Tweak.** Agents edit files in the live checkout directly for one-off changes; Fast Refresh shows them immediately. `live-dev claim --by <thread>` records an advisory claim on the files an agent is editing, and `status` shows claims so two agents do not edit the same file at once. `live-dev commit --by <thread> -m <message> [--note <line>]` adds a changelog entry and an inventory review line itself, commits them with the claimed edits on `live/main` through the repository hooks, and releases the claim. A refused commit leaves the edits in place.
+- **Promote.** `live-dev promote <branch>` merges a local task branch into `live/main`. It refuses remote refs, refuses while anyone's uncommitted edits are present, and checks the merge in memory first, so a conflict never writes markers into the watched tree. The changelog and inventory merge as a union, since both sides add entries at the top.
+- **Sync.** `live-dev sync` merges `origin/main` into `live/main` under the same rules.
+- **Dependencies.** After each change the command compares the shared dependency cache key, which ignores workspace version bumps, with the key recorded at the last successful install. When it differs, it reinstalls and asks the coordinator to restart the dev server by writing `<host>/live/restart-request`. The coordinator only restarts its own child in response.
+- **Delivery.** `live/main` reaches GitHub `main` through Builds' usual pull request, the same day. Builds merges `origin/main` back with `live-dev sync` afterwards.
+
+## Fast-track daemon restarts
+
+Daemon, protocol and server changes still restart the Host daemon through the tracked lifecycle workflow, with its approval policy and finish-turns hold. In live mode the update builds from a copy-on-write clone of the live checkout instead of a fresh archive and clean install: dependencies, TypeScript incremental build information and the previous output come along, the dependency rebuild runs only when the lockfile changed, and the web export is skipped because the interface is already live. A failed build leaves the running release selected. This needs the managed source updater, so it follows the managed delivery conversion that Builds is preparing.
+
+## Compatibility
+
+New owner routes and the `liveDev` capability field are additions. Older interfaces never call them and see the static interface. Reliable mode behaves exactly as before. The state file is absent on existing installations, which reads as Reliable.
