@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Record in the customizations inventory that the Codex Chrome toggle launches Chrome DevTools MCP with its usage statistics and CrUX lookups off.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- Add an owner-only Chrome toggle to Codex threads on machines with Google Chrome. Threads with it on attach a pinned Chrome DevTools MCP server to the owner's running Chrome, with its usage statistics and CrUX lookups off, restarting the thread's Codex process on the next turn and keeping the conversation. It is off by default, needs remote debugging turned on once at chrome://inspect/#remote-debugging, and is never available to quota-managed workers or enabled by agents.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - Show a Chrome switch next to Choose profile in threads that offer Chrome. Profile-based composers hid every thread toggle, so the owner had no way to turn on Claude in Chrome. The switch changes only that thread and is not saved as a default for new threads.
