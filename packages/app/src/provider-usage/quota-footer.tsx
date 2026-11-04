@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { taskCardStyles } from "@/agent-stream/task-card-styles";
+import { taskCardStyles, TASK_CARD_BODY_INSET } from "@/agent-stream/task-card-styles";
+import {
+  sectionDividerBleedStyle,
+  useSectionDividerBleed,
+} from "@/components/sidebar/global-card-shell";
 import { quotaFreshness } from "./global-quota";
 import type { RunwayState } from "./runway";
 import { LaneSwatch } from "./runway-lane";
@@ -39,11 +43,19 @@ export function QuotaFooter({
     return () => clearInterval(timer);
   }, [view]);
   const freshness = quotaFreshness(view, now);
+  const bleed = useSectionDividerBleed();
   const [keyOpen, setKeyOpen] = useState(false);
   const toggleKey = useCallback(() => setKeyOpen((open) => !open), []);
   const keyState = useMemo(() => ({ expanded: keyOpen }), [keyOpen]);
   return (
-    <View style={[taskCardStyles.proseInset, taskCardStyles.separator, styles.footer]}>
+    <View
+      style={[
+        taskCardStyles.proseInset,
+        taskCardStyles.separator,
+        sectionDividerBleedStyle(bleed, TASK_CARD_BODY_INSET),
+        styles.footer,
+      ]}
+    >
       <View style={styles.row}>
         {freshness ? (
           <View style={styles.freshness} testID="global-quota-freshness">
