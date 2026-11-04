@@ -118,6 +118,14 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
     renewal: true,
     legacyField: "hostLauncherUpdateConfiguration",
   },
+  // Records that the coordinator launcher sets VORTEO_RELEASE_SEALS=enabled. The same
+  // change lets the candidate launcher add (or, with null, remove) exactly that variable;
+  // the coordinator itself reads the environment, not this value.
+  releaseSeals: {
+    path: ["releaseSeals"],
+    value: z.literal("enabled"),
+    renewal: true,
+  },
 } as const satisfies Record<string, ReviewedConfigurationSettingDefinition>;
 
 export type ReviewedConfigurationSetting = keyof typeof REVIEWED_CONFIGURATION_SETTINGS;

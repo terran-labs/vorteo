@@ -97,6 +97,8 @@ interface PluginServiceDependencies {
   factoryControls?: () => Pick<NativeFactorySetupService, "readControls" | "control"> | null;
   factoryProject?: () => Pick<ProjectFactoryService, "invoke"> | null;
   usageAgents?: AgentUsageLookup;
+  /** Keeps each account's last good usage reading across daemon restarts. */
+  usageSnapshotPath?: string;
   settingsDirectory?: string;
   runtime?: PluginRuntimePort;
   managedSources?: ManagedPluginSources;
@@ -146,6 +148,8 @@ export class PluginService {
       300_000,
       this.logger,
       dependencies.usageAgents,
+      undefined,
+      dependencies.usageSnapshotPath,
     );
     this.runtime =
       dependencies.runtime ??
