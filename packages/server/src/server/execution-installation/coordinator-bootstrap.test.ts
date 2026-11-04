@@ -361,6 +361,17 @@ test("only explicit maintenance delegation approves a release seal change automa
   }
 });
 
+test("maintenance delegation never approves a Dev boot-entry switch plan automatically", async () => {
+  // The switch itself is approved by digest, so the owner reviews its plan here.
+  const f = automaticCoordinatorFixture(true);
+  f.plan.configurationChanges = [{ setting: "bootEntrySwitch", value: null }];
+  f.plan.candidate.configuration.sha256 = "f".repeat(64);
+  const submitted = await f.submit();
+  await expect(
+    f.service().approveAutomatic(automaticCoordinatorIdentity(submitted)),
+  ).rejects.toThrow("require exact owner review");
+});
+
 test("loaded coordinator PID parsing rejects nested, foreign and incomplete records", () => {
   const service = "gui/501/local.vorteo.fixture.installation";
   expect(loadedCoordinatorPid(service, `${service} = {\n\tpid = 123\n}`)).toBe(123);

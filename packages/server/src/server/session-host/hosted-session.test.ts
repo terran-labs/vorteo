@@ -572,3 +572,32 @@ test("the provider's context breakdown crosses the host, and an old host reports
   });
   expect(await legacy.getContextBreakdown()).toBeNull();
 });
+
+test("a steer result crosses the host, and an accepted steer is never reported as failed", async () => {
+  const fixture = await hostedFixture();
+  const session = await fixture.client.createSession(config, { agentId: "steer" });
+  const provider: AgentSession = fixture.hosted[0]!;
+  const steer = { expectedTurnId: "turn-1" };
+
+  // Claude names the steered message; the strict contract once rejected the extra field after
+  // the provider had already delivered the message, so clients resent it.
+  provider.steerActiveTurn = async () => ({ status: "accepted", providerMessageId: "msg-1" });
+  expect(await session.steerActiveTurn?.("more", steer)).toEqual({
+    status: "accepted",
+    providerMessageId: "msg-1",
+  });
+
+  provider.steerActiveTurn = async () => ({ status: "unavailable" });
+  expect(await session.steerActiveTurn?.("more", steer)).toEqual({ status: "unavailable" });
+
+  // A malformed acceptance still went to the provider, so it must not invite a resend.
+  provider.steerActiveTurn = async () =>
+    ({ status: "accepted", providerMessageId: 7 }) as unknown as { status: "accepted" };
+  expect(await session.steerActiveTurn?.("more", steer)).toEqual({ status: "accepted" });
+
+  provider.steerActiveTurn = async () =>
+    ({ status: "maybe" }) as unknown as { status: "unavailable" };
+  await expect(session.steerActiveTurn?.("more", steer)).rejects.toThrow(
+    "The provider returned an invalid steerActiveTurn result.",
+  );
+});

@@ -1,6 +1,6 @@
 import {
   plansConfigurationChange,
-  plansOwnerOnlyConfigurationChange,
+  plansOwnerReviewOnlyChange,
 } from "@getpaseo/protocol/coordinator-configuration-settings";
 import {
   BootstrapRequestConflict,
@@ -424,8 +424,8 @@ function assertAutomaticCoordinatorPlan(
     plan.compatibleRecovery.configuration.sha256 !== plan.previous.configuration.sha256 ||
     (plan.recoveredFrom && !preFreezeRecovery) ||
     plan.supervisionRecovery ||
-    // Settings marked ownerOnly in the registry always need exact owner review.
-    plansOwnerOnlyConfigurationChange(plan) ||
+    // Full delegation never admits a setting the owner approves later by digest alone.
+    plansOwnerReviewOnlyChange(plan) ||
     (!delegatedMaintenance &&
       (plan.candidate.configuration.sha256 !== plan.previous.configuration.sha256 ||
         plan.sourceUpdateTooling ||

@@ -364,6 +364,10 @@ setInterval(releaseCheck, RELEASE_CHECK_INTERVAL_MS).unref();
 const server = app.listen(config.listenPort, "127.0.0.1", () =>
   logger.info("Installation coordinator ready"),
 );
+// Live dev mode's Fast Refresh socket; every other upgrade is refused as before.
+server.on("upgrade", (req, socket, head) => {
+  if (!app.handleLiveDevUpgrade(req, socket, head)) socket.destroy();
+});
 server.on("error", (error) => {
   logger.error({ err: error }, "Installation listener failed");
   process.exitCode = 1;
@@ -395,6 +399,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
     stopProfileSynchronization?.();
     stopSettingsReconciliation?.();
     daemonConnections.close();
+    void app.stopLiveDev();
     server.close();
     gateServer?.close();
   });

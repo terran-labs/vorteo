@@ -1,4 +1,9 @@
 import {
+  LiveDevStatusSchema,
+  type LiveDevMode,
+  type LiveDevStatus,
+} from "@getpaseo/protocol/live-dev";
+import {
   PreviewBrokerDeploymentJobSchema,
   type PreviewBrokerDeploymentJob,
 } from "@getpaseo/protocol/preview-broker-deployment";
@@ -644,6 +649,28 @@ export class InstallationClient {
     }
   }
 
+  private liveDevSupported = false;
+
+  /** Null on coordinators without live dev mode. */
+  async liveDev(): Promise<LiveDevStatus | null> {
+    try {
+      const status = LiveDevStatusSchema.parse(await this.request("live-dev/query", {}));
+      this.liveDevSupported = true;
+      return status;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable && !this.liveDevSupported) return null;
+      throw error;
+    }
+  }
+
+  async changeLiveDev(status: LiveDevStatus, mode: LiveDevMode): Promise<LiveDevStatus> {
+    if (!this.liveDevSupported)
+      throw new InstallationRouteUnavailable("Live dev mode is unavailable");
+    return LiveDevStatusSchema.parse(
+      await this.request("live-dev/change", { expectedRevision: status.revision, mode }),
+    );
+  }
+
   async changeMaintenanceDelegation(
     status: MaintenanceDelegationStatus,
     enabled: boolean,
@@ -791,7 +818,7 @@ export class InstallationClient {
         ? `${path}?idleRestarts=1${this.installation.gracefulRestarts ? "&gracefulRestarts=1" : ""}`
         : path;
     const query = path.startsWith("restarts")
-      ? `${resource}${resource.includes("?") ? "&" : "?"}sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&delegatedRequests=1`
+      ? `${resource}${resource.includes("?") ? "&" : "?"}sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1`
       : resource;
     return this.ports.request(query, this.password, body);
   }

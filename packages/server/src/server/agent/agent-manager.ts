@@ -5092,6 +5092,29 @@ export class AgentManager {
     );
   }
 
+  /**
+   * Replaces the system prompt an agent's next session starts with. A running session keeps
+   * its current prompt, since providers take it only at launch; resume and recreate use this.
+   */
+  async setStoredSystemPrompt(agentId: string, systemPrompt: string): Promise<void> {
+    await this.runLifecycleMutation(agentId, async () => {
+      const liveAgent = this.agents.get(agentId);
+      if (liveAgent) {
+        liveAgent.config.systemPrompt = systemPrompt;
+        await this.persistSnapshot(liveAgent);
+        return;
+      }
+      const registry = this.requireRegistry();
+      const record = await registry.get(agentId);
+      if (!record) throw new Error(`Agent not found: ${agentId}`);
+      await registry.upsert({
+        ...record,
+        config: { ...record.config, systemPrompt },
+        updatedAt: this.nextStoredUpdatedAt(record),
+      });
+    });
+  }
+
   private async updateAgentMetadataUnlocked(
     agentId: string,
     updates: {
@@ -5307,7 +5330,7 @@ export class AgentManager {
   /** The owner's answer is saved, then delivered once through the durable queue. */
   async answerQuestion(
     agentId: string,
-    input: { questionId: string; answer: string; answeredBy: string },
+    input: import("./questions/model.js").OwnerAnswerInput,
   ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
     const agent = this.requireAgent(agentId);
     if (!this.messageQueueControl?.queueQuestionAnswer)

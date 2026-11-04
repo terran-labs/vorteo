@@ -8,13 +8,14 @@ on:
   merge_group:
   workflow_dispatch:
 
-# A newer push to the same ref cancels the run still in progress, main included.
-# A full run costs about 200 runner-minutes against the org's 20 concurrent
-# jobs, and a superseded main run only answers a question the newer commit
-# answers again.
+# A newer push to a pull request cancels its run still in progress. A full run
+# costs about 200 runner-minutes against the org's 20 concurrent jobs.
+# Vorteo: main runs finish. Merges land faster than a full run, so cancelling
+# on main meant no main run ever completed its slowest browser shard. The
+# group still keeps at most one queued main run and drops older queued ones.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # CI does not use the CUDA execution provider, and the onnxruntime-node

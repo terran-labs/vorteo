@@ -9,7 +9,13 @@ import {
 } from "@getpaseo/protocol/coordinator-configuration-settings";
 import type { InstallationConfig } from "./config.js";
 import { createInstallationRestartExecutor, hostLauncherTarget } from "./daemon.js";
-import { automaticPermitted, RESTART_OPERATIONS } from "./restart-operations.js";
+import type { RestartJob } from "@getpaseo/protocol/execution-installation";
+import {
+  automaticPermitted,
+  legacyOperationReplies,
+  operationFor,
+  RESTART_OPERATIONS,
+} from "./restart-operations.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -81,7 +87,30 @@ function samples(): Partial<Record<ReviewedConfigurationSetting, unknown>> {
       },
     },
     hostLauncherUpdate: { candidate: path.join(root, "candidate.plist"), sha256: "c".repeat(64) },
+    bootEntrySwitch: {
+      docker: process.execPath,
+      socket: path.join(root, "docker.sock"),
+      container: "a".repeat(64),
+      current: { pointer: pinned(root, "pointer", "/old/entry\n"), entry: pinned(root, "old") },
+      target: pinned(root, "new"),
+      node: pinned(root, "node"),
+      supervisorEntry: pinned(root, "supervisor"),
+      supervisor: { config: path.join(root, "supervisord.conf"), program: "paseo-server" },
+      expectBootForm: "launcher",
+      factoryVerify: {
+        script,
+        sha256: createHash("sha256").update(readFileSync(script)).digest("hex"),
+        lockInode: 1,
+        ownerMode: "paused",
+      },
+    },
   };
+}
+
+function pinned(root: string, name: string, bytes = `// ${name}\n`) {
+  const file = path.join(root, name);
+  writeFileSync(file, bytes, { mode: 0o600 });
+  return { path: file, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
 function baseConfig(): Record<string, unknown> {
@@ -138,7 +167,9 @@ test.skipIf(process.platform === "win32")(
 test("full owner delegation permits only explicitly delegable exact maintenance plans", () => {
   for (const operation of RESTART_OPERATIONS) {
     const job = { [operation.field]: "a".repeat(64) };
-    expect(automaticPermitted(job, false, RESTART_OPERATIONS, true)).toBe(true);
+    expect(automaticPermitted(job, false, RESTART_OPERATIONS, true)).toBe(
+      operation.delegable === true,
+    );
     if (operation.automatic !== "allowed") expect(automaticPermitted(job, false)).toBe(false);
     expect(
       automaticPermitted(
@@ -148,5 +179,64 @@ test("full owner delegation permits only explicitly delegable exact maintenance 
         true,
       ),
     ).toBe(false);
+  }
+});
+
+test("the Dev boot-entry switch is never automatic, even under a standing decision or full delegation", () => {
+  const job = { bootEntrySwitchPlanSha256: "a".repeat(64) };
+  expect(operationFor("bootEntrySwitchPlanSha256").automatic).toBe("never");
+  expect(automaticPermitted(job, true)).toBe(false);
+  // Full owner delegation, which is active on the owner's installation, does not cover it.
+  expect(automaticPermitted(job, true, RESTART_OPERATIONS, true)).toBe(false);
+  expect(operationFor("bootEntrySwitchPlanSha256").delegable).not.toBe(true);
+});
+
+test("the Dev boot-entry switch refuses another plan, registration-bound Dev and stale Factory pins", async () => {
+  const sample = samples().bootEntrySwitch as { factoryVerify: { sha256: string } };
+  const switchJob = (sha256: string) =>
+    ({ id: "job", target: "container-daemon", bootEntrySwitchPlanSha256: sha256 }) as RestartJob;
+  const executorFor = (config: Record<string, unknown>) =>
+    createInstallationRestartExecutor(config as unknown as InstallationConfig, () => undefined);
+  const configured = withSetting(["container", "bootEntrySwitch"], sample);
+  const executor = executorFor(configured);
+  const digest = executor.bootEntrySwitchPlan!()!;
+  // Each refusal comes before any Dev command; the fixture Docker binary is never run.
+  await expect(executor.switchBootEntry!(switchJob("b".repeat(64)))).rejects.toThrow(
+    "Dev boot-entry switch plan is unavailable or changed",
+  );
+  const stale = withSetting(["container", "bootEntrySwitch"], sample);
+  (stale.container as Record<string, unknown>).factoryGate = {
+    docker: process.execPath,
+    socket: "/fixture/docker.sock",
+    container: "a".repeat(64),
+    verify: { ...sample.factoryVerify, sha256: "9".repeat(64) },
+  };
+  // A stale pin withholds the capability, and dispatch refuses it again.
+  expect(executorFor(stale).bootEntrySwitchPlan!()).toBeUndefined();
+  await expect(executorFor(stale).switchBootEntry!(switchJob(digest))).rejects.toThrow(
+    "factoryGate must pin the same Factory check as the switch before it runs",
+  );
+  const bound = withSetting(["container", "bootEntrySwitch"], sample);
+  (bound.container as Record<string, unknown>).persistentRegistration = {};
+  const boundExecutor = executorFor(bound);
+  expect(boundExecutor.bootEntrySwitchPlan!()).toBeUndefined();
+  await expect(boundExecutor.switchBootEntry!(switchJob(digest))).rejects.toThrow(
+    "Dev boot-entry switch requires an independently bound Dev operation",
+  );
+});
+
+test("a client that did not negotiate an operation sees an ordinary restart it can only cancel", () => {
+  for (const operation of RESTART_OPERATIONS) {
+    if (!operation.legacyReply) continue;
+    const job = {
+      id: "job",
+      target: operation.target,
+      reason: "Reviewed",
+      [operation.field]: "a".repeat(64),
+    } as unknown as RestartJob;
+    const legacy = legacyOperationReplies(job, {});
+    expect(legacy[operation.field], operation.capability).toBeUndefined();
+    expect(legacy.reason).toBe(operation.legacyReply.reason);
+    expect(legacyOperationReplies(job, { [operation.capability]: true })).toBe(job);
   }
 });

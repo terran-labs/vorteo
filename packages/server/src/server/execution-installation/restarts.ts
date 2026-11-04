@@ -237,6 +237,9 @@ export interface RestartExecutor {
   recoverEngine?(job: RestartJob): Promise<string>;
   engineRestartPlan?(): string | undefined;
   restartEngine?(job: RestartJob): Promise<string>;
+  /** Digest of the configured Dev boot-entry switch plan, when it is executable. */
+  bootEntrySwitchPlan?(): string | undefined;
+  switchBootEntry?(job: RestartJob): Promise<string>;
   supportsUpdate?(target: RestartJob["target"]): boolean;
   sourceBase?(target: RestartJob["target"]): string;
   sourceWeb?(target: RestartJob["target"]): string;
@@ -2112,6 +2115,7 @@ export class InstallationRestarts {
     engineRestartPlanSha256?: string,
     hostLauncherPlanSha256?: string,
     engineRecoveryPlanSha256?: string,
+    bootEntrySwitchPlanSha256?: string,
   ): RestartJob {
     this.requireActive();
     const job = this.jobs.find((candidate) => candidate.id === id);
@@ -2123,6 +2127,7 @@ export class InstallationRestarts {
       engineRestartPlanSha256,
       hostLauncherPlanSha256,
       engineRecoveryPlanSha256,
+      bootEntrySwitchPlanSha256,
     });
     this.validateDecision(job, decision, updateSha256);
     if (decision === "request-again") {

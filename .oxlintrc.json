@@ -555,6 +555,13 @@
                 "rmSync",
                 "symlinkSync"
               ],
+              // TODO: the boot-entry switch capability digest is synchronous like the Docker restart's; it binds the Docker executable and the owner-controlled target entry bytes.
+              "server/execution-installation/boot-entry-switch.ts": [
+                "accessSync",
+                "lstatSync",
+                "readFileSync",
+                "realpathSync"
+              ],
               // TODO: standing automation consent is descriptor-bound and durably recorded; migrate ordered authority mutations together.
               "server/execution-installation/daemon-automation.ts": [
                 "closeSync",

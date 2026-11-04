@@ -1,3 +1,4 @@
+import type { LiveDevMode, LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import { brokerActionDisabledReason, type BrokerAction } from "./preview-broker-review";
 import type { MaintenanceDelegationStatus } from "@getpaseo/protocol/maintenance-approval";
@@ -53,6 +54,8 @@ interface InstallationPanelState {
   daemonAutomation: DaemonAutomationPreference | null;
   maintenanceDelegation: MaintenanceDelegationStatus | null;
   maintenanceDelegationError: string | null;
+  liveDev: LiveDevStatus | null;
+  liveDevError: string | null;
   maintenanceStatus: InstallationMaintenanceStatus | null;
   daemonAutomationError: string | null;
   restartSummary: RestartSummary | null;
@@ -96,6 +99,8 @@ export class InstallationPanelModel {
     daemonAutomation: null,
     maintenanceDelegation: null,
     maintenanceDelegationError: null,
+    liveDev: null,
+    liveDevError: null,
     maintenanceStatus: null,
     daemonAutomationError: null,
     restartSummary: null,
@@ -155,6 +160,8 @@ export class InstallationPanelModel {
           | "daemonAutomation"
           | "maintenanceDelegation"
           | "changeMaintenanceDelegation"
+          | "liveDev"
+          | "changeLiveDev"
           | "maintenanceStatus"
           | "enrollmentStatus"
           | "recoveryAccess"
@@ -224,6 +231,8 @@ export class InstallationPanelModel {
         daemonAutomation: null,
         maintenanceDelegation: null,
         maintenanceDelegationError: null,
+        liveDev: null,
+        liveDevError: null,
         maintenanceStatus: null,
         recoveryAccess: null,
         recoveryAccessError: null,
@@ -311,6 +320,7 @@ export class InstallationPanelModel {
         maintenanceStatus,
         sessionHost,
         instructionRequests,
+        liveDev,
       ] = await Promise.all([
         this.client.listRestarts(),
         this.client.profileSharingStatus(),
@@ -360,6 +370,7 @@ export class InstallationPanelModel {
             return this.state.instructionRequests;
           },
         ),
+        this.loadLiveDev(),
       ]);
       if (generation !== this.accessGeneration) return;
       const targets = new Set(
@@ -382,6 +393,7 @@ export class InstallationPanelModel {
         brokerJobs,
         sessionHost,
         instructionRequests,
+        liveDev,
         pendingJobs: pending,
         profileSharing,
         ...(automationGeneration === this.automationGeneration
@@ -566,6 +578,44 @@ export class InstallationPanelModel {
         notice: null,
         daemonAutomationError: toErrorMessage(error),
       });
+      if (error instanceof OwnerAccessExpired) this.fail(error);
+    } finally {
+      if (generation === this.accessGeneration) this.publish({ busy: false });
+    }
+  }
+
+  /** The Delivery mode card never blocks the rest of Installation controls. */
+  private async loadLiveDev(): Promise<LiveDevStatus | null> {
+    try {
+      const status = (await this.client.liveDev?.()) ?? null;
+      this.publish({ liveDevError: null });
+      return status;
+    } catch (error) {
+      if (error instanceof OwnerAccessExpired) throw error;
+      this.publish({ liveDevError: failureMessage(error, "Live dev mode is unavailable") });
+      return this.state.liveDev;
+    }
+  }
+
+  async changeLiveDev(mode: LiveDevMode): Promise<void> {
+    const status = this.state.liveDev;
+    if (this.state.busy || !this.state.unlocked || !status || !this.client.changeLiveDev) return;
+    if (mode === "live" && !status.available) return;
+    const generation = this.accessGeneration;
+    this.publish({ busy: true, error: null, liveDevError: null, notice: null });
+    try {
+      const saved = await this.client.changeLiveDev(status, mode);
+      if (generation !== this.accessGeneration) return;
+      this.publish({
+        liveDev: saved,
+        notice:
+          mode === "live"
+            ? "Live dev mode is on. Reload once the live dev server is ready."
+            : "Reliable mode is on. Reload to use the published interface.",
+      });
+    } catch (error) {
+      if (generation !== this.accessGeneration) return;
+      this.publish({ liveDevError: toErrorMessage(error) });
       if (error instanceof OwnerAccessExpired) this.fail(error);
     } finally {
       if (generation === this.accessGeneration) this.publish({ busy: false });
@@ -894,6 +944,8 @@ export class InstallationPanelModel {
         daemonAutomation: null,
         maintenanceDelegation: null,
         maintenanceDelegationError: null,
+        liveDev: null,
+        liveDevError: null,
         maintenanceStatus: null,
         daemonAutomationError: null,
         recoveryAccess: null,

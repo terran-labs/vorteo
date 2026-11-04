@@ -1,3 +1,9 @@
+import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
+import { FactoryProjectActions } from "./sidebar/factory-project-actions";
+import { FactoryFolderStatus } from "./sidebar/factory-status";
+import { FactoryInstructionsPanel, useProjectFactories } from "./sidebar/factory-instructions";
+import { ProjectFactoryDialog } from "./sidebar/project-factory";
+import { projectFactoryTargets } from "./sidebar/project-factory-model";
 import { hasActiveSidebarLabelFilter } from "@/stores/sidebar-view-store";
 import { useScrollReporter } from "./use-scroll-divider";
 import { NestableScrollDivider } from "./nestable-scroll-divider";
@@ -39,7 +45,6 @@ import {
   type MutableRefObject,
   type Ref,
   type ComponentProps,
-  type PropsWithChildren,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { router, usePathname } from "expo-router";
@@ -100,7 +105,6 @@ import { useShowShortcutBadges } from "@/hooks/use-show-shortcut-badges";
 import {
   ContextMenu,
   ContextMenuContent,
-  ContextMenuItem,
   ContextMenuTrigger,
   useContextMenu,
 } from "@/components/ui/context-menu";
@@ -108,7 +112,6 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
-  DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { ProjectLeadingVisual } from "@/components/sidebar/project-leading-visual";
 import { useToast } from "@/contexts/toast-context";
@@ -708,21 +711,6 @@ function ProjectKebabMenu({
   );
 }
 
-type ProjectMenuSurface = "context" | "dropdown";
-
-function ProjectMenuItem({
-  surface,
-  children,
-  ...props
-}: PropsWithChildren<
-  Omit<ComponentProps<typeof DropdownMenuItem>, "children"> & { surface: ProjectMenuSurface }
->) {
-  if (surface === "context") {
-    return <ContextMenuItem {...props}>{children}</ContextMenuItem>;
-  }
-  return <DropdownMenuItem {...props}>{children}</DropdownMenuItem>;
-}
-
 function ProjectMenuItems({
   surface,
   projectViewKey,
@@ -798,15 +786,13 @@ function ProjectMenuItems({
             testID={`sidebar-project-menu-open-factory-${projectViewKey}`}
             onSelect={handleOpenFactory}
           >
-            Open Factory
+            {t("projectFactory.open")}
           </ProjectMenuItem>
-          <ProjectMenuItem
+          <FactoryProjectActions
             surface={surface}
-            testID={`sidebar-project-menu-factory-setup-unavailable-${projectViewKey}`}
-            disabled
-          >
-            Factory setup unavailable
-          </ProjectMenuItem>
+            settingsTarget={settingsTarget}
+            projectPath={projectPath}
+          />
         </>
       ) : null}
       {settingsTarget ? (
@@ -1277,7 +1263,12 @@ function ProjectHeaderRow({
         iconDataUri={iconDataUri}
         statusBucket={statusBucket}
         projectViewKey={project.viewKey}
-        backdrop={getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered })}
+        backdrop={getSidebarRowBackdrop({
+          isDragging,
+          isPressed,
+          selected,
+          isHovered,
+        })}
         chevron={chevron}
         showChevron={isHovered && chevron !== null}
         isArchiving={isArchiving}
@@ -1480,7 +1471,12 @@ function WorkspaceRowInner({
           selected,
           isHovered,
         });
-        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
+        const backdrop = getSidebarRowBackdrop({
+          isDragging,
+          isPressed,
+          selected,
+          isHovered,
+        });
         return (
           <View
             {...dragAttributes}
@@ -1621,7 +1617,12 @@ function WorkspaceRowWithMenu({
     canMarkUnread,
     handleMarkAsRead,
     handleMarkAsUnread,
-  } = useWorkspaceMenuActions({ workspace, selected, canPin, onToggleWorkspacePin });
+  } = useWorkspaceMenuActions({
+    workspace,
+    selected,
+    canPin,
+    onToggleWorkspacePin,
+  });
 
   useKeyboardActionHandler({
     handlerId: `workspace-archive-${workspace.workspaceKey}`,
@@ -1722,7 +1723,10 @@ function WorkspaceRowItem({
     if (!workspace.serverId) {
       return;
     }
-    navigateToWorkspace({ serverId: workspace.serverId, workspaceId: workspace.workspaceId });
+    navigateToWorkspace({
+      serverId: workspace.serverId,
+      workspaceId: workspace.workspaceId,
+    });
   }, [workspace.serverId, workspace.workspaceId]);
 
   return (
@@ -1935,6 +1939,7 @@ function ProjectSection({
   level,
   itemLevel,
   beforeList,
+  summary,
   renderList,
 }: {
   projectKey: string;
@@ -1947,6 +1952,7 @@ function ProjectSection({
   /** Level of the section's workspaces. */
   itemLevel: number;
   beforeList?: ReactNode;
+  summary?: ReactNode;
   renderList: (items: SidebarWorkspacePlacement[]) => ReactElement;
 }) {
   const touch = useVortonTouch();
@@ -1995,6 +2001,7 @@ function ProjectSection({
           trailing={trailing}
         />
       )}
+      {summary}
       {collapsed ? null : (
         <>
           {beforeList}
@@ -2029,7 +2036,9 @@ function useProjectRemoval(project: SidebarProjectEntry, displayName: string) {
     void (async () => {
       const confirmed = await confirmDialog({
         title: t("sidebar.project.confirmations.removeTitle"),
-        message: t("sidebar.project.confirmations.removeMessage", { projectName: displayName }),
+        message: t("sidebar.project.confirmations.removeMessage", {
+          projectName: displayName,
+        }),
         confirmLabel: t("sidebar.project.confirmations.removeConfirm"),
         cancelLabel: t("sidebar.project.confirmations.cancel"),
         destructive: true,
@@ -2095,7 +2104,11 @@ function ProjectFocusActions({
   const localDaemonServerId = useLocalDaemonServerId();
   const rowModel = useMemo(
     () =>
-      buildSidebarProjectRowModel({ project, collapsed: false, supportsMultiplicityByServerId }),
+      buildSidebarProjectRowModel({
+        project,
+        collapsed: false,
+        supportsMultiplicityByServerId,
+      }),
     [project, supportsMultiplicityByServerId],
   );
   const worktreeTarget =
@@ -2237,9 +2250,20 @@ function ProjectBlock({
     [project.workspaces],
   );
   const supportsFactory = useHostFeatureMap(factoryHostIds, "factoryWorkspaceMembership");
+  const factoryTargets = useMemo(
+    () => projectFactoryTargets(project.hosts, project.workspaces, workspaceEntriesByKey),
+    [project.hosts, project.workspaces, workspaceEntriesByKey],
+  );
+  const factoryStates = useProjectFactories(factoryTargets, supportsFactory);
   const groups = useMemo(
-    () => splitFactoryWorkspaces(project.workspaces, workspaceEntriesByKey, supportsFactory),
-    [project.workspaces, workspaceEntriesByKey, supportsFactory],
+    () =>
+      splitFactoryWorkspaces(
+        project.workspaces,
+        workspaceEntriesByKey,
+        supportsFactory,
+        factoryStates,
+      ),
+    [project.workspaces, workspaceEntriesByKey, supportsFactory, factoryStates],
   );
   // Folders organize ordinary workspaces only; Factory and Standing keep their own sections.
   const workRows = useMemo(() => {
@@ -2564,7 +2588,14 @@ function ProjectBlock({
           <ProjectSection
             projectKey={project.viewKey}
             section="factory"
-            title="Factory"
+            summary={overviewTargets.map((target) => (
+              <FactoryFolderStatus
+                key={`${target.serverId}:${target.projectId}`}
+                serverId={target.serverId}
+                projectId={target.projectId}
+              />
+            ))}
+            title={t("projectFactory.folder")}
             items={groups.factory}
             focus={focus}
             level={sectionLevel}
@@ -2803,7 +2834,9 @@ export function SidebarWorkspaceList({
   // One fetch, one map, every mode — project mode paints icons on its headers and status mode
   // paints them on each row, all keyed by `projectViewKey`. The targets come from the projection
   // that produced the rows, so the question "what is on screen" is answered once.
-  const projectIconByProjectViewKey = useProjectIcons({ projects: projectIconTargets });
+  const projectIconByProjectViewKey = useProjectIcons({
+    projects: projectIconTargets,
+  });
 
   // A filter that matches nothing swaps the list's body and nothing above it. It used to replace
   // this whole subtree, which unmounted the header — and the header is where the display menu's
@@ -3019,7 +3052,10 @@ function useProjectModeView(input: {
   );
   // The compact rail's single-project flyout has no room for a focused view: it never shows
   // focus itself, and its Focus buttons focus the sidebar instead.
-  const focusController = useSidebarFocusController({ world: focusWorld, enabled: rootFolders });
+  const focusController = useSidebarFocusController({
+    world: focusWorld,
+    enabled: rootFolders,
+  });
   const focusElsewhere = useMemo(() => {
     if (rootFolders || !onFocusElsewhere) return null;
     return {
@@ -3041,7 +3077,7 @@ function useProjectModeView(input: {
             labels: {
               allProjects: t("sidebar.focus.allProjects"),
               standing: "Standing",
-              factory: "Factory",
+              factory: t("projectFactory.folder"),
               pinned: t("sidebar.pinned.title"),
             },
           })
@@ -3478,7 +3514,11 @@ function ProjectModeListContent({
           />
         );
       }
-      const block = renderProjectBlock(row.item, { drag, isDragging: isActive, dragHandleProps });
+      const block = renderProjectBlock(row.item, {
+        drag,
+        isDragging: isActive,
+        dragHandleProps,
+      });
       return row.depth > 0 ? <View style={sidebarNestingStyle(row.depth)}>{block}</View> : block;
     },
     [renderProjectBlock],
@@ -3541,7 +3581,11 @@ function ProjectModeListContent({
       isActive,
       dragHandleProps,
     }: DraggableRenderItemInfo<SidebarWorkspacePlacement>) =>
-      renderPinnedChatRow(item, { drag, isDragging: isActive, dragHandleProps }),
+      renderPinnedChatRow(item, {
+        drag,
+        isDragging: isActive,
+        dragHandleProps,
+      }),
     [renderPinnedChatRow],
   );
 
@@ -3643,6 +3687,8 @@ function ProjectModeListContent({
 
   return (
     <SidebarFocusProvider value={focusContext}>
+      <ProjectFactoryDialog />
+      <FactoryInstructionsPanel />
       <View style={styles.container}>
         {platformIsNative ? (
           <NestableScrollContainer

@@ -58,6 +58,8 @@ import {
   ResolvedPluginSourceSchema,
 } from "@getpaseo/protocol/plugin-installation";
 import { OwnerSessions, OWNER_SESSION_MAX_AGE } from "./owner-sessions.js";
+import { createLiveDev, LiveDevUnavailable } from "./live-dev/service.js";
+import { LiveDevStateError } from "./live-dev/state.js";
 import { createInstallationProfiles } from "./profiles/runtime.js";
 import { createInstallationNameStore } from "./installation-name.js";
 import { ProfileSharingConflict } from "./profiles/merge.js";
@@ -228,6 +230,7 @@ function restartReply(
   engineRestart?: boolean,
   hostLauncherUpdate?: boolean,
   engineRecovery?: boolean,
+  bootEntrySwitch?: boolean,
 ) {
   // Captures are retained in the protected journal, not sent to legacy strict clients.
   // COMPAT(workerLaunchReply): added in v674; remove after 2027-04-17 once requester floor >= v674.
@@ -256,6 +259,7 @@ function restartReply(
     engineRestart,
     hostLauncherUpdate,
     engineRecovery,
+    bootEntrySwitch,
   });
   if (!hostAutomaticRestarts) {
     const { automaticApproval: _approval, ...compatible } = job;
@@ -682,6 +686,19 @@ export function createInstallationServer(
       ?.slice(cookieName(req).length + 1);
   const configuredPasswordFile =
     config.ownerPasswordFile ?? path.resolve(config.stateDir, "../..", "owner-password");
+  const liveDev = createLiveDev({
+    config,
+    logger,
+    ownerSession: (cookie) => {
+      const token = cookie
+        ?.split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(`${publicCookieName}=`))
+        ?.slice(publicCookieName.length + 1);
+      return Boolean(sessions.expiresAt(token));
+    },
+    secureCookies,
+  });
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", "loopback");
@@ -1254,6 +1271,7 @@ export function createInstallationServer(
             req.query.engineRestart === "1",
             req.query.hostLauncherUpdate === "1",
             req.query.engineRecovery === "1",
+            req.query.bootEntrySwitch === "1",
           ),
         });
         void drainRestarts();
@@ -1275,6 +1293,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
           );
     },
@@ -1302,6 +1321,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     });
   });
@@ -1811,6 +1831,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
       );
   });
@@ -1855,6 +1876,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     );
   });
@@ -2221,6 +2243,12 @@ export function createInstallationServer(
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
     void drainRestarts();
   });
+  app.post("/api/installation/owner/live-dev/query", (_req, res, next) => {
+    void liveDev.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/live-dev/change", (req, res, next) => {
+    void liveDev.change(req.body).then((status) => res.json(status), next);
+  });
   app.post("/api/installation/owner/maintenance-delegation/query", (req, res) => {
     const available = daemonAutomation.legacyPolicyAvailable();
     const status = maintenanceDelegationStatus(config.stateDir);
@@ -2320,6 +2348,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
             job,
             delegation,
@@ -2373,6 +2402,7 @@ export function createInstallationServer(
       decision.engineRestartPlanSha256,
       decision.hostLauncherPlanSha256,
       decision.engineRecoveryPlanSha256,
+      decision.bootEntrySwitchPlanSha256,
     );
     res.json(
       withDelegation(
@@ -2390,6 +2420,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
         job,
         requestedDelegation(config.stateDir, req.query.delegatedRequests === "1"),
@@ -2477,6 +2508,15 @@ export function createInstallationServer(
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
+  const liveDevWebUi = liveDev.middleware(() => ({
+    ...config.public,
+    name: installationName.read(),
+    origin: config.public.origin,
+    environments: config.public.environments,
+    profileSharing: true,
+    idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
+    gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+  }));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
   const localWebUi = new Map<string, ReturnType<typeof webUi>>();
   app.use((req, res, next) => {
@@ -2490,7 +2530,13 @@ export function createInstallationServer(
       middleware(req, res, next);
       return;
     }
-    (isRecoveryRequest(req) ? recoveryWebUi : canonicalWebUi)(req, res, next);
+    if (isRecoveryRequest(req)) {
+      recoveryWebUi(req, res, next);
+      return;
+    }
+    // The recovery and local origins always serve the static interface, so a broken live
+    // edit can never take every route to Installation controls with it.
+    liveDevWebUi(req, res, () => canonicalWebUi(req, res, next));
   });
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError) {
@@ -2503,6 +2549,10 @@ export function createInstallationServer(
     }
     if (error instanceof InstructionRequestError) {
       res.status(error.status).json({ error: error.message });
+      return;
+    }
+    if (error instanceof LiveDevStateError || error instanceof LiveDevUnavailable) {
+      res.status(409).json({ error: error.message });
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {
@@ -2536,6 +2586,9 @@ export function createInstallationServer(
       await releaseRuntime.updates.check();
       void drainRestarts();
     },
+    /** Fast Refresh socket for live dev mode; true when handled. */
+    handleLiveDevUpgrade: liveDev.upgrade,
+    stopLiveDev: liveDev.stop,
     operationalQueueSummary: () => restarts.operationalSummary(),
     setOperationalActivitySink: restarts.setOperationalActivitySink.bind(restarts),
     assertRegistrationReadiness: standingRuntime.assertRegistrationReadiness,

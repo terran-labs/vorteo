@@ -46,7 +46,12 @@ function plan(factory = false): EngineRestartConfiguration {
 }
 
 /** A fake Docker: each container reports `state()`; the engine restart advances `boot`. */
-function fakeDocker(options: { health?: () => string; epochs?: number[]; verifyFails?: string }) {
+function fakeDocker(options: {
+  health?: () => string;
+  epochs?: number[];
+  verifyFails?: string;
+  bootForms?: string[];
+}) {
   const commands: string[] = [];
   let boot = 1;
   const epochs = [...(options.epochs ?? [40, 41])];
@@ -75,7 +80,14 @@ function fakeDocker(options: { health?: () => string; epochs?: number[]; verifyF
         });
         throw error;
       }
-      const facts = { ok: true, check: "all", epoch: epochs.shift(), supervisorPid: 20 + boot };
+      const bootForm = options.bootForms?.shift();
+      const facts = {
+        ok: true,
+        check: "all",
+        epoch: epochs.shift(),
+        supervisorPid: 20 + boot,
+        ...(bootForm ? { bootForm } : {}),
+      };
       return { stdout: `${JSON.stringify(facts)}\n` };
     }
     throw new Error(`unexpected command ${file} ${args.join(" ")}`);
@@ -174,6 +186,21 @@ test("Factory verification fails when the controller epoch did not advance", asy
   await expect(
     verifyFactoryAfterRestart(configured, preflight, { run: docker.run }),
   ).rejects.toThrow("epoch did not advance");
+});
+
+test("Factory verification accepts a plain Dev boot only when it was plain before", async () => {
+  const plainDev = fakeDocker({ epochs: [0, 0], bootForms: ["plain", "plain"] });
+  const configured = plan(true);
+  const preflight = await engineRestartPreflight(configured, { run: plainDev.run });
+  expect(preflight.factoryBootForm).toBe("plain");
+  await expect(
+    verifyFactoryAfterRestart(configured, preflight, { run: plainDev.run }),
+  ).resolves.toBe("Dev booted without Factory's launcher, as before");
+  const switched = fakeDocker({ epochs: [40, 0], bootForms: ["launcher", "plain"] });
+  const before = await engineRestartPreflight(configured, { run: switched.run });
+  await expect(
+    verifyFactoryAfterRestart(configured, before, { run: switched.run }),
+  ).rejects.toThrow("Dev's boot form changed (launcher to plain)");
 });
 
 test("a failed Docker Desktop restart command is reported, not retried", async () => {
