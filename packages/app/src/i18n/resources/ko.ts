@@ -2,6 +2,7 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
+  projectFactory: en.projectFactory,
   paneFind: {
     connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
     historyChangedFailure: "검색 중에 채팅이 변경되었습니다. 다시 검색하세요.",
@@ -1134,7 +1135,10 @@ export const ko: TranslationResources = {
     creating: "만드는 중…",
     name: "레이블 이름",
     updateHostUse: "레이블을 사용하려면 호스트를 업데이트하세요.",
-    errors: { update: "레이블을 업데이트할 수 없습니다", load: "레이블을 불러올 수 없습니다" },
+    errors: {
+      update: "레이블을 업데이트할 수 없습니다",
+      load: "레이블을 불러올 수 없습니다",
+    },
     colors: {
       violet: "보라",
       sky: "하늘",
@@ -1756,7 +1760,10 @@ export const ko: TranslationResources = {
           connectDocs: "문서",
           openConnectDocs: "연결 문서 열기",
           recommended: "권장",
-          relay: { title: "릴레이", hint: "엔드투엔드 암호화, QR 코드를 스캔하세요" },
+          relay: {
+            title: "릴레이",
+            hint: "엔드투엔드 암호화, QR 코드를 스캔하세요",
+          },
           tailscale: { title: "Tailscale", hint: "약간의 설정이 필요합니다" },
         },
       },
@@ -3147,7 +3154,7 @@ export const ko: TranslationResources = {
       system: {
         title: "Vorteo System 정보",
         description:
-          "이 프로젝트는 이 Vorteo 설치를 발전시키기 위한 곳입니다. 설치를 빌드한 체크아웃을 기반으로 하며, Vorteo :: Optimizer처럼 데몬이 관리하는 유지 관리 워크스페이스도 담고 있습니다. 데몬이 다시 만들고 의존하므로 제거하거나 이름을 바꿀 수 없습니다.",
+          "이 프로젝트는 이 Vorteo 설치를 발전시키기 위한 곳입니다. 설치를 빌드한 체크아웃을 기반으로 하며, Vorteo :: Mechanic처럼 데몬이 관리하는 유지 관리 워크스페이스도 담고 있습니다. 데몬이 다시 만들고 의존하므로 제거하거나 이름을 바꿀 수 없습니다.",
       },
       readFailures: {
         invalidTitle: "paseo.json을 파싱할 수 없습니다",

@@ -84,7 +84,10 @@ describe("createSidebarWorkspaceEntry workspace directory label", () => {
     descriptor.workspaceDirectory = "/worktrees/feature/packages/app";
     descriptor.worktreeSlug = "feature";
 
-    const entry = createSidebarWorkspaceEntry({ serverId: "srv", workspace: descriptor });
+    const entry = createSidebarWorkspaceEntry({
+      serverId: "srv",
+      workspace: descriptor,
+    });
 
     expect(entry.workspaceDirectoryLabel).toBe("feature");
   });
@@ -93,7 +96,10 @@ describe("createSidebarWorkspaceEntry workspace directory label", () => {
     const descriptor = workspaceWithForge(undefined, "https://github.com/acme/repo/pull/42");
     descriptor.workspaceDirectory = "/home/alice/external/feature";
 
-    const entry = createSidebarWorkspaceEntry({ serverId: "srv", workspace: descriptor });
+    const entry = createSidebarWorkspaceEntry({
+      serverId: "srv",
+      workspace: descriptor,
+    });
 
     expect(entry.workspaceDirectoryLabel).toBe("~/external/feature");
   });
@@ -114,7 +120,9 @@ function project(input: {
   iconWorkingDir?: string;
   workspaceKeys: string[];
   hosts?: Array<
-    Omit<WorkspaceStructureProject["hosts"][number], "projectId"> & { projectId?: string }
+    Omit<WorkspaceStructureProject["hosts"][number], "projectId"> & {
+      projectId?: string;
+    }
   >;
 }): WorkspaceStructureProject {
   return {
@@ -131,7 +139,10 @@ function project(input: {
           worktreeSupport: "supported" as const,
         },
       ],
-      (host) => Object.assign({}, host, { projectId: host.projectId ?? input.projectKey }),
+      (host) =>
+        Object.assign({}, host, {
+          projectId: host.projectId ?? input.projectKey,
+        }),
     ),
     workspaceKeys: input.workspaceKeys,
   };
@@ -142,7 +153,12 @@ function sidebarProject(input: {
   workspaceKeys: string[];
 }): SidebarProjectEntry {
   const projects = buildSidebarProjectsFromStructure({
-    projects: [project({ projectKey: input.projectKey, workspaceKeys: input.workspaceKeys })],
+    projects: [
+      project({
+        projectKey: input.projectKey,
+        workspaceKeys: input.workspaceKeys,
+      }),
+    ],
   });
   const result = projects[0];
   if (!result) {
@@ -270,7 +286,12 @@ describe("buildSidebarProjectsFromStructure", () => {
 
   it("preserves the structure hook workspace order", () => {
     const projects = buildSidebarProjectsFromStructure({
-      projects: [project({ projectKey: "project-1", workspaceKeys: ["feature", "main"] })],
+      projects: [
+        project({
+          projectKey: "project-1",
+          workspaceKeys: ["feature", "main"],
+        }),
+      ],
     });
 
     expect(projects[0]?.workspaces.map((placement) => placement.workspaceId)).toEqual([
@@ -417,7 +438,12 @@ describe("shared sidebar workspace model", () => {
 
   it("preserves the collection when a retained sidebar reconnects to unchanged entries", () => {
     const model = buildSidebarWorkspacePlacementModel({
-      projects: [project({ projectKey: "project", workspaceKeys: ["srv:one", "srv:two"] })],
+      projects: [
+        project({
+          projectKey: "project",
+          workspaceKeys: ["srv:one", "srv:two"],
+        }),
+      ],
     });
     const one = workspace({
       id: "one",
@@ -468,7 +494,12 @@ describe("shared sidebar workspace model", () => {
 
   it("preserves unchanged row identities when another workspace updates", () => {
     const model = buildSidebarWorkspacePlacementModel({
-      projects: [project({ projectKey: "project", workspaceKeys: ["srv:one", "srv:two"] })],
+      projects: [
+        project({
+          projectKey: "project",
+          workspaceKeys: ["srv:one", "srv:two"],
+        }),
+      ],
     });
     const one = workspace({
       id: "one",
@@ -517,7 +548,13 @@ describe("shared sidebar workspace model", () => {
   it("keeps a structurally disambiguated project key in status entries", () => {
     const projectKey = "host:srv:project:prj_a";
     const model = buildSidebarWorkspacePlacementModel({
-      projects: [project({ projectKey, projectName: "Clone A", workspaceKeys: ["srv:clone-a"] })],
+      projects: [
+        project({
+          projectKey,
+          projectName: "Clone A",
+          workspaceKeys: ["srv:clone-a"],
+        }),
+      ],
     });
     const entries = buildSidebarWorkspaceEntries({
       placements: model.workspaces,
@@ -629,7 +666,10 @@ describe("computeSidebarOrderUpdates", () => {
 
   it("appends unseen projects without changing saved project order", () => {
     const projects = [
-      sidebarProject({ projectKey: "project-a", workspaceKeys: ["ws-1", "ws-2"] }),
+      sidebarProject({
+        projectKey: "project-a",
+        workspaceKeys: ["ws-1", "ws-2"],
+      }),
       sidebarProject({ projectKey: "project-b", workspaceKeys: ["ws-3"] }),
     ];
 
@@ -687,7 +727,11 @@ describe("deriveSidebarLoadingState", () => {
         hydratedServerIds: ["srv"],
         hasProjects: true,
       }),
-    ).toEqual({ isLoading: false, isInitialLoad: false, isRevalidating: false });
+    ).toEqual({
+      isLoading: false,
+      isInitialLoad: false,
+      isRevalidating: false,
+    });
   });
 
   it("short-circuits to idle when inactive", () => {
@@ -698,7 +742,11 @@ describe("deriveSidebarLoadingState", () => {
         hydratedServerIds: [],
         hasProjects: false,
       }),
-    ).toEqual({ isLoading: false, isInitialLoad: false, isRevalidating: false });
+    ).toEqual({
+      isLoading: false,
+      isInitialLoad: false,
+      isRevalidating: false,
+    });
   });
 });
 
@@ -736,7 +784,12 @@ function agent(input: {
     status: input.status,
     turn:
       input.status === "running"
-        ? { phase: "open", turnId: null, startedAt: null, cancellationRequestId: null }
+        ? {
+            phase: "open",
+            turnId: null,
+            startedAt: null,
+            cancellationRequestId: null,
+          }
         : { phase: "idle", cancellationRequestId: null },
     createdAt: new Date(0),
     updatedAt: input.updatedAt ?? new Date(1_000),
@@ -900,7 +953,9 @@ describe("deriveProjectStatusBucket", () => {
         ],
         sessions: {
           srv: sessionWith({ workspaces: [projectWorkspace("ws-1", "done")] }),
-          other: sessionWith({ workspaces: [projectWorkspace("ws-9", "running")] }),
+          other: sessionWith({
+            workspaces: [projectWorkspace("ws-9", "running")],
+          }),
         },
       }),
     ).toBe("running");
@@ -914,7 +969,9 @@ describe("deriveProjectStatusBucket", () => {
           workspacePlacement({ serverId: "offline", workspaceId: "ws-2" }),
         ],
         sessions: {
-          srv: sessionWith({ workspaces: [projectWorkspace("ws-1", "running")] }),
+          srv: sessionWith({
+            workspaces: [projectWorkspace("ws-1", "running")],
+          }),
         },
       }),
     ).toBe("running");
@@ -982,7 +1039,11 @@ function workerSidebarFixture() {
   const execution = projectWorkspace("execution", "running");
   execution.projectId = "worker-project";
   execution.workspaceDirectory = "/isolated/worker";
-  const parent = agent({ id: "parent", workspaceId: origin.id, status: "idle" });
+  const parent = agent({
+    id: "parent",
+    workspaceId: origin.id,
+    status: "idle",
+  });
   const worker = agent({
     id: "worker",
     workspaceId: execution.id,
@@ -1073,7 +1134,10 @@ describe("managed worker sidebar placement", () => {
       projectKey: membership.key,
       workspaceKeys: ["srv:origin", "srv:execution"],
     });
-    fixture.projects[1] = project({ projectKey: "worker-project", workspaceKeys: [] });
+    fixture.projects[1] = project({
+      projectKey: "worker-project",
+      workspaceKeys: [],
+    });
     const model = buildSidebarWorkspacePlacementModel({
       projects: fixture.projects,
       managedWorkspaces: collectManagedWorkspacePlacements({
@@ -1121,7 +1185,10 @@ describe("managed worker sidebar placement", () => {
       deriveProjectStatusBucket({
         workspaces: model.workspaces,
         sessions: {
-          srv: { workspaces: fixture.session.workspaces, workspaceAgentActivity: activity },
+          srv: {
+            workspaces: fixture.session.workspaces,
+            workspaceAgentActivity: activity,
+          },
         },
       }),
     ).toBe("running");
@@ -1216,7 +1283,9 @@ describe("managed worker sidebar placement", () => {
         sessions: [fixture.session],
       }),
     ).toEqual([]);
-    const model = buildSidebarWorkspacePlacementModel({ projects: fixture.projects });
+    const model = buildSidebarWorkspacePlacementModel({
+      projects: fixture.projects,
+    });
     expect(model.projects.map((entry) => entry.viewKey)).toEqual([
       "origin-project",
       "worker-project",
@@ -1276,9 +1345,9 @@ describe("managed worker sidebar placement", () => {
         }),
       ).toEqual([]);
       expect(
-        buildSidebarWorkspacePlacementModel({ projects: fixture.projects }).workspaces.map(
-          (entry) => entry.workspaceId,
-        ),
+        buildSidebarWorkspacePlacementModel({
+          projects: fixture.projects,
+        }).workspaces.map((entry) => entry.workspaceId),
       ).toContain("execution");
     },
   );
@@ -1360,7 +1429,7 @@ it("places exact native Factory members once before Standing when the host suppo
       ...base,
       standing: true,
       factoryMembership: {
-        installationId: "installation",
+        installationId: "project-factory:installation",
         projectId: base.projectId,
         serverId: "one",
         role: "factory",
@@ -1391,7 +1460,11 @@ it("rejects Factory placement for a relationship from another host or project", 
       workspace: {
         ...base,
         standing: true,
-        factoryMembership: { installationId: "installation", ...identity, role: "worker" },
+        factoryMembership: {
+          installationId: "installation",
+          ...identity,
+          role: "worker",
+        },
       },
     });
     const entries = new Map([[member.workspaceKey, member]]);
@@ -1405,7 +1478,10 @@ it("rejects Factory placement for a relationship from another host or project", 
 
 it("updates retained PR rows when merging starts and stops without a daemon update", () => {
   const descriptor = workspaceWithForge("github", "https://github.com/acme/repo/pull/42");
-  const initial = createSidebarWorkspaceEntry({ serverId: "srv", workspace: descriptor });
+  const initial = createSidebarWorkspaceEntry({
+    serverId: "srv",
+    workspace: descriptor,
+  });
   const input = {
     placements: [initial],
     sessions: [
@@ -1424,10 +1500,16 @@ it("updates retained PR rows when merging starts and stops without a daemon upda
   });
   expect(merging.get(initial.workspaceKey)?.prHint?.activity).toBe("merging");
   expect(merging.get(initial.workspaceKey)).not.toBe(idle.get(initial.workspaceKey));
-  const finished = buildSidebarWorkspaceEntries({ ...input, previousEntries: merging });
+  const finished = buildSidebarWorkspaceEntries({
+    ...input,
+    previousEntries: merging,
+  });
   expect(finished.get(initial.workspaceKey)?.prHint?.activity).toBeUndefined();
   expect(finished.get(initial.workspaceKey)).not.toBe(merging.get(initial.workspaceKey));
-  const unchanged = buildSidebarWorkspaceEntries({ ...input, previousEntries: finished });
+  const unchanged = buildSidebarWorkspaceEntries({
+    ...input,
+    previousEntries: finished,
+  });
   expect(unchanged.get(initial.workspaceKey)).toBe(finished.get(initial.workspaceKey));
 });
 
@@ -1450,8 +1532,16 @@ it("deduplicates Factory overview routes while retaining exact host/project iden
   );
   const entries = new Map(members.map((member) => [member.workspaceKey, member]));
   expect(factoryOverviewTargets(members, entries, new Set(["one", "two"]))).toEqual([
-    { installationId: "installation", serverId: "one", projectId: base.projectId },
-    { installationId: "installation", serverId: "two", projectId: base.projectId },
+    {
+      installationId: "installation",
+      serverId: "one",
+      projectId: base.projectId,
+    },
+    {
+      installationId: "installation",
+      serverId: "two",
+      projectId: base.projectId,
+    },
   ]);
   expect(
     factoryOverviewTargets(members, entries, new Set(["two"])).map((target) => target.serverId),
@@ -1524,9 +1614,80 @@ it("prepends newly discovered manual workspaces without dropping filtered saved 
     }),
   ).toEqual({
     projectOrder: null,
-    workspaceOrders: [{ projectViewKey: "p", order: ["srv:new", "srv:hidden", "srv:a", "srv:b"] }],
+    workspaceOrders: [
+      {
+        projectViewKey: "p",
+        order: ["srv:new", "srv:hidden", "srv:a", "srv:b"],
+      },
+    ],
   });
   expect(
     computeSidebarOrderUpdates({ projects, persistedProjectOrder: ["p"] }).workspaceOrders,
   ).toEqual([]);
+});
+
+it("orders project Factory roles and places the system Mechanic after Releases", () => {
+  const base = workspaceWithForge(undefined, "https://github.com/acme/repo/pull/42");
+  const roles = ["worker", "Releases", "Foreman", "Builds", "Triage"].map((name) =>
+    createSidebarWorkspaceEntry({
+      serverId: "one",
+      workspace: {
+        ...base,
+        id: name,
+        title: `Project :: ${name}`,
+        standing: true,
+        factoryMembership: {
+          installationId: "project-factory:project",
+          projectId: base.projectId,
+          serverId: "one",
+          role: "factory",
+        },
+      },
+    }),
+  );
+  const mechanic = createSidebarWorkspaceEntry({
+    serverId: "one",
+    workspace: {
+      ...base,
+      id: "mechanic",
+      title: "Mechanic",
+      standing: true,
+      systemMembership: { role: "optimization-runner" },
+    },
+  });
+  const entries = new Map([...roles, mechanic].map((entry) => [entry.workspaceKey, entry]));
+  const grouped = splitFactoryWorkspaces([...roles, mechanic], entries, new Map([["one", true]]));
+  expect(grouped.factory.map((entry) => entry.workspaceId)).toEqual([
+    "Triage",
+    "Foreman",
+    "Builds",
+    "Releases",
+    "mechanic",
+    "worker",
+  ]);
+  expect(grouped.standing).toEqual([]);
+  // Authoritative workspace IDs win even when user-set titles no longer name the role.
+  const renamedEntries = new Map(
+    [...entries].map(([key, entry]) => [key, { ...entry, title: "Renamed role" }]),
+  );
+  const daemonOrder = [roles[3], roles[4], roles[2], roles[1], mechanic];
+  const ordered = splitFactoryWorkspaces(
+    [...roles, mechanic],
+    renamedEntries,
+    new Map([["one", true]]),
+    [
+      {
+        serverId: "one",
+        projectId: base.projectId,
+        roles: daemonOrder.map((entry) => ({ workspaceId: entry.workspaceId })),
+      },
+    ],
+  );
+  expect(ordered.factory.map((entry) => entry.workspaceId)).toEqual([
+    ...daemonOrder.map((entry) => entry.workspaceId),
+    "worker",
+  ]);
+  const withoutMembers = splitFactoryWorkspaces([mechanic], entries, new Map([["one", true]]));
+  expect(withoutMembers.factory).toEqual([]);
+  expect(withoutMembers.standing).toEqual([mechanic]);
 });

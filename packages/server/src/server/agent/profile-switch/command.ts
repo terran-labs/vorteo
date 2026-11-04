@@ -27,6 +27,14 @@ function describeAccount(
   return model ? `${account} (${model})` : account;
 }
 
+function withStandingInstructions(
+  options: { standingInstructions?: string } | undefined,
+  switchInstructions: string,
+) {
+  const standing = options?.standingInstructions;
+  return standing ? `${standing}\n\n${switchInstructions}` : switchInstructions;
+}
+
 export async function switchAgentProfileCommand(
   dependencies: CreateAgentCommandDependencies & {
     providerSnapshotManager: Pick<
@@ -35,6 +43,11 @@ export async function switchAgentProfileCommand(
     >;
   },
   target: ProfileSwitchTarget,
+  /**
+   * Instructions the thread keeps across the switch, such as a daemon role charter. They lead
+   * the new session's system prompt, ahead of the carried context.
+   */
+  options?: { standingInstructions?: string },
 ): Promise<void> {
   const { agentManager, agentStorage, providerSnapshotManager } = dependencies;
   await agentManager.waitForAgentClose(target.agentId);
@@ -69,15 +82,18 @@ export async function switchAgentProfileCommand(
     cwd: record.cwd,
     title: sourceConfig.title,
     mcpServers: sourceConfig.mcpServers,
-    systemPrompt: formatSwitchInstructions({
-      from: describeAccount(
-        settings,
-        record.provider,
-        live?.runtimeInfo?.model ?? sourceConfig.model,
-      ),
-      to: describeAccount(settings, target.provider, target.model),
-      context,
-    }),
+    systemPrompt: withStandingInstructions(
+      options,
+      formatSwitchInstructions({
+        from: describeAccount(
+          settings,
+          record.provider,
+          live?.runtimeInfo?.model ?? sourceConfig.model,
+        ),
+        to: describeAccount(settings, target.provider, target.model),
+        context,
+      }),
+    ),
     ...(target.profileId ? { profileId: target.profileId } : {}),
     ...(target.model ? { model: target.model } : {}),
     ...(target.thinkingOptionId ? { thinkingOptionId: target.thinkingOptionId } : {}),

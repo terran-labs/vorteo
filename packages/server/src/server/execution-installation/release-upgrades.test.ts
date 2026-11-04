@@ -115,6 +115,25 @@ function statuses(upgrades: InstallationUpgrades) {
   return { status: upgrade.status, steps: upgrade.steps.map((step) => step.status) };
 }
 
+test("keeps an installer-built Host job and requests it only once", async () => {
+  // Installer-made Hosts return `installer-<upgrade id>`. The journal once refused that ID,
+  // so every tick relaunched the Host build and the upgrade stayed running forever.
+  const fake = fakePorts({
+    requestHostUpdate: async (upgrade) => {
+      fake.calls.push("host-request");
+      return `installer-${upgrade.id}`;
+    },
+  });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  await upgrades.drain();
+  await upgrades.drain();
+  expect(fake.calls.filter((call) => call === "host-request")).toHaveLength(1);
+  fake.finishHost("failed");
+  await upgrades.drain();
+  expect(statuses(upgrades).status).toBe("failed");
+});
+
 test("runs every step in order and records each one", async () => {
   const fake = fakePorts();
   const upgrades = new InstallationUpgrades(journal, fake.ports);

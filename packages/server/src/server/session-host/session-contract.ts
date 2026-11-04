@@ -147,7 +147,11 @@ export type HistoryPage = z.infer<typeof HistoryPageSchema>;
 /** The result each method must produce; the host and the worker both check it. */
 export const SessionCallResultSchemas = {
   startTurn: z.object({ turnId: IdSchema }).strict(),
-  steerActiveTurn: z.object({ status: z.enum(["accepted", "unavailable"]) }).strict(),
+  // Claude names the steered message so the conversation can be rewound to it.
+  steerActiveTurn: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("accepted"), providerMessageId: z.string().optional() }).strict(),
+    z.object({ status: z.literal("unavailable") }).strict(),
+  ]),
   interrupt: z.null(),
   respondToPermission: z
     .object({ followUpPrompt: HostedPromptSchema.optional() })
