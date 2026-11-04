@@ -581,6 +581,32 @@ describe("OMP agent client and session", () => {
     expect(omp.timeline()).toContainEqual(
       expect.objectContaining({ messageId: "native-late", clientMessageId: "client-late" }),
     );
+    runtime.finishTurn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // An old ambiguous steer surfaces while a newer prompt is pending. Neither may claim the
+    // other's ID, and the pending order is no longer trusted, so neither echo takes one.
+    const next = await session.startTurn("next", { clientMessageId: "client-next" });
+    runtime.beginTurn();
+    runtime.acceptPrompt("next", "native-next");
+    await session.steerActiveTurn?.("old answer", {
+      expectedTurnId: next.turnId,
+      clientMessageId: "answer-A",
+    });
+    await session.startTurn("different answer", { clientMessageId: "answer-B" });
+    runtime.beginTurn();
+    runtime.acceptPrompt("old answer", "native-A");
+    runtime.acceptPrompt("different answer", "native-B");
+    const late = omp
+      .timeline()
+      .filter(
+        (item) =>
+          item.type === "user_message" && ["native-A", "native-B"].includes(item.messageId ?? ""),
+      );
+    expect(late).toEqual([
+      expect.not.objectContaining({ clientMessageId: expect.anything() }),
+      expect.not.objectContaining({ clientMessageId: expect.anything() }),
+    ]);
   });
 
   test("reports a rejected steer as unavailable", async () => {

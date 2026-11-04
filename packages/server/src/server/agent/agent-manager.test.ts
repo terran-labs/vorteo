@@ -16657,6 +16657,8 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
     loseAcknowledgement = false;
     // Pi and OMP: the provider holds the steer, but the turn ended before it applied.
     turnEndsAfterSubmit = false;
+    // Pi and OMP emit an entry without a client ID when its text has conflicting owners.
+    conflictingEcho = false;
     override async steerActiveTurn(
       prompt: AgentPromptInput,
       options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
@@ -16678,7 +16680,7 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
           type: "user_message",
           text,
           messageId: nativeId,
-          clientMessageId: options.clientMessageId,
+          ...(this.conflictingEcho ? {} : { clientMessageId: options.clientMessageId }),
         },
       });
       providerHistory.push({
@@ -16737,6 +16739,7 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
     const first = await ask("Ship the beta tonight?");
     const second = await ask("Ship the stable tonight?");
     const third = await ask("Ship the docs tonight?");
+    const fourth = await ask("Ship the website tonight?");
     void drainAsyncGenerator(manager.streamAgent(agent.id, "long work"));
     await manager.waitForAgentRunStart(agent.id);
     const answerMessages = async () =>
@@ -16791,6 +16794,12 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
       { id: `question-answer-${second.questionId}`, delivery: { status: "uncertain" } },
       { id: `question-answer-${third.questionId}`, delivery: { status: "uncertain" } },
     ]);
+
+    // The adapter could not tell whose entry the fourth answer's was, so it gave no client ID.
+    // With no recorded mapping, history cannot prove delivery and the answer fails closed.
+    session.conflictingEcho = true;
+    await manager.answerQuestion(agent.id, fourth);
+    expect(session.steerCount).toBe(5);
     await manager.closeAgent(agent.id);
     await manager.flush();
     queue.close();
@@ -16819,9 +16828,12 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
       .toBe(3);
     expect((await question(second.questionId, reopened))?.answerDeliveredAt).toBeDefined();
     expect((await question(third.questionId, reopened))?.answerDeliveredAt).toBeDefined();
-    expect((await nextQueue.read(agent.id)).items).toEqual([]);
+    expect((await question(fourth.questionId, reopened))?.answerDeliveredAt).toBeUndefined();
+    expect((await nextQueue.read(agent.id)).items).toMatchObject([
+      { id: `question-answer-${fourth.questionId}`, delivery: { status: "uncertain" } },
+    ]);
     expect(await nextQueue.acceptedHistory(agent.id)).toHaveLength(3);
-    expect(session.steerCount).toBe(4);
+    expect(session.steerCount).toBe(5);
   } finally {
     queue.close();
     nextQueue?.close();
