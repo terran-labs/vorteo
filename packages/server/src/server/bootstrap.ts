@@ -162,7 +162,6 @@ import { AgentStorage } from "./agent/agent-storage.js";
 import { migrateMovedPaths } from "./migrations/moved-paths.migration.js";
 import { reconcileQuotaReserveStartup } from "./agent/quota-reserve/reconcile-startup.js";
 import { QuotaReservePolling } from "./agent/quota-reserve/polling.js";
-import { ClaudeLimitObservations } from "./agent/providers/claude/limit-observation.js";
 import { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -1254,14 +1253,12 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   const reserveRecoveryStops = await reconcileQuotaReserveStartup(agentStorage);
   logger.info({ reserveRecoveryStops }, "Quota reserve startup reconciliation completed");
-  const claudeLimitObservations = new ClaudeLimitObservations();
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,
-    claudeLimitObservations,
   });
   agentManager.setUsageLimitObserver((provider, stop) => {
-    if (claudeLimitObservations.record(provider, stop)) providerUsageService.invalidate();
+    providerUsageService.recordUsageLimitStop(provider, stop);
   });
   const quotaReservePolling = new QuotaReservePolling({
     agentManager,

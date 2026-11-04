@@ -51,7 +51,50 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The Vorteo :: Optimizer workspace and newly created Optimizer agents are now titled Mechanic; the stored role and label are unchanged.
 
+## 26.11.301 - 2026-11-03
+
+Beta bootstrap release for installer-made installations. It carries every change listed below since 26.11.206; 26.11.300 was prepared but never tagged.
+
+### Documentation
+
+- The agent guide points to live dev delivery in the task delivery guide instead of repeating it, keeping the guide within its size budget.
+
+## 26.11.300 - 2026-11-03
+
+Prepared but never tagged; superseded by 26.11.301.
+
+### Features
+
+- Live dev mode: an owner-only Delivery mode in Installation settings that serves the signed-in owner the interface from a live checkout on the Host, with Fast Refresh and a safe link to the published interface.
+- Typed questions: agents can ask yes or no, single-choice and multiple-choice questions answered in one click.
+
+### Fixes
+
+- Upgrades from Installation controls finish on installer-made installations instead of staying "running" with a failed Host build.
+- Provider account connections survive concurrent settings writes, and a Dev container paired after its daemon started syncs accounts after its next daemon start.
+- The message queue reopens its browser storage after the browser closes it.
+- Server tests are green again; the daemon bootstrap no longer names a specific provider.
+
 ## Unreleased - 2026-11-03
+
+### Fixes
+
+- When a provider CLI is too old for its models, the whole profile card now shows the warning border and carries the update notice, instead of nesting a second warning card inside it. An **Upgrade** button opens a new Host workspace in the current project with an editable upgrade task; nothing runs until the owner submits it.
+- The **Profile permissions changed** prompt no longer offers **Recreate chat** while the chat still has an open permission request, which the daemon refuses. It asks the owner to answer that request first.
+- Connecting a Claude or Codex account no longer fails with "Daemon settings changed while verifying installation authority" when account sync writes local settings during the sign-in. The authority read repeats, up to three attempts, against the new settings.
+- A Dev container paired after its daemon started now finds the pairing client when its daemon next starts. Before this, the Dev daemon refused every shared settings request, so Claude accounts connected on the Host never synchronized to Dev.
+
+### Tooling
+
+- Merged current `main` into typed questions before delivery.
+- Merged live dev mode into typed questions for the VortLab bootstrap release.
+- Merged the server test repairs into the VortLab bootstrap release.
+- Merged the provider account connection fixes and current `main` into the VortLab bootstrap release.
+
+### Fixes
+
+- Upgrades from Installation controls finish on installations made by the one-command installer. The coordinator refused to save its own Host build ID, so it relaunched the Host build every two seconds, the overlapping builds failed, and the upgrade stayed running forever.
+- Harden live dev mode after an independent security review. The proxy no longer forwards your session to the dev server, refuses encoded and dotted paths, never redirects off-site, and keeps a failed live page's assets static. The supervisor only signals its own dev server, stops orphaned watchers and stays stopped after you switch to Reliable. The live checkout tool takes its lock atomically, promotes only local branches, checks merges before touching the tree, merges changelog entries as a union and writes its own changelog entry for tweaks.
 
 ### Fixed
 
@@ -60,6 +103,21 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ## Unreleased - 2026-11-03
 
 ### Features
+
+- Ask typed questions. Agents can offer Yes and No, a choice of options or checkboxes, and you answer in one click, with an optional note or your own answer when none fit. Free-text questions now show one editable field pre-filled with the recommendation.
+- Make every line in the Open questions cards the same size as normal sidebar text.
+- Add a Delivery mode to Installation settings. Reliable, the default, serves the published interface. Live dev serves your signed-in browser the interface from a live checkout on the Host, so agents' edits appear within seconds through Fast Refresh. A Live dev marker and a safe interface link keep the published interface one click away, and other browsers and the recovery address always get it.
+- Add a live checkout tool for agents: one-off tweaks with claims and commits, branch promotion and syncing with main, each under a lock that refuses conflicts.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The daemon bootstrap no longer names a provider. Claude usage-limit stops are now recorded by the provider usage service, which restores the upstream rule that keeps the generic bootstrap provider-neutral. Account usage behavior is unchanged.
+
+### Tests
+
+- Server test stubs follow two recent changes: agent manager stubs answer the new history reload check, and the coordinator ledger tests expect its read-only lifecycle view and dispatch status feature. These were the 13 server test failures on Ubuntu and Windows CI.
 
 - Turn release seals on or off through tracked workflows. A reviewed coordinator update with the new `releaseSeals` setting adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, and the Host launcher update does the same for the Host service once managed release selection is in place. Full maintenance delegation covers both. Any other launcher difference, value or unexpected launcher state is refused with a message naming what differed.
 
@@ -82,6 +140,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Tooling
 
 - Merged current `main` into the message queue reconnect fix before delivery.
+- Merged current `main`, including the message queue reconnect fix, into the provider account connection fixes before delivery.
 
 ### Tests
 
