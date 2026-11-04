@@ -3685,6 +3685,35 @@ export class DaemonClient {
     if (!payload.accepted) throw new Error(payload.error ?? "Failed to move workspace");
   }
 
+  /** Installation project synchronization: null when the daemon predates it. */
+  async listProjectsForSync(): Promise<
+    Extract<SessionOutboundMessage, { type: "project.sync.list.response" }>["payload"] | null
+  > {
+    if (this.lastServerInfoMessage?.features?.projectSync !== true) return null;
+    const payload = await this.sendNamespacedCorrelatedSessionRequest<"project.sync.list.response">(
+      {
+        message: { type: "project.sync.list.request" },
+      },
+    );
+    if (payload.error) throw new Error(payload.error);
+    return payload;
+  }
+
+  async applyProjectSync(
+    changes: Extract<SessionInboundMessage, { type: "project.sync.apply.request" }>["changes"],
+  ): Promise<
+    Extract<SessionOutboundMessage, { type: "project.sync.apply.response" }>["payload"]["results"]
+  > {
+    if (this.lastServerInfoMessage?.features?.projectSync !== true)
+      throw new Error("Update this host to synchronize projects.");
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.sync.apply.response">({
+        message: { type: "project.sync.apply.request", changes },
+      });
+    if (payload.error) throw new Error(payload.error);
+    return payload.results;
+  }
+
   async setWorkspaceLifecycle(
     options: Omit<
       Extract<SessionInboundMessage, { type: "workspace.lifecycle.set.request" }>,

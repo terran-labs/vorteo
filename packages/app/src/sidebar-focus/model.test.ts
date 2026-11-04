@@ -16,10 +16,16 @@ import {
   type SidebarFocusProject,
   type SidebarFocusTarget,
   type SidebarFocusWorld,
+  type StoredSidebarFocus,
 } from "./model";
 
 const ROOT: SidebarFolderScope = { kind: "root" };
-const LABELS = { allProjects: "All projects", standing: "Standing", factory: "Factory" };
+const LABELS = {
+  allProjects: "All projects",
+  standing: "Standing",
+  factory: "Factory",
+  pinned: "Pinned",
+};
 
 function folder(id: string, parentId: string | null, scope: SidebarFolderScope = ROOT) {
   return { id, name: id.toUpperCase(), parentId, scope, createdAt: "2026-10-28T00:00:00Z" };
@@ -127,6 +133,12 @@ describe("sidebar focus fallback", () => {
 
   test("returns to all projects when nothing on the path remains", () => {
     expect(resolveSidebarFocus(stored, world({ folders: [] }))).toBeNull();
+  });
+
+  test("keeps Pinned focused while anything is pinned, then returns to all projects", () => {
+    const pinned: StoredSidebarFocus = { target: { kind: "pinned" }, ancestors: [] };
+    expect(resolveSidebarFocus(pinned, { ...chain, hasPinned: true })).toEqual({ kind: "pinned" });
+    expect(resolveSidebarFocus(pinned, chain)).toBeNull();
   });
 
   test("falls back from an empty Standing section to its project", () => {

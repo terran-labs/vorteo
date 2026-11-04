@@ -17,9 +17,6 @@ import {
   RESTART_OPERATIONS,
 } from "./restart-operations.js";
 
-/** Supervisor maintenance is configured through Dev registration, not a reviewed setting. */
-const UNREGISTERED_OPERATIONS = ["supervisorMaintenance"];
-
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -36,6 +33,11 @@ function samples(): Partial<Record<ReviewedConfigurationSetting, unknown>> {
   const dockerBytes = "#!/bin/sh\nexit 99\n";
   writeFileSync(docker, dockerBytes, { mode: 0o700 });
   return {
+    supervisorMaintenance: {
+      node: process.execPath,
+      script,
+      sha256: createHash("sha256").update(readFileSync(script)).digest("hex"),
+    },
     factoryRuntimeAdoption: {
       node: process.execPath,
       script,
@@ -138,10 +140,6 @@ test.skipIf(process.platform === "win32")(
   "every reviewed restart operation's plan comes from the registered setting of the same name",
   () => {
     for (const operation of RESTART_OPERATIONS) {
-      if (UNREGISTERED_OPERATIONS.includes(operation.capability)) {
-        expect(Object.hasOwn(REVIEWED_CONFIGURATION_SETTINGS, operation.capability)).toBe(false);
-        continue;
-      }
       expect(
         Object.hasOwn(REVIEWED_CONFIGURATION_SETTINGS, operation.capability),
         operation.capability,
@@ -165,13 +163,6 @@ test.skipIf(process.platform === "win32")(
     }
   },
 );
-
-test("supervisor maintenance is the only restart operation without a registered setting", () => {
-  const unregistered = RESTART_OPERATIONS.map((operation) => operation.capability).filter(
-    (capability) => !Object.hasOwn(REVIEWED_CONFIGURATION_SETTINGS, capability),
-  );
-  expect(unregistered).toEqual(UNREGISTERED_OPERATIONS);
-});
 
 test("full owner delegation permits only explicitly delegable exact maintenance plans", () => {
   for (const operation of RESTART_OPERATIONS) {

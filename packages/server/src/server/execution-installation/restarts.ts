@@ -308,9 +308,17 @@ function sessionHostFailureDetail(error: unknown): string {
 
 function validateSourceDecision(job: RestartJob, decision: RestartDecision, updateSha256?: string) {
   if ((job.update || job.sourceBatch) && decision !== "reject" && decision !== "cancel") {
-    if (decision !== "approve" || !job.update || updateSha256 !== job.update.sha256)
+    // A single reviewed update may finish current turns first, as automatic Host updates do:
+    // that path holds new work, builds the candidate, then restarts when idle. Release upgrades
+    // approved to install after current work use it. Combined batches stay immediate.
+    const finishUpdate = decision === "finish-current-turns" && !job.sourceBatch;
+    if (
+      (decision !== "approve" && !finishUpdate) ||
+      !job.update ||
+      updateSha256 !== job.update.sha256
+    )
       throw new RestartRequestError(
-        "Review and approve this exact source update. Idle updates are not supported.",
+        "Review and approve this exact source update. Only single updates can finish current turns first.",
       );
   }
 }

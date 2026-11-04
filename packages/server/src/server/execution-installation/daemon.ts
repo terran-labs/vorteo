@@ -5,7 +5,11 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { FileBootstrapRequestJournal } from "./coordinator-bootstrap-journal.js";
 import { filterArchivedRestartErrors } from "./restart-impact.js";
-import { runSupervisorMaintenance, supervisorPlanDigest } from "./supervisor-maintenance.js";
+import {
+  runSupervisorMaintenance,
+  runSupervisorReplacement,
+  supervisorPlanDigest,
+} from "./supervisor-maintenance.js";
 import { factoryRuntimePlanDigest, runFactoryRuntimePhase } from "./factory-runtime-adoption.js";
 import {
   hostLauncherPlanDigest,
@@ -656,30 +660,24 @@ export function createInstallationRestartExecutor(
       const plan = config.container?.supervisorMaintenance;
       if (!plan || job.target !== "container-daemon" || job.supervisorPlanSha256 !== plan.sha256)
         throw new Error("Supervisor maintenance plan is unavailable or changed");
-      const before = await connectInstallationDaemon(config, "container");
-      let previousPid: number;
-      try {
-        previousPid = (await before.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS })).pid;
-      } finally {
-        await before.close();
-      }
-      assertReady("container-daemon");
-      await runSupervisorMaintenance(plan, job);
-      const deadline = Date.now() + 120_000;
-      while (Date.now() < deadline) {
-        await delay(1000);
-        let client: DaemonClient | null = null;
-        try {
-          client = await connectInstallationDaemon(config, "container");
-          const status = await client.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS });
-          if (status.pid !== previousPid)
-            return `Dev supervisor maintenance completed; replacement worker ${status.pid} and environment identity verified`;
-        } catch {
-          /* The worker may still be starting; never dispatch again. */
-        } finally {
-          await client?.close();
-        }
-      }
+      const replacement = await runSupervisorReplacement({
+        async readPid() {
+          const client = await connectInstallationDaemon(config, "container");
+          try {
+            return (await client.getDaemonStatus({ timeout: DAEMON_RESPONSE_TIMEOUT_MS })).pid;
+          } finally {
+            await client.close();
+          }
+        },
+        async run() {
+          assertReady("container-daemon");
+          await runSupervisorMaintenance(plan, job);
+        },
+      });
+      if (replacement)
+        return replacement.previousPid === null
+          ? `Dev supervisor maintenance completed; Dev was not answering before the repair; replacement worker ${replacement.pid} and environment identity verified`
+          : `Dev supervisor maintenance completed; replacement worker ${replacement.pid} and environment identity verified`;
       return reportRestartTimeout(config, "container-daemon");
     },
     async inspect(target): Promise<RestartImpact> {
