@@ -2576,7 +2576,7 @@ describe("PiRpcAgentSession steering", () => {
   });
 
   test("reports unavailable when the expected turn is not the active one", async () => {
-    const { pi, session } = await createSession();
+    const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
     const { turnId } = await session.startTurn("run");
 
@@ -2591,16 +2591,47 @@ describe("PiRpcAgentSession steering", () => {
     expect(idle).toEqual({ status: "unavailable" });
     expect(fakeSession.steerCalls).toEqual([]);
 
-    // Pi already holds a steer whose turn ends before it applies; it is not a refusal.
+    // Pi surfaces a steer's entry while the steer RPC is still in flight.
     const next = await session.startTurn("run again");
     const steer = fakeSession.steer.bind(fakeSession);
+    fakeSession.steer = async (...args) => {
+      await steer(...args);
+      fakeSession.finishSubmittedUserMessage({ id: "entry-early", parentId: null, text: "early" });
+    };
+    await session.steerActiveTurn("early", {
+      expectedTurnId: next.turnId,
+      clientMessageId: "client-early",
+    });
+    // Pi already holds a steer whose turn ends before it applies; it is not a refusal, and
+    // the entry Pi surfaces afterwards still carries the steer's client ID.
     fakeSession.steer = async (...args) => {
       await steer(...args);
       fakeSession.finishTurn();
       await flushTurnScheduling();
     };
-    const submitted = await session.steerActiveTurn("steer", { expectedTurnId: next.turnId });
+    const submitted = await session.steerActiveTurn("late", {
+      expectedTurnId: next.turnId,
+      clientMessageId: "client-late",
+    });
     expect(submitted).toEqual({ status: "unavailable", submitted: true });
+    fakeSession.finishSubmittedUserMessage({ id: "entry-late", parentId: null, text: "late" });
+    const steered = events.timelineItems().filter((item) => item.type === "user_message");
+    expect(steered).toEqual(
+      expect.arrayContaining([
+        {
+          type: "user_message",
+          text: "early",
+          messageId: "entry-early",
+          clientMessageId: "client-early",
+        },
+        {
+          type: "user_message",
+          text: "late",
+          messageId: "entry-late",
+          clientMessageId: "client-late",
+        },
+      ]),
+    );
   });
 
   test("keeps slash-command steers on the interrupt fallback", async () => {

@@ -563,6 +563,24 @@ describe("OMP agent client and session", () => {
       expect.objectContaining({ messageId: "native-first", clientMessageId: "client-first" }),
       expect.objectContaining({ messageId: "native-steer", clientMessageId: "client-steer" }),
     ]);
+    // OMP takes a steer as its turn ends; the entry it surfaces later keeps the client ID.
+    const steer = runtime.steer.bind(runtime);
+    runtime.steer = async (...args) => {
+      await steer(...args);
+      runtime.finishTurn();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    await expect(
+      session.steerActiveTurn?.("late answer", {
+        expectedTurnId: turnId,
+        clientMessageId: "client-late",
+      }),
+    ).resolves.toEqual({ status: "unavailable", submitted: true });
+    runtime.beginTurn();
+    runtime.acceptPrompt("late answer", "native-late");
+    expect(omp.timeline()).toContainEqual(
+      expect.objectContaining({ messageId: "native-late", clientMessageId: "client-late" }),
+    );
   });
 
   test("reports a rejected steer as unavailable", async () => {

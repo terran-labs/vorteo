@@ -16620,15 +16620,14 @@ test("an answer saved before a failed delivery is delivered once when its thread
         logger,
       }),
     );
+    // Journaling follows the delivery timestamp, so wait for the entry itself.
     await expect
-      .poll(async () => (await reopened!.readQuestions(agent.id))[0]?.answerDeliveredAt, {
+      .poll(() => reopened!.getAgent(agent.id)?.journal?.map((entry) => entry.text), {
         timeout: 10_000,
       })
-      .toBeDefined();
+      .toEqual(['Owner answered "Ship the beta tonight?": Ship tomorrow']);
+    expect((await reopened.readQuestions(agent.id))[0]?.answerDeliveredAt).toBeDefined();
     expect((await nextQueue.read(agent.id)).items).toEqual([]);
-    expect(reopened.getAgent(agent.id)?.journal?.map((entry) => entry.text)).toEqual([
-      'Owner answered "Ship the beta tonight?": Ship tomorrow',
-    ]);
     // A retried answer after delivery neither enqueues nor journals again.
     await reopened.answerQuestion(agent.id, {
       questionId,
@@ -16662,22 +16661,35 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
       prompt: AgentPromptInput,
       options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
     ): Promise<import("./agent-sdk-types.js").SteerResult> {
-      const result = await super.steerActiveTurn(prompt, options);
-      if (result.status === "accepted")
-        providerHistory.push({
-          type: "timeline",
-          provider: "codex",
-          turnId: `active-turn-${this.startCount}`,
-          item: {
-            type: "user_message",
-            text: typeof prompt === "string" ? prompt : "structured",
-            clientMessageId: options.clientMessageId,
-            messageId: `provider-${options.clientMessageId}`,
-          },
-        });
+      this.steerCount += 1;
+      if (
+        this.steerResult === "unavailable" ||
+        options.expectedTurnId !== `active-turn-${this.startCount}`
+      )
+        return { status: "unavailable" };
+      const text = typeof prompt === "string" ? prompt : "structured";
+      const nativeId = `entry-${this.steerCount}`;
+      // As with Pi: the live entry carries the client ID, but native history carries only
+      // the provider's entry ID, so reconciliation depends on the daemon's recorded mapping.
+      this.pushEvent({
+        type: "timeline",
+        provider: this.provider,
+        item: {
+          type: "user_message",
+          text,
+          messageId: nativeId,
+          clientMessageId: options.clientMessageId,
+        },
+      });
+      providerHistory.push({
+        type: "timeline",
+        provider: "codex",
+        turnId: `active-turn-${this.startCount}`,
+        item: { type: "user_message", text, messageId: nativeId },
+      });
       if (this.loseAcknowledgement) throw new Error("steer acknowledgement timed out");
       if (this.turnEndsAfterSubmit) return { status: "unavailable", submitted: true };
-      return result;
+      return { status: "accepted" };
     }
   }
   const session = new AnswerSession({ provider: "codex", cwd: workdir });
@@ -16801,13 +16813,14 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
         logger,
       }),
     );
+    // Journaling follows the delivery timestamp, so wait for the entries themselves.
     await expect
-      .poll(async () => (await question(third.questionId, reopened))?.answerDeliveredAt)
-      .toBeDefined();
+      .poll(() => reopened!.getAgent(agent.id)?.journal?.length, { timeout: 10_000 })
+      .toBe(3);
     expect((await question(second.questionId, reopened))?.answerDeliveredAt).toBeDefined();
+    expect((await question(third.questionId, reopened))?.answerDeliveredAt).toBeDefined();
     expect((await nextQueue.read(agent.id)).items).toEqual([]);
     expect(await nextQueue.acceptedHistory(agent.id)).toHaveLength(3);
-    expect(reopened.getAgent(agent.id)?.journal).toHaveLength(3);
     expect(session.steerCount).toBe(4);
   } finally {
     queue.close();

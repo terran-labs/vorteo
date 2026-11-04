@@ -8166,7 +8166,10 @@ export class AgentManager {
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
     });
-    if (options.queuedMessage && options.providerMessageId) {
+    if (
+      (options.queuedMessage || answeredQuestionId(clientMessageId)) &&
+      options.providerMessageId
+    ) {
       this.persistQueuedPromptIdentity(agent.id, clientMessageId, options.providerMessageId);
     }
     if (options.intent === "goal") {
@@ -8236,7 +8239,9 @@ export class AgentManager {
     }
     if (!existing || existing.item.type !== "user_message") return null;
     if (messageId) {
-      if (existing.item.queue)
+      // Steered answers are queue items too. Their native ID is how provider history proves
+      // an ambiguous steer arrived, since history may not carry the client ID.
+      if (existing.item.queue || answeredQuestionId(clientMessageId))
         this.persistQueuedPromptIdentity(agent.id, clientMessageId, messageId);
       const goal = agent.goalSubmissions?.find(
         (entry) => entry.clientMessageId === clientMessageId,

@@ -698,8 +698,18 @@ export class OmpAgentSession implements AgentSession {
   private readonly pendingExtensionUiRequests = new Map<string, AgentPermissionRequest>();
   private readonly questionUi = new OmpQuestionUi();
   private activeTurnId: string | null = null;
-  private readonly pendingClientMessages: Array<{ clientMessageId: string | null; text: string }> =
-    [];
+  // An ambiguous steer keeps its client ID after its turn ends, because OMP can still surface
+  // its entry and the daemon proves delivery from history through that correlation.
+  private readonly retiredClientMessages: Array<{
+    clientMessageId: string | null;
+    text: string;
+    ambiguous?: boolean;
+  }> = [];
+  private readonly pendingClientMessages: Array<{
+    clientMessageId: string | null;
+    text: string;
+    ambiguous?: boolean;
+  }> = [];
   private activeAssistantMessageId: string | null = null;
   private activeTurnTerminalAssistantMessage: OmpAgentMessage | null = null;
   private activeTurnStarted = false;
@@ -953,12 +963,22 @@ export class OmpAgentSession implements AgentSession {
       await this.runtimeSession.steer(payload.text, payload.images);
     } catch (error) {
       this.forgetClientMessage(submission);
-      if (isOmpSteerTransportFailure(error)) throw error;
+      if (isOmpSteerTransportFailure(error)) {
+        // Pending messages pair with echoes in order, so an ambiguous one may only match by text.
+        submission.ambiguous = true;
+        this.retainClientMessages([submission]);
+        throw error;
+      }
       return { status: "unavailable" };
     }
     // OMP already holds the steer, so a turn that moved on leaves its fate ambiguous.
-    if (this.closed || this.activeTurnId !== options.expectedTurnId)
+    if (this.closed || this.activeTurnId !== options.expectedTurnId) {
+      // The turn may already have discarded it; either way it may now only match by text.
+      this.forgetClientMessage(submission);
+      submission.ambiguous = true;
+      this.retainClientMessages([submission]);
       return { status: "unavailable", submitted: true };
+    }
     if (options.clearPendingPermissions) {
       for (const requestId of this.pendingExtensionUiRequests.keys()) {
         await this.respondToPermission(requestId, {
@@ -973,11 +993,11 @@ export class OmpAgentSession implements AgentSession {
   private rememberClientMessage(
     clientMessageId: string | null,
     text: string,
-  ): {
-    clientMessageId: string | null;
-    text: string;
-  } {
-    const submission = { clientMessageId, text };
+  ): { clientMessageId: string | null; text: string; ambiguous?: boolean } {
+    const submission: { clientMessageId: string | null; text: string; ambiguous?: boolean } = {
+      clientMessageId,
+      text,
+    };
     this.pendingClientMessages.push(submission);
     if (this.pendingClientMessages.length > 16) this.pendingClientMessages.shift();
     return submission;
@@ -990,6 +1010,20 @@ export class OmpAgentSession implements AgentSession {
 
   private takeClientMessage(): { clientMessageId: string | null; text: string } | undefined {
     return this.pendingClientMessages.shift();
+  }
+
+  private retainClientMessages(
+    submissions: { clientMessageId: string | null; text: string; ambiguous?: boolean }[],
+  ): void {
+    this.retiredClientMessages.push(...submissions);
+    this.retiredClientMessages.splice(0, Math.max(0, this.retiredClientMessages.length - 16));
+  }
+
+  private takeRetiredClientMessage(
+    text: string,
+  ): { clientMessageId: string | null; text: string } | undefined {
+    const index = this.retiredClientMessages.findIndex((submission) => submission.text === text);
+    return index >= 0 ? this.retiredClientMessages.splice(index, 1)[0] : undefined;
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
@@ -1239,7 +1273,9 @@ export class OmpAgentSession implements AgentSession {
     this.activeTurnStarted = false;
     this.outOfBandTurnStartAnnounced = false;
     this.activeTurnHasUserMessage = false;
-    this.pendingClientMessages.length = 0;
+    this.retainClientMessages(
+      this.pendingClientMessages.splice(0).filter((submission) => submission.ambiguous),
+    );
     this.clearNoTurnBuffers();
   }
 
@@ -2068,7 +2104,8 @@ export class OmpAgentSession implements AgentSession {
         }
         this.emittedUserMessageIds.add(resolvedMessageId);
       }
-      const clientMessageId = this.takeClientMessage()?.clientMessageId;
+      const clientMessageId = (this.takeClientMessage() ?? this.takeRetiredClientMessage(text))
+        ?.clientMessageId;
       this.emit({
         type: "timeline",
         provider: this.provider,
