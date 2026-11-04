@@ -8,9 +8,16 @@ import { runFactoryVerify, type EngineCommand, type FactoryFacts } from "./facto
  * How a restart may move Factory's controller (agreed with Factory, 2026-10-23):
  * `worker` replaces only the daemon worker, so epoch and supervisor stay; `entry`
  * re-runs the container entry, so the epoch rises and the supervisor changes;
- * `either` is supervisor maintenance, which may or may not replace the supervisor.
+ * `either` is supervisor maintenance, which may or may not replace the supervisor;
+ * `boot-switch` is the reviewed Dev boot-entry switch, the only restart that may change
+ * how Dev boots (its executor separately requires the plan's exact expected form).
  */
-export type FactoryRestartClass = "worker" | "entry" | "either";
+export type FactoryRestartClass = "worker" | "entry" | "either" | "boot-switch";
+
+/** How Dev booted; scripts before v4 do not report it and always meant the launcher. */
+function bootForm(facts: FactoryFacts): "launcher" | "plain" {
+  return facts.bootForm ?? "launcher";
+}
 
 /** Baselines older than this are taken again; idle restarts poll every few seconds. */
 const BASELINE_TTL_MS = 120_000;
@@ -33,7 +40,7 @@ export function compareFactoryFacts(
   after: FactoryFacts,
   restartClass: FactoryRestartClass,
 ): { problems: string[]; notes: string[] } {
-  const problems = controllerProblems(before, after, restartClass);
+  const problems = bootProblems(before, after, restartClass);
   const owner =
     before.ownerMode === "paused"
       ? pausedOwnerProblems(before, after)
@@ -41,11 +48,31 @@ export function compareFactoryFacts(
   return { problems: [...problems, ...owner.problems], notes: owner.notes };
 }
 
+/**
+ * Only the boot-entry switch may change the boot form. Without the launcher no controller
+ * runs, so Factory's epoch and supervisor are not compared; returning to the launcher
+ * re-runs it, so the epoch must rise as on any entry restart.
+ */
+function bootProblems(
+  before: FactoryFacts,
+  after: FactoryFacts,
+  restartClass: FactoryRestartClass,
+): string[] {
+  const formBefore = bootForm(before);
+  const formAfter = bootForm(after);
+  if (formBefore !== formAfter && restartClass !== "boot-switch")
+    return [
+      `Dev's boot form changed (${formBefore} to ${formAfter}) outside the boot-entry switch`,
+    ];
+  if (formAfter === "plain") return [];
+  return controllerProblems(before, after, restartClass === "boot-switch" ? "entry" : restartClass);
+}
+
 /** Worker restarts keep the epoch and supervisor; entry restarts raise and replace them. */
 function controllerProblems(
   before: FactoryFacts,
   after: FactoryFacts,
-  restartClass: FactoryRestartClass,
+  restartClass: Exclude<FactoryRestartClass, "boot-switch">,
 ): string[] {
   const problems: string[] = [];
   const supervisorChanged = after.supervisorPid !== before.supervisorPid;
@@ -103,7 +130,9 @@ function runningOwner(before: FactoryFacts, after: FactoryFacts) {
 export function factoryRestartClass(job: {
   engineRestartPlanSha256?: string;
   supervisorPlanSha256?: string;
+  bootEntrySwitchPlanSha256?: string;
 }): FactoryRestartClass {
+  if (job.bootEntrySwitchPlanSha256) return "boot-switch";
   if (job.engineRestartPlanSha256) return "entry";
   if (job.supervisorPlanSha256) return "either";
   return "worker";
@@ -185,7 +214,8 @@ export class FactoryGate {
         throw new Error(
           `Dev restarted, but ${problems.join("; ")}. Factory review is required; nothing will be retried.`,
         );
-      const summary = `Factory checks passed (epoch ${after.epoch}, owner ${after.ownerMode} ${after.ownerSequence}, ${after.custodyCount} custody records)`;
+      const boot = bootForm(after) === "plain" ? "no launcher" : `epoch ${after.epoch}`;
+      const summary = `Factory checks passed (${boot}, owner ${after.ownerMode} ${after.ownerSequence}, ${after.custodyCount} custody records)`;
       return notes.length ? `${summary}; ${notes.join(", ")}.` : `${summary}.`;
     } finally {
       await this.discard(jobId);

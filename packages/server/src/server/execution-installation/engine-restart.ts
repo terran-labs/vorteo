@@ -36,6 +36,8 @@ export interface EngineRestartPreflight {
   startedAt: Record<keyof EngineRestartConfiguration["containers"], string>;
   factoryEpoch: number | null;
   factorySupervisorPid: number | null;
+  /** How Dev booted before the restart; null when no Factory check is configured. */
+  factoryBootForm?: "launcher" | "plain" | null;
 }
 
 const CONTAINER_LABELS: Record<keyof EngineRestartConfiguration["containers"], string> = {
@@ -148,6 +150,7 @@ export async function engineRecoveryPreflight(
     startedAt: plan.baseline.startedAt,
     factoryEpoch: plan.baseline.factory.epoch,
     factorySupervisorPid: plan.baseline.factory.supervisorPid,
+    factoryBootForm: plan.baseline.factory.bootForm ?? "launcher",
   };
 }
 
@@ -262,13 +265,15 @@ export async function engineRestartPreflight(
   }
   let factoryEpoch: number | null = null;
   let factorySupervisorPid: number | null = null;
+  let factoryBootForm: "launcher" | "plain" | null = null;
   if (plan.factoryVerify) {
     const result = await runFactoryVerify(plan, run);
     if (!result.ok) refuse(`Factory lock acceptance check "${result.check}" failed`);
     factoryEpoch = result.epoch ?? null;
     factorySupervisorPid = result.supervisorPid ?? null;
+    factoryBootForm = result.bootForm ?? "launcher";
   }
-  return { startedAt, factoryEpoch, factorySupervisorPid };
+  return { startedAt, factoryEpoch, factorySupervisorPid, factoryBootForm };
 }
 
 /** The only effect. Docker Desktop restarts its VM; containers return through their restart policy. */
@@ -346,7 +351,10 @@ async function readinessGap(
   return "";
 }
 
-/** After Dev answers: Factory's launcher accepted its lock on this boot, with a newer epoch. */
+/**
+ * After Dev answers: with the launcher, Factory accepted its lock on this boot with a newer
+ * epoch; without it (after the boot-entry switch), Dev must still boot without it.
+ */
 export async function verifyFactoryAfterRestart(
   plan: EngineRestartConfiguration,
   preflight: EngineRestartPreflight,
@@ -358,6 +366,13 @@ export async function verifyFactoryAfterRestart(
     throw new Error(
       `Docker restarted and Dev answers, but Factory lock acceptance check "${result.check}" failed. Factory recovery is required; nothing will be retried.`,
     );
+  const before = preflight.factoryBootForm ?? "launcher";
+  const after = result.bootForm ?? "launcher";
+  if (after !== before)
+    throw new Error(
+      `Docker restarted, but Dev's boot form changed (${before} to ${after}). Factory review is required; nothing will be retried.`,
+    );
+  if (after === "plain") return "Dev booted without Factory's launcher, as before";
   if (
     preflight.factoryEpoch !== null &&
     (result.epoch === undefined || result.epoch <= preflight.factoryEpoch)

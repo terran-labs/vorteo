@@ -5508,6 +5508,8 @@ test("every reviewed restart operation enforces the shared request, decision and
     f.executor.recoverEngine = async () => "recovery";
     f.executor.hostLauncherPlan = () => plans.get("hostLauncherPlanSha256");
     f.executor.updateHostLauncher = async () => "launcher";
+    f.executor.bootEntrySwitchPlan = () => plans.get("bootEntrySwitchPlanSha256");
+    f.executor.switchBootEntry = async () => "boot entry";
     const queue = new InstallationRestarts(f.journal, f.executor, () => 2000, f.policy);
     const input = {
       target: operation.target,
@@ -5572,6 +5574,7 @@ test("a reviewed restart operation without an explicit automatic policy is never
     ["engineRestartPlanSha256", "never"],
     ["engineRecoveryPlanSha256", "never"],
     ["hostLauncherPlanSha256", "never"],
+    ["bootEntrySwitchPlanSha256", "never"],
   ]);
 });
 

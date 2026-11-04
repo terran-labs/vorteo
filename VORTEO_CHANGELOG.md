@@ -6,15 +6,21 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
-### Added
+### Features
 
 - Add `paseo factory project list`, `pause-all` and `resume-all` for draining Factory work before a restart or upgrade. Pause-all pauses every project whose Factory is on and records each drain with its own id, reason and time; resume-all resumes only those, so projects an operator paused by hand stay paused. A manual pause, resume or turn off takes a project out of the drain, and the record survives a daemon restart.
 - Pause-all sends each paused project's Foreman one drain notice carrying the drain id, steered into its current turn, and clears its status line; the Foreman acknowledges with "Drained <id>: <n> workers still finishing", so an earlier drain's reply cannot satisfy a new one. Resume-all tells it the drain ended. A failed notice is retried by the next pause-all, notices skip archived or missing projects until they are restored, and a drain recorded before ids existed gets a new notice with its id.
+- A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
+- Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
 
-### Changed
+### Changes
 
 - A damaged Factory state file makes list, pause-all and resume-all refuse instead of reporting an empty or successful drain.
 - Charters: the Mechanic reads `installation-agent.mjs update-status` and copes while it does not exist yet; Builds drains with pause-all and waits for the Foreman's acknowledgment, orders lifecycle actions, keeps release notes append-only and proposes restoring the pre-install snapshot on a regression; the Foreman checks the drain before every admission and cancels superseded CI runs; and every role gains the operating rules Builds learned running delivery.
+
+### Fixes
+
+- The Dev boot-entry switch reads and hashes its pinned files as paseo. Dev's root has no capabilities, so it could not read the paseo-private Factory entry or the managed releases, and the switch's checks would have refused every plan. A file paseo cannot read is now reported as unreadable rather than changed.
 
 ## Unreleased - 2026-11-03
 
@@ -164,6 +170,13 @@ Prepared but never tagged; superseded by 26.11.301.
 - Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
 
 ## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Main CI runs now finish instead of being cancelled by the next merge. Merges landed faster than a full run, so no recent main run completed its slowest browser shard. Pull request runs still cancel when superseded, and main keeps at most one queued run.
+- The container smoke frees unused preinstalled SDKs before building, after one run exhausted the runner disk while copying the web interface.
 
 ## Unreleased - 2026-11-03
 
