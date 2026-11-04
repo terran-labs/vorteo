@@ -42,7 +42,9 @@ function report(input: {
 }
 
 test.describe("usage settings", () => {
-  test("renders every report returned by usage.list_reports", async ({ page }) => {
+  test("renders every report returned by usage.list_reports in host Settings and on the direct route", async ({
+    page,
+  }) => {
     test.setTimeout(120_000);
     const serverId = getServerId();
     const usage = await installUsageReportsFixture(page, {
