@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Show a Chrome switch next to Choose profile in threads that offer Chrome. Profile-based composers hid every thread toggle, so the owner had no way to turn on Claude in Chrome. The switch changes only that thread and is not saved as a default for new threads.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Clear completed removes every completed task from the card at once instead of one row at a time. Deletes still run in order in the background; tasks left by an error reappear with it.
 - Keep hover tooltips open while another part of the window scrolls. A streaming agent reply scrolls the chat, which closed any task tooltip you were reading; tooltips now close only when a scroll moves the item they describe.
 
