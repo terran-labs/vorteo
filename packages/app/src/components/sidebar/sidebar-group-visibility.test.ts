@@ -6,6 +6,11 @@ import {
   type SidebarGroupItem,
   type SidebarGroupVisibilityPolicy,
 } from "./sidebar-group-visibility";
+import type { SidebarTreeRow } from "@/sidebar-folders/tree";
+import {
+  selectSidebarTreeGroupVisibility,
+  SIDEBAR_TREE_VISIBLE_ROWS,
+} from "./sidebar-tree-group-visibility";
 
 interface Item extends SidebarGroupItem {
   id: number;
@@ -133,5 +138,71 @@ describe("selectSidebarGroupVisibility", () => {
     expect(result.leadingItem).toBeNull();
     expect(result.visibleItems).toEqual(items.slice(0, 7));
     expect(result.canToggle).toBe(true);
+  });
+});
+
+describe("selectSidebarTreeGroupVisibility", () => {
+  function itemRows(items: readonly Item[], depth = 0): SidebarTreeRow<Item>[] {
+    return items.map((item) => ({
+      kind: "item",
+      key: item.workspaceId,
+      item,
+      depth,
+      folderId: depth === 0 ? null : "folder-1",
+    }));
+  }
+
+  const folderRow: SidebarTreeRow<Item> = {
+    kind: "folder",
+    key: "folder:folder-1",
+    folder: {
+      id: "folder-1",
+      name: "Later",
+      parentId: null,
+      scope: { kind: "project", projectKey: "project-a" },
+      createdAt: "2026-11-03T00:00:00.000Z",
+    },
+    depth: 0,
+    collapsed: false,
+    itemCount: 2,
+  };
+
+  it("keeps active rows with their folder and leads with the hidden open workspace", () => {
+    const top = rows(Array(SIDEBAR_TREE_VISIBLE_ROWS + 1).fill("done"));
+    const nestedDone: Item = { id: 101, serverId, workspaceId: "nested-1", statusBucket: "done" };
+    const nestedRunning: Item = {
+      id: 102,
+      serverId,
+      workspaceId: "nested-2",
+      statusBucket: "running",
+    };
+    const treeRows = [...itemRows(top), folderRow, ...itemRows([nestedDone!, nestedRunning!], 1)];
+    const result = selectSidebarTreeGroupVisibility({
+      rows: treeRows,
+      expanded: false,
+      getStatusBucket: (item) => item.statusBucket,
+      selection: selectionFor(top[SIDEBAR_TREE_VISIBLE_ROWS]!),
+    });
+
+    expect(result.leadingItem).toBe(top[SIDEBAR_TREE_VISIBLE_ROWS]);
+    expect(result.visibleRows).toEqual([
+      ...treeRows.slice(0, SIDEBAR_TREE_VISIBLE_ROWS),
+      folderRow,
+      treeRows[treeRows.length - 1],
+    ]);
+    expect(result.canToggle).toBe(true);
+  });
+
+  it("shows every row in order without a toggle when the open row is the only hidden row", () => {
+    const items = rows(Array(SIDEBAR_TREE_VISIBLE_ROWS + 1).fill("done"));
+    const treeRows = itemRows(items);
+    const result = selectSidebarTreeGroupVisibility({
+      rows: treeRows,
+      expanded: false,
+      getStatusBucket: (item) => item.statusBucket,
+      selection: selectionFor(items[SIDEBAR_TREE_VISIBLE_ROWS]!),
+    });
+
+    expect(result).toEqual({ leadingItem: null, visibleRows: treeRows, canToggle: false });
   });
 });

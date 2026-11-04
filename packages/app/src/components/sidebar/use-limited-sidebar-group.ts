@@ -5,6 +5,13 @@ import {
   type SidebarGroupVisibility,
   type SidebarGroupVisibilityPolicy,
 } from "./sidebar-group-visibility";
+import {
+  selectSidebarTreeGroupVisibility,
+  SIDEBAR_TREE_VISIBLE_ROWS,
+  type SidebarTreeGroupVisibility,
+} from "./sidebar-tree-group-visibility";
+import type { SidebarStateBucket } from "@/hooks/sidebar-workspaces-view-model";
+import type { SidebarTreeRow } from "@/sidebar-folders/tree";
 import type { ActiveWorkspaceSelection } from "@/stores/last-workspace-selection";
 
 const PINNED_POLICY = { kind: "pinned" } as const;
@@ -33,16 +40,34 @@ export function useLimitedSidebarGroup<T extends SidebarGroupItem>({
   return { ...visibility, expanded, toggleExpanded };
 }
 
-const INITIAL_VISIBLE_ITEMS = 20;
-
 export function useLimitedSidebarTreeGroup<T>(items: readonly T[]) {
   const [expanded, setExpanded] = useState(false);
   const visibleItems = useMemo(
-    () => (expanded ? items.slice() : items.slice(0, INITIAL_VISIBLE_ITEMS)),
+    () => (expanded ? items.slice() : items.slice(0, SIDEBAR_TREE_VISIBLE_ROWS)),
     [expanded, items],
   );
-  const canToggle = items.length > INITIAL_VISIBLE_ITEMS;
+  const canToggle = items.length > SIDEBAR_TREE_VISIBLE_ROWS;
   const toggleExpanded = useCallback(() => setExpanded((current) => !current), []);
 
   return { visibleItems, expanded, canToggle, toggleExpanded };
+}
+
+/** A project's workspace tree, which keeps active rows and the open workspace past the limit. */
+export function useLimitedSidebarWorkspaceTree<T extends SidebarGroupItem>({
+  rows,
+  selection,
+  getStatusBucket,
+}: {
+  rows: readonly SidebarTreeRow<T>[];
+  selection: ActiveWorkspaceSelection | null;
+  getStatusBucket: (item: T) => SidebarStateBucket;
+}): SidebarTreeGroupVisibility<T> & { expanded: boolean; toggleExpanded: () => void } {
+  const [expanded, setExpanded] = useState(false);
+  const visibility = useMemo(
+    () => selectSidebarTreeGroupVisibility({ rows, expanded, getStatusBucket, selection }),
+    [expanded, getStatusBucket, rows, selection],
+  );
+  const toggleExpanded = useCallback(() => setExpanded((current) => !current), []);
+
+  return { ...visibility, expanded, toggleExpanded };
 }

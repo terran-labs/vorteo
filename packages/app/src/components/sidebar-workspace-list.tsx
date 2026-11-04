@@ -130,6 +130,7 @@ import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle
 import {
   useLimitedSidebarGroup,
   useLimitedSidebarTreeGroup,
+  useLimitedSidebarWorkspaceTree,
 } from "@/components/sidebar/use-limited-sidebar-group";
 import {
   sidebarWorkspaceRowStyles,
@@ -2270,12 +2271,23 @@ function ProjectBlock({
     [groups.factory, workspaceEntriesByKey, installedPlugins],
   );
 
+  // A placement without an entry renders no row, so it counts as Done and claims no slot.
+  const getWorkspaceStatusBucket = useCallback(
+    (item: SidebarWorkspacePlacement) =>
+      workspaceEntriesByKey.get(item.workspaceKey)?.statusBucket ?? "done",
+    [workspaceEntriesByKey],
+  );
   const {
-    visibleItems: visibleWorkRows,
+    leadingItem: leadingWorkspace,
+    visibleRows: visibleWorkRows,
     expanded: workspacesExpanded,
     canToggle: canToggleWorkspaces,
     toggleExpanded: toggleWorkspacesExpanded,
-  } = useLimitedSidebarTreeGroup(workRows);
+  } = useLimitedSidebarWorkspaceTree({
+    rows: workRows,
+    selection: selectionEnabled ? activeWorkspaceSelection : null,
+    getStatusBucket: getWorkspaceStatusBucket,
+  });
   const rowModel = useMemo(
     () =>
       buildSidebarProjectRowModel({
@@ -2503,6 +2515,9 @@ function ProjectBlock({
     if (project.workspaces.length > 0) {
       projectChildren = (
         <>
+          {leadingWorkspace
+            ? renderWorkspaceRow(leadingWorkspace, { indentLevel: childLevel })
+            : null}
           <DraggableList
             externalDrop={workExternalDrop}
             treeDrop={isWeb ? workTreeDrop : undefined}

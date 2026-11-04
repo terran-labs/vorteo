@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- A project's workspace list no longer hides the open workspace or active work behind Show more. Rows past the first 20 stay visible while their workspace is working or needs attention, along with the folders above them, and a hidden open workspace leads the list. The sidebar reorder browser tests check this against the 20-row limit.
+
+## Unreleased - 2026-11-03
+
 ### Tests
 
 - Sidebar browser tests now follow Vorteo's sidebar after the Paseo merge. They open View preferences from the More menu, mark compact rows unread through the row context menu, open grouped workspaces by row instead of by name, measure the drawn toolbar glyph, expect navigation to yield to Explorer at half-screen width, and check the phone close button against the toolbar.

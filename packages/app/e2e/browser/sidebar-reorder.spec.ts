@@ -8,6 +8,7 @@ import { projectEquivalenceViewKey } from "../support/helpers/project-view-key";
 import { getE2EDaemonPort } from "../support/helpers/daemon-port";
 import { getServerId } from "../support/helpers/server-id";
 import { seedWorkspace } from "../support/helpers/seed-client";
+import { SIDEBAR_TREE_VISIBLE_ROWS as LIMIT } from "../../src/components/sidebar/sidebar-tree-group-visibility";
 import {
   sidebarProjectForWorkspace,
   waitForSidebarHydration,
@@ -589,13 +590,16 @@ test("Created stays stable, Last prompt follows human submissions and survives t
   }
 });
 
+// Five workspaces past the project tree's limit, newest first; the seeded one is the oldest.
+const COMPACT_PROJECT_SIZE = LIMIT + 5;
+
 async function seedCompactProject() {
   const seed = await seedWorkspace({
     repoPrefix: "sidebar-visibility-",
     title: "Oldest workspace",
   });
   const ids = [seed.workspaceId];
-  for (let index = 2; index <= 12; index += 1) {
+  for (let index = 2; index <= COMPACT_PROJECT_SIZE; index += 1) {
     const created = await seed.client.createWorkspace({
       source: { kind: "directory", path: seed.repoPath, projectId: seed.projectId },
       title: `Workspace ${index}`,
@@ -643,14 +647,15 @@ function compactProjectRows(page: Page, seed: CompactProject["seed"]) {
 
 async function expectActiveOverflowTransitions(page: Page, { seed, ids, agent }: CompactProject) {
   const { rows } = compactProjectRows(page, seed);
-  await expectWorkspaceOrder(rows, ids.slice(0, 7));
+  const oldest = ids[ids.length - 1]!;
+  await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
 
   await seed.client.sendAgentMessage(agent.id, "show active overflow");
-  await expectWorkspaceOrder(rows, [...ids.slice(0, 7), ids[11]]);
+  await expectWorkspaceOrder(rows, [...ids.slice(0, LIMIT), oldest]);
   await seed.client.waitForFinish(agent.id, 15_000);
-  await expectWorkspaceOrder(rows, [...ids.slice(0, 7), ids[11]]);
+  await expectWorkspaceOrder(rows, [...ids.slice(0, LIMIT), oldest]);
   await seed.client.clearWorkspaceAttention(seed.workspaceId);
-  await expectWorkspaceOrder(rows, ids.slice(0, 7));
+  await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
 }
 
 async function expectRevealSurvivesSortingAndCollapse(
@@ -658,6 +663,7 @@ async function expectRevealSurvivesSortingAndCollapse(
   { seed, ids, agent }: CompactProject,
 ) {
   const { rows, group, project } = compactProjectRows(page, seed);
+  const oldest = ids[ids.length - 1]!;
   const retainedRows = await rows.elementHandles();
   await revealWorkspaces(group, "Show more");
   await expectWorkspaceOrder(rows, ids);
@@ -675,15 +681,15 @@ async function expectRevealSurvivesSortingAndCollapse(
   await seed.client.clearWorkspaceAttention(seed.workspaceId);
   await expectWorkspaceOrder(rows, ids);
   await selectWorkspaceSort(page, "Last prompt");
-  await expectWorkspaceOrder(rows, [ids[11], ...ids.slice(0, 11)]);
-  const revealedRow = await rows.nth(8).elementHandle();
+  await expectWorkspaceOrder(rows, [oldest, ...ids.slice(0, -1)]);
+  const revealedRow = await rows.nth(LIMIT + 1).elementHandle();
   await revealWorkspaces(group, "Show less");
-  await expectWorkspaceOrder(rows, [ids[11], ...ids.slice(0, 6)]);
+  await expectWorkspaceOrder(rows, [oldest, ...ids.slice(0, LIMIT - 1)]);
   await selectWorkspaceSort(page, "Created");
-  await expectWorkspaceOrder(rows, ids.slice(0, 7));
+  await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
   expect(await revealedRow!.evaluate((row) => row.isConnected)).toBe(false);
   await reconnectSidebar(page);
-  await expectWorkspaceOrder(rows, ids.slice(0, 7));
+  await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
 }
 
 async function expectStatusBucketsRetainActiveOverflow(
@@ -694,9 +700,10 @@ async function expectStatusBucketsRetainActiveOverflow(
   await selectSidebarStatusGrouping(page);
   const done = page.getByTestId("sidebar-status-group-rows-done");
   const doneRows = done.locator('[data-testid^="sidebar-workspace-row-"]');
+  // Status groups keep Paseo's seven-row limit; only the project tree uses Vorteo's.
   await expect(doneRows).toHaveCount(7);
   await revealWorkspaces(done, "Show more");
-  await expect(doneRows).toHaveCount(12);
+  await expect(doneRows).toHaveCount(ids.length);
   await seed.client.sendAgentMessage(agent.id, "status overflow");
   await seed.client.waitForFinish(agent.id, 15_000);
   await expect(
@@ -704,9 +711,9 @@ async function expectStatusBucketsRetainActiveOverflow(
       .getByTestId("sidebar-status-group-rows-attention")
       .getByText("Oldest workspace", { exact: true }),
   ).toBeVisible();
-  await expect(doneRows).toHaveCount(11);
+  await expect(doneRows).toHaveCount(ids.length - 1);
   await seed.client.clearWorkspaceAttention(seed.workspaceId);
-  await expect(doneRows).toHaveCount(12);
+  await expect(doneRows).toHaveCount(ids.length);
   await revealWorkspaces(done, "Show less");
   await expect(doneRows).toHaveCount(7);
   const activeAgents: Array<{ id: string }> = [];
@@ -732,7 +739,7 @@ async function expectStatusBucketsRetainActiveOverflow(
   for (const workspaceId of ids.slice(0, 8)) await seed.client.clearWorkspaceAttention(workspaceId);
   await expect(doneRows).toHaveCount(7);
   await selectProjectGrouping(page);
-  await expectWorkspaceOrder(rows, ids.slice(0, 7));
+  await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
 }
 
 test("compact groups retain active overflow and reveal the current ordered rows", async ({
@@ -831,23 +838,26 @@ test("collapsed groups lead with the open workspace instead of hiding it behind 
     await gotoAppShell(page);
     await waitForSidebarHydration(page);
     await selectWorkspaceSort(page, "Created");
-    const { rows, group } = compactProjectRows(page, seed);
-    await expectWorkspaceOrder(rows, ids.slice(0, 7));
+    const { group } = compactProjectRows(page, seed);
+    // The open workspace leads outside the drag list, so match its rows across the page.
+    const rows = workspaceRows(page, ids);
+    const hidden = ids[LIMIT + 2]!;
+    await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
     await revealWorkspaces(group, "Show more");
-    await openWorkspaceRow(page, ids[9]!);
+    await openWorkspaceRow(page, hidden);
     await expectWorkspaceOrder(rows, ids);
     await revealWorkspaces(group, "Show less");
-    await expectWorkspaceOrder(rows, [ids[9]!, ...ids.slice(0, 7)]);
+    await expectWorkspaceOrder(rows, [hidden, ...ids.slice(0, LIMIT)]);
     await expect(
-      page.getByTestId(`sidebar-workspace-row-${getServerId()}:${ids[9]!}`),
+      page.getByTestId(`sidebar-workspace-row-${getServerId()}:${hidden}`),
     ).toHaveAttribute("aria-selected", "true");
     await reconnectSidebar(page);
-    await expectWorkspaceOrder(rows, [ids[9]!, ...ids.slice(0, 7)]);
+    await expectWorkspaceOrder(rows, [hidden, ...ids.slice(0, LIMIT)]);
     await expect(
-      page.getByTestId(`sidebar-workspace-row-${getServerId()}:${ids[9]!}`),
+      page.getByTestId(`sidebar-workspace-row-${getServerId()}:${hidden}`),
     ).toHaveAttribute("aria-selected", "true");
     await openWorkspaceRow(page, ids[2]!);
-    await expectWorkspaceOrder(rows, ids.slice(0, 7));
+    await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
     await expect(
       page.getByTestId(`sidebar-workspace-row-${getServerId()}:${ids[2]!}`),
     ).toHaveAttribute("aria-selected", "true");
@@ -873,15 +883,16 @@ test("a Manual drag in a collapsed group keeps the open workspace's saved place"
     await selectWorkspaceSort(page, "Manual");
     const rows = workspaceRows(page, ids);
     const toggle = page.getByTestId(`sidebar-project-show-more-${projectKey}`);
-    await expectWorkspaceOrder(rows, ids.slice(0, 7));
+    const hidden = ids[LIMIT + 2]!;
+    await expectWorkspaceOrder(rows, ids.slice(0, LIMIT));
     await toggle.click();
-    await openWorkspaceRow(page, ids[9]!);
+    await openWorkspaceRow(page, hidden);
     await toggle.click();
-    await expectWorkspaceOrder(rows, [ids[9]!, ...ids.slice(0, 7)]);
+    await expectWorkspaceOrder(rows, [hidden, ...ids.slice(0, LIMIT)]);
     await quickDragFirstRowAfterSecond(workspaceRows(page, [ids[0]!, ids[1]!]), pressWorkspaceRow);
-    await expectWorkspaceOrder(rows, [ids[9]!, ids[1]!, ids[0]!, ...ids.slice(2, 7)]);
+    await expectWorkspaceOrder(rows, [hidden, ids[1]!, ids[0]!, ...ids.slice(2, LIMIT)]);
     await reconnectSidebar(page);
-    await expectWorkspaceOrder(rows, [ids[9]!, ids[1]!, ids[0]!, ...ids.slice(2, 7)]);
+    await expectWorkspaceOrder(rows, [hidden, ids[1]!, ids[0]!, ...ids.slice(2, LIMIT)]);
     await toggle.click();
     await expectWorkspaceOrder(rows, [ids[1]!, ids[0]!, ...ids.slice(2)]);
   } finally {
