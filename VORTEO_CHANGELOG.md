@@ -10,6 +10,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Merged current `main` into typed questions before delivery.
 - Merged live dev mode into typed questions for the VortLab bootstrap release.
+- Merged the server test repairs into the VortLab bootstrap release.
 
 ### Fixes
 
@@ -27,9 +28,29 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- The daemon bootstrap no longer names a provider. Claude usage-limit stops are now recorded by the provider usage service, which restores the upstream rule that keeps the generic bootstrap provider-neutral. Account usage behavior is unchanged.
+
+### Tests
+
+- Server test stubs follow two recent changes: agent manager stubs answer the new history reload check, and the coordinator ledger tests expect its read-only lifecycle view and dispatch status feature. These were the 13 server test failures on Ubuntu and Windows CI.
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Merged current `main` into the message queue reconnect fix before delivery.
+
 ### Tests
 
 - Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The message queue reopens its saved-queue storage after the browser closes the connection. It used to show "The database connection is closing" until the page reloaded, and Retry failed the same way.
 
 ## Unreleased - 2026-11-03
 
