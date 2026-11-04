@@ -11,7 +11,7 @@ principal -> grants
     `-- opens a session with equal or narrower authority
 ```
 
-A principal is the durable identity the daemon authorizes. A credential proves that a device or service represents it. Keep them separate so you can rotate credentials, attach more than one device, and revoke a Hub user without inventing daemon user accounts.
+A principal is the durable identity the daemon authorizes: the owner, a Hub relationship or a [service principal](#service-principals). A credential proves that a device or service represents it. Keep them separate so you can rotate credentials, attach more than one device, and revoke a Hub user without inventing daemon user accounts.
 
 A pairing invitation is neither. It is an expiring, single-use exchange that creates a principal and credential with the permissions selected by its issuer.
 
@@ -38,6 +38,26 @@ see [Connected hosts](connected-hosts.md#ownership-and-authority).
 Owner, operator, and viewer are UI presets expanded into explicit permissions. Do not persist them as roles. Adding a permission must not silently widen an existing principal.
 
 Permissions are additive allows. Missing authority denies the operation. Do not add deny precedence.
+
+## Service principals
+
+A service principal is a non-interactive identity for another program, such as a personal dashboard, with permissions the owner chooses. Create, list and revoke them with `paseo access service` or in the host's Settings under Service access:
+
+```sh
+paseo access service create --label "Vorton observer" --read-only
+paseo access service list
+paseo access service revoke <id>
+```
+
+`--read-only` grants `workspace.read`, the only permission a service principal can hold today. The others are refused until [resource-scoped grants](#resources) exist: `daemon.read` returns daemon configuration, which carries provider environment variables such as API keys, and the write, manage and access permissions are owner-equivalent because agents and terminals execute code. The issuer can grant only permissions its own session holds.
+
+Daemon-wide `workspace.read` is also narrowed for service sessions. File, git, terminal and other operations address the filesystem by an arbitrary `cwd` or `path`, so they would read any file the daemon can, including its own owner credential. Service sessions are refused every inbound operation whose request carries a path-addressing field, computed from the request schemas, every terminal operation, because scrollback can show secrets, and every `hosts.*` routing operation, because routed sessions carry permissions but not this restriction. They are also refused presence heartbeats and push registration, which would suppress or redirect the owner's notifications, forge repository search, which uses the owner's sign-in, and project suggestions, which reveal provider history. They can still list projects, workspaces and agents and read agent timelines, which can contain anything an agent printed.
+
+Creation prints a token once. The daemon stores only its SHA-256 hash in `$PASEO_HOME/service-principals.json` (mode 0600). A client presents it in `hello.auth` as `{kind: "serviceCredential", token}`; with `@getpaseo/client`, pass `serviceCredential` to `DaemonClient`. Daemons that support this advertise `server_info.features.servicePrincipals`. The session holds exactly the principal's permissions and every operation is checked against them. Service tokens grant nothing as an HTTP or WebSocket header bearer.
+
+Revocation is immediate: the daemon removes the principal's authority from its live sessions, closes their sockets and refuses the token afterwards. Revoked principals stay listed for audit.
+
+A daemon without a password admits any client that presents no credential as owner, so it refuses to issue service credentials.
 
 ## Resources
 

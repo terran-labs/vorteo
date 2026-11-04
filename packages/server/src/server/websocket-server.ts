@@ -137,6 +137,12 @@ import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
+import {
+  ServicePrincipalError,
+  ServicePrincipalStore,
+  servicePrincipalSessionId,
+} from "./authorization/service-principals.js";
+import type { ServicePrincipalManagement } from "./session.js";
 import type { WorkspaceLabelService } from "./workspace-labels/index.js";
 import {
   APPLICATION_SOCKET_LEASE_CHECK_INTERVAL_MS,
@@ -517,6 +523,7 @@ interface SocketSessionOptions {
   onLifecycleIntent?: (intent: SessionLifecycleIntent) => void;
   hubExecutionAgents?: HubExecutionAgents;
   hubRelationships?: HubRelationshipManagement;
+  servicePrincipals?: ServicePrincipalManagement;
 }
 
 interface ClosePhysicalSocketParams {
@@ -631,6 +638,8 @@ export class VoiceAssistantWebSocketServer {
   private readonly sidebarState: SidebarStateStore;
   private readonly paseoHome: string;
   private readonly connectedHosts: ConnectedHosts;
+  private readonly servicePrincipals: ServicePrincipalStore;
+  private readonly servicePrincipalManagement: ServicePrincipalManagement;
 
   toolHosts() {
     return createToolHosts(this.connectedHosts);
@@ -832,6 +841,24 @@ export class VoiceAssistantWebSocketServer {
       logger: this.logger.child({ module: "sidebar-state" }),
     });
     this.connectedHosts = new ConnectedHosts(paseoHome, { serverId, label: getHostName() });
+    this.servicePrincipals = new ServicePrincipalStore(paseoHome);
+    this.servicePrincipalManagement = {
+      list: () => this.servicePrincipals.list(),
+      create: async (input) => {
+        // Without a password every unauthenticated client is owner, so a scoped
+        // credential would promise a boundary the daemon cannot enforce.
+        if (!this.passwordHash)
+          throw new ServicePrincipalError(
+            "Set a daemon password before issuing service credentials",
+          );
+        return this.servicePrincipals.create(input);
+      },
+      revoke: async (id) => {
+        const principal = await this.servicePrincipals.revoke(id);
+        this.disconnectPrincipal(servicePrincipalSessionId(id));
+        return principal;
+      },
+    };
     this.passwordHash = auth?.password;
     this.worktreesRoot = daemonRuntimeConfig?.worktreesRoot;
     this.daemonConfigStore = daemonConfigStore;
@@ -1248,6 +1275,23 @@ export class VoiceAssistantWebSocketServer {
             ? permissions.filter((permission) => connection.permissionCeiling!.includes(permission))
             : permissions,
         );
+      }
+    }
+  }
+
+  /** Removes all authority from a principal's live sessions and closes their sockets. */
+  private disconnectPrincipal(principalId: string): void {
+    this.updatePrincipalPermissions(principalId, []);
+    for (const [ws, pending] of this.pendingConnections) {
+      if (pending.admission?.principalId === principalId) {
+        this.clearPendingConnection(ws);
+        this.closePhysicalSocket({ ws, logMessage: "Closed pending socket of revoked principal" });
+      }
+    }
+    for (const connection of new Set(this.externalSessionsByKey.values())) {
+      if (connection.principalId !== principalId) continue;
+      for (const ws of connection.sockets) {
+        this.closePhysicalSocket({ ws, logMessage: "Closed socket of revoked principal" });
       }
     }
   }
@@ -1742,6 +1786,7 @@ export class VoiceAssistantWebSocketServer {
       },
       hubExecutionAgents: admission.hubExecutionAgents,
       hubRelationships: this.hubRelationships ?? undefined,
+      servicePrincipals: this.servicePrincipalManagement,
     });
 
     const base: SessionConnectionBase = {
@@ -1848,6 +1893,7 @@ export class VoiceAssistantWebSocketServer {
       providerLoginService: this.providerLoginService,
       hubExecutionAgents: options.hubExecutionAgents,
       hubRelationships: options.hubRelationships,
+      servicePrincipals: options.servicePrincipals,
       serviceProxy: this.serviceProxy ?? undefined,
       scriptRuntimeStore: this.scriptRuntimeStore ?? undefined,
       workspaceSetupObservation: this.workspaceSetupObservation,
@@ -2041,6 +2087,7 @@ export class VoiceAssistantWebSocketServer {
         credential: message.auth,
         passwordHash: this.passwordHash,
         localCredential: this.credentialSource?.localCredential?.() ?? null,
+        servicePrincipals: this.servicePrincipals,
       });
       if (this.pendingConnections.get(ws) !== pending) return false;
       if ("rejection" in resolved) {
@@ -2178,6 +2225,8 @@ export class VoiceAssistantWebSocketServer {
         workspaceTitleSuggestions: true,
         connectedHosts: true,
         hostMultiplexing: true,
+        // COMPAT(servicePrincipals): added 2026-11-03, remove gate after 2027-05-03.
+        servicePrincipals: true,
         // COMPAT(relayProtectedSecurity): added in v0.13.0, remove gate after 2027-04-21.
         relayProtectedSecurity: true,
         usageSetting: true,
@@ -2922,7 +2971,8 @@ export class VoiceAssistantWebSocketServer {
     message: Extract<WSInboundMessage, { type: "session" }>,
   ): Promise<void> {
     const link = this.hostLink(ws, activeConnection);
-    if (link.handles(message.message)) {
+    // Unauthorized link frames fall through so the session answers with its rpc_error.
+    if (link.handles(message.message) && activeConnection.session.allowsInbound(message.message)) {
       await activeConnection.session.delivery.request(ws, message.message, () =>
         link.dispatch(message.message),
       );

@@ -428,3 +428,118 @@ describe("daemon bearer auth", () => {
     }
   });
 });
+
+describe("service principals", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    process.env = { ...originalEnv, PASEO_SUPERVISED: "0" };
+  });
+
+  function connectClient(port: number, auth: { password?: string; serviceCredential?: string }) {
+    return new DaemonClient({
+      url: `ws://127.0.0.1:${port}/ws`,
+      clientId: `service-principal-${Math.random().toString(36).slice(2)}`,
+      clientType: "cli",
+      ...auth,
+      webSocketFactory: (url, options) =>
+        new WebSocket(url, options?.protocols, { headers: options?.headers }),
+      reconnect: { enabled: false },
+    });
+  }
+
+  test("a read-only principal reads, is refused writes, and loses access when revoked", async () => {
+    const daemonHandle = await createTestPaseoDaemon({ auth: { password: CORRECT_PASSWORD_HASH } });
+    const owner = connectClient(daemonHandle.port, { password: "correct-password" });
+    let service: DaemonClient | null = null;
+    try {
+      await owner.connect();
+      expect(owner.getLastServerInfoMessage()?.features?.servicePrincipals).toBe(true);
+      for (const permission of ["access.manage", "daemon.read", "workspace.write"] as const) {
+        const refused = await owner.createServicePrincipal({
+          label: "escalation",
+          permissions: [permission],
+        });
+        expect(refused.token).toBeNull();
+      }
+
+      const created = await owner.createServicePrincipal({
+        label: "Vorton observer",
+        permissions: ["workspace.read"],
+      });
+      expect(created.error).toBeNull();
+      const token = created.token!;
+      const stored = await readFile(
+        join(daemonHandle.paseoHome, "service-principals.json"),
+        "utf8",
+      );
+      expect(stored).not.toContain(token.split(".")[2]);
+      expect(
+        (await stat(join(daemonHandle.paseoHome, "service-principals.json"))).mode & 0o777,
+      ).toBe(0o600);
+
+      service = connectClient(daemonHandle.port, { serviceCredential: token });
+      await service.connect();
+      expect(service.getLastServerInfoMessage()?.permissions).toEqual(["workspace.read"]);
+      await expect(service.fetchWorkspaces()).resolves.toBeDefined();
+      await expect(service.fetchAgents()).resolves.toBeDefined();
+      await expect(service.listProjects()).resolves.toBeDefined();
+      await expect(service.sendAgentMessage("any-agent", "hello")).rejects.toThrow(
+        /not authorized/,
+      );
+      await expect(
+        service.createServicePrincipal({ label: "minted", permissions: ["workspace.read"] }),
+      ).rejects.toThrow(/not authorized/);
+      // Path-addressed reads would expose any daemon-readable file, including the
+      // owner's local credential, so service sessions never reach them.
+      await expect(service.readFile(daemonHandle.paseoHome, "local-credential")).rejects.toThrow(
+        /not authorized/,
+      );
+      await expect(service.getCheckoutStatus(daemonHandle.paseoHome)).rejects.toThrow(
+        /not authorized/,
+      );
+
+      const closed = new Promise<void>((resolve) => {
+        service!.subscribeConnectionStatus((status) => {
+          if (status.status === "disconnected") resolve();
+        });
+      });
+      const revoked = await owner.revokeServicePrincipal(created.principal!.id);
+      expect(revoked.principal?.revokedAt).not.toBeNull();
+      await closed;
+      await service.close();
+
+      service = connectClient(daemonHandle.port, { serviceCredential: token });
+      await expect(service.connect()).rejects.toMatchObject({ reason: "incorrect_password" });
+    } finally {
+      await service?.close();
+      await owner.close();
+      await daemonHandle.close();
+    }
+  });
+
+  test("a service token gives no authority as a header bearer", async () => {
+    const daemonHandle = await createTestPaseoDaemon({ auth: { password: CORRECT_PASSWORD_HASH } });
+    const owner = connectClient(daemonHandle.port, { password: "correct-password" });
+    try {
+      await owner.connect();
+      const { token } = await owner.createServicePrincipal({
+        label: "header test",
+        permissions: ["workspace.read"],
+      });
+      const response = await fetch(`http://127.0.0.1:${daemonHandle.port}/api/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(401);
+      await expectWebSocketCloses({
+        port: daemonHandle.port,
+        protocol: `paseo.bearer.${token}`,
+        code: 4401,
+        reason: "Incorrect password",
+      });
+    } finally {
+      await owner.close();
+      await daemonHandle.close();
+    }
+  });
+});

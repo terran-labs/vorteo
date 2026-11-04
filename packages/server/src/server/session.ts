@@ -248,6 +248,9 @@ import { ProjectConfigSession } from "./session/project-config/project-config-se
 import { DaemonSession, type DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import type { DaemonWebSocketRuntimeDiagnosticSnapshot } from "./session/daemon/diagnostics.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
+import type { ServicePrincipal } from "@getpaseo/protocol/messages";
+import { ServicePrincipalError } from "./authorization/service-principals.js";
+import { sessionRestrictionsFor } from "./authorization/service-restrictions.js";
 import { HubExecutionController } from "./hub/execution-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
@@ -503,6 +506,16 @@ const nodeSessionFileSystem: SessionFileSystem = {
 // Stub types for features under development (modules not yet available)
 type AgentMcpTransportFactory = () => Promise<unknown>;
 
+/** Daemon-wide service principal operations; revocation also disconnects the principal. */
+export interface ServicePrincipalManagement {
+  list(): Promise<ServicePrincipal[]>;
+  create(input: {
+    label: string;
+    permissions: readonly DaemonPermission[];
+  }): Promise<{ principal: ServicePrincipal; token: string }>;
+  revoke(id: string): Promise<ServicePrincipal>;
+}
+
 export interface SessionOptions {
   maintenanceRestart?: MaintenanceRestartBridge;
   coordinatorBootstrap?: BootstrapReviewService;
@@ -628,6 +641,7 @@ export interface SessionOptions {
   providerLoginService?: ProviderLoginService;
   hubExecutionAgents?: HubExecutionAgents;
   hubRelationships?: HubRelationshipManagement;
+  servicePrincipals?: ServicePrincipalManagement;
   serviceProxy?: ServiceProxySubsystem;
   scriptRuntimeStore?: WorkspaceScriptRuntimeStore;
   workspaceSetupObservation?: WorkspaceSetupObservation;
@@ -930,6 +944,7 @@ export class Session {
   private readonly projectConfigSession: ProjectConfigSession;
   private readonly daemonSession: DaemonSession;
   private readonly hubExecutionController: HubExecutionController | null;
+  private readonly servicePrincipals: ServicePrincipalManagement | null;
   private readonly workspaceScripts: WorkspaceScriptsService;
   private readonly messageReceipts: Pick<MessageReceipts, "send">;
   private readonly agentMessages: AgentMessageDelivery;
@@ -1010,7 +1025,11 @@ export class Session {
     this.browserToolsBroker = options.browserToolsBroker;
     this.clientId = clientId;
     this.serverId = serverId;
-    this.authorization = new SessionAuthorization(permissions);
+    this.authorization = new SessionAuthorization(
+      permissions,
+      sessionRestrictionsFor(options.principalId),
+    );
+    this.servicePrincipals = options.servicePrincipals ?? null;
     this.principalId = options.principalId;
     this.clientType = options.clientType;
     this.ownerEvidence = new TaskOwnerEvidenceStore(paseoHome);
@@ -2472,6 +2491,108 @@ export class Session {
     return this.authorization.listPermissions();
   }
 
+  private dispatchServicePrincipalMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "access.service_principals.list.request":
+      case "access.service_principals.create.request":
+      case "access.service_principals.revoke.request":
+        return this.handleServicePrincipalRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleServicePrincipalRequest(
+    msg: Extract<
+      SessionInboundMessage,
+      {
+        type:
+          | "access.service_principals.list.request"
+          | "access.service_principals.create.request"
+          | "access.service_principals.revoke.request";
+      }
+    >,
+  ): Promise<void> {
+    const store = this.servicePrincipals;
+    const failure = (error: unknown) =>
+      error instanceof ServicePrincipalError ? error.message : "Service principal request failed";
+    switch (msg.type) {
+      case "access.service_principals.list.request": {
+        let principals: ServicePrincipal[] = [];
+        let error: string | null = store
+          ? null
+          : "Service principals are unavailable on this daemon";
+        try {
+          principals = (await store?.list()) ?? [];
+        } catch (caught) {
+          error = failure(caught);
+        }
+        this.emit({
+          type: "access.service_principals.list.response",
+          payload: { requestId: msg.requestId, principals, error },
+        });
+        return;
+      }
+      case "access.service_principals.create.request": {
+        let result: {
+          principal: ServicePrincipal | null;
+          token: string | null;
+          error: string | null;
+        };
+        // An issuer can delegate only authority its own session holds.
+        const exceeding = msg.permissions.filter(
+          (permission) => !this.authorization.allowsPermission(permission),
+        );
+        if (!store) {
+          result = { principal: null, token: null, error: "Service principals are unavailable" };
+        } else if (exceeding.length > 0) {
+          result = {
+            principal: null,
+            token: null,
+            error: `This session cannot grant ${exceeding.join(", ")}`,
+          };
+        } else {
+          try {
+            result = {
+              ...(await store.create({ label: msg.label, permissions: msg.permissions })),
+              error: null,
+            };
+            this.sessionLogger.info(
+              { servicePrincipalId: result.principal?.id, permissions: msg.permissions },
+              "Created service principal",
+            );
+          } catch (error) {
+            result = { principal: null, token: null, error: failure(error) };
+          }
+        }
+        this.emit({
+          type: "access.service_principals.create.response",
+          payload: { requestId: msg.requestId, ...result },
+        });
+        return;
+      }
+      case "access.service_principals.revoke.request": {
+        let principal: ServicePrincipal | null = null;
+        let error: string | null = null;
+        try {
+          if (!store) throw new ServicePrincipalError("Service principals are unavailable");
+          principal = await store.revoke(msg.principalId);
+          this.sessionLogger.info(
+            { servicePrincipalId: msg.principalId },
+            "Revoked service principal",
+          );
+        } catch (caught) {
+          error = failure(caught);
+        }
+        this.emit({
+          type: "access.service_principals.revoke.response",
+          payload: { requestId: msg.requestId, principal, error },
+        });
+        return;
+      }
+    }
+  }
+
   public allowsInbound(message: SessionInboundMessage): boolean {
     return this.authorization.allowsInbound(message);
   }
@@ -2679,6 +2800,7 @@ export class Session {
     return (
       this.dispatchTerminalMessage(msg) ??
       this.dispatchScheduleMessage(msg) ??
+      this.dispatchServicePrincipalMessage(msg) ??
       this.speechModelsSession.dispatch(msg)
     );
   }

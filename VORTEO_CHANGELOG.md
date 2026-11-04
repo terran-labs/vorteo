@@ -6,6 +6,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Added
+
+- Service principals: issue a credential with only the permissions you choose, such as read-only access for a personal dashboard, with `paseo access service create --read-only` or in host Settings under Service access. Only read-only access is issuable for now; service sessions cannot read files, run git or terminal requests, or route to other hosts. Tokens are shown once and stored as hashes, and revoking a principal disconnects it immediately. Clients connect with the new `serviceCredential` option on daemons advertising `servicePrincipals`.
+- One read-only view of the installation: the Host coordinator's overview route returns projects, workspaces and agents from Host and Dev in one call, with each environment's status and errors. It reads each daemon through a read-only principal and accepts observer tokens that authorize nothing else. Host agents use `installation-agent.mjs overview` and `overview-observers`.
+
+## Unreleased - 2026-11-03
+
 ### Tests
 
 - Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.

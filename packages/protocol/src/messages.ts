@@ -1719,6 +1719,26 @@ export const DaemonGetPairingOfferRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// Service principals are non-interactive identities with owner-selected permissions.
+// Their bearer tokens are shown once at creation; the daemon persists only hashes.
+export const AccessServicePrincipalsListRequestSchema = z.object({
+  type: z.literal("access.service_principals.list.request"),
+  requestId: z.string(),
+});
+
+export const AccessServicePrincipalsCreateRequestSchema = z.object({
+  type: z.literal("access.service_principals.create.request"),
+  requestId: z.string(),
+  label: z.string().trim().min(1).max(120),
+  permissions: z.array(DaemonPermissionSchema).min(1),
+});
+
+export const AccessServicePrincipalsRevokeRequestSchema = z.object({
+  type: z.literal("access.service_principals.revoke.request"),
+  requestId: z.string(),
+  principalId: z.string().min(1),
+});
+
 export const DaemonConfigReloadRequestSchema = z.object({
   type: z.literal("daemon.config.reload.request"),
   requestId: z.string(),
@@ -3712,6 +3732,9 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WaitForFinishRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
+  AccessServicePrincipalsListRequestSchema,
+  AccessServicePrincipalsCreateRequestSchema,
+  AccessServicePrincipalsRevokeRequestSchema,
   DaemonConfigReloadRequestSchema,
   DaemonOriginAdmissionInspectRequestSchema,
   DaemonOriginAdmissionRequestSchema,
@@ -4130,6 +4153,8 @@ export const ServerInfoStatusPayloadSchema = z
         prepaidQuotaAuthorization: z.boolean().optional(),
         connectedHosts: z.boolean().optional(),
         hostMultiplexing: z.boolean().optional(),
+        // COMPAT(servicePrincipals): added 2026-11-03, remove gate after 2027-05-03; older daemons reject serviceCredential hello auth.
+        servicePrincipals: z.boolean().optional(),
         // COMPAT(usageSetting): added in v0.14, remove after 2027-05-01.
         usageSetting: z.boolean().optional(),
         usageSources: z.boolean().optional(),
@@ -5839,6 +5864,43 @@ export const DaemonGetPairingOfferResponseSchema = z.object({
       relayEnabled: z.boolean(),
     })
     .passthrough(),
+});
+
+export const ServicePrincipalSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  permissions: z.array(DaemonPermissionSchema),
+  createdAt: z.string(),
+  revokedAt: z.string().nullable(),
+});
+
+export const AccessServicePrincipalsListResponseSchema = z.object({
+  type: z.literal("access.service_principals.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    principals: z.array(ServicePrincipalSchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AccessServicePrincipalsCreateResponseSchema = z.object({
+  type: z.literal("access.service_principals.create.response"),
+  payload: z.object({
+    requestId: z.string(),
+    principal: ServicePrincipalSchema.nullable(),
+    // Returned once. The daemon cannot recover it later.
+    token: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AccessServicePrincipalsRevokeResponseSchema = z.object({
+  type: z.literal("access.service_principals.revoke.response"),
+  payload: z.object({
+    requestId: z.string(),
+    principal: ServicePrincipalSchema.nullable(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const DaemonConfigReloadResponseSchema = z.object({
@@ -7826,6 +7888,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
+  AccessServicePrincipalsListResponseSchema,
+  AccessServicePrincipalsCreateResponseSchema,
+  AccessServicePrincipalsRevokeResponseSchema,
   DaemonConfigReloadResponseSchema,
   DaemonOriginAdmissionInspectResponseSchema,
   DaemonOriginAdmissionResponseSchema,
@@ -8134,6 +8199,16 @@ export type ListAvailableProvidersResponse = z.infer<typeof ListAvailableProvide
 export type DaemonGetStatusResponse = z.infer<typeof DaemonGetStatusResponseSchema>;
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DaemonConfigReloadResponse = z.infer<typeof DaemonConfigReloadResponseSchema>;
+export type ServicePrincipal = z.infer<typeof ServicePrincipalSchema>;
+export type AccessServicePrincipalsListResponse = z.infer<
+  typeof AccessServicePrincipalsListResponseSchema
+>;
+export type AccessServicePrincipalsCreateResponse = z.infer<
+  typeof AccessServicePrincipalsCreateResponseSchema
+>;
+export type AccessServicePrincipalsRevokeResponse = z.infer<
+  typeof AccessServicePrincipalsRevokeResponseSchema
+>;
 export type DaemonOriginAdmissionInput = z.infer<typeof DaemonOriginAdmissionInputSchema>;
 export type DaemonOriginAdmissionState = z.infer<typeof DaemonOriginAdmissionStateSchema>;
 export type DaemonOriginAdmissionInspectResponse = z.infer<
@@ -8492,6 +8567,7 @@ export const WSHelloMessageSchema = z.object({
     .discriminatedUnion("kind", [
       z.object({ kind: z.literal("password"), password: z.string() }),
       z.object({ kind: z.literal("localCredential"), token: z.string() }),
+      z.object({ kind: z.literal("serviceCredential"), token: z.string() }),
     ])
     .optional(),
   appVersion: z.string().optional(),

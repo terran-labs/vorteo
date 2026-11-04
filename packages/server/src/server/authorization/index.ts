@@ -22,14 +22,22 @@ export function parseDaemonPermissions(values: readonly string[]): DaemonPermiss
 
 export const OWNER_PERMISSIONS: readonly DaemonPermission[] = DAEMON_PERMISSIONS;
 
+export interface SessionRestrictions {
+  /** Inbound operation types denied even when the permission allows them. */
+  deniedInbound: ReadonlySet<string>;
+}
+
 export class SessionAuthorization {
   private permissions: ReadonlySet<DaemonPermission>;
+  private readonly restrictions: SessionRestrictions | null;
 
-  constructor(permissions: readonly DaemonPermission[]) {
+  constructor(permissions: readonly DaemonPermission[], restrictions?: SessionRestrictions) {
     this.permissions = new Set(permissions);
+    this.restrictions = restrictions ?? null;
   }
 
   allowsInbound(message: SessionInboundMessage): boolean {
+    if (this.restrictions?.deniedInbound.has(message.type)) return false;
     return this.allows(requiredPermissionForInbound(message.type));
   }
 
