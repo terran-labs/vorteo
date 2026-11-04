@@ -106,11 +106,7 @@ Use `get_thread_goal` and `update_thread_goal` to revise your existing goal with
 
 ### Current Vorteo development preference
 
-When the owner asks to implement a change in Vorteo, treat it as [Level 4](#authorization-levels) and deliver it to this existing Vorteo instance so the owner can reload and review it here. Do not substitute a separate preview URL unless explicitly requested. This is the current rapid-development preference and may change as the project stabilizes. Validate the change and use the guarded static publisher for interface-only updates; preserve the required tracked approval workflow for any daemon or installation restart. When the owner requests visual review, leave acceptance open until they review the installed change.
-
-### Live dev mode
-
-When an installation's Delivery mode is Live dev, deliver interface changes to it through its live checkout with `scripts/live-dev.mjs`: claim and commit one-off tweaks, or promote a task branch. The owner sees them through Fast Refresh, with no build or publication. Builds still takes `live/main` to `main` by pull request the same day; daemon changes still use the tracked lifecycle workflow. See [live dev mode](docs/live-dev-mode.md).
+When the owner asks to implement a change in Vorteo, treat it as [Level 4](#authorization-levels) and deliver it to this existing Vorteo instance so the owner can reload and review it here. Do not substitute a separate preview URL unless explicitly requested. This is the current rapid-development preference and may change as the project stabilizes. Validate the change and use [live dev](docs/task-delivery.md#deliver-in-live-dev-mode) or the guarded static publisher for interface-only updates; preserve the required tracked approval workflow for any daemon or installation restart. When the owner requests visual review, leave acceptance open until they review the installed change.
 
 ### Live demo previews
 
