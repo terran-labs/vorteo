@@ -2354,8 +2354,9 @@ function ComposerContentImpl({
       narrowDesktop && styles.narrowDesktopInputArea,
       mobileComposer.enabled && styles.mobileInputArea,
       isComposerLocked && styles.inputAreaLocked,
+      isFullscreen && styles.inputAreaFullscreen,
     ],
-    [columnWidth, isComposerLocked, mobileComposer.enabled, narrowDesktop],
+    [columnWidth, isComposerLocked, mobileComposer.enabled, narrowDesktop, isFullscreen],
   );
 
   const messageInputContainerStyle = useMemo(
@@ -2475,6 +2476,7 @@ function ComposerContentImpl({
               styles.inputAreaContent,
               styles.bottomCardStack,
               (columnWidth !== undefined || narrowDesktop) && styles.columnInputContent,
+              isFullscreen && styles.fullscreenFill,
             ]}
           >
             {sendErrorNode}

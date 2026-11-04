@@ -914,6 +914,7 @@ interface SendButtonPresentation {
 }
 
 function resolveModifiedSendButton(input: {
+  submitButtonAccessibilityLabel: string | undefined;
   action: "default" | "alternate" | "newline" | "send";
   queues: boolean;
   disabled: boolean;
@@ -923,7 +924,8 @@ function resolveModifiedSendButton(input: {
   const presentation = { ...input.baseline };
   if (input.queues) presentation.buttonIcon = "queue";
   if (input.action === "send") {
-    presentation.submitAccessibilityLabel = input.t("composer.input.sendMessage");
+    presentation.submitAccessibilityLabel =
+      input.submitButtonAccessibilityLabel ?? input.t("composer.input.sendMessage");
     presentation.sendTooltipLabel = presentation.submitAccessibilityLabel;
   }
   if (input.action === "alternate") {
@@ -2054,6 +2056,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       ),
     });
     const buttonPresentation = resolveModifiedSendButton({
+      submitButtonAccessibilityLabel,
       action: submitAction.action,
       queues: submitAction.queues,
       disabled,

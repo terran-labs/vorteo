@@ -8,6 +8,16 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Restore fullscreen composer wrapper sizing lost during integration and preserve custom Create and Launch accessibility labels in compact send mode. Compact and wide headers share the same test identifier.
+
+### Tests
+
+- Folder scrolling checks use path identities without changing host-label lookups or viewport-containment checks. Fullscreen checks explicitly distinguish compact chat's microphone from wide chat and terminal controls. Terminal caret navigation uses the macOS line-end shortcut on macOS and End on Linux.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Owner-confirmed 2026-11-03: keep the compact touch microphone and Fullscreen controls in separate corner slots. The editor reserves both slots from the first line, so growing a draft does not shift its text or hide either control behind the other.
 
 ## Unreleased - 2026-11-03

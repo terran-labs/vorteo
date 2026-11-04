@@ -16,6 +16,7 @@ import {
   expectAddProjectPage,
   expectNewWorkspaceForAddedProject,
   expectAddProjectResultVisible,
+  expectAddProjectPathVisible,
   navigateAddProjectResults,
   navigateAndDismissAddProject,
   watchAddProjectRenderWarnings,
@@ -340,26 +341,26 @@ test.describe("Add Project command-center flow", () => {
       });
 
       await navigateAddProjectResults(page, "ArrowDown", 12);
-      await expectAddProjectResultVisible(page, rowPath(11));
+      await expectAddProjectPathVisible(page, rowPath(11));
       await navigateAddProjectResults(page, "ArrowUp", 12);
-      await expectAddProjectResultVisible(page, parentDirectory);
+      await expectAddProjectPathVisible(page, parentDirectory);
       await navigateAddProjectResults(page, "ArrowUp", 1);
-      await expectAddProjectResultVisible(page, rowPath(15));
+      await expectAddProjectPathVisible(page, rowPath(15));
       await navigateAddProjectResults(page, "ArrowDown", 1);
-      await expectAddProjectResultVisible(page, parentDirectory);
+      await expectAddProjectPathVisible(page, parentDirectory);
 
       await navigateAddProjectResults(page, "ArrowDown", 12);
-      await expectAddProjectResultVisible(page, rowPath(11));
+      await expectAddProjectPathVisible(page, rowPath(11));
       await addProjectFlowInput(page).fill(`${path.basename(parentDirectory)}probe`);
       await expect(results.getByRole("button")).toHaveCount(16);
-      await expectAddProjectResultVisible(page, rowPath(0));
+      await expectAddProjectPathVisible(page, rowPath(0));
       await navigateAddProjectResults(page, "ArrowDown", 12);
-      await expectAddProjectResultVisible(page, rowPath(12));
+      await expectAddProjectPathVisible(page, rowPath(12));
       await addProjectFlowInput(page).fill(path.basename(parentDirectory));
       await expect(results.getByRole("button")).toHaveCount(17);
-      await expectAddProjectResultVisible(page, parentDirectory);
+      await expectAddProjectPathVisible(page, parentDirectory);
       await navigateAddProjectResults(page, "ArrowDown", 12);
-      await expectAddProjectResultVisible(page, rowPath(11));
+      await expectAddProjectPathVisible(page, rowPath(11));
       await page.keyboard.press("Enter");
       projectId = await expectOpenedProject(page, "scroll-probe-11");
       await expectNewWorkspaceForAddedProject(page, {

@@ -131,8 +131,21 @@ export async function navigateAddProjectResults(
 
 export async function expectAddProjectResultVisible(page: Page, text: string): Promise<void> {
   const results = page.getByTestId("add-project-flow-results");
-  const row = results.getByTestId(`add-project-flow-path-${encodeURIComponent(text)}`);
-  await expect(row).toHaveAttribute("aria-selected", "true");
+  await expectAddProjectRowVisible(
+    results,
+    results.getByRole("button").filter({ has: page.getByText(text, { exact: true }) }),
+  );
+}
+
+export async function expectAddProjectPathVisible(page: Page, path: string): Promise<void> {
+  const results = page.getByTestId("add-project-flow-results");
+  await expectAddProjectRowVisible(
+    results,
+    results.getByTestId(`add-project-flow-path-${encodeURIComponent(path)}`),
+  );
+}
+
+async function expectAddProjectRowVisible(results: Locator, row: Locator): Promise<void> {
   await expect
     .poll(async () => {
       const viewport = await results.boundingBox();

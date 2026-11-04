@@ -146,7 +146,9 @@ test.describe("New workspace: launching a terminal", () => {
       await selectProfile(PROMPT_PROFILE);
       await expect(terminalPromptInput(page)).toHaveValue("Short draft");
       await expect(fullscreen).toHaveCount(0);
-      await terminalPromptInput(page).press("End");
+      await terminalPromptInput(page).press(
+        process.platform === "darwin" ? "Meta+ArrowRight" : "End",
+      );
       await terminalPromptInput(page).press("Shift+Enter");
       await terminalPromptInput(page).pressSequentially("Second");
       await terminalPromptInput(page).press("Shift+Enter");
@@ -230,13 +232,13 @@ test.describe("New workspace: fullscreen composer across the compact breakpoint"
       await expectComposerFullscreenControls(page);
       await expectNewWorkspaceHeaderHidden(page);
       await resizeComposerViewport(page, "landscape");
-      await expectComposerFullscreenControls(page);
+      await expectComposerFullscreenControls(page, { dictation: false });
       await expectNewWorkspaceFullscreen(page, "Create");
       // The desktop form's own import button is dropped from the fullscreen slot.
       await expect(
         page.getByTestId("new-workspace-import-session").filter({ visible: true }),
       ).toHaveCount(0);
-      await composerLocator(page).press("End");
+      await composerLocator(page).press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
       await composerLocator(page).pressSequentially(" wide");
       await exitComposerFullscreen(page);
       await expectNewWorkspaceHeaderVisible(page);

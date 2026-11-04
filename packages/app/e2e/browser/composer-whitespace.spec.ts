@@ -271,7 +271,7 @@ test("compact fullscreen editing preserves the live draft and selection and retu
       await expectComposerFullscreenControls(page);
       await selectComposerDraftRange(page, 0, 5);
       await resizeComposerViewport(page, "landscape");
-      await expectComposerFullscreenControls(page);
+      await expectComposerFullscreenControls(page, { dictation: false });
       await expectComposerDraftSelection(page, 0, 5);
       await expect(composerLocator(page)).toHaveValue("Short draft");
       await expect(composerLocator(page)).toBeFocused();

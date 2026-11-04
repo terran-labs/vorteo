@@ -27,7 +27,7 @@ for (const [width, height] of [[390, 844]]) {
       const importSession = page.getByTestId("new-workspace-import-session");
       await expect(menu).toBeVisible();
       await expect(importSession).toHaveAccessibleName("Import session");
-      const header = page.getByTestId("screen-header").filter({ visible: true }).first();
+      const header = page.getByTestId("screen-header").filter({ has: menu, visible: true });
       await expect(header.getByRole("button", { name: "Open menu", exact: true })).toBeVisible();
       await expect(header.getByTestId("new-workspace-import-session")).toBeVisible();
       const headerBox = (await header.boundingBox())!;

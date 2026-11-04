@@ -415,9 +415,17 @@ export async function expectComposerDraftSelection(
     )
     .toEqual([start, end]);
 }
-export async function expectComposerFullscreenControls(page: Page): Promise<void> {
+export async function expectComposerFullscreenControls(
+  page: Page,
+  { dictation = true }: { dictation?: boolean } = {},
+): Promise<void> {
   await expect(page.getByRole("button", { name: "Exit fullscreen", exact: true })).toBeVisible();
-  await expect(page.getByTestId("composer-fullscreen").getByRole("button")).toHaveCount(2);
+  await expect(page.getByTestId("composer-fullscreen").getByRole("button")).toHaveCount(
+    dictation ? 3 : 2,
+  );
+  await expect(
+    page.getByTestId("composer-fullscreen").getByRole("button", { name: /dictation/i }),
+  ).toHaveCount(dictation ? 1 : 0);
   await expect(composerInput(page)).toHaveCount(1);
 }
 /** The fullscreen frame and its submit button sit inside the browser's visible viewport. */
