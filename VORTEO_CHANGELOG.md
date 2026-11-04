@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Changed
+
+- Show working subagents in the collapsed Subagents tile as their count inside a spinning ring. When every subagent is idle, the tile keeps its icon above the count.
+
+## Unreleased - 2026-11-03
+
 ### Changes
 
 - Full maintenance delegation may approve a renewal that attaches the preview broker deployment or broker settings, as the owner decided. Consumer deployment and channel rebind still need the owner.
