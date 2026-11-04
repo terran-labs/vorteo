@@ -6,6 +6,19 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Synchronize projects across the Host and Dev. The installation coordinator joins each environment's projects by their folder in the shared Projects folder, gives each one fixed key that git no longer re-derives, and registers a project on every environment where its folder exists. Git remotes no longer join different folders. Vorteo System gets one identity, and Vorton appears on the Host.
+- File new worktrees under their repository's project even when the requesting thread names another, and let a misfiled checkout or worktree move into its repository's project. Builders started from Vorteo System had filed Vorton worktrees under it.
+
+## Unreleased - 2026-11-03
+
+### Tests
+
+- Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.
+
+## Unreleased - 2026-11-03
+
 ### Added
 
 - Recover a wedged Dev through the tracked supervisor maintenance route. `supervisorMaintenance` is a registered coordinator setting that an owner-reviewed renewal can carry, and `scripts/maintenance/dev-supervisor-recovery.mjs` prepares a protected plan for it. After a failed Dev source activation leaves the `paseo` program FATAL or its worker failing, the plan selects the previous release named by the protected Host receipts, starts only `paseo`, and verifies a replacement worker and container health, with intent, rollback and result records. It refuses anything else and never replays.

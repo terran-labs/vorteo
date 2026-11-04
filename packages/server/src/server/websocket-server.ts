@@ -2291,6 +2291,7 @@ export class VoiceAssistantWebSocketServer {
         workspaceMultiplicity: true,
         workspaceProjectMembership: true,
         workspaceProjectPlacement: true,
+        projectSync: true,
         workspaceCreateProjectMembership: true,
         workspaceTaskEnvironments: true,
         idleRestart: true,
