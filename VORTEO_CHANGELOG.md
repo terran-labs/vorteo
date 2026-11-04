@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Settings search finds the Delivery mode row in Installation settings. Live dev mode added the row without a settings catalog entry, which failed the app tests.
+
 ## 26.11.301 - 2026-11-03
 
 Beta bootstrap release for installer-made installations. It carries every change listed below since 26.11.206; 26.11.300 was prepared but never tagged.
