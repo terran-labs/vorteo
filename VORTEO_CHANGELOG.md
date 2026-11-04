@@ -13,6 +13,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Upgrades from Installation controls finish on installations made by the one-command installer. The coordinator refused to save its own Host build ID, so it relaunched the Host build every two seconds, the overlapping builds failed, and the upgrade stayed running forever.
 - Harden live dev mode after an independent security review. The proxy no longer forwards your session to the dev server, refuses encoded and dotted paths, never redirects off-site, and keeps a failed live page's assets static. The supervisor only signals its own dev server, stops orphaned watchers and stays stopped after you switch to Reliable. The live checkout tool takes its lock atomically, promotes only local branches, checks merges before touching the tree, merges changelog entries as a union and writes its own changelog entry for tweaks.
 
 ## Unreleased - 2026-11-03
