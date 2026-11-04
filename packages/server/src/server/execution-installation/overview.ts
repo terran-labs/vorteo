@@ -7,6 +7,7 @@ import type { DaemonPermission } from "@getpaseo/protocol/messages";
 import { writePrivateFileAtomic } from "../private-files.js";
 import type { InstallationConfig } from "./config.js";
 import { connectInstallationDaemon } from "./daemon.js";
+import { projectProject, projectWorkspace } from "../authorization/service-projections.js";
 
 /** What the coordinator's per-daemon principal may do: observe, never act. */
 export const OVERVIEW_DAEMON_PERMISSIONS: DaemonPermission[] = ["workspace.read"];
@@ -126,8 +127,10 @@ export class InstallationOverviewReader {
           serverId,
           status: "ok",
           observedAt: now().toISOString(),
-          projects: projects.projects.map(redactCredentials),
-          workspaces: workspaces.entries.map(redactCredentials),
+          projects: projects.projects.map((project) => redactCredentials(projectProject(project))),
+          workspaces: workspaces.entries.map((workspace) =>
+            redactCredentials(projectWorkspace(workspace)),
+          ),
           agents: agents.entries.map(projectAgentEntry),
           truncated: workspaces.truncated || agents.truncated,
         };
@@ -233,7 +236,6 @@ export const OVERVIEW_AGENT_FIELDS = [
   "provider",
   "model",
   "status",
-  "cwd",
   "workspaceId",
   "labels",
   "createdAt",
@@ -254,7 +256,15 @@ function projectAgentEntry(entry: unknown): unknown {
   for (const field of OVERVIEW_AGENT_FIELDS) {
     if (agent && field in agent) projected[field] = agent[field];
   }
-  return { agent: projected, project: redactCredentials(project) };
+  const placement = (project ?? {}) as Record<string, unknown>;
+  return {
+    agent: projected,
+    project: redactCredentials({
+      projectKey: placement.projectKey,
+      projectName: placement.projectName,
+      workspaceName: placement.workspaceName ?? null,
+    }),
+  };
 }
 
 /** Deep copy with credentials removed from any URL, such as a git remote with a token. */

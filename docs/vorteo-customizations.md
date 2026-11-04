@@ -1824,6 +1824,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 4, 2026: Builds re-review fixes: cancel grants need tool-less targets, service directory data and the overview use fixed projections, and service sessions read single agents only through grants. README unchanged.
+
 November 4, 2026: Merged current `main` into the service principals branch before handing it back to Builds; the merge was clean. No feature or limitation changes.
 
 November 4, 2026: Service message markers carry a random per-message tag, labels drop format characters, and long expiries re-arm their disconnect timer. README unchanged.

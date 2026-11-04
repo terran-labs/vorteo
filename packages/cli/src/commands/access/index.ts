@@ -162,7 +162,10 @@ export function createAccessCommand(): Command {
         collectMultiple,
         [],
       )
-      .option("--read-only", `Grant ${READ_ONLY_SERVICE_PERMISSIONS.join(" and ")}`)
+      .option(
+        "--read-only",
+        `Grant daemon-wide ${READ_ONLY_SERVICE_PERMISSIONS.join(" and ")}. For the installation coordinator; give external apps an overview observer token or agent grants instead`,
+      )
       .option("--expires-at <iso>", "Refuse the token after this ISO time")
       .option(
         "--grants-file <path>",

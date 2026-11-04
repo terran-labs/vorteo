@@ -1297,10 +1297,14 @@ export class VoiceAssistantWebSocketServer {
    * Final outbound check for service sessions. Some session paths deliver without
    * the session's own filter; this transport boundary covers every one of them.
    */
-  private allowsServiceDelivery(connection: SessionConnection, msg: SessionOutboundMessage) {
-    if (!connection.principalId.startsWith("service:")) return true;
+  private serviceDelivery(
+    connection: SessionConnection,
+    msg: SessionOutboundMessage,
+  ): SessionOutboundMessage | null {
+    if (!connection.principalId.startsWith("service:")) return msg;
     // The handshake server_info is written directly to the socket, not through here.
-    return connection.session.allowsOutbound(msg);
+    // Directory projection happens in session delivery, before delivery proofs attach.
+    return connection.session.allowsOutbound(msg) ? msg : null;
   }
 
   /** Ends a service principal's sessions when its token expires, not only at its next connect. */
@@ -1789,15 +1793,20 @@ export class VoiceAssistantWebSocketServer {
         if (!connection) {
           return;
         }
-        if (!this.allowsServiceDelivery(connection, msg)) return;
-        this.sendToConnection(connection, wrapSessionMessage(msg));
+        const delivered = this.serviceDelivery(connection, msg);
+        if (!delivered) return;
+        this.sendToConnection(connection, wrapSessionMessage(delivered));
       },
       onMessageToSource: async (source, msg) => {
         if (!connection || !connection.sockets.has(source as WebSocketLike)) {
           return;
         }
-        if (!this.allowsServiceDelivery(connection, msg)) return;
-        await this.sendMessageToClientAndWait(source as WebSocketLike, wrapSessionMessage(msg));
+        const delivered = this.serviceDelivery(connection, msg);
+        if (!delivered) return;
+        await this.sendMessageToClientAndWait(
+          source as WebSocketLike,
+          wrapSessionMessage(delivered),
+        );
       },
       onBinaryMessage: (frame) => {
         if (!connection) {

@@ -484,6 +484,13 @@ describe("service principals", () => {
       await expect(service.fetchWorkspaces()).resolves.toBeDefined();
       await expect(service.fetchAgents()).resolves.toBeDefined();
       await expect(service.listProjects()).resolves.toBeDefined();
+      // Daemon-wide read returns projected directory data and no single-agent reads.
+      const owned = await owner.createAgent({ provider: "codex", cwd: daemonHandle.staticDir });
+      const listed = await service.fetchAgents();
+      const entry = listed.entries.find((candidate) => candidate.agent.id === owned.id);
+      expect(entry?.agent).toMatchObject({ cwd: "", pendingPermissions: [], persistence: null });
+      expect(entry?.agent).not.toHaveProperty("journal");
+      await expect(service.fetchAgent(owned.id)).rejects.toThrow(/not authorized/);
       await expect(service.sendAgentMessage("any-agent", "hello")).rejects.toThrow(
         /not authorized/,
       );
@@ -564,7 +571,8 @@ describe("service principals", () => {
         permissions: [],
         grants: [
           { actions: ["agent.read", "agent.message", "agent.cancel"], agentIds: [lane.id] },
-          { actions: ["agent.read", "agent.message"], agentIds: [builder.id] },
+          // A cancel grant on a full-tool agent is accepted but never usable.
+          { actions: ["agent.read", "agent.message", "agent.cancel"], agentIds: [builder.id] },
         ],
       });
       expect(created.error).toBeNull();

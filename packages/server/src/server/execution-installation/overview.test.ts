@@ -47,7 +47,20 @@ describe("installation overview", () => {
         return {
           getLastServerInfoMessage: () => null,
           listProjects: async () => ({ projects: [{ projectKey: "remote:vorteo" }] }) as never,
-          fetchWorkspaces: async () => page([{ id: "ws1" }]) as never,
+          fetchWorkspaces: async () =>
+            page([
+              {
+                id: "ws1",
+                projectId: "p1",
+                status: "running",
+                projectRootPath: "/Users/owner/secret",
+                scripts: [
+                  { scriptName: "web", publicProxyUrl: "https://preview", terminalId: "t1" },
+                ],
+                gitRuntime: { remoteUrl: "https://user:tok@github.com/o/r.git" },
+                githubRuntime: { pullRequest: { url: "https://github.com/o/r/pull/1" } },
+              },
+            ]) as never,
           fetchAgents: async () =>
             page([
               {
@@ -78,13 +91,24 @@ describe("installation overview", () => {
       expect.objectContaining({
         kind: "host",
         status: "ok",
-        projects: [{ projectKey: "remote:vorteo" }],
-        workspaces: [{ id: "ws1" }],
+        projects: [{ projectKey: "remote:vorteo", projectRootPath: "" }],
+        // Workspaces keep identity and status; paths, scripts, git and forge state stay inside.
+        workspaces: [
+          {
+            id: "ws1",
+            projectId: "p1",
+            status: "running",
+            projectRootPath: "",
+            scripts: [],
+            gitRuntime: {},
+            githubRuntime: {},
+          },
+        ],
         // Only projected agent fields leave Vorteo, and URL credentials are stripped.
         agents: [
           {
             agent: { id: "a1", status: "running" },
-            project: { projectKey: "k", checkout: { remoteUrl: "https://github.com/o/r.git" } },
+            project: { projectKey: "k", workspaceName: null },
           },
         ],
       }),

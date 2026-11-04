@@ -252,7 +252,8 @@ import type { HubRelationshipManagement } from "./hub/relationship-controller.js
 import type { ServicePrincipal } from "@getpaseo/protocol/messages";
 import { ServicePrincipalError } from "./authorization/service-principals.js";
 import { sessionRestrictionsFor } from "./authorization/service-restrictions.js";
-import { AgentGrantGuard } from "./authorization/agent-grants.js";
+import { AGENT_GRANT_OPERATIONS, AgentGrantGuard } from "./authorization/agent-grants.js";
+import { projectServiceDirectoryMessage } from "./authorization/service-projections.js";
 import type { AgentGrant } from "@getpaseo/protocol/messages";
 import { HubExecutionController } from "./hub/execution-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -831,7 +832,11 @@ export class Session {
         return this.onBinaryMessageToSource(source, frame);
       } else this.emitBinary(frame);
     },
-    (source, message) => this.workspaceSetupMessageForClient(message, source),
+    (source, message) => {
+      const adapted = this.workspaceSetupMessageForClient(message, source);
+      // Delivery proofs follow the projected object, so service projection happens here.
+      return this.isServicePrincipal() ? projectServiceDirectoryMessage(adapted) : adapted;
+    },
     (request, message) =>
       this.sessionLogger.warn(
         {
@@ -2703,6 +2708,16 @@ export class Session {
 
   private allowsInboundMessage(message: SessionInboundMessage): boolean | Promise<boolean> {
     if (this.authorization.restrictsOperation(message.type)) return false;
+    // Service sessions reach individual agents only through agent grants: daemon-wide
+    // workspace.read must not return full snapshots, permission requests or timelines.
+    if (
+      this.isServicePrincipal() &&
+      this.agentGrants === null &&
+      AGENT_GRANT_OPERATIONS.has(message.type)
+    )
+      return false;
+    if (this.isServicePrincipal() && this.agentGrants?.handlesInbound(message.type))
+      return this.agentGrants.allowsInbound(message);
     if (this.authorization.allowsInbound(message)) return true;
     // Agent grants authorize only their own operations, on resolved exact agent IDs.
     if (this.agentGrants?.handlesInbound(message.type))
