@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createOutboxStorage } from "./outbox-storage.web";
 import { outboxStorageContract } from "./outbox-storage.contract";
 import { outboxKey, type OutboxRecord } from "./outbox-record";
@@ -59,4 +59,25 @@ it("allows only one browser connection to prepare an operation", async () => {
   ]);
   expect(results.filter(Boolean)).toHaveLength(1);
   expect((await second.read(key))?.revision).toBe(1);
+});
+
+it("reopens after the browser closes the cached connection", async () => {
+  const storage = createOutboxStorage(`paseo-outbox-closed-${crypto.randomUUID()}`);
+  const open = indexedDB.open.bind(indexedDB);
+  const requests: IDBOpenDBRequest[] = [];
+  const spy = vi.spyOn(indexedDB, "open").mockImplementation((name, version) => {
+    const request = open(name, version);
+    requests.push(request);
+    return request;
+  });
+  try {
+    expect(await storage.list()).toEqual([]);
+    // A closed handle makes transaction() throw InvalidStateError, the same
+    // failure the queue showed forever before the store learned to reopen.
+    requests[0].result.close();
+    expect(await storage.list()).toEqual([]);
+    expect(requests).toHaveLength(2);
+  } finally {
+    spy.mockRestore();
+  }
 });

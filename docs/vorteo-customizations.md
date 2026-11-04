@@ -1,6 +1,12 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): merged current `main`, including the message queue reconnect fix, into the provider account connection fixes for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): account connection fixes. An outdated provider CLI turns the whole profile card into the warning, with an Upgrade button that drafts a Host task in the current project. The permission warning waits for an open permission request instead of offering a switch the daemon refuses. Installation authority reads repeat when local settings change mid-read, so concurrent account sync no longer fails a sign-in. The Dev image daemon adopts a pairing client written after its launcher started, which unblocks Claude account sync to Dev after its next daemon start. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): merged current `main` into the message queue reconnect fix for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): the browser message queue now reopens its local storage when the browser closes the connection, instead of failing every read, including Retry, until reload. A browser regression test covers it. The replica cache, project icon cache and plugin bundle cache keep the same single-connection pattern and are not changed here. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): test and documentation change. Usage browser tests follow the retained policy that hides the sidebar Usage summary, its icon and window pins, and reach Usage through the `/usage` route, named as direct-route cases, or the Quota card's Open Usage link; the glossary documents the policy. Settings has no Sidebar card since the single-page Settings redesign, so those footer steps check saved preferences alone. Known gap: Usage Settings labels lost their translations in the Paseo merge, and the Japanese Usage test reports it. Functionality is unchanged. README overview and onboarding are unchanged.
 
