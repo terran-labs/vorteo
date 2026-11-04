@@ -51,6 +51,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The Vorteo :: Optimizer workspace and newly created Optimizer agents are now titled Mechanic; the stored role and label are unchanged.
 
+## Unreleased - 2026-11-04
+
+### Fixed
+
+- Messages sent into a running Claude turn no longer fail with "The provider returned an invalid steerActiveTurn result." The message had already reached Claude, so the error put it back in the composer and every resend delivered another copy. A send that does fail now keeps anything typed meanwhile below the restored message instead of overwriting it.
+
 ## 26.11.302 - 2026-11-03
 
 Fix-forward beta for the VortLab bootstrap. 26.11.301 merged but was never tagged because its full checks were not green.
