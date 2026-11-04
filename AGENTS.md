@@ -108,6 +108,10 @@ Use `get_thread_goal` and `update_thread_goal` to revise your existing goal with
 
 When the owner asks to implement a change in Vorteo, treat it as [Level 4](#authorization-levels) and deliver it to this existing Vorteo instance so the owner can reload and review it here. Do not substitute a separate preview URL unless explicitly requested. This is the current rapid-development preference and may change as the project stabilizes. Validate the change and use the guarded static publisher for interface-only updates; preserve the required tracked approval workflow for any daemon or installation restart. When the owner requests visual review, leave acceptance open until they review the installed change.
 
+### Live dev mode
+
+When an installation's Delivery mode is Live dev, deliver interface changes to it through its live checkout with `scripts/live-dev.mjs`: claim and commit one-off tweaks, or promote a task branch. The owner sees them through Fast Refresh, with no build or publication. Builds still takes `live/main` to `main` by pull request the same day; daemon changes still use the tracked lifecycle workflow. See [live dev mode](docs/live-dev-mode.md).
+
 ### Live demo previews
 
 Interactive UI previews default to a live development server with file watching and Fast Refresh or the framework's equivalent. Use representative isolated demo data without real credentials, provider execution or installation mutations. Reuse the task worktree, managed preview service and private HTTPS reservation. Verify an actual source edit reaches the browser without rebuilding or manually reloading, then revert the verification edit. Keep the demo available while implementation continues and journal the verified review URL when ready.
