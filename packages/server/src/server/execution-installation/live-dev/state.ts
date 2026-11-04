@@ -33,6 +33,8 @@ export class LiveDevStateError extends Error {
 }
 
 const NO_RECORD_REVISION = "none";
+/** Reported for a record that cannot be read; only a change to Reliable may use it. */
+export const UNREADABLE_REVISION = "unreadable";
 
 function stateFile(stateDir: string): string {
   return path.join(stateDir, "live-dev.json");
@@ -73,7 +75,14 @@ export async function changeLiveDevMode(
   now: () => Date = () => new Date(),
 ): Promise<LiveDevModeRecord> {
   const change = LiveDevChangeSchema.parse(input);
-  const current = await readLiveDevMode(stateDir);
+  let current: LiveDevModeRecord;
+  try {
+    current = await readLiveDevMode(stateDir);
+  } catch (error) {
+    // The owner can always repair an unreadable record by choosing Reliable.
+    if (!(error instanceof LiveDevStateError) || change.mode !== "reliable") throw error;
+    current = { mode: "live", revision: UNREADABLE_REVISION, changedAt: null };
+  }
   if (change.expectedRevision !== current.revision)
     throw new LiveDevStateError("Delivery mode changed elsewhere. Refresh before saving.");
   if (change.mode === current.mode) return current;

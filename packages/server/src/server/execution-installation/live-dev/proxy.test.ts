@@ -58,7 +58,12 @@ async function get(port: number, requestPath: string, headers: Record<string, st
     headers,
     redirect: "manual",
   });
-  return { status: res.status, body: await res.text(), cookie: res.headers.get("set-cookie") };
+  return {
+    status: res.status,
+    body: await res.text(),
+    cookie: res.headers.get("set-cookie"),
+    location: res.headers.get("location"),
+  };
 }
 
 const page = { accept: "text/html" };
@@ -77,22 +82,31 @@ test("only the owner gets live code, and only through allowlisted Metro paths", 
   expect(live.body).toContain("live page");
   expect(live.body).toContain("vorteo-live-dev-marker");
   expect((await get(owner, "/node_modules/entry.bundle?platform=web")).body).toBe("live bundle");
-  // Editor launchers, the debugger and anything unlisted never reach Metro.
-  for (const blocked of [
+  // Editor launchers, the debugger and anything unlisted never reach Metro, whether or not
+  // the request asks for a page, and encoded or dotted paths cannot be normalized into them.
+  const blocked = [
     "/open-stack-frame",
     "/_expo/open",
     "/inspector/device",
     "/json",
     "/message",
-  ])
-    expect((await get(owner, blocked)).body).toBe("static interface");
-  expect(seen.some((url) => /open|inspector|json|message/.test(url))).toBe(false);
+    "/assets/%2e%2e/json/list",
+    "/assets/../json/list",
+    "/assets/..%2fjson",
+  ];
+  for (const target of blocked) {
+    await get(owner, target);
+    await get(owner, target, page);
+  }
+  expect(seen.filter((url) => url !== "/" && !url.endsWith("platform=web"))).toEqual([]);
 });
 
 test("the safe interface choice serves static until the owner picks live again", async () => {
   const owner = await app(await fakeMetro([]), true);
   const choose = await get(owner, "/?interface=safe");
   expect(choose.status).toBe(302);
+  // The redirect never echoes the request path, so it cannot point at another host.
+  expect((await get(owner, "//evil.example?interface=safe")).location).toBe("/");
   const cookie = choose.cookie?.split(";")[0] ?? "";
   expect((await get(owner, "/", { ...page, cookie })).body).toBe("static interface");
   expect((await get(owner, "/?interface=live", { cookie })).cookie).toContain("vorteo-interface=;");
@@ -113,6 +127,14 @@ test("a stale mode change is refused and an unreadable record never reads as liv
     ).rejects.toBeInstanceOf(LiveDevStateError);
     await writeFile(path.join(stateDir, "live-dev.json"), '{"version":1,"mode":"live"');
     await expect(readLiveDevMode(stateDir)).rejects.toBeInstanceOf(LiveDevStateError);
+    // The owner can repair it by choosing Reliable, and only Reliable.
+    await expect(
+      changeLiveDevMode(stateDir, { expectedRevision: "unreadable", mode: "live" }),
+    ).rejects.toBeInstanceOf(LiveDevStateError);
+    expect(
+      (await changeLiveDevMode(stateDir, { expectedRevision: "unreadable", mode: "reliable" }))
+        .mode,
+    ).toBe("reliable");
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

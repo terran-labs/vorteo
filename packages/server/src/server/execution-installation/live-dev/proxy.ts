@@ -15,13 +15,28 @@ import { prepareWebUiHtml } from "../../web-ui.js";
  */
 
 const PAGE_TIMEOUT_MS = 5_000;
+/** A cold web bundle took 74 seconds on VortLab; leave room for a slower machine. */
+const ASSET_TIMEOUT_MS = 180_000;
+/** After a failed page fetch the static page's own assets must not go to Metro either. */
+const FALLBACK_SECONDS = 60;
 export const INTERFACE_COOKIE = "vorteo-interface";
+/** Request headers that never reach Metro, which runs code from the live checkout. */
+const CREDENTIAL_HEADERS = new Set(["cookie", "authorization", "proxy-authorization"]);
 
-/** Bundles, source maps and assets the dev page loads. Query strings are not inspected. */
-export function isLiveDevAssetPath(pathname: string): boolean {
-  if (pathname.includes("..")) return false;
-  if (pathname.endsWith(".bundle") || pathname.endsWith(".map")) return true;
-  return pathname.startsWith("/assets/");
+/**
+ * Bundles, source maps and assets the dev page loads, judged on the raw request path. Encoded
+ * characters, backslashes, empty and dot segments are refused outright, because Metro
+ * normalizes them and could otherwise resolve `/assets/%2e%2e/json/list` to its debugger.
+ */
+export function isLiveDevAssetPath(rawPath: string): boolean {
+  if (/[%\\]/.test(rawPath) || rawPath.includes("//")) return false;
+  if (rawPath.split("/").some((segment) => segment === "." || segment === "..")) return false;
+  if (rawPath.endsWith(".bundle") || rawPath.endsWith(".map")) return true;
+  return rawPath.startsWith("/assets/");
+}
+
+function requestPath(req: Request): string {
+  return req.originalUrl.split("?")[0] ?? "/";
 }
 
 /** The only WebSocket the browser needs for Fast Refresh. */
@@ -39,8 +54,10 @@ function wantsPage(req: Request): boolean {
 
 function choseSafeInterface(req: Request): boolean {
   return (
-    req.headers.cookie?.split(";").some((part) => part.trim() === `${INTERFACE_COOKIE}=safe`) ??
-    false
+    req.headers.cookie?.split(";").some((part) => {
+      const value = part.trim();
+      return value === `${INTERFACE_COOKIE}=safe` || value === `${INTERFACE_COOKIE}=fallback`;
+    }) ?? false
   );
 }
 
@@ -70,7 +87,8 @@ function fetchPage(port: number, req: Request): Promise<string | null> {
         host: "127.0.0.1",
         port,
         method: "GET",
-        path: req.originalUrl,
+        // The app is a single page; asking for "/" keeps client paths away from Metro routes.
+        path: "/",
         timeout: PAGE_TIMEOUT_MS,
         headers: {
           host: req.headers.host,
@@ -117,9 +135,13 @@ function pipeAsset(port: number, req: Request, res: Response, next: () => void):
         if (value !== undefined) res.setHeader(header, value);
       }
       res.setHeader("Cache-Control", "no-store");
+      // Sibling *.ts.net hosts count as same-site; they must not embed live bundles.
+      res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
       upstreamRes.pipe(res);
     },
   );
+  upstream.setTimeout(ASSET_TIMEOUT_MS, () => upstream.destroy());
+  res.on("close", () => upstream.destroy());
   upstream.on("error", () => {
     if (!res.headersSent) next();
     else res.end();
@@ -148,7 +170,8 @@ export function createLiveDevMiddleware(options: LiveDevProxyOptions): RequestHa
           path: "/",
         });
       else res.clearCookie(INTERFACE_COOKIE, { path: "/" });
-      res.redirect(302, req.path);
+      // Never echo the request path: `//evil.example?interface=safe` would be an open redirect.
+      res.redirect(302, "/");
       return;
     }
     const port = options.port();
@@ -156,7 +179,7 @@ export function createLiveDevMiddleware(options: LiveDevProxyOptions): RequestHa
       next();
       return;
     }
-    if (isLiveDevAssetPath(req.path)) {
+    if (isLiveDevAssetPath(requestPath(req))) {
       pipeAsset(port, req, res, next);
       return;
     }
@@ -179,6 +202,14 @@ async function servePage(
     const html = await fetchPage(port, req);
     if (html === null) {
       options.logger.warn("Live dev page unavailable; serving the static interface");
+      // The static page's own assets must come from the static interface too.
+      res.cookie(INTERFACE_COOKIE, "fallback", {
+        httpOnly: true,
+        sameSite: "strict",
+        secure: options.secureCookies,
+        path: "/",
+        maxAge: FALLBACK_SECONDS * 1000,
+      });
       next();
       return;
     }
@@ -191,6 +222,7 @@ async function servePage(
     if (res.destroyed) return;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
     res.vary("Accept-Encoding");
     if (result.contentEncoding) res.setHeader("Content-Encoding", result.contentEncoding);
     res.setHeader("Content-Length", result.body.length);
@@ -213,8 +245,13 @@ export function forwardLiveDevUpgrade(
 ): void {
   const upstream = connect(port, "127.0.0.1", () => {
     const lines = [`${req.method ?? "GET"} ${req.url ?? "/"} HTTP/${req.httpVersion}`];
-    for (let index = 0; index < req.rawHeaders.length; index += 2)
-      lines.push(`${req.rawHeaders[index]}: ${req.rawHeaders[index + 1]}`);
+    // Metro runs live checkout code, so it never sees the owner's session or forwarding headers.
+    for (let index = 0; index < req.rawHeaders.length; index += 2) {
+      const name = req.rawHeaders[index] ?? "";
+      const lower = name.toLowerCase();
+      if (CREDENTIAL_HEADERS.has(lower) || lower.startsWith("x-forwarded-")) continue;
+      lines.push(`${name}: ${req.rawHeaders[index + 1]}`);
+    }
     upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
     if (head.length > 0) upstream.write(head);
     upstream.pipe(socket);

@@ -41,12 +41,12 @@ process.env.EXPO_PACKAGER_PROXY_URL = origin.origin;
 // The watchers share this process group, so stopping the server stops them.
 const root = fileURLToPath(new URL("..", import.meta.url));
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-for (const script of ["watch:protocol", "watch:client"])
-  spawn(npm, ["run", script], {
-    cwd: root,
-    stdio: "inherit",
-    env: process.env,
-  });
+const watchers = ["watch:protocol", "watch:client"].map((script) =>
+  spawn(npm, ["run", script], { cwd: root, stdio: "inherit", env: process.env }),
+);
+process.on("exit", () => {
+  for (const watcher of watchers) watcher.kill("SIGTERM");
+});
 process.chdir(fileURLToPath(new URL("../packages/app", import.meta.url)));
 process.argv = [process.execPath, cli, "start", "--web", "--localhost", "--port", String(port)];
 require(cli);

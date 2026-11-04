@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { mkdir, open, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer } from "node:net";
@@ -123,6 +123,16 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const LAUNCHER_MARK = "live-dev-server.mjs";
+
+/** A pid from an old pidfile may have been reused; only signal our own launcher. */
+function isLiveDevLauncher(pid: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("ps", ["-o", "command=", "-p", String(pid)], { timeout: 5_000 }, (error, stdout) =>
+      resolve(!error && stdout.includes(LAUNCHER_MARK)),
+    );
+  });
+}
 
 /** Stops a process group and verifies the leader exited. */
 async function stopPid(pid: number): Promise<boolean> {
@@ -165,8 +175,16 @@ export class LiveDevSupervisor {
     return { ...this.status };
   }
 
-  /** Brings the dev server to the wanted state. Calls are serialized and idempotent. */
+  /**
+   * Brings the dev server to the wanted state. The wish is recorded at once, so a retry or
+   * restart already queued behind a stop sees it and does not start the server again.
+   */
   reconcile(wanted: boolean): Promise<void> {
+    this.wanted = wanted;
+    if (!wanted && this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     return this.enqueue(() => this.apply(wanted));
   }
 
@@ -204,8 +222,7 @@ export class LiveDevSupervisor {
   }
 
   private async apply(wanted: boolean): Promise<void> {
-    this.wanted = wanted;
-    if (!wanted) {
+    if (!wanted || !this.wanted) {
       if (this.retryTimer) clearTimeout(this.retryTimer);
       this.retryTimer = null;
       this.failures = [];
@@ -229,7 +246,13 @@ export class LiveDevSupervisor {
       return;
     }
     const pid = Number(text.trim());
-    if (Number.isInteger(pid) && pid > 1 && pid !== this.child?.pid && alive(pid)) {
+    if (
+      Number.isInteger(pid) &&
+      pid > 1 &&
+      pid !== this.child?.pid &&
+      alive(pid) &&
+      (await isLiveDevLauncher(pid))
+    ) {
       const stopped = await stopPid(pid);
       this.options.logger.info({ pid, stopped }, "Stopped a stale live dev server");
       if (!stopped) throw new Error(`Live dev server ${pid} did not stop`);
@@ -238,6 +261,7 @@ export class LiveDevSupervisor {
   }
 
   private async startChild(): Promise<void> {
+    if (!this.wanted) return;
     const { paths, origin, logger } = this.options;
     const launcher = path.join(paths.checkout, "scripts", "live-dev-server.mjs");
     if (!(await fileExists(launcher))) {
@@ -316,6 +340,8 @@ export class LiveDevSupervisor {
   ): void {
     if (this.child !== child) return;
     this.child = null;
+    // The type watchers share the launcher's group and would otherwise outlive it.
+    if (child.pid) signalGroup(child.pid, "SIGTERM");
     void rm(this.options.paths.pidFile, { force: true });
     if (!this.wanted) return;
     const now = Date.now();
@@ -340,7 +366,8 @@ export class LiveDevSupervisor {
     };
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      void this.reconcile(true);
+      // A retry never revives a server the owner has since turned off.
+      if (this.wanted) void this.reconcile(true);
     }, delay);
     this.retryTimer.unref();
   }

@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Harden live dev mode after an independent security review. The proxy no longer forwards your session to the dev server, refuses encoded and dotted paths, never redirects off-site, and keeps a failed live page's assets static. The supervisor only signals its own dev server, stops orphaned watchers and stays stopped after you switch to Reliable. The live checkout tool takes its lock atomically, promotes only local branches, checks merges before touching the tree, merges changelog entries as a union and writes its own changelog entry for tweaks.
+
+## Unreleased - 2026-11-03
+
 ### Features
 
 - Add a Delivery mode to Installation settings. Reliable, the default, serves the published interface. Live dev serves your signed-in browser the interface from a live checkout on the Host, so agents' edits appear within seconds through Fast Refresh. A Live dev marker and a safe interface link keep the published interface one click away, and other browsers and the recovery address always get it.

@@ -10,7 +10,12 @@ import type { RequestHandler } from "express";
 import type { Logger } from "pino";
 import type { InstallationConfig } from "../config.js";
 import { createLiveDevMiddleware, forwardLiveDevUpgrade, isLiveDevSocketPath } from "./proxy.js";
-import { changeLiveDevMode, readLiveDevMode, type LiveDevModeRecord } from "./state.js";
+import {
+  changeLiveDevMode,
+  readLiveDevMode,
+  UNREADABLE_REVISION,
+  type LiveDevModeRecord,
+} from "./state.js";
 import { liveDevPaths, LiveDevSupervisor, type LiveDevPaths } from "./supervisor.js";
 
 const run = promisify(execFile);
@@ -104,7 +109,8 @@ export function createLiveDev(options: LiveDevServiceOptions) {
   /** Creates the live checkout the first time live mode turns on. */
   async function prepareCheckout(live: LiveDevTarget): Promise<void> {
     const { checkout, root } = live.paths;
-    if (await exists(path.join(checkout, "node_modules"))) return;
+    // The tool records this key only after a successful install, so a failed one is retried.
+    if (await exists(path.join(root, "prepared-key"))) return;
     await mkdir(root, { recursive: true, mode: 0o700 });
     const git = (args: string[]) =>
       run("git", ["-C", live.sourceDirectory, ...args], { timeout: 120_000 });
@@ -126,6 +132,8 @@ export function createLiveDev(options: LiveDevServiceOptions) {
       cwd: checkout,
       timeout: PREPARE_TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
+      // Like the dev server, preparation gets no coordinator secrets from the environment.
+      env: { HOME: process.env.HOME, PATH: process.env.PATH, LANG: process.env.LANG },
     });
   }
 
@@ -190,14 +198,22 @@ export function createLiveDev(options: LiveDevServiceOptions) {
       available: reason === null,
       reason,
       mode: record?.mode ?? "reliable",
-      revision: record?.revision ?? "unreadable",
+      revision: record?.revision ?? UNREADABLE_REVISION,
       changedAt: record?.changedAt ?? null,
       server: serverStatus(),
       checkout,
     };
   }
 
-  async function change(input: unknown): Promise<LiveDevStatus> {
+  // Owner changes run one at a time, so compare-and-set cannot interleave.
+  let changes: Promise<unknown> = Promise.resolve();
+  function change(input: unknown): Promise<LiveDevStatus> {
+    const next = changes.then(() => applyChange(input));
+    changes = next.catch(() => undefined);
+    return next;
+  }
+
+  async function applyChange(input: unknown): Promise<LiveDevStatus> {
     const requested = (input as { mode?: unknown } | null)?.mode;
     if (requested === "live" && typeof target === "string") throw new LiveDevUnavailable(target);
     record = await changeLiveDevMode(config.stateDir, input);
