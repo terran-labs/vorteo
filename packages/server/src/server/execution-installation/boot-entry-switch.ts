@@ -176,15 +176,24 @@ async function inspectDev(
   };
 }
 
-// sha256 of each argument path, one "<hex> <path>" line each; a missing file prints "missing".
-const HASH_FILES = `for f in "$@"; do if [ -f "$f" ] && [ ! -L "$f" ]; then printf '%s %s\\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$f"; else printf 'missing %s\\n' "$f"; fi; done`;
+// sha256 of each argument path, one "<hex> <path>" line each; a missing file prints
+// "missing" and one this user cannot read prints "unreadable".
+const HASH_FILES = `for f in "$@"; do if [ ! -f "$f" ] || [ -L "$f" ]; then printf 'missing %s\\n' "$f"; elif [ ! -r "$f" ]; then printf 'unreadable %s\\n' "$f"; else printf '%s %s\\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$f"; fi; done`;
+
+/**
+ * Reads run as paseo. Dev drops every capability, so its root cannot read past file modes:
+ * the managed releases (0700) and the Factory entry (0600) belong to paseo, while the
+ * pointer and the installed plain entry are world-readable. Only writes and supervisorctl
+ * run as root.
+ */
+const READER = "paseo";
 
 async function hashes(
   plan: BootEntrySwitchConfiguration,
   run: EngineCommand,
   paths: string[],
 ): Promise<Map<string, string>> {
-  const output = await inDev(plan, run, "0", HASH_FILES, paths);
+  const output = await inDev(plan, run, READER, HASH_FILES, paths);
   const result = new Map<string, string>();
   for (const line of output.trim().split("\n")) {
     const space = line.indexOf(" ");
@@ -257,8 +266,10 @@ export async function bootEntrySwitchPreflight(
   if (state.id !== plan.container) refuse("the Dev container ID changed");
   if (!state.running) refuse("the Dev container is not running");
   if (state.health !== "healthy") refuse("the Dev container is not healthy");
-  const pointerContent = await inDev(plan, run, "0", 'cat "$1"', [plan.current.pointer.path]).catch(
-    (error: unknown) => refuse(`the boot pointer could not be read (${commandError(error)})`),
+  const pointerContent = await inDev(plan, run, READER, 'cat "$1"', [
+    plan.current.pointer.path,
+  ]).catch((error: unknown) =>
+    refuse(`the boot pointer could not be read (${commandError(error)})`),
   );
   if (pointerContent !== bootEntryPointerBytes(plan.current.entry.path))
     refuse("the boot pointer does not name the expected current entry");
@@ -280,8 +291,10 @@ export async function bootEntrySwitchPreflight(
   } catch (error) {
     return refuse(`Dev files could not be hashed (${commandError(error)})`);
   }
-  for (const [path, expected, label] of files)
+  for (const [path, expected, label] of files) {
+    if (found.get(path) === "unreadable") refuse(`the ${label} is not readable by ${READER}`);
     if (found.get(path) !== expected) refuse(`the ${label} differs from the plan`);
+  }
   await assertSafeDirectories(plan, run, refuse);
 
   const pid = await supervisorPid(plan, run).catch(() => null);
