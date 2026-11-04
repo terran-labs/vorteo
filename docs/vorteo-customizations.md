@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): second review round for installer upgrades: the Dev recheck moved after the image build, immediately before `update.sh`, and the upgrade lock is created exclusively with owner-checked release. README unchanged.
+
 Maintenance review (2026-11-04): review fixes for installer upgrades: rollback covers failed restarts, Dev resume compares the running container's image, interface upgrades are rechecked before each restart, and a lock refuses concurrent installer upgrades. README unchanged.
 
 Maintenance review (2026-11-04): the install tests' upgrade jobs install old releases from a checkout of their tag, because the old installers' GitHub API lookup was refused on shared macOS runners. Test only; installer behavior unchanged. README unchanged.

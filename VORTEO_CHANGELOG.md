@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- An installer upgrade checks for an interface upgrade again after building Dev's image, right before recreating Dev, and takes its lock atomically, so two installer runs can no longer both proceed.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
 - Installer upgrades roll a service back even when its restart itself fails, recreate Dev after an interrupted image switch by checking the image the container runs, check again for an interface upgrade before each restart, and refuse a second concurrent installer upgrade.
 
 ## Unreleased - 2026-11-04

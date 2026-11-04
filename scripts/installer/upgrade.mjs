@@ -9,7 +9,7 @@
 // agents, ports, routes and data stay where they are; the previous release stays in
 // host/releases, so a rollback only repoints a link. The journal at state/upgrade.json
 // lets a rerun resume at the step that failed.
-import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServiceManager, installResult, runSteps } from "./apply.mjs";
@@ -723,7 +723,6 @@ async function devStep(s) {
   const { plan, install, context, journal } = s;
   const docker = install.plan.executables.docker;
   const deployment = install.plan.paths.container;
-  assertNoInterfaceUpgrade(s);
   if (!s.outputs.devPreviousImage) journal.output({ devPreviousImage: devImage(s) });
   const previous = s.outputs.devPreviousImage;
   let image = s.outputs.devImage;
@@ -774,6 +773,9 @@ async function devStep(s) {
   }
   const { connectInstallationDaemon } = await modules(s);
   const current = config(s);
+  // After the build, which takes minutes, and outside the rollback below, so a refusal
+  // never touches another upgrade's Dev.
+  assertNoInterfaceUpgrade(s);
   try {
     if ((await runningImage(s)) !== (await imageId(s, image)))
       await context.run("/bin/bash", [path.join(deployment, "update.sh"), image], {
@@ -978,25 +980,45 @@ export async function applyUpgrade(plan, context, emit) {
   }
 }
 
-/** One installer upgrade at a time per installation; a lock left by a dead process is taken over. */
+/**
+ * One installer upgrade at a time per installation. The lock file is created exclusively;
+ * one left by a process that no longer runs is removed and taken once more.
+ */
 function lockUpgrade(root) {
   const file = path.join(root, "state", "upgrade.lock");
-  const holder = readJson(file)?.pid;
-  if (holder && holder !== process.pid) {
-    let alive = true;
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; ; attempt += 1) {
     try {
-      process.kill(holder, 0);
-    } catch {
-      alive = false;
+      writeFileSync(file, JSON.stringify({ pid: process.pid }) + "\n", { flag: "wx", mode: 0o600 });
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST" || attempt > 0) {
+        const holder = readJson(file)?.pid;
+        throw new InstallerError(
+          `Another installer${holder ? ` (process ${holder})` : ""} is upgrading ${root}.`,
+          `Wait for it to finish, then rerun the installer. If none runs, remove ${file}.`,
+        );
+      }
+      const holder = readJson(file)?.pid;
+      let alive = false;
+      try {
+        if (holder) process.kill(holder, 0);
+        alive = Boolean(holder);
+      } catch {
+        /* the holder has exited */
+      }
+      if (alive)
+        throw new InstallerError(
+          `Another installer (process ${holder}) is upgrading ${root}.`,
+          "Wait for it to finish, then rerun the installer.",
+        );
+      rmSync(file, { force: true });
     }
-    if (alive)
-      throw new InstallerError(
-        `Another installer (process ${holder}) is upgrading ${root}.`,
-        "Wait for it to finish, then rerun the installer.",
-      );
   }
-  writeJson(file, { pid: process.pid });
-  return () => rmSync(file, { force: true });
+  // Released only by its owner, so a run never removes another run's lock.
+  return () => {
+    if (readJson(file)?.pid === process.pid) rmSync(file, { force: true });
+  };
 }
 
 async function runUpgrade(plan, context, emit, install, installJournal) {
