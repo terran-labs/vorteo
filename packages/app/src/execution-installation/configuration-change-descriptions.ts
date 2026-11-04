@@ -70,7 +70,11 @@ const DESCRIPTIONS: Descriptions = {
   hostLauncherUpdate: (config) =>
     config === null
       ? "Remove the Host launcher update plan."
-      : `Allow a one-time Host launcher update that adds managed release selection, which you approve separately. Candidate launcher ${config.sha256.slice(0, 12)}.`,
+      : `Allow a one-time Host launcher update, which you approve separately: managed release selection, or release seals on or off. Candidate launcher ${config.sha256.slice(0, 12)}.`,
+  releaseSeals: (config) =>
+    config === null
+      ? "Turn off release seals for the coordinator. Its launcher drops VORTEO_RELEASE_SEALS, so later Host builds are not sealed and installs check release bytes in full. Existing sealed releases keep their flags."
+      : "Turn on release seals for the coordinator. Its launcher gains VORTEO_RELEASE_SEALS=enabled, so later Host builds are made read-only and digested once, and installs check seals. Seals take effect only when the Host launcher also sets it.",
 };
 
 function describe<S extends ReviewedConfigurationSetting>(setting: S, value: unknown): string {

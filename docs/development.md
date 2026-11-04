@@ -704,13 +704,24 @@ Get the session ID from the agent JSON (`persistence.sessionId`), then:
 ~/.codex/sessions/{YYYY}/{MM}/{DD}/rollout-{timestamp}-{session-id}.jsonl
 ```
 
-## Builds gate marker
+<a id="builds-gate-marker"></a>
 
-While Vorteo :: Builds runs an install gate, it writes `/Users/vtn/.local/share/vorteo-host/state/builds-gate-running.json` with the gate's `tip`, `startedAt` and `pid`. Before a full or heavy test suite, such as the coordinator bootstrap, renewal or restart suites or a whole package suite, check the marker. If it exists and its `pid` is alive, wait for the gate to finish, so your run neither slows the gate nor times out under its load. A marker whose `pid` has exited does not block. Run heavy suites under `nice -n 10` either way.
+## Heavy-job queue
+
+Run heavy work through one machine-wide slot: server or web builds, full typechecks, dependency installs, browser suites and whole-package or coordinator bootstrap, renewal or restart suites. Focused single-file tests do not need it.
 
 ```sh
-M=/Users/vtn/.local/share/vorteo-host/state/builds-gate-running.json; [ -f "$M" ] && kill -0 "$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["pid"])' "$M")" 2>/dev/null && echo "Builds gate running; wait"
+node scripts/heavy-job.mjs run --label "server build" -- npm run build:server
+node scripts/heavy-job.mjs status
 ```
+
+- **One at a time, in order.** Each run takes a ticket; the oldest live ticket holds the slot and the rest wait, printing their position and the current holder. A ticket whose process exits frees the slot. No per-thread grant from Builds is needed, and spare agent capacity is not build capacity.
+- **Builds gate first.** While Vorteo :: Builds runs an install gate, it writes `~/.local/share/vorteo-host/state/builds-gate-running.json` with the gate's `tip`, `startedAt` and `pid`. A marker with a live `pid` holds the slot ahead of every ticket; Builds runs the gate's own heavy steps through the queue too.
+- **Memory guard, not load.** The holder starts only when memory allows. Critical macOS memory pressure, under 10% free memory, or swap-outs above 1 MiB/s defer the start, and the reason is printed. Load average is ignored: the Dev virtual machine, the Host daemon and indexing keep it high on an otherwise healthy machine. Routine "warn" pressure does not defer.
+- **Background priority.** The job runs under `taskpolicy -b nice -n 10` on macOS and `nice -n 10` elsewhere, so it uses efficiency cores and throttled I/O while agents, the Dev machine and the interface keep priority.
+- **Bounded tests.** The queue sets `VITEST_MAX_WORKERS=2` and `E2E_WORKERS=1` unless the caller already set them.
+
+The queue lives in `~/.local/share/vorteo-host/state/heavy-jobs` and serializes work on one computer. `VORTEO_HEAVY_QUEUE_DIR` overrides it; a Dev container has its own queue.
 
 ## Testing with Playwright MCP
 

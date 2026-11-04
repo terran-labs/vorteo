@@ -826,6 +826,7 @@ export async function createPaseoDaemon(
     }),
     builtinPlugins: resolveBuiltinPluginLoader(dependencies),
     settingsDirectory: path.join(config.paseoHome, "plugin-settings"),
+    usageSnapshotPath: path.join(config.paseoHome, "usage", "last-readings.json"),
   });
 
   const serverId = getOrCreateServerId(config.paseoHome, { logger });
