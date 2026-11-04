@@ -290,11 +290,23 @@ Processes inside the container, such as agents, terminals and `pwd`, may still p
 When the Host and the Dev daemon advertise the same `projectsRoot`, a project inside it needs no per-environment setup:
 
 - Starting a workspace in an environment with no copy of the project, or moving a draft there, uses the identical path. The destination adds the project on demand; there is no folder prompt or path mapping.
-- Placements whose roots are the same path inside the folder appear as one project in the sidebar, the new-workspace picker and Settings > Projects, even without a git remote. The join happens in the client; each daemon's stored project key is unchanged.
+- Placements whose roots are the same path inside the folder appear as one project in the sidebar, the new-workspace picker and Settings > Projects, even without a git remote. [Synchronized projects](#synchronized-projects) give them one stored key; until both daemons support it, the client joins them by path.
 - Settings > Projects opens the Host placement's settings, else the first placement. Both environments read the same `paseo.json`.
 - Each environment keeps its own toolchain. Dependencies installed by one, such as `node_modules` with native binaries, may need reinstalling in the other; moving a draft shows that reminder.
 
 Daemons that do not advertise the same folder keep the earlier behavior: the client maps folders through shared host paths and otherwise asks for the folder.
+
+### Synchronized projects
+
+A project is one identity, its project key, with a folder on each environment. The installation coordinator keeps projects inside the shared Projects folder registered on every environment, so a project added on the Host appears in Dev within about 15 seconds, and the reverse.
+
+- **Joined by folder.** Two environments hold the same project when their roots are the same logical path inside the Projects folder. A Dev root kept at an alias path, such as a Factory-bound checkout, counts by its logical path. A Git remote never joins two folders: a second clone of the same repository at another path gets its own key, `project:<hash of its path>`.
+- **Fixed identity.** Each pass pins every synchronized project's key, and pinned keys are never re-derived from git. The key that wins a join is a Factory project's key, which its binding compares, then an already pinned key, then the Host's, then Dev's. Existing keys keep their value, so saved sidebar order and collapse state still apply.
+- **Repair.** When a join changes a project's key, the project records the key it replaced, and every pass points both daemons' workspace memberships and saved sidebar state under that key at the new one, so a pass cut short still finishes. A key another active project still holds, on either environment and even outside the Projects folder, is never renamed; that project's own workspaces follow it instead. Factory-managed workspaces keep their memberships. Two Factory projects that disagree about one folder's key leave it for an operator, and no other folder may take that key. The Host's Vorteo System project key replaces Dev's, so both environments' System workspaces share one project.
+- **Missing projects.** The pass registers a project on each environment that has no record at that folder, using the same key and custom name, when the folder exists there. It never restores a project an environment archived, and removing a synchronized project archives its record so it is not restored from the other environment. Projects outside the Projects folder, and the folder itself, stay on their own environment. A refused change, such as a folder missing in Dev, is retried after ten minutes.
+- **Requirements.** Both daemons must advertise `features.projectSync` and the same `projectsRoot`; otherwise the pass changes nothing. The coordinator calls `project.sync.list` and `project.sync.apply`, which need `daemon.manage`.
+
+Worktrees belong to their repository's project. A new worktree is filed under the project whose folder is its main checkout even when the requesting thread names another project; the requested grouping stays in its membership. A checkout or worktree filed under the wrong project can be moved into its repository's project with `paseo workspace move <workspace-id> --project <project-id>`, which keeps its chats, folder and running agents; moves into any other project are refused.
 
 ### Project exclusions
 
