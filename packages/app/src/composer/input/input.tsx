@@ -1,5 +1,9 @@
 import { taskCardStyles } from "@/agent-stream/task-card-styles";
-import { useMobileComposerLayout, COMPOSER_CORNER_INSET } from "../mobile-layout";
+import {
+  useMobileComposerLayout,
+  COMPOSER_CORNER_INSET,
+  COMPOSER_TOUCH_CORNER_SLOT,
+} from "../mobile-layout";
 import { useKeyboardFocusSurface } from "@/keyboard";
 import type { SendShortcut } from "@/hooks/use-settings";
 import {
@@ -2166,8 +2170,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         mode.isMonospace && styles.textInputMonospace,
         isFullscreen ? styles.fullscreenTextInput : composerHeightStyle,
         touch && mode.showVoice && styles.touchTextInput,
+        touch && mode.showVoice && isCompact && styles.touchFullscreenTextInput,
       ],
-      [composerHeightStyle, mode.isMonospace, mode.showVoice, touch, isFullscreen],
+      [composerHeightStyle, mode.isMonospace, mode.showVoice, touch, isCompact, isFullscreen],
     );
     // Static content has no textarea to mirror, so it grows with its own text
     // instead of the measured input height.
@@ -2506,6 +2511,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           inputWrapperStyle={inputWrapperCombinedStyle}
           inputPointerEvents={surfacePresentation.input.pointerEvents}
           attachmentSlot={attachmentSlot}
+          trailingDictation={touch && mode.showVoice && isCompact}
           showFullscreenButton={shouldShowFullscreenControl(
             isCompact,
             readOnly,
@@ -2658,6 +2664,8 @@ const styles = StyleSheet.create((theme: Theme) => ({
     zIndex: 1,
   },
   touchTextInput: { paddingRight: 56, minHeight: 44 },
+  // Reserve both corner slots before Fullscreen appears, so text never jumps.
+  touchFullscreenTextInput: { paddingRight: 56 + COMPOSER_TOUCH_CORNER_SLOT },
   mobileDictationSlot: { top: COMPOSER_CORNER_INSET - 1 },
   buttonRow: {
     flexShrink: 0,

@@ -10,6 +10,7 @@ import { ICON_SIZE } from "@/styles/theme";
 import { StyleSheet } from "react-native-unistyles";
 import { useComposerFullscreenExit } from "./fullscreen-exit";
 import { resolveGlyphRailOffset } from "./state";
+import { COMPOSER_TOUCH_CORNER_SLOT } from "../mobile-layout";
 
 const CONTROL_SIZE = 28;
 const FULLSCREEN_GLYPH_SIZE = ICON_SIZE.md;
@@ -38,6 +39,7 @@ export function ComposerInputPresentation({
   inputPointerEvents,
   attachmentSlot,
   showFullscreenButton,
+  trailingDictation = false,
   onEnter,
   overlay,
 }: {
@@ -53,6 +55,7 @@ export function ComposerInputPresentation({
   inputPointerEvents: ViewProps["pointerEvents"];
   attachmentSlot: ReactNode;
   showFullscreenButton: boolean;
+  trailingDictation?: boolean;
   onEnter: () => void;
   overlay: ReactNode;
 }) {
@@ -75,7 +78,13 @@ export function ComposerInputPresentation({
     [],
   );
   // The toolbar row bleeds 6px past the input padding; the inline glyph sits on that edge.
-  const enterStyle = useMemo(() => [styles.enterButton, { right: -6 + railOffset }], [railOffset]);
+  const enterStyle = useMemo(
+    () => [
+      styles.enterButton,
+      { right: -6 + railOffset + (trailingDictation ? COMPOSER_TOUCH_CORNER_SLOT : 0) },
+    ],
+    [railOffset, trailingDictation],
+  );
   const exitStyle = useMemo(() => [styles.iconButton, { marginRight: railOffset }], [railOffset]);
   return (
     <View

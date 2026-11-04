@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03), owner-confirmed 2026-11-03: the touch microphone keeps its top-right position while Fullscreen occupies the adjacent slot to its left. Compact editor padding reserves both slots from the first line, repairing the pointer interception introduced by combining Vorteo's microphone placement with upstream fullscreen controls. Browser acceptance is pending; README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): restored the upstream New workspace header and composer dock contracts lost during integration, including Import session placement and fullscreen layout. Vorteo's profile-first controls and project fields remain; compact title removal is intentional. Folder keyboard coverage uses the encoded path identity instead of unshortened display text, adds selected-row verification, and keeps full viewport containment. Deferred-draft coverage selects the same slow mock model through a profile. Browser validation is pending the lead's load-controlled slot. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): merged current `main` into the message queue reconnect fix for delivery; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.

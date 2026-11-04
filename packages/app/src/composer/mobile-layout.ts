@@ -2,6 +2,8 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVortonTouch } from "@/vorton-touch";
 
 export const COMPOSER_CORNER_INSET = 8;
+// Keep a full touch target plus a gap between corner controls.
+export const COMPOSER_TOUCH_CORNER_SLOT = 44 + 8;
 export const MOBILE_COMPOSER_MARGIN = 16;
 export function useMobileComposerLayout() {
   const touch = useVortonTouch();

@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Owner-confirmed 2026-11-03: keep the compact touch microphone and Fullscreen controls in separate corner slots. The editor reserves both slots from the first line, so growing a draft does not shift its text or hide either control behind the other.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
 - Restore the New workspace navigation header, Import session action and composer dock after upstream integration. Compact layout coverage follows the intentional removal of the title while retaining navigation, project selection and bottom alignment checks.
 - Browser checks use the stable folder identity when paths are shortened and select the delayed mock model through its profile.
 
