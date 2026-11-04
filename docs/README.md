@@ -49,6 +49,7 @@ Use this index to find the document that owns your task. Read relevant subjects 
 | [docs/private-domain.md](private-domain.md)                     | Optional custom-domain gateway: private Tailscale endpoint, Caddy templates, DNS, verification and removal                     |
 | [docs/host-handoff.md](host-handoff.md)                         | Team handoff entry point, fresh installation, migration and acceptance                                                         |
 | [docs/instance-continuity.md](instance-continuity.md)           | Persistent web publication and active-instance development                                                                     |
+| [docs/live-dev-mode.md](live-dev-mode.md)                       | Live dev delivery mode: the live checkout, dev server proxy, safe interface and live checkout commands                         |
 | [docs/agent-presets.md](agent-presets.md)                       | Saved presets, managed workers, quota lifecycle and implementation status                                                      |
 | [iOS Home Screen toolbar](ios-home-screen.md)                   | Native top blur, installation metadata, viewport ownership and acceptance                                                      |
 | [docs/vorton-touch-audit.md](vorton-touch-audit.md)             | Vorteo touch contract, historical checks and physical-device limits                                                            |

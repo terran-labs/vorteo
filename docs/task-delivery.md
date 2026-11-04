@@ -160,6 +160,16 @@ Never call daemon drain/restart RPCs directly or use launchctl, supervisorctl, D
 
 For daemon or protocol deployment, inspect the maintenance client's `capabilities` and use `request-restart --target host|container-daemon --update` for each affected target. Host installs its daemon and shared interface; Dev installs its daemon in the existing container. Complete validation before submitting, retain contribution receipts, and wait for the recorded approval, automatic or by the owner. Prefer guarded static publication for interface-only changes. If that operation is unavailable from the current environment, inspect the supported Host source updater before declaring delivery blocked. When it is available, prepare and submit the validated source with `request-restart --target host --update`, then return its exact review link and explain that approval installs the Host daemon, restarts Host and publishes the interface. Do not ask for chat permission to prepare or submit the request. Wait for the recorded approval before execution. A plain restart does not install code. Hand off only when both the applicable static route and managed source-update route are unavailable or concretely refused; report the observed failure. Preview-only requests still stop at preview delivery.
 
+## Deliver in live dev mode
+
+On an installation whose Delivery mode is Live dev, the owner's browser runs the Host's live checkout (`live/main`), so interface delivery is a change to that checkout rather than a publication. Use `node scripts/live-dev.mjs`; see [live dev mode](live-dev-mode.md).
+
+- **One-off tweaks.** `claim --by <thread> <files>`, edit the files in the live checkout, check the result in the browser, then `commit --by <thread> -m <message>`. Commits run the repository hooks and need the usual changelog and inventory updates. Release a claim you abandon with `release`.
+- **Task branches.** Validate in your task worktree as usual, then `promote <branch> --by <thread>`. It refuses while the live checkout has uncommitted edits and aborts on conflicts without changing anything.
+- **Main.** Builds publishes `live/main` to `main` through the usual pull request the same day, then runs `sync` to merge `main` back. A live checkout that runs ahead of `main` overnight is the same problem as a Host that runs ahead of GitHub.
+- **Daemon and protocol changes** still use the tracked lifecycle workflow; live mode only changes how the interface is served. Gate interface work on daemon capabilities as usual, because the live interface may run ahead of the installed daemon.
+- **Status.** `status` shows the branch, how far it is ahead of `main`, claims and uncommitted edits. Check it before you edit.
+
 ## Archive a task
 
 ```sh
