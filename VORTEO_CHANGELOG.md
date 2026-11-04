@@ -123,6 +123,24 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix again, bringing in the combined sidebar footer block and the Dev boot-entry switch fix; the changelog kept every dated entry.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix; the changelog kept both dated entries.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Moving a workspace with the keyboard in the web sidebar now shows its drop line on the first arrow key. Previously an arrow pressed right after Space picked the row up could be lost, so the move could not be placed. The sidebar reorder browser test also opens sorting through the current View preferences menu again.
+
+## Unreleased - 2026-11-04
+
 ### Changes
 
 - Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
