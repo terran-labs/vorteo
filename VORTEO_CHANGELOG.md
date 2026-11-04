@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- The Vorteo System browser test, the README and a charter comment now name the Vorteo :: Mechanic workspace instead of the Optimizer.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
 - Update the sidebar projection test's Factory fixture to a per-project Factory member, matching the Factory folder's grouping rule.
 
 ## Unreleased - 2026-11-03
