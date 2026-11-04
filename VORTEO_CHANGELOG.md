@@ -6,6 +6,17 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Fixes
+
+- Clear completed removes every completed task from the card at once instead of one row at a time. Deletes still run in order in the background; tasks left by an error reappear with it.
+- Keep hover tooltips open while another part of the window scrolls. A streaming agent reply scrolls the chat, which closed any task tooltip you were reading; tooltips now close only when a scroll moves the item they describe.
+
+### Changed
+
+- Task cards are agent managed by default. Rows no longer offer completion toggles, edit pencils or dragging, and the header hides Add task, until you press the new Edit tasks toggle at the right end of the card header, which stays pushed in while editing. Edit mode resets when you switch threads or reload. Interface only.
+
+## Unreleased - 2026-11-03
+
 ### Added
 
 - Hovering a workspace in the sidebar shows where it lives: its root folders, project and project folders as a breadcrumb, so pinned workspaces say which project they belong to.

@@ -582,7 +582,14 @@ export function TooltipContent({
 
   useEffect(() => {
     if (!isWeb || !ctx.open || !ctx.enabled) return;
-    const dismissOnScroll = () => ctx.setOpen(false);
+    // Vorteo: close only when the scroll moves the trigger. A streaming chat scrolls beside
+    // task cards many times a second, and dismissing on every scroll made hovered tooltips vanish.
+    const dismissOnScroll = (event: Event) => {
+      const trigger: unknown = ctx.triggerRef.current;
+      const source = event.target;
+      if (trigger instanceof Node && source instanceof Node && !source.contains(trigger)) return;
+      ctx.setOpen(false);
+    };
     window.addEventListener("scroll", dismissOnScroll, true);
     return () => window.removeEventListener("scroll", dismissOnScroll, true);
   }, [ctx]);
