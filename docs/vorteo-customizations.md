@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-03): CI change. Unlike upstream Paseo, main CI runs are no longer cancelled by a newer merge, so main produces complete browser results; pull request runs still cancel when superseded. The container smoke frees unused runner SDKs after a disk exhaustion. Product functionality is unchanged. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): the delivery guide asks Builds to state what each long wait watches, its start, usual duration and ending condition, and to reconcile its checklist after each install receipt. Instructions only; functionality, README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): heavy work now goes through one queued slot with a memory guard and background priority, replacing per-thread grants from Builds and the load-average limit. The agent, development and delivery guides point to it. Source only; not installed. README overview and onboarding are unchanged.
