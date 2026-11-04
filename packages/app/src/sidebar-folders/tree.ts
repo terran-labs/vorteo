@@ -71,33 +71,46 @@ function itemParent(input: {
 }
 
 /**
+ * `saved` keeps item rows where the user dragged them. `given` keeps the order items arrive in,
+ * for the sidebar's time-based workspace sorts, while folders keep their saved positions.
+ */
+export type SidebarTreeItemOrder = "saved" | "given";
+
+/**
  * Stored order first. Items it does not mention keep their place in the flat order: each sits
- * before the next item that follows it there, so new workspaces still appear at the top.
+ * before the next item that follows it there. New rows reach the top because placement writes
+ * them first into both the flat order and any saved container order; see
+ * `sidebar-state/placement.ts`. Unmentioned folders follow at the end, oldest first.
  */
 function orderChildren(input: {
   stored: readonly string[];
   items: readonly string[];
   folders: readonly string[];
+  itemOrder: SidebarTreeItemOrder;
 }): string[] {
   const members = new Set([...input.items, ...input.folders]);
-  const sequence = [...new Set(input.stored.filter((entry) => members.has(entry)))];
-  const placed = new Set(sequence);
+  const ordered = [...new Set(input.stored.filter((entry) => members.has(entry)))];
+  const placed = new Set(ordered);
   for (let index = input.items.length - 1; index >= 0; index -= 1) {
     const key = input.items[index]!;
     if (placed.has(key)) continue;
     const successor = input.items.slice(index + 1).find((next) => placed.has(next));
-    const position = successor === undefined ? sequence.length : sequence.indexOf(successor);
-    sequence.splice(position, 0, key);
+    const position = successor === undefined ? ordered.length : ordered.indexOf(successor);
+    ordered.splice(position, 0, key);
     placed.add(key);
   }
-  for (const entry of input.folders) if (!placed.has(entry)) sequence.push(entry);
-  return sequence;
+  for (const entry of input.folders) if (!placed.has(entry)) ordered.push(entry);
+  if (input.itemOrder === "saved") return ordered;
+  // Refill the item slots in the given order; folder slots stay put.
+  const items = input.items[Symbol.iterator]();
+  return ordered.map((entry) => (folderIdOf(entry) === null ? items.next().value! : entry));
 }
 
 function buildScopeChildren(input: {
   state: SidebarFolderState;
   scope: SidebarFolderScope;
   keys: readonly string[];
+  itemOrder?: SidebarTreeItemOrder;
 }): ScopeChildren {
   const { state, scope } = input;
   const items = new Map<string | null, string[]>();
@@ -120,6 +133,7 @@ function buildScopeChildren(input: {
         stored: state.childOrder[sidebarFolderContainerKey(scope, parent)] ?? [],
         items: items.get(parent) ?? [],
         folders: folders.get(parent) ?? [],
+        itemOrder: input.itemOrder ?? "saved",
       }),
     );
   }
@@ -146,12 +160,14 @@ export function buildSidebarTreeRows<T>(input: {
   items: readonly T[];
   getKey: (item: T) => string;
   hideEmptyFolders: boolean;
+  itemOrder?: SidebarTreeItemOrder;
 }): SidebarTreeRow<T>[] {
   const itemByKey = new Map(input.items.map((item) => [input.getKey(item), item]));
   const children = buildScopeChildren({
     state: input.state,
     scope: input.scope,
     keys: [...itemByKey.keys()],
+    itemOrder: input.itemOrder,
   });
   const rows: SidebarTreeRow<T>[] = [];
   function walk(parent: string | null, depth: number) {
@@ -177,6 +193,27 @@ export function buildSidebarTreeRows<T>(input: {
   }
   walk(null, 0);
   return rows;
+}
+
+/**
+ * In a time-based sort, rows show in `given` order but drops are written to the saved order.
+ * Both orders share slot positions, so the saved entry in the anchor's on-screen slot is the
+ * anchor that puts a dropped row where the user saw it land.
+ */
+export function savedSidebarAnchor(input: {
+  state: SidebarFolderState;
+  scope: SidebarFolderScope;
+  keys: readonly string[];
+  anchor: string | null;
+}): string | null {
+  if (input.anchor === null) return null;
+  const given = buildScopeChildren({ ...input, itemOrder: "given" });
+  const saved = buildScopeChildren({ ...input, itemOrder: "saved" });
+  for (const [parent, entries] of given) {
+    const index = entries.indexOf(input.anchor);
+    if (index >= 0) return saved.get(parent)?.[index] ?? input.anchor;
+  }
+  return input.anchor;
 }
 
 /** Folders in one scope whose subtree holds at least one of `keys`; filters hide the rest. */
@@ -371,8 +408,8 @@ export function createSidebarFolderPatch(input: {
     sidebarFolders: { [folder.id]: folder },
     childOrder: {
       [sidebarFolderContainerKey(input.scope, input.parentId)]: [
-        ...(children.get(input.parentId) ?? []),
         sidebarFolderEntry(folder.id),
+        ...(children.get(input.parentId) ?? []),
       ],
     },
   };

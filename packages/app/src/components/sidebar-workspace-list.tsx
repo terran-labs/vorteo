@@ -246,6 +246,8 @@ import {
   ROOT_FOLDER_SCOPE,
   buildSidebarTreeRows,
   projectFolderScope,
+  savedSidebarAnchor,
+  sidebarEntryParent,
   type SidebarTreeRow,
 } from "@/sidebar-folders/tree";
 
@@ -2248,11 +2250,13 @@ function ProjectBlock({
       items: groups.work,
       getKey: workspaceKeyExtractor,
       hideEmptyFolders,
+      // Time-based sorts order the rows; folders still keep their saved places.
+      itemOrder: manualSort ? "saved" : "given",
     });
     return focus?.kind === "folder"
       ? focusTreeRows(rows, sidebarFolderEntry(focus.folderId))
       : rows;
-  }, [focus, folderState, folderScope, groups.work, hideEmptyFolders]);
+  }, [focus, folderState, folderScope, groups.work, hideEmptyFolders, manualSort]);
   // Focused contents become the top level, so their rows lose the project's step in.
   const { showHeader, childLevel, sectionLevel, sectionItemLevel } =
     sidebarProjectBlockLevels(focus);
@@ -2454,14 +2458,31 @@ function ProjectBlock({
     (dragged: SidebarDropRow, placement: SidebarDropPlacement) => {
       if (folderState) {
         const container = placement.container;
+        const targetFolderId =
+          container === null || container === project.viewKey ? null : folderIdOfEntry(container);
+        const keys = groups.work.map(workspaceKeyExtractor);
+        let { beforeKey, afterKey } = placement;
+        if (!manualSort) {
+          // The sort orders workspaces, so only folder membership and folder slots can change.
+          const isFolder = folderIdOfEntry(dragged.key) !== null;
+          const sourceFolderId = sidebarEntryParent({
+            state: folderState,
+            scope: folderScope,
+            entry: dragged.key,
+          });
+          if (!isFolder && sourceFolderId === targetFolderId) return;
+          const anchor = (key: string | null) =>
+            savedSidebarAnchor({ state: folderState, scope: folderScope, keys, anchor: key });
+          beforeKey = anchor(beforeKey);
+          afterKey = anchor(afterKey);
+        }
         placeSidebarEntry({
           scope: folderScope,
           entry: dragged.key,
-          targetFolderId:
-            container === null || container === project.viewKey ? null : folderIdOfEntry(container),
-          before: placement.beforeKey,
-          after: placement.afterKey,
-          keys: groups.work.map(workspaceKeyExtractor),
+          targetFolderId,
+          before: beforeKey,
+          after: afterKey,
+          keys,
         });
         return;
       }
@@ -2473,7 +2494,15 @@ function ProjectBlock({
         keys.flatMap((key) => byKey.get(key) ?? []),
       );
     },
-    [folderState, folderScope, project.viewKey, groups.work, visibleWorkRows, onWorkspaceReorder],
+    [
+      folderState,
+      folderScope,
+      manualSort,
+      project.viewKey,
+      groups.work,
+      visibleWorkRows,
+      onWorkspaceReorder,
+    ],
   );
   const workTreeDrop = useSidebarTreeDrop({
     items: visibleWorkRows,

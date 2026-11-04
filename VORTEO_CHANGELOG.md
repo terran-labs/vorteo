@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-03
 
+### Maintenance
+
+- Merge current `main` into the sidebar placement branch, keeping both sides' changelog and customizations entries.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- New projects, workspaces and folders now appear as the first row of the list that holds them, and stay where they are on every device. Before, the sidebar saved new rows only on the device that saw them, so each sync update could move them, and a project with a saved folder order slotted new workspaces into the middle. In the Created and Last prompt sorts, workspaces inside folders follow the sort again, and drops there change only folder membership and folder positions. A device waits for its first Host snapshot before placing new rows, so it never replays a stale order over newer drags.
+
+## Unreleased - 2026-11-03
+
 ### Fixes
 
 - The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
