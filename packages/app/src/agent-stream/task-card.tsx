@@ -16,6 +16,7 @@ import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { useVortonTouch } from "@/vorton-touch";
 import {
   Children,
+  createContext,
   isValidElement,
   useCallback,
   useContext,
@@ -334,6 +335,9 @@ export function TaskCard({ scrollBody = true, ...props }: TaskCardProps) {
   return scrollBody ? <BoundedTaskCard {...props} /> : <ContentTaskCard {...props} />;
 }
 
+/** The width-adaptive horizontal inset around a content card's body, for full-bleed dividers. */
+export const TaskCardBodyInsetContext = createContext(0);
+
 function ContentTaskCard({
   children,
   testID,
@@ -372,7 +376,11 @@ function ContentTaskCard({
           ]}
         >
           <CardColumnContext.Provider value={null}>
-            {parts.filter((part) => !isHeader(part))}
+            <TaskCardBodyInsetContext.Provider
+              value={(flushBody ? 0 : TASK_CARD_BODY_INSET) + inset}
+            >
+              {parts.filter((part) => !isHeader(part))}
+            </TaskCardBodyInsetContext.Provider>
           </CardColumnContext.Provider>
         </View>
       </View>

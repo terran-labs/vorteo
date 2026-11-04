@@ -14,8 +14,10 @@ import {
 import { createDemoScenario, DEMO_SERVER_ID, DEMO_TIMESTAMP } from "./scenario";
 import { demoFilePath } from "./files";
 import { DemoFileState, type DemoFilePersistence } from "./file-state";
+import { demoProviderUsage } from "./usage";
 
 type DemoWorkspace = ReturnType<typeof createDemoScenario>["workspaces"][number];
+type DemoAgent = ReturnType<typeof createDemoScenario>["agents"][number];
 type DemoWorkspaceFilter = Extract<
   SessionInboundMessage,
   { type: "fetch_workspaces_request" }
@@ -115,6 +117,8 @@ export class DemoSession {
               checklistReviewStatus: true,
               agentJournal: true,
               workspaceFileEditing: true,
+              agentQuestions: true,
+              providerUsageList: true,
             },
           },
         }),
@@ -133,6 +137,9 @@ export class DemoSession {
     const subscriptionId = `demo-subscription-${++this.subscriptionOrdinal}`;
     if (message.type === "send_agent_message_request") return this.sendDemoMessage(message);
     if (message.type === "agent.checklist.mutate.request") return this.mutateTasks(message);
+    if (message.type === "agent.questions.answer.request") return this.answerQuestion(message);
+    if (message.type === "provider.usage.list.request")
+      return [{ type: "provider.usage.list.response", payload: demoProviderUsage(requestId) }];
     return (
       this.handleWorkspace(message, requestId, subscriptionId, owner) ??
       this.handleThread(message, requestId, subscriptionId, owner) ??
@@ -441,26 +448,13 @@ export class DemoSession {
   private mutateTasks(
     message: Extract<SessionInboundMessage, { type: "agent.checklist.mutate.request" }>,
   ): SessionOutboundMessage[] {
-    const { agents, workspaces } = this.scenario;
+    const { agents } = this.scenario;
     const { requestId } = message;
     const agent = agents.find((entry) => entry.id === message.agentId);
     try {
       if (!agent) throw new Error("Demo thread not found.");
       agent.tasks = this.checklists.mutate(agent.id, message.mutation);
-      const project = workspaces.find((entry) => entry.id === agent.workspaceId)?.project ?? null;
-      queueMicrotask(() => {
-        const workspace = workspaces.find((entry) => entry.id === agent.workspaceId);
-        if (!workspace) return;
-        for (const [id, subscription] of this.agentSubscriptions) {
-          if (!matchesDemoAgent(agent, workspace, subscription.filter)) continue;
-          this.listeners.get(subscription.owner)?.(
-            this.wrap({
-              type: "agent_update",
-              payload: { subscriptionId: id, kind: "upsert", agent, project },
-            }),
-          );
-        }
-      });
+      this.publishAgent(agent);
       return [
         {
           type: "agent.checklist.mutate.response",
@@ -480,6 +474,61 @@ export class DemoSession {
         },
       ];
     }
+  }
+
+  /** Records an answer on the sample question. No agent receives it; the question just closes. */
+  private answerQuestion(
+    message: Extract<SessionInboundMessage, { type: "agent.questions.answer.request" }>,
+  ): SessionOutboundMessage[] {
+    const { requestId, agentId } = message;
+    const reply = (
+      questions: DemoAgent["questions"] | null,
+      error: string | null,
+    ): SessionOutboundMessage[] => [
+      {
+        type: "agent.questions.answer.response",
+        payload: { requestId, agentId, questions: questions ?? null, error },
+      },
+    ];
+    const agent = this.scenario.agents.find((entry) => entry.id === agentId);
+    const question = agent?.questions?.find((entry) => entry.id === message.questionId);
+    if (!agent || !question) return reply(null, "Demo question not found.");
+    const answer = message.answer.trim();
+    if (!answer) return reply(null, "Write an answer before sending it.");
+    if (question.status === "open") {
+      agent.questions = agent.questions?.map((entry) =>
+        entry.id === question.id
+          ? {
+              ...entry,
+              status: "answered" as const,
+              answer,
+              answeredAt: new Date().toISOString(),
+              answeredBy: "demo-owner",
+            }
+          : entry,
+      );
+      this.publishAgent(agent);
+    }
+    return reply(agent.questions ?? [], null);
+  }
+
+  /** Sends an agent's new snapshot to every agent subscription that matches it. */
+  private publishAgent(agent: DemoAgent): void {
+    const { workspaces } = this.scenario;
+    const project = workspaces.find((entry) => entry.id === agent.workspaceId)?.project ?? null;
+    queueMicrotask(() => {
+      const workspace = workspaces.find((entry) => entry.id === agent.workspaceId);
+      if (!workspace) return;
+      for (const [id, subscription] of this.agentSubscriptions) {
+        if (!matchesDemoAgent(agent, workspace, subscription.filter)) continue;
+        this.listeners.get(subscription.owner)?.(
+          this.wrap({
+            type: "agent_update",
+            payload: { subscriptionId: id, kind: "upsert", agent, project },
+          }),
+        );
+      }
+    });
   }
 
   private releaseSubscription(id: string, owner: symbol): void {

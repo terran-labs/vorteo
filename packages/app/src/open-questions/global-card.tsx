@@ -4,7 +4,11 @@ import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { TaskCardIcon } from "@/agent-stream/task-card-icon";
 import { taskCardStyles } from "@/agent-stream/task-card-styles";
-import { GlobalCard } from "@/components/sidebar/global-card-shell";
+import {
+  GlobalCard,
+  sectionDividerBleedStyle,
+  useSectionDividerBleed,
+} from "@/components/sidebar/global-card-shell";
 import { Button } from "@/components/ui/button";
 import { selectPendingArchiveAgentIds, usePendingArchiveState } from "@/hooks/use-archive-agent";
 import { useHosts } from "@/runtime/host-runtime";
@@ -80,6 +84,7 @@ function ThreadQuestionGroup({
   first: boolean;
   onBeforeNavigate?: () => void;
 }) {
+  const bleed = useSectionDividerBleed();
   const { canAnswer, pendingId, answer } = useQuestionAnswer(
     thread.serverId,
     thread.agentId,
@@ -119,7 +124,7 @@ function ThreadQuestionGroup({
   );
   return (
     <View
-      style={!first && taskCardStyles.separator}
+      style={!first && [taskCardStyles.separator, sectionDividerBleedStyle(bleed)]}
       testID={`global-open-questions-thread-${thread.agentId}`}
     >
       {thread.questions.map((question, index) => (

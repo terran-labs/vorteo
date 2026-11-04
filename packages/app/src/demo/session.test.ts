@@ -67,6 +67,20 @@ it("serves populated projects, workspaces, checklists and timelines through the 
         expect.objectContaining({ status: "blocked" }),
       ]),
     );
+    expect((await client.listProviderUsage()).providers.map((usage) => usage.status)).toEqual([
+      "available",
+      "available",
+      "available",
+    ]);
+    const asking = agents.entries.filter(({ agent }) => agent.questions?.length);
+    expect(new Set(asking.map(({ agent }) => agent.workspaceId)).size).toBe(2);
+    const [question] = asking[0].agent.questions!;
+    const answered = await client.answerAgentQuestion(
+      asking[0].agent.id,
+      question.id,
+      question.recommendedDefault,
+    );
+    expect(answered.find((entry) => entry.id === question.id)?.status).toBe("answered");
   } finally {
     await client.close();
   }
