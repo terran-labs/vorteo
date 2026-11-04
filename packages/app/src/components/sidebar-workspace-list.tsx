@@ -1,7 +1,6 @@
 import { hasActiveSidebarLabelFilter } from "@/stores/sidebar-view-store";
 import { useScrollReporter } from "./use-scroll-divider";
 import { NestableScrollDivider } from "./nestable-scroll-divider";
-import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { splitFactoryWorkspaces, factoryOverviewTargets } from "@/workspace/lifecycle/grouping";
 import { useWorkspaceSessionMenu } from "@/workspace/use-workspace-session-menu";
 import { useWorkspaceMenuActions } from "@/workspace/use-workspace-menu-actions";
@@ -125,7 +124,10 @@ import {
 } from "@/components/sidebar/sidebar-workspace-menu";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
 import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
-import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle-row";
+import {
+  SidebarGroupToggleRow,
+  SidebarListActionRow,
+} from "@/components/sidebar/sidebar-group-toggle-row";
 
 import {
   useLimitedSidebarGroup,
@@ -519,9 +521,12 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
 function FactoryOverviewRow({
   target,
   multiple,
+  level,
 }: {
   target: { serverId: string; projectId: string };
   multiple: boolean;
+  /** The Factory section's workspace level, so Overview lines up with them. */
+  level: number;
 }) {
   const openOverview = useCallback(
     () =>
@@ -536,11 +541,11 @@ function FactoryOverviewRow({
     [target.serverId, target.projectId],
   );
   return (
-    <SidebarHeaderRow
+    <SidebarListActionRow
       icon={Factory}
       label={multiple ? `Overview (${target.serverId.slice(-8)})` : "Overview"}
       accessibilityLabel={`Factory overview for host ${target.serverId} project ${target.projectId}`}
-      variant="compact"
+      level={level}
       testID={`sidebar-factory-overview-${target.serverId}-${target.projectId}`}
       onPress={openOverview}
     />
@@ -2540,6 +2545,7 @@ function ProjectBlock({
                 key={`${target.serverId}:${target.projectId}`}
                 target={target}
                 multiple={overviewTargets.length > 1}
+                level={sectionItemLevel}
               />
             ))}
             renderList={renderFactoryList}

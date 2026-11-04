@@ -11,11 +11,51 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Service principals: issue a credential with only the permissions you choose, such as read-only access for a personal dashboard, with `paseo access service create --read-only` or in host Settings under Service access. Only read-only access is issuable for now; service sessions cannot read files, run git or terminal requests, or route to other hosts. Tokens are shown once and stored as hashes, and revoking a principal disconnects it immediately. Clients connect with the new `serviceCredential` option on daemons advertising `servicePrincipals`.
 - One read-only view of the installation: the Host coordinator's overview route returns projects, workspaces and agents from Host and Dev in one call, with each environment's status and errors. It reads each daemon through a read-only principal and accepts observer tokens that authorize nothing else. Host agents use `installation-agent.mjs overview` and `overview-observers`.
 
+### Tooling
+
+- Merged current `main` into the service principals branch before delivery.
+
 ## Unreleased - 2026-11-03
+
+### Fixed
+
+- Add profile and Edit on a provider page no longer crash Settings with "Couldn't find a navigation object". The profile page now reads navigation from the expo-router copy the app runs on, and still guards unsaved edits; opened outside a navigator, as the chat composer's centered window will be, it simply skips that guard.
+
+## Unreleased - 2026-11-03
+
+### Features
+
+- Turn release seals on or off through tracked workflows. A reviewed coordinator update with the new `releaseSeals` setting adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, and the Host launcher update does the same for the Host service once managed release selection is in place. Full maintenance delegation covers both. Any other launcher difference, value or unexpected launcher state is refused with a message naming what differed.
+
+## Unreleased - 2026-11-03
+
+### Documentation
+
+- Builds now states what each long wait is watching, when it started, its usual duration and what ends it, and keeps its checklist current after each install, so the operator can tell progress from a stall.
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
+
+## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Merged current `main` into the message queue reconnect fix before delivery.
 
 ### Tests
 
 - Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The message queue reopens its saved-queue storage after the browser closes the connection. It used to show "The database connection is closing" until the page reloaded, and Retry failed the same way.
 
 ## Unreleased - 2026-11-03
 
@@ -37,6 +77,31 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Maintenance
 
 - Merge current `main` into the durable sessions branch, keeping both sides' new installer tests and the browser test's mocks for the upgrade and snapshot cards.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- The Factory Overview row in the sidebar now steps in with the Factory workspaces below it at every nesting depth, instead of keeping a fixed indent.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Account tiles name the usage window their reset belongs to, such as Session resets in 3h or Weekly resets in 4 days, so a short session reset no longer reads as the weekly quota resetting.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Make the sidebar's waiting hourglass smaller and neutral grey, with sand that gently drains into a pile over eight seconds and then resets. Reduced motion holds the sand at rest.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Stop rate-limiting Claude account usage checks. The sidebar quota fetcher now waits out Claude's requested delay for each account and keeps showing its last good reading, and the Context window details no longer force a provider usage refresh each time they open.
+- Keep each account's last good usage reading across daemon restarts. While Claude limits checks, the account card shows that reading with its age and a muted note instead of a red error.
 
 ## Unreleased - 2026-11-03
 

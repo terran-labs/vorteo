@@ -1394,6 +1394,31 @@ test.runIf(process.platform === "darwin")(
         configurationChanges: [{ setting: "hostLauncherUpdate", value: launcherUpdate }],
       }),
     ).resolves.toBeUndefined();
+    // Release seals ride an owner-reviewed renewal as a listed change; the launcher
+    // verifier binds the candidate launcher's VORTEO_RELEASE_SEALS to the same entry.
+    const sealsConfig = JSON.parse(readFileSync(candidateConfig.path, "utf8"));
+    const sealsPlanned = f.save(path.join(f.root, "release-seals.json"), {
+      ...sealsConfig,
+      releaseSeals: "enabled",
+    });
+    const sealsChange = [{ setting: "releaseSeals", value: "enabled" }];
+    await expect(
+      verifyRenewalPlan(setup, { ...plan, configurationChanges: sealsChange }),
+    ).rejects.toThrow("outside its approved policy");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...plan,
+        candidate: { ...f.host, configuration: sealsPlanned },
+        configurationChanges: sealsChange,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...plan,
+        candidate: { ...f.host, configuration: sealsPlanned },
+        configurationChanges: [{ setting: "releaseSeals", value: "on" }],
+      }),
+    ).rejects.toThrow("Invalid value for configuration setting: releaseSeals");
     const removed = f.save(path.join(f.root, "factory-disabled.json"), {
       ...f.config,
       container: { ...f.config.container, factoryRuntimeAdoption: undefined },
