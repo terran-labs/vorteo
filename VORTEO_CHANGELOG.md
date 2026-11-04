@@ -51,6 +51,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The Vorteo :: Optimizer workspace and newly created Optimizer agents are now titled Mechanic; the stored role and label are unchanged.
 
+## 26.11.302 - 2026-11-03
+
+Fix-forward beta for the VortLab bootstrap. 26.11.301 merged but was never tagged because its full checks were not green.
+
+### Fixes
+
+- Settings search finds the Delivery mode row in Installation settings. Live dev mode added the row without a settings catalog entry, which failed the app tests.
+
+### Tests
+
+- The restarted-daemon usage test compares the saved reading with the time its fetch completed, which the registry records, instead of the start time. It failed intermittently on slower runners.
+
 ## 26.11.301 - 2026-11-03
 
 Beta bootstrap release for installer-made installations. It carries every change listed below since 26.11.206; 26.11.300 was prepared but never tagged.

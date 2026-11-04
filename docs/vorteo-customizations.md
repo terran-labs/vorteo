@@ -2,6 +2,12 @@
 
 Maintenance review (2026-11-03): per-project Factory. Turning it on from the project menu or `paseo factory project enable` creates or adopts five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a service-owned heartbeat gated on GitHub changes; the daemon records them in `$PASEO_HOME/factory/projects.json` and never creates a second. Factory folders order role workspaces and include the system Mechanic, which adopts the Optimizer. Role instructions support revision checks, history and charter review proposals. Triage receives threads from the tab menu through each thread's owning environment and project; roles and workers use existing profile controls, and fresh role status appears in the sidebar. `VORTEO_RELEASES=1` admits only the release tag command. Instruction conflicts refresh the revision and proposal while keeping the draft, review diffs show collapsed context, and accepting binds to the displayed proposal. This source is not installed. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-03): prepared beta release 26.11.302 for the VortLab bootstrap, superseding the untagged 26.11.301 with the settings catalog and usage test fixes. Version and changelog only. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): the restarted-daemon usage test expects the last successful reading stamped at fetch completion, matching the registry, which removes a one-millisecond race on slow CI runners. Test only; behavior unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-03): the settings catalog gains the Delivery mode row from live dev mode, so settings search reaches it and the catalog coverage test passes. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-03): prepared beta release 26.11.301 for the VortLab bootstrap, superseding the untagged 26.11.300 preparation after the AGENTS.md size fix. Version and changelog only; no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): the live dev mode section in AGENTS.md became a pointer to the task delivery guide, which already holds the full workflow, so AGENTS.md stays within its 32 KiB budget. Documentation only; no behavior changed. README overview and onboarding are unchanged.
