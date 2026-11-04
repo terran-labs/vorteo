@@ -714,6 +714,9 @@ const AgentSessionConfigSchema = z.object({
   toolPolicy: ToolPolicySchema.optional(),
   systemPrompt: z.string().optional(),
   mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
+  // COMPAT(agentToolAccess): added 2026-11-04, remove gate after 2027-05-04. Owner-only and
+  // creation-only; "none" launches a Claude-family agent that cannot call any tool.
+  toolAccess: z.literal("none").optional(),
 });
 
 const AgentPermissionUpdateSchema = z.record(z.string(), z.unknown());
@@ -1153,6 +1156,8 @@ export const AgentSnapshotPayloadSchema = z.object({
   providerUnavailable: z.boolean().optional(),
   // Private helper marker, retained for exact-ID snapshots and older wire messages.
   internal: z.boolean().optional(),
+  // COMPAT(agentToolAccess): added 2026-11-04, remove gate after 2027-05-04; older daemons omit it.
+  toolAccess: z.literal("none").optional(),
 });
 
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
@@ -4186,6 +4191,8 @@ export const ServerInfoStatusPayloadSchema = z
         servicePrincipals: z.boolean().optional(),
         // COMPAT(serviceAgentGrants): added 2026-11-03, remove gate after 2027-05-03.
         serviceAgentGrants: z.boolean().optional(),
+        // COMPAT(agentToolAccess): added 2026-11-04, remove gate after 2027-05-04.
+        agentToolAccess: z.boolean().optional(),
         // COMPAT(usageSetting): added in v0.14, remove after 2027-05-01.
         usageSetting: z.boolean().optional(),
         usageSources: z.boolean().optional(),

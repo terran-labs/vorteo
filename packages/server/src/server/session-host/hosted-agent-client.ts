@@ -87,7 +87,9 @@ function isHostable(input: EligibilityInput): input is EligibilityInput & {
     typeof input.launchContext?.agentId === "string" &&
     input.launchContext.agentId.length > 0 &&
     input.persistSession !== false &&
-    input.config.internal !== true
+    input.config.internal !== true &&
+    // A session host built before tool access existed would launch with default tools.
+    input.config.toolAccess !== "none"
   );
 }
 

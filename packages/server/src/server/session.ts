@@ -2428,7 +2428,9 @@ export class Session {
           },
           "agent.session.inbound",
         );
-      if (!(await this.allowsInboundMessage(msg))) {
+      // Only agent grants need an asynchronous lookup; other checks keep dispatch synchronous.
+      const allowed = this.allowsInboundMessage(msg);
+      if (!(typeof allowed === "boolean" ? allowed : await allowed)) {
         const requestId = sessionRequestId(msg);
         if (requestId) {
           this.emit({
@@ -2492,6 +2494,7 @@ export class Session {
             workspaceId: live?.workspaceId ?? stored?.workspaceId,
             internal: live?.internal === true || stored?.internal === true,
             archived: !!stored?.archivedAt,
+            toolLess: (await this.agentManager.getToolAccess(agentId)) === "none",
           };
         })
       : null;
@@ -2698,7 +2701,7 @@ export class Session {
     });
   }
 
-  private async allowsInboundMessage(message: SessionInboundMessage): Promise<boolean> {
+  private allowsInboundMessage(message: SessionInboundMessage): boolean | Promise<boolean> {
     if (this.authorization.restrictsOperation(message.type)) return false;
     if (this.authorization.allowsInbound(message)) return true;
     // Agent grants authorize only their own operations, on resolved exact agent IDs.
@@ -5294,6 +5297,7 @@ export class Session {
         )
       : undefined;
     try {
+      this.assertMayRequestToolAccess(request.config);
       const creation = await this.createRequestedAgent(
         request,
         progress ? (snapshot) => progress.emit(this.creationUpdate(snapshot)) : undefined,
@@ -5481,8 +5485,22 @@ export class Session {
     }
   }
 
+  /**
+   * Only the owner may create a thread with restricted tool access. Checked before any
+   * creation record is written; agent creation checks it again.
+   */
+  private assertMayRequestToolAccess(config: { toolAccess?: "none" }): void {
+    if (config.toolAccess !== undefined && this.principalId !== "owner") {
+      throw new SessionRequestError(
+        "tool_access_forbidden",
+        "Only the owner can create a thread without tools.",
+      );
+    }
+  }
+
   private async handleCreateAgentRequest(msg: CreateAgentRequestMessage): Promise<void> {
     try {
+      this.assertMayRequestToolAccess(msg.config);
       let agent: AgentSnapshotPayload;
       if (msg.idempotencyKey !== undefined) {
         if (msg.initialPrompt !== undefined) {
@@ -5607,6 +5625,7 @@ export class Session {
       attachments,
       env,
     } = msg;
+    this.assertMayRequestToolAccess(config);
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
       `Creating agent in ${config.cwd} (${config.provider})${

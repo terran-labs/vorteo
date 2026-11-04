@@ -518,7 +518,7 @@ describe("service principals", () => {
     }
   });
 
-  test("agent grants allow only their actions on their agents", async () => {
+  test("agent grants allow only their actions, and messages reach tool-less agents only", async () => {
     const daemonHandle = await createTestPaseoDaemon({
       auth: { password: CORRECT_PASSWORD_HASH },
       mcpEnabled: false,
@@ -528,59 +528,86 @@ describe("service principals", () => {
     try {
       await owner.connect();
       const lane = await owner.createAgent({
-        provider: "codex",
-        cwd: daemonHandle.staticDir,
+        config: { provider: "claude", cwd: daemonHandle.staticDir, toolAccess: "none" },
         title: "Lane",
       });
-      const other = await owner.createAgent({
+      const builder = await owner.createAgent({
         provider: "codex",
         cwd: daemonHandle.staticDir,
-        title: "Other",
+        title: "Builder",
       });
+      await expect(
+        owner.createServicePrincipal({
+          label: "workspace messages",
+          permissions: [],
+          grants: [{ actions: ["agent.message"], workspaceIds: [lane.workspaceId ?? "w"] }],
+        }),
+      ).resolves.toMatchObject({ token: null, error: expect.stringMatching(/exact agent IDs/) });
       const created = await owner.createServicePrincipal({
         label: "Council bridge",
         permissions: [],
-        grants: [{ actions: ["agent.read", "agent.message"], agentIds: [lane.id] }],
+        grants: [
+          { actions: ["agent.read", "agent.message", "agent.cancel"], agentIds: [lane.id] },
+          { actions: ["agent.read", "agent.message"], agentIds: [builder.id] },
+        ],
       });
       expect(created.error).toBeNull();
 
       service = connectClient(daemonHandle.port, { serviceCredential: created.token! });
       await service.connect();
+      const streamed = new Set<string>();
+      service.subscribeRawMessages((message) => {
+        if (message.type === "agent_stream") streamed.add(message.payload.agentId);
+      });
       await expect(service.fetchAgent(lane.id)).resolves.toMatchObject({ agent: { id: lane.id } });
       await expect(
-        service.sendAgentMessage(lane.id, "steer", { activeTurnBehavior: "steer" }),
+        service.sendAgentMessage(lane.id, "hello", { activeTurnBehavior: "steer" }),
       ).resolves.toBeDefined();
-      const denied = [
-        service.fetchAgent(other.id),
-        // Prefix and title resolution would reveal other agents; only exact IDs pass.
-        service.fetchAgent(lane.id.slice(0, 8)),
-        service.sendAgentMessage(lane.id, "interrupt", { activeTurnBehavior: "interrupt" }),
-        service.sendAgentMessage(lane.id, "mode", {
-          activeTurnBehavior: "steer",
-          sessionMode: "full-access",
-        }),
-        service.sendAgentMessage(other.id, "steer", { activeTurnBehavior: "steer" }),
-        service.cancelAgent(lane.id),
-        service.fetchAgents(),
-      ];
-      for (const request of denied) await expect(request).rejects.toThrow(/not authorized/);
+      // The daemon labels service text so the agent and timeline never read it as the owner's.
+      await expect
+        .poll(async () => JSON.stringify(await owner.fetchAgentTimeline(lane.id)))
+        .toContain('Message from service credential \\"Council bridge\\", not from the owner');
 
-      // Workspace grants match agents by their owning workspace; changing grants reconnects.
-      const workspaceId = (await owner.fetchAgent(lane.id))!.agent.workspaceId!;
-      const closed = new Promise<void>((resolve) => {
-        service!.subscribeConnectionStatus((status) => {
-          if (status.status === "disconnected") resolve();
-        });
-      });
-      await owner.setServicePrincipalGrants(created.principal!.id, [
-        { actions: ["agent.cancel"], workspaceIds: [workspaceId] },
-      ]);
-      await closed;
-      await service.close();
-      service = connectClient(daemonHandle.port, { serviceCredential: created.token! });
-      await service.connect();
+      const denied = [
+        // Messages are delegated action, so a full-tool agent is never a message target.
+        () => service!.sendAgentMessage(builder.id, "steer", { activeTurnBehavior: "steer" }),
+        () => service!.fetchAgent(lane.id.slice(0, 8)),
+        () => service!.sendAgentMessage(lane.id, "/rewind", { activeTurnBehavior: "steer" }),
+        () => service!.sendAgentMessage(lane.id, "interrupt", { activeTurnBehavior: "interrupt" }),
+        () =>
+          service!.sendAgentMessage(lane.id, "mode", {
+            activeTurnBehavior: "steer",
+            sessionMode: "bypassPermissions",
+          }),
+        () =>
+          service!.sendAgentMessage(lane.id, "origin", {
+            activeTurnBehavior: "steer",
+            origin: "agent",
+          }),
+        () =>
+          service!.sendAgentMessage(lane.id, "image", {
+            activeTurnBehavior: "steer",
+            images: [{ data: "aGk=", mimeType: "image/png" }],
+          }),
+        () => service!.cancelAgent(builder.id),
+        () => service!.fetchAgents(),
+        () => service!.setAgentMode(lane.id, "default"),
+        () => service!.createAgent({ provider: "claude", cwd: daemonHandle.staticDir }),
+      ];
+      for (const request of denied) await expect(request()).rejects.toThrow(/not authorized/);
       await expect(service.cancelAgent(lane.id)).resolves.toBeUndefined();
-      await expect(service.fetchAgent(lane.id)).rejects.toThrow(/not authorized/);
+
+      // Agents the session never addressed produce no stream for it.
+      await owner.sendAgentMessage(builder.id, "owner work");
+      await expect
+        .poll(async () => (await owner.fetchAgent(builder.id))?.agent.status)
+        .not.toBe("initializing");
+      expect(streamed.has(builder.id)).toBe(false);
+
+      await owner.archiveAgent(lane.id);
+      await expect(
+        service.sendAgentMessage(lane.id, "archived", { activeTurnBehavior: "steer" }),
+      ).rejects.toThrow(/not authorized/);
     } finally {
       await service?.close();
       await owner.close();

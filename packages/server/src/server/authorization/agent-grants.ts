@@ -15,6 +15,8 @@ export type AgentWorkspaceLookup = (agentId: string) => Promise<{
   workspaceId: string | undefined;
   internal: boolean;
   archived: boolean;
+  /** True only when the daemon launches the agent with no tools at all. */
+  toolLess: boolean;
 } | null>;
 
 /**
@@ -63,6 +65,9 @@ export class AgentGrantGuard {
     // messaging an archived agent would unarchive it.
     if (!agent || agent.internal) return false;
     if (action === "agent.message" && agent.archived) return false;
+    // A message is delegated action: the target acts on the caller's text with its
+    // own tools. Checked on every message, so a later reconfiguration is caught.
+    if (action === "agent.message" && !agent.toolLess) return false;
     if (matching.some((grant) => grant.agentIds?.includes(agentId))) return true;
     const workspaceId = agent.workspaceId;
     return !!workspaceId && matching.some((grant) => grant.workspaceIds?.includes(workspaceId));

@@ -88,6 +88,12 @@ Grant checks use exact agent IDs; prefix and title resolution would reveal other
 
 Agent grants authorize no other operation: listing agents, workspaces, files and every other operation still need daemon-wide permissions, and path-addressed operations stay refused. A service session must advertise `owned_subscriptions` and `selective_agent_timeline`, so it receives only replies to its own requests and its own subscriptions. The transport delivers a message to it only when every agent the message names is one the session was allowed to address.
 
+### Tool-less agents
+
+The owner can create an agent that cannot call any tool by setting `toolAccess: "none"` in its creation config, for example `createAgent({ config: { provider: "claude", cwd, toolAccess: "none" } })`. Only owner sessions may set it, and only at creation; no later update removes it. Daemons that support it advertise `server_info.features.agentToolAccess`, and the client refuses to send it to a daemon that does not, which would otherwise drop the field and launch the agent with every tool.
+
+It runs only on the Claude provider family, resolved through the provider registry, so `claude-account-*` entries qualify. The daemon launches it without Paseo tools, plugin tools or MCP servers. The Claude provider passes `tools: []`, empty MCP servers with `strictMcpConfig`, no plugins, skills, subagents or setting sources, disabled hooks and a `canUseTool` that denies everything. It refuses permission-skipping modes and provider commands that add CLI arguments. A provider or mode switch that would break these rules is refused.
+
 ## Resources
 
 Permissions are daemon-wide. [Agent grants](#agent-grants) are the first resource-scoped authority; they cover agent operations only. Broader workspace-scoped grants remain future work, and operation classification remains inside the authorization module:

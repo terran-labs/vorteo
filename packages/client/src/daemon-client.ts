@@ -3470,6 +3470,12 @@ export class DaemonClient {
   async createAgent(options: CreateAgentRequestOptions): Promise<AgentSnapshotPayload> {
     const config = resolveAgentConfig(options);
     this.requireWorkflowLaunchSupport(config.profileId);
+    // An older daemon would drop toolAccess and launch the agent with every tool.
+    if (
+      config.toolAccess !== undefined &&
+      this.lastServerInfoMessage?.features?.agentToolAccess !== true
+    )
+      throw new Error("Update the Paseo host to create agents without tools.");
     if (options.background !== undefined) this.requireBackgroundWorkspaces();
     const result = await this.creations.createAgent({
       ...options,

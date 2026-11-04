@@ -2263,6 +2263,7 @@ export class VoiceAssistantWebSocketServer {
         servicePrincipals: true,
         // COMPAT(serviceAgentGrants): added 2026-11-03, remove gate after 2027-05-03.
         serviceAgentGrants: true,
+        agentToolAccess: true,
         // COMPAT(relayProtectedSecurity): added in v0.13.0, remove gate after 2027-04-21.
         relayProtectedSecurity: true,
         usageSetting: true,
