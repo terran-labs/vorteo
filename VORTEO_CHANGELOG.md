@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
 ## Unreleased - 2026-11-05

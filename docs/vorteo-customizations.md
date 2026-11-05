@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Questions card drafts: Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
+
 Maintenance review (2026-11-05): live tweak by Lab self-update: Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
 Maintenance review (2026-11-05): live tweak by Scroll edge fades: The sidebar workspace list now fades under its top and bottom dividers while more workspaces lie past them, through a shared scroll edge fade hook.
