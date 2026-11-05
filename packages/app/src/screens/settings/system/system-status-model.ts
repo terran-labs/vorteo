@@ -18,7 +18,16 @@ export interface SystemEnvironmentInput {
   connection: Pick<HostRuntimeSnapshot, "connectionStatus" | "lastError">;
   enrollment?: InstallationEnrollmentStatus | null;
   liveDev?: LiveDevStatus | null;
-  restartJobs?: readonly Pick<RestartJob, "id" | "target" | "status" | "reason">[];
+  restartJobs?: readonly Pick<
+    RestartJob,
+    | "id"
+    | "target"
+    | "status"
+    | "reason"
+    | "supervisorPlanSha256"
+    | "engineRecoveryPlanSha256"
+    | "impact"
+  >[];
   upgrades?: readonly Pick<
     InstallationUpgrade,
     "id" | "status" | "release" | "automatic" | "acknowledgedAt"
@@ -43,6 +52,11 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     : (input.restartJobs ?? []).filter((job) => job.target === input.target);
   const upgrades = input.locked ? [] : (input.upgrades ?? []);
   const waiting = jobs.find((job) => job.status === "pending");
+  const recovery =
+    waiting?.target === "container-daemon" &&
+    Boolean(
+      waiting.engineRecoveryPlanSha256 || (waiting.supervisorPlanSha256 && waiting.impact?.error),
+    );
   const upgrade = upgrades.find((job) => job.status === "pending");
   const counts = input.locked ? input.restartSummary : undefined;
   const activeJob = jobs.find((job) => job.status === "approved" || job.status === "running");
@@ -74,6 +88,7 @@ export function deriveSystemEnvironment(input: SystemEnvironmentInput): {
     Boolean(counts && (counts.queued || counts.running));
   let action: SystemAction | null = null;
   if (activeWork) action = null;
+  else if (recovery) action = { kind: "approve-restart", id: waiting!.id, label: "Repair Dev" };
   else if (offline) action = { kind: "reconnect", label: "Reconnect" };
   else if (waiting)
     action = {

@@ -4,6 +4,8 @@
 
 ### Maintenance
 
+- Keep tracked Dev repair available when Dev cannot answer, and verify session-host upgrade holders in System Details.
+
 - Merge current main into Settings round 4. Preserve installation release policies and safe approval choices in System updates, live delivery mode in Advanced, recovery reviews in Restart, and service access in environment details.
 
 ## Unreleased - 2026-11-05
