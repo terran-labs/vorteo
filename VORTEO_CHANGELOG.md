@@ -1,5 +1,22 @@
 # Vorteo changelog
 
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge current `main`, including Host-only adoption of an unmanaged Dev, into the installer upgrade branch, keeping both sides' changelog and inventory entries.
+
+## Unreleased - 2026-11-05
+
+- Preserve the working setup token when an OAuth upgrade cannot verify a persisted, renewable grant. Temporary storage failures no longer trigger logout during upgrade verification.
+
+## Unreleased - 2026-11-05
+
+- Pin Claude Code 2.1.318, which fixes sign-outs caused by status commands exiting before a refresh is saved. Managed account health checks now read storage without launching Claude.
+- Keep account refresh recoverable through temporary outages, adopt credentials saved before a failed request, and distinguish unreadable storage from a missing login.
+- Keep dependent queued messages after a failed turn and show its delivery error without replaying accepted work.
+- Name the built-in Claude connection Claude (CLI), preserve custom names, and route account creation through one installation flow. Environment access no longer duplicates sign-in controls.
+
 Vorteo change history, covering features, fixes, documentation, tests, tooling and upstream integration. Every commit adds a dated entry headed Unreleased; a release preparation heads its entry with the new calendar version, and the Unreleased entries below it belong to that release. See the [commit workflow](docs/release.md#vorteo-release-notes).
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
@@ -46,6 +63,19 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Snapshots on Linux read Dev's home through its running container. Linux keeps the bind-mounted home private to the container's user, so the Host could not read it and every upgrade with Dev on Linux, from the interface or the installer, stopped at its snapshot. Restores already unpack such a snapshot through the container. Found by the install tests' Linux upgrade jobs.
 
+### Features
+
+- A middle click anywhere in Vorteo outside a link now starts and stops dictation like a triple click. Map a three-finger tap to middle click, on a Mac with a helper such as MiddleClick or on an Android touchpad, to dictate with a three-finger tap. iPads cannot make that mapping, so use the triple click there.
+
+### Fixes
+
+- The thread Chrome switch shows a browser icon labeled On or Off, with the tooltip "Enable Chrome developer access" or "Disable Chrome developer access". While a change is on its way to the daemon, a spinning ring circles the icon and further presses are ignored, so a second tap can't undo the first.
+
+### Fixes
+
+- An installation whose Dev is not an installer-made deployment moves only its Host to the installer layout. Its Dev container, network, boot entry and Factory settings stay untouched, and release upgrades skip the Dev step instead of rebuilding it. Adoption treats Dev as unmanaged only when Docker shows a running container publishing the Dev endpoint from a folder without the installer marker; anything else fails closed. Upgrades, snapshots and restores then cover the Host only, and a restore refuses an older snapshot that holds Dev's home.
+- Host installations from before the one-command installer whose coordinator runs a configuration from a reviewed plan folder can now move to the installer layout in place, from Installation controls or `install.sh`. Detection found no installation there, so upgrades and release updates stayed unavailable. Adoption now reads the configuration the coordinator actually runs instead of a stale copy from setup, which would have dropped every later coordinator setting, and writes the result to the installation's own `coordinator.json` without touching the plan's hash-pinned file. Only a record with the same installation ID counts, and a resumed adoption stops if the coordinator's configuration changed meanwhile.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
@@ -59,6 +89,12 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 - When a fresh live page times out under load, the live dev proxy serves the last page from the same dev server instead of silently falling back to the static interface.
 - Live dev preparation builds the server package, so the first live commit's typecheck no longer fails on missing declarations.
 - Usage rings and the context donut no longer log an invalid DOM property warning in development.
+
+## Unreleased - 2026-11-05
+
+### Fixed
+
+- Site wrappers such as Unite now build a sharp Vorteo app icon. The web interface serves a 1024px touch icon from its `apple-touch-icon` link and from the precomposed and iPhone fallback paths, which previously returned the page instead of an image.
 
 ## Unreleased - 2026-11-05
 

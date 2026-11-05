@@ -13,7 +13,8 @@ import {
   accessProjectionDigest,
   type ClaudeOAuthProjectionDelivery,
 } from "./claude-oauth-delivery.js";
-import type { ClaudeHostCli, ClaudeOAuthGrant } from "./claude-oauth-host.js";
+import type { ClaudeHostCli } from "./claude-oauth-host.js";
+import type { ClaudeOAuthGrant } from "./claude-oauth-storage.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -139,7 +140,7 @@ function harness(
     expiresAt: Date.now() + 3_600_000,
     scopes: ["user:inference", "user:profile"],
   };
-  const readGrant = vi.fn(async () => grant);
+  const readGrant = vi.fn(async (): Promise<ClaudeOAuthGrant | null> => grant);
   const daemonFeatures = vi.fn(async (kind: "host" | "container") =>
     kind === "container" ? devFeatures : SUPPORTED,
   );
@@ -459,3 +460,29 @@ it("does not upgrade while a setup-token sign-in runs or for a full sign-in acco
   await expect(full.runtime.upgradeRead("one")).resolves.toMatchObject({ available: false });
   await expect(full.runtime.upgradeStart("one")).rejects.toThrow();
 });
+
+it.each(["missing", "unreadable", "expired", "not renewable"] as const)(
+  "preserves the setup token when upgrade grant storage is %s despite identity metadata",
+  async (failure) => {
+    const h = harness(setupToken, SUPPORTED, { everywhere: true });
+    const original = structuredClone(h.definitions()[0]);
+    if (failure === "unreadable") h.readGrant.mockRejectedValue(new Error("Storage unavailable"));
+    else if (failure === "missing") h.readGrant.mockResolvedValue(null);
+    else
+      h.readGrant.mockResolvedValue({
+        accessToken: "synthetic-access",
+        hasRefreshToken: failure !== "not renewable",
+        expiresAt: failure === "expired" ? 1 : Date.now() + 3_600_000,
+        scopes: ["user:inference"],
+      });
+    await h.runtime.upgradeStart("one");
+    await until(() => h.runtime.read("one").login.status === "waiting");
+    h.complete(true);
+    await until(() => h.runtime.read("one").login.status === "failed");
+    expect(h.definitions()[0]).toEqual(original);
+    expect(h.settings.update).not.toHaveBeenCalled();
+    expect(h.setupRuntime.reconcile).not.toHaveBeenCalled();
+    expect(h.cli.logout).not.toHaveBeenCalled();
+    expect(h.readGrant).toHaveBeenCalledWith(h.configDir);
+  },
+);
