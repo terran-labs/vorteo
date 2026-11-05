@@ -1874,6 +1874,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 4, 2026: Synchronized projects now move Factory-managed workspaces' sidebar memberships with a replaced project key, fixing a duplicate Vorteo System row after installation. The Synchronized projects feature is otherwise unchanged. README overview and onboarding are unchanged.
+
 November 4, 2026: Merged current `main` into the service principals branch before handback; clean merge, no feature changes.
 
 November 4, 2026: Merged current `main` into the service principals branch; session.ts and this inventory conflicted, and both sides were kept. No feature changes.
