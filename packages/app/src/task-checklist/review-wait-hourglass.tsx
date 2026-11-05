@@ -13,6 +13,7 @@ import Animated, {
 } from "react-native-reanimated";
 import {
   DRAIN_TRACK,
+  FLIP_START,
   HourglassOutline,
   layers,
   PILE_FADE_TRACK,
@@ -23,6 +24,8 @@ import {
   StreamGrain,
   TopSand,
 } from "./review-wait-hourglass-frame";
+
+const FLIP_EASING = Easing.inOut(Easing.cubic);
 
 /**
  * Native hourglass. One phase value per icon drives every layer on the UI thread. Rows are not
@@ -111,24 +114,32 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
     ),
   }));
 
+  // The turn is eased on its own segment, so it starts and settles gently.
+  const flip = useAnimatedStyle(() => {
+    const t = Math.min(1, Math.max(0, (phase.value - FLIP_START) / (1 - FLIP_START)));
+    return { transform: [{ rotate: `${FLIP_EASING(t) * 180}deg` }] };
+  });
+
   return (
     <View style={layers.frame}>
-      <Animated.View style={[layers.topWindow, drain]}>
-        <Animated.View style={[layers.topContent, drainCounter]}>
-          <TopSand muted={muted} />
-        </Animated.View>
-      </Animated.View>
-      <Animated.View style={[layers.full, pileFade]}>
-        <Animated.View style={[layers.pileWindow, pile]}>
-          <Animated.View style={[layers.pileContent, pileCounter]}>
-            <PileSand muted={muted} />
+      <Animated.View style={[layers.flip, flip]}>
+        <Animated.View style={[layers.topWindow, drain]}>
+          <Animated.View style={[layers.topContent, drainCounter]}>
+            <TopSand muted={muted} />
           </Animated.View>
         </Animated.View>
+        <Animated.View style={[layers.full, pileFade]}>
+          <Animated.View style={[layers.pileWindow, pile]}>
+            <Animated.View style={[layers.pileContent, pileCounter]}>
+              <PileSand muted={muted} />
+            </Animated.View>
+          </Animated.View>
+        </Animated.View>
+        <Animated.View style={[layers.stream, stream]}>
+          <StreamGrain muted={muted} />
+        </Animated.View>
+        <HourglassOutline muted={muted} />
       </Animated.View>
-      <Animated.View style={[layers.stream, stream]}>
-        <StreamGrain muted={muted} />
-      </Animated.View>
-      <HourglassOutline muted={muted} />
     </View>
   );
 });

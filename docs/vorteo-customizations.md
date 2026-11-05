@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Hourglass calm and flip: The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
+
 Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): live checkout preparation now runs `build:server` before `build:app-deps`, because the commit hook typechecks `packages/cli` against the server's built declarations and the first live commit on VortLab failed without them. README overview and onboarding are unchanged.

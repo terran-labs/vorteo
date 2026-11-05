@@ -2,6 +2,8 @@ import { memo, useCallback, useLayoutEffect, useRef, type RefCallback } from "re
 import { View, type View as NativeView } from "react-native";
 import {
   DRAIN_TRACK,
+  FLIP_START,
+  FLIP_TRACK,
   HourglassOutline,
   layers,
   PILE_FADE_TRACK,
@@ -29,6 +31,12 @@ const PILE = translate(PILE_TRACK);
 const PILE_COUNTER = translate(PILE_TRACK, -1);
 const PILE_FADE = fade(PILE_FADE_TRACK);
 const STREAM = fade(STREAM_TRACK);
+// Ease only the turn itself, so it starts and settles gently.
+const FLIP: Keyframe[] = FLIP_TRACK.offsets.map((offset, index) => ({
+  offset,
+  transform: `rotate(${FLIP_TRACK.values[index]}deg)`,
+  easing: offset === FLIP_START ? "cubic-bezier(0.45, 0, 0.55, 1)" : "linear",
+}));
 
 function prefersReducedMotion(): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -74,24 +82,27 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
   const pileCounter = useSandLoop(PILE_COUNTER);
   const pileFade = useSandLoop(PILE_FADE);
   const stream = useSandLoop(STREAM);
+  const flip = useSandLoop(FLIP);
   return (
     <View style={layers.frame}>
-      <View ref={drain} style={layers.topWindow}>
-        <View ref={drainCounter} style={layers.topContent}>
-          <TopSand muted={muted} />
-        </View>
-      </View>
-      <View ref={pileFade} style={layers.full}>
-        <View ref={pile} style={layers.pileWindow}>
-          <View ref={pileCounter} style={layers.pileContent}>
-            <PileSand muted={muted} />
+      <View ref={flip} style={layers.flip}>
+        <View ref={drain} style={layers.topWindow}>
+          <View ref={drainCounter} style={layers.topContent}>
+            <TopSand muted={muted} />
           </View>
         </View>
+        <View ref={pileFade} style={layers.full}>
+          <View ref={pile} style={layers.pileWindow}>
+            <View ref={pileCounter} style={layers.pileContent}>
+              <PileSand muted={muted} />
+            </View>
+          </View>
+        </View>
+        <View ref={stream} style={layers.stream}>
+          <StreamGrain muted={muted} />
+        </View>
+        <HourglassOutline muted={muted} />
       </View>
-      <View ref={stream} style={layers.stream}>
-        <StreamGrain muted={muted} />
-      </View>
-      <HourglassOutline muted={muted} />
     </View>
   );
 });
