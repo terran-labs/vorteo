@@ -77,7 +77,13 @@ interface RestartContinuationRelease {
 // lane, including reads, so no caller can observe an uncommitted mutation.
 export class MessageQueueStore {
   private readonly tails = new Map<string, Promise<void>>();
+  /** Called after an acceptance commits, whether by delivery, steering or history repair. */
+  onAccepted?: (agentId: string, item: QueueItem) => void;
   constructor(private readonly root: string) {}
+
+  private notifyAccepted(agentId: string, items: readonly QueueItem[]): void {
+    for (const item of items) this.onAccepted?.(agentId, item);
+  }
 
   private serial<T>(agentId: string, action: () => Promise<T>): Promise<T> {
     IdSchema.parse(agentId);
@@ -273,13 +279,17 @@ export class MessageQueueStore {
     });
   }
 
-  claim(agentId: string): Promise<QueueItem | null> {
+  /** Claims the head, or a named item that may be delivered out of order, such as an answer. */
+  claim(agentId: string, messageId?: string): Promise<QueueItem | null> {
     return this.serial(agentId, async () => {
       const record = await this.load(agentId);
-      const head = record.snapshot.items[0];
+      const head = messageId
+        ? record.snapshot.items.find((item) => item.id === messageId)
+        : record.snapshot.items[0];
       if (record.restartContinuation?.phase === "held") return null;
-      if (!head || (record.snapshot.paused && !head.sendNow) || head.delivery.status !== "queued")
-        return null;
+      // A pause holds back ordinary delivery, not a named item steered into an active turn.
+      const paused = record.snapshot.paused && !head?.sendNow && !messageId;
+      if (!head || paused || head.delivery.status !== "queued") return null;
       head.delivery = {
         status: "dispatching",
         attemptId: randomUUID(),
@@ -343,7 +353,7 @@ export class MessageQueueStore {
   ): Promise<{ snapshot: QueueSnapshot; changed: boolean }> {
     return this.serial(agentId, async () => {
       const record = await this.load(agentId);
-      let changed = false;
+      const accepted: QueueItem[] = [];
       for (const item of record.snapshot.items) {
         if (item.delivery.status !== "uncertain") continue;
         const nativeId = record.providerMessageIds.find(
@@ -357,12 +367,15 @@ export class MessageQueueStore {
           turnId: evidence.turnId,
         });
         record.submissions.push({ item, ...evidence });
-        record.snapshot.items = record.snapshot.items.filter((entry) => entry.id !== item.id);
-        changed = true;
+        accepted.push(item);
       }
+      const changed = accepted.length > 0;
       if (changed) {
+        const ids = new Set(accepted.map((item) => item.id));
+        record.snapshot.items = record.snapshot.items.filter((entry) => !ids.has(entry.id));
         record.snapshot.revision += 1;
         await this.commit(record);
+        this.notifyAccepted(agentId, accepted);
       }
       return { snapshot: record.snapshot, changed };
     });
@@ -450,6 +463,7 @@ export class MessageQueueStore {
       }
       record.snapshot.revision += 1;
       await this.commit(record);
+      if (outcome.status === "accepted") this.notifyAccepted(input.agentId, [item]);
       return record.snapshot;
     });
   }

@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
+
 ## Unreleased - 2026-11-03
 
 ### Maintenance
@@ -146,6 +152,14 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Each release now ships Claude Code 2.1.311 instead of 2.1.284, so the Host and Dev daemons can offer Haiku 5.5, which needs 2.1.293 or later. Its Keychain item naming, credentials file and storage lock match 2.1.284.
 
 ## Unreleased - 2026-11-04
+
+### Fixes
+
+- Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer, and Pi and OMP, whose steer acknowledgements cannot prove delivery, still receive the answer when the turn finishes; reliable answer steering for Pi and OMP will follow separately. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment. Pausing the queue no longer holds an answer back from a busy thread, and a steer whose acknowledgement is lost is settled from provider history instead of being sent again.
+
+### Maintenance
+
+- Merged current `main` into the open question answer delivery fix three times; both sides' entries are kept.
 
 ### Changes
 
