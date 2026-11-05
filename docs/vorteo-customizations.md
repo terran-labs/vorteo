@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): snapshots on Linux take Dev's home through the running container (`docker exec ... tar`), since its bind mount is private to the container's user; upgrades with Dev on Linux had stopped at the snapshot. README unchanged.
+
 Maintenance review (2026-11-04): installer upgrades accept only a release tag as the target's release name; a commit from a test checkout no longer reaches the snapshot, which refused it. Found by the macOS upgrade jobs. README unchanged.
 
 Maintenance review (2026-11-04): the Linux upgrade test jobs pass the old release's commit SHA, not its tag, as the Dev image build commit. Test only. README unchanged.

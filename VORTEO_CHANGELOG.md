@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Snapshots on Linux read Dev's home through its running container. Linux keeps the bind-mounted home private to the container's user, so the Host could not read it and every upgrade with Dev on Linux, from the interface or the installer, stopped at its snapshot. Restores already unpack such a snapshot through the container. Found by the install tests' Linux upgrade jobs.
+
 ## Unreleased - 2026-11-04
 
 ### Fixes

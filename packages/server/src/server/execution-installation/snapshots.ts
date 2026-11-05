@@ -99,6 +99,55 @@ export function snapshotSources(
   return sources;
 }
 
+/** Where Dev's home is mounted inside its container (docker/multiplex compose files). */
+const DEV_HOME_IN_CONTAINER = "/home/paseo";
+
+/** The Compose container that runs Dev, named by the deployment's PASEO_INSTANCE. */
+export function devContainerName(directory: string | undefined): string | null {
+  if (!directory) return null;
+  try {
+    const line = readFileSync(path.join(directory, ".env"), "utf8")
+      .split("\n")
+      .find((item) => item.startsWith("PASEO_INSTANCE="));
+    const instance = line?.slice("PASEO_INSTANCE=".length).trim();
+    return instance ? `${instance}-paseo-1` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * On Linux, Dev's bind-mounted home belongs to the container's user with private modes,
+ * so the Host cannot read it. Its snapshot part goes through the running container
+ * instead, and a restore unpacks it the same way (`importDocker`). Docker Desktop on
+ * macOS shows the files as the Host user's, so the folder is copied there as before.
+ */
+export function devHomeThroughContainer(
+  sources: SnapshotSource[],
+  input: { platform: NodeJS.Platform; docker: string | null; container: string | null },
+): SnapshotSource[] {
+  const { platform, docker, container } = input;
+  if (platform !== "linux" || !docker || !container) return sources;
+  return sources.map((source) =>
+    source.type === "directory" && source.kind === "dev-home"
+      ? { type: "docker", kind: "dev-home", docker, container, path: DEV_HOME_IN_CONTAINER }
+      : source,
+  );
+}
+
+/** An absolute docker executable on PATH or in its usual places, or null. */
+export function findDocker(searchPath = process.env.PATH ?? ""): string | null {
+  const candidates = [
+    ...searchPath
+      .split(path.delimiter)
+      .filter(Boolean)
+      .map((directory) => path.join(directory, "docker")),
+    "/usr/bin/docker",
+    "/usr/local/bin/docker",
+  ];
+  return candidates.find((file) => path.isAbsolute(file) && existsSync(file)) ?? null;
+}
+
 export function sourceLabel(source: SnapshotSource): string {
   return source.type === "docker" ? `docker:${source.container}:${source.path}` : source.path;
 }

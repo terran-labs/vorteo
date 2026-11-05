@@ -491,7 +491,17 @@ async function snapshot(s) {
   if (!root) return { skip: "This installation has no snapshot folder." };
   const store = snapshots.createInstallationSnapshots({
     root,
-    sources: () => snapshots.snapshotSources(current, s.install.plan.paths.coordinatorConfig),
+    sources: () => {
+      const sources = snapshots.snapshotSources(current, s.install.plan.paths.coordinatorConfig);
+      // Releases before this one copy Dev's home as a folder, which Linux keeps private.
+      return snapshots.devHomeThroughContainer
+        ? snapshots.devHomeThroughContainer(sources, {
+            platform: s.install.plan.platform,
+            docker: s.install.plan.executables.docker ?? null,
+            container: s.install.outputs.instance ? `${s.install.outputs.instance}-paseo-1` : null,
+          })
+        : sources;
+    },
     ports: { now: () => s.context.now(), ...snapshots.dockerSnapshotPorts },
   });
   const taken = await store.take({

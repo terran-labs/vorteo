@@ -18,6 +18,7 @@ import {
   planRestore,
   snapshotPartKinds,
   snapshotSources,
+  devHomeThroughContainer,
   type SnapshotSource,
 } from "./snapshots.js";
 import { InstallationConfigSchema } from "./config.js";
@@ -298,6 +299,22 @@ posixTest("snapshot sources follow the installation layout", () => {
       excludeTopLevel: ["data", "workspace", "logs"],
     },
   ]);
+  // Linux keeps Dev's home private to the container's user: it goes through the container.
+  const linux = devHomeThroughContainer(snapshotSources(config, "/fixture/coordinator.json"), {
+    platform: "linux",
+    docker: "/usr/bin/docker",
+    container: "paseo-x-paseo-1",
+  });
+  expect(linux.find((source) => source.kind === "dev-home")).toEqual({
+    type: "docker",
+    kind: "dev-home",
+    docker: "/usr/bin/docker",
+    container: "paseo-x-paseo-1",
+    path: "/home/paseo",
+  });
+  expect(
+    devHomeThroughContainer(linux, { platform: "darwin", docker: "/d", container: "c" }),
+  ).toEqual(linux);
   const { container: _dev, deployment: _deployment, ...hostOnly } = config;
   const hostOnlySources = snapshotSources(
     { ...hostOnly, public: { ...config.public, environments: [config.public.environments[0]] } },
