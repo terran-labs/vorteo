@@ -209,7 +209,7 @@ function machine({ revision = INSTALLED, gateFails = 0, devId = DEV_ID, ...optio
         cpSync(path.join(REPOSITORY, "docker"), path.join(target, "docker"), { recursive: true });
       },
     ],
-    ["docker ps", ""],
+    ["docker ps", (args) => (args.includes("-a") ? "" : (options.dockerPorts ?? ""))],
     ["docker image inspect", new Error("No such image")],
     ["docker build", (args) => writeFileSync(args[args.indexOf("--iidfile") + 1], "sha256:dev\n")],
     ["docker inspect", () => (state.gateMode ? NEW_CONTAINER : OLD_CONTAINER)],
@@ -587,7 +587,7 @@ describe("apply", () => {
   });
 
   test("a Dev the installer does not manage is left exactly as it is", async () => {
-    const { context, state } = machine();
+    const { context, state } = machine({ dockerPorts: "127.0.0.1:6768->6767/tcp|/srv/hand-built" });
     const legacy = legacyInstallation(context.home, {
       root: labRoot(context),
       sourceUpdates: true,
@@ -611,6 +611,17 @@ describe("apply", () => {
     expect(config.public.environments).toEqual(legacy.config.public.environments);
     expect(config.container).toEqual(legacy.config.container);
     expect(config.deployment.containerDirectory).toBeUndefined();
+  });
+
+  test("Dev counts as unmanaged only on positive evidence, never because detection missed it", async () => {
+    const { context } = machine();
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      sourceUpdates: true,
+    });
+    rmSync(path.join(legacy.deployment, ".container-installation"));
+    context.root = legacy.root;
+    await expect(createHostAdoptionPlan(context)).rejects.toThrow("No running container publishes");
   });
 });
 

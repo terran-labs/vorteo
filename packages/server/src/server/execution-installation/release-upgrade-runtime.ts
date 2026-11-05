@@ -716,12 +716,15 @@ export function createReleaseUpgradeRuntime(input: {
 
   function upgradeDetail(): string {
     if (blocker) return blocker;
-    const steps = config.container
+    // Before adoption the coordinator cannot tell whether Dev is installer-managed; the
+    // adoption plan decides, and leaves an unmanaged Dev untouched.
+    const dev = managedDev(config);
+    const steps = dev
       ? "takes a snapshot, then restarts the Host daemon, replaces the coordinator and recreates the Dev container."
       : "takes a snapshot, then restarts the Host daemon and replaces the coordinator.";
     return adoptable
-      ? `This installation predates the one-command installer. An upgrade first moves it to the installer layout in place${config.container ? ", with Dev in gate mode" : ""}, then ${steps}`
-      : `An upgrade ${steps}`;
+      ? "This installation predates the one-command installer. An upgrade first moves it to the installer layout in place, then takes a snapshot, restarts the Host daemon and replaces the coordinator. A Dev the installer made also moves to gate mode and is recreated; any other Dev is left exactly as it is."
+      : `An upgrade ${steps}${config.container && !dev ? " Dev is not managed by the installer and is left as it is." : ""}`;
   }
 
   function readRestoreStatus(): SnapshotRestoreStatus | null {
@@ -772,6 +775,12 @@ export function createReleaseUpgradeRuntime(input: {
       ].sort();
       if (JSON.stringify(confirmed) !== JSON.stringify(snapshotPartKinds(snapshot)))
         throw new RestartRequestError("The snapshot's contents changed. Review the restore again.");
+      // An older snapshot can hold Dev's home; never write it into a Dev this installation
+      // does not manage.
+      if (!services.dev && snapshot.parts.some((part) => part.kind === "dev-home"))
+        throw new RestartRequestError(
+          "This snapshot holds Dev's home, but Dev is not managed by the installer here. Restore it by hand if needed.",
+        );
       // Check every stored part before stopping anything.
       snapshots.storedParts(snapshot);
       // The current state stays restorable: take one more snapshot before replacing it.

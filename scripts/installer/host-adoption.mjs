@@ -165,6 +165,47 @@ async function managedDevDeployment(context, config, root) {
   );
 }
 
+/**
+ * Positive evidence that Dev is a deployment the installer did not make: Docker answers and a
+ * running container publishes the Dev endpoint from a folder without the installer's marker.
+ * Anything less fails closed, so a managed Dev that detection missed is never skipped.
+ */
+async function assertUnmanagedDev(context, config, docker) {
+  const port = endpointPort(config.container.endpoint);
+  let output;
+  try {
+    output = await context.run(docker, [
+      "ps",
+      "--format",
+      '{{.Ports}}|{{.Label "com.docker.compose.project.working_dir"}}',
+    ]);
+  } catch (error) {
+    throw new InstallerError(
+      "Docker did not answer, so the installer cannot tell how Dev is deployed.",
+      "Start Docker and Dev, then run the upgrade again.",
+      { cause: error },
+    );
+  }
+  const publisher = output
+    .split("\n")
+    .map((line) => line.split("|"))
+    .find(([ports]) =>
+      ports?.split(",").some((entry) => entry.trim().startsWith(`127.0.0.1:${port}->`)),
+    );
+  if (!publisher)
+    throw new InstallerError(
+      `No running container publishes 127.0.0.1:${port}, the endpoint this installation uses for Dev.`,
+      "Start the Dev container, then run the upgrade again.",
+    );
+  const folder = publisher[1]?.trim();
+  if (folder && existsSync(path.join(folder, ".container-installation")))
+    throw new InstallerError(
+      `Dev in ${folder} is an installer-made deployment the installer could not read.`,
+      "Check its .env and Compose files, then run the upgrade again.",
+    );
+  return true;
+}
+
 async function legacyDevDeployment(context, config, root) {
   const port = endpointPort(config.container.endpoint);
   const deployments = await findLegacyDeployments(context, {
@@ -461,7 +502,9 @@ export async function createHostAdoptionPlan(context, { source, revision: reques
   // A Dev the installer does not manage stays exactly as it is: adoption moves only the Host
   // and never runs a Dev step on it (no image build, gate switch or container recreation).
   const devUnmanaged =
-    Boolean(config.container) && !(await managedDevDeployment(context, config, found.root));
+    Boolean(config.container) &&
+    !(await managedDevDeployment(context, config, found.root)) &&
+    (await assertUnmanagedDev(context, config, docker));
   const dev =
     config.container && !devUnmanaged
       ? await devPlan(context, config, found.root, hostHome, docker)
