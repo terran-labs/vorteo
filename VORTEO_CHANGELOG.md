@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Tooling
+
+- Merged current `main` (the Unite touch icon fix) into the VortLab lab beta before release.
+
 ## 26.11.501 - 2026-11-05
 
 Beta for VortLab: custom domains for installer-made installations, and lab self-update.
@@ -40,6 +46,10 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 ### Maintenance
 
 - Placed the Custom domain card directly after the daemon automation control in Installation controls.
+
+### Fixed
+
+- Site wrappers such as Unite now build a sharp Vorteo app icon. The web interface serves a 1024px touch icon from its `apple-touch-icon` link and from the precomposed and iPhone fallback paths, which previously returned the page instead of an image.
 
 ## Unreleased - 2026-11-05
 

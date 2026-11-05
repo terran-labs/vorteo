@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): merged current `main`, including the Unite touch icon fix, into the VortLab lab beta branch; both sides kept and no behavior changed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): prepared beta release 26.11.501 for VortLab with custom domains and lab self-update; live design tweaks were held out by the owner. Version and changelog only. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): live tweak by Lab self-update: Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
