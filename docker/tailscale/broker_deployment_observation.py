@@ -111,11 +111,26 @@ class NativeObservation:
             raise ValueError('Native process custody changed')
         return {'pid': pid, 'birth': before['birth'], 'uid': os.getuid(), 'argv': argv}
 
-    def owned(self, pid):
+    def inventory_process(self, pid):
+        """Stable identity and argv for any listed pid, whatever its credentials."""
         try:
-            return self.kernel.info(pid)['uids'] == [os.getuid()] * 3
+            before = self.kernel.info(pid)
+            argv = self.kernel.argv(pid)
+            after = self.kernel.info(pid)
         except ProcessGone:
-            return False
+            return None
+        if before != after or before['pid'] != pid:
+            raise ValueError('Native process custody changed')
+        return before, argv
+
+    def broker_related(self, arg):
+        """Broad match for processes outside full owner custody: any broker root path
+        or consumer module name, not only the exact routes."""
+        names = ('https_broker', 'https-preview', 'host_config', 'channel_identity',
+                 'broker_deployment', 'broker_rebind')
+        return (any(arg == binding['root'] or arg.startswith(binding['root'] + '/')
+                    or binding['root'] + '/' in arg for binding in self.bindings)
+                or any(name in arg for name in names))
 
     def old_process_exited(self, expected):
         if expected is None:
@@ -189,9 +204,18 @@ class NativeObservation:
                   for name in ('https_broker.py', 'https-preview.py')}
         for pid in self.kernel.pids(os.getuid()):
             # The inventory filters by effective UID only, so it also lists processes
-            # such as loginwindow (euid owner, ruid and svuid root). Those cannot be
-            # our consumers; process() keeps its strict custody check for the rest.
-            if not self.owned(pid):
+            # such as loginwindow (euid owner, ruid and svuid root). A mixed-credential
+            # process is skipped only when its argv names no broker root, route or
+            # module; otherwise it is refused like any unlisted caller. An unreadable
+            # argv raises. Every sweep re-reads credentials, so a later drop to full
+            # owner UIDs takes the strict process() path below.
+            observed = self.inventory_process(pid)
+            if observed is None:
+                continue
+            info, argv = observed
+            if info['uids'] != [os.getuid()] * 3:
+                if any(self.broker_related(arg) for arg in argv):
+                    raise ValueError('Unlisted broker caller or waiting generation remains')
                 continue
             process = self.process(pid)
             if process is not None and any(arg in routes for arg in process['argv']):
