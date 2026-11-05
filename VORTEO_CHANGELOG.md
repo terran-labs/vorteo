@@ -9,6 +9,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Added
 
 - Installer-made installations can set a custom domain from Installation controls. Saving it allows the domain on the Host and Dev daemons and restarts only the coordinator. If the coordinator does not come back, the previous settings are restored automatically.
+- Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
 ## 26.11.500 - 2026-11-05
 

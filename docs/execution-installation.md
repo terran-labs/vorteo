@@ -168,6 +168,15 @@ Each installation has an update policy in `<stateDir>/update-policy.json`, edite
 
 Snapshots go to `<installRoot>/state/snapshots/<time>/` with `manifest.json`; the newest five are kept. They hold coordinator state, the coordinator configuration, the Host daemon home, Dev's home and Dev's deployment files, without `.npm`, `.cache` and `.pnpm-store`. A restore first snapshots the current state, then a detached helper stops the coordinator, Host and Dev, replaces each part, and starts Dev, the Host and the coordinator.
 
+### Installation type and lab self-updates
+
+Every installation has a type. **Stable**, the default, installs tagged releases through the upgrades above. **Lab** also rebuilds itself from its live checkout without a tag; its changes reach `main` later through Builds' usual pull request. Only the owner changes the type, in Installation settings.
+
+- **State.** The type is stored in `<stateDir>/installation-type.json` as `{version, type, changedAt}`. A missing file reads as Stable. Owner routes `POST /api/installation/owner/installation-type/query` and `/change` (`{expectedRevision, type}`) read and change it behind the owner session check, with the schemas in `packages/protocol/src/installation-type.ts`. A stale revision is refused. An unreadable record reports Stable with the revision `unreadable`, never Lab, and only a change to Stable may use that revision. The status reports `labUpdateAvailable` and `labUpdateReason`.
+- **Lab self-update.** `POST /api/installation/owner/lab-updates` starts one; Host agents use `POST /api/installation/lab-update-requests` with the Host agent token, which the installation client sends as `request-lab-update` (and `lab-update-status <id>`). Both refuse unless the type is Lab, the installation was made by the installer with `host-current` and `coordinator-current` links and no Host source updates, and no release upgrade runs. The capability appears as `labSelfUpdate` in `/api/installation/capabilities`. How it builds, restarts and rolls back is in [live dev mode](live-dev-mode.md#fast-track-daemon-restarts).
+- **Approval.** The Lab type is the approval. Each job records `approval: {policy: "lab-installation-type"}` and starts without an owner decision. The Host restart it requests is approved on the same basis. Switching back to Stable stops new lab self-updates and fails one whose build has not started.
+- **Status.** `POST /api/installation/owner/lab-updates/query` returns the type, availability and the last 20 jobs from `<stateDir>/lab-updates/journal.json`, newest first. `POST /api/installation/owner/lab-updates/cancel` (`{id, revision}`) cancels a job before anything restarts.
+
 ### Installations from before the installer
 
 A Host installation made by `scripts/install-execution-host.mjs install` from a hand-written plan has no `deployment`. It reaches the installer layout in place, through its normal upgrade path, and keeps its root, identity, owner password, credentials, homes, agents and data. Three paths run the same engine command, `node scripts/installer/main.mjs adopt --root <old root>`:
