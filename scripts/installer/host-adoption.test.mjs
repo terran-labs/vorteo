@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -208,7 +209,7 @@ function machine({ revision = INSTALLED, gateFails = 0, devId = DEV_ID, ...optio
         cpSync(path.join(REPOSITORY, "docker"), path.join(target, "docker"), { recursive: true });
       },
     ],
-    ["docker ps", ""],
+    ["docker ps", (args) => (args.includes("-a") ? "" : (options.dockerPorts ?? ""))],
     ["docker image inspect", new Error("No such image")],
     ["docker build", (args) => writeFileSync(args[args.indexOf("--iidfile") + 1], "sha256:dev\n")],
     ["docker inspect", () => (state.gateMode ? NEW_CONTAINER : OLD_CONTAINER)],
@@ -583,6 +584,44 @@ describe("apply", () => {
     expect(serviceArguments(readFileSync(legacy.coordinatorPlist, "utf8")).at(-1)).toBe(own);
     const record = JSON.parse(readFileSync(path.join(legacy.root, "installation.json"), "utf8"));
     expect(record.configFile).toBe(own);
+  });
+
+  test("a Dev the installer does not manage is left exactly as it is", async () => {
+    const { context, state } = machine({ dockerPorts: "127.0.0.1:6768->6767/tcp|/srv/hand-built" });
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      sourceUpdates: true,
+    });
+    // A hand-built Compose project: no installer marker, so nothing identifies it as managed.
+    rmSync(path.join(legacy.deployment, ".container-installation"));
+    context.root = legacy.root;
+    const { plan, summary } = await createHostAdoptionPlan(context);
+    expect(plan).toMatchObject({ devContainer: false, devUnmanaged: true });
+    expect(plan.steps.filter((step) => step.startsWith("dev-") || step === "remote")).toEqual([]);
+    expect(summary.join("\n")).toContain("stays exactly as it is");
+    const { ok } = await adopt(context);
+    expect(ok).toBe(true);
+    expect(state.gateMode).toBe(false);
+    expect(
+      context.run.calls.filter((call) =>
+        call.args.some((arg) => /gate\.sh|docker\/base\/Dockerfile/.test(String(arg))),
+      ),
+    ).toEqual([]);
+    const config = JSON.parse(readFileSync(path.join(legacy.root, "coordinator.json"), "utf8"));
+    expect(config.public.environments).toEqual(legacy.config.public.environments);
+    expect(config.container).toEqual(legacy.config.container);
+    expect(config.deployment.containerDirectory).toBeUndefined();
+  });
+
+  test("Dev counts as unmanaged only on positive evidence, never because detection missed it", async () => {
+    const { context } = machine();
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      sourceUpdates: true,
+    });
+    rmSync(path.join(legacy.deployment, ".container-installation"));
+    context.root = legacy.root;
+    await expect(createHostAdoptionPlan(context)).rejects.toThrow("No running container publishes");
   });
 });
 
