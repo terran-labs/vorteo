@@ -22,7 +22,7 @@ import { PLAN_VERSION } from "./plan.mjs";
 import { InstallerError, build, writeJson } from "./primitives.mjs";
 import { STEPS, pointLink } from "./steps.mjs";
 import { writeSystemSource } from "../lib/system-source.mjs";
-import { compareVersions as compareCalendarVersions } from "../vorteo-version.mjs";
+import { compareVersions as compareCalendarVersions, parseTag } from "../vorteo-version.mjs";
 
 export const UPGRADE_JOURNAL = path.join("state", "upgrade.json");
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -199,7 +199,8 @@ async function targetRelease(context, source, revision, release) {
   } catch {
     updatePolicy = false;
   }
-  return { revision, version, release: release ?? null, updatePolicy };
+  // Only a release tag names a release; a test checkout passes its commit instead.
+  return { revision, version, release: parseTag(release ?? "") ? release : null, updatePolicy };
 }
 
 /**

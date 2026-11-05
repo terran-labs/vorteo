@@ -353,6 +353,13 @@ describe("upgrade plan", () => {
     );
   });
 
+  test("a commit passed as the release names no release", async () => {
+    const { context } = machine();
+    const result = await upgradePlan(context, { release: NEW });
+    expect(result.target.release).toBeNull();
+    expect(result.plan.to.release).toBeNull();
+  });
+
   test("the same, an older and an unchanged-settings run plan nothing", async () => {
     const { context } = machine();
     const same = await upgradePlan(context, { revision: OLD });

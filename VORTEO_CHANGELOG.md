@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Fixes
+
+- An installer upgrade from a checkout, as the install tests run it, names no release instead of passing the commit as one, which the snapshot step refused.
+
+## Unreleased - 2026-11-04
+
 ### Tests
 
 - The Linux upgrade jobs build the old release's Dev image with its commit SHA, which the app build requires, instead of its tag name.
