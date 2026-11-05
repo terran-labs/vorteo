@@ -1200,6 +1200,8 @@ function createRuntime(
 export class PiRpcAgentSession implements AgentSession {
   readonly provider: AgentProvider;
   readonly capabilities: AgentCapabilityFlags;
+  // A steer can land after its turn ends; text echoes cannot reliably prove which one arrived.
+  readonly ambiguousSteerAcknowledgement = true;
 
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly activeToolCalls = new Map<string, PiTrackedToolCall>();
