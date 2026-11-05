@@ -277,11 +277,15 @@ function WorkspaceStatusIndicator({
   // Busy is the only status that moves, and it is the ring rather than a dot for the same
   // reason it is a dot elsewhere: every status in the sidebar sits in this one slot, so busy
   // has to fill it without displacing anything. A row starting up and a row working are both
-  // busy, so they share the ring and differ only in testID.
+  // busy, so they share the ring and differ only in testID. Sidebar rows always use the quiet
+  // foreground ring, not the colored agent ring: a list full of working agents should hum, not
+  // blink blue at you.
   if (loading) {
     return (
       <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-loading">
-        <StatusRing variant={muted ? "task" : "agent"} />
+        <View style={styles.workspaceStatusRing}>
+          <StatusRing variant="task" />
+        </View>
       </View>
     );
   }
@@ -289,7 +293,9 @@ function WorkspaceStatusIndicator({
   if (shouldRenderSyncedStatusLoader({ bucket })) {
     return (
       <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-running">
-        <StatusRing variant={muted ? "task" : "agent"} />
+        <View style={styles.workspaceStatusRing}>
+          <StatusRing variant="task" />
+        </View>
       </View>
     );
   }
@@ -659,6 +665,11 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
+  },
+  // Shrinks the shared status ring for the dense sidebar list without changing its geometry
+  // elsewhere (tabs, composer, checklist), where it keeps its full size.
+  workspaceStatusRing: {
+    transform: [{ scale: 0.8 }],
   },
   statusDotOverlay: {
     position: "absolute",

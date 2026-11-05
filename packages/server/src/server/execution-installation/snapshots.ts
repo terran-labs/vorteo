@@ -9,7 +9,7 @@ import {
   statSync,
 } from "node:fs";
 import { createReadStream, createWriteStream } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -50,6 +50,11 @@ export const SnapshotSourceSchema = z.discriminatedUnion("type", [
     docker: z.string().startsWith("/"),
     container: z.string().min(1),
     path: z.string().startsWith("/"),
+    /**
+     * The path is a bind mount of the Host (Linux Dev's home). A restore then replaces
+     * its contents as root through Dev's own mounts, and puts them back on failure.
+     */
+    mounted: z.literal(true).optional(),
   }),
 ]);
 export type SnapshotSource = z.infer<typeof SnapshotSourceSchema>;
@@ -100,6 +105,62 @@ export function snapshotSources(
       excludeTopLevel: [...DEPLOYMENT_EXCLUDED_ENTRIES],
     });
   return sources;
+}
+
+/** Where Dev's home is mounted inside its container (docker/multiplex compose files). */
+const DEV_HOME_IN_CONTAINER = "/home/paseo";
+
+/** The Compose container that runs Dev, named by the deployment's PASEO_INSTANCE. */
+export function devContainerName(directory: string | undefined): string | null {
+  if (!directory) return null;
+  try {
+    const line = readFileSync(path.join(directory, ".env"), "utf8")
+      .split("\n")
+      .find((item) => item.startsWith("PASEO_INSTANCE="));
+    const instance = line?.slice("PASEO_INSTANCE=".length).trim();
+    return instance ? `${instance}-paseo-1` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * On Linux, Dev's bind-mounted home belongs to the container's user with private modes,
+ * so the Host cannot read it. Its snapshot part goes through the running container
+ * instead, and a restore replaces it through Dev's mounts (`mountedHomeRestore`). Docker Desktop on
+ * macOS shows the files as the Host user's, so the folder is copied there as before.
+ */
+export function devHomeThroughContainer(
+  sources: SnapshotSource[],
+  input: { platform: NodeJS.Platform; docker: string | null; container: string | null },
+): SnapshotSource[] {
+  const { platform, docker, container } = input;
+  if (platform !== "linux" || !docker || !container) return sources;
+  return sources.map((source) =>
+    source.type === "directory" && source.kind === "dev-home"
+      ? {
+          type: "docker",
+          kind: "dev-home",
+          docker,
+          container,
+          path: DEV_HOME_IN_CONTAINER,
+          mounted: true,
+        }
+      : source,
+  );
+}
+
+/** An absolute docker executable on PATH or in its usual places, or null. */
+export function findDocker(searchPath = process.env.PATH ?? ""): string | null {
+  const candidates = [
+    ...searchPath
+      .split(path.delimiter)
+      .filter(Boolean)
+      .map((directory) => path.join(directory, "docker")),
+    "/usr/bin/docker",
+    "/usr/local/bin/docker",
+  ];
+  return candidates.find((file) => path.isAbsolute(file) && existsSync(file)) ?? null;
 }
 
 export function sourceLabel(source: SnapshotSource): string {
@@ -339,9 +400,22 @@ export function planRestore(parts: readonly StoredPart[], hasDev: boolean): Rest
   ];
 }
 
+type DockerSource = Extract<SnapshotSource, { type: "docker" }>;
+
+/**
+ * Replaces a bind-mounted Dev home from a snapshot: its current contents move aside within
+ * the same mount, the snapshot unpacks with its owners, and the aside copy is put back
+ * after a failure or discarded once the whole restore succeeds.
+ */
+export interface MountedHomeRestore {
+  replace(source: DockerSource, file: string, restoreId: string): Promise<void>;
+  revert(source: DockerSource, restoreId: string): Promise<void>;
+  discard(source: DockerSource, restoreId: string): Promise<void>;
+}
+
 export interface RestorePorts {
   services: ServiceControl;
-  snapshot: Pick<SnapshotPorts, "importDocker">;
+  snapshot: Pick<SnapshotPorts, "importDocker"> & { mounted?: MountedHomeRestore };
   verifyCoordinator(): Promise<void>;
   progress(step: string): void;
 }
@@ -358,7 +432,9 @@ async function restorePart(
 ): Promise<void> {
   const { source, stored } = part;
   if (source.type === "docker") {
-    await ports.snapshot.importDocker(source, stored);
+    if (source.mounted && ports.snapshot.mounted)
+      await ports.snapshot.mounted.replace(source, stored, restoreId);
+    else await ports.snapshot.importDocker(source, stored);
     return;
   }
   if (source.type === "file") {
@@ -385,9 +461,12 @@ async function restorePart(
 }
 
 /** Puts a moved-aside part back after a failed restore. */
-function revertPart(part: StoredPart, restoreId: string): void {
+async function revertPart(part: StoredPart, restoreId: string, ports: RestorePorts) {
   const { source } = part;
-  if (source.type === "docker") return;
+  if (source.type === "docker") {
+    if (source.mounted) await ports.snapshot.mounted?.revert(source, restoreId);
+    return;
+  }
   const aside = asideName(source.path, restoreId);
   if (!existsSync(aside)) return;
   if (source.type === "directory" && source.excludeTopLevel?.length) {
@@ -403,8 +482,11 @@ function revertPart(part: StoredPart, restoreId: string): void {
   renameSync(aside, source.path);
 }
 
-function discardAside(part: StoredPart, restoreId: string): void {
-  if (part.source.type === "docker") return;
+async function discardAside(part: StoredPart, restoreId: string, ports: RestorePorts) {
+  if (part.source.type === "docker") {
+    if (part.source.mounted) await ports.snapshot.mounted?.discard(part.source, restoreId);
+    return;
+  }
   rmSync(asideName(part.source.path, restoreId), { recursive: true, force: true });
 }
 
@@ -413,6 +495,27 @@ function discardAside(part: StoredPart, restoreId: string): void {
  * the stopped services again and rethrows, so the installation returns to the state
  * the owner left. A separate pre-restore snapshot keeps that state restorable too.
  */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A restore failed and some replaced parts could not be put back. Their previous copies
+ * stay beside them (`*.before-restore-<id>`), so the installation needs recovery by hand.
+ */
+export class RestoreRollbackError extends Error {
+  constructor(
+    readonly restoreError: unknown,
+    readonly problems: readonly string[],
+  ) {
+    const reason = restoreError instanceof Error ? restoreError.message : String(restoreError);
+    super(
+      `Restore failed (${reason}) and putting things back failed: ${problems.join("; ")}. The services stay stopped, and the previous copies are kept beside each part as .before-restore-<id>; recover them before starting the installation again.`,
+    );
+    this.name = "RestoreRollbackError";
+  }
+}
+
 export async function executeRestore(input: {
   restoreId: string;
   parts: readonly StoredPart[];
@@ -422,13 +525,19 @@ export async function executeRestore(input: {
   const { restoreId, parts, steps, ports } = input;
   const replaced: StoredPart[] = [];
   const stopped: ManagedService[] = [];
+  const everStopped: ManagedService[] = [];
+  // Recorded before each start is awaited: a start that fails, such as Dev failing its
+  // health wait, may still have launched the service.
+  const started = new Set<ManagedService>();
   try {
     for (const step of steps) {
       ports.progress(describeStep(step, parts));
       if (step.action === "stop") {
         await ports.services.stop(step.service);
         stopped.push(step.service);
+        everStopped.push(step.service);
       } else if (step.action === "start") {
+        started.add(step.service);
         await ports.services.start(step.service);
         stopped.splice(stopped.indexOf(step.service), 1);
       } else if (step.action === "restore") {
@@ -439,14 +548,30 @@ export async function executeRestore(input: {
     }
   } catch (error) {
     ports.progress("Restore failed; putting back the replaced files");
-    for (const part of replaced.toReversed()) revertPart(part, restoreId);
+    // Files change only once every service the plan may have started is stopped again,
+    // coordinator first as the plan does. A service that will not stop leaves the
+    // restored files and the previous copies as they are.
+    const problems: string[] = [];
+    for (const service of everStopped.filter((item) => started.has(item)))
+      await ports.services
+        .stop(service)
+        .catch((stopError: unknown) =>
+          problems.push(`stopping ${service}: ${describeError(stopError)}`),
+        );
+    if (problems.length) throw new RestoreRollbackError(error, problems);
+    for (const part of replaced.toReversed())
+      await revertPart(part, restoreId, ports).catch((revertError: unknown) =>
+        problems.push(`${part.part.source}: ${describeError(revertError)}`),
+      );
+    // Partially recovered data must not start; the owner recovers it first.
+    if (problems.length) throw new RestoreRollbackError(error, problems);
     // Start in the plan's order: Dev, then the Host, then the coordinator.
     const order: ManagedService[] = ["dev", "host", "coordinator"];
-    for (const service of order.filter((item) => stopped.includes(item)))
+    for (const service of order.filter((item) => everStopped.includes(item)))
       await ports.services.start(service).catch(() => undefined);
     throw error;
   }
-  for (const part of replaced) discardAside(part, restoreId);
+  for (const part of replaced) await discardAside(part, restoreId, ports);
 }
 
 function describeStep(step: RestoreStep, parts: readonly StoredPart[]): string {
@@ -457,10 +582,18 @@ function describeStep(step: RestoreStep, parts: readonly StoredPart[]): string {
   return "Waiting for the coordinator";
 }
 
-/** Production Docker transfer for a Dev home that is not bind-mounted. */
+/** Production Docker transfer for Dev's home. */
 export const dockerSnapshotPorts: Omit<SnapshotPorts, "now"> = {
-  exportDocker(source, file) {
+  async exportDocker(source, file) {
     const exclusions = SNAPSHOT_EXCLUDED_NAMES.flatMap((name) => [`--exclude=${name}`]);
+    // Dev runs as root without CAP_DAC_OVERRIDE, so `docker exec` cannot read the Dev
+    // user's private folders; a bind-mounted home is read through Dev's mounts instead.
+    if (source.mounted)
+      return pipeToFile(
+        source.docker,
+        await mountedHomeArgs(source, "export", ["--exclude=./.before-restore-*", ...exclusions]),
+        file,
+      );
     return pipeToFile(
       source.docker,
       ["exec", source.container, "tar", "-C", source.path, ...exclusions, "-cf", "-", "."],
@@ -473,27 +606,157 @@ export const dockerSnapshotPorts: Omit<SnapshotPorts, "now"> = {
   },
 };
 
+// Runs as root in a one-shot container with Dev's mounts and Docker's default capabilities,
+// so every file is readable and ownership is kept. The aside copy lives inside the mount,
+// where a move is a rename.
+const MOUNTED_HOME_SCRIPTS = {
+  // The remaining arguments are tar options, such as exclusions. Dev keeps running, and
+  // GNU tar exits 1 when a file changed while it was read; the archive is still whole.
+  export: `set -eu
+home="$1"; shift
+status=0
+tar -C "$home" "$@" -cf - . || status=$?
+[ "$status" -eq 1 ] && exit 0
+exit "$status"`,
+  // Moves every entry aside one at a time, stopping at the first failure, and marks the
+  // aside copy complete before unpacking. Without the mark nothing was unpacked yet.
+  replace: `set -eu
+home="$1"; aside="$home/.before-restore-$2"; complete="$aside.complete"
+mkdir "$aside"
+for entry in "$home"/* "$home"/.[!.]* "$home"/..?*; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  [ "$entry" = "$aside" ] && continue
+  mv "$entry" "$aside"/
+done
+touch "$complete"
+tar -C "$home" --same-owner -xpf -`,
+  // After a complete move the home holds only unpacked entries, which go; after a partial
+  // one it still holds untouched originals, which stay. The aside entries then move back.
+  revert: `set -eu
+home="$1"; aside="$home/.before-restore-$2"; complete="$aside.complete"
+[ -d "$aside" ] || exit 0
+if [ -e "$complete" ]; then
+  for entry in "$home"/* "$home"/.[!.]* "$home"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    [ "$entry" = "$aside" ] || [ "$entry" = "$complete" ] && continue
+    rm -rf "$entry"
+  done
+fi
+for entry in "$aside"/* "$aside"/.[!.]* "$aside"/..?*; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  mv "$entry" "$home"/
+done
+rmdir "$aside"
+rm -f "$complete"`,
+  discard: `set -eu
+rm -rf "$1/.before-restore-$2" "$1/.before-restore-$2.complete"`,
+};
+
+/** The script for `action`, for running in a shell; exported for tests. */
+export function mountedHomeScript(action: keyof typeof MOUNTED_HOME_SCRIPTS): string {
+  return MOUNTED_HOME_SCRIPTS[action];
+}
+
+async function mountedHomeArgs(
+  source: DockerSource,
+  action: keyof typeof MOUNTED_HOME_SCRIPTS,
+  rest: string[],
+): Promise<string[]> {
+  // The image Dev's container was created from, present even while it is stopped.
+  const image = await new Promise<string>((resolve, reject) => {
+    const child = spawn(source.docker, ["inspect", "--format", "{{.Image}}", source.container], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    const errors = collectStderr(child);
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(output.trim());
+      else reject(exitError("docker inspect", code, errors()));
+    });
+  });
+  return [
+    "run",
+    "--rm",
+    "-i",
+    "--network",
+    "none",
+    "--user",
+    "0:0",
+    "--volumes-from",
+    source.container,
+    "--entrypoint",
+    "/bin/sh",
+    image,
+    "-c",
+    MOUNTED_HOME_SCRIPTS[action],
+    "restore",
+    source.path,
+    ...rest,
+  ];
+}
+
+/** Keeps the end of a child's stderr for its error message. */
+function collectStderr(child: ChildProcess): () => string {
+  let text = "";
+  child.stderr?.on("data", (chunk) => (text = (text + chunk).slice(-2000)));
+  return () => text.trim().split("\n").slice(-5).join("\n");
+}
+
+function exitError(command: string, code: number | null, stderr: string): Error {
+  const name = path.basename(command);
+  return new Error(`${name} exited with ${code}${stderr ? `: ${stderr}` : ""}`);
+}
+
+function runToEnd(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const errors = collectStderr(child);
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(exitError(command, code, errors()));
+    });
+  });
+}
+
+/** Production restore of a bind-mounted Dev home. */
+export const mountedHomeRestore: MountedHomeRestore = {
+  async replace(source, file, restoreId) {
+    await pipeFromFile(source.docker, await mountedHomeArgs(source, "replace", [restoreId]), file);
+  },
+  async revert(source, restoreId) {
+    await runToEnd(source.docker, await mountedHomeArgs(source, "revert", [restoreId]));
+  },
+  async discard(source, restoreId) {
+    await runToEnd(source.docker, await mountedHomeArgs(source, "discard", [restoreId]));
+  },
+};
+
 function pipeToFile(command: string, args: string[], file: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const output = createWriteStream(file, { mode: 0o600, flags: "wx" });
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const errors = collectStderr(child);
     child.stdout.pipe(output);
     child.on("error", reject);
     child.on("close", (code) => {
       output.close();
       if (code === 0) resolve();
-      else reject(new Error(`${path.basename(command)} exited with ${code}`));
+      else reject(exitError(command, code, errors()));
     });
   });
 }
 
 function pipeFromFile(command: string, args: string[], file: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"] });
+    const errors = collectStderr(child);
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`${path.basename(command)} exited with ${code}`));
+      else reject(exitError(command, code, errors()));
     });
     createReadStream(file).on("error", reject).pipe(child.stdin);
   });
