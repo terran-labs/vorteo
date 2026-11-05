@@ -144,6 +144,7 @@ if (
       reason: { type: "string" },
       "instructions-file": { type: "string" },
       "base-revision": { type: "string" },
+      "rollback-of": { type: "string" },
     },
   });
   // Vorteo :: Builds is the only writer of shared state (AGENTS.md, "Builds coordinator").
@@ -585,6 +586,26 @@ if (
       // Batch details include each contribution's merge result, such as a conflict.
       resource = `/api/installation/restart-requests/${positionals[1]}?sourceBatches=1`;
       break;
+    case "request-lab-update":
+      // Approved by the Lab installation type; a Stable installation refuses it.
+      if (config.kind !== "host-agent")
+        throw new Error("Lab self-updates require the trusted Host client");
+      if (values["rollback-of"] && !/^[a-f0-9-]{36}$/.test(values["rollback-of"]))
+        throw new Error("--rollback-of needs the lab update ID to roll back");
+      resource = "/api/installation/lab-update-requests";
+      body = {
+        ...(values.reason?.trim() ? { reason: values.reason.trim() } : {}),
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+        ...(values["rollback-of"] ? { rollbackOf: values["rollback-of"] } : {}),
+      };
+      break;
+    case "lab-update-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Lab self-update inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A lab update ID is required");
+      resource = `/api/installation/lab-update-requests/${positionals[1]}`;
+      break;
     case "read-instructions":
       // Prints the shared agent instructions and the revision a change must be based on.
       resource = "/api/installation/settings/admission";
@@ -620,7 +641,7 @@ if (
       break;
     default:
       throw new Error(
-        "Commands: request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, container-agents (Host only)",
+        "Commands: request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, container-agents (Host only)",
       );
   }
   let upload;
