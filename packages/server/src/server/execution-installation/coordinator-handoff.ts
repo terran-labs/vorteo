@@ -20,6 +20,7 @@ import { ManagedServicesSchema, type ServiceControl } from "./service-control.js
 import {
   executeRestore,
   planRestore,
+  RestoreRollbackError,
   type InstallationSnapshots,
   type RestorePorts,
 } from "./snapshots.js";
@@ -221,7 +222,10 @@ export async function runRestore(
     const detail = error instanceof Error ? error.message : String(error);
     update({
       status: "failed",
-      detail: `Restore failed and the replaced files were put back: ${detail}`,
+      detail:
+        error instanceof RestoreRollbackError
+          ? detail
+          : `Restore failed and the replaced files were put back: ${detail}`,
     });
   }
   return status;

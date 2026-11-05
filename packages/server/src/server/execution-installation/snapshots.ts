@@ -492,6 +492,23 @@ async function discardAside(part: StoredPart, restoreId: string, ports: RestoreP
  * the stopped services again and rethrows, so the installation returns to the state
  * the owner left. A separate pre-restore snapshot keeps that state restorable too.
  */
+/**
+ * A restore failed and some replaced parts could not be put back. Their previous copies
+ * stay beside them (`*.before-restore-<id>`), so the installation needs recovery by hand.
+ */
+export class RestoreRollbackError extends Error {
+  constructor(
+    readonly restoreError: unknown,
+    readonly problems: readonly string[],
+  ) {
+    const reason = restoreError instanceof Error ? restoreError.message : String(restoreError);
+    super(
+      `Restore failed (${reason}) and putting back ${problems.join("; ")} failed. The previous copies are kept beside each part as .before-restore-<id>; recover them before starting the installation again.`,
+    );
+    this.name = "RestoreRollbackError";
+  }
+}
+
 export async function executeRestore(input: {
   restoreId: string;
   parts: readonly StoredPart[];
@@ -501,12 +518,14 @@ export async function executeRestore(input: {
   const { restoreId, parts, steps, ports } = input;
   const replaced: StoredPart[] = [];
   const stopped: ManagedService[] = [];
+  const everStopped: ManagedService[] = [];
   try {
     for (const step of steps) {
       ports.progress(describeStep(step, parts));
       if (step.action === "stop") {
         await ports.services.stop(step.service);
         stopped.push(step.service);
+        everStopped.push(step.service);
       } else if (step.action === "start") {
         await ports.services.start(step.service);
         stopped.splice(stopped.indexOf(step.service), 1);
@@ -518,12 +537,22 @@ export async function executeRestore(input: {
     }
   } catch (error) {
     ports.progress("Restore failed; putting back the replaced files");
+    // Services the plan already started run on restored files; stop them, coordinator
+    // first as the plan does, before those files change again.
+    for (const service of everStopped.filter((item) => !stopped.includes(item)))
+      await ports.services.stop(service).catch(() => undefined);
+    const problems: string[] = [];
     for (const part of replaced.toReversed())
-      await revertPart(part, restoreId, ports).catch(() => undefined);
+      await revertPart(part, restoreId, ports).catch((revertError: unknown) =>
+        problems.push(
+          `${part.part.source}: ${revertError instanceof Error ? revertError.message : String(revertError)}`,
+        ),
+      );
     // Start in the plan's order: Dev, then the Host, then the coordinator.
     const order: ManagedService[] = ["dev", "host", "coordinator"];
-    for (const service of order.filter((item) => stopped.includes(item)))
+    for (const service of order.filter((item) => everStopped.includes(item)))
       await ports.services.start(service).catch(() => undefined);
+    if (problems.length) throw new RestoreRollbackError(error, problems);
     throw error;
   }
   for (const part of replaced) await discardAside(part, restoreId, ports);
@@ -556,19 +585,38 @@ export const dockerSnapshotPorts: Omit<SnapshotPorts, "now"> = {
 // Runs as root in a one-shot container with Dev's mounts, so ownership is kept. The aside
 // copy lives inside the mount, where a move is a rename.
 const MOUNTED_HOME_SCRIPTS = {
+  // Moves every entry aside one at a time, stopping at the first failure, and marks the
+  // aside copy complete before unpacking. Without the mark nothing was unpacked yet.
   replace: `set -eu
-home="$1"; aside="$home/.before-restore-$2"
+home="$1"; aside="$home/.before-restore-$2"; complete="$aside.complete"
 mkdir "$aside"
-find "$home" -mindepth 1 -maxdepth 1 ! -path "$aside" -exec mv {} "$aside"/ \\;
+for entry in "$home"/* "$home"/.[!.]* "$home"/..?*; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  [ "$entry" = "$aside" ] && continue
+  mv "$entry" "$aside"/
+done
+touch "$complete"
 tar -C "$home" --same-owner -xpf -`,
+  // After a complete move the home holds only unpacked entries, which go; after a partial
+  // one it still holds untouched originals, which stay. The aside entries then move back.
   revert: `set -eu
-home="$1"; aside="$home/.before-restore-$2"
+home="$1"; aside="$home/.before-restore-$2"; complete="$aside.complete"
 [ -d "$aside" ] || exit 0
-find "$home" -mindepth 1 -maxdepth 1 ! -path "$aside" -exec rm -rf {} +
-find "$aside" -mindepth 1 -maxdepth 1 -exec mv {} "$home"/ \\;
-rmdir "$aside"`,
+if [ -e "$complete" ]; then
+  for entry in "$home"/* "$home"/.[!.]* "$home"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    [ "$entry" = "$aside" ] || [ "$entry" = "$complete" ] && continue
+    rm -rf "$entry"
+  done
+fi
+for entry in "$aside"/* "$aside"/.[!.]* "$aside"/..?*; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  mv "$entry" "$home"/
+done
+rmdir "$aside"
+rm -f "$complete"`,
   discard: `set -eu
-rm -rf "$1/.before-restore-$2"`,
+rm -rf "$1/.before-restore-$2" "$1/.before-restore-$2.complete"`,
 };
 
 /** The script for `action`, for running in a shell; exported for tests. */

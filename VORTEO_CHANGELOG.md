@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- A failed snapshot restore stops the services it had already started before putting files back, keeps untouched originals when moving a Linux Dev home aside stopped midway, and reports that recovery is needed, keeping the previous copies, when putting a part back fails.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
 - Restoring a snapshot replaces a Linux Dev home instead of unpacking over it, and puts the previous contents back if the restore fails. A one-shot root container with Dev's mounts moves the current home aside within the mount, unpacks the snapshot with its owners, and keeps or discards the aside copy with the rest of the restore.
 
 ## Unreleased - 2026-11-05

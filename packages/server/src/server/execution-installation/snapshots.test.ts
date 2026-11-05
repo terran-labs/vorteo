@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -20,6 +21,7 @@ import {
   snapshotSources,
   devHomeThroughContainer,
   mountedHomeScript,
+  RestoreRollbackError,
   type MountedHomeRestore,
   type SnapshotSource,
   type StoredPart,
@@ -301,6 +303,56 @@ posixTest(
   },
 );
 
+posixTest("a late restore failure stops started services before putting files back", async () => {
+  const source = {
+    type: "docker" as const,
+    kind: "dev-home" as const,
+    docker: "/usr/bin/docker",
+    container: "c",
+    path: "/home/paseo",
+    mounted: true as const,
+  };
+  const part = {
+    part: { kind: "dev-home", source: "dev" },
+    source,
+    stored: "/s.tar",
+  } as unknown as StoredPart;
+  const calls: string[] = [];
+  const error = await executeRestore({
+    restoreId: "r2",
+    parts: [part],
+    steps: planRestore([part], true),
+    ports: {
+      services: recordingServices(calls),
+      snapshot: {
+        importDocker: async () => undefined,
+        mounted: {
+          replace: async () => undefined,
+          revert: async () => {
+            calls.push("revert");
+            throw new Error("mv failed");
+          },
+          discard: async () => undefined,
+        },
+      },
+      verifyCoordinator: async () => {
+        throw new Error("coordinator did not answer");
+      },
+      progress: () => undefined,
+    },
+  }).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(RestoreRollbackError);
+  expect(String(error)).toMatch(/coordinator did not answer.*mv failed/);
+  // Dev, the Host and the coordinator were running again; all stop before the revert.
+  const revertAt = calls.indexOf("revert");
+  expect(calls.slice(revertAt - 3, revertAt)).toEqual([
+    "stop coordinator",
+    "stop host",
+    "stop dev",
+  ]);
+  expect(calls.slice(revertAt + 1)).toEqual(["start dev", "start host", "start coordinator"]);
+});
+
 posixTest("the mounted home scripts replace, put back and discard the contents", () => {
   const home = path.join(root, "home");
   write(path.join(home, "old.txt"), "old");
@@ -321,6 +373,27 @@ posixTest("the mounted home scripts replace, put back and discard the contents",
   sh("discard");
   expect(readdirSync(home)).toEqual(["kept.txt"]);
 });
+
+posixTest.skipIf(process.getuid?.() === 0)(
+  "a move that fails midway leaves untouched originals in place for the revert",
+  () => {
+    const home = path.join(root, "home");
+    for (const name of ["a", "b", "c"]) write(path.join(home, name, "file"), name);
+    // Moving a directory needs write access to it, for its parent link.
+    chmodSync(path.join(home, "b"), 0o555);
+    const sh = (action: "replace" | "revert", input?: Buffer) =>
+      execFileSync("/bin/sh", ["-c", mountedHomeScript(action), "restore", home, "r3"], {
+        input,
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+    expect(() => sh("replace", Buffer.from(""))).toThrow();
+    sh("revert");
+    chmodSync(path.join(home, "b"), 0o755);
+    expect(readdirSync(home).sort()).toEqual(["a", "b", "c"]);
+    for (const name of ["a", "b", "c"])
+      expect(readFileSync(path.join(home, name, "file"), "utf8")).toBe(name);
+  },
+);
 
 posixTest("snapshot sources follow the installation layout", () => {
   const { container } = installation();
