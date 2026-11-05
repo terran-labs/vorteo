@@ -4777,6 +4777,116 @@ test("createAgent injects paseo MCP server only into provider launch config", as
   });
 });
 
+test("a tool-less agent launches without tools, only on Claude, and stays tool-less after reload", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  onTestFinished(() => rmSync(workdir, { recursive: true, force: true }));
+
+  class ClaudeAccountSession extends McpCapableTestAgentSession {
+    override describePersistence() {
+      return { provider: "claude-account-test", sessionId: this.id };
+    }
+  }
+  class ToolCaptureClient extends TestAgentClient {
+    override readonly capabilities = {
+      ...TEST_CAPABILITIES,
+      supportsMcpServers: true,
+      supportsNativePaseoTools: true,
+    };
+    readonly launches: Array<{
+      config: Partial<AgentSessionConfig>;
+      context?: AgentLaunchContext;
+    }> = [];
+
+    override async createSession(
+      config: AgentSessionConfig,
+      launchContext?: AgentLaunchContext,
+    ): Promise<AgentSession> {
+      this.launches.push({ config, context: launchContext });
+      return new ClaudeAccountSession(config);
+    }
+
+    override async resumeSession(
+      _handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+      launchContext?: AgentLaunchContext,
+    ): Promise<AgentSession> {
+      this.launches.push({ config: config ?? {}, context: launchContext });
+      return new ClaudeAccountSession({ provider: this.provider, cwd: config?.cwd ?? workdir });
+    }
+  }
+  function createManager(client: ToolCaptureClient, storage: AgentStorage): AgentManager {
+    return new AgentManager({
+      clients: { "claude-account-test": client, codex: new TestAgentClient() },
+      // The account resolves to the Claude family only through the registry's extends chain.
+      providerDefinitions: {
+        claude: { enabled: true, derivedFromProviderId: null },
+        "claude-account-test": { enabled: true, derivedFromProviderId: "claude" },
+        codex: { enabled: true, derivedFromProviderId: null },
+      },
+      registry: storage,
+      logger,
+      mcpBaseUrl: "http://127.0.0.1:6767/mcp/agents",
+      paseoToolCatalogFactory: () => {
+        throw new Error("A tool-less launch must not build the Vorteo tool catalog");
+      },
+      idFactory: () => "00000000-0000-4000-8000-0000000001a1",
+    });
+  }
+  function expectNoTools(launch: ToolCaptureClient["launches"][number] | undefined): void {
+    expect(launch?.config.toolAccess).toBe("none");
+    expect(launch?.config.mcpServers).toBeUndefined();
+    expect(launch?.context?.paseoTools).toBeUndefined();
+    expect(launch?.context?.mcpServers).toBeUndefined();
+  }
+
+  const client = new ToolCaptureClient("claude-account-test");
+  const storage = new AgentStorage(storagePath, logger);
+  const manager = createManager(client, storage);
+  await expect(
+    manager.createAgent({ provider: "codex", cwd: workdir, toolAccess: "none" }, undefined, {
+      workspaceId: undefined,
+    }),
+  ).rejects.toThrow("only run on a Claude account");
+
+  const agent = await manager.createAgent(
+    {
+      provider: "claude-account-test",
+      cwd: workdir,
+      toolAccess: "none",
+      mcpServers: { custom: { type: "stdio", command: "custom-mcp" } },
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+  expectNoTools(client.launches[0]);
+  expect(toAgentPayload(agent).toolAccess).toBe("none");
+  await expect(manager.getToolAccess(agent.id)).resolves.toBe("none");
+  await manager.flush();
+  await manager.closeAgent(agent.id);
+
+  const reloadedClient = new ToolCaptureClient("claude-account-test");
+  const reloadedStorage = new AgentStorage(storagePath, logger);
+  const reloaded = createManager(reloadedClient, reloadedStorage);
+  expect((await reloadedStorage.get(agent.id))?.config?.toolAccess).toBe("none");
+  await expect(reloaded.getToolAccess(agent.id)).resolves.toBe("none");
+  await ensureAgentLoaded(agent.id, {
+    agentManager: reloaded,
+    agentStorage: reloadedStorage,
+    logger,
+  });
+  expectNoTools(reloadedClient.launches[0]);
+
+  // Reconfiguration cannot clear it or reattach MCP servers.
+  await reloaded.reloadAgentSession(agent.id, {
+    toolAccess: undefined,
+    mcpServers: { custom: { type: "stdio", command: "custom-mcp" } },
+  });
+  expectNoTools(reloadedClient.launches[1]);
+  await reloaded.flush();
+  expect((await reloadedStorage.get(agent.id))?.config?.toolAccess).toBe("none");
+});
+
 test("createAgent closes and rejects a provider session that cannot honor MCP servers", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

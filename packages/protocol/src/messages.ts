@@ -714,6 +714,9 @@ const AgentSessionConfigSchema = z.object({
   toolPolicy: ToolPolicySchema.optional(),
   systemPrompt: z.string().optional(),
   mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
+  // COMPAT(agentToolAccess): added 2026-11-04, remove gate after 2027-05-04. Owner-only and
+  // creation-only; "none" launches a Claude-family agent that cannot call any tool.
+  toolAccess: z.literal("none").optional(),
 });
 
 const AgentPermissionUpdateSchema = z.record(z.string(), z.unknown());
@@ -1153,6 +1156,8 @@ export const AgentSnapshotPayloadSchema = z.object({
   providerUnavailable: z.boolean().optional(),
   // Private helper marker, retained for exact-ID snapshots and older wire messages.
   internal: z.boolean().optional(),
+  // COMPAT(agentToolAccess): added 2026-11-04, remove gate after 2027-05-04; older daemons omit it.
+  toolAccess: z.literal("none").optional(),
 });
 
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
@@ -1800,6 +1805,54 @@ export const DaemonGetStatusRequestSchema = z.object({
 export const DaemonGetPairingOfferRequestSchema = z.object({
   type: z.literal("daemon.get_pairing_offer.request"),
   requestId: z.string(),
+});
+
+// Service principals are non-interactive identities with owner-selected permissions.
+// Their bearer tokens are shown once at creation; the daemon persists only hashes.
+export const AGENT_GRANT_ACTIONS = ["agent.read", "agent.message", "agent.cancel"] as const;
+export const AgentGrantActionSchema = z.enum(AGENT_GRANT_ACTIONS);
+export type AgentGrantAction = z.infer<typeof AgentGrantActionSchema>;
+
+/**
+ * Resource-scoped authority over specific agents, independent of daemon-wide
+ * permissions. `agent.read` covers fetching and following an agent's timeline,
+ * `agent.message` sending it steering messages, `agent.cancel` stopping its turn.
+ * Agents match by exact ID or by owning workspace.
+ */
+export const AgentGrantSchema = z.object({
+  actions: z.array(AgentGrantActionSchema).min(1),
+  agentIds: z.array(z.string().min(1)).optional(),
+  workspaceIds: z.array(z.string().min(1)).optional(),
+});
+export type AgentGrant = z.infer<typeof AgentGrantSchema>;
+
+export const AccessServicePrincipalsListRequestSchema = z.object({
+  type: z.literal("access.service_principals.list.request"),
+  requestId: z.string(),
+});
+
+export const AccessServicePrincipalsCreateRequestSchema = z.object({
+  type: z.literal("access.service_principals.create.request"),
+  requestId: z.string(),
+  label: z.string().trim().min(1).max(120),
+  permissions: z.array(DaemonPermissionSchema),
+  // COMPAT(serviceAgentGrants): added 2026-11-03, remove gate after 2027-05-03.
+  grants: z.array(AgentGrantSchema).optional(),
+  /** Optional ISO time after which the token is refused. */
+  expiresAt: z.string().optional(),
+});
+
+export const AccessServicePrincipalsSetGrantsRequestSchema = z.object({
+  type: z.literal("access.service_principals.set_grants.request"),
+  requestId: z.string(),
+  principalId: z.string().min(1),
+  grants: z.array(AgentGrantSchema),
+});
+
+export const AccessServicePrincipalsRevokeRequestSchema = z.object({
+  type: z.literal("access.service_principals.revoke.request"),
+  requestId: z.string(),
+  principalId: z.string().min(1),
 });
 
 export const DaemonConfigReloadRequestSchema = z.object({
@@ -3797,6 +3850,10 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WaitForFinishRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
+  AccessServicePrincipalsListRequestSchema,
+  AccessServicePrincipalsCreateRequestSchema,
+  AccessServicePrincipalsRevokeRequestSchema,
+  AccessServicePrincipalsSetGrantsRequestSchema,
   DaemonConfigReloadRequestSchema,
   DaemonOriginAdmissionInspectRequestSchema,
   DaemonOriginAdmissionRequestSchema,
@@ -4215,6 +4272,12 @@ export const ServerInfoStatusPayloadSchema = z
         prepaidQuotaAuthorization: z.boolean().optional(),
         connectedHosts: z.boolean().optional(),
         hostMultiplexing: z.boolean().optional(),
+        // COMPAT(servicePrincipals): added 2026-11-03, remove gate after 2027-05-03; older daemons reject serviceCredential hello auth.
+        servicePrincipals: z.boolean().optional(),
+        // COMPAT(serviceAgentGrants): added 2026-11-03, remove gate after 2027-05-03.
+        serviceAgentGrants: z.boolean().optional(),
+        // COMPAT(agentToolAccess): added 2026-11-04, remove gate after 2027-05-04.
+        agentToolAccess: z.boolean().optional(),
         // COMPAT(usageSetting): added in v0.14, remove after 2027-05-01.
         usageSetting: z.boolean().optional(),
         usageSources: z.boolean().optional(),
@@ -5930,6 +5993,56 @@ export const DaemonGetPairingOfferResponseSchema = z.object({
       relayEnabled: z.boolean(),
     })
     .passthrough(),
+});
+
+export const ServicePrincipalSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  permissions: z.array(DaemonPermissionSchema),
+  // COMPAT(serviceAgentGrants): absent on daemons without agent grants.
+  grants: z.array(AgentGrantSchema).optional(),
+  createdAt: z.string(),
+  revokedAt: z.string().nullable(),
+  // COMPAT(serviceAgentGrants): absent on daemons without expiry.
+  expiresAt: z.string().nullable().optional(),
+});
+
+export const AccessServicePrincipalsListResponseSchema = z.object({
+  type: z.literal("access.service_principals.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    principals: z.array(ServicePrincipalSchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AccessServicePrincipalsCreateResponseSchema = z.object({
+  type: z.literal("access.service_principals.create.response"),
+  payload: z.object({
+    requestId: z.string(),
+    principal: ServicePrincipalSchema.nullable(),
+    // Returned once. The daemon cannot recover it later.
+    token: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AccessServicePrincipalsSetGrantsResponseSchema = z.object({
+  type: z.literal("access.service_principals.set_grants.response"),
+  payload: z.object({
+    requestId: z.string(),
+    principal: ServicePrincipalSchema.nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AccessServicePrincipalsRevokeResponseSchema = z.object({
+  type: z.literal("access.service_principals.revoke.response"),
+  payload: z.object({
+    requestId: z.string(),
+    principal: ServicePrincipalSchema.nullable(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const DaemonConfigReloadResponseSchema = z.object({
@@ -7917,6 +8030,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
+  AccessServicePrincipalsListResponseSchema,
+  AccessServicePrincipalsCreateResponseSchema,
+  AccessServicePrincipalsRevokeResponseSchema,
+  AccessServicePrincipalsSetGrantsResponseSchema,
   DaemonConfigReloadResponseSchema,
   DaemonOriginAdmissionInspectResponseSchema,
   DaemonOriginAdmissionResponseSchema,
@@ -8227,6 +8344,19 @@ export type ListAvailableProvidersResponse = z.infer<typeof ListAvailableProvide
 export type DaemonGetStatusResponse = z.infer<typeof DaemonGetStatusResponseSchema>;
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DaemonConfigReloadResponse = z.infer<typeof DaemonConfigReloadResponseSchema>;
+export type ServicePrincipal = z.infer<typeof ServicePrincipalSchema>;
+export type AccessServicePrincipalsListResponse = z.infer<
+  typeof AccessServicePrincipalsListResponseSchema
+>;
+export type AccessServicePrincipalsCreateResponse = z.infer<
+  typeof AccessServicePrincipalsCreateResponseSchema
+>;
+export type AccessServicePrincipalsSetGrantsResponse = z.infer<
+  typeof AccessServicePrincipalsSetGrantsResponseSchema
+>;
+export type AccessServicePrincipalsRevokeResponse = z.infer<
+  typeof AccessServicePrincipalsRevokeResponseSchema
+>;
 export type DaemonOriginAdmissionInput = z.infer<typeof DaemonOriginAdmissionInputSchema>;
 export type DaemonOriginAdmissionState = z.infer<typeof DaemonOriginAdmissionStateSchema>;
 export type DaemonOriginAdmissionInspectResponse = z.infer<
@@ -8585,6 +8715,7 @@ export const WSHelloMessageSchema = z.object({
     .discriminatedUnion("kind", [
       z.object({ kind: z.literal("password"), password: z.string() }),
       z.object({ kind: z.literal("localCredential"), token: z.string() }),
+      z.object({ kind: z.literal("serviceCredential"), token: z.string() }),
     ])
     .optional(),
   appVersion: z.string().optional(),

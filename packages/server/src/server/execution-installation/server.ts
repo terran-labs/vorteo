@@ -122,6 +122,13 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import {
+  InstallationOverviewReader,
+  productionOverviewDependencies,
+  type InstallationOverview,
+  type OverviewDependencies,
+} from "./overview.js";
+import { ServicePrincipalStore } from "../authorization/service-principals.js";
 import { FactoryGate, factoryRestartClass } from "./factory-gate.js";
 import {
   delegatedHandler,
@@ -394,6 +401,7 @@ export function createInstallationServer(
   // The private configuration file, captured by safety snapshots. Omitted in tests.
   files?: { configFile: string },
   codexSignIn?: CodexSignInRuntime,
+  overviewDependencies?: OverviewDependencies,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -1908,6 +1916,88 @@ export function createInstallationServer(
         next(error);
       }
     })();
+  });
+
+  // Read-only overview of every environment. Observer tokens are coordinator-issued
+  // service principals; they authorize this route and nothing else.
+  const observers = new ServicePrincipalStore(config.stateDir, "overview-observers.json");
+  const overview = new InstallationOverviewReader(
+    config,
+    overviewDependencies ?? productionOverviewDependencies(config),
+  );
+  let overviewCache: {
+    at: number;
+    settled: boolean;
+    value: Promise<InstallationOverview>;
+  } | null = null;
+  const OVERVIEW_CACHE_MS = 5_000;
+  app.get("/api/installation/overview", (req, res, next) => {
+    void (async () => {
+      try {
+        const token = extractHttpBearerToken(req.header("authorization"));
+        const observer = token ? await observers.authenticate(token) : null;
+        if (!matchesToken(token, config.hostAgentTokenHash) && !observer) {
+          res.sendStatus(401);
+          return;
+        }
+        // Coalesce polling clients so each daemon sees at most one read per interval.
+        // A read still in flight is always reused: overlapping reads would share one
+        // daemon client ID and displace each other's session.
+        if (
+          !overviewCache ||
+          (overviewCache.settled && Date.now() - overviewCache.at > OVERVIEW_CACHE_MS)
+        ) {
+          const entry = { at: Date.now(), settled: false, value: overview.read() };
+          overviewCache = entry;
+          entry.value.then(
+            () => {
+              entry.settled = true;
+              entry.at = Date.now();
+              return undefined;
+            },
+            () => {
+              if (overviewCache === entry) overviewCache = null;
+            },
+          );
+        }
+        res.json(await overviewCache.value);
+      } catch (error) {
+        next(error);
+      }
+    })();
+  });
+  function requireHostAgent(req: Request, res: Response, next: NextFunction) {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(403);
+      return;
+    }
+    next();
+  }
+  app.get("/api/installation/overview/observers", requireHostAgent, (_req, res, next) => {
+    observers.list().then((list) => res.json({ observers: list }), next);
+  });
+  app.post("/api/installation/overview/observers", requireHostAgent, (req, res) => {
+    const label = typeof req.body?.label === "string" ? req.body.label : "";
+    observers
+      .create({ label, permissions: ["workspace.read"], issuerPrincipalId: "host-agent" })
+      .then(
+        (created) => res.json(created),
+        (error: unknown) =>
+          res
+            .status(400)
+            .json({ error: error instanceof Error ? error.message : "Invalid observer" }),
+      );
+  });
+  app.post("/api/installation/overview/observers/:id/revoke", requireHostAgent, (req, res) => {
+    observers.revoke(String(req.params.id), "host-agent").then(
+      (observer) => res.json({ observer }),
+      (error: unknown) =>
+        res
+          .status(404)
+          .json({ error: error instanceof Error ? error.message : "Unknown observer" }),
+    );
   });
 
   // Public setup metadata contains a recovery path, never credentials or connection secrets.

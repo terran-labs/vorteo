@@ -178,6 +178,33 @@ test("cancel_agent_request reports refusal only through its response", async () 
   ]);
 });
 
+test("create_agent_request refuses tool access settings from a non-owner principal", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const createAgent = vi.fn();
+  const session = createSessionForTest({
+    messages,
+    principalId: null,
+    agentManager: { createAgent },
+  });
+
+  await session.handleMessage({
+    type: "create_agent_request",
+    requestId: "create-tool-less",
+    config: { provider: "claude", cwd: "/tmp", toolAccess: "none" },
+    labels: {},
+  });
+
+  expect(createAgent).not.toHaveBeenCalled();
+  expect(messages).toContainEqual({
+    type: "status",
+    payload: expect.objectContaining({
+      status: "agent_create_failed",
+      requestId: "create-tool-less",
+      errorCode: "tool_access_forbidden",
+    }),
+  });
+});
+
 test("legacy cancel_agent_request reports refusal through the activity log", async () => {
   const agentId = "11111111-1111-4111-8111-111111111111";
   const messages: SessionOutboundMessage[] = [];
@@ -313,6 +340,7 @@ interface SessionForTestOptions {
   workspaceRuntimeStore?: WorkspaceRuntimeStore;
   sendToSource?: SessionOptions["onMessageToSource"];
   clientId?: string;
+  principalId?: SessionOptions["principalId"];
   permissions?: readonly DaemonPermission[];
   agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
   agentStorage?: { [K in keyof SessionOptions["agentStorage"]]?: unknown };
@@ -405,6 +433,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     agentMessages: createAgentMessageDeliveryStub(),
     creationService: createTestCreationService(),
     clientId: options.clientId ?? "test-client",
+    ...(options.principalId !== undefined ? { principalId: options.principalId } : {}),
     onMessage: (message) => messages.push(message),
     ...(options.targetedMessages
       ? {
