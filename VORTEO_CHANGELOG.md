@@ -4,6 +4,7 @@
 
 ### Maintenance
 
+- Restore bundled skill selection and installation controls inside the single Skills library. Navigation coverage includes the Voice section.
 - Merge current main into Settings round 4. Preserve installation release policies and safe approval choices in System updates, live delivery mode in Advanced, recovery reviews in Restart, and service access in environment details.
 
 ## Unreleased - 2026-11-05

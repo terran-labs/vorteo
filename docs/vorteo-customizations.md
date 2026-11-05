@@ -1812,7 +1812,7 @@ Source batching preserves complete historical release-note entries, including du
 
 ## Skills and instruction management
 
-- **Shared skill library.** Settings exposes installed skills across environments with instruction content, ownership, hashes, provenance and audit export. Shared provider discovery paths appear once per environment, with each path retained in Details. See [skill library](skill-library.md).
+- **Shared skill library.** Settings exposes installed skills across environments with instruction content, ownership, hashes, provenance and audit export. Its single Skills library also retains bundled selection, installation and removal controls. Shared provider discovery paths appear once per environment, with each path retained in Details. See [skill library](skill-library.md).
 - **Reviewed skill changes.** Preview pinned installation, provider discovery links, identical-copy consolidation, removal and restoration before applying them. Backups and conflict checks protect local edits. Managed installations keep a canonical catalog and project reviewed definitions into each environment. See [skill operations](skill-library.md).
 - **Profile skill selection.** Profiles can inherit defaults with exclusions, select specific packages or disable optional skills. Supported Claude and Codex runtimes freeze restricted selections for each task; unsupported restrictions fail rather than claiming enforcement. Selection limits discovery and invocation, not filesystem or tool access. See [profile policies](skill-library.md#profile-policies).
 - **Environment exclusions.** Disable a personal skill for one environment while retaining its shared definition and installed files. New tasks obey current installation policy; a profile cannot override an environment exclusion. Existing tasks retain their recorded selection. See [environment exceptions](skill-library.md#environment-exceptions).
@@ -1915,6 +1915,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+Settings round 4 follow-up (2026-11-05): bundled skill management is restored inside the library, and navigation coverage includes Voice. Browser validation is pending. README overview and onboarding are unchanged.
 
 November 4, 2026: Synchronized projects now move Factory-managed workspaces' sidebar memberships with a replaced project key, fixing a duplicate Vorteo System row after installation. The Synchronized projects feature is otherwise unchanged. README overview and onboarding are unchanged.
 

@@ -1,6 +1,5 @@
 import { Switch } from "@/components/ui/switch";
 import { SettingsRow } from "@/components/settings";
-import { SkillLibraryButton } from "./library";
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
@@ -10,7 +9,6 @@ import { ArrowUpRight, Blocks, Check, Settings2 } from "lucide-react-native";
 import type { AgentSkillOperation, AgentSkillsStatus } from "@getpaseo/protocol/messages";
 import type { TFunction } from "i18next";
 import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -137,7 +135,6 @@ export function AgentSkillsSection({ serverId }: { serverId: string }) {
   if (!skills.connected || !skills.supported) {
     return (
       <SettingsSection title={t("settings.host.skills.sectionTitle")} trailing={trailing}>
-        <SkillLibraryButton />
         <View style={settingsStyles.card} testID="host-agent-skills-unavailable">
           <View style={styles.emptyCard}>
             <Text style={styles.mutedText}>
@@ -152,9 +149,11 @@ export function AgentSkillsSection({ serverId }: { serverId: string }) {
   }
 
   return (
-    <SettingsSection title={t("settings.host.skills.sectionTitle")} trailing={trailing}>
-      <SkillLibraryButton />
-      {skills.error ? <Alert variant="error" description={toErrorMessage(skills.error)} /> : null}
+    <SettingsSection
+      title={t("settings.host.skills.sectionTitle")}
+      trailing={trailing}
+      status={skills.error ? toErrorMessage(skills.error) : null}
+    >
       <View style={settingsStyles.card} testID="host-agent-skills-card">
         <View style={settingsStyles.row}>
           <View style={settingsStyles.rowContent}>
