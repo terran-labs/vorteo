@@ -9,6 +9,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Tooling
 
 - Merged current `main` (the Unite touch icon fix) into the VortLab lab beta before release.
+- The secret scan allows the UUID idempotency key fixture in the Claude limit reset tests, a false positive that blocked every push from the shared repository.
 
 ## 26.11.501 - 2026-11-05
 
