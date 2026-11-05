@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- You can archive ordinary workspaces that share a local checkout with Factory roles. The checkout stays on disk, and Factory workspaces and their managed worktrees remain protected.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
