@@ -178,6 +178,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
 
+### Live tweaks
+
+- Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
+
 ## Unreleased - 2026-11-04
 
 ### Live tweaks

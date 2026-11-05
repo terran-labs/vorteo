@@ -26,6 +26,9 @@ Maintenance review (2026-11-04): owner answers to open questions steer into a bu
 Maintenance review (2026-11-04): the heavy-job queue uses an atomic populated-directory rename for exclusive slot ownership and recovers dead owners without deleting successor claims. Ticket rewrites are atomic. The CLI and environment variables are unchanged. Not yet installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): trackpad dictation. A triple click anywhere in the window toggles dictation into the active message field and stops without sending, so a lone Magic Trackpad can drive dictation. Not yet installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): live tweak by Redesign lower left sidebar layout: Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
+
 Maintenance review (2026-11-04): live tweak by builds: Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
 
 Maintenance review (2026-11-04): merged main into the sidebar keyboard move fix again, bringing in the combined sidebar footer block and the Dev boot-entry switch fix. The only conflict was the changelog, which keeps every dated entry. The keyboard move fix is unchanged. README overview and onboarding are unchanged.
