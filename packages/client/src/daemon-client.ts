@@ -143,6 +143,12 @@ import type {
   UsageReportEntry,
   DaemonGetStatusResponse,
   DaemonGetPairingOfferResponse,
+  AccessServicePrincipalsListResponse,
+  AccessServicePrincipalsCreateResponse,
+  AccessServicePrincipalsRevokeResponse,
+  AccessServicePrincipalsSetGrantsResponse,
+  AgentGrant,
+  DaemonPermission,
   DaemonConfigReloadResponse,
   DaemonOriginAdmissionResponse,
   DaemonOriginAdmissionInspectResponse,
@@ -280,6 +286,7 @@ function compatibleBearerPassword(password: string | null): string | null {
 type HelloAuth =
   | { kind: "password"; password: string }
   | { kind: "localCredential"; token: string }
+  | { kind: "serviceCredential"; token: string }
   | undefined;
 
 export type DaemonAuthFailureReason = "password_required" | "incorrect_password";
@@ -316,6 +323,14 @@ function chooseConnectionAuth(
   config: DaemonClientConfig,
   localCredential: string | undefined,
 ): { helloAuth: HelloAuth; headers: Record<string, string>; protocols?: string[] } {
+  // A service credential travels only in hello. Header bearers admit as owner, so
+  // it never takes the password's header or subprotocol route.
+  if (config.serviceCredential) {
+    return {
+      helloAuth: { kind: "serviceCredential", token: config.serviceCredential },
+      headers: {},
+    };
+  }
   const password = normalizePassword(config.password);
   let helloAuth: HelloAuth;
   if (localCredential) helloAuth = { kind: "localCredential", token: localCredential };
@@ -480,6 +495,12 @@ export interface DaemonClientConfig {
   expectedServerId?: string;
   password?: string;
   localCredential?: () => string | undefined | Promise<string | undefined>;
+  /**
+   * Service principal token issued by `paseo access service create`. When set, the
+   * session holds only that principal's permissions; password and local credentials
+   * are ignored. Requires a daemon advertising `features.servicePrincipals`.
+   */
+  serviceCredential?: string;
   authHeader?: string;
   suppressSendErrors?: boolean;
   transportFactory?: DaemonTransportFactory;
@@ -3449,6 +3470,12 @@ export class DaemonClient {
   async createAgent(options: CreateAgentRequestOptions): Promise<AgentSnapshotPayload> {
     const config = resolveAgentConfig(options);
     this.requireWorkflowLaunchSupport(config.profileId);
+    // An older daemon would drop toolAccess and launch the agent with every tool.
+    if (
+      config.toolAccess !== undefined &&
+      this.lastServerInfoMessage?.features?.agentToolAccess !== true
+    )
+      throw new Error("Update the Paseo host to create agents without tools.");
     if (options.background !== undefined) this.requireBackgroundWorkspaces();
     const result = await this.creations.createAgent({
       ...options,
@@ -6613,6 +6640,71 @@ export class DaemonClient {
       requestId,
       message: { type: "hub.management.daemon.disconnect.request", force },
       responseType: "hub.management.daemon.disconnect.response",
+    });
+  }
+
+  async listServicePrincipals(options?: {
+    requestId?: string;
+    timeout?: number;
+  }): Promise<AccessServicePrincipalsListResponse["payload"]> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: { type: "access.service_principals.list.request" },
+      responseType: "access.service_principals.list.response",
+      timeout: options?.timeout,
+    });
+  }
+
+  async createServicePrincipal(
+    input: {
+      label: string;
+      permissions: DaemonPermission[];
+      grants?: AgentGrant[];
+      /** ISO time after which the token is refused. */
+      expiresAt?: string;
+    },
+    options?: { requestId?: string; timeout?: number },
+  ): Promise<AccessServicePrincipalsCreateResponse["payload"]> {
+    if (input.grants?.length && this.lastServerInfoMessage?.features?.serviceAgentGrants !== true)
+      throw new Error("Update the Paseo host to issue agent grants.");
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: {
+        type: "access.service_principals.create.request",
+        label: input.label,
+        permissions: input.permissions,
+        ...(input.grants?.length ? { grants: input.grants } : {}),
+        ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+      },
+      responseType: "access.service_principals.create.response",
+      timeout: options?.timeout,
+    });
+  }
+
+  async setServicePrincipalGrants(
+    principalId: string,
+    grants: AgentGrant[],
+    options?: { requestId?: string; timeout?: number },
+  ): Promise<AccessServicePrincipalsSetGrantsResponse["payload"]> {
+    if (this.lastServerInfoMessage?.features?.serviceAgentGrants !== true)
+      throw new Error("Update the Paseo host to change agent grants.");
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: { type: "access.service_principals.set_grants.request", principalId, grants },
+      responseType: "access.service_principals.set_grants.response",
+      timeout: options?.timeout,
+    });
+  }
+
+  async revokeServicePrincipal(
+    principalId: string,
+    options?: { requestId?: string; timeout?: number },
+  ): Promise<AccessServicePrincipalsRevokeResponse["payload"]> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: { type: "access.service_principals.revoke.request", principalId },
+      responseType: "access.service_principals.revoke.response",
+      timeout: options?.timeout,
     });
   }
 
