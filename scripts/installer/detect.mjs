@@ -164,9 +164,36 @@ const SERVICE_FILES = [
   },
 ];
 
+/**
+ * The nearest folder at or above `start` holding installation.json. A coordinator updated
+ * through a reviewed plan runs a config inside `<root>/coordinator-plans/<plan>/`, so the
+ * config's own folder is not always the installation root.
+ */
+export function installationRootOf(start, installationId, levels = 3) {
+  let folder = path.resolve(start);
+  for (let level = 0; level <= levels; level += 1) {
+    const record = readJson(path.join(folder, "installation.json"));
+    // Only the record of the same installation counts; a test coordinator under another
+    // installation's folder must never adopt that installation.
+    if (record && (!installationId || record.installationId === installationId)) return folder;
+    const parent = path.dirname(folder);
+    if (parent === folder) break;
+    folder = parent;
+  }
+  return null;
+}
+
 /** Installation roots named by local.vorteo.*.installation services: their config's folder. */
 export function serviceRoots(home) {
-  const roots = [];
+  return serviceInstallations(home).map((service) => service.root);
+}
+
+/**
+ * Each local.vorteo.*.installation service's root and the config file it actually runs,
+ * which can differ from the one installation.json recorded at setup.
+ */
+export function serviceInstallations(home) {
+  const services = [];
   for (const { directory, suffix } of SERVICE_FILES) {
     const folder = path.join(home, ...directory);
     let names = [];
@@ -185,10 +212,22 @@ export function serviceRoots(home) {
         continue;
       }
       const configFile = argv.findLast((arg) => arg.endsWith(".json"));
-      if (configFile && path.isAbsolute(configFile)) roots.push(path.dirname(configFile));
+      if (!configFile || !path.isAbsolute(configFile)) continue;
+      const installationId = readJson(configFile)?.public?.installationId;
+      const nested = installationId
+        ? installationRootOf(path.dirname(configFile), installationId)
+        : null;
+      services.push({ root: nested ?? path.dirname(configFile), configFile });
     }
   }
-  return roots;
+  return services;
+}
+
+/** The config the root's installation service runs, or undefined when no service names one. */
+export function runningCoordinatorConfig(home, root) {
+  const resolved = path.resolve(root);
+  return serviceInstallations(home).find((service) => path.resolve(service.root) === resolved)
+    ?.configFile;
 }
 
 /**
@@ -196,10 +235,12 @@ export function serviceRoots(home) {
  * installer-made installation (`current`, with its root), an old Host root
  * (`legacy-host`), or nothing. Reads only; secrets never leave this function.
  */
-export function inspectHostRoot(root) {
+export function inspectHostRoot(root, { configFile: running } = {}) {
   const record = readJson(path.join(root, "installation.json"));
   if (!record || typeof record !== "object") return null;
-  const configFile = record.configFile ?? path.join(root, "coordinator.json");
+  // The config the coordinator service runs wins over the one recorded at setup: adoption
+  // rewrites this file, and a stale copy would drop every setting a later update added.
+  const configFile = running ?? record.configFile ?? path.join(root, "coordinator.json");
   const config = readJson(configFile);
   if (!config?.public?.installationId) return null;
   if (config.deployment?.installRoot)
@@ -226,13 +267,19 @@ export function findHostRoots(context) {
     path.join(context.home, LAB_DIRECTORY, "host"),
     ...serviceRoots(context.home),
   ];
+  // The first service per root wins, as runningCoordinatorConfig picks it.
+  const running = new Map();
+  for (const service of serviceInstallations(context.home)) {
+    const root = path.resolve(service.root);
+    if (!running.has(root)) running.set(root, service.configFile);
+  }
   const seen = new Set();
   const found = [];
   for (const candidate of candidates) {
     const resolved = path.resolve(candidate);
     if (seen.has(resolved)) continue;
     seen.add(resolved);
-    const host = inspectHostRoot(resolved);
+    const host = inspectHostRoot(resolved, { configFile: running.get(resolved) });
     if (host) found.push(host);
   }
   return found;

@@ -1,7 +1,52 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { requireClaudeAuthentication } from "./authentication.js";
 
 describe("Claude authentication monitoring", () => {
+  it("checks a managed grant without launching Claude, including near expiry", async () => {
+    const run = vi.fn();
+    const readGrant = vi.fn(async () => ({
+      accessToken: "synthetic-access",
+      hasRefreshToken: true,
+      expiresAt: 1,
+      scopes: [],
+    }));
+    for (let check = 0; check < 3; check += 1) {
+      await requireClaudeAuthentication({
+        executable: "claude",
+        args: [],
+        runtimeSettings: {
+          env: { CLAUDE_CONFIG_DIR: "/managed-account", VORTEO_CLAUDE_SIGN_IN: "full" },
+        },
+        readGrant,
+        run,
+      });
+    }
+    expect(readGrant).toHaveBeenCalledWith("/managed-account");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes a missing managed grant from unreadable storage without exposing errors", async () => {
+    const input = {
+      executable: "claude",
+      args: [],
+      runtimeSettings: {
+        env: { CLAUDE_CONFIG_DIR: "/managed-account", VORTEO_CLAUDE_SIGN_IN: "full" },
+      },
+      run: vi.fn(),
+    };
+    await expect(
+      requireClaudeAuthentication({ ...input, readGrant: async () => null }),
+    ).rejects.toMatchObject({ code: "SIGN_IN_REQUIRED" });
+    await expect(
+      requireClaudeAuthentication({
+        ...input,
+        readGrant: async () => {
+          throw new Error("private storage detail");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CHECK_FAILED" });
+    expect(input.run).not.toHaveBeenCalled();
+  });
   it("uses the configured CLI, environment and cancellation signal", async () => {
     const signal = new AbortController().signal;
     await requireClaudeAuthentication({

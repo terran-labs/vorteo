@@ -73,6 +73,9 @@ export function snapshotSources(
   const hostHome = config.deployment?.hostHome ?? config.host.startupValidation?.home;
   if (hostHome) sources.push({ type: "directory", kind: "host-home", path: hostHome });
   if (!config.container) return sources;
+  // A Dev the installer does not manage (an adopted installation without containerDirectory)
+  // is neither captured nor restored; snapshots cover the Host only.
+  if (config.deployment && !config.deployment.containerDirectory) return sources;
   const directory = config.deployment?.containerDirectory;
   const boundHome =
     config.deployment?.containerHome ??
