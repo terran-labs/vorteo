@@ -494,6 +494,9 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     get supportsAutomaticRecoveryDispatch() {
       return inner.supportsAutomaticRecoveryDispatch;
     },
+    get ambiguousSteerAcknowledgement() {
+      return inner.ambiguousSteerAcknowledgement;
+    },
     closeIfIdle: inner.closeIfIdle?.bind(inner),
     isDurablyHosted: inner.isDurablyHosted?.bind(inner),
     detach: inner.detach?.bind(inner),
