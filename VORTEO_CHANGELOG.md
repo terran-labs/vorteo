@@ -4,6 +4,16 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.501 - 2026-11-05
+
+Beta for VortLab: custom domains for installer-made installations, and lab self-update.
+
+### Features
+
+- Custom domain: installer-made installations can set a custom domain from Installation controls. Saving it admits the domain on the Host and Dev daemons and restarts only the coordinator, restoring the previous configuration if the coordinator does not come back.
+- Installation type and release channel: each installation is Stable or Lab and follows the Stable or Beta release channel. Both default to Stable.
+- Lab self-update: a Lab installation can rebuild itself from its live checkout through a tracked job that swaps the Host and coordinator releases, with rollback.
+
 ## Unreleased - 2026-11-05
 
 ### Added
