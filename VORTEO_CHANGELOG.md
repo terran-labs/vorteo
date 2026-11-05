@@ -2,6 +2,14 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Primary connection
+
+- The installation records one primary connection, stored once in shared settings and used in every environment. The Optimizer, Factory and other system threads launch with it, through its profile when one is set. Without one they wait instead of picking whichever provider is usable first.
+- Upgrades adopt the only usable connection as primary once. With several, Settings asks the owner to choose: General Status shows "Choose a primary connection for system threads", and Providers marks the primary connection and offers Make primary, with a confirmation, on other ready connections.
+- Shared settings conflict reviews name the primary connection.
+
 ## 26.11.503 - 2026-11-05
 
 Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supersedes the untagged 26.11.501 and 26.11.502 after main moved.
@@ -22,11 +30,6 @@ Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supe
 - Merge main 26.11.503 into Settings round 4. The new Custom domain card sits in owner-unlocked Installation controls between daemon automation and delivery mode, and its change result and errors use the fixed-height status line.
 
 ## Unreleased - 2026-11-05
-
-### Primary connection
-
-- The installation records one primary connection, stored once in shared settings and used in every environment. The Optimizer, Factory and other system threads launch with it, through its profile when one is set. Without one they wait instead of picking whichever provider is usable first.
-- Upgrades adopt the only usable connection as primary once. With several, Settings asks the owner to choose: General Status shows "Choose a primary connection for system threads", and Providers marks the primary connection and offers Make primary, with a confirmation, on other ready connections.
 
 ### Maintenance
 

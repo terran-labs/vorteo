@@ -31,6 +31,7 @@ const FIELD_LABELS: Record<InstallationSettingsField, string> = {
   terminalProfiles: "Terminal profiles",
   resourceExclusions: "Per-environment exclusions",
   projectPolicies: "Project policies",
+  primaryConnection: "Primary connection",
 };
 
 export function conflictFieldLabel(field: InstallationSettingsField): string {
@@ -84,6 +85,7 @@ const DESCRIBE: Partial<
     `${Object.keys(settings.resourceExclusions).length} environments with exclusions`,
   projectPolicies: (settings) =>
     `${Object.keys(settings.projectPolicies ?? {}).length} project policies`,
+  primaryConnection: (settings) => (settings.primaryConnection ? "Chosen" : "Not chosen"),
 };
 
 /** One line a person can compare at a glance, never a JSON dump. */
