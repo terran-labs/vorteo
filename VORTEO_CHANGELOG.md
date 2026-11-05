@@ -17,6 +17,12 @@ Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supe
 
 ## Unreleased - 2026-11-05
 
+### Maintenance
+
+- Merge current `main`, including Host-only adoption of an unmanaged Dev, into the installer upgrade branch, keeping both sides' changelog and inventory entries.
+
+## Unreleased - 2026-11-05
+
 - Preserve the working setup token when an OAuth upgrade cannot verify a persisted, renewable grant. Temporary storage failures no longer trigger logout during upgrade verification.
 
 ## Unreleased - 2026-11-05
@@ -54,11 +60,47 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 - Installer-made installations can set a custom domain from Installation controls. Saving it allows the domain on the Host and Dev daemons and restarts only the coordinator. If the coordinator does not come back, the previous settings are restored automatically.
 - Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
+### Maintenance
+
+- Merge current `main` into the installer upgrade branch again, keeping both sides' changelog and inventory entries.
+
 ## Unreleased - 2026-11-05
 
 ### Fixes
 
 - Shared settings reconcile backs off failed provider account preparation per environment, retrying after 10 seconds and doubling to at most 5 minutes, instead of every 5 seconds. A success, owner edit or explicit reconcile retries at once, including an owner edit saved while a failing attempt is still running, and healthy reconcile timing is unchanged.
+
+- A Linux upgrade no longer stops at its snapshot. Dev runs as root without the capability to read other users' files, so `docker exec tar` could not open the Dev user's private folders; the bind-mounted Dev home is now archived by the one-shot root container a restore uses. Docker failures name the end of their error output, and uninstall clears a systemd unit left failed after its stop timed out.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- A failed snapshot restore also stops a service whose start failed part way, changes files back only once every such service has stopped, and leaves the installation stopped for recovery when a stop or a revert fails, rather than starting it on partially recovered data.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- A failed snapshot restore stops the services it had already started before putting files back, keeps untouched originals when moving a Linux Dev home aside stopped midway, and reports that recovery is needed, keeping the previous copies, when putting a part back fails.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Restoring a snapshot replaces a Linux Dev home instead of unpacking over it, and puts the previous contents back if the restore fails. A one-shot root container with Dev's mounts moves the current home aside within the mount, unpacks the snapshot with its owners, and keeps or discards the aside copy with the rest of the restore.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge current `main` into the installer upgrade branch, keeping both sides' changelog and inventory entries.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Snapshots on Linux read Dev's home through its running container. Linux keeps the bind-mounted home private to the container's user, so the Host could not read it and every upgrade with Dev on Linux, from the interface or the installer, stopped at its snapshot. Restores already unpack such a snapshot through the container. Found by the install tests' Linux upgrade jobs.
 
 ### Features
 
@@ -135,6 +177,50 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 
 ### Fixes
 
+- An installer upgrade from a checkout, as the install tests run it, names no release instead of passing the commit as one, which the snapshot step refused.
+
+## Unreleased - 2026-11-04
+
+### Tests
+
+- The Linux upgrade jobs build the old release's Dev image with its commit SHA, which the app build requires, instead of its tag name.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge current `main`, which now carries the release updates branch, into the installer upgrade branch. No conflicts.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- The installer upgrade lock appears complete in one step and is never taken from another run, so two runs cannot both reclaim it; it is released on every exit, including Ctrl-C, and a lock left by a killed run names the file to remove.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- An installer upgrade checks for an interface upgrade again after building Dev's image, right before recreating Dev, and takes its lock atomically, so two installer runs can no longer both proceed.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Installer upgrades roll a service back even when its restart itself fails, recreate Dev after an interrupted image switch by checking the image the container runs, check again for an interface upgrade before each restart, and refuse a second concurrent installer upgrade.
+
+## Unreleased - 2026-11-04
+
+### Tests
+
+- The install tests' upgrade jobs install each old release from a checkout of its tag, running that release's own installer without GitHub API calls, which shared macOS runners had exhausted.
+
+## Unreleased - 2026-11-04
+
+### Added
+
+- Rerunning the installer upgrades an installation it made. It fetches the latest release first, shows the installed and latest versions, and asks to upgrade in place and whether to change the installation name or in-app update policy meanwhile. The upgrade builds the release beside the running one, takes a snapshot, then restarts the Host daemon, coordinator and Dev on it; each returns to its previous release if it does not come back healthy, and a rerun resumes a stopped upgrade. Installations from release 26.11.103 on can upgrade this way, including those whose in-app upgrade never finished. `--repair` still repairs offline without upgrading.
+- The install tests workflow gains upgrade jobs that install releases 26.11.103 and 26.11.206 with their own installers on Linux with Dev and on macOS, then upgrade them with the commit under test and check that the upgraded installation offers in-app updates.
 - Heavy-job status now shows one logical job instead of listing compatibility guards as queued jobs, and falls back to surviving child ownership after wrapper death. The documented workload contract covers foreground commands in the original process group; daemonized or `setsid` descendants do not retain the slot.
 
 - Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.

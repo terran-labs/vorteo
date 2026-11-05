@@ -48,7 +48,10 @@ import { RestartRequestError, type InstallationRestarts } from "./restarts.js";
 import { managedServices, runCommand, type CommandRunner } from "./service-control.js";
 import {
   createInstallationSnapshots,
+  devContainerName,
+  devHomeThroughContainer,
   dockerSnapshotPorts,
+  findDocker,
   snapshotPartKinds,
   snapshotRoot,
   snapshotSources,
@@ -242,7 +245,12 @@ export function createReleaseUpgradeRuntime(input: {
   const snapshots = root
     ? createInstallationSnapshots({
         root,
-        sources: () => snapshotSources(config, configFile),
+        sources: () =>
+          devHomeThroughContainer(snapshotSources(config, configFile), {
+            platform: process.platform,
+            docker: findDocker(),
+            container: devContainerName(config.deployment?.containerDirectory),
+          }),
         ports: { now: () => new Date(), ...dockerSnapshotPorts },
       })
     : null;

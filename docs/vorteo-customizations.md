@@ -16,6 +16,37 @@ Maintenance review (2026-11-05): the Factory Mechanic and the Vorteo System Opti
 
 Maintenance review (2026-11-05): shared settings reconcile backs off failed provider account preparation per environment with a capped exponential delay and resets after a success, ending roughly ten errors a minute on Dev. A review fix records each failure against the revision it attempted, so an owner edit saved during a failing attempt is retried on the next poll. Healthy reconcile timing is unchanged. Source only; not installed. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-05): merged current `main` (Host-only adoption of an unmanaged Dev) into the installer upgrade branch; only the changelog and this inventory conflicted, and both sides' entries are kept. README unchanged.
+
+Maintenance review (2026-11-05): merged current `main` into the installer upgrade branch again; only the changelog and this inventory conflicted, and both sides' entries are kept. README unchanged.
+
+Maintenance review (2026-11-05): snapshots on Linux archive Dev's bind-mounted home through a one-shot root container with Dev's mounts, replacing `docker exec ... tar`, which could not read the Dev user's private folders because Dev drops the capability to; uninstall clears a systemd unit left failed after a timed-out stop. README unchanged.
+
+Maintenance review (2026-11-05): restore rollback counts a failed start as possibly running, reverts only after every such service stopped, and starts nothing after a failed stop or revert. README unchanged.
+
+Maintenance review (2026-11-05): restore rollback stops restarted services before putting files back, survives a Linux Dev home move that stops midway, and reports recovery needed instead of claiming the files were put back. README unchanged.
+
+Maintenance review (2026-11-05): snapshot restore replaces a bind-mounted Linux Dev home through a one-shot root container with Dev's mounts, and rolls it back with the rest of a failed restore. README unchanged.
+
+Maintenance review (2026-11-05): merged current `main` into the installer upgrade branch; only the changelog and this inventory conflicted, and both sides' entries are kept. README unchanged.
+
+Maintenance review (2026-11-05): snapshots on Linux take Dev's home through the running container (`docker exec ... tar`), since its bind mount is private to the container's user; upgrades with Dev on Linux had stopped at the snapshot. README unchanged.
+
+Maintenance review (2026-11-04): installer upgrades accept only a release tag as the target's release name; a commit from a test checkout no longer reaches the snapshot, which refused it. Found by the macOS upgrade jobs. README unchanged.
+
+Maintenance review (2026-11-04): the Linux upgrade test jobs pass the old release's commit SHA, not its tag, as the Dev image build commit. Test only. README unchanged.
+
+Maintenance review (2026-11-04): merged current `main` (release updates, #114) into the installer upgrade branch without conflicts; functionality unchanged by the merge. README unchanged.
+
+Maintenance review (2026-11-04): third review round: the installer upgrade lock is linked into place complete, released on exit, and never reclaimed automatically. README unchanged.
+
+Maintenance review (2026-11-04): second review round for installer upgrades: the Dev recheck moved after the image build, immediately before `update.sh`, and the upgrade lock is created exclusively with owner-checked release. README unchanged.
+
+Maintenance review (2026-11-04): review fixes for installer upgrades: rollback covers failed restarts, Dev resume compares the running container's image, interface upgrades are rechecked before each restart, and a lock refuses concurrent installer upgrades. README unchanged.
+
+Maintenance review (2026-11-04): the install tests' upgrade jobs install old releases from a checkout of their tag, because the old installers' GitHub API lookup was refused on shared macOS runners. Test only; installer behavior unchanged. README unchanged.
+
+Maintenance review (2026-11-04): the installer upgrades installations it made. Rerunning `install.sh` fetches the target release first, shows the installed and latest versions, and offers an in-place upgrade with an optional name and update policy change, built beside the running release with a snapshot, per-service rollback and a resumable journal. It supports every installer release since 26.11.103. Not yet released. README onboarding updated.
 Maintenance review (2026-11-05): OAuth upgrade verification now requires a readable, unexpired grant with a refresh token before retiring setup-token access. Missing or unreadable credentials preserve the setup definition and do not trigger logout. Independent re-review and installation remain pending.
 
 Maintenance review (2026-11-05): Claude connection reliability repair pins CLI 2.1.318, makes managed health checks passive, and preserves refresh recovery through temporary failures. Credential read errors no longer imply sign-out; completed refreshes are adopted even after request failure. Queued dependent messages stop on failed turns, and Claude (CLI) is distinct from installation accounts with one creation flow. Focused regression checks pass; installation and sustained live refresh acceptance remain pending. README overview and onboarding are unchanged.
@@ -1823,6 +1854,7 @@ Source batching preserves complete historical release-note entries, including du
 - **Optional private custom domains.** A separate Tailscale and Caddy gateway gives the application a custom HTTPS hostname without publishing host ports or enabling Funnel. DNS validation renews certificates, and application authentication remains required. See [private domains](private-domain.md).
 - **Managed preview monitor replacement.** A separate Host-requested operation binds owner approval to reviewed monitor bytes, container identity and directory ancestry. Atomic exchange retains the displaced entry; ambiguous results fence later lifecycle work without replay or automatic rollback. Older clients retain cancellation but cannot approve hidden configuration changes. Source preparation is complete; managed activation and live acceptance remain pending. See [monitor maintenance](preview-monitor-maintenance.md).
 - **Installation update workflows.** Source update checks prepare editable update and upstream-merge tasks. Persistent publication uses guarded builds and receipts; a web-only update cannot activate new daemon behavior. Installation connections survive reloads and domain migration. See [instance continuity](instance-continuity.md).
+- **Installer upgrades of existing installations.** Rerunning `install.sh` on an installation it made, from release 26.11.103 on, shows the installed and latest versions and offers to upgrade in place, optionally changing the name and in-app update policy. The target release's engine reads every older layout, builds the new release beside the running one, snapshots, then switches the Host daemon, coordinator and Dev with per-service rollback and a resumable journal, and verifies that the coordinator now offers in-app updates. Upstream Paseo has no installer upgrade. See [upgrades with the installer](execution-installation.md#upgrades-with-the-installer).
 - **Release updates per installation.** Each installation picks manual or automatic updates and the stable or beta channel. The coordinator checks GitHub Releases hourly and offers each newer release once as a pending upgrade in the sidebar's Open questions card, with the notes' summary, a security marker, changed Factory charters and the snapshot rollback path. Answering installs through the tracked upgrade. Install after current work holds new Host turns and restarts once current turns end, and recreates Dev once no Dev agent works; automatic mode approves that way by itself, and Install now skips the wait. Agents read the policy and offer with `installation-agent.mjs update-status` and cannot approve. Limitations: the installation-wide Factory admission pause and post-install health comparison are Builds and Mechanic charter duties that depend on the per-project Factory change; the heavy-job queue is not consulted yet; on a Host built by the installer engine, the wait covers only the start of the build, so agents starting during it are interrupted. See [release updates](execution-installation.md#release-updates).
 
 ## Skills and instruction management

@@ -128,6 +128,112 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  upgrade-linux:
+    name: ubuntu upgrade from ${{ matrix.from }} (Dev in gate mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        # The first installer release, which the oldest installations run, and the newest
+        # stable release from before in-app upgrades could finish on installer-made Hosts.
+        from: [release-26.11.103, release-26.11.206]
+    env:
+      VORTEO_E2E_STATE: ${{ github.workspace }}/.runtime/vorteo-e2e
+      VORTEO_E2E_OLD_DEV_IMAGE: vorteo-old:upgrade-tests
+      VORTEO_E2E_OLD_SOURCE: ${{ github.workspace }}/../old-source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Start the runner user's systemd manager
+        run: bash scripts/release/e2e/linux-user-systemd.sh
+      - uses: docker/setup-buildx-action@v4
+      - name: Check out the old release
+        id: old
+        run: |
+          git worktree add --detach "$VORTEO_E2E_OLD_SOURCE" "${{ matrix.from }}"
+          echo "commit=$(git rev-parse "${{ matrix.from }}^{commit}")" >> "$GITHUB_OUTPUT"
+      - name: Build the old release's Dev image with cached layers
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.VORTEO_E2E_OLD_SOURCE }}
+          file: ${{ env.VORTEO_E2E_OLD_SOURCE }}/docker/base/Dockerfile
+          build-args: PASEO_BUILD_COMMIT=${{ steps.old.outputs.commit }}
+          tags: ${{ env.VORTEO_E2E_OLD_DEV_IMAGE }}
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=multiplex-amd64
+      - name: Install the old release with its own installer
+        run: node scripts/release/e2e/install-e2e.mjs install-release "${{ matrix.from }}" full
+      - run: node scripts/release/e2e/install-e2e.mjs wait-ready full
+      - name: Upgrade with this commit's installer
+        run: node scripts/release/e2e/install-e2e.mjs upgrade
+      - run: node scripts/release/e2e/install-e2e.mjs wait-ready full
+      - run: node scripts/release/e2e/install-e2e.mjs assert-upgraded
+      - run: node scripts/release/e2e/install-e2e.mjs assert-access full
+      - run: node scripts/release/e2e/install-e2e.mjs assert-shared-projects
+      - name: Diagnostics
+        if: failure()
+        run: node scripts/release/e2e/install-e2e.mjs diagnose
+      - name: Upload upgrade diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-diagnostics-linux-${{ matrix.from }}
+          path: ${{ env.VORTEO_E2E_STATE }}/diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+
+  upgrade-macos:
+    name: macos upgrade from ${{ matrix.from }} (Host only, launchd)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        from: [release-26.11.103, release-26.11.206]
+    env:
+      VORTEO_E2E_STATE: ${{ github.workspace }}/.runtime/vorteo-e2e
+      VORTEO_E2E_OLD_SOURCE: ${{ github.workspace }}/../old-source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Check out the old release
+        run: git worktree add --detach "$VORTEO_E2E_OLD_SOURCE" "${{ matrix.from }}"
+      - name: Install the old release with its own installer
+        run: node scripts/release/e2e/install-e2e.mjs install-release "${{ matrix.from }}" host-only
+      - run: node scripts/release/e2e/install-e2e.mjs wait-ready host-only
+      - name: Upgrade with this commit's installer
+        run: node scripts/release/e2e/install-e2e.mjs upgrade
+      - run: node scripts/release/e2e/install-e2e.mjs wait-ready host-only
+      - run: node scripts/release/e2e/install-e2e.mjs assert-upgraded
+      - run: node scripts/release/e2e/install-e2e.mjs assert-access host-only
+      - name: Diagnostics
+        if: failure()
+        run: node scripts/release/e2e/install-e2e.mjs diagnose
+      - name: Upload upgrade diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-diagnostics-macos-${{ matrix.from }}
+          path: ${{ env.VORTEO_E2E_STATE }}/diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+
   macos:
     name: macos (Host only, launchd)
     # GitHub's macOS runners have no Docker, so macOS covers the Host-only path.

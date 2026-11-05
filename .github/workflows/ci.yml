@@ -96,7 +96,7 @@ jobs:
       - name: install.sh, prerequisites, QR and progress
         run: node --test scripts/installer/install-sh.test.mjs scripts/installer/prerequisites.test.mjs scripts/installer/qr.test.mjs scripts/installer/progress.test.mjs scripts/installer/build-output.test.mjs scripts/installer/service-path.test.mjs
       - name: Installer engine
-        run: npx vitest run scripts/installer/plan.test.mjs scripts/installer/detect.test.mjs scripts/installer/apply.test.mjs scripts/installer/services.test.mjs scripts/installer/gate.test.mjs scripts/installer/host-adoption.test.mjs
+        run: npx vitest run scripts/installer/plan.test.mjs scripts/installer/detect.test.mjs scripts/installer/apply.test.mjs scripts/installer/services.test.mjs scripts/installer/gate.test.mjs scripts/installer/host-adoption.test.mjs scripts/installer/upgrade.test.mjs
 
   # Vorteo's main ruleset requires the separate format and lint checks by name, so they stay
   # their own jobs; quality runs upstream's remaining lint-rule, relay and SDK steps.
