@@ -1,5 +1,9 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): merged current `main` into the installer upgrade branch again; only the changelog and this inventory conflicted, and both sides' entries are kept. README unchanged.
+
+Maintenance review (2026-11-05): snapshots on Linux archive Dev's bind-mounted home through a one-shot root container with Dev's mounts, replacing `docker exec ... tar`, which could not read the Dev user's private folders because Dev drops the capability to; uninstall clears a systemd unit left failed after a timed-out stop. README unchanged.
+
 Maintenance review (2026-11-05): restore rollback counts a failed start as possibly running, reverts only after every such service stopped, and starts nothing after a failed stop or revert. README unchanged.
 
 Maintenance review (2026-11-05): restore rollback stops restarted services before putting files back, survives a Linux Dev home move that stops midway, and reports recovery needed instead of claiming the files were put back. README unchanged.
@@ -25,6 +29,22 @@ Maintenance review (2026-11-04): review fixes for installer upgrades: rollback c
 Maintenance review (2026-11-04): the install tests' upgrade jobs install old releases from a checkout of their tag, because the old installers' GitHub API lookup was refused on shared macOS runners. Test only; installer behavior unchanged. README unchanged.
 
 Maintenance review (2026-11-04): the installer upgrades installations it made. Rerunning `install.sh` fetches the target release first, shows the installed and latest versions, and offers an in-place upgrade with an optional name and update policy change, built beside the running release with a snapshot, per-service rollback and a resumable journal. It supports every installer release since 26.11.103. Not yet released. README onboarding updated.
+Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): live checkout preparation now runs `build:server` before `build:app-deps`, because the commit hook typechecks `packages/cli` against the server's built declarations and the first live commit on VortLab failed without them. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): merged current `main` into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): heavy-job status groups compatibility guards into one logical command and shows surviving child ownership after wrapper death. The queue contract covers foreground commands in their original process group; escaped sessions and daemonized descendants do not retain ownership. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): heavy-job review fixes add boot and process-start identity, child process-group ownership with a launch handshake, and legacy-visible guards. Legacy callers already past their final queue check retain a bounded rollout window until old copies pick up main and their jobs finish. Not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): merged current main into the Factory task template branch, retaining both maintenance reviews and all changelog entries. The template is unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): added a Markdown Factory task issue template with four author prompts and a title prefix matching the existing template convention. Labels and chooser configuration are unchanged. The chooser will list it after merge to the default branch. Product functionality, README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): successful provider history hydration publishes the parent's final subagent descriptors through existing updates, including quiet hydration when opening a thread. This restores children after an unloaded sidebar list without replaying timeline history or changing load retries. Source only; not installed.
 
 Maintenance review (2026-11-04): merged current main again into the provider subagent polling fix, retaining service principals, synchronized Factory project memberships and the read-only list behavior. Incoming changelog entries are retained. Source only; not installed.
@@ -34,8 +54,12 @@ Maintenance review (2026-11-04): `agent.provider_subagents.list` answers from th
 Maintenance review (2026-11-04): merged current `main`, including the Dev boot-entry switch, the single sidebar footer block and later trackpad dictation, into the open question answer delivery fix; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): owner answers to open questions steer into a busy thread's active turn instead of waiting behind it, falling back to the message queue when the provider cannot steer. Delivery, the thread message and the journal entry are recorded when the agent receives the answer, and the card shows queued answers as queued. After review, a steer that throws is settled as uncertain and reconciled from provider history rather than requeued, and a paused queue no longer blocks answer steering. Review rounds then found repeated ordering hazards in text-based steer correlation for Pi and OMP, so that correlation was reverted: those adapters match upstream again and mark their steer acknowledgements as ambiguous, and their answers wait in the queue until the turn ends. Source only; not installed. README overview and onboarding are unchanged.
+Maintenance review (2026-11-04): the heavy-job queue uses an atomic populated-directory rename for exclusive slot ownership and recovers dead owners without deleting successor claims. Ticket rewrites are atomic. The CLI and environment variables are unchanged. Not yet installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): trackpad dictation. A triple click anywhere in the window toggles dictation into the active message field and stops without sending, so a lone Magic Trackpad can drive dictation. Not yet installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): live tweak by Redesign lower left sidebar layout: Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
+
 Maintenance review (2026-11-04): live tweak by builds: Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
 
 Maintenance review (2026-11-04): merged main into the sidebar keyboard move fix again, bringing in the combined sidebar footer block and the Dev boot-entry switch fix. The only conflict was the changelog, which keeps every dated entry. The keyboard move fix is unchanged. README overview and onboarding are unchanged.
