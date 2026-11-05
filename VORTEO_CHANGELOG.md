@@ -56,6 +56,10 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 
 ## Unreleased - 2026-11-05
 
+### Fixes
+
+- Shared settings reconcile backs off failed provider account preparation per environment, retrying after 10 seconds and doubling to at most 5 minutes, instead of every 5 seconds. A success, owner edit or explicit reconcile retries at once, including an owner edit saved while a failing attempt is still running, and healthy reconcile timing is unchanged.
+
 ### Features
 
 - A middle click anywhere in Vorteo outside a link now starts and stops dictation like a triple click. Map a three-finger tap to middle click, on a Mac with a helper such as MiddleClick or on an Android touchpad, to dictate with a three-finger tap. iPads cannot make that mapping, so use the triple click there.

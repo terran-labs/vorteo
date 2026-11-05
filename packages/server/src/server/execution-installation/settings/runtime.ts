@@ -296,7 +296,7 @@ export function startSettingsReconciliation(
     if (running) return;
     running = true;
     try {
-      await settings.reconcile();
+      await settings.reconcile({ background: true });
     } catch {
       // Port errors are reflected in sources. Journal failures must not leak config values.
       logger.warn("Shared settings reconciliation could not persist installation state");
