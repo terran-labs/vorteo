@@ -13,7 +13,8 @@ import {
   accessProjectionDigest,
   type ClaudeOAuthProjectionDelivery,
 } from "./claude-oauth-delivery.js";
-import type { ClaudeHostCli, ClaudeOAuthGrant } from "./claude-oauth-host.js";
+import type { ClaudeHostCli } from "./claude-oauth-host.js";
+import type { ClaudeOAuthGrant } from "./claude-oauth-storage.js";
 
 const directories: string[] = [];
 afterEach(() => {

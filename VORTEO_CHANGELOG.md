@@ -1,5 +1,12 @@
 # Vorteo changelog
 
+## Unreleased - 2026-11-05
+
+- Pin Claude Code 2.1.318, which fixes sign-outs caused by status commands exiting before a refresh is saved. Managed account health checks now read storage without launching Claude.
+- Keep account refresh recoverable through temporary outages, adopt credentials saved before a failed request, and distinguish unreadable storage from a missing login.
+- Keep dependent queued messages after a failed turn and show its delivery error without replaying accepted work.
+- Name the built-in Claude connection Claude (CLI), preserve custom names, and route account creation through one installation flow. Environment access no longer duplicates sign-in controls.
+
 Vorteo change history, covering features, fixes, documentation, tests, tooling and upstream integration. Every commit adds a dated entry headed Unreleased; a release preparation heads its entry with the new calendar version, and the Unreleased entries below it belong to that release. See the [commit workflow](docs/release.md#vorteo-release-notes).
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.

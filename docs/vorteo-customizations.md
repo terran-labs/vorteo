@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): Claude connection reliability repair pins CLI 2.1.318, makes managed health checks passive, and preserves refresh recovery through temporary failures. Credential read errors no longer imply sign-out; completed refreshes are adopted even after request failure. Queued dependent messages stop on failed turns, and Claude (CLI) is distinct from installation accounts with one creation flow. Focused regression checks pass; installation and sustained live refresh acceptance remain pending. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): merged current `main` into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.

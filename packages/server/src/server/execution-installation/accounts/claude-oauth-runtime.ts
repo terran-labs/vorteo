@@ -18,11 +18,8 @@ import {
   ClaudeOAuthProjectionReceiptSchema,
   type ClaudeOAuthProjectionDelivery,
 } from "./claude-oauth-delivery.js";
-import {
-  createClaudeHostCli,
-  readClaudeOAuthGrant,
-  type ClaudeHostCli,
-} from "./claude-oauth-host.js";
+import { createClaudeHostCli, type ClaudeHostCli } from "./claude-oauth-host.js";
+import { readClaudeOAuthGrant } from "./claude-oauth-storage.js";
 import { ClaudeOAuthRefresher, type ClaudeOAuthPolicy } from "./claude-oauth-refresher.js";
 
 // Sign-in start failures surface a short message in the interface; the cause goes to the log.

@@ -261,8 +261,10 @@ export class QueueDeliveryWorker {
       return false;
     }
     let accepted = false;
+    let turnFailure: string | null = null;
     try {
       for await (const event of stream) {
+        if (event.type === "turn_failed") turnFailure = event.error;
         if (event.type !== "turn_started" || accepted) continue;
         const snapshot = await this.store.settle({
           agentId,
@@ -288,6 +290,12 @@ export class QueueDeliveryWorker {
           outcome: { status: "uncertain", reason },
         }),
       );
+      return false;
+    }
+    if (accepted && turnFailure !== null) {
+      // Acceptance records delivery, not successful work. Keep dependent messages queued
+      // until the agent can accept work again; never replay an already accepted prompt.
+      await this.reportFailure(new Error(turnFailure), agentId);
       return false;
     }
     if (!accepted) {
