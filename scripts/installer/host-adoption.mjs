@@ -30,6 +30,7 @@ import {
   LAB_DIRECTORY,
   findLegacyDeployments,
   inspectHostRoot,
+  runningCoordinatorConfig,
   serviceArguments,
   tailscaleStatus,
 } from "./detect.mjs";
@@ -232,7 +233,9 @@ export function adoptionSteps({ devContainer, tailscale, build }) {
 }
 
 function assertAdoptable(context) {
-  const host = inspectHostRoot(context.root);
+  const host = inspectHostRoot(context.root, {
+    configFile: runningCoordinatorConfig(context.home, context.root),
+  });
   if (host?.kind === "legacy-host") return host;
   if (host?.kind === "current")
     throw new InstallerError(
@@ -744,6 +747,8 @@ async function adoptConfig(s) {
   const record = JSON.parse(readFileSync(plan.adoption.record, "utf8"));
   writeJson(plan.adoption.record, {
     ...record,
+    // Later tools read the config the coordinator runs, not a copy left from setup.
+    configFile: file,
     installRoot: plan.paths.root,
     release: plan.paths.release,
     adoptedAt: s.context.now().toISOString(),

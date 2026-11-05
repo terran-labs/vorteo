@@ -539,6 +539,46 @@ describe("apply", () => {
     expect(existsSync(path.join(legacy.root, "releases", "host-current"))).toBe(false);
     expect(state.restarts).toEqual([path.basename(legacy.coordinatorPlist)]);
   });
+
+  test("a coordinator running a reviewed plan's config is found and that config is adopted", async () => {
+    const { context } = machine();
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      dev: false,
+      sourceUpdates: true,
+    });
+    // A later coordinator update runs a newer copy from a plan folder; coordinator.json is stale.
+    const running = path.join(
+      legacy.root,
+      "coordinator-plans",
+      "ordinary-prepared-1",
+      "candidate-config.json",
+    );
+    touch(running, JSON.stringify({ ...legacy.config, claudeHostRefresh: true }, null, 2));
+    const stale = readFileSync(path.join(legacy.root, "coordinator.json"), "utf8");
+    writeFileSync(
+      legacy.coordinatorPlist,
+      readFileSync(legacy.coordinatorPlist, "utf8").replace(
+        `${legacy.root}/coordinator.json`,
+        running,
+      ),
+    );
+    expect(await detectExisting(context)).toMatchObject({
+      kind: "legacy-host",
+      paths: { root: legacy.root, coordinatorConfig: running },
+    });
+    context.root = legacy.root;
+    const { ok } = await adopt(context);
+    expect(ok).toBe(true);
+    const adopted = JSON.parse(readFileSync(running, "utf8"));
+    expect(adopted).toMatchObject({
+      claudeHostRefresh: true,
+      deployment: { installRoot: legacy.root },
+    });
+    expect(readFileSync(path.join(legacy.root, "coordinator.json"), "utf8")).toBe(stale);
+    const record = JSON.parse(readFileSync(path.join(legacy.root, "installation.json"), "utf8"));
+    expect(record.configFile).toBe(running);
+  });
 });
 
 describe("coordinator configuration contract", () => {
