@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): prepared beta release 26.11.503 for VortLab, superseding the untagged 26.11.501 and 26.11.502 after main moved, and adding the Mechanic CI duty. Version and changelog only. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): prepared beta release 26.11.502 for VortLab, superseding the untagged 26.11.501 after main moved. Version and changelog only. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): the gitleaks config allows UUID values in the Claude limit reset test file only. A fixture idempotency key there matched generic-api-key, and because the pre-push scan covers every local branch, it blocked all pushes. No behavior changed. README overview and onboarding are unchanged.
