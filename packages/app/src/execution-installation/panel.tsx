@@ -528,8 +528,8 @@ function InstallationPanel({
               onCancel={model.cancelMaintenanceService}
             />
             <DaemonAutomationControl model={model} state={state} />
-            <DeliveryModeCard model={model} state={state} />
             <CustomDomainCard model={model} state={state} />
+            <DeliveryModeCard model={model} state={state} />
             {state.brokerJobs.map((job) => (
               <BrokerRequest
                 key={`${job.id}:${job.revision}`}

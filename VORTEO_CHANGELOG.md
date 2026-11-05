@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-05
 
+### Maintenance
+
+- Placed the Custom domain card directly after the daemon automation control in Installation controls.
+
+## Unreleased - 2026-11-05
+
 ### Added
 
 - Installer-made installations can set a custom domain from Installation controls. Saving it allows the domain on the Host and Dev daemons and restarts only the coordinator. If the coordinator does not come back, the previous settings are restored automatically.

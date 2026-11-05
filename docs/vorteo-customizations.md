@@ -1894,6 +1894,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 5, 2026: Moved the Custom domain card above Delivery mode in Installation controls, so it stays put when Delivery mode moves to About. No behavior change.
+
 November 5, 2026: Added the owner-set custom domain for installer-made installations, the coordinator-config handoff mode and its rollback test. README overview and onboarding are unchanged.
 
 November 4, 2026: Synchronized projects now move Factory-managed workspaces' sidebar memberships with a replaced project key, fixing a duplicate Vorteo System row after installation. The Synchronized projects feature is otherwise unchanged. README overview and onboarding are unchanged.
