@@ -156,13 +156,16 @@ jobs:
         run: bash scripts/release/e2e/linux-user-systemd.sh
       - uses: docker/setup-buildx-action@v4
       - name: Check out the old release
-        run: git worktree add --detach "$VORTEO_E2E_OLD_SOURCE" "${{ matrix.from }}"
+        id: old
+        run: |
+          git worktree add --detach "$VORTEO_E2E_OLD_SOURCE" "${{ matrix.from }}"
+          echo "commit=$(git rev-parse "${{ matrix.from }}^{commit}")" >> "$GITHUB_OUTPUT"
       - name: Build the old release's Dev image with cached layers
         uses: docker/build-push-action@v7
         with:
           context: ${{ env.VORTEO_E2E_OLD_SOURCE }}
           file: ${{ env.VORTEO_E2E_OLD_SOURCE }}/docker/base/Dockerfile
-          build-args: PASEO_BUILD_COMMIT=${{ matrix.from }}
+          build-args: PASEO_BUILD_COMMIT=${{ steps.old.outputs.commit }}
           tags: ${{ env.VORTEO_E2E_OLD_DEV_IMAGE }}
           load: true
           provenance: false

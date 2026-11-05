@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Tests
+
+- The Linux upgrade jobs build the old release's Dev image with its commit SHA, which the app build requires, instead of its tag name.
+
+## Unreleased - 2026-11-04
+
 ### Maintenance
 
 - Merge current `main`, which now carries the release updates branch, into the installer upgrade branch. No conflicts.

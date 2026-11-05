@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): the Linux upgrade test jobs pass the old release's commit SHA, not its tag, as the Dev image build commit. Test only. README unchanged.
+
 Maintenance review (2026-11-04): merged current `main` (release updates, #114) into the installer upgrade branch without conflicts; functionality unchanged by the merge. README unchanged.
 
 Maintenance review (2026-11-04): third review round: the installer upgrade lock is linked into place complete, released on exit, and never reclaimed automatically. README unchanged.
