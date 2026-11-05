@@ -1,10 +1,17 @@
 # Vorteo changelog
 
+The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
+
 ## Unreleased - 2026-11-05
 
 ### Tooling
 
 - Merged current `main` (Host delivery #142) and the Mechanic CI duty into the VortLab lab beta.
+
+### Factory charter changes
+
+- Mechanic: every review now measures CI, test and build cost (jobs per push, required-check runner wait, superseded and flaky runs, rebase churn) and proposes fixes through a PR, such as routing heavy suites to the merge queue, nightly or release, path filters, caching, concurrency cancellation and conflict-free changelog fragments. Required-check and merge queue changes go to the owner. It alerts when required checks wait over 15 minutes or one push starts over 10 jobs.
+- Optimizer (Vorteo System): reviews the Vorteo repository's CI and build cost the same way, read only.
 
 ## Unreleased - 2026-11-05
 
@@ -18,8 +25,6 @@
 - Name the built-in Claude connection Claude (CLI), preserve custom names, and route account creation through one installation flow. Environment access no longer duplicates sign-in controls.
 
 Vorteo change history, covering features, fixes, documentation, tests, tooling and upstream integration. Every commit adds a dated entry headed Unreleased; a release preparation heads its entry with the new calendar version, and the Unreleased entries below it belong to that release. See the [commit workflow](docs/release.md#vorteo-release-notes).
-
-The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
 ## 26.11.502 - 2026-11-05
 
