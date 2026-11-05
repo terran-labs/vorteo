@@ -87,7 +87,9 @@ function isHostable(input: EligibilityInput): input is EligibilityInput & {
     typeof input.launchContext?.agentId === "string" &&
     input.launchContext.agentId.length > 0 &&
     input.persistSession !== false &&
-    input.config.internal !== true
+    input.config.internal !== true &&
+    // A session host built before tool access existed would launch with default tools.
+    input.config.toolAccess !== "none"
   );
 }
 
@@ -356,6 +358,9 @@ export function createHostedAgentClient(input: {
     const agentId = launchContext?.agentId;
     const adoption = agentId ? routing.adoptions?.get(agentId) : undefined;
     if (!agentId || !adoption) return null;
+    // A hosted session was launched with whatever tools its host gave it; a tool-less
+    // agent never adopts one and launches locally instead.
+    if (config.toolAccess === "none") return null;
     routing.adoptions?.delete(agentId);
     const session = hostedSession({
       channel: adoption.channel,

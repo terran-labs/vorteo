@@ -291,7 +291,9 @@ function AnsweredQuestions({
 function answeredMeta(question: AgentQuestion): string {
   const when = `Answered ${formatTimeAgo(new Date(question.answeredAt ?? question.askedAt))}`;
   const source = answeredFrom(question.answeredBy);
-  return source ? `${when} from ${source}` : when;
+  const answered = source ? `${when} from ${source}` : when;
+  // Delivery is recorded when the thread receives the answer, not when it is saved.
+  return question.answerDeliveredAt ? answered : `${answered}. Queued for the thread`;
 }
 
 const styles = StyleSheet.create((theme) => ({

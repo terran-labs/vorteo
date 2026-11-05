@@ -10,6 +10,7 @@ export type MessageInputKeyboardActionKind =
   | "focus"
   | "send"
   | "dictation-toggle"
+  | "dictation-insert-toggle"
   | "dictation-cancel"
   | "dictation-confirm"
   | "voice-toggle"

@@ -2,7 +2,11 @@ import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useCallback, useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { taskCardStyles } from "@/agent-stream/task-card-styles";
+import { taskCardStyles, TASK_CARD_BODY_INSET } from "@/agent-stream/task-card-styles";
+import {
+  sectionDividerBleedStyle,
+  useSectionDividerBleed,
+} from "@/components/sidebar/global-card-shell";
 import { Tooltip, TooltipContent, TooltipText, TooltipTrigger } from "@/components/ui/tooltip";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
@@ -139,13 +143,18 @@ function AccountRow({
   }, [account.providerId, expanded]);
   const toggleState = useMemo(() => ({ expanded }), [expanded]);
   const { action, usage } = useConnection(account, serverId, view);
+  const bleed = useSectionDividerBleed();
   const Chevron = expanded ? Down : Right;
   const label = runwayLabel(account, runway);
   const summary = runwaySummary(account, runway, now);
   const description = `${account.name}, next 7 days: ${runwayDescription(runway, now)}`;
   return (
     <View
-      style={[styles.account, taskCardStyles.proseInset, !first && taskCardStyles.separator]}
+      style={[
+        styles.account,
+        taskCardStyles.proseInset,
+        !first && [taskCardStyles.separator, sectionDividerBleedStyle(bleed, TASK_CARD_BODY_INSET)],
+      ]}
       testID={`global-quota-account-${account.providerId}`}
     >
       <View style={styles.header}>

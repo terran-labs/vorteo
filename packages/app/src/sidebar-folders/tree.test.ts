@@ -9,6 +9,7 @@ import { EMPTY_SIDEBAR_FOLDER_STATE, type SidebarFolderState } from "./store";
 import {
   buildSidebarTreeRows,
   createSidebarFolderPatch,
+  savedSidebarAnchor,
   flattenSidebarScope,
   listSidebarFolderDestinations,
   moveSidebarEntryPatch,
@@ -45,17 +46,33 @@ function describeRows(rows: SidebarTreeRow<string>[]): string[] {
   );
 }
 
-function rowsFor(state: SidebarFolderState, items: string[], hideEmptyFolders = false) {
+function rowsFor(
+  state: SidebarFolderState,
+  items: string[],
+  hideEmptyFolders = false,
+  itemOrder?: "saved" | "given",
+) {
   return buildSidebarTreeRows({
     state,
     scope: ROOT,
     items,
     getKey: (item) => item,
     hideEmptyFolders,
+    itemOrder,
   });
 }
 
 describe("sidebar folder tree", () => {
+  test("time-based sorts order rows around saved folder slots, and drops map back", () => {
+    const state = folderState([folder("f", null)], {
+      childOrder: { root: ["c", "folder:f", "a", "b"] },
+    });
+    const keys = ["a", "b", "c"];
+    expect(describeRows(rowsFor(state, keys, false, "given"))).toEqual(["a", "F", "b", "c"]);
+    // On screen the folder dropped before "b"; in the saved order that slot holds "a".
+    expect(savedSidebarAnchor({ state, scope: ROOT, keys, anchor: "b" })).toBe("a");
+  });
+
   test("renders folders nested more than three levels with their items", () => {
     const state = folderState(
       [folder("a", null), folder("b", "a"), folder("c", "b"), folder("d", "c"), folder("e", "d")],
@@ -83,14 +100,6 @@ describe("sidebar folder tree", () => {
     expect(rows[1]).toMatchObject({ kind: "folder", collapsed: true, itemCount: 2 });
   });
 
-  test("filters hide folders that contain no visible item", () => {
-    const state = folderState([folder("a", null), folder("bb", null)], {
-      itemFolder: { one: "a" },
-    });
-    expect(describeRows(rowsFor(state, ["one"], true))).toEqual(["A", "  one"]);
-    expect(describeRows(rowsFor(state, ["one"]))).toEqual(["A", "  one", "BB"]);
-  });
-
   test("items missing from the stored order keep their flat position", () => {
     const state = folderState([folder("a", null)], {
       childOrder: { root: ["y", "folder:a", "z"] },
@@ -102,6 +111,14 @@ describe("sidebar folder tree", () => {
       "z",
       "last",
     ]);
+  });
+
+  test("filters hide folders that contain no visible item", () => {
+    const state = folderState([folder("a", null), folder("bb", null)], {
+      itemFolder: { one: "a" },
+    });
+    expect(describeRows(rowsFor(state, ["one"], true))).toEqual(["A", "  one"]);
+    expect(describeRows(rowsFor(state, ["one"]))).toEqual(["A", "  one", "BB"]);
   });
 
   test("moving a project into a folder writes the tree and the flat order older clients read", () => {
@@ -208,12 +225,12 @@ describe("sidebar folder tree", () => {
       folder: { id: "f", name: "Later", createdAt: "2026-10-22T00:00:00Z" },
       keys: ["s:1", "s:2"],
     });
-    expect(created.childOrder).toEqual({ "project:proj": ["s:1", "s:2", "folder:f"] });
+    expect(created.childOrder).toEqual({ "project:proj": ["folder:f", "s:1", "s:2"] });
     const state = folderState([folder("f", null, scope)], {
       childOrder: created.childOrder as Record<string, string[]>,
       itemFolder: { "s:1": "f" },
     });
-    expect(flattenSidebarScope({ state, scope, keys: ["s:1", "s:2"] })).toEqual(["s:2", "s:1"]);
+    expect(flattenSidebarScope({ state, scope, keys: ["s:1", "s:2"] })).toEqual(["s:1", "s:2"]);
     const patch = moveSidebarEntryPatch({
       state,
       scope,

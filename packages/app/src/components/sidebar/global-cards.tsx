@@ -3,7 +3,6 @@ import { View, useWindowDimensions } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { GlobalOpenQuestionsCard } from "@/open-questions/global-card";
 import { GlobalQuotaCard } from "@/provider-usage/global-quota-card";
-import { SIDEBAR_OUTER_GAP } from "@/stores/panel-store/state";
 import {
   GlobalCardLayoutContext,
   globalCardLayout,
@@ -11,18 +10,11 @@ import {
 } from "./global-card-shell";
 
 /**
- * Global cards between the workspace list and the sidebar footer. Each card hides itself while
- * it has nothing to show, so an idle installation keeps the full list. On desktop the cards are
- * `detached`: they sit below the floating navigation card, separated by the panel gap. Inline
- * (mobile) cards keep the same gap from the list above and the banners or footer below.
+ * The global sections at the top of the sidebar footer block, inside the navigation card between
+ * the workspace list and the footer rows. Each section hides itself, with its rule, while it has
+ * nothing to show, so an idle installation keeps the full list.
  */
-export function SidebarGlobalCards({
-  onBeforeNavigate,
-  detached = false,
-}: {
-  onBeforeNavigate?: () => void;
-  detached?: boolean;
-}) {
+export function SidebarGlobalCards({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const { height } = useWindowDimensions();
   const [shown, setShownState] = useState<ReadonlySet<GlobalCardKind>>(() => new Set());
   const setShown = useCallback((kind: GlobalCardKind, visible: boolean) => {
@@ -40,10 +32,7 @@ export function SidebarGlobalCards({
   );
   return (
     <GlobalCardLayoutContext.Provider value={layout}>
-      <View
-        style={[styles.stack, shown.size > 0 && (detached ? styles.detached : styles.inline)]}
-        testID="sidebar-global-cards"
-      >
+      <View style={styles.stack} testID="sidebar-global-cards">
         <GlobalOpenQuestionsCard onBeforeNavigate={onBeforeNavigate} />
         <GlobalQuotaCard />
       </View>
@@ -51,8 +40,6 @@ export function SidebarGlobalCards({
   );
 }
 
-const styles = StyleSheet.create((theme) => ({
-  stack: { flexShrink: 0, gap: theme.spacing[2] },
-  detached: { marginTop: SIDEBAR_OUTER_GAP },
-  inline: { marginVertical: SIDEBAR_OUTER_GAP },
-}));
+const styles = StyleSheet.create({
+  stack: { flexShrink: 0 },
+});

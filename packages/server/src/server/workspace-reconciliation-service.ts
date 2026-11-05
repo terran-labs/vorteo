@@ -17,7 +17,7 @@ import {
   type MutableWorkspacePlacement,
 } from "./workspace-registry-model.js";
 import { workspaceIdsForProjects } from "./workspace-directory.js";
-import { deriveProjectKey } from "./project-key.js";
+import { deriveProjectKey, retainedProjectKey } from "./project-key.js";
 
 const DEFAULT_RESCAN_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_DEBOUNCE_MS = 100;
@@ -425,9 +425,9 @@ export class WorkspaceReconciliationService {
     if (project.kind !== mappedKind) {
       projectUpdates.kind = mappedKind;
     }
-    // The system project's key is daemon-owned and never follows its git remote.
-    if (!project.systemProject && project.projectKey !== projectKey) {
-      projectUpdates.projectKey = projectKey;
+    const nextKey = retainedProjectKey(project, projectKey);
+    if (project.projectKey !== nextKey) {
+      projectUpdates.projectKey = nextKey;
     }
 
     if (Object.keys(projectUpdates).length > 0) {

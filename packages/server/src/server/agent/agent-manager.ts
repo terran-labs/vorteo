@@ -10,6 +10,8 @@ import {
   answerJournalEntryId,
   answerJournalText,
   answerMessage,
+  answerMessageId,
+  answeredQuestionId,
   QuestionError,
 } from "./questions/model.js";
 import { editThreadGoal, type ThreadGoalEdit } from "./agent-goal.js";
@@ -161,6 +163,7 @@ import {
 } from "./profile-switch/history.js";
 import { readRecordedContext } from "./profile-switch/context.js";
 import type {
+  AgentToolAccessSetting,
   ProfileSwitchEndpoint,
   ProfileSwitchTimelineItem,
 } from "@getpaseo/protocol/agent-types";
@@ -269,6 +272,14 @@ export class RestartInterruptionError extends Error {
   }
 }
 
+/** The steer was refused before the provider could hold the message. */
+export class SteerNotAdmittedError extends Error {
+  constructor() {
+    super("Active turn changed before steering could be delivered");
+    this.name = "SteerNotAdmittedError";
+  }
+}
+
 export class AgentRunCancellationError extends Error {
   constructor(agentId: string, action: "reload" | "replace" | "rewind" | "stop") {
     super(
@@ -363,7 +374,41 @@ function buildStoredAgentConfig(record: StoredAgentRecord): AgentSessionConfig {
   if (record.config.usageLimitHold) config.usageLimitHold = record.config.usageLimitHold;
   if (record.config.quotaReserve) config.quotaReserve = record.config.quotaReserve;
   if (record.config.mcpServers != null) config.mcpServers = record.config.mcpServers;
+  if (record.config.toolAccess === "none") config.toolAccess = "none";
   return stripInternalPaseoMcpServer(config);
+}
+
+/** Effective tool access reported to the authorization layer. */
+export type AgentToolAccess = "none" | "default";
+
+/** Only the Claude provider disables every built-in tool, so tool-less agents run only there. */
+const TOOL_LESS_PROVIDER_FAMILY = "claude";
+
+/** Refusal to create, launch or reconfigure an agent against its tool access setting. */
+export class ToolAccessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolAccessError";
+  }
+}
+
+/** A tool-less config keeps no MCP servers or tool preapprovals to launch with. */
+function withoutToolGrants(config: AgentSessionConfig): AgentSessionConfig {
+  const next: AgentSessionConfig = { ...config, toolAccess: "none" };
+  delete next.mcpServers;
+  delete next.toolPolicy;
+  return next;
+}
+
+/** Fails closed if anything attached tools to a tool-less launch. */
+function resolveToolLessLaunchConfig(
+  launchConfig: AgentSessionConfig,
+  launchContext: AgentLaunchContext,
+): AgentSessionConfig {
+  if (launchContext.paseoTools || Object.keys(launchContext.mcpServers ?? {}).length > 0) {
+    throw new ToolAccessError("A thread without tools cannot launch with tools attached.");
+  }
+  return withoutToolGrants(launchConfig);
 }
 
 export { AGENT_LIFECYCLE_STATUSES, type AgentLifecycleStatus };
@@ -1558,6 +1603,8 @@ export class AgentManager {
             MessageQueueService,
             | "withIdleQueue"
             | "queueQuestionAnswer"
+            | "steerQueuedMessage"
+            | "onMessageAccepted"
             | "captureRestartContinuation"
             | "releaseRestartContinuation"
             | "wakeRestartContinuation"
@@ -1570,6 +1617,7 @@ export class AgentManager {
           >
         >)
     | null = null;
+  private messageQueueAcceptedSubscription: (() => void) | null = null;
   private readonly queueGoalMutationTails = new Map<string, Promise<void>>();
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
@@ -1750,6 +1798,9 @@ export class AgentManager {
       assertCurrent,
       openSession: (input) => {
         assertCurrent();
+        // Governed sessions skip prepareSessionConfig, which is what enforces tool access.
+        if (input.config.toolAccess === "none")
+          throw new ToolAccessError("Controller-managed execution cannot run without tools.");
         return (async () => {
           // Capture scalar placement before awaiting registry reads. Provider startup
           // must not race a controller mutating the caller's placement object.
@@ -1825,6 +1876,8 @@ export class AgentManager {
           MessageQueueService,
           | "withIdleQueue"
           | "queueQuestionAnswer"
+          | "steerQueuedMessage"
+          | "onMessageAccepted"
           | "captureRestartContinuation"
           | "releaseRestartContinuation"
           | "wakeRestartContinuation"
@@ -1835,7 +1888,19 @@ export class AgentManager {
         >
       >,
   ): void {
+    this.messageQueueAcceptedSubscription?.();
     this.messageQueueControl = control;
+    this.messageQueueAcceptedSubscription =
+      control.onMessageAccepted?.((agentId, item) => {
+        const questionId = answeredQuestionId(item.id);
+        if (!questionId) return;
+        void this.recordAnswerReceived(agentId, questionId).catch((error: unknown) => {
+          this.logger.warn(
+            { err: error, agentId },
+            "Received open question answer was not recorded",
+          );
+        });
+      }) ?? null;
   }
 
   /** Review one existing idle thread; never steer, replace, or resume a goal implicitly. */
@@ -3080,6 +3145,7 @@ export class AgentManager {
         ...request.config,
         ...config,
         internal: config.internal,
+        toolAccess: config.toolAccess,
         profileId: config.profileId,
         profileLaunch: config.profileLaunch,
         skillSnapshot: config.skillSnapshot,
@@ -3150,6 +3216,10 @@ export class AgentManager {
       (await this.registry?.get(resolvedAgentId))?.config?.controllerExecutionId
     )
       throw new Error("Controller-managed execution must be created through its controller.");
+    // Recreating a stored tool-less agent, as loading one without a provider handle does,
+    // keeps it tool-less even though its record is replaced.
+    if ((await this.readStoredToolAccess(resolvedAgentId)) === "none")
+      config = { ...config, toolAccess: "none" };
     await this.deleteAgentState(resolvedAgentId);
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
@@ -3176,7 +3246,7 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       options?.env,
-      buildCreateOpening(),
+      { ...buildCreateOpening(), toolAccess: storedConfig.toolAccess },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
@@ -3352,7 +3422,7 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       launchEnv,
-      buildResumeOpening(),
+      { ...buildResumeOpening(), toolAccess: storedConfig.toolAccess },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const session = await client.resumeSession(
@@ -3524,6 +3594,7 @@ export class AgentManager {
         workspaceId: existing.workspaceId,
         title: await this.resolveInitialPersistedTitle(agentId, existing.config, null),
         labels: existing.labels,
+        toolAccess: storedConfig.toolAccess,
       },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
@@ -3672,7 +3743,12 @@ export class AgentManager {
       storedConfig.cwd,
       paseoToolPolicy,
       undefined,
-      { reason: "create", purpose: "interactive", workspaceId: source.workspaceId },
+      {
+        reason: "create",
+        purpose: "interactive",
+        workspaceId: source.workspaceId,
+        toolAccess: storedConfig.toolAccess,
+      },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
 
@@ -5342,7 +5418,11 @@ export class AgentManager {
     return this.deliverAnswer(agentId, answered);
   }
 
-  /** The stable queue operation ID keeps delivery exactly once across retries and reloads. */
+  /**
+   * The answer is enqueued under a stable ID first, so retries and reloads deliver it once.
+   * It then steers into an active turn like a peer message; a provider that cannot steer,
+   * or whose steer acknowledgement is ambiguous, leaves it queued until the turn ends. Only the queue's acceptance marks it delivered.
+   */
   private async deliverAnswer(
     agentId: string,
     question: import("@getpaseo/protocol/agent-questions").AgentQuestion,
@@ -5350,19 +5430,67 @@ export class AgentManager {
     const queue = this.messageQueueControl;
     if (!queue?.queueQuestionAnswer)
       throw new QuestionError("unavailable", "This daemon cannot deliver answers to the thread.");
+    const messageId = answerMessageId(question.id);
+    // An acceptance committed before a crash cut off its record needs only the record.
+    if ((await queue.acceptedHistory(agentId)).some((entry) => entry.item.id === messageId))
+      return this.recordAnswerReceived(agentId, question.id);
     await queue.queueQuestionAnswer(agentId, question.id, answerMessage(question));
-    const questions = await this.requireRegistry().markAnswerDelivered(agentId, question.id);
-    const agent = this.requireAgent(agentId);
-    agent.questions = questions;
-    this.emitState(agent, { persist: false });
+    const steered = await queue.steerQueuedMessage?.(agentId, messageId, async (item) => {
+      const agent = this.agents.get(agentId);
+      const turnId = agent?.activeForegroundTurnId ?? agent?.activeTurnId;
+      // An ambiguous acknowledgement cannot prove delivery, so those answers wait in the queue.
+      if (
+        !turnId ||
+        !agent?.session?.steerActiveTurn ||
+        agent.session.ambiguousSteerAcknowledgement
+      )
+        return null;
+      try {
+        this.assertQuotaNotPaused(agentId);
+      } catch {
+        return null;
+      }
+      // Null only for a certain refusal before submission. Any other failure may have
+      // reached the provider, so it is left to provider history.
+      try {
+        const result = await this.steerAgentRun(agentId, item.text, { clientMessageId: item.id });
+        return result.status === "accepted" ? { turnId } : null;
+      } catch (error) {
+        if (error instanceof SteerNotAdmittedError) return null;
+        throw error;
+      }
+    });
+    if (steered === "accepted") return this.recordAnswerReceived(agentId, question.id);
+    return structuredClone(this.requireAgent(agentId).questions ?? []);
+  }
+
+  /** Mark the answer delivered and journal it once the agent has actually received it. */
+  private async recordAnswerReceived(
+    agentId: string,
+    questionId: string,
+  ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
+    const registry = this.requireRegistry();
+    const questions = await registry.markAnswerDelivered(agentId, questionId);
+    const question = questions.find((candidate) => candidate.id === questionId);
+    const agent = this.agents.get(agentId);
+    if (agent) {
+      agent.questions = questions;
+      this.emitState(agent, { persist: false });
+    }
+    if (!question) return structuredClone(questions);
     try {
-      await this.appendJournal(agentId, {
+      await registry.appendJournal(agentId, {
         entryId: answerJournalEntryId(question.id),
         text: answerJournalText(question),
         machineContext: `questionId=${question.id}\nansweredBy=${question.answeredBy}`,
       });
+      const loaded = this.agents.get(agentId);
+      if (loaded) {
+        loaded.journal = await this.readJournal(agentId);
+        this.emitState(loaded, { persist: false });
+      }
     } catch (error) {
-      // The durable message already carries the answer; the journal is a record of it.
+      // The delivered message already carries the answer; the journal is a record of it.
       this.logger.warn({ err: error, agentId }, "Delivered open question answer was not journaled");
     }
     return structuredClone(questions);
@@ -5767,7 +5895,7 @@ export class AgentManager {
     // An unavailable answer is only safe to fall back from while this admission
     // still owns the active turn. Never let an A admission replace a later B.
     if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      throw new SteerNotAdmittedError();
     }
     return result;
   }
@@ -5832,7 +5960,7 @@ export class AgentManager {
 
   private assertSteerAdmissionOwnsTurn(agent: ActiveManagedAgent, expectedTurnId: string): void {
     if (agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      throw new SteerNotAdmittedError();
     }
   }
 
@@ -8079,7 +8207,10 @@ export class AgentManager {
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
     });
-    if (options.queuedMessage && options.providerMessageId) {
+    if (
+      (options.queuedMessage || answeredQuestionId(clientMessageId)) &&
+      options.providerMessageId
+    ) {
       this.persistQueuedPromptIdentity(agent.id, clientMessageId, options.providerMessageId);
     }
     if (options.intent === "goal") {
@@ -8149,7 +8280,9 @@ export class AgentManager {
     }
     if (!existing || existing.item.type !== "user_message") return null;
     if (messageId) {
-      if (existing.item.queue)
+      // Steered answers are queue items too. Their native ID is how provider history proves
+      // an ambiguous steer arrived, since history may not carry the client ID.
+      if (existing.item.queue || answeredQuestionId(clientMessageId))
         this.persistQueuedPromptIdentity(agent.id, clientMessageId, messageId);
       const goal = agent.goalSubmissions?.find(
         (entry) => entry.clientMessageId === clientMessageId,
@@ -8604,10 +8737,20 @@ export class AgentManager {
   ): Promise<PreparedSessionConfig> {
     if (config.controllerExecutionId)
       throw new Error("Controller-managed execution requires trusted registration.");
-    const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), {
+    // Tool access only narrows. Once an agent is tool-less, no override, profile switch or
+    // reload config can restore its tools.
+    const toolLess =
+      config.toolAccess === "none" || (await this.readStoredToolAccess(agentId)) === "none";
+    const source = toolLess ? withoutToolGrants(config) : config;
+    const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(source), {
       env: options.env,
       purpose: options.purpose,
     });
+    if (toolLess) {
+      if (options.purpose !== "history") this.assertToolLessProvider(storedConfig.provider);
+      const launchConfig = this.applyDaemonAppendSystemPrompt(storedConfig);
+      return { storedConfig, launchConfig, paseoToolPolicy: { enabled: false } };
+    }
     const paseoToolPolicy = this.paseoToolsEnabled
       ? this.resolvePaseoToolPolicy(storedConfig.provider)
       : { enabled: false };
@@ -8632,6 +8775,52 @@ export class AgentManager {
       }),
     );
     return { storedConfig, launchConfig, paseoToolPolicy };
+  }
+
+  /** The tool access recorded for an agent, live or persisted, before any new config applies. */
+  private async readStoredToolAccess(agentId: string): Promise<AgentToolAccessSetting | undefined> {
+    if (this.agents.get(agentId)?.config.toolAccess === "none") return "none";
+    const record = await this.registry?.get(agentId);
+    return record?.config?.toolAccess === "none" ? "none" : undefined;
+  }
+
+  /**
+   * Root provider of a provider's `extends` chain in the registry, such as "claude" for a
+   * `claude-account-*` account. Null when the chain is unregistered or cyclic.
+   */
+  private resolveProviderFamily(provider: AgentProvider): AgentProvider | null {
+    const seen = new Set<AgentProvider>();
+    let current = provider;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const definition = this.providerDefinitions.get(current);
+      if (!definition) return null;
+      if (!definition.derivedFromProviderId) return current;
+      current = definition.derivedFromProviderId;
+    }
+    return null;
+  }
+
+  private assertToolLessProvider(provider: AgentProvider): void {
+    if (this.resolveProviderFamily(provider) !== TOOL_LESS_PROVIDER_FAMILY) {
+      throw new ToolAccessError(
+        `A thread without tools can only run on a Claude account. '${provider}' is not one.`,
+      );
+    }
+  }
+
+  /**
+   * Effective tool access for an agent, for authorization decisions. Returns "none" only when
+   * the agent's live or stored config records `toolAccess: "none"` and its provider resolves
+   * to the Claude family through the provider registry, the only provider that enforces it.
+   * Every other agent, including an unknown one, reports "default".
+   */
+  async getToolAccess(agentId: string): Promise<AgentToolAccess> {
+    if ((await this.readStoredToolAccess(agentId)) !== "none") return "default";
+    const provider =
+      this.agents.get(agentId)?.provider ?? (await this.registry?.get(agentId))?.provider;
+    if (!provider) return "default";
+    return this.resolveProviderFamily(provider) === TOOL_LESS_PROVIDER_FAMILY ? "none" : "default";
   }
 
   private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
@@ -8662,6 +8851,8 @@ export class AgentManager {
       workspaceId?: string | null;
       title?: string | null;
       labels?: Record<string, string>;
+      /** A tool-less launch attaches no plugin tools, MCP servers or native tool catalog. */
+      toolAccess?: AgentToolAccessSetting;
     },
   ): Promise<AgentLaunchContext> {
     // A plugin changing during this open must still make the resulting session stale.
@@ -8688,7 +8879,7 @@ export class AgentManager {
       const request = buildOpenRequest();
       const transformed = await this.pluginLifecycle.before("agent.open.before", request);
       env = { ...transformed.env, ...env };
-      if (request.purpose === "interactive") {
+      if (request.purpose === "interactive" && opening?.toolAccess !== "none") {
         this.attachedPluginTools.set(agentId, transformed.tools as AttachedAgentTool[]);
         mcpServers = transformed.mcpServers;
         mcpServerOwners = transformed.mcpServerOwners;
@@ -8707,10 +8898,12 @@ export class AgentManager {
       },
     };
     const useNativeTools =
+      opening?.toolAccess !== "none" &&
       this.paseoToolsEnabled &&
       isPaseoToolPolicyEnabled(paseoToolPolicy) &&
       client.capabilities.supportsNativePaseoTools;
     if (
+      opening?.toolAccess !== "none" &&
       this.paseoToolCatalogFactory &&
       (useNativeTools || this.getPluginTools(agentId).length > 0)
     ) {
@@ -8733,6 +8926,8 @@ export class AgentManager {
     launchConfig: AgentSessionConfig,
     launchContext: AgentLaunchContext,
   ): AgentSessionConfig {
+    if (launchConfig.toolAccess === "none")
+      return resolveToolLessLaunchConfig(launchConfig, launchContext);
     const savedServerNames = new Set(
       Object.keys(stripInternalPaseoMcpServer(launchConfig).mcpServers ?? {}),
     );
