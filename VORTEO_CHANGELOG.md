@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Shared settings reconcile backs off failed provider account preparation per environment, retrying after 10 seconds and doubling to at most 5 minutes, instead of every 5 seconds. A success, owner edit or explicit reconcile retries at once, and healthy reconcile timing is unchanged.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
