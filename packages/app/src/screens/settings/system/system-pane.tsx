@@ -1,3 +1,4 @@
+import { ServiceAccessSection } from "../service-access-section";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -177,6 +178,7 @@ function EnvironmentDetails({
         </>
       )}
       <InstallationSystemDetails target={target} />
+      <ServiceAccessSection serverId={serverId} />
       <InstallationConnectionCheck embedded />
     </View>
   );
@@ -291,6 +293,11 @@ export function SystemPane({
       {advanced ? (
         <ScrollView style={styles.advanced} contentContainerStyle={styles.detailsBody}>
           <InstallationSystemAdvanced />
+          <Text style={settingsStyles.rowTitle}>Installation overview</Text>
+          <Text selectable style={settingsStyles.rowHint}>
+            Read-only projects, workspaces and agents across Host and Dev are available at
+            /api/installation/overview. Scripts need a dedicated observer credential issued by Host.
+          </Text>
           <UpstreamUpdatesSection />
         </ScrollView>
       ) : null}

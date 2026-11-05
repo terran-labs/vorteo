@@ -1,3 +1,9 @@
+import { useInstallationOwnerClient } from "@/execution-installation/panel";
+import {
+  useInstallationUpgradeStatus,
+  useInstallationUpgradeActions,
+} from "@/execution-installation/use-installation-upgrades";
+import { supportsUpdatePolicy } from "@/execution-installation/installation-upgrades-model";
 import { useCallback, useMemo, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -20,6 +26,10 @@ const channels = [
 export function SystemUpdatesRow() {
   const app = useDesktopAppUpdater();
   const update = useVortonUpdate();
+  const owner = useInstallationOwnerClient();
+  const installation = useInstallationUpgradeStatus(owner);
+  const actions = useInstallationUpgradeActions(owner);
+  const policy = Boolean(owner && supportsUpdatePolicy(installation.data));
   const { settings, updateSettings } = useSettings();
   const toast = useToast();
   const [expanded, setExpanded] = useState(false);
@@ -38,9 +48,11 @@ export function SystemUpdatesRow() {
     [settings.releaseChannel],
   );
   const check = useCallback(() => {
-    update.checkNow();
+    if (policy)
+      void actions.check.mutateAsync().catch((error) => toast.error(toErrorMessage(error)));
+    else update.checkNow();
     if (app.isDesktopApp) void app.checkForUpdates();
-  }, [update, app]);
+  }, [update, app, policy, actions.check, toast]);
   const install = useCallback(async () => {
     try {
       if (
@@ -56,11 +68,11 @@ export function SystemUpdatesRow() {
     }
   }, [app, toast]);
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
-  let status = "Check for updates";
-  if (update.data?.status === "available")
-    status = `Vorteo ${update.data.latestRelease ?? "update"} available`;
-  if (update.data?.status === "current") status = "Vorteo is up to date";
-  if (app.isDesktopApp) status = `${app.statusText}. ${status}`;
+  const status = updateStatusText(
+    update.data,
+    policy ? installation.data : null,
+    app.isDesktopApp ? app.statusText : null,
+  );
   return (
     <View testID="system-updates-row" style={settingsStyles.card}>
       <View style={styles.row}>
@@ -70,7 +82,7 @@ export function SystemUpdatesRow() {
         </View>
         <Button
           onPress={check}
-          disabled={app.isChecking || update.isFetching}
+          disabled={app.isChecking || update.isFetching || actions.check.isPending}
           testID="system-check-updates"
         >
           Check
@@ -81,15 +93,17 @@ export function SystemUpdatesRow() {
       </View>
       {expanded ? (
         <ScrollView style={styles.details} contentContainerStyle={styles.body}>
-          <SelectField
-            label="Release channel"
-            value={settings.releaseChannel}
-            selectedDisplay={display}
-            options={channels}
-            onChange={changeChannel}
-            placeholder="Choose channel"
-            emptyText="No channels"
-          />
+          {!policy ? (
+            <SelectField
+              label="Release channel"
+              value={settings.releaseChannel}
+              selectedDisplay={display}
+              options={channels}
+              onChange={changeChannel}
+              placeholder="Choose channel"
+              emptyText="No channels"
+            />
+          ) : null}
           {app.isDesktopApp ? (
             <>
               <SettingsStatusLine message={app.errorMessage ?? app.statusText} />
@@ -107,6 +121,24 @@ export function SystemUpdatesRow() {
     </View>
   );
 }
+function updateStatusText(
+  update: ReturnType<typeof useVortonUpdate>["data"],
+  installation: ReturnType<typeof useInstallationUpgradeStatus>["data"],
+  appStatus: string | null,
+) {
+  let message = "Check for updates";
+  if (update?.status === "available")
+    message = `Vorteo ${update.latestRelease ?? "update"} available`;
+  if (update?.status === "current") message = "Vorteo is up to date";
+  if (installation)
+    message =
+      installation.check?.error ??
+      (installation.check?.latest
+        ? `Vorteo ${installation.check.latest.release} available`
+        : "Installation updates follow its saved channel");
+  return appStatus ? `${appStatus}. ${message}` : message;
+}
+
 const styles = StyleSheet.create((theme) => ({
   row: {
     height: 88,

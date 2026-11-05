@@ -43,6 +43,9 @@ function fakePorts(changes: Partial<UpgradePorts> = {}) {
     hasContainer: true,
     coordinatorReplacement: null,
     currentCommit: () => INSTALLED_COMMIT,
+    automaticAllowed: () => true,
+    directHost: false,
+    busy: async () => null,
     resolveRelease: async () => RELEASE_COMMIT,
     snapshot: async () => {
       calls.push("snapshot");
@@ -115,6 +118,25 @@ function statuses(upgrades: InstallationUpgrades) {
   return { status: upgrade.status, steps: upgrade.steps.map((step) => step.status) };
 }
 
+test("keeps an installer-built Host job and requests it only once", async () => {
+  // Installer-made Hosts return `installer-<upgrade id>`. The journal once refused that ID,
+  // so every tick relaunched the Host build and the upgrade stayed running forever.
+  const fake = fakePorts({
+    requestHostUpdate: async (upgrade) => {
+      fake.calls.push("host-request");
+      return `installer-${upgrade.id}`;
+    },
+  });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  await upgrades.drain();
+  await upgrades.drain();
+  expect(fake.calls.filter((call) => call === "host-request")).toHaveLength(1);
+  fake.finishHost("failed");
+  await upgrades.drain();
+  expect(statuses(upgrades).status).toBe("failed");
+});
+
 test("runs every step in order and records each one", async () => {
   const fake = fakePorts();
   const upgrades = new InstallationUpgrades(journal, fake.ports);
@@ -139,6 +161,62 @@ test("runs every step in order and records each one", async () => {
     steps: ["succeeded", "succeeded", "succeeded", "succeeded", "succeeded"],
   });
   expect(upgrades.list()[0].snapshotId).toBe("20261030T120000000Z");
+});
+
+test("after current work, the Dev step waits for Dev agents until the owner installs now", async () => {
+  let devBusy: string | null = "1 agent still working.";
+  const fake = fakePorts({
+    busy: async (target) => (target === "container-daemon" ? devBusy : null),
+  });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  const pending = await upgrades.request("release-26.10.3000");
+  upgrades.decide(pending.id, pending.revision, "approve-after-work");
+  fake.finishHost("succeeded");
+  await upgrades.drain();
+  fake.reportCoordinator("succeeded");
+  await upgrades.drain();
+  await upgrades.drain();
+  expect(fake.calls).not.toContain("dev-replace sha256:new");
+  expect(upgrades.list()[0].steps[4]?.detail).toBe(
+    "Waiting for current Dev work: 1 agent still working.",
+  );
+  // Waiting rewrites nothing, so the revision the owner decides on stays valid.
+  const waiting = upgrades.list()[0];
+  await upgrades.drain();
+  expect(upgrades.list()[0].revision).toBe(waiting.revision);
+  // Install now stops the wait without another approval.
+  upgrades.decide(waiting.id, waiting.revision, "approve");
+  devBusy = "still busy";
+  await upgrades.drain();
+  expect(fake.calls.slice(-2)).toEqual(["dev-replace sha256:new", "dev-verify"]);
+  expect(statuses(upgrades).status).toBe("succeeded");
+});
+
+test("turning automatic updates off stops an automatic upgrade before the Host restart", async () => {
+  const fake = fakePorts({ automaticAllowed: () => false });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  const offer = await upgrades.request("release-26.10.3000", {
+    origin: "update-check",
+    notes: { summary: "", security: false, charterChanges: [], url: "https://github.com/x" },
+  });
+  upgrades.approveAutomatically(offer.id);
+  await upgrades.drain();
+  expect(fake.calls).not.toContain("host-request");
+  expect(statuses(upgrades).status).toBe("failed");
+});
+
+test("a Dev the installer does not manage is skipped, never rebuilt", async () => {
+  const fake = fakePorts({ devUnmanaged: true });
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  fake.finishHost("succeeded");
+  await upgrades.drain();
+  fake.reportCoordinator("succeeded");
+  await upgrades.drain();
+  await upgrades.drain();
+  expect(fake.calls.filter((call) => call.startsWith("dev-"))).toEqual([]);
+  expect(upgrades.list()[0]).toMatchObject({ status: "succeeded" });
+  expect(upgrades.list()[0].steps[4]).toMatchObject({ status: "skipped" });
 });
 
 test("a restarted coordinator resumes from the journal without repeating finished effects", async () => {

@@ -1078,6 +1078,13 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     scope: installation,
   },
   {
+    id: "maintenance.installation.deliveryMode",
+    pane: "maintenance.installation",
+    label: "Delivery mode",
+    keywords: ["live dev", "fast refresh", "reliable", "live checkout"],
+    scope: installation,
+  },
+  {
     id: "maintenance.installation.sessionHost",
     pane: "maintenance.installation",
     label: "Session host",

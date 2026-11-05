@@ -84,6 +84,14 @@ function UnlockedAddAccountButton({
   style,
   ...props
 }: AddAccountProps & Omit<AccountButtonProps, keyof AddAccountProps>) {
+  const installation = readExecutionInstallation();
+  const belongsToInstallation = installation?.environments.some(
+    (environment) => environment.serverId === props.serverId,
+  );
+  const hostId = installation?.environments.find(
+    (environment) => environment.kind === "host",
+  )?.serverId;
+  const serverId = belongsToInstallation && hostId ? hostId : props.serverId;
   const [open, setOpen] = useState(false);
   const show = useCallback(() => setOpen(true), []);
   const close = useCallback(() => setOpen(false), []);
@@ -100,7 +108,7 @@ function UnlockedAddAccountButton({
         {label ??
           (catalog ? "Add" : `Add ${props.provider === "claude" ? "Claude" : "Codex"} account`)}
       </Button>
-      {open ? <AccountSheet key={props.serverId} {...props} onClose={close} /> : null}
+      {open ? <AccountSheet key={serverId} {...props} serverId={serverId} onClose={close} /> : null}
     </>
   );
 }

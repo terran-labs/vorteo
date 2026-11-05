@@ -83,6 +83,11 @@ export const taskCardStyles = StyleSheet.create((theme) => {
       borderRadius: FLOATING_PANEL_RADIUS,
     },
     touchAction: { width: 44, height: 44, minWidth: 44, minHeight: 44 },
+    // A sunken well, so an active mode toggle reads as a button held down.
+    selectedAction: {
+      borderColor: theme.colors.border,
+      boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.45)",
+    },
     header: {
       flexDirection: "row",
       alignItems: "center",

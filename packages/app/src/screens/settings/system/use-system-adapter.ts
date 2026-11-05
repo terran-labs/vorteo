@@ -56,14 +56,7 @@ export function useSystemAdapter(serverId?: string) {
   const toast = useToast();
   const previousNotice = useRef(state?.notice);
   useEffect(() => {
-    const error =
-      state?.error ??
-      state?.helperError ??
-      state?.enrollmentError ??
-      state?.serviceQueueError ??
-      state?.daemonAutomationError ??
-      state?.maintenanceDelegationError ??
-      upgrades.error;
+    const error = systemSyncError(state, upgrades.error);
     reportSyncError(`system:${installation?.installationId ?? hostId}`, error, () =>
       toast.error(toErrorMessage(error)),
     );
@@ -83,6 +76,7 @@ export function useSystemAdapter(serverId?: string) {
             state,
             upgrades: upgrades.data?.upgrades ?? [],
             offer,
+            upgradeStatus: upgrades.data,
           },
           action,
           {
@@ -95,8 +89,8 @@ export function useSystemAdapter(serverId?: string) {
               if (!model) throw new Error("Unlock System controls first");
               await model.decide(job, decision);
             },
-            upgrade: (upgrade) =>
-              upgradeActions.decide.mutateAsync({ upgrade, decision: "approve" }),
+            upgrade: (upgrade, decision) =>
+              upgradeActions.decide.mutateAsync({ upgrade, decision }),
             requestUpgrade: (release) => upgradeActions.create.mutateAsync(release),
             updateStandalone: async (selectedId) => {
               const runtime = getHostRuntimeStore().getClient(selectedId);
@@ -201,4 +195,21 @@ function buildEnvironmentStatuses({
       reconnectingAfterAction: updating === devId && updating !== null,
     }),
   };
+}
+
+function systemSyncError(
+  state: import("./system-adapter-model").InstallationSystemState | null,
+  upgradeError: unknown,
+) {
+  if (!state) return upgradeError;
+  return [
+    state.error,
+    state.helperError,
+    state.enrollmentError,
+    state.serviceQueueError,
+    state.daemonAutomationError,
+    state.maintenanceDelegationError,
+    state.liveDevError,
+    upgradeError,
+  ].find(Boolean);
 }

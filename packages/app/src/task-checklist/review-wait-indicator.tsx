@@ -1,19 +1,9 @@
 import { Text, View, type StyleProp, type ViewStyle } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { Hourglass } from "lucide-react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Theme } from "@/styles/theme";
 import type { TodoEntry } from "@/types/stream";
-import { getStatusDotColor } from "@/utils/status-dot-color";
-import { STATUS_INDICATOR_ALERT_SIZE } from "@/utils/status-indicator-geometry";
 import { reviewWaitSummary } from "./review-wait";
-
-// Working blue, the color of the busy ring: the work is still moving, just not here.
-const waitingColor = (theme: Theme) => ({
-  color: getStatusDotColor({ theme, bucket: "running" }) ?? theme.colors.foreground,
-});
-const managedColor = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
-const ThemedHourglass = withUnistyles(Hourglass);
+import { ReviewWaitHourglass } from "./review-wait-hourglass";
 
 /** Takes the row's status slot while its idle thread waits on a Review item. */
 export function ReviewWaitIndicator({
@@ -36,11 +26,7 @@ export function ReviewWaitIndicator({
           accessibilityLabel={`${summary.heading}: ${summary.rows.map((row) => row.title).join(", ")}`}
           testID="workspace-status-indicator-review"
         >
-          <ThemedHourglass
-            size={STATUS_INDICATOR_ALERT_SIZE}
-            strokeWidth={2.25}
-            uniProps={muted ? managedColor : waitingColor}
-          />
+          <ReviewWaitHourglass muted={muted} />
         </View>
       </TooltipTrigger>
       <TooltipContent maxWidth={360}>

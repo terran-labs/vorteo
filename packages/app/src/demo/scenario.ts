@@ -37,6 +37,48 @@ function demoTaskProgress(status: string, storyIndex: number) {
   return { progress: status === "blocked" ? 40 : 50 };
 }
 
+/**
+ * Sample owner questions on two threads in different projects, so the sidebar's Open questions
+ * card has something to show. Questions carry a recommended answer rather than fixed options;
+ * the alternative is named in `why`. Authored examples, never asked by a real agent.
+ */
+const DEMO_QUESTIONS: Record<
+  number,
+  { question: string; why: string; answer: string; blocks: number[] }[]
+> = {
+  1: [
+    {
+      question: "Should previews reuse the existing HTTPS reservation?",
+      why: "Sample question. Reuse keeps the current preview address; New one reserves a second address for this release.",
+      answer: "Reuse",
+      blocks: [4],
+    },
+  ],
+  2: [
+    {
+      question: "Pin archived workspaces to the bottom?",
+      why: "Sample question. Yes keeps archived workspaces out of the way; No keeps them in activity order.",
+      answer: "Yes",
+      blocks: [],
+    },
+  ],
+};
+
+function demoQuestions(agentIndex: number) {
+  return (DEMO_QUESTIONS[agentIndex] ?? []).map((entry, questionIndex) => ({
+    id: `00000000-0000-4000-9000-${String(agentIndex * 100 + questionIndex).padStart(12, "0")}`,
+    question: entry.question,
+    why: entry.why,
+    recommendedDefault: entry.answer,
+    blocks: entry.blocks.length
+      ? entry.blocks.map((task) => `demo-task-${agentIndex}-${task}`)
+      : undefined,
+    askedAt: DEMO_TIMESTAMP,
+    askedBy: `demo-agent-${agentIndex}`,
+    status: "open" as const,
+  }));
+}
+
 export function createDemoScenario() {
   const projects = PROJECTS.map((project) =>
     WorkspaceProjectDescriptorPayloadSchema.parse({
@@ -128,6 +170,7 @@ export function createDemoScenario() {
             : undefined,
         ...demoTaskProgress(status, index),
       })),
+      questions: demoQuestions(index),
       journal: [
         {
           id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,

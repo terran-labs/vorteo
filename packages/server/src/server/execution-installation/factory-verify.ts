@@ -43,6 +43,8 @@ const FactoryFactsSchema = z.looseObject({
     .string()
     .regex(/^[a-f0-9]{64}$/)
     .optional(),
+  /** v4: how Dev booted. Absent (older scripts) means through Factory's launcher. */
+  bootForm: z.enum(["launcher", "plain"]).optional(),
 });
 export type FactoryFacts = Pick<
   z.infer<typeof FactoryFactsSchema>,
@@ -56,6 +58,7 @@ export type FactoryFacts = Pick<
   | "ownerSequence"
   | "custodyCount"
   | "custodyDigest"
+  | "bootForm"
 >;
 
 /** Factory's script must be an owner-controlled physical file with the pinned digest. */
@@ -121,6 +124,7 @@ export async function runFactoryVerify(
       ownerSequence: facts.ownerSequence,
       custodyCount: facts.custodyCount,
       custodyDigest: facts.custodyDigest,
+      bootForm: facts.bootForm,
     };
   } catch {
     return { ok: false, check: "receipt" };

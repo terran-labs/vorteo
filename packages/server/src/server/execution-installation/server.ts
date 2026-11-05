@@ -6,6 +6,7 @@ import {
   SnapshotRestoreRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
+  UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
 import {
@@ -57,6 +58,8 @@ import {
   ResolvedPluginSourceSchema,
 } from "@getpaseo/protocol/plugin-installation";
 import { OwnerSessions, OWNER_SESSION_MAX_AGE } from "./owner-sessions.js";
+import { createLiveDev, LiveDevUnavailable } from "./live-dev/service.js";
+import { LiveDevStateError } from "./live-dev/state.js";
 import { createInstallationProfiles } from "./profiles/runtime.js";
 import { createInstallationNameStore } from "./installation-name.js";
 import { ProfileSharingConflict } from "./profiles/merge.js";
@@ -119,6 +122,13 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import {
+  InstallationOverviewReader,
+  productionOverviewDependencies,
+  type InstallationOverview,
+  type OverviewDependencies,
+} from "./overview.js";
+import { ServicePrincipalStore } from "../authorization/service-principals.js";
 import { FactoryGate, factoryRestartClass } from "./factory-gate.js";
 import {
   delegatedHandler,
@@ -227,6 +237,7 @@ function restartReply(
   engineRestart?: boolean,
   hostLauncherUpdate?: boolean,
   engineRecovery?: boolean,
+  bootEntrySwitch?: boolean,
 ) {
   // Captures are retained in the protected journal, not sent to legacy strict clients.
   // COMPAT(workerLaunchReply): added in v674; remove after 2027-04-17 once requester floor >= v674.
@@ -255,6 +266,7 @@ function restartReply(
     engineRestart,
     hostLauncherUpdate,
     engineRecovery,
+    bootEntrySwitch,
   });
   if (!hostAutomaticRestarts) {
     const { automaticApproval: _approval, ...compatible } = job;
@@ -389,6 +401,7 @@ export function createInstallationServer(
   // The private configuration file, captured by safety snapshots. Omitted in tests.
   files?: { configFile: string },
   codexSignIn?: CodexSignInRuntime,
+  overviewDependencies?: OverviewDependencies,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -681,6 +694,19 @@ export function createInstallationServer(
       ?.slice(cookieName(req).length + 1);
   const configuredPasswordFile =
     config.ownerPasswordFile ?? path.resolve(config.stateDir, "../..", "owner-password");
+  const liveDev = createLiveDev({
+    config,
+    logger,
+    ownerSession: (cookie) => {
+      const token = cookie
+        ?.split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(`${publicCookieName}=`))
+        ?.slice(publicCookieName.length + 1);
+      return Boolean(sessions.expiresAt(token));
+    },
+    secureCookies,
+  });
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", "loopback");
@@ -1253,6 +1279,7 @@ export function createInstallationServer(
             req.query.engineRestart === "1",
             req.query.hostLauncherUpdate === "1",
             req.query.engineRecovery === "1",
+            req.query.bootEntrySwitch === "1",
           ),
         });
         void drainRestarts();
@@ -1274,6 +1301,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
           );
     },
@@ -1301,6 +1329,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     });
   });
@@ -1810,6 +1839,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
       );
   });
@@ -1854,6 +1884,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     );
   });
@@ -1885,6 +1916,88 @@ export function createInstallationServer(
         next(error);
       }
     })();
+  });
+
+  // Read-only overview of every environment. Observer tokens are coordinator-issued
+  // service principals; they authorize this route and nothing else.
+  const observers = new ServicePrincipalStore(config.stateDir, "overview-observers.json");
+  const overview = new InstallationOverviewReader(
+    config,
+    overviewDependencies ?? productionOverviewDependencies(config),
+  );
+  let overviewCache: {
+    at: number;
+    settled: boolean;
+    value: Promise<InstallationOverview>;
+  } | null = null;
+  const OVERVIEW_CACHE_MS = 5_000;
+  app.get("/api/installation/overview", (req, res, next) => {
+    void (async () => {
+      try {
+        const token = extractHttpBearerToken(req.header("authorization"));
+        const observer = token ? await observers.authenticate(token) : null;
+        if (!matchesToken(token, config.hostAgentTokenHash) && !observer) {
+          res.sendStatus(401);
+          return;
+        }
+        // Coalesce polling clients so each daemon sees at most one read per interval.
+        // A read still in flight is always reused: overlapping reads would share one
+        // daemon client ID and displace each other's session.
+        if (
+          !overviewCache ||
+          (overviewCache.settled && Date.now() - overviewCache.at > OVERVIEW_CACHE_MS)
+        ) {
+          const entry = { at: Date.now(), settled: false, value: overview.read() };
+          overviewCache = entry;
+          entry.value.then(
+            () => {
+              entry.settled = true;
+              entry.at = Date.now();
+              return undefined;
+            },
+            () => {
+              if (overviewCache === entry) overviewCache = null;
+            },
+          );
+        }
+        res.json(await overviewCache.value);
+      } catch (error) {
+        next(error);
+      }
+    })();
+  });
+  function requireHostAgent(req: Request, res: Response, next: NextFunction) {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(403);
+      return;
+    }
+    next();
+  }
+  app.get("/api/installation/overview/observers", requireHostAgent, (_req, res, next) => {
+    observers.list().then((list) => res.json({ observers: list }), next);
+  });
+  app.post("/api/installation/overview/observers", requireHostAgent, (req, res) => {
+    const label = typeof req.body?.label === "string" ? req.body.label : "";
+    observers
+      .create({ label, permissions: ["workspace.read"], issuerPrincipalId: "host-agent" })
+      .then(
+        (created) => res.json(created),
+        (error: unknown) =>
+          res
+            .status(400)
+            .json({ error: error instanceof Error ? error.message : "Invalid observer" }),
+      );
+  });
+  app.post("/api/installation/overview/observers/:id/revoke", requireHostAgent, (req, res) => {
+    observers.revoke(String(req.params.id), "host-agent").then(
+      (observer) => res.json({ observer }),
+      (error: unknown) =>
+        res
+          .status(404)
+          .json({ error: error instanceof Error ? error.message : "Unknown observer" }),
+    );
   });
 
   // Public setup metadata contains a recovery path, never credentials or connection secrets.
@@ -2220,6 +2333,12 @@ export function createInstallationServer(
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
     void drainRestarts();
   });
+  app.post("/api/installation/owner/live-dev/query", (_req, res, next) => {
+    void liveDev.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/live-dev/change", (req, res, next) => {
+    void liveDev.change(req.body).then((status) => res.json(status), next);
+  });
   app.post("/api/installation/owner/maintenance-delegation/query", (req, res) => {
     const available = daemonAutomation.legacyPolicyAvailable();
     const status = maintenanceDelegationStatus(config.stateDir);
@@ -2319,6 +2438,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
             job,
             delegation,
@@ -2372,6 +2492,7 @@ export function createInstallationServer(
       decision.engineRestartPlanSha256,
       decision.hostLauncherPlanSha256,
       decision.engineRecoveryPlanSha256,
+      decision.bootEntrySwitchPlanSha256,
     );
     res.json(
       withDelegation(
@@ -2389,6 +2510,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
         job,
         requestedDelegation(config.stateDir, req.query.delegatedRequests === "1"),
@@ -2431,6 +2553,34 @@ export function createInstallationServer(
     res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
     void drainRestarts();
   });
+  const requireUpdates = () => {
+    const releaseUpdates = requireReleaseRuntime().updates;
+    if (!releaseUpdates)
+      throw new RestartRequestError(requireReleaseRuntime().upgradeStatus().detail);
+    return releaseUpdates;
+  };
+  // The status after a check; an upgrade the check approved advances at once.
+  const statusAfterCheck = async () => {
+    await requireUpdates().checkAgain();
+    void drainRestarts();
+    return requireReleaseRuntime().upgradeStatus();
+  };
+  // The owner's update policy. A changed policy runs a check at once, so switching channel
+  // or mode offers or approves the matching release without waiting for the hourly check.
+  app.post("/api/installation/owner/update-policy", (req, res, next) => {
+    const change = UpdatePolicyChangeSchema.parse(req.body);
+    void requireUpdates()
+      .changePolicy(change)
+      .then(statusAfterCheck)
+      .then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/update-check", (_req, res, next) => {
+    void statusAfterCheck().then((status) => res.json(status), next);
+  });
+  // Read-only for agents: the Mechanic reports stale offers and Builds plans drains from it.
+  app.get("/api/installation/update-status", authenticateUpdate, (_req, res) => {
+    res.json(requireUpdates().agentStatus());
+  });
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
       enabled: true,
@@ -2448,6 +2598,15 @@ export function createInstallationServer(
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
+  const liveDevWebUi = liveDev.middleware(() => ({
+    ...config.public,
+    name: installationName.read(),
+    origin: config.public.origin,
+    environments: config.public.environments,
+    profileSharing: true,
+    idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
+    gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+  }));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
   const localWebUi = new Map<string, ReturnType<typeof webUi>>();
   app.use((req, res, next) => {
@@ -2461,7 +2620,13 @@ export function createInstallationServer(
       middleware(req, res, next);
       return;
     }
-    (isRecoveryRequest(req) ? recoveryWebUi : canonicalWebUi)(req, res, next);
+    if (isRecoveryRequest(req)) {
+      recoveryWebUi(req, res, next);
+      return;
+    }
+    // The recovery and local origins always serve the static interface, so a broken live
+    // edit can never take every route to Installation controls with it.
+    liveDevWebUi(req, res, () => canonicalWebUi(req, res, next));
   });
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError) {
@@ -2474,6 +2639,10 @@ export function createInstallationServer(
     }
     if (error instanceof InstructionRequestError) {
       res.status(error.status).json({ error: error.message });
+      return;
+    }
+    if (error instanceof LiveDevStateError || error instanceof LiveDevUnavailable) {
+      res.status(409).json({ error: error.message });
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {
@@ -2501,6 +2670,15 @@ export function createInstallationServer(
   });
   return Object.assign(app, {
     drainRestarts,
+    /** Runs the release update check, then advances an upgrade it approved automatically. */
+    checkReleases: async () => {
+      if (!releaseRuntime?.updates) return;
+      await releaseRuntime.updates.check();
+      void drainRestarts();
+    },
+    /** Fast Refresh socket for live dev mode; true when handled. */
+    handleLiveDevUpgrade: liveDev.upgrade,
+    stopLiveDev: liveDev.stop,
     operationalQueueSummary: () => restarts.operationalSummary(),
     setOperationalActivitySink: restarts.setOperationalActivitySink.bind(restarts),
     assertRegistrationReadiness: standingRuntime.assertRegistrationReadiness,

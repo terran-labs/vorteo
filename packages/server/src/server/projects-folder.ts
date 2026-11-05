@@ -205,6 +205,19 @@ export function logicalProjectsPath(value: string): string {
   return activeProjectsFolder ? toLogicalProjectsPath(activeProjectsFolder, value) : value;
 }
 
+/**
+ * Where `value` sits inside the Projects folder, even for a recorded path `keepPaths` holds at
+ * an alias. Use it to compare locations; records keep `logicalProjectsPath`.
+ */
+export function projectsFolderLocation(value: string): string {
+  return activeProjectsFolder
+    ? toLogicalProjectsPath(
+        { root: activeProjectsFolder.root, aliases: activeProjectsFolder.aliases },
+        value,
+      )
+    : value;
+}
+
 /** Like `logicalProjectsPath`, for nullable values. */
 export function logicalProjectsPathOrNull(value: string | null): string | null {
   return value === null ? null : logicalProjectsPath(value);

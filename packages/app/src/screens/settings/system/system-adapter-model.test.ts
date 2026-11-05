@@ -131,3 +131,24 @@ it("respects explicit, installation, selected and first-host precedence", () => 
   expect(selectSystemEnvironments(null, hosts, undefined, "selected").hostId).toBe("selected");
   expect(selectSystemEnvironments(null, hosts, undefined, "removed").hostId).toBe("first");
 });
+
+it("reports a failed live interface through Host status and the single notice, excluding locked data", () => {
+  const liveDev = {
+    available: true,
+    mode: "live" as const,
+    reason: null,
+    revision: "r",
+    changedAt: null,
+    checkout: null,
+    server: { state: "failed" as const, detail: "Live interface stopped" },
+  };
+  const state = { ...empty, unlocked: true, liveDev };
+  expect(systemEnvironmentState({ target: "host", snapshot, installation: state }).status).toBe(
+    "attention",
+  );
+  expect(
+    systemEnvironmentState({ target: "container-daemon", snapshot, installation: state }).status,
+  ).toBe("healthy");
+  expect(systemAttentionCount(state)).toBe(1);
+  expect(systemAttentionCount({ ...state, unlocked: false })).toBe(0);
+});

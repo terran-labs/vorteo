@@ -70,17 +70,20 @@ function isUnstartedSession(window: ReadableWindow): boolean {
   return window.id === "five_hour" && window.remainingPct === 100 && resetTime(window) === null;
 }
 
+/** "Session resets in 3h"; the window name keeps a short session reset from reading as weekly. */
+function namedReset(window: ReadableWindow, when: string): string {
+  const name = window.label.trim();
+  if (!name) return when === "now" ? "Resetting now" : `Resets ${when}`;
+  return when === "now" ? `${name} resetting now` : `${name} resets ${when}`;
+}
+
 /** When the limiting window resets, falling back to the account's next known reset. */
 export function resetDescription(usage: ProviderUsage | undefined, window: ReadableWindow): string {
   const own = formatResetIn(window.resetsAt);
-  if (own) return own === "now" ? "Resetting now" : `Resets ${own}`;
+  if (own) return namedReset(window, own);
   const next = nextReset(usage);
   const other = next ? formatResetIn(next.resetsAt) : null;
-  if (next && other) {
-    return other === "now"
-      ? `${next.window.label} resetting now`
-      : `${next.window.label} resets ${other}`;
-  }
+  if (next && other) return namedReset(next.window, other);
   if (isUnstartedSession(window)) return "Session not started";
   return "Reset time unavailable";
 }

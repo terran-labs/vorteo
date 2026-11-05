@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   status: "healthy",
   services: null as string | null,
 }));
+vi.mock("../service-access-section", () => ({ ServiceAccessSection: () => null }));
 vi.mock("./use-system-adapter", () => ({
   useSystemAdapter: () => ({
     hostId: "host",

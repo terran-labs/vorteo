@@ -11,6 +11,19 @@ const mocks = vi.hoisted(() => ({
   confirm: vi.fn(async () => false),
   error: vi.fn(),
   fetching: false,
+  policy: false,
+  checkInstallation: vi.fn(async () => {}),
+}));
+vi.mock("@/execution-installation/panel", () => ({
+  useInstallationOwnerClient: () => (mocks.policy ? {} : null),
+}));
+vi.mock("@/execution-installation/use-installation-upgrades", () => ({
+  useInstallationUpgradeStatus: () => ({
+    data: mocks.policy ? { policy: { mode: "manual", channel: "beta" } } : null,
+  }),
+  useInstallationUpgradeActions: () => ({
+    check: { isPending: false, mutateAsync: mocks.checkInstallation },
+  }),
 }));
 vi.mock("react-native", () => ({
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -74,6 +87,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mocks.fetching = false;
+  mocks.policy = false;
 });
 it("checks both update sources and preserves the disclosure through polling", () => {
   const { rerender } = render(<SystemUpdatesRow />);
@@ -98,4 +112,14 @@ it("requires confirmation before installing the app", async () => {
   mocks.confirm.mockResolvedValueOnce(true);
   fireEvent.click(screen.getByRole("button", { name: "Update app" }));
   await waitFor(() => expect(mocks.install).toHaveBeenCalledOnce());
+});
+
+it("checks the installation policy instead of the device channel when available", () => {
+  mocks.policy = true;
+  render(<SystemUpdatesRow />);
+  fireEvent.click(screen.getByRole("button", { name: "Check" }));
+  expect(mocks.checkInstallation).toHaveBeenCalledOnce();
+  expect(mocks.check).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Details" }));
+  expect(screen.queryByRole("button", { name: "Release channel" })).toBeNull();
 });

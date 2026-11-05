@@ -1,3 +1,5 @@
+import { AddClaudeAccountButton } from "./add-account";
+import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
 import { ProviderLoginPanel } from "./login-panel";
 import { useSharedInstallationSignIn } from "./use-provider-login";
 import { useCallback, useMemo, useState } from "react";
@@ -102,6 +104,8 @@ export function ProviderReconnectControl({
   return (
     <>
       <ConnectionButton
+        claude={claude}
+        serverId={serverId}
         action={action}
         shared={shared}
         name={name}
@@ -160,18 +164,24 @@ export function ProviderReconnectControl({
   );
 }
 function ConnectionButton({
+  claude,
+  serverId,
   action,
   shared,
   name,
   providerId,
   onPress,
 }: {
+  claude: boolean;
+  serverId: string | null;
   action: "Connect" | "Reconnect" | null;
   shared: boolean;
   name: string;
   providerId: string;
   onPress(event: GestureResponderEvent): void;
 }) {
+  if (claude && shared && serverId && !claudeProviderConnectsToInstallation(providerId))
+    return <AddClaudeAccountButton serverId={serverId} label="Add account" />;
   if (!action && !shared) return null;
   const label = action ?? "Connection";
   return (

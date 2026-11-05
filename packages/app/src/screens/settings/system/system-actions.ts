@@ -3,8 +3,19 @@ import type {
   RestartDecision,
   RestartJob,
 } from "@getpaseo/protocol/execution-installation";
-import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
-import { restartActionDisabledReason } from "@/execution-installation/panel-model";
+import type {
+  UpgradeStatus,
+  UpgradeDecision,
+  InstallationUpgrade,
+} from "@getpaseo/protocol/installation-upgrades";
+import {
+  upgradeApprovalText,
+  supportsUpdatePolicy,
+} from "@/execution-installation/installation-upgrades-model";
+import {
+  supervisorRepairNeedsImmediateApproval,
+  restartActionDisabledReason,
+} from "@/execution-installation/panel-model";
 import type { ConfirmDialogInput } from "@/utils/confirm-dialog";
 import type { InstallationSystemState, SystemTarget } from "./system-adapter-model";
 import type { SystemAction } from "./system-status-model";
@@ -15,12 +26,13 @@ export interface SystemActionContext {
   state: InstallationSystemState | null;
   upgrades: readonly InstallationUpgrade[];
   offer: string | null;
+  upgradeStatus?: UpgradeStatus | null;
 }
 export interface SystemActionPorts {
   confirm(input: ConfirmDialogInput): Promise<boolean>;
   reconnect(serverId: string): Promise<void>;
   restart(job: RestartJob, decision: RestartDecision): Promise<void>;
-  upgrade(upgrade: InstallationUpgrade): Promise<unknown>;
+  upgrade(upgrade: InstallationUpgrade, decision: UpgradeDecision["decision"]): Promise<unknown>;
   requestUpgrade(release: string): Promise<unknown>;
   updateStandalone(serverId: string): Promise<void>;
 }
@@ -33,9 +45,12 @@ async function approveRestart(
   const job = state?.pendingJobs.find((entry) => entry.id === id && entry.target === target);
   if (!state?.unlocked || !job)
     throw new Error("This request changed. Refresh System and review it again.");
-  const installing = Boolean(job.update || job.sourceBatch || job.engineRecoveryPlanSha256);
+  const recovering = Boolean(
+    job.engineRecoveryPlanSha256 || supervisorRepairNeedsImmediateApproval(job),
+  );
+  const installing = Boolean(job.update || job.sourceBatch || recovering);
   let blocker: string | null;
-  if (job.engineRecoveryPlanSha256) blocker = state.busy ? "Another action is in progress" : null;
+  if (recovering) blocker = state.busy ? "Another action is in progress" : null;
   else
     blocker = restartActionDisabledReason(
       job,
@@ -65,16 +80,16 @@ async function approveUpgrade(
   const upgrade = context.upgrades.find((entry) => entry.id === id);
   if (!context.state?.unlocked || !upgrade || upgrade.status !== "pending")
     throw new Error("Reconnect and unlock System controls to review this update.");
+  const afterWork = supportsUpdatePolicy(context.upgradeStatus);
   if (
     await ports.confirm({
       title: "Approve update?",
-      message:
-        "Take a safety snapshot, then update Host, Dev and System services. Running work may be interrupted.",
+      message: upgradeApprovalText(context.upgradeStatus?.container ?? true, afterWork),
       confirmLabel: "Approve update",
       destructive: true,
     })
   )
-    await ports.upgrade(upgrade);
+    await ports.upgrade(upgrade, afterWork ? "approve-after-work" : "approve");
 }
 /** Confirmation and reviewed revisions remain mandatory even when the row offers a shortcut. */
 export async function executeSystemAction(

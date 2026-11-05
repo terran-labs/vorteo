@@ -39,6 +39,7 @@ export function systemEnvironmentState(input: {
     locked: !unlocked,
     restartSummary: input.installation?.restartSummary ?? undefined,
     enrollment: unlocked ? input.installation?.enrollmentStatus : undefined,
+    liveDev: unlocked && input.target === "host" ? input.installation?.liveDev : undefined,
     restartJobs: input.installation ? currentSystemRestarts(input.installation) : [],
     upgrades: unlocked ? input.upgrades : undefined,
     serviceQueue: unlocked ? (input.installation?.serviceQueue ?? undefined) : undefined,
@@ -106,14 +107,17 @@ export function systemAttentionCount(
     state.serviceQueue?.jobs ?? [],
     state.sessionHost?.jobs ?? [],
     state.instructionRequests?.requests ?? [],
-    upgrades,
+    upgrades.filter((upgrade) => !upgrade.acknowledgedAt),
   ];
   const requests = queues.reduce((total, queue) => total + queue.filter(requiresReview).length, 0);
   const blockedServices =
     state.enrollmentStatus?.services.filter((service) => service.readiness === "blocked").length ??
     0;
   return (
-    requests + blockedServices + Number(state.enrollmentStatus?.activation === "recovery-required")
+    requests +
+    blockedServices +
+    Number(state.enrollmentStatus?.activation === "recovery-required") +
+    Number(state.liveDev?.mode === "live" && state.liveDev.server.state === "failed")
   );
 }
 

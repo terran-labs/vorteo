@@ -11,6 +11,8 @@ const PairedClientSchema = z.object({
 interface ManagedClientInput {
   configuredPath?: string;
   managedWorker: boolean;
+  /** The worker's PASEO_HOME. The Dev image's daemon uses `~/.paseo`; repo dev scripts do not. */
+  paseoHome?: string;
   environment?: "host" | "container";
   platform: NodeJS.Platform;
   homeDir: string;
@@ -20,8 +22,14 @@ interface ManagedClientInput {
 /** Older managed supervisors did not inherit the client installed by pairing. */
 export function resolveManagedInstallationClient(input: ManagedClientInput): string | undefined {
   if (input.configuredPath) return input.configuredPath;
-  const pairedDev =
-    input.managedWorker && input.platform === "linux" && input.environment === "container";
+  // The image daemon was paired after its launcher started when the client file appeared later
+  // (pairing runs inside a running container), so it may lack the export just as an older
+  // managed supervisor did. Its home holds the pairing binding; other workers stay standalone.
+  const pairedHome =
+    input.managedWorker ||
+    (input.paseoHome !== undefined &&
+      path.resolve(input.paseoHome) === path.join(input.homeDir, ".paseo"));
+  const pairedDev = pairedHome && input.platform === "linux" && input.environment === "container";
   if (!pairedDev) return undefined;
   const file = path.join(input.homeDir, ".local/share/vorteo-installation-client/client.json");
   let descriptor: number | undefined;

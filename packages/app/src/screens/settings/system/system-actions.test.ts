@@ -93,3 +93,51 @@ it("confirms standalone updates and rejects installation updates while locked", 
     "Unlock",
   );
 });
+
+it("keeps release approvals after current work when the installation has an update policy", async () => {
+  const { context, ports } = fixture();
+  const upgrade = {
+    id: "release",
+    revision: "reviewed",
+    release: "release-26.11.500",
+    status: "pending" as const,
+    sourceCommit: "a".repeat(40),
+    previousCommit: null,
+    createdAt: "2026-11-05T00:00:00Z",
+    detail: "",
+    steps: [],
+  };
+  context.upgrades = [upgrade];
+  context.upgradeStatus = {
+    available: true,
+    container: true,
+    detail: "",
+    repository: "owner/repo",
+    current: null,
+    upgrades: [upgrade],
+    policy: { mode: "manual", channel: "beta" },
+  };
+  await executeSystemAction(
+    context,
+    { kind: "approve-upgrade", label: "Approve update", id: upgrade.id },
+    ports,
+  );
+  expect(ports.upgrade).toHaveBeenCalledWith(upgrade, "approve-after-work");
+});
+it("approves the exact recovery plan when Dev cannot finish turns", async () => {
+  const { context, ports } = fixture();
+  const recovery = {
+    ...job,
+    target: "container-daemon" as const,
+    supervisorPlanSha256: "a".repeat(64),
+    impact: { ...job.impact, error: "Dev is not answering" } as RestartJob["impact"],
+  };
+  context.target = "container-daemon";
+  context.state = { ...context.state!, jobs: [recovery], pendingJobs: [recovery] };
+  await executeSystemAction(
+    context,
+    { kind: "approve-restart", label: "Approve restart", id: recovery.id },
+    ports,
+  );
+  expect(ports.restart).toHaveBeenCalledWith(recovery, "approve");
+});
