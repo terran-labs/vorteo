@@ -61,6 +61,14 @@ Maintenance review (2026-11-05): ordinary workspaces can archive when a Factory 
 
 Maintenance review (2026-11-05): a timed-out settings admission read raises the existing installation settings admission error naming the unreachable coordinator origin, with the timeout kept as its cause; callers already surface that error's message, so logs and failed requests now show the cause. Other fetch failures are unchanged. The reader takes an optional fetch implementation so its test injects a fake instead of replacing the global. Source only; not installed. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-05): added a narrow gitleaks allowlist entry for a random test request UUID in one live commit's Claude reset test, matching the entry on `live/main`, so the all-refs pre-push secret scan passes. Tooling only; product functionality, README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): simplified the review hourglass. Each bulb's sand is the bulb's whole interior and the bottom bulb mirrors the top, so the loop turns over without a jump; drain and pile share one linear timing on web and native, and the stream's first grain falls under gravity. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+
+Maintenance review (2026-11-05): live tweak by Hourglass calm and flip: The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
+
 Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): live checkout preparation now runs `build:server` before `build:app-deps`, because the commit hook typechecks `packages/cli` against the server's built declarations and the first live commit on VortLab failed without them. README overview and onboarding are unchanged.

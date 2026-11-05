@@ -131,6 +131,15 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 
 - The settings admission timeout test injects a fake fetch into the settings reader instead of replacing the global `fetch`.
 
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The secret scan allowlists a random test request ID in one earlier commit, so pushes are no longer blocked by it.
+- The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
+- Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+- The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
