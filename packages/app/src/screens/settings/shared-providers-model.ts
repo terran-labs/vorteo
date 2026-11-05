@@ -116,6 +116,7 @@ export function groupInstallationProviders(
     const isDefault =
       !definition.accountId && Object.values(definition.bindings).every((id) => id === type);
     const id = isDefault ? `default/${type}` : definition.id;
+    const defaultName = isDefault && type === "claude" ? "Claude (CLI)" : "Default connection";
     const account = family.accounts.find((entry) => entry.id === id);
     if (account) {
       account.definitions.push(definition);
@@ -123,7 +124,7 @@ export function groupInstallationProviders(
     } else
       family.accounts.push({
         id,
-        name: definition.policy.label ?? "Default connection",
+        name: definition.policy.label ?? defaultName,
         enabled,
         definitions: [definition],
       });

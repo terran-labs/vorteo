@@ -2,14 +2,13 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { CLAUDE_REFRESH_REQUEST_ARGS, createClaudeHostCli } from "./claude-oauth-host.js";
 import {
   CLAUDE_REFRESH_LEAD_MS,
-  CLAUDE_REFRESH_REQUEST_ARGS,
   claudeAccessProjection,
-  createClaudeHostCli,
   needsHostRefresh,
   readClaudeOAuthGrant,
-} from "./claude-oauth-host.js";
+} from "./claude-oauth-storage.js";
 import {
   claudeKeychainAccount,
   claudeKeychainServiceForConfigDir,
@@ -112,7 +111,26 @@ it("refuses a symbolic-link credentials file", async () => {
   const elsewhere = join(temporary("claude-oauth-elsewhere-"), "grant.json");
   writeFileSync(elsewhere, storage({ accessToken: "synthetic-elsewhere" }));
   symlinkSync(elsewhere, join(configDir, ".credentials.json"));
-  await expect(readClaudeOAuthGrant(configDir, { platform: "linux" })).resolves.toBeNull();
+  await expect(readClaudeOAuthGrant(configDir, { platform: "linux" })).rejects.toThrow(
+    "credential storage",
+  );
+});
+
+it("does not mistake unreadable Keychain storage for sign-out or use a stale file", async () => {
+  const configDir = temporary("claude-oauth-unreadable-");
+  writeFileSync(join(configDir, ".credentials.json"), storage({ accessToken: "stale-file" }));
+  await expect(
+    readClaudeOAuthGrant(configDir, {
+      platform: "darwin",
+      readKeychain: async () => {
+        throw new Error("Keychain locked");
+      },
+    }),
+  ).rejects.toThrow("Keychain locked");
+  writeFileSync(join(configDir, ".credentials.json"), "{");
+  await expect(readClaudeOAuthGrant(configDir, { platform: "linux" })).rejects.toThrow(
+    "credential storage",
+  );
 });
 
 it("asks for a refresh only inside the lead window and only with a refresh token", () => {
@@ -133,24 +151,25 @@ it("asks for a refresh only inside the lead window and only with a refresh token
   expect(needsHostRefresh(null, now)).toBe(false);
 });
 
-it("reads identity from local auth status, signs out and opens sign-in for the exact directory", async () => {
+it("reads identity without a CLI probe and keeps explicit login actions scoped", async () => {
   const configDir = temporary("claude-oauth-identity-");
-  const run = vi.fn(async (_executable: string, args: string[]) =>
-    args.includes("status")
-      ? {
-          stdout: JSON.stringify({ loggedIn: true, email: "owner@example.com", orgId: "org-1" }),
-          stderr: "",
-        }
-      : { stdout: "", stderr: "" },
+  const config = join(configDir, ".claude.json");
+  writeFileSync(
+    config,
+    JSON.stringify({
+      oauthAccount: { emailAddress: "owner@example.com", organizationUuid: "org-1" },
+    }),
   );
+  const run = vi.fn(async (_executable: string, _args: string[]) => ({ stdout: "", stderr: "" }));
   const cli = createClaudeHostCli({ run: run as never, resolveLaunch: launch });
   await expect(cli.identity(configDir)).resolves.toEqual({
     email: "owner@example.com",
     orgId: "org-1",
   });
+  expect(run).not.toHaveBeenCalled();
   await cli.logout(configDir);
   expect(run.mock.calls.at(-1)![1]).toEqual(["--launch-arg", "auth", "logout"]);
-  run.mockRejectedValueOnce(Object.assign(new Error("signed out"), { code: 1 }));
+  rmSync(config);
   await expect(cli.identity(configDir)).resolves.toBeNull();
   const session = await cli.loginSession(configDir);
   expect(session).toBeInstanceOf(ClaudeLoginSession);
@@ -162,7 +181,9 @@ it("trusts the Host credentials file only with the Dev reader's checks", async (
   const file = join(configDir, ".credentials.json");
   writeFileSync(file, storage({ accessToken: "synthetic-access", expiresAt: 1_900_000_000_000 }));
   chmodSync(file, 0o666);
-  await expect(readClaudeOAuthGrant(configDir, { platform: "linux" })).resolves.toBeNull();
+  await expect(readClaudeOAuthGrant(configDir, { platform: "linux" })).rejects.toThrow(
+    "credential storage",
+  );
   chmodSync(file, 0o600);
   await expect(readClaudeOAuthGrant(configDir, { platform: "linux" })).resolves.toMatchObject({
     accessToken: "synthetic-access",
