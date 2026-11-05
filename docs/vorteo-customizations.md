@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): added a Markdown Factory task issue template with four author prompts and a title prefix matching the existing template convention. Labels and chooser configuration are unchanged. The chooser will list it after merge to the default branch. Product functionality, README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): merged current `main`, including the Dev boot-entry switch, the single sidebar footer block and later trackpad dictation, into the open question answer delivery fix; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): owner answers to open questions steer into a busy thread's active turn instead of waiting behind it, falling back to the message queue when the provider cannot steer. Delivery, the thread message and the journal entry are recorded when the agent receives the answer, and the card shows queued answers as queued. After review, a steer that throws is settled as uncertain and reconciled from provider history rather than requeued, and a paused queue no longer blocks answer steering. Review rounds then found repeated ordering hazards in text-based steer correlation for Pi and OMP, so that correlation was reverted: those adapters match upstream again and mark their steer acknowledgements as ambiguous, and their answers wait in the queue until the turn ends. Source only; not installed. README overview and onboarding are unchanged.

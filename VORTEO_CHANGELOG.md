@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Added
+
+- Added a Factory task issue template with prompts for the goal, acceptance criteria, scope limits and notes.
+
+## Unreleased - 2026-11-04
+
 ### Fixes
 
 - Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
