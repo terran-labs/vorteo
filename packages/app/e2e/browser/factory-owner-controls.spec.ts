@@ -115,9 +115,9 @@ test("per-project Factory Overview opens on desktop and compact", async ({ page 
       await page.goto(`/h/${getServerId()}/factory/${workspace.projectId}`);
       const overview = page.getByTestId("factory-overview");
       await expect(overview).toBeVisible();
-      await expect(
-        overview.getByRole("button", { name: "Default", exact: true }).first(),
-      ).toBeVisible();
+      await expect(overview.getByTestId("factory-overview-off")).toBeVisible();
+      await expect(overview.getByTestId("preset-controls")).toHaveCount(0);
+      await expect(overview.getByRole("switch")).toHaveCount(0);
       await page.screenshot({
         path: testInfo.outputPath(`factory-overview-${width}.png`),
         fullPage: true,

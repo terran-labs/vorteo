@@ -1,6 +1,20 @@
 export const en = {
   projectFactory: {
     overview: "Factory Overview",
+    overviewHost: "Factory Overview ({{host}})",
+    unknownHost: "Environment",
+    turnOnHint: "Open the project menu and choose Turn on Factory to get started.",
+    agentStatuses: {
+      initializing: "Starting",
+      running: "Running",
+      idle: "Idle",
+      error: "Error",
+      stopped: "Stopped",
+      completed: "Completed",
+      failed: "Failed",
+      canceled: "Canceled",
+      unknown: "Status unavailable",
+    },
     unavailableProfile: "Unavailable profile",
     issueStages: "Issue stages",
     plan: "Plan",
@@ -13,7 +27,7 @@ export const en = {
     roles: "Roles",
     openThread: "Open thread",
     saving: "Saving…",
-    draining: "Draining for {{reason}}",
+    draining: "Draining: {{reason}}",
     pausedAt: "Paused {{time}}",
     pullRequest: "PR #{{number}}",
     states: {

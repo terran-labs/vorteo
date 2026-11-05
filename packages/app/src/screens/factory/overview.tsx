@@ -24,7 +24,12 @@ import { useInstalledPlugins, usePluginCatalogStatus } from "@/plugins/registry"
 import { useFetchQuery } from "@/data/query";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
-import { loadFactoryQueue, type FactoryInvoke, type FactoryQueue } from "./queue";
+import {
+  loadFactoryQueue,
+  factoryAgentStatusKey,
+  type FactoryInvoke,
+  type FactoryQueue,
+} from "./queue";
 
 interface Target {
   serverId: string;
@@ -69,7 +74,13 @@ export function FactoryOverview({ serverId, projectId }: Target) {
       {unavailable ? (
         <Text style={styles.text}>{t("projectFactory.states.unavailable")}</Text>
       ) : null}
-      {factory.data && plugin && focused ? (
+      {factory.data?.state === "off" ? (
+        <View testID="factory-overview-off">
+          <Text style={styles.text}>{t("projectFactory.states.off")}</Text>
+          <Text style={styles.text}>{t("projectFactory.turnOnHint")}</Text>
+        </View>
+      ) : null}
+      {factory.data && factory.data.state !== "off" && plugin && focused ? (
         <OverviewContent
           serverId={serverId}
           projectId={projectId}
@@ -220,7 +231,7 @@ function QueueContent({ serverId, queue }: { serverId: string; queue: FactoryQue
                 key={agent.agentId}
                 serverId={serverId}
                 agentId={agent.agentId}
-                label={`${t(`projectFactory.agents.${agent.role}`)}: ${agent.status}`}
+                label={`${t(`projectFactory.agents.${agent.role}`)}: ${t(factoryAgentStatusKey(agent.status))}`}
               />
             ))}
           </View>

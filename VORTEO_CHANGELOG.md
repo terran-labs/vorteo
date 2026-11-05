@@ -8,7 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Features
 
-- Factory Overview shows per-project status, issue stage profiles, work in progress and role controls. Standing workspaces join the Factory folder after its roles, and adopted roles follow daemon workspace assignments. Older daemons retain the controls they support.
+- Factory Overview shows per-project status, issue stage profiles, work in progress and role controls. Standing workspaces join the Factory folder after its roles, and adopted roles follow daemon workspace assignments. Older daemons retain the controls they support. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed.
 
 - A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
 - Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.

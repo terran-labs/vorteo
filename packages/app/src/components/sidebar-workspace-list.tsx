@@ -1,3 +1,4 @@
+import { factoryOverviewRoute } from "./sidebar/project-factory-model";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
 import { FactoryFolderStatus } from "./sidebar/factory-status";
@@ -524,33 +525,33 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
 function FactoryOverviewRow({
   target,
   level,
+  disambiguate,
 }: {
   target: { serverId: string; projectId: string; installationId: string };
-  /** The Factory section's workspace level, so Overview lines up with them. */
   level: number;
+  disambiguate: boolean;
 }) {
   const { t } = useTranslation();
-  const openOverview = useCallback(
-    () =>
-      router.navigate(
-        target.installationId.startsWith("project-factory:")
-          ? {
-              pathname: "/h/[serverId]/factory/[projectId]",
-              params: { serverId: target.serverId, projectId: target.projectId },
-            }
-          : buildPluginSurfaceRoute(
-              target.serverId,
-              "factory",
-              { kind: "surface", id: "overview" },
-              { projectId: target.projectId },
-            ),
-      ),
-    [target.serverId, target.projectId, target.installationId],
+  const hosts = useHosts();
+  const plugin = useInstalledPlugins().find(
+    (entry) => entry.id === "factory" && entry.serverId === target.serverId,
   );
+  const route = factoryOverviewRoute(target, plugin);
+  const openOverview = useCallback(() => {
+    if (route) router.navigate(route);
+  }, [route]);
+  if (!route) return null;
+  const hostName =
+    hosts.find((host) => host.serverId === target.serverId)?.label.trim() ||
+    t("projectFactory.unknownHost");
   return (
     <SidebarListActionRow
       icon={Factory}
-      label={t("projectFactory.overview")}
+      label={
+        disambiguate
+          ? t("projectFactory.overviewHost", { host: hostName })
+          : t("projectFactory.overview")
+      }
       level={level}
       testID={`sidebar-factory-overview-${target.serverId}-${target.projectId}`}
       onPress={openOverview}
@@ -2295,6 +2296,14 @@ function ProjectBlock({
             .map((plugin) => plugin.serverId),
         ),
         factoryStates,
+      ).filter(
+        (target) =>
+          factoryOverviewRoute(
+            target,
+            installedPlugins.find(
+              (plugin) => plugin.id === "factory" && plugin.serverId === target.serverId,
+            ),
+          ) !== null,
       ),
     [groups.factory, workspaceEntriesByKey, installedPlugins, factoryStates],
   );
@@ -2577,6 +2586,7 @@ function ProjectBlock({
                     <FactoryOverviewRow
                       key={`${target.serverId}:${target.projectId}`}
                       target={target}
+                      disambiguate={overviewTargets.length > 1}
                       level={sectionItemLevel}
                     />
                   ))
@@ -2990,15 +3000,34 @@ function useProjectModeView(input: {
     [projects],
   );
   const supportsFactoryByServerId = useHostFeatureMap(focusHostIds, "factoryWorkspaceMembership");
+  const factoryHosts = useMemo(() => projects.flatMap((project) => project.hosts), [projects]);
+  const factoryPollingTargets = useMemo(
+    () =>
+      projects.flatMap((project) =>
+        projectFactoryTargets(project.hosts, project.workspaces, workspaceEntriesByKey),
+      ),
+    [projects, workspaceEntriesByKey],
+  );
+  const factoryStates = useProjectFactories(
+    factoryHosts,
+    supportsFactoryByServerId,
+    factoryPollingTargets,
+  );
   const focusWorld = useMemo(
     () =>
       buildSidebarFocusWorld({
         folderState: folderState ?? EMPTY_SIDEBAR_FOLDER_STATE,
         projects: projects.map((project) => {
+          const hostProjects = new Set(
+            project.hosts.map((host) => JSON.stringify([host.serverId, host.projectId])),
+          );
           const groups = splitFactoryWorkspaces(
             project.workspaces,
             workspaceEntriesByKey,
             supportsFactoryByServerId,
+            factoryStates.filter((state) =>
+              hostProjects.has(JSON.stringify([state.serverId, state.projectId])),
+            ),
           );
           const sections: SidebarFocusSection[] = [];
           if (groups.standing.length > 0) sections.push("standing");
@@ -3012,7 +3041,14 @@ function useProjectModeView(input: {
         }),
         hideEmptyFolders,
       }),
-    [folderState, projects, workspaceEntriesByKey, supportsFactoryByServerId, hideEmptyFolders],
+    [
+      folderState,
+      projects,
+      workspaceEntriesByKey,
+      supportsFactoryByServerId,
+      factoryStates,
+      hideEmptyFolders,
+    ],
   );
   // The compact rail's single-project flyout has no room for a focused view: it never shows
   // focus itself, and its Focus buttons focus the sidebar instead.

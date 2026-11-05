@@ -1,6 +1,6 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-04): Factory Overview opens a native per-project page with pause and resume, issue stage profiles, queue links and role instructions. Standing workspaces share the Factory folder after daemon-assigned roles. Older daemons omit unsupported planning and queue controls. Source only; README overview and onboarding are unchanged.
+Maintenance review (2026-11-04): Factory Overview opens a native per-project page with pause and resume, issue stage profiles, queue links and role instructions. Standing workspaces share the Factory folder after daemon-assigned roles. Older daemons omit unsupported planning and queue controls. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed. Source only; README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-03): CI change. Unlike upstream Paseo, main CI runs are no longer cancelled by a newer merge, so main produces complete browser results; pull request runs still cancel when superseded. The container smoke frees unused runner SDKs after a disk exhaustion. Product functionality is unchanged. README overview and onboarding are unchanged.
 

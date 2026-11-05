@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadFactoryQueue, type FactoryInvoke } from "./queue";
+import { loadFactoryQueue, factoryAgentStatusKey, type FactoryInvoke } from "./queue";
 import { ProjectFactoryStateSchema } from "@/components/sidebar/factory-state";
 
 const emptyQueue = { fetchedAt: "2026-11-04T12:00:00Z", error: null, issues: [] };
@@ -55,6 +55,10 @@ describe("Factory overview daemon compatibility", () => {
       return { ...emptyQueue, issues: [issue] };
     };
     expect(await loadFactoryQueue(invoke, "project")).toEqual({ ...emptyQueue, issues: [issue] });
+    const malformedLinks = { ...issue, url: "bad url", pr: { ...issue.pr, url: "bad pr url" } };
+    expect(
+      await loadFactoryQueue(async () => ({ ...emptyQueue, issues: [malformedLinks] }), "project"),
+    ).toEqual({ ...emptyQueue, issues: [malformedLinks] });
   });
 
   it.each([
@@ -80,4 +84,11 @@ describe("Factory overview daemon compatibility", () => {
       loadFactoryQueue(async () => ({ ...emptyQueue, issues: [{}] }), "project"),
     ).rejects.toThrow();
   });
+});
+
+it("localizes known agent statuses and hides unknown wire values", () => {
+  expect(factoryAgentStatusKey("running")).toBe("projectFactory.agentStatuses.running");
+  expect(factoryAgentStatusKey("future_internal_status")).toBe(
+    "projectFactory.agentStatuses.unknown",
+  );
 });

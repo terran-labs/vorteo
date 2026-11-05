@@ -7,13 +7,13 @@ const QueueSchema = z.object({
     z.object({
       number: z.number().int(),
       title: z.string(),
-      url: z.string().url(),
+      url: z.string(),
       label: z.enum(["ready", "running", "blocked", "human-review"]),
       stage: z.enum(["queued", "planning", "building", "review", "repair", "merging", "blocked"]),
       pr: z
         .object({
           number: z.number().int(),
-          url: z.string().url(),
+          url: z.string(),
           headSha: z.string(),
           checks: z.enum(["pending", "passing", "failing"]).nullable(),
           reviewDecision: z.string().nullable(),
@@ -49,4 +49,19 @@ export async function loadFactoryQueue(
     if (missingMethod || missingContribution) return null;
     throw error;
   }
+}
+
+const agentStatuses = [
+  "initializing",
+  "running",
+  "idle",
+  "error",
+  "stopped",
+  "completed",
+  "failed",
+  "canceled",
+] as const;
+export function factoryAgentStatusKey(status: string) {
+  const known = agentStatuses.find((candidate) => candidate === status);
+  return `projectFactory.agentStatuses.${known ?? "unknown"}` as const;
 }
