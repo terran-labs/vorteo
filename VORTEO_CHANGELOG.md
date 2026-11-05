@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Tooling
+
+- Merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged.
+
 ## Unreleased - 2026-11-04
 
 ### Maintenance
@@ -20,12 +26,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Heavy-job status now shows one logical job instead of listing compatibility guards as queued jobs, and falls back to surviving child ownership after wrapper death. The documented workload contract covers foreground commands in the original process group; daemonized or `setsid` descendants do not retain the slot.
+
 - Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.
 
 - Listing a thread's provider subagents no longer starts or resumes its provider session. Sidebar polling no longer retries threads that cannot load. An unloaded thread now answers at once with no subagents; opening the thread loads it, and its subagents arrive through live updates.
 - Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
+- Heavy-job claims now validate process start and boot identity, retain ownership while the job process group survives its wrapper, and publish legacy-visible guards. New callers wait for marked legacy holders; an old caller already past its final queue check remains a documented rollout window.
+- The heavy-job queue now acquires its slot atomically, preventing overlapping jobs when a delayed caller publishes an older ticket or a ticket rewrite briefly hides the holder. Waiters recover exited owners without removing a successor's claim. CLI options and environment variables are unchanged.
 
 ### Tooling
+
+- Merged current `main` into the heavy-job queue fix, preserving both sides' entries. The approved queue implementation and tests are unchanged.
 
 - Merged current `main` into the provider subagent polling fix, retaining the service principals changes.
 
