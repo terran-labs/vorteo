@@ -20,6 +20,7 @@ export async function requestInstallationSettings(update?: InstallationSettingsU
       "Content-Type": "application/json",
       "X-Vorteo-Provider-Removal": "1",
       "X-Vorteo-Project-Policies": "1",
+      "X-Vorteo-Primary-Connection": "1",
     },
     body: JSON.stringify(update ?? {}),
   }).catch((error: unknown) => {

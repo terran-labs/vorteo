@@ -554,6 +554,10 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     installationResourceBindings: persisted.daemon?.installationResourceBindings,
     // Present even when empty: the coordinator reads the key as support for project policies.
     installationProjectPolicies: persisted.daemon?.installationProjectPolicies ?? {},
+    // Absent means not chosen yet, which lets a standalone daemon adopt its only connection.
+    primaryConnection: persisted.daemon?.primaryConnection,
+    // Present even when unset: the coordinator reads the key as support for the primary connection.
+    installationPrimaryConnection: persisted.daemon?.installationPrimaryConnection ?? null,
   };
 }
 
@@ -606,6 +610,8 @@ export type ResolvedDaemonSettings = Pick<
   | "sharedProviderPreferences"
   | "installationResourceBindings"
   | "installationProjectPolicies"
+  | "primaryConnection"
+  | "installationPrimaryConnection"
   | "skillSelection"
   | "pluginsEnabled"
   | "plugins"

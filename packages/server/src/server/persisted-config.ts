@@ -2,6 +2,7 @@ import {
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "@getpaseo/protocol/installation-settings";
+import { DaemonPrimaryConnectionSchema } from "@getpaseo/protocol/messages";
 import { readFile } from "node:fs/promises";
 import { PluginRegistriesSchema } from "@getpaseo/protocol/plugin-registry";
 import { existsSync, readFileSync } from "node:fs";
@@ -294,6 +295,8 @@ export const PersistedConfigSchema = z
         installationProjectPolicies: z
           .record(z.string(), InstallationProjectPolicySchema.loose())
           .optional(),
+        primaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
+        installationPrimaryConnection: DaemonPrimaryConnectionSchema.nullable().optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
         sharedProviderPreferences: SharedProviderPreferencesSchema.optional(),
         cors: z

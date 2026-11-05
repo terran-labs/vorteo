@@ -7,14 +7,25 @@ const state = vi.hoisted(() => ({
   data: undefined as object | undefined,
   error: null as Error | null,
   isLoading: false,
+  primary: { loaded: false, primary: undefined as object | null | undefined },
 }));
 vi.mock("@/components/settings", () => ({
   SettingsCard: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SettingsSection: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  SettingsRow: ({ label }: { label: string }) => <div>{label}</div>,
+  SettingsRow: ({ label, children }: { label: string; children?: ReactNode }) => (
+    <div>
+      {label}
+      {children}
+    </div>
+  ),
 }));
 vi.mock("@/components/settings/collapsible-row", () => ({ SettingsCollapsibleRow: () => null }));
-vi.mock("@/components/ui/button", () => ({ Button: () => null }));
+vi.mock("@/components/ui/button", () => ({
+  Button: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
+}));
+vi.mock("@/execution-installation/primary-connection", () => ({
+  usePrimaryConnection: () => state.primary,
+}));
 vi.mock("@/execution-installation/panel", () => ({ useRestartsAwaitingApproval: () => 0 }));
 vi.mock("@/execution-installation/policy", () => ({
   installationDefaultServerId: () => state.serverId,
@@ -35,6 +46,7 @@ beforeEach(() => {
   state.data = undefined;
   state.error = null;
   state.isLoading = false;
+  state.primary = { loaded: false, primary: undefined };
 });
 const openPane = vi.fn();
 const render = () => renderToStaticMarkup(<AttentionSection onOpenPane={openPane} />);
@@ -51,5 +63,17 @@ it("answers after the first settings fetch fails", () => {
 });
 it("answers without a host even if settings has not loaded", () => {
   state.serverId = undefined;
+  expect(render()).toContain("All clear");
+});
+it("asks for a primary connection once shared settings load without one", () => {
+  state.installation = null;
+  state.primary = { loaded: true, primary: null };
+  const html = render();
+  expect(html).toContain("Choose a primary connection for system threads");
+  expect(html).toContain("Open Providers");
+  state.primary = { loaded: true, primary: { providerId: "claude" } };
+  expect(render()).toContain("All clear");
+  // Not loaded yet, or unsupported: never asks.
+  state.primary = { loaded: false, primary: undefined };
   expect(render()).toContain("All clear");
 });

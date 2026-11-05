@@ -1,4 +1,8 @@
-import type { MutableDaemonConfig, ProviderUsage } from "@getpaseo/protocol/messages";
+import type {
+  DaemonPrimaryConnection,
+  MutableDaemonConfig,
+  ProviderUsage,
+} from "@getpaseo/protocol/messages";
 import { resolveProviderType, sharedProfileId } from "@getpaseo/protocol/provider-preferences";
 
 import type { ProviderSnapshotEntry } from "../agent/agent-sdk-types.js";
@@ -17,7 +21,7 @@ export interface Launch {
  * installation's default provider leads within each group.
  */
 export function usableProviders(
-  ready: readonly ProviderSnapshotEntry[],
+  ready: readonly Pick<ProviderSnapshotEntry, "provider">[],
   usage: readonly ProviderUsage[],
   settings: MutableDaemonConfig,
 ): string[] {
@@ -63,21 +67,73 @@ function safeProviderType(provider: string, settings: MutableDaemonConfig): stri
 }
 
 /**
- * The launch a daemon-created agent would use right now, or null when no provider is usable.
- * Reads cached usage; the Optimizer's own seeding refreshes it when connections change.
+ * The connection system threads launch with. An installation daemon uses the coordinator's
+ * copy, where null means none is chosen; older coordinators never send one, and their daemons
+ * wait too. A standalone daemon uses its own choice; undefined means it has not chosen yet.
  */
-export async function resolveDefaultLaunch(input: {
+export function primaryConnection(
+  settings: MutableDaemonConfig,
+): DaemonPrimaryConnection | null | undefined {
+  if (settings.sharedProviderPreferences?.installation)
+    return settings.installationPrimaryConnection ?? null;
+  return settings.primaryConnection;
+}
+
+/** The primary connection's launch: its own profile, else the provider's default profile. */
+export function primaryLaunch(
+  primary: DaemonPrimaryConnection,
+  settings: MutableDaemonConfig,
+): Launch {
+  return primary.profileId
+    ? { provider: primary.provider, profileId: primary.profileId }
+    : selectLaunch(primary.provider, settings);
+}
+
+export interface DefaultLaunchInput {
   providers: Pick<ProviderSnapshotManager, "listProviders">;
   readUsage: (options: { forceRefresh: boolean }) => Promise<{ providers: ProviderUsage[] }>;
   getSettings: () => MutableDaemonConfig;
-}): Promise<Launch | null> {
-  const entries = await input.providers.listProviders({ wait: false });
-  const ready = entries.filter((entry) => entry.enabled && entry.status === "ready");
+  /**
+   * Stores a standalone daemon's one-time choice: the only usable provider, or null when
+   * several are usable and the owner has to choose. Without it nothing is adopted.
+   */
+  adoptPrimary?: (primary: DaemonPrimaryConnection | null) => void | Promise<void>;
+}
+
+/**
+ * The launch a daemon-created agent would use right now: the primary connection, or null while
+ * none is chosen or the primary connection is not usable. Never falls back to another
+ * provider. Reads cached usage unless asked; the Optimizer refreshes it when connections change.
+ */
+export async function resolveDefaultLaunch(
+  input: DefaultLaunchInput,
+  options: { wait?: boolean; refreshUsage?: (readyKey: string) => boolean } = {},
+): Promise<Launch | null> {
+  const before = input.getSettings();
+  const chosen = primaryConnection(before);
+  if (chosen === null) return null;
+  const entries = await input.providers.listProviders({ wait: options.wait ?? false });
+  const ready = entries.filter(
+    (entry) =>
+      entry.enabled && entry.status === "ready" && (!chosen || entry.provider === chosen.provider),
+  );
   if (ready.length === 0) return null;
-  const usage = await input.readUsage({ forceRefresh: false });
+  const usage = await input.readUsage({
+    forceRefresh: options.refreshUsage?.(ready.map((entry) => entry.provider).join(",")) ?? false,
+  });
   const settings = input.getSettings();
-  const [best] = usableProviders(ready, usage.providers, settings);
-  return best ? selectLaunch(best, settings) : null;
+  const usable = usableProviders(ready, usage.providers, settings);
+  if (chosen) return usable.length > 0 ? primaryLaunch(chosen, settings) : null;
+  // Not chosen yet on a standalone daemon: adopt the only usable provider, once.
+  if (!input.adoptPrimary || usable.length === 0) return null;
+  if (primaryConnection(settings) !== undefined) return null;
+  if (usable.length > 1) {
+    await input.adoptPrimary(null);
+    return null;
+  }
+  const adopted = { provider: usable[0]! };
+  await input.adoptPrimary(adopted);
+  return primaryLaunch(adopted, settings);
 }
 
 /**

@@ -11,6 +11,7 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useHosts } from "@/runtime/host-runtime";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { useInstallationSettings } from "@/execution-installation/settings";
+import { usePrimaryConnection } from "@/execution-installation/primary-connection";
 import { providersNeedingAttention } from "../shared-providers-model";
 import { useProviderDetection } from "../use-provider-detection";
 
@@ -19,6 +20,8 @@ interface AttentionItem {
   label: string;
   hint: string;
   pane: string;
+  /** The row's button. Defaults to Review. */
+  action?: string;
 }
 
 const NO_ENVIRONMENTS: never[] = [];
@@ -60,7 +63,18 @@ function useAttentionItems(): AttentionItem[] | null {
   const restarts = useRestartsAwaitingApproval();
   const update = useVortonUpdate();
   const providerItems = useProviderAttentionItems();
+  const primary = usePrimaryConnection();
   const items: AttentionItem[] = [];
+  // Only once settings load, so a slow read never shows a choice that is already made.
+  if (primary.loaded && !primary.primary) {
+    items.push({
+      id: "primary-connection",
+      label: "Choose a primary connection for system threads",
+      hint: "The Optimizer and Factory wait until you choose one in Providers.",
+      pane: "accounts.providers",
+      action: "Open Providers",
+    });
+  }
   if (restarts > 0) {
     items.push({
       id: "restarts",
@@ -94,7 +108,7 @@ function AttentionRow({
   return (
     <SettingsRow label={item.label} hint={item.hint} testID={`settings-attention-${item.id}`}>
       <Button variant="outline" size="sm" onPress={open}>
-        Review
+        {item.action ?? "Review"}
       </Button>
     </SettingsRow>
   );

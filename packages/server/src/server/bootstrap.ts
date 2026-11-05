@@ -508,6 +508,8 @@ export interface PaseoDaemonConfig {
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
   installationResourceBindings?: MutableDaemonConfig["installationResourceBindings"];
   installationProjectPolicies?: MutableDaemonConfig["installationProjectPolicies"];
+  primaryConnection?: MutableDaemonConfig["primaryConnection"];
+  installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   /** Seeds the Vorteo System project at startup. Defaults on; test daemons turn it off. */
@@ -690,6 +692,8 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     sharedProviderPreferences: config.sharedProviderPreferences,
     installationResourceBindings: config.installationResourceBindings,
     installationProjectPolicies: config.installationProjectPolicies,
+    primaryConnection: config.primaryConnection,
+    installationPrimaryConnection: config.installationPrimaryConnection,
   };
 
   if (config.terminalProfiles !== undefined) {
@@ -1876,6 +1880,13 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  // A standalone daemon's one-time primary connection choice; installations choose centrally.
+  const adoptPrimaryConnection = async (primary: MutableDaemonConfig["primaryConnection"]) => {
+    // Never overwrite a choice the owner made while the launch was being resolved.
+    daemonConfigStore.patch((current) =>
+      current.primaryConnection === undefined ? { primaryConnection: primary } : {},
+    );
+  };
   projectFactoryService = new ProjectFactoryService({
     paseoHome: config.paseoHome,
     serverId,
@@ -1921,6 +1932,7 @@ export async function createPaseoDaemon(
         providers: providerSnapshotManager,
         readUsage: (options) => providerUsageService.listUsage(options),
         getSettings: () => daemonConfigStore.get(),
+        adoptPrimary: adoptPrimaryConnection,
       }),
     profileProvider: (profileId) => profileProvider(profileId, daemonConfigStore.get()),
     schedules: scheduleService,
@@ -1940,6 +1952,7 @@ export async function createPaseoDaemon(
       providers: providerSnapshotManager,
       readUsage: (options) => providerUsageService.listUsage(options),
       getSettings: () => daemonConfigStore.get(),
+      adoptPrimary: adoptPrimaryConnection,
       // Any settings change, such as a newly connected account or a new default profile.
       onSettingsChange: (handler) => daemonConfigStore.onChange(() => handler()),
       createAgent,

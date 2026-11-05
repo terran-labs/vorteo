@@ -1327,3 +1327,95 @@ test("a Host-only installation imports, edits and projects settings with one env
       new InstallationSettingsService(journal, [host, new SettingsEnvironmentFake("container")]),
   ).toThrow(InstallationSettingsInvalidUpdate);
 });
+
+test("an upgrade adopts the only usable connection as primary once and projects it", async () => {
+  const { service, host, container } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  // Nothing usable yet: it stays unchosen for a later pass.
+  const waiting = await service.reconcile();
+  expect(waiting.settings?.primaryConnection).toBeUndefined();
+  const claude = waiting.settings?.providerDefinitions?.find(
+    (entry) => entry.bindings.host === "claude-account",
+  );
+  if (!claude) throw new Error("Expected the Claude connection");
+
+  host.usableProviders = ["claude-account"];
+  const adopted = await service.reconcile();
+  expect(adopted.revision).toBe(waiting.revision + 1);
+  expect(adopted.settings?.primaryConnection).toEqual({ providerId: claude.id });
+  expect(host.config.installationPrimaryConnection).toEqual({ provider: "claude-account" });
+  // Only a daemon that keeps a copy receives one.
+  expect(container.config.installationPrimaryConnection).toBeUndefined();
+
+  // Adoption happens once: a second usable connection never replaces the choice.
+  host.usableProviders = ["codex-account", "claude-account"];
+  const later = await service.reconcile();
+  expect(later.settings?.primaryConnection).toEqual({ providerId: claude.id });
+});
+
+test("an upgrade with several usable connections leaves the choice to the owner", async () => {
+  const { service, host } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  host.usableProviders = ["claude-account", "codex-account"];
+  const undecided = await service.reconcile();
+  expect(undecided.settings?.primaryConnection).toBeNull();
+  expect(host.config.installationPrimaryConnection).toBeNull();
+  // Null is a decision: a later pass with one usable connection does not adopt it.
+  host.usableProviders = ["codex-account"];
+  expect((await service.reconcile()).settings?.primaryConnection).toBeNull();
+
+  const codex = undecided.settings?.providerDefinitions?.find(
+    (entry) => entry.bindings.host === "codex-account",
+  );
+  if (!codex) throw new Error("Expected the Codex connection");
+  const chosen = await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: {
+      primaryConnection: { providerId: codex.id, profileId: "shared-profile/codex/fast" },
+    },
+  });
+  // A stale revision is refused like any other shared setting.
+  await expect(
+    service.update({
+      expectedRevision: undecided.revision - 1,
+      settings: { primaryConnection: null },
+    }),
+  ).rejects.toBeInstanceOf(InstallationSettingsConflict);
+  await expect(
+    service.update({
+      expectedRevision: chosen.revision,
+      settings: { primaryConnection: { providerId: "unknown" } },
+    }),
+  ).rejects.toBeInstanceOf(InstallationSettingsInvalidUpdate);
+  await service.reconcile();
+  expect(host.config.installationPrimaryConnection).toEqual({
+    provider: "codex-account",
+    profileId: "shared-profile/codex/fast",
+  });
+
+  // Removing the primary connection clears the choice instead of pointing at nothing.
+  const removed = await service.update({
+    expectedRevision: chosen.revision,
+    settings: {
+      providerDefinitions: removeDefinition(chosen.settings?.providerDefinitions, codex.id),
+    },
+  });
+  expect(removed.settings?.primaryConnection).toBeNull();
+});
+
+function removeDefinition<T extends { id: string; removed?: boolean }>(
+  definitions: readonly T[] | undefined,
+  id: string,
+): T[] {
+  const next = structuredClone([...(definitions ?? [])]);
+  for (const entry of next) if (entry.id === id) entry.removed = true;
+  return next;
+}

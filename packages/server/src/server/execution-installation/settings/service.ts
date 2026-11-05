@@ -26,6 +26,7 @@ import type {
 } from "@getpaseo/protocol/messages";
 import type { ExecutionEnvironmentKind } from "@getpaseo/protocol/execution-installation";
 import {
+  isDefaultConnection,
   isProjectPolicyKey,
   InstallationSettingsFieldSchema,
   InstallationSettingsSchema,
@@ -58,6 +59,8 @@ export interface SettingsEnvironment {
     excludedIds: readonly string[],
   ): Promise<void>;
   previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult>;
+  /** Local provider ids that can run a system thread now, best first. */
+  readUsableProviders(): Promise<string[]>;
   patch(
     patch: MutableDaemonConfigPatch,
     confirmedSkillRemovals?: readonly string[],
@@ -82,6 +85,7 @@ export const SettingsBackupSchema = z.strictObject({
     "skill-catalog-migration",
     "provider-catalog-migration",
     "plugin-provider-enrollment",
+    "primary-connection-adoption",
     "owner-update",
     "environment-projection",
   ]),
@@ -118,7 +122,8 @@ export class InstallationSettingsInvalidUpdate extends Error {
       | "terminal-profile"
       | "metadata-provider"
       | "installation-instructions"
-      | "project-policy",
+      | "project-policy"
+      | "primary-connection",
   ) {
     super(
       reason === "project-policy"
@@ -220,8 +225,7 @@ export class InstallationSettingsService {
       base = previous.settings;
     }
     const settings = InstallationSettingsSchema.parse({ ...base, ...request.settings });
-    if (request.settings.resourceExclusions === undefined) pruneResourceExclusions(settings);
-    if (request.settings.projectPolicies === undefined) pruneProjectPolicies(settings);
+    pruneUnspecified(settings, request.settings);
     this.validateResources(settings);
     if (previous.settings !== null && isDeepStrictEqual(settings, previous.settings)) {
       this.skillRemovalConfirmations = request.confirmedSkillRemovals ?? {};
@@ -257,6 +261,8 @@ export class InstallationSettingsService {
       if (this.needsProviderCatalogMigration()) return this.snapshot();
       if (this.needsBrowserPolicyMigration()) await this.migrateBrowserPolicy();
       if (this.needsBrowserPolicyMigration()) return this.snapshot();
+      if (this.state.settings?.primaryConnection === undefined && this.state.settings !== null)
+        await this.adoptPrimaryConnection();
       if (this.state.settings !== null) {
         const unavailable = await this.enrollPluginProviders();
         for (const environment of this.environments)
@@ -297,6 +303,47 @@ export class InstallationSettingsService {
     }
     for (const serverId of unavailable) this.recordStatus(serverId, "read_failed");
     return unavailable;
+  }
+
+  /**
+   * Upgrades an installation that has never chosen a primary connection, once. The only usable
+   * connection becomes primary; with several the owner chooses, so it is set to null. With none
+   * it stays unchosen and a later pass, or the setup guide, decides. A failed read retries.
+   */
+  private async adoptPrimaryConnection(): Promise<void> {
+    const previous = this.snapshot();
+    if (!previous.settings?.providerDefinitions) return;
+    const usable = new Set<string>();
+    for (const environment of this.environments) {
+      let localIds: string[];
+      try {
+        localIds = await environment.readUsableProviders();
+      } catch {
+        return;
+      }
+      const excluded = previous.settings.resourceExclusions[environment.serverId]?.providerIds;
+      for (const localId of localIds) {
+        const definition = previous.settings.providerDefinitions.find(
+          (entry) =>
+            !entry.removed &&
+            entry.policy.enabled !== false &&
+            entry.bindings[environment.serverId] === localId &&
+            !excluded?.includes(entry.id),
+        );
+        if (definition) usable.add(adoptionIdentity(definition, previous.settings));
+      }
+    }
+    if (usable.size === 0 || previous.revision !== this.state.revision) return;
+    const [only] = usable;
+    const settings: InstallationSettings = {
+      ...structuredClone(previous.settings),
+      primaryConnection: usable.size === 1 ? { providerId: only! } : null,
+    };
+    this.validateResources(settings);
+    const next = { ...previous, revision: previous.revision + 1, settings };
+    for (const source of Object.values(next.sources)) source.pendingRevision = next.revision;
+    this.journal.backup({ reason: "primary-connection-adoption", previous, observations: {} });
+    this.commit(next);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -391,6 +438,11 @@ export class InstallationSettingsService {
         throw new InstallationSettingsInvalidUpdate("metadata-provider");
     }
     this.validateProjectPolicies(settings, { definitionIds, skillIds });
+    if (
+      settings.primaryConnection &&
+      !definitionIds.includes(settings.primaryConnection.providerId)
+    )
+      throw new InstallationSettingsInvalidUpdate("primary-connection");
   }
 
   private validateProjectPolicies(
@@ -947,7 +999,12 @@ export class InstallationSettingsService {
         isDeepStrictEqual(
           verifiedConfig.installationResourceBindings,
           patch.installationResourceBindings,
-        )
+        ) &&
+        (patch.installationPrimaryConnection === undefined ||
+          isDeepStrictEqual(
+            verifiedConfig.installationPrimaryConnection,
+            patch.installationPrimaryConnection,
+          ))
         ? null
         : "verification_failed",
     );
@@ -1005,8 +1062,46 @@ function environmentCopiesSettled(
   return (
     isDeepStrictEqual(bindings, patch.installationResourceBindings) &&
     (patch.installationProjectPolicies === undefined ||
-      isDeepStrictEqual(local.installationProjectPolicies, patch.installationProjectPolicies))
+      isDeepStrictEqual(local.installationProjectPolicies, patch.installationProjectPolicies)) &&
+    (patch.installationPrimaryConnection === undefined ||
+      isDeepStrictEqual(local.installationPrimaryConnection, patch.installationPrimaryConnection))
   );
+}
+
+/** Drops references the owner's update left dangling in fields it did not send. */
+function pruneUnspecified(
+  settings: InstallationSettings,
+  sent: InstallationSettingsUpdate["settings"],
+) {
+  if (sent.resourceExclusions === undefined) pruneResourceExclusions(settings);
+  if (sent.projectPolicies === undefined) pruneProjectPolicies(settings);
+  if (sent.primaryConnection === undefined) prunePrimaryConnection(settings);
+}
+
+/** A removed connection stops being primary, and the owner chooses again. */
+function prunePrimaryConnection(settings: InstallationSettings) {
+  const primary = settings.primaryConnection;
+  if (!primary) return;
+  const definition = settings.providerDefinitions?.find((entry) => entry.id === primary.providerId);
+  if (!definition || definition.removed) settings.primaryConnection = null;
+}
+
+/**
+ * The definition that stands for a connection when counting usable ones. A provider's shared
+ * default connection can be one definition per environment; the Host's copy names them all.
+ */
+function adoptionIdentity(
+  definition: InstallationProvider,
+  settings: InstallationSettings,
+): string {
+  if (!isDefaultConnection(definition)) return definition.id;
+  const first = (settings.providerDefinitions ?? []).find(
+    (entry) =>
+      !entry.removed &&
+      entry.providerType === definition.providerType &&
+      isDefaultConnection(entry),
+  );
+  return first?.id ?? definition.id;
 }
 
 function pruneProjectPolicies(settings: InstallationSettings) {

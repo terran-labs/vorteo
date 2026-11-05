@@ -2,6 +2,11 @@
 
 ## Unreleased - 2026-11-05
 
+### Primary connection
+
+- The installation records one primary connection, stored once in shared settings and used in every environment. The Optimizer, Factory and other system threads launch with it, through its profile when one is set. Without one they wait instead of picking whichever provider is usable first.
+- Upgrades adopt the only usable connection as primary once. With several, Settings asks the owner to choose: General Status shows "Choose a primary connection for system threads", and Providers marks the primary connection and offers Make primary, with a confirmation, on other ready connections.
+
 ### Maintenance
 
 - Merge current main into Settings round 4. Preserve installation release policies and safe approval choices in System updates, live delivery mode in Advanced, recovery reviews in Restart, and service access in environment details.

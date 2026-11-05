@@ -106,6 +106,13 @@ export class SettingsEnvironmentFake implements SettingsEnvironment {
         this.plugins.push({ ...item, enabled: false, status: "disabled" });
   }
 
+  /** Local provider ids that read as usable; null makes the read fail. */
+  usableProviders: string[] | null = [];
+  async readUsableProviders(): Promise<string[]> {
+    if (this.offline || this.usableProviders === null) throw new Error("environment offline");
+    return [...this.usableProviders];
+  }
+
   async previewSkills(selection: AgentSkillSelection): Promise<AgentSkillsSaveResult> {
     if (this.offline) throw new Error("environment offline");
     const removals = this.skillOps.filter((op) => op.kind === "delete").map((op) => op.name);

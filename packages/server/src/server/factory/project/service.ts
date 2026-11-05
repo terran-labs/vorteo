@@ -105,7 +105,7 @@ export interface ProjectFactoryServiceInput {
      */
     switchLaunch(agentId: string, launch: Launch, standingInstructions: string): Promise<void>;
   };
-  /** The launch the Optimizer would use now, or null when no provider is usable. */
+  /** The primary connection's launch now, or null while none is chosen or it is not usable. */
   defaultLaunch: () => Promise<Launch | null>;
   /** The provider a profile launches with, for a launch configured by profile alone. */
   profileProvider?: (profileId: string) => string | null;
@@ -668,7 +668,7 @@ export class ProjectFactoryService {
       : await this.input.defaultLaunch();
     if (!launch)
       throw new ProjectFactoryError(
-        "No provider is ready to run Factory agents. Connect an account, then turn Factory on again.",
+        "The primary connection is not chosen or not ready. Choose one in Settings, Providers, then turn Factory on again.",
       );
     let lastError: unknown = null;
     for (const attempt of launchAttempts(launch)) {

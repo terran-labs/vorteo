@@ -37,7 +37,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
+import {
+  canMakePrimary as offersMakePrimary,
+  confirmPrimaryConnection,
+  isPrimaryConnection,
+  usePrimaryConnection,
+} from "@/execution-installation/primary-connection";
 import { selectProfileCatalogSources } from "@/execution-installation/profile-catalog";
 import {
   requestInstallationSettings,
@@ -273,6 +280,21 @@ function ConnectionsSection({
   const [details, setDetails] = useState<ProviderAccount | null>(null);
   const [keys, setKeys] = useState<ProviderAccount | null>(null);
   const secrets = useProviderSecrets();
+  const primary = usePrimaryConnection();
+  const toast = useToast();
+  const { choose } = primary;
+  const makePrimary = useCallback(
+    (account: ProviderAccount, name: string) =>
+      void confirmPrimaryConnection({
+        name,
+        providerId: primaryDefinition(account, environments).id,
+        confirm: confirmDialog,
+        choose,
+        toast,
+        describeError: toErrorMessage,
+      }),
+    [choose, environments, toast],
+  );
   const closeKeys = useCallback(() => setKeys(null), []);
   const openAdd = useCallback(() => setAdding(true), []);
   const closeAdd = useCallback(() => setAdding(false), []);
@@ -332,6 +354,10 @@ function ConnectionsSection({
             onDetails={setDetails}
             onKeys={setKeys}
             secrets={secrets.byDefinition.get(primaryDefinition(account, environments).id)}
+            primary={
+              primary.loaded ? isPrimaryConnection(primary.primary, account.definitions) : null
+            }
+            onMakePrimary={makePrimary}
           />
         ))}
       </View>
@@ -395,6 +421,8 @@ function ConnectionRow({
   onDetails,
   onKeys,
   secrets,
+  primary,
+  onMakePrimary,
 }: {
   account: ProviderAccount;
   snapshot: InstallationSettingsSnapshot & { settings: InstallationSettings };
@@ -406,6 +434,9 @@ function ConnectionRow({
   onDetails(account: ProviderAccount): void;
   onKeys(account: ProviderAccount): void;
   secrets: ProviderSecretsStatus | undefined;
+  /** Whether this is the primary connection; null where the setting is unavailable. */
+  primary: boolean | null;
+  onMakePrimary(account: ProviderAccount, name: string): void;
 }) {
   const provider = primaryDefinition(account, environments);
   const host = environments.find((environment) => environment.kind === "host");
@@ -443,6 +474,11 @@ function ConnectionRow({
   const rename = useCallback(() => onRename(account), [onRename, account]);
   const details = useCallback(() => onDetails(account), [onDetails, account]);
   const keys = useCallback(() => onKeys(account), [onKeys, account]);
+  const canMakePrimary = offersMakePrimary({ primary, enabled: account.enabled, states });
+  const makePrimary = useCallback(
+    () => onMakePrimary(account, name),
+    [onMakePrimary, account, name],
+  );
 
   const toggle = useCallback(
     (enabled: boolean) => {
@@ -474,6 +510,7 @@ function ConnectionRow({
           secrets={secrets}
           states={states}
           cliLogin={account.id === "default/claude"}
+          primary={primary === true}
         />
         <View style={styles.controls}>
           {signInEnvironment && signInId ? (
@@ -497,6 +534,7 @@ function ConnectionRow({
             onRename={rename}
             onDetails={details}
             onKeys={keys}
+            onMakePrimary={canMakePrimary ? makePrimary : undefined}
           />
         </View>
       </View>
@@ -538,8 +576,10 @@ function ConnectionStatusLines({
   secrets,
   states,
   cliLogin,
+  primary,
 }: {
   cliLogin: boolean;
+  primary: boolean;
   accountId: string;
   name: string;
   status: string;
@@ -552,7 +592,14 @@ function ConnectionStatusLines({
   const signIns = pendingSignIns(secrets, states);
   return (
     <View style={settingsStyles.rowContent}>
-      <Text style={settingsStyles.rowTitle}>{name}</Text>
+      <View style={styles.connectionTitle}>
+        <Text style={settingsStyles.rowTitle}>{name}</Text>
+        {primary ? (
+          <View testID={`provider-connection-primary-${accountId}`}>
+            <StatusBadge label="Primary" size="xs" variant="success" />
+          </View>
+        ) : null}
+      </View>
       {cliLogin ? (
         <Text style={settingsStyles.rowHint}>Uses the existing Claude CLI login.</Text>
       ) : null}
@@ -580,6 +627,7 @@ function ConnectionMenu({
   onRename,
   onDetails,
   onKeys,
+  onMakePrimary,
 }: {
   name: string;
   accountId: string;
@@ -587,6 +635,7 @@ function ConnectionMenu({
   onRename(): void;
   onDetails(): void;
   onKeys(): void;
+  onMakePrimary?: () => void;
 }) {
   const triggerStyle = useCallback(
     ({ hovered, open }: PressableStateCallbackType & { hovered?: boolean; open?: boolean }) => [
@@ -623,6 +672,14 @@ function ConnectionMenu({
         <DropdownMenuItem onSelect={onDetails} testID={`provider-connection-access-${accountId}`}>
           Environment access
         </DropdownMenuItem>
+        {onMakePrimary ? (
+          <DropdownMenuItem
+            onSelect={onMakePrimary}
+            testID={`provider-connection-make-primary-${accountId}`}
+          >
+            Make primary
+          </DropdownMenuItem>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1168,6 +1225,12 @@ const styles = StyleSheet.create((theme) => ({
   connectionHeading: {
     flexDirection: "row",
     alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  connectionTitle: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
     gap: theme.spacing[2],
   },
   controls: {

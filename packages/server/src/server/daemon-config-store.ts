@@ -20,6 +20,10 @@ import {
   changesProjectPolicies,
 } from "./execution-installation/settings/project-policies.js";
 import {
+  assertPrimaryConnectionProjection,
+  changesPrimaryConnectionCopy,
+} from "./execution-installation/settings/primary-connection.js";
+import {
   loadPersistedConfig,
   withPersistedConfigWriter,
   type PersistedConfigWriter,
@@ -75,6 +79,8 @@ interface SupportedMutableConfigPatch {
   terminalProfiles?: MutableDaemonConfig["terminalProfiles"];
   installationResourceBindings?: MutableDaemonConfig["installationResourceBindings"];
   installationProjectPolicies?: MutableDaemonConfig["installationProjectPolicies"];
+  primaryConnection?: MutableDaemonConfig["primaryConnection"];
+  installationPrimaryConnection?: MutableDaemonConfig["installationPrimaryConnection"];
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
   sharedProviderPreferences?: MutableDaemonConfig["sharedProviderPreferences"];
   skills?: MutableDaemonConfig["skills"];
@@ -310,6 +316,8 @@ const RELOADABLE_PATHS = [
   "daemon.terminalProfiles",
   "daemon.installationResourceBindings",
   "daemon.installationProjectPolicies",
+  "daemon.primaryConnection",
+  "daemon.installationPrimaryConnection",
   "daemon.agentProfiles",
   "daemon.sharedProviderPreferences",
   "app.baseUrl",
@@ -341,6 +349,8 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.installationResourceBindings", "installationResourceBindings"],
   ["daemon.installationProjectPolicies", "installationProjectPolicies"],
+  ["daemon.primaryConnection", "primaryConnection"],
+  ["daemon.installationPrimaryConnection", "installationPrimaryConnection"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.sharedProviderPreferences", "sharedProviderPreferences"],
   ["app.baseUrl", "app.baseUrl"],
@@ -393,6 +403,20 @@ function pickProjectPolicies(patch: MutableDaemonConfigPatch): SupportedMutableC
   return patch.installationProjectPolicies === undefined
     ? {}
     : { installationProjectPolicies: patch.installationProjectPolicies };
+}
+
+/** Both values are replaced whole, so a choice without a profile drops the previous profile. */
+function pickPrimaryConnection(
+  patch: Pick<SupportedMutableConfigPatch, "primaryConnection" | "installationPrimaryConnection">,
+): SupportedMutableConfigPatch {
+  return {
+    ...(patch.primaryConnection !== undefined
+      ? { primaryConnection: patch.primaryConnection }
+      : {}),
+    ...(patch.installationPrimaryConnection !== undefined
+      ? { installationPrimaryConnection: patch.installationPrimaryConnection }
+      : {}),
+  };
 }
 
 function pickRelayPatch(
@@ -450,6 +474,7 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       ? { installationResourceBindings: patch.installationResourceBindings }
       : {}),
     ...pickProjectPolicies(patch),
+    ...pickPrimaryConnection(patch),
     ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
     ...(patch.sharedProviderPreferences !== undefined
       ? { sharedProviderPreferences: patch.sharedProviderPreferences }
@@ -750,7 +775,8 @@ export class DaemonConfigStore {
       !binding ||
       (!changesInstallationSettings(before, parsed) &&
         !changesInstallationProviders(before, parsed) &&
-        !changesProjectPolicies(before, parsed))
+        !changesProjectPolicies(before, parsed) &&
+        !changesPrimaryConnectionCopy(before, parsed))
     )
       return this.patch(parsed);
     const admission = await this.readInstallationSettingsAuthority();
@@ -817,6 +843,7 @@ export class DaemonConfigStore {
     assertInstallationProviderProjection(this.current, parsed, admission);
     assertInstallationSettingsProjection({ current: this.current, patch: parsed, admission });
     assertProjectPoliciesProjection({ current: this.current, patch: parsed, admission });
+    assertPrimaryConnectionProjection({ current: this.current, patch: parsed, admission });
     this.validateInstallationProjection(parsed);
     if (parsed.sharedProviderPreferences) {
       const revision = this.current.sharedProviderPreferences?.revision ?? null;
@@ -994,6 +1021,7 @@ export class DaemonConfigStore {
       merged.skills = { selection: parsedPatch.skills.selection };
     }
     if (parsedPatch.plugins !== undefined) merged.plugins = parsedPatch.plugins;
+    Object.assign(merged, pickPrimaryConnection(parsedPatch));
     Object.assign(merged, replacementProviderPreferences(parsedPatch));
     const next = MutableDaemonConfigSchema.parse(
       installationOwned
@@ -1433,6 +1461,7 @@ function mergeMutableDaemonPatch(
     next.installationResourceBindings = patch.installationResourceBindings;
   if (patch.installationProjectPolicies !== undefined)
     next.installationProjectPolicies = patch.installationProjectPolicies;
+  Object.assign(next, pickPrimaryConnection(patch));
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
   if (patch.sharedProviderPreferences !== undefined)
     next.sharedProviderPreferences = patch.sharedProviderPreferences;
