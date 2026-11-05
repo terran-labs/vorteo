@@ -48,7 +48,7 @@ export function createPreviewBrokerDeploymentExecutor(context: Context): BrokerD
     if (
       plan.installationId !== scope.installationId ||
       plan.id !== scope.requestId ||
-      plan.bootUUID !== scope.bootUUID ||
+      plan.bootUUID.toLowerCase() !== scope.bootUUID.toLowerCase() ||
       JSON.stringify(plan.manualParticipants) !== JSON.stringify(scope.manualParticipants) ||
       JSON.stringify(plan.participantEvidence) !== JSON.stringify([configuration.scope]) ||
       plan.evidenceDirectory !== path.join(configuration.evidenceRoot, plan.id) ||
