@@ -5,8 +5,13 @@ import { Hourglass } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 
 export const HOURGLASS_SIZE = 10;
-/** One drain, settle and reset. Slow enough to read as waiting rather than working. */
-export const SAND_PERIOD_MS = 8000;
+/** One drain and flip. Slow enough to read as waiting rather than working. */
+export const SAND_PERIOD_MS = 9000;
+/**
+ * Waiting is background state, so the hourglass takes the idle dots' colour at a little more
+ * strength than their 0.3, which a 10px outline needs to stay legible.
+ */
+export const HOURGLASS_OPACITY = 0.55;
 
 // Sand geometry on the outline's 24-unit grid, scaled to the icon.
 const UNIT = HOURGLASS_SIZE / 24;
@@ -29,26 +34,37 @@ export interface SandTrack {
  */
 /** The top window's edge descends as the bulb empties. */
 export const DRAIN_TRACK: SandTrack = {
-  offsets: [0, 0.06, 0.82, 1],
+  offsets: [0, 0.06, 0.72, 1],
   values: [0, 0, TOP.height, TOP.height],
 };
 /** The pile window rises from below the floor as sand lands. */
 export const PILE_TRACK: SandTrack = {
-  offsets: [0, 0.08, 0.84, 1],
+  offsets: [0, 0.08, 0.74, 1],
   values: [PILE.height, PILE.height, 0, 0],
 };
-/** The settled pile fades before the next drain begins. */
+/**
+ * The settled pile stays through the flip: turned over, it is the full top bulb the next drain
+ * starts from, and the outline is symmetric, so the loop restarts without a visible jump.
+ */
 export const PILE_FADE_TRACK: SandTrack = {
-  offsets: [0, 0.84, 0.9, 0.97, 1],
-  values: [1, 1, 1, 0, 0],
+  offsets: [0, 1],
+  values: [1, 1],
 };
 /** The stream shows only while sand is falling. */
 export const STREAM_TRACK: SandTrack = {
-  offsets: [0, 0.08, 0.8, 0.86, 1],
+  offsets: [0, 0.08, 0.7, 0.75, 1],
   values: [0, 1, 1, 0, 0],
 };
 
-const neutral = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+/** Once the sand has landed, the whole hourglass turns over, slowly, in degrees. */
+export const FLIP_TRACK: SandTrack = {
+  offsets: [0, 0.79, 1],
+  values: [0, 0, 180],
+};
+/** Where the flip begins, for easing only that segment. */
+export const FLIP_START = FLIP_TRACK.offsets[1] ?? 0.79;
+
+const neutral = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 const managed = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 export const hourglassColor = (muted: boolean) => (muted ? managed : neutral);
 
@@ -82,7 +98,9 @@ export function HourglassOutline({ muted }: { muted: boolean }) {
 // Plain React Native styles: on native these land on Reanimated views, and a theme-tracked style
 // on one crashes when the theme changes (docs/unistyles.md). Colour lives one level in.
 export const layers = RNStyleSheet.create({
-  frame: { width: HOURGLASS_SIZE, height: HOURGLASS_SIZE },
+  frame: { width: HOURGLASS_SIZE, height: HOURGLASS_SIZE, opacity: HOURGLASS_OPACITY },
+  /** Turns the sand and outline together around the icon's centre. */
+  flip: { width: HOURGLASS_SIZE, height: HOURGLASS_SIZE },
   full: { position: "absolute", top: 0, left: 0, width: HOURGLASS_SIZE, height: HOURGLASS_SIZE },
   topWindow: {
     position: "absolute",
@@ -112,6 +130,6 @@ export const layers = RNStyleSheet.create({
 });
 
 const themed = StyleSheet.create((theme) => ({
-  stream: { flex: 1, backgroundColor: theme.colors.foregroundMuted, opacity: 0.8 },
+  stream: { flex: 1, backgroundColor: theme.colors.foregroundExtraMuted, opacity: 0.8 },
   streamManaged: { backgroundColor: theme.colors.foregroundExtraMuted },
 }));

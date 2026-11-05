@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Profile picker accounts show a single refresh ring around the account icon instead of two spinners, and the compact reset button is shorter.
 
 ## Unreleased - 2026-11-05
