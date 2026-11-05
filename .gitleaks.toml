@@ -19,6 +19,13 @@ regexTarget = "match"
 paths = ['''(^|/)packages/app/src/source-editor/codemirror/webview-html\.ts$''']
 regexes = ['''^defaultKeymapLength\s*=\s*defaultKeymap2\.length;?$''']
 
+# A UUID idempotency key used as a fixture in the Claude limit reset tests.
+[[allowlists]]
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(^|/)packages/server/src/server/agent/providers/claude/reset-credits\.test\.ts$''']
+regexes = ['''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''']
+
 # Persistent credentials are private even when their contents use an unknown format.
 [[rules]]
 id = "credential-state-file"
