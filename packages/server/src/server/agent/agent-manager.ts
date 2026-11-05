@@ -10,6 +10,8 @@ import {
   answerJournalEntryId,
   answerJournalText,
   answerMessage,
+  answerMessageId,
+  answeredQuestionId,
   QuestionError,
 } from "./questions/model.js";
 import { editThreadGoal, type ThreadGoalEdit } from "./agent-goal.js";
@@ -266,6 +268,14 @@ export class RestartInterruptionError extends Error {
   ) {
     super(`Restart interruption is incomplete: ${code}`);
     this.name = "RestartInterruptionError";
+  }
+}
+
+/** The steer was refused before the provider could hold the message. */
+export class SteerNotAdmittedError extends Error {
+  constructor() {
+    super("Active turn changed before steering could be delivered");
+    this.name = "SteerNotAdmittedError";
   }
 }
 
@@ -1558,6 +1568,8 @@ export class AgentManager {
             MessageQueueService,
             | "withIdleQueue"
             | "queueQuestionAnswer"
+            | "steerQueuedMessage"
+            | "onMessageAccepted"
             | "captureRestartContinuation"
             | "releaseRestartContinuation"
             | "wakeRestartContinuation"
@@ -1570,6 +1582,7 @@ export class AgentManager {
           >
         >)
     | null = null;
+  private messageQueueAcceptedSubscription: (() => void) | null = null;
   private readonly queueGoalMutationTails = new Map<string, Promise<void>>();
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
@@ -1825,6 +1838,8 @@ export class AgentManager {
           MessageQueueService,
           | "withIdleQueue"
           | "queueQuestionAnswer"
+          | "steerQueuedMessage"
+          | "onMessageAccepted"
           | "captureRestartContinuation"
           | "releaseRestartContinuation"
           | "wakeRestartContinuation"
@@ -1835,7 +1850,19 @@ export class AgentManager {
         >
       >,
   ): void {
+    this.messageQueueAcceptedSubscription?.();
     this.messageQueueControl = control;
+    this.messageQueueAcceptedSubscription =
+      control.onMessageAccepted?.((agentId, item) => {
+        const questionId = answeredQuestionId(item.id);
+        if (!questionId) return;
+        void this.recordAnswerReceived(agentId, questionId).catch((error: unknown) => {
+          this.logger.warn(
+            { err: error, agentId },
+            "Received open question answer was not recorded",
+          );
+        });
+      }) ?? null;
   }
 
   /** Review one existing idle thread; never steer, replace, or resume a goal implicitly. */
@@ -5342,7 +5369,11 @@ export class AgentManager {
     return this.deliverAnswer(agentId, answered);
   }
 
-  /** The stable queue operation ID keeps delivery exactly once across retries and reloads. */
+  /**
+   * The answer is enqueued under a stable ID first, so retries and reloads deliver it once.
+   * It then steers into an active turn like a peer message; a provider that cannot steer,
+   * or whose steer acknowledgement is ambiguous, leaves it queued until the turn ends. Only the queue's acceptance marks it delivered.
+   */
   private async deliverAnswer(
     agentId: string,
     question: import("@getpaseo/protocol/agent-questions").AgentQuestion,
@@ -5350,19 +5381,67 @@ export class AgentManager {
     const queue = this.messageQueueControl;
     if (!queue?.queueQuestionAnswer)
       throw new QuestionError("unavailable", "This daemon cannot deliver answers to the thread.");
+    const messageId = answerMessageId(question.id);
+    // An acceptance committed before a crash cut off its record needs only the record.
+    if ((await queue.acceptedHistory(agentId)).some((entry) => entry.item.id === messageId))
+      return this.recordAnswerReceived(agentId, question.id);
     await queue.queueQuestionAnswer(agentId, question.id, answerMessage(question));
-    const questions = await this.requireRegistry().markAnswerDelivered(agentId, question.id);
-    const agent = this.requireAgent(agentId);
-    agent.questions = questions;
-    this.emitState(agent, { persist: false });
+    const steered = await queue.steerQueuedMessage?.(agentId, messageId, async (item) => {
+      const agent = this.agents.get(agentId);
+      const turnId = agent?.activeForegroundTurnId ?? agent?.activeTurnId;
+      // An ambiguous acknowledgement cannot prove delivery, so those answers wait in the queue.
+      if (
+        !turnId ||
+        !agent?.session?.steerActiveTurn ||
+        agent.session.ambiguousSteerAcknowledgement
+      )
+        return null;
+      try {
+        this.assertQuotaNotPaused(agentId);
+      } catch {
+        return null;
+      }
+      // Null only for a certain refusal before submission. Any other failure may have
+      // reached the provider, so it is left to provider history.
+      try {
+        const result = await this.steerAgentRun(agentId, item.text, { clientMessageId: item.id });
+        return result.status === "accepted" ? { turnId } : null;
+      } catch (error) {
+        if (error instanceof SteerNotAdmittedError) return null;
+        throw error;
+      }
+    });
+    if (steered === "accepted") return this.recordAnswerReceived(agentId, question.id);
+    return structuredClone(this.requireAgent(agentId).questions ?? []);
+  }
+
+  /** Mark the answer delivered and journal it once the agent has actually received it. */
+  private async recordAnswerReceived(
+    agentId: string,
+    questionId: string,
+  ): Promise<import("@getpaseo/protocol/agent-questions").AgentQuestion[]> {
+    const registry = this.requireRegistry();
+    const questions = await registry.markAnswerDelivered(agentId, questionId);
+    const question = questions.find((candidate) => candidate.id === questionId);
+    const agent = this.agents.get(agentId);
+    if (agent) {
+      agent.questions = questions;
+      this.emitState(agent, { persist: false });
+    }
+    if (!question) return structuredClone(questions);
     try {
-      await this.appendJournal(agentId, {
+      await registry.appendJournal(agentId, {
         entryId: answerJournalEntryId(question.id),
         text: answerJournalText(question),
         machineContext: `questionId=${question.id}\nansweredBy=${question.answeredBy}`,
       });
+      const loaded = this.agents.get(agentId);
+      if (loaded) {
+        loaded.journal = await this.readJournal(agentId);
+        this.emitState(loaded, { persist: false });
+      }
     } catch (error) {
-      // The durable message already carries the answer; the journal is a record of it.
+      // The delivered message already carries the answer; the journal is a record of it.
       this.logger.warn({ err: error, agentId }, "Delivered open question answer was not journaled");
     }
     return structuredClone(questions);
@@ -5767,7 +5846,7 @@ export class AgentManager {
     // An unavailable answer is only safe to fall back from while this admission
     // still owns the active turn. Never let an A admission replace a later B.
     if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      throw new SteerNotAdmittedError();
     }
     return result;
   }
@@ -5832,7 +5911,7 @@ export class AgentManager {
 
   private assertSteerAdmissionOwnsTurn(agent: ActiveManagedAgent, expectedTurnId: string): void {
     if (agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      throw new SteerNotAdmittedError();
     }
   }
 
@@ -8079,7 +8158,10 @@ export class AgentManager {
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
     });
-    if (options.queuedMessage && options.providerMessageId) {
+    if (
+      (options.queuedMessage || answeredQuestionId(clientMessageId)) &&
+      options.providerMessageId
+    ) {
       this.persistQueuedPromptIdentity(agent.id, clientMessageId, options.providerMessageId);
     }
     if (options.intent === "goal") {
@@ -8149,7 +8231,9 @@ export class AgentManager {
     }
     if (!existing || existing.item.type !== "user_message") return null;
     if (messageId) {
-      if (existing.item.queue)
+      // Steered answers are queue items too. Their native ID is how provider history proves
+      // an ambiguous steer arrived, since history may not carry the client ID.
+      if (existing.item.queue || answeredQuestionId(clientMessageId))
         this.persistQueuedPromptIdentity(agent.id, clientMessageId, messageId);
       const goal = agent.goalSubmissions?.find(
         (entry) => entry.clientMessageId === clientMessageId,
