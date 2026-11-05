@@ -147,6 +147,24 @@ function endpointPort(endpoint) {
 }
 
 /** Dev's deployment: the one whose loopback port (or gate relay) is the coordinator's endpoint. */
+/**
+ * The installer-made Dev deployment publishing this installation's Dev endpoint, or null when
+ * none does: a Dev the installer does not manage, such as a hand-built Compose project.
+ */
+async function managedDevDeployment(context, config, root) {
+  const port = endpointPort(config.container.endpoint);
+  const deployments = await findLegacyDeployments(context, {
+    exclude: [root],
+    extra: [path.join(context.home, LAB_DIRECTORY, "container")],
+  });
+  return (
+    deployments.find(
+      (deployment) =>
+        (deployment.gateMode ? deployment.relayPort : deployment.loopbackPort) === port,
+    ) ?? null
+  );
+}
+
 async function legacyDevDeployment(context, config, root) {
   const port = endpointPort(config.container.endpoint);
   const deployments = await findLegacyDeployments(context, {
@@ -440,9 +458,14 @@ export async function createHostAdoptionPlan(context, { source, revision: reques
   const hostHome = config.host.startupValidation?.home ?? record.hostHome;
   const tools = await legacyTools(context, config, record);
   const { tailscale, docker, hostname, servePorts } = tools;
-  const dev = config.container
-    ? await devPlan(context, config, found.root, hostHome, docker)
-    : null;
+  // A Dev the installer does not manage stays exactly as it is: adoption moves only the Host
+  // and never runs a Dev step on it (no image build, gate switch or container recreation).
+  const devUnmanaged =
+    Boolean(config.container) && !(await managedDevDeployment(context, config, found.root));
+  const dev =
+    config.container && !devUnmanaged
+      ? await devPlan(context, config, found.root, hostHome, docker)
+      : null;
   const ports = await adoptionPorts(context, { config, record, dev, servePorts, tailscale });
   const release = build ? path.join(found.root, "releases", revision) : current.coordinator.release;
   const paths = adoptionPaths({ context, found, config, hostHome, release, links, dev });
@@ -456,6 +479,7 @@ export async function createHostAdoptionPlan(context, { source, revision: reques
     revision,
     origin: config.public.origin,
     devContainer: Boolean(dev),
+    ...(devUnmanaged ? { devUnmanaged: true } : {}),
     remote: { mode: tailscale ? "tailscale" : "local", ...(hostname ? { hostname } : {}) },
     ports,
     paths,
@@ -494,6 +518,10 @@ export function summarizeAdoption(plan) {
       ? `The coordinator runs through ${paths.coordinatorReleaseLink}; the Host keeps ${paths.hostReleaseLink} from Host source updates.`
       : `The Host daemon and coordinator run through ${paths.hostReleaseLink} and ${paths.coordinatorReleaseLink}, so upgrades from the interface replace them.`,
   );
+  if (plan.devUnmanaged)
+    lines.push(
+      "Dev is not an installer-made deployment, so it stays exactly as it is: its container, network, boot entry and Factory settings are untouched, and it keeps updating through Dev source updates.",
+    );
   if (plan.devContainer) {
     lines.push(
       `Dev in ${paths.container} moves to gate mode with automatic rollback, on ${plan.dev.subnet}. Its identity, home and workspace are kept.`,
@@ -505,7 +533,7 @@ export function summarizeAdoption(plan) {
   }
   lines.push("Claude and Codex accounts connect once for the whole installation.");
   lines.push(
-    `The coordinator${adoption.restartHost ? " and the Host daemon" : ""} restart through ${plan.services.manager === "launchd" ? "their launchd agents" : "their systemd user services"}; running agents are interrupted.`,
+    `The coordinator${adoption.restartHost ? " and the Host daemon restart" : " restarts"} through ${plan.services.manager === "launchd" ? "launchd" : "systemd user services"}; running agents are interrupted.`,
   );
   lines.push(
     `The previous configuration is kept as *.before-adoption, the service files in ${paths.state}/adoption.`,
@@ -670,8 +698,9 @@ function throughLink(file, releases, link) {
 export function adoptedCoordinatorConfig(config, { plan, manager, hostname, containerIds }) {
   const tailscale = plan.remote.mode === "tailscale";
   const { adoption, paths } = plan;
+  // An unmanaged Dev keeps its own endpoint; only a Dev moved to gate mode gets a new one.
   const environments = config.public.environments.map((environment) =>
-    environment.kind === "container"
+    environment.kind === "container" && plan.devContainer
       ? {
           ...environment,
           endpoint: tailscale

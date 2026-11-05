@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -583,6 +584,33 @@ describe("apply", () => {
     expect(serviceArguments(readFileSync(legacy.coordinatorPlist, "utf8")).at(-1)).toBe(own);
     const record = JSON.parse(readFileSync(path.join(legacy.root, "installation.json"), "utf8"));
     expect(record.configFile).toBe(own);
+  });
+
+  test("a Dev the installer does not manage is left exactly as it is", async () => {
+    const { context, state } = machine();
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      sourceUpdates: true,
+    });
+    // A hand-built Compose project: no installer marker, so nothing identifies it as managed.
+    rmSync(path.join(legacy.deployment, ".container-installation"));
+    context.root = legacy.root;
+    const { plan, summary } = await createHostAdoptionPlan(context);
+    expect(plan).toMatchObject({ devContainer: false, devUnmanaged: true });
+    expect(plan.steps.filter((step) => step.startsWith("dev-") || step === "remote")).toEqual([]);
+    expect(summary.join("\n")).toContain("stays exactly as it is");
+    const { ok } = await adopt(context);
+    expect(ok).toBe(true);
+    expect(state.gateMode).toBe(false);
+    expect(
+      context.run.calls.filter((call) =>
+        call.args.some((arg) => /gate\.sh|docker\/base\/Dockerfile/.test(String(arg))),
+      ),
+    ).toEqual([]);
+    const config = JSON.parse(readFileSync(path.join(legacy.root, "coordinator.json"), "utf8"));
+    expect(config.public.environments).toEqual(legacy.config.public.environments);
+    expect(config.container).toEqual(legacy.config.container);
+    expect(config.deployment.containerDirectory).toBeUndefined();
   });
 });
 

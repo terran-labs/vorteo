@@ -151,6 +151,16 @@ export function upgradeBlocker(config: InstallationConfig, adoptable = false): s
   return null;
 }
 
+/**
+ * True when upgrades rebuild Dev: an installation with Dev whose deployment the installer
+ * manages. Adoption records `containerDirectory` only for such a Dev; an installation not yet
+ * adopted keeps the old behavior until adoption decides.
+ */
+function managedDev(config: InstallationConfig): boolean {
+  if (config.container === undefined) return false;
+  return !config.deployment || config.deployment.containerDirectory !== undefined;
+}
+
 /** True when the installer engine, not Host source updates, builds Host releases. */
 function directHostUpgrades(config: InstallationConfig): boolean {
   return !config.sourceUpdates && Boolean(config.deployment?.hostReleaseLink);
@@ -449,7 +459,8 @@ export function createReleaseUpgradeRuntime(input: {
     adoptionOutcome: (upgradeId) =>
       readAdoptionOutcome(path.join(upgradeDirectory, upgradeId, "adoption.json")),
     adoptionDeadlineMs: ADOPTION_DEADLINE_MS,
-    hasContainer: config.container !== undefined,
+    hasContainer: managedDev(config),
+    devUnmanaged: config.container !== undefined && !managedDev(config),
     coordinatorReplacement: config.deployment?.coordinator
       ? null
       : "The installer did not record the coordinator release link. Restart the coordinator with the vorteo update command.",
@@ -815,7 +826,7 @@ export function createReleaseUpgradeRuntime(input: {
                   ?.release ?? null,
             }
           : null,
-        container: config.container !== undefined,
+        container: managedDev(config),
         upgrades: upgrades?.list() ?? [],
         ...(updates ? { policy: updates.policy(), check: updates.lastCheck() } : {}),
       };

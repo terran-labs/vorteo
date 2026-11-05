@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): in-place adoption moves only the Host when Dev is not an installer-made deployment, as the owner decided, and release upgrades skip such a Dev. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): in-place adoption of older Host installations now finds a coordinator that runs a reviewed plan's configuration and adopts that configuration, not the stale setup copy. Release updates stay unavailable on such installations until they are adopted. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
