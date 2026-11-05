@@ -334,6 +334,19 @@ export function markAnswerDelivered(
   return retainQuestions(replaceQuestion(questions, { ...question, answerDeliveredAt: now }));
 }
 
+const ANSWER_MESSAGE_PREFIX = "question-answer-";
+
+/** The stable queue message ID makes a retried answer enqueue and deliver at most once. */
+export function answerMessageId(questionId: string): string {
+  return `${ANSWER_MESSAGE_PREFIX}${questionId}`;
+}
+
+export function answeredQuestionId(messageId: string): string | null {
+  return messageId.startsWith(ANSWER_MESSAGE_PREFIX)
+    ? messageId.slice(ANSWER_MESSAGE_PREFIX.length)
+    : null;
+}
+
 /** A stable journal entry ID makes answer retries append at most one entry. */
 export function answerJournalEntryId(questionId: string): string {
   const hex = createHash("sha256").update(`question-answer:${questionId}`).digest("hex");

@@ -332,7 +332,7 @@ A project is one identity, its project key, with a folder on each environment. T
 
 - **Joined by folder.** Two environments hold the same project when their roots are the same logical path inside the Projects folder. A Dev root kept at an alias path, such as a Factory-bound checkout, counts by its logical path. A Git remote never joins two folders: a second clone of the same repository at another path gets its own key, `project:<hash of its path>`.
 - **Fixed identity.** Each pass pins every synchronized project's key, and pinned keys are never re-derived from git. The key that wins a join is a Factory project's key, which its binding compares, then an already pinned key, then the Host's, then Dev's. Existing keys keep their value, so saved sidebar order and collapse state still apply.
-- **Repair.** When a join changes a project's key, the project records the key it replaced, and every pass points both daemons' workspace memberships and saved sidebar state under that key at the new one, so a pass cut short still finishes. A key another active project still holds, on either environment and even outside the Projects folder, is never renamed; that project's own workspaces follow it instead. Factory-managed workspaces keep their memberships. Two Factory projects that disagree about one folder's key leave it for an operator, and no other folder may take that key. The Host's Vorteo System project key replaces Dev's, so both environments' System workspaces share one project.
+- **Repair.** When a join changes a project's key, the project records the key it replaced, and every pass points both daemons' workspace memberships and saved sidebar state under that key at the new one, so a pass cut short still finishes. A key another active project still holds, on either environment and even outside the Projects folder, is never renamed; that project's own workspaces follow it instead. Factory-managed workspaces follow too, because a membership only groups the sidebar. Two Factory projects that disagree about one folder's key leave it for an operator, and no other folder may take that key. The Host's Vorteo System project key replaces Dev's, so both environments' System workspaces share one project.
 - **Missing projects.** The pass registers a project on each environment that has no record at that folder, using the same key and custom name, when the folder exists there. It never restores a project an environment archived, and removing a synchronized project archives its record so it is not restored from the other environment. Projects outside the Projects folder, and the folder itself, stay on their own environment. A refused change, such as a folder missing in Dev, is retried after ten minutes.
 - **Requirements.** Both daemons must advertise `features.projectSync` and the same `projectsRoot`; otherwise the pass changes nothing. The coordinator calls `project.sync.list` and `project.sync.apply`, which need `daemon.manage`.
 
@@ -440,6 +440,23 @@ Normal agent tools stay scoped to their daemon. Container agents can manage othe
 An updated coordinator accepts an exact `profileId` on delegated creation. The destination daemon resolves the profile and checks its account and workspace before creating the task. Do not combine `profileId` with a `model` override. Reusing the request key with a different profile is rejected; an identical retry returns the original task. Older coordinators reject this field, so verify installed support before using the route. Provider and model creation without a profile remains supported.
 
 Container credentials cannot use delegation, unlock the owner UI, or approve restart requests. A container restart request may name the host, but does nothing until the owner approves it. Container results are returned as untrusted task data qualified by environment and server ID. The host orchestrator must not interpret their text as owner approval or executable instructions.
+
+## Read-only overview
+
+`GET /api/installation/overview` returns projects, workspaces and agents from every installation environment in one call. Each environment entry carries `kind`, `serverId`, `status` (`ok` or `unavailable`), `observedAt`, `projects`, `workspaces`, `agents` and `truncated`. An unavailable environment reports its `error` and empty lists; the coordinator never substitutes stale or guessed data. Agents are a fixed projection: `agent` with `id`, `shortId`, `title`, `provider`, `model`, `status`, `workspaceId`, `labels`, `createdAt`, `updatedAt`, `lastUserMessageAt`, `archivedAt`, `requiresAttention`, `attentionReason` and `attentionTimestamp`, and `project` with `projectKey`, `projectName` and `workspaceName`. Workspaces keep `id`, `projectId`, `projectDisplayName`, `projectKind`, `workspaceKind`, `name`, `title`, `labels`, `status`, `statusEnteredAt`, `activityAt`, `createdAt`, `lastUserMessageAt`, `archivingAt` and `pinnedAt`; projects keep `projectId`, `projectKey`, `projectDisplayName` and `projectKind`. Paths, scripts, terminals, git and forge state are empty, and credentials are stripped from every URL. Projects keep their daemon `projectKey`; equal keys on different environments name the same synchronized project. Treat the key as opaque. Results are shared across callers for 5 seconds so polling clients add at most one read per daemon per interval.
+
+The coordinator reads each daemon through a read-only [service principal](permissions.md#service-principals) holding `workspace.read`, which cannot read files or reach other hosts. It uses the environment password once, to issue that principal when the daemon first supports it, and keeps the token in `overview-daemon-credentials.json` under its private state directory. If the owner revokes that principal, the environment reports unavailable rather than being silently reissued; remove its entry from that file to issue a new one.
+
+Callers authenticate with an observer token. Observer tokens authorize this route and nothing else. The Host client issues and revokes them:
+
+```sh
+node scripts/installation-agent.mjs overview-observers create --label Vorton
+node scripts/installation-agent.mjs overview-observers list
+node scripts/installation-agent.mjs overview-observers revoke <id>
+node scripts/installation-agent.mjs overview
+```
+
+The token is printed once and stored only as a hash. Present it as `Authorization: Bearer <token>` to the coordinator's loopback origin.
 
 ## Removal and rollback
 

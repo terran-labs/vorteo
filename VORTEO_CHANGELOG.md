@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-05
 
+### Maintenance
+
+- Merge current `main` into the installer upgrade branch, keeping both sides' changelog and inventory entries.
+
+## Unreleased - 2026-11-05
+
 ### Fixes
 
 - Snapshots on Linux read Dev's home through its running container. Linux keeps the bind-mounted home private to the container's user, so the Host could not read it and every upgrade with Dev on Linux, from the interface or the installer, stopped at its snapshot. Restores already unpack such a snapshot through the container. Found by the install tests' Linux upgrade jobs.
@@ -58,6 +64,40 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Rerunning the installer upgrades an installation it made. It fetches the latest release first, shows the installed and latest versions, and asks to upgrade in place and whether to change the installation name or in-app update policy meanwhile. The upgrade builds the release beside the running one, takes a snapshot, then restarts the Host daemon, coordinator and Dev on it; each returns to its previous release if it does not come back healthy, and a rerun resumes a stopped upgrade. Installations from release 26.11.103 on can upgrade this way, including those whose in-app upgrade never finished. `--repair` still repairs offline without upgrading.
 - The install tests workflow gains upgrade jobs that install releases 26.11.103 and 26.11.206 with their own installers on Linux with Dev and on macOS, then upgrade them with the commit under test and check that the upgraded installation offers in-app updates.
+- Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.
+
+- Listing a thread's provider subagents no longer starts or resumes its provider session. Sidebar polling no longer retries threads that cannot load. An unloaded thread now answers at once with no subagents; opening the thread loads it, and its subagents arrive through live updates.
+- Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
+
+### Tooling
+
+- Merged current `main` into the provider subagent polling fix, retaining the service principals changes.
+
+- Merged current `main` into the service principals branch before handback.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch again before delivery.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch for handback.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- Cancel grants, like message grants, now apply only to tool-less agents. Service sessions read single agents and timelines only through agent grants. Directory data they receive with daemon-wide read, and the installation overview, is projected to identity, status and timestamps, without paths, scripts, terminals, git, forge or permission data. Workspace removals that carry an emptied project are projected too. The grant docs and CLI help warn that a workspace read grant covers agents created there later.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch before delivery.
 
 ## Unreleased - 2026-11-03
 
@@ -202,6 +242,14 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Fixes
+
+- Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer, and Pi and OMP, whose steer acknowledgements cannot prove delivery, still receive the answer when the turn finishes; reliable answer steering for Pi and OMP will follow separately. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment. Pausing the queue no longer holds an answer back from a busy thread, and a steer whose acknowledgement is lost is settled from provider history instead of being sent again.
+
+### Maintenance
+
+- Merged current `main` into the open question answer delivery fix three times; both sides' entries are kept.
+
 ### Changes
 
 - Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
@@ -272,6 +320,28 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Security
+
+- Close the re-review's findings on service messages. A leading `@` in service text is neutralized, because Claude reads `@path` files without a tool. Messages are wrapped in markers with a random per-message tag that the text cannot imitate, and labels lose invisible formatting characters. Expired credentials disconnect their live sessions, including expiries more than 24 days out. Tool-less agents never adopt a hosted session, and resuming with `toolAccess` is owner-only.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- The owner can create a Claude thread that cannot call any tool by setting `toolAccess: "none"` at creation. The daemon attaches no Vorteo tools, MCP servers or plugin tools, and Claude launches with built-in tools disabled, no MCP, plugins, skills, subagents or filesystem settings, and a permission handler that refuses every request. Only the owner can set it, nothing can clear it later, and it is refused for non-Claude providers. Daemons advertise it as `agentToolAccess`. This is the basis for granting service credentials message access to an agent.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- Tighten service principals after review. Message and cancel grants name exact agents only. Service sessions may use only an explicit list of operations. Service text starting with `/` is refused, and messages reach agents labeled as coming from the service credential. Credentials can expire, and only their issuer or the owner can change them. An unreadable principal store admits nobody and is never overwritten. The installation overview returns a fixed agent projection and strips credentials from URLs. `paseo access service create --expires-at` sets an expiry. Tests cover issuer and expiry limits, the fail-closed store, the operation allowlist and the overview route's token rules.
+
+### Tooling
+
+- Merged current `main` into the service principals branch before fixing review findings.
+
+## Unreleased - 2026-11-04
+
 ### Fixed
 
 - Messages sent into a running Claude turn no longer fail with "The provider returned an invalid steerActiveTurn result." The message had already reached Claude, so the error put it back in the composer and every resend delivered another copy. A send that does fail now keeps anything typed meanwhile below the restored message instead of overwriting it.
@@ -311,6 +381,23 @@ Prepared but never tagged; superseded by 26.11.301.
 - Provider account connections survive concurrent settings writes, and a Dev container paired after its daemon started syncs accounts after its next daemon start.
 - The message queue reopens its browser storage after the browser closes it.
 - Server tests are green again; the daemon bootstrap no longer names a specific provider.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Agent grants for service principals: give a credential read, steering-message or cancel access to specific agents, or to every agent in a workspace, without any other write access. Use `paseo access service create --grants-file` or `set-grants`; changing grants reconnects the credential's sessions. Granted messages steer with text only, and service sessions receive only data about agents they were allowed to address. A message grant is delegated action: the target agent acts with its own tools, so the docs recommend it only on agents with tools disabled.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Service principals: issue a credential with only the permissions you choose, such as read-only access for a personal dashboard, with `paseo access service create --read-only` or in host Settings under Service access. Only read-only access is issuable for now; service sessions cannot read files, run git or terminal requests, or route to other hosts. Tokens are shown once and stored as hashes, and revoking a principal disconnects it immediately. Clients connect with the new `serviceCredential` option on daemons advertising `servicePrincipals`.
+- One read-only view of the installation: the Host coordinator's overview route returns projects, workspaces and agents from Host and Dev in one call, with each environment's status and errors. It reads each daemon through a read-only principal and accepts observer tokens that authorize nothing else. Host agents use `installation-agent.mjs overview` and `overview-observers`.
+
+### Tooling
+
+- Merged current `main` into the service principals branch before delivery.
 
 ## Unreleased - 2026-11-03
 
