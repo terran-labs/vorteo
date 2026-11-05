@@ -4,6 +4,20 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.500 - 2026-11-05
+
+Beta for VortLab, delivered by Upgrade from Installation controls.
+
+### Features
+
+- Live dev status indicator: in Live dev mode, every owner page shows a small status circle (live, safe, slow, starting or down) that opens an explanation with links to the static interface, Live dev and Installation settings. It replaces the purple Live dev marker.
+
+### Fixes
+
+- When a fresh live page times out under load, the live dev proxy serves the last page from the same dev server instead of silently falling back to the static interface.
+- Live dev preparation builds the server package, so the first live commit's typecheck no longer fails on missing declarations.
+- Usage rings and the context donut no longer log an invalid DOM property warning in development.
+
 ## Unreleased - 2026-11-05
 
 ### Tooling

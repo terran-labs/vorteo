@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): live checkout preparation now runs `build:server` before `build:app-deps`, because the commit hook typechecks `packages/cli` against the server's built declarations and the first live commit on VortLab failed without them. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
