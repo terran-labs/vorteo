@@ -66,7 +66,7 @@ afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 
-async function fixture(mode = "normal") {
+async function fixture(mode = "normal", scopeBoot = boot) {
   state.inputs.clear();
   state.children = [];
   state.inspect = undefined;
@@ -98,7 +98,7 @@ async function fixture(mode = "normal") {
       version: 1,
       installationId: boot,
       requestId,
-      bootUUID: boot,
+      bootUUID: scopeBoot,
       validUntil: new Date(Date.now() + 600_000).toISOString(),
       declaration:
         "Only the declared managed routes and manual participants are known; no new manual broker calls until release",
@@ -265,4 +265,18 @@ test("changed evidence directory custody refuses before spawning", async () => {
   );
   expect(state.children).toHaveLength(0);
   expect(await readdir(f.directory)).toEqual([]);
+});
+
+test("scope boot UUID written in uppercase still matches the plan", async () => {
+  // sysctl prints the boot session UUID in uppercase; the kernel adapter lowercases it.
+  const f = await fixture("normal", boot.toUpperCase());
+  expect((await f.executor.executeBrokerDeployment(f.job, () => {})).kind).toBe("committed");
+});
+
+test("scope from a different boot refuses before spawning", async () => {
+  const f = await fixture("normal", randomUUID());
+  await expect(f.executor.executeBrokerDeployment(f.job, () => {})).rejects.toThrow(
+    "Deployment scope differs from protected participant custody",
+  );
+  expect(state.children).toHaveLength(0);
 });
