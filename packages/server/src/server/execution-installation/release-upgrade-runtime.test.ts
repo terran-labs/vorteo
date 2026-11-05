@@ -45,7 +45,10 @@ function legacyInstallation(): { config: InstallationConfig; configFile: string;
     path.join(release, "scripts/installer/main.mjs"),
     'import { appendFileSync } from "node:fs";\nappendFileSync(process.env.ENGINE_LOG ?? "/dev/null", JSON.stringify(process.argv.slice(2)) + "\\n");\n',
   );
-  touch(path.join(root, "installation.json"), "{}");
+  touch(
+    path.join(root, "installation.json"),
+    JSON.stringify({ installationId: "791360b7-0000-4000-8000-000000000001" }),
+  );
   const configFile = path.join(root, "coordinator.json");
   const config = {
     public: {

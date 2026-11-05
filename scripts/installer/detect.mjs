@@ -169,10 +169,13 @@ const SERVICE_FILES = [
  * through a reviewed plan runs a config inside `<root>/coordinator-plans/<plan>/`, so the
  * config's own folder is not always the installation root.
  */
-export function installationRootOf(start, levels = 3) {
+export function installationRootOf(start, installationId, levels = 3) {
   let folder = path.resolve(start);
   for (let level = 0; level <= levels; level += 1) {
-    if (existsSync(path.join(folder, "installation.json"))) return folder;
+    const record = readJson(path.join(folder, "installation.json"));
+    // Only the record of the same installation counts; a test coordinator under another
+    // installation's folder must never adopt that installation.
+    if (record && (!installationId || record.installationId === installationId)) return folder;
     const parent = path.dirname(folder);
     if (parent === folder) break;
     folder = parent;
@@ -210,8 +213,11 @@ export function serviceInstallations(home) {
       }
       const configFile = argv.findLast((arg) => arg.endsWith(".json"));
       if (!configFile || !path.isAbsolute(configFile)) continue;
-      const root = installationRootOf(path.dirname(configFile)) ?? path.dirname(configFile);
-      services.push({ root, configFile });
+      const installationId = readJson(configFile)?.public?.installationId;
+      const nested = installationId
+        ? installationRootOf(path.dirname(configFile), installationId)
+        : null;
+      services.push({ root: nested ?? path.dirname(configFile), configFile });
     }
   }
   return services;
@@ -261,12 +267,12 @@ export function findHostRoots(context) {
     path.join(context.home, LAB_DIRECTORY, "host"),
     ...serviceRoots(context.home),
   ];
-  const running = new Map(
-    serviceInstallations(context.home).map((service) => [
-      path.resolve(service.root),
-      service.configFile,
-    ]),
-  );
+  // The first service per root wins, as runningCoordinatorConfig picks it.
+  const running = new Map();
+  for (const service of serviceInstallations(context.home)) {
+    const root = path.resolve(service.root);
+    if (!running.has(root)) running.set(root, service.configFile);
+  }
   const seen = new Set();
   const found = [];
   for (const candidate of candidates) {

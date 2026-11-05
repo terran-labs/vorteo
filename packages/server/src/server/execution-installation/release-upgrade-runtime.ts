@@ -106,10 +106,16 @@ function readEnvImage(directory: string): string {
  * through a reviewed plan runs a config inside `<root>/coordinator-plans/<plan>/`, so the
  * config's own folder is not always the installation root (scripts/installer/detect.mjs).
  */
-export function installationRootOf(configFile: string, levels = 3): string | null {
+export function installationRootOf(
+  configFile: string,
+  installationId: string,
+  levels = 3,
+): string | null {
   let folder = path.dirname(path.resolve(configFile));
   for (let level = 0; level <= levels; level += 1) {
-    if (existsSync(path.join(folder, "installation.json"))) return folder;
+    // Only the record of this installation counts, never another installation's folder.
+    if (recordInstallationId(path.join(folder, "installation.json")) === installationId)
+      return folder;
     const parent = path.dirname(folder);
     if (parent === folder) break;
     folder = parent;
@@ -117,8 +123,19 @@ export function installationRootOf(configFile: string, levels = 3): string | nul
   return null;
 }
 
+function recordInstallationId(file: string): string | null {
+  try {
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    return typeof record?.installationId === "string" ? record.installationId : null;
+  } catch {
+    return null;
+  }
+}
+
 export function adoptionRequired(config: InstallationConfig, configFile: string): boolean {
-  return !config.deployment && installationRootOf(configFile) !== null;
+  return (
+    !config.deployment && installationRootOf(configFile, config.public.installationId) !== null
+  );
 }
 
 /** Why upgrades cannot run on this installation, or null. */
@@ -310,7 +327,7 @@ export function createReleaseUpgradeRuntime(input: {
         adoptionEngine(),
         "adopt",
         "--root",
-        installationRootOf(configFile) ?? path.dirname(configFile),
+        installationRootOf(configFile, config.public.installationId) ?? path.dirname(configFile),
         "--outcome",
         path.join(directory, "adoption.json"),
       ],

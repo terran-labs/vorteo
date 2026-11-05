@@ -540,7 +540,7 @@ describe("apply", () => {
     expect(state.restarts).toEqual([path.basename(legacy.coordinatorPlist)]);
   });
 
-  test("a coordinator running a reviewed plan's config is found and that config is adopted", async () => {
+  test("a coordinator running a reviewed plan's config is adopted into the installation's own config", async () => {
     const { context } = machine();
     const legacy = legacyInstallation(context.home, {
       root: labRoot(context),
@@ -554,7 +554,8 @@ describe("apply", () => {
       "ordinary-prepared-1",
       "candidate-config.json",
     );
-    touch(running, JSON.stringify({ ...legacy.config, claudeHostRefresh: true }, null, 2));
+    const planned = JSON.stringify({ ...legacy.config, claudeHostRefresh: true }, null, 2);
+    touch(running, planned);
     const stale = readFileSync(path.join(legacy.root, "coordinator.json"), "utf8");
     writeFileSync(
       legacy.coordinatorPlist,
@@ -570,14 +571,18 @@ describe("apply", () => {
     context.root = legacy.root;
     const { ok } = await adopt(context);
     expect(ok).toBe(true);
-    const adopted = JSON.parse(readFileSync(running, "utf8"));
-    expect(adopted).toMatchObject({
+    // The plan's pinned file is read, never rewritten; the installation's own file gets the
+    // running settings plus the deployment, and the service now runs it.
+    expect(readFileSync(running, "utf8")).toBe(planned);
+    const own = path.join(legacy.root, "coordinator.json");
+    expect(JSON.parse(readFileSync(own, "utf8"))).toMatchObject({
       claudeHostRefresh: true,
       deployment: { installRoot: legacy.root },
     });
-    expect(readFileSync(path.join(legacy.root, "coordinator.json"), "utf8")).toBe(stale);
+    expect(readFileSync(`${own}.before-adoption`, "utf8")).toBe(stale);
+    expect(serviceArguments(readFileSync(legacy.coordinatorPlist, "utf8")).at(-1)).toBe(own);
     const record = JSON.parse(readFileSync(path.join(legacy.root, "installation.json"), "utf8"));
-    expect(record.configFile).toBe(running);
+    expect(record.configFile).toBe(own);
   });
 });
 
