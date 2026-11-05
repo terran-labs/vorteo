@@ -26,6 +26,12 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 
 ## Unreleased - 2026-11-05
 
+### Fixed
+
+- Site wrappers such as Unite now build a sharp Vorteo app icon. The web interface serves a 1024px touch icon from its `apple-touch-icon` link and from the precomposed and iPhone fallback paths, which previously returned the page instead of an image.
+
+## Unreleased - 2026-11-05
+
 ### Tooling
 
 - Merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged.
