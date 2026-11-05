@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+
 Maintenance review (2026-11-05): live tweak by Questions card drafts: Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
 
 Maintenance review (2026-11-05): live tweak by Lab self-update: Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.

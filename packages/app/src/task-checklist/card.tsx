@@ -4,7 +4,7 @@ import { useCardDisclosure } from "@/agent-stream/use-card-disclosure";
 import { CardDisclosure } from "@/agent-stream/card-disclosure";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Text } from "react-native";
+import { StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import { BrushCleaning, Check, Circle, CircleAlert, Eye, Pencil, Plus } from "lucide-react-native";
 import { useMutation } from "@tanstack/react-query";
 import { useShallow } from "zustand/shallow";
@@ -51,12 +51,30 @@ interface ChecklistCardProps {
 }
 type EditorState = { open: false } | { open: true; task: AgentTaskItem | null };
 const EMPTY_TASKS: AgentTaskItem[] = [];
-const TASK_RUNNING_ICON = <StatusRing variant="task" />;
+// Task status glyphs run smaller than the Button's default icon so the checklist matches the
+// sidebar's compact status column: a 12px Lucide circle draws a 10px ring, the same footprint
+// as the status ring scaled to 80%.
+const TASK_STATUS_ICON_SIZE = 12;
+const compactRingStyles = RNStyleSheet.create({ ring: { transform: [{ scale: 0.8 }] } });
+const TASK_RUNNING_ICON = (
+  <View style={compactRingStyles.ring}>
+    <StatusRing variant="task" />
+  </View>
+);
 const COMPACT_COLUMN_DATA = { vortonRowHandle: "true" };
+type StatusGlyph = typeof Circle;
+// Button calls a one-argument function with its themed icon color, which lets us pick the size.
+const sizedGlyph = (Glyph: StatusGlyph) => (color: string) => (
+  <Glyph color={color} size={TASK_STATUS_ICON_SIZE} />
+);
+const CHECK_ICON = sizedGlyph(Check);
+const BLOCKED_ICON = sizedGlyph(CircleAlert);
+const REVIEW_ICON = sizedGlyph(Eye);
+const PENDING_ICON = sizedGlyph(Circle);
 function inactiveTaskIcon(status: AgentTaskItem["status"]) {
-  if (status === "blocked") return CircleAlert;
-  if (status === "review") return Eye;
-  return Circle;
+  if (status === "blocked") return BLOCKED_ICON;
+  if (status === "review") return REVIEW_ICON;
+  return PENDING_ICON;
 }
 const taskKey = (task: AgentTaskItem, index: number) =>
   `${task.source ?? "provider"}:${task.id ?? index}`;
@@ -434,7 +452,7 @@ function ChecklistCheckbox({
       onLongPress={onLongPress}
       // Touch keeps the 44px height but the narrower leading column, like a row handle.
       dataSet={COMPACT_COLUMN_DATA}
-      leftIcon={completed ? Check : incompleteIcon}
+      leftIcon={completed ? CHECK_ICON : incompleteIcon}
     />
   );
 }

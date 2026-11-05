@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
 
 ## Unreleased - 2026-11-05
