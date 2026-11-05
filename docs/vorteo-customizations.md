@@ -1,5 +1,11 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): successful provider history hydration publishes the parent's final subagent descriptors through existing updates, including quiet hydration when opening a thread. This restores children after an unloaded sidebar list without replaying timeline history or changing load retries. Source only; not installed.
+
+Maintenance review (2026-11-04): merged current main again into the provider subagent polling fix, retaining service principals, synchronized Factory project memberships and the read-only list behavior. Incoming changelog entries are retained. Source only; not installed.
+
+Maintenance review (2026-11-04): `agent.provider_subagents.list` answers from the loaded session or the stored record and never loads the parent thread. Polling the list had started provider sessions and retried failing threads on every poll. An unloaded thread lists no provider subagents until it is opened; the wire shape is unchanged. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): merged current `main`, including the Dev boot-entry switch, the single sidebar footer block and later trackpad dictation, into the open question answer delivery fix; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): owner answers to open questions steer into a busy thread's active turn instead of waiting behind it, falling back to the message queue when the provider cannot steer. Delivery, the thread message and the journal entry are recorded when the agent receives the answer, and the card shows queued answers as queued. After review, a steer that throws is settled as uncertain and reconciled from provider history rather than requeued, and a paused queue no longer blocks answer steering. Review rounds then found repeated ordering hazards in text-based steer correlation for Pi and OMP, so that correlation was reverted: those adapters match upstream again and mark their steer acknowledgements as ambiguous, and their answers wait in the queue until the turn ends. Source only; not installed. README overview and onboarding are unchanged.
