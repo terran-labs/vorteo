@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- A failed snapshot restore also stops a service whose start failed part way, changes files back only once every such service has stopped, and leaves the installation stopped for recovery when a stop or a revert fails, rather than starting it on partially recovered data.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
 - A failed snapshot restore stops the services it had already started before putting files back, keeps untouched originals when moving a Linux Dev home aside stopped midway, and reports that recovery is needed, keeping the previous copies, when putting a part back fails.
 
 ## Unreleased - 2026-11-05

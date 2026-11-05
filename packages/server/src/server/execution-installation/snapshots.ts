@@ -492,6 +492,10 @@ async function discardAside(part: StoredPart, restoreId: string, ports: RestoreP
  * the stopped services again and rethrows, so the installation returns to the state
  * the owner left. A separate pre-restore snapshot keeps that state restorable too.
  */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * A restore failed and some replaced parts could not be put back. Their previous copies
  * stay beside them (`*.before-restore-<id>`), so the installation needs recovery by hand.
@@ -503,7 +507,7 @@ export class RestoreRollbackError extends Error {
   ) {
     const reason = restoreError instanceof Error ? restoreError.message : String(restoreError);
     super(
-      `Restore failed (${reason}) and putting back ${problems.join("; ")} failed. The previous copies are kept beside each part as .before-restore-<id>; recover them before starting the installation again.`,
+      `Restore failed (${reason}) and putting things back failed: ${problems.join("; ")}. The services stay stopped, and the previous copies are kept beside each part as .before-restore-<id>; recover them before starting the installation again.`,
     );
     this.name = "RestoreRollbackError";
   }
@@ -519,6 +523,9 @@ export async function executeRestore(input: {
   const replaced: StoredPart[] = [];
   const stopped: ManagedService[] = [];
   const everStopped: ManagedService[] = [];
+  // Recorded before each start is awaited: a start that fails, such as Dev failing its
+  // health wait, may still have launched the service.
+  const started = new Set<ManagedService>();
   try {
     for (const step of steps) {
       ports.progress(describeStep(step, parts));
@@ -527,6 +534,7 @@ export async function executeRestore(input: {
         stopped.push(step.service);
         everStopped.push(step.service);
       } else if (step.action === "start") {
+        started.add(step.service);
         await ports.services.start(step.service);
         stopped.splice(stopped.indexOf(step.service), 1);
       } else if (step.action === "restore") {
@@ -537,22 +545,27 @@ export async function executeRestore(input: {
     }
   } catch (error) {
     ports.progress("Restore failed; putting back the replaced files");
-    // Services the plan already started run on restored files; stop them, coordinator
-    // first as the plan does, before those files change again.
-    for (const service of everStopped.filter((item) => !stopped.includes(item)))
-      await ports.services.stop(service).catch(() => undefined);
+    // Files change only once every service the plan may have started is stopped again,
+    // coordinator first as the plan does. A service that will not stop leaves the
+    // restored files and the previous copies as they are.
     const problems: string[] = [];
+    for (const service of everStopped.filter((item) => started.has(item)))
+      await ports.services
+        .stop(service)
+        .catch((stopError: unknown) =>
+          problems.push(`stopping ${service}: ${describeError(stopError)}`),
+        );
+    if (problems.length) throw new RestoreRollbackError(error, problems);
     for (const part of replaced.toReversed())
       await revertPart(part, restoreId, ports).catch((revertError: unknown) =>
-        problems.push(
-          `${part.part.source}: ${revertError instanceof Error ? revertError.message : String(revertError)}`,
-        ),
+        problems.push(`${part.part.source}: ${describeError(revertError)}`),
       );
+    // Partially recovered data must not start; the owner recovers it first.
+    if (problems.length) throw new RestoreRollbackError(error, problems);
     // Start in the plan's order: Dev, then the Host, then the coordinator.
     const order: ManagedService[] = ["dev", "host", "coordinator"];
     for (const service of order.filter((item) => everStopped.includes(item)))
       await ports.services.start(service).catch(() => undefined);
-    if (problems.length) throw new RestoreRollbackError(error, problems);
     throw error;
   }
   for (const part of replaced) await discardAside(part, restoreId, ports);

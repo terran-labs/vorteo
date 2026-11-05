@@ -252,10 +252,12 @@ posixTest(
       }),
     ).rejects.toThrow("host did not start");
     expect(readFileSync(path.join(host, "config.json"), "utf8")).toBe('{"changed":true}');
+    // The failed start may have launched the Host, so it stops before files go back.
     expect(calls).toEqual([
       "stop coordinator",
       "stop host",
       "start host",
+      "stop host",
       "start host",
       "start coordinator",
     ]);
@@ -350,8 +352,68 @@ posixTest("a late restore failure stops started services before putting files ba
     "stop host",
     "stop dev",
   ]);
-  expect(calls.slice(revertAt + 1)).toEqual(["start dev", "start host", "start coordinator"]);
+  // Nothing starts on partially recovered data.
+  expect(calls.slice(revertAt + 1)).toEqual([]);
 });
+
+posixTest(
+  "a Dev that fails its start is stopped, and a stop that fails leaves files alone",
+  async () => {
+    const source = {
+      type: "docker" as const,
+      kind: "dev-home" as const,
+      docker: "/usr/bin/docker",
+      container: "c",
+      path: "/home/paseo",
+      mounted: true as const,
+    };
+    const part = {
+      part: { kind: "dev-home", source: "dev" },
+      source,
+      stored: "/s.tar",
+    } as unknown as StoredPart;
+    const attempt = async (stopFails: boolean) => {
+      const calls: string[] = [];
+      const services = recordingServices(calls, "dev");
+      const error = await executeRestore({
+        restoreId: "r4",
+        parts: [part],
+        steps: planRestore([part], true),
+        ports: {
+          services: {
+            ...services,
+            stop: async (service) => {
+              calls.push(`stop ${service}`);
+              if (stopFails && calls.includes("start dev")) throw new Error("still running");
+            },
+          },
+          snapshot: {
+            importDocker: async () => undefined,
+            mounted: {
+              replace: async () => undefined,
+              revert: async () => void calls.push("revert"),
+              discard: async () => undefined,
+            },
+          },
+          verifyCoordinator: async () => undefined,
+          progress: () => undefined,
+        },
+      }).catch((caught: unknown) => caught);
+      return { calls, error };
+    };
+    const ok = await attempt(false);
+    expect(ok.calls.slice(ok.calls.indexOf("start dev") + 1)).toEqual([
+      "stop dev",
+      "revert",
+      "start dev",
+      "start host",
+      "start coordinator",
+    ]);
+    const stuck = await attempt(true);
+    expect(stuck.error).toBeInstanceOf(RestoreRollbackError);
+    expect(stuck.calls).not.toContain("revert");
+  },
+);
 
 posixTest("the mounted home scripts replace, put back and discard the contents", () => {
   const home = path.join(root, "home");
