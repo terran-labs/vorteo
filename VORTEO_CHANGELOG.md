@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
+
 ## Unreleased - 2026-11-04
 
 ### Live tweaks
