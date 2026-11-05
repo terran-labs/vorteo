@@ -833,6 +833,11 @@ export interface AgentUsageSession {
 export interface AgentSession {
   /** Opt in only when startTurn checks automaticRecoveryPermit and cannot implicitly resume native work. */
   readonly supportsAutomaticRecoveryDispatch?: boolean;
+  /**
+   * Set when a steer can reach the provider yet report unavailable or fail, so its
+   * acknowledgement cannot prove delivery. Owner answers then wait for the turn to end.
+   */
+  readonly ambiguousSteerAcknowledgement?: boolean;
   usageSession?(): AgentUsageSession | null;
   readonly provider: AgentProvider;
   readonly id: string | null;
