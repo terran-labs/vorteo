@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Profile picker accounts show a single refresh ring around the account icon instead of two spinners, and the compact reset button is shorter.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
 
 ## Unreleased - 2026-11-05

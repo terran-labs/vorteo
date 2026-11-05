@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Fix duplicate account spinners: Profile picker accounts show a single refresh ring around the account icon instead of two spinners, and the compact reset button is shorter.
+
 Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
 
 Maintenance review (2026-11-05): live tweak by Questions card drafts: Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
