@@ -10455,6 +10455,7 @@ describe("moving a workspace's local project with its group", () => {
   function setup(
     kind: "directory" | "worktree" | "local_checkout",
     projects: Record<string, typeof target>,
+    mainRepoRoot: string | null = null,
   ) {
     const emitted: SessionOutboundMessage[] = [];
     const session = createSessionForWorkspaceTests({
@@ -10466,6 +10467,7 @@ describe("moving a workspace's local project with its group", () => {
       cwd: REPO_CWD,
       kind,
       displayName: "Stray",
+      mainRepoRoot,
       createdAt: "2026-10-18T00:00:00.000Z",
       updatedAt: "2026-10-18T00:00:00.000Z",
     });
@@ -10490,6 +10492,25 @@ describe("moving a workspace's local project with its group", () => {
       accepted: true,
     });
     expect(current()).toMatchObject({ projectId: "vorteo-local", projectMembership: membership });
+  });
+
+  test("moves a misfiled worktree into its own repository's project", async () => {
+    const { emitted, session, current } = setup(
+      "worktree",
+      { "vorteo-local": target },
+      "/work/vorteo",
+    );
+    await session.handleMessage({
+      type: "workspace.project.set.request",
+      workspaceId: "stray",
+      membership: null,
+      projectId: "vorteo-local",
+      requestId: "move",
+    });
+    expect(findByType(emitted, "workspace.project.set.response")?.payload).toMatchObject({
+      accepted: true,
+    });
+    expect(current()).toMatchObject({ projectId: "vorteo-local", projectMembership: null });
   });
 
   test("refuses archived or missing targets and worktrees without changing anything", async () => {

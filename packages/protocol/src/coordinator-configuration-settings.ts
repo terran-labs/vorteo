@@ -10,6 +10,7 @@ import {
   FactoryGateConfigurationSchema,
   FactoryRuntimeAdoptionConfigurationSchema,
   HostLauncherUpdateConfigurationSchema,
+  SupervisorMaintenanceConfigurationSchema,
 } from "./execution-installation.js";
 import { PreviewMonitorConfigurationSchema } from "./preview-monitor-maintenance.js";
 
@@ -24,8 +25,9 @@ export interface ReviewedConfigurationSettingDefinition {
   path: readonly [string] | readonly [string, string];
   /** The value a plan may set; `null` in a change removes the setting. */
   value: z.ZodType;
-  /** Whether an owner-reviewed runner renewal may carry the change. */
-  renewal: boolean;
+  /** Whether an owner-reviewed runner renewal may carry the change. `"alone"` admits
+   * it only as the renewal's single configuration change. */
+  renewal: boolean | "alone";
   /**
    * Only the owner's own review admits the change, even under full maintenance delegation.
    * For settings whose later operation the owner approves by digest alone, so the owner must
@@ -64,6 +66,12 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
     value: z.string().startsWith("/"),
     renewal: true,
   },
+  supervisorMaintenance: {
+    path: ["container", "supervisorMaintenance"],
+    value: SupervisorMaintenanceConfigurationSchema,
+    // Configuring the plan grants no approval: each repair stays a separate tracked request.
+    renewal: true,
+  },
   factoryRuntimeAdoption: {
     path: ["container", "factoryRuntimeAdoption"],
     value: FactoryRuntimeAdoptionConfigurationSchema,
@@ -73,12 +81,12 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
   previewBrokerDeployment: {
     path: ["previewBrokerDeployment"],
     value: PreviewBrokerDeploymentConfigurationSchema,
-    renewal: false,
+    renewal: "alone",
   },
   previewBroker: {
     path: ["previewBroker"],
     value: PreviewBrokerConfigurationSchema,
-    renewal: false,
+    renewal: "alone",
   },
   previewMonitor: {
     path: ["previewMonitor"],

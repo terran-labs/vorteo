@@ -3,6 +3,7 @@ import { isWeb } from "@/constants/platform";
 import { useVortonTouch } from "@/vorton-touch";
 import {
   useCallback,
+  useMemo,
   useState,
   type PropsWithChildren,
   type ReactElement,
@@ -17,6 +18,7 @@ import {
   ExternalLink,
   FileDiff,
   Folder,
+  FolderTree,
   GitBranch,
   Server,
 } from "lucide-react-native";
@@ -34,6 +36,9 @@ import { PrBadge } from "@/components/sidebar-workspace-list";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useHosts } from "@/runtime/host-runtime";
+import { useSidebarFoldersSupported } from "@/sidebar-folders/actions";
+import { EMPTY_SIDEBAR_FOLDER_STATE, useSidebarFolderStore } from "@/sidebar-folders/store";
+import { sidebarWorkspaceAncestry } from "@/sidebar-folders/tree";
 import {
   COUNTED_CHECK_PRESENTATIONS,
   countCheckPresentations,
@@ -108,6 +113,7 @@ function WorkspaceHoverCardContent({
           />
         </View>
       ) : null}
+      <AncestryRow workspace={workspace} />
       <HostRow serverId={workspace.serverId} />
       {workspace.currentBranch ? (
         <CopyableInfoRow
@@ -139,6 +145,7 @@ function WorkspaceHoverCardContent({
 
 const ThemedGitBranch = withUnistyles(GitBranch);
 const ThemedFolder = withUnistyles(Folder);
+const ThemedFolderTree = withUnistyles(FolderTree);
 const ThemedServer = withUnistyles(Server);
 const ThemedFileDiff = withUnistyles(FileDiff);
 
@@ -150,6 +157,39 @@ function HostRow({ serverId }: { serverId: string }): ReactElement | null {
   const label = host?.label?.trim() || serverId;
 
   return <InfoRow icon={ThemedServer} value={label} testID="hover-card-workspace-host" />;
+}
+
+/**
+ * The workspace's place in the sidebar, from its outermost folder through its project, so a
+ * pinned or grouped row still says where it lives.
+ */
+function AncestryRow({ workspace }: { workspace: SidebarWorkspaceEntry }): ReactElement {
+  const foldersSupported = useSidebarFoldersSupported();
+  const storedFolders = useSidebarFolderStore();
+  const label = useMemo(
+    () =>
+      sidebarWorkspaceAncestry({
+        state: foldersSupported ? storedFolders : EMPTY_SIDEBAR_FOLDER_STATE,
+        projectKey: workspace.projectViewKey,
+        projectName: workspace.projectName,
+        workspaceKey: workspace.workspaceKey,
+      }).join(" › "),
+    [
+      foldersSupported,
+      storedFolders,
+      workspace.projectViewKey,
+      workspace.projectName,
+      workspace.workspaceKey,
+    ],
+  );
+  return (
+    <View style={styles.cardInfoRow}>
+      <ThemedFolderTree size={12} uniProps={foregroundMutedColorMapping} />
+      <Text style={styles.cardInfoText} numberOfLines={2} testID="hover-card-workspace-ancestry">
+        {label}
+      </Text>
+    </View>
+  );
 }
 
 const ThemedExternalLink = withUnistyles(ExternalLink);

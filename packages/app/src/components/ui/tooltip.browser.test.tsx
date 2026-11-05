@@ -72,6 +72,20 @@ describe("Tooltip portal cleanup", () => {
     await expectRemoved();
   });
 
+  it("stays open when an unrelated region scrolls and closes when its own page scrolls", async () => {
+    const elsewhere = document.createElement("div");
+    document.body.append(elsewhere);
+    flushSync(() => root.render(<Harness />));
+    await userEvent.hover(document.querySelector('[data-testid="tooltip-trigger"]')!);
+    await expectVisible();
+    elsewhere.dispatchEvent(new Event("scroll"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextFrame();
+    expect(document.querySelectorAll('[role="tooltip"]').length).toBe(1);
+    document.dispatchEvent(new Event("scroll"));
+    await expectRemoved();
+  });
+
   it("removes the tooltip when its trigger unmounts during navigation", async () => {
     flushSync(() => root.render(<Harness open />));
     await expectVisible();

@@ -4,6 +4,213 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Tooling
+
+- Merged current `main` via the Factory drain branch into the issue stages branch.
+
+## Unreleased - 2026-11-05
+
+### Tooling
+
+- Merged current `main` into the Factory drain and update duties branch; both sides' entries are kept.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
+
+### Tooling
+
+- Merged current `main` into the service principals branch before handback.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch again before delivery.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch for handback.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- Cancel grants, like message grants, now apply only to tool-less agents. Service sessions read single agents and timelines only through agent grants. Directory data they receive with daemon-wide read, and the installation overview, is projected to identity, status and timestamps, without paths, scripts, terminals, git, forge or permission data. Workspace removals that carry an emptied project are projected too. The grant docs and CLI help warn that a workspace read grant covers agents created there later.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch before delivery.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge current `main` into the release updates branch, keeping both sides' changelog and inventory entries.
+
+### Added
+
+- Installations update themselves from GitHub Releases. Each installation chooses manual or automatic updates and the stable or beta channel in Settings. The coordinator checks hourly and offers each new release once in the sidebar's Open questions card, with its summary, a security marker, changed Factory charters and the rollback path. Install after current work holds new Host turns and waits for running turns and Dev agents before restarting; automatic mode installs that way without asking. Agents read the policy with `installation-agent.mjs update-status`. Older coordinators keep the previous Settings behavior.
+- While a release upgrade waits for current work, Install now ends the wait from Open questions or Settings, and turning automatic updates off stops an automatic upgrade before its Host restart.
+- The restart queue lets the owner approve a single reviewed source update to finish current turns first when the decision names its exact digest, as automatic Host updates already do. Combined batches still restart at once.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Synchronize projects across the Host and Dev. The installation coordinator joins each environment's projects by their folder in the shared Projects folder, gives each one fixed key that git no longer re-derives, and registers a project on every environment where its folder exists. Git remotes no longer join different folders. Vorteo System gets one identity, and Vorton appears on the Host.
+- File new worktrees under their repository's project even when the requesting thread names another, and let a misfiled checkout or worktree move into its repository's project. Builders started from Vorteo System had filed Vorton worktrees under it.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Recover a wedged Dev through the tracked supervisor maintenance route. `supervisorMaintenance` is a registered coordinator setting that an owner-reviewed renewal can carry, and `scripts/maintenance/dev-supervisor-recovery.mjs` prepares a protected plan for it. After a failed Dev source activation leaves the `paseo` program FATAL or its worker failing, the plan selects the previous release named by the protected Host receipts, starts only `paseo`, and verifies a replacement worker and container health, with intent, rollback and result records. It refuses anything else and never replays.
+
+### Changed
+
+- Supervisor maintenance runs when Dev does not answer and then accepts any worker that answers. The review of such a request offers **Repair Dev supervisor now, Dev is not answering**, an immediate approval of the exact plan, in place of a finish-turns choice it cannot honor.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Record in the customizations inventory that the Codex Chrome toggle launches Chrome DevTools MCP with its usage statistics and CrUX lookups off.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- Add an owner-only Chrome toggle to Codex threads on machines with Google Chrome. Threads with it on attach a pinned Chrome DevTools MCP server to the owner's running Chrome, with its usage statistics and CrUX lookups off, restarting the thread's Codex process on the next turn and keeping the conversation. It is off by default, needs remote debugging turned on once at chrome://inspect/#remote-debugging, and is never available to quota-managed workers or enabled by agents.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Show a Chrome switch next to Choose profile in threads that offer Chrome. Profile-based composers hid every thread toggle, so the owner had no way to turn on Claude in Chrome. The switch changes only that thread and is not saved as a default for new threads.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Clear completed removes every completed task from the card at once instead of one row at a time. Deletes still run in order in the background; tasks left by an error reappear with it.
+- Keep hover tooltips open while another part of the window scrolls. A streaming agent reply scrolls the chat, which closed any task tooltip you were reading; tooltips now close only when a scroll moves the item they describe.
+
+### Changed
+
+- Task cards are agent managed by default. Rows no longer offer completion toggles, edit pencils or dragging, and the header hides Add task, until you press the new Edit tasks toggle at the right end of the card header, which stays pushed in while editing. Edit mode resets when you switch threads or reload. Interface only.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Hovering a workspace in the sidebar shows where it lives: its root folders, project and project folders as a breadcrumb, so pinned workspaces say which project they belong to.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Pinned in the sidebar now looks and behaves like a root folder: a pin icon, the same title size as folders, and the whole row folds it. Pinned workspaces indent under it.
+- Pinned workspaces also stay in their project or status group, marked with a pin icon before their right-side icons, so pinning no longer moves them out of place.
+
+### Added
+
+- Focus into Pinned with its Focus button to see only pinned workspaces.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Show working subagents in the collapsed Subagents tile as their count inside a spinning ring. When every subagent is idle, the tile keeps its icon above the count.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Full maintenance delegation may approve a renewal that attaches the preview broker deployment or broker settings, as the owner decided. Consumer deployment and channel rebind still need the owner.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Let an owner-reviewed coordinator renewal attach the preview broker deployment or broker channel configuration, one section per renewal, so installations that update through renewals can restore the managed preview broker. Each section passes its existing protected file, scope and recovery reader checks before admission, rollback keeps the live configuration, and maintenance delegation cannot approve it. Consumer deployment and channel rebind remain separate owner decisions.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge current `main` into the sidebar placement branch, keeping both sides' changelog and customizations entries.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- New projects, workspaces and folders now appear as the first row of the list that holds them, and stay where they are on every device. Before, the sidebar saved new rows only on the device that saw them, so each sync update could move them, and a project with a saved folder order slotted new workspaces into the middle. In the Created and Last prompt sorts, workspaces inside folders follow the sort again, and drops there change only folder membership and folder positions. A device waits for its first Host snapshot before placing new rows, so it never replays a stale order over newer drags.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
+
+## Unreleased - 2026-11-04
+
+### Live tweaks
+
+- Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix again, bringing in the combined sidebar footer block and the Dev boot-entry switch fix; the changelog kept every dated entry.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix; the changelog kept both dated entries.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Moving a workspace with the keyboard in the web sidebar now shows its drop line on the first arrow key. Previously an arrow pressed right after Space picked the row up could be lost, so the move could not be placed. The sidebar reorder browser test also opens sorting through the current View preferences menu again.
+
+## Unreleased - 2026-11-04
+
+### Changes
+
+- Each release now ships Claude Code 2.1.311 instead of 2.1.284, so the Host and Dev daemons can offer Haiku 5.5, which needs 2.1.293 or later. Its Keychain item naming, credentials file and storage lock match 2.1.284.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer, and Pi and OMP, whose steer acknowledgements cannot prove delivery, still receive the answer when the turn finishes; reliable answer steering for Pi and OMP will follow separately. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment. Pausing the queue no longer holds an answer back from a busy thread, and a steer whose acknowledgement is lost is settled from provider history instead of being sent again.
+
+### Maintenance
+
+- Merged current `main` into the open question answer delivery fix three times; both sides' entries are kept.
+
+### Changes
+
+- Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
+
+## Unreleased - 2026-11-04
+
+### Features
+
+- Triple click anywhere in Vorteo with a mouse or trackpad to start dictating into the active message field; triple click again to stop and edit the text, or press Send. Terminals, file editors and other text fields keep their usual triple-click selection.
+
 ## Unreleased - 2026-11-04
 
 ### Features
@@ -73,6 +280,28 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Security
+
+- Close the re-review's findings on service messages. A leading `@` in service text is neutralized, because Claude reads `@path` files without a tool. Messages are wrapped in markers with a random per-message tag that the text cannot imitate, and labels lose invisible formatting characters. Expired credentials disconnect their live sessions, including expiries more than 24 days out. Tool-less agents never adopt a hosted session, and resuming with `toolAccess` is owner-only.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- The owner can create a Claude thread that cannot call any tool by setting `toolAccess: "none"` at creation. The daemon attaches no Vorteo tools, MCP servers or plugin tools, and Claude launches with built-in tools disabled, no MCP, plugins, skills, subagents or filesystem settings, and a permission handler that refuses every request. Only the owner can set it, nothing can clear it later, and it is refused for non-Claude providers. Daemons advertise it as `agentToolAccess`. This is the basis for granting service credentials message access to an agent.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- Tighten service principals after review. Message and cancel grants name exact agents only. Service sessions may use only an explicit list of operations. Service text starting with `/` is refused, and messages reach agents labeled as coming from the service credential. Credentials can expire, and only their issuer or the owner can change them. An unreadable principal store admits nobody and is never overwritten. The installation overview returns a fixed agent projection and strips credentials from URLs. `paseo access service create --expires-at` sets an expiry. Tests cover issuer and expiry limits, the fail-closed store, the operation allowlist and the overview route's token rules.
+
+### Tooling
+
+- Merged current `main` into the service principals branch before fixing review findings.
+
+## Unreleased - 2026-11-04
+
 ### Fixed
 
 - Messages sent into a running Claude turn no longer fail with "The provider returned an invalid steerActiveTurn result." The message had already reached Claude, so the error put it back in the composer and every resend delivered another copy. A send that does fail now keeps anything typed meanwhile below the restored message instead of overwriting it.
@@ -112,6 +341,23 @@ Prepared but never tagged; superseded by 26.11.301.
 - Provider account connections survive concurrent settings writes, and a Dev container paired after its daemon started syncs accounts after its next daemon start.
 - The message queue reopens its browser storage after the browser closes it.
 - Server tests are green again; the daemon bootstrap no longer names a specific provider.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Agent grants for service principals: give a credential read, steering-message or cancel access to specific agents, or to every agent in a workspace, without any other write access. Use `paseo access service create --grants-file` or `set-grants`; changing grants reconnects the credential's sessions. Granted messages steer with text only, and service sessions receive only data about agents they were allowed to address. A message grant is delegated action: the target agent acts with its own tools, so the docs recommend it only on agents with tools disabled.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Service principals: issue a credential with only the permissions you choose, such as read-only access for a personal dashboard, with `paseo access service create --read-only` or in host Settings under Service access. Only read-only access is issuable for now; service sessions cannot read files, run git or terminal requests, or route to other hosts. Tokens are shown once and stored as hashes, and revoking a principal disconnects it immediately. Clients connect with the new `serviceCredential` option on daemons advertising `servicePrincipals`.
+- One read-only view of the installation: the Host coordinator's overview route returns projects, workspaces and agents from Host and Dev in one call, with each environment's status and errors. It reads each daemon through a read-only principal and accepts observer tokens that authorize nothing else. Host agents use `installation-agent.mjs overview` and `overview-observers`.
+
+### Tooling
+
+- Merged current `main` into the service principals branch before delivery.
 
 ## Unreleased - 2026-11-03
 

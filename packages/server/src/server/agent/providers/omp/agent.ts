@@ -692,6 +692,8 @@ class OmpHistorySession implements AgentSession {
 export class OmpAgentSession implements AgentSession {
   readonly provider: AgentProvider = OMP_PROVIDER;
   readonly capabilities: AgentCapabilityFlags = withOmpCapabilities();
+  // A steer can land after its turn ends; text echoes cannot reliably prove which one arrived.
+  readonly ambiguousSteerAcknowledgement = true;
 
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly activeToolCalls = new Map<string, OmpTrackedToolCall>();
