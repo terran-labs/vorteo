@@ -5,6 +5,8 @@ import {
   HandoffPlanSchema,
   pointLink,
   readCurrentLink,
+  restoreFileAtomically,
+  runCoordinatorConfigChange,
   runCoordinatorSwap,
   runRestore,
   type HandoffPorts,
@@ -34,6 +36,13 @@ if (plan.kind === "coordinator-swap") {
   });
   writePrivateFileAtomicSync(plan.outcomeFile, JSON.stringify(outcome, null, 2));
   console.log(`Coordinator handoff ${outcome.status}: ${outcome.detail}`);
+} else if (plan.kind === "coordinator-config") {
+  const outcome = await runCoordinatorConfigChange(plan, {
+    ...ports,
+    restoreFile: restoreFileAtomically,
+  });
+  writePrivateFileAtomicSync(plan.outcomeFile, JSON.stringify(outcome, null, 2));
+  console.log(`Coordinator configuration handoff ${outcome.status}: ${outcome.detail}`);
 } else {
   const snapshots = createInstallationSnapshots({
     root: plan.snapshotRoot,

@@ -1,5 +1,32 @@
 # Vorteo changelog
 
+The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge the current main-sync revision into the Settings fixes branch, preserving bundled skill management and custom domain support.
+
+## 26.11.503 - 2026-11-05
+
+Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supersedes the untagged 26.11.501 and 26.11.502 after main moved.
+
+### Tooling
+
+- Merged current `main` (Host delivery #142) and the Mechanic CI duty into the VortLab lab beta.
+
+### Factory charter changes
+
+- Mechanic: every review now measures CI, test and build cost (jobs per push, required-check runner wait, superseded and flaky runs, rebase churn) and proposes fixes through a PR, such as routing heavy suites to the merge queue, nightly or release, path filters, caching, concurrency cancellation and conflict-free changelog fragments. Required-check and merge queue changes go to the owner. It alerts when required checks wait over 15 minutes or one push starts over 10 jobs.
+- Optimizer (Vorteo System): reviews the Vorteo repository's CI and build cost the same way, read only.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge main 26.11.503 into Settings round 4. The new Custom domain card sits in owner-unlocked Installation controls between daemon automation and delivery mode, and its change result and errors use the fixed-height status line.
+
 ## Unreleased - 2026-11-05
 
 ### Maintenance
@@ -20,7 +47,31 @@
 
 Vorteo change history, covering features, fixes, documentation, tests, tooling and upstream integration. Every commit adds a dated entry headed Unreleased; a release preparation heads its entry with the new calendar version, and the Unreleased entries below it belong to that release. See the [commit workflow](docs/release.md#vorteo-release-notes).
 
-The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
+## 26.11.502 - 2026-11-05
+
+Supersedes the untagged 26.11.501 after `main` moved; same contents plus current `main`.
+
+### Tooling
+
+- Merged current `main` (the Unite touch icon fix) into the VortLab lab beta before release.
+- The secret scan allows the UUID idempotency key fixture in the Claude limit reset tests, a false positive that blocked every push from the shared repository.
+
+## 26.11.501 - 2026-11-05
+
+Beta for VortLab: custom domains for installer-made installations, and lab self-update.
+
+### Features
+
+- Custom domain: installer-made installations can set a custom domain from Installation controls. Saving it admits the domain on the Host and Dev daemons and restarts only the coordinator, restoring the previous configuration if the coordinator does not come back.
+- Installation type and release channel: each installation is Stable or Lab and follows the Stable or Beta release channel. Both default to Stable.
+- Lab self-update: a Lab installation can rebuild itself from its live checkout through a tracked job that swaps the Host and coordinator releases, with rollback.
+
+## Unreleased - 2026-11-05
+
+### Added
+
+- Installer-made installations can set a custom domain from Installation controls. Saving it allows the domain on the Host and Dev daemons and restarts only the coordinator. If the coordinator does not come back, the previous settings are restored automatically.
+- Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
 ## Unreleased - 2026-11-05
 
@@ -52,6 +103,10 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 - Usage rings and the context donut no longer log an invalid DOM property warning in development.
 
 ## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Placed the Custom domain card directly after the daemon automation control in Installation controls.
 
 ### Fixed
 

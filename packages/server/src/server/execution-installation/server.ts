@@ -59,9 +59,22 @@ import {
 } from "@getpaseo/protocol/plugin-installation";
 import { OwnerSessions, OWNER_SESSION_MAX_AGE } from "./owner-sessions.js";
 import { createLiveDev, LiveDevUnavailable } from "./live-dev/service.js";
+import {
+  createCustomDomain,
+  CustomDomainConflict,
+  CustomDomainUnavailable,
+} from "./custom-domain.js";
+import { launchHandoff } from "./coordinator-handoff.js";
 import { LiveDevStateError } from "./live-dev/state.js";
 import { createInstallationProfiles } from "./profiles/runtime.js";
 import { createInstallationNameStore } from "./installation-name.js";
+import {
+  changeInstallationType,
+  InstallationTypeStateError,
+  reportedInstallationType,
+} from "./installation-type.js";
+import { createLabSelfUpdateRuntime } from "./lab-self-update-runtime.js";
+import { LabUpdateCancelSchema, LabUpdateRequestSchema } from "@getpaseo/protocol/lab-self-update";
 import { ProfileSharingConflict } from "./profiles/merge.js";
 import { ProviderPreferencesValidationError } from "../agent/provider-preferences/validation.js";
 import type { InstallationProfiles } from "./profiles/service.js";
@@ -571,6 +584,16 @@ export function createInstallationServer(
     if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
     return releaseRuntime;
   };
+  // Lab self-updates and release upgrades both replace the Host and coordinator releases.
+  const labRuntime = createLabSelfUpdateRuntime({
+    config,
+    restarts,
+    logger,
+    conflict: () =>
+      releaseRuntime?.upgrades?.active()
+        ? "Wait for the release upgrade to finish before a lab self-update."
+        : null,
+  });
   const startupReleased = () => {
     if (startupFence && !startupFence.released()) return false;
     restarts.activate();
@@ -659,6 +682,10 @@ export function createInstallationServer(
         void releaseRuntime?.upgrades
           ?.drain()
           .catch((error) => logger.error({ err: error }, "Installation upgrade failed"));
+        // Lab builds run for minutes; like upgrades they advance beside the drain.
+        void labRuntime.updates
+          .drain()
+          .catch((error) => logger.error({ err: error }, "Lab self-update failed"));
         if (coordinatorRequests && !coordinatorReconciliation) {
           coordinatorReconciliation = reconcileInstallationCoordinator(config, coordinatorRequests)
             .catch(() => logger.warn("Automatic coordinator reconciliation remains unconfirmed"))
@@ -694,6 +721,16 @@ export function createInstallationServer(
       ?.slice(cookieName(req).length + 1);
   const configuredPasswordFile =
     config.ownerPasswordFile ?? path.resolve(config.stateDir, "../..", "owner-password");
+  const customDomain = createCustomDomain({
+    config,
+    configFile: files?.configFile,
+    logger,
+    ports: {
+      connect: (kind) => connectInstallationDaemon(config, kind),
+      launch: launchHandoff,
+      now: () => new Date(),
+    },
+  });
   const liveDev = createLiveDev({
     config,
     logger,
@@ -1049,6 +1086,7 @@ export function createInstallationServer(
     );
     void (async () => {
       const brokerDeploymentAvailable = host && (await restarts.brokerDeploymentAvailable());
+      const labSelfUpdateAvailable = host && (await labRuntime.blocker()) === null;
       const brokerCompatible = host ? ((await executor.brokerCompatible?.()) ?? false) : false;
       const monitorCompatible = host ? ((await executor.monitorCompatible?.()) ?? false) : false;
       const coordinator = await coordinatorCapability();
@@ -1123,6 +1161,11 @@ export function createInstallationServer(
                 executor.verifyHelperRecovery,
               ),
               ownerApprovalRequired: !delegatedMaintenance,
+            },
+            // Lab self-updates are approved by the Lab installation type, never by request.
+            labSelfUpdate: {
+              available: labSelfUpdateAvailable,
+              ownerApprovalRequired: false,
             },
             sessionHostJob: {
               available: host && restarts.sessionHostAvailable(),
@@ -1889,6 +1932,31 @@ export function createInstallationServer(
     );
   });
 
+  // Host agents may request a lab self-update; the Lab installation type approves it.
+  const isHostAgent = (req: Request) =>
+    matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash);
+  app.post("/api/installation/lab-update-requests", (req, res, next) => {
+    if (!isHostAgent(req)) {
+      res.sendStatus(401);
+      return;
+    }
+    const input = LabUpdateRequestSchema.parse(req.body ?? {});
+    void labRuntime.updates.request(input, "host-agent").then((update) => {
+      res.status(201).json(update);
+      return drainRestarts();
+    }, next);
+  });
+  app.get("/api/installation/lab-update-requests/:id", (req, res, next) => {
+    if (!isHostAgent(req)) {
+      res.sendStatus(401);
+      return;
+    }
+    void labRuntime.updates.get(req.params.id).then((update) => {
+      if (!update) return res.sendStatus(404);
+      return res.json(update);
+    }, next);
+  });
+
   app.post("/api/installation/container-agents", (req, res, next) => {
     void (async () => {
       const token = extractHttpBearerToken(req.header("authorization"));
@@ -2333,11 +2401,58 @@ export function createInstallationServer(
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
     void drainRestarts();
   });
+  app.post("/api/installation/owner/custom-domain/query", (_req, res, next) => {
+    void customDomain.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/custom-domain/change", (req, res, next) => {
+    void customDomain.change(req.body).then((status) => res.json(status), next);
+  });
   app.post("/api/installation/owner/live-dev/query", (_req, res, next) => {
     void liveDev.status().then((status) => res.json(status), next);
   });
   app.post("/api/installation/owner/live-dev/change", (req, res, next) => {
     void liveDev.change(req.body).then((status) => res.json(status), next);
+  });
+  const installationTypeStatus = async () => {
+    const record = await reportedInstallationType(config.stateDir);
+    const reason = await labRuntime.blocker();
+    return {
+      type: record.type,
+      revision: record.revision,
+      changedAt: record.changedAt,
+      labUpdateAvailable: reason === null,
+      labUpdateReason: reason,
+      releaseChannel: record.releaseChannel,
+    };
+  };
+  app.post("/api/installation/owner/installation-type/query", (_req, res, next) => {
+    void installationTypeStatus().then((status) => res.json(status), next);
+  });
+  // Owner changes run one at a time, so compare-and-set cannot interleave.
+  let installationTypeChanges: Promise<unknown> = Promise.resolve();
+  app.post("/api/installation/owner/installation-type/change", (req, res, next) => {
+    const change = installationTypeChanges.then(() =>
+      changeInstallationType(config.stateDir, req.body),
+    );
+    installationTypeChanges = change.catch(() => undefined);
+    void change.then(installationTypeStatus).then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/lab-updates/query", (_req, res, next) => {
+    void labRuntime.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/lab-updates", (req, res, next) => {
+    const input = LabUpdateRequestSchema.parse(req.body ?? {});
+    void labRuntime.updates.request(input, "owner").then((update) => {
+      res.status(201).json(update);
+      return drainRestarts();
+    }, next);
+  });
+  app.post("/api/installation/owner/lab-updates/cancel", (req, res, next) => {
+    const input = LabUpdateCancelSchema.parse(req.body);
+    void labRuntime.updates.cancel(input.id, input.revision).then((update) => {
+      res.json(update);
+      return drainRestarts();
+    }, next);
   });
   app.post("/api/installation/owner/maintenance-delegation/query", (req, res) => {
     const available = daemonAutomation.legacyPolicyAvailable();
@@ -2544,8 +2659,13 @@ export function createInstallationServer(
   };
   app.post("/api/installation/owner/upgrades", (req, res, next) => {
     const { release } = UpgradeRequestSchema.parse(req.body);
-    void requireUpgrades()
-      .request(release)
+    void labRuntime.updates
+      .active()
+      .then((active) => {
+        if (active)
+          throw new RestartRequestError("Wait for the lab self-update to finish before upgrading.");
+        return requireUpgrades().request(release);
+      })
       .then((upgrade) => res.status(201).json(upgrade), next);
   });
   app.post("/api/installation/owner/upgrades/:id/decision", (req, res) => {
@@ -2641,7 +2761,15 @@ export function createInstallationServer(
       res.status(error.status).json({ error: error.message });
       return;
     }
-    if (error instanceof LiveDevStateError || error instanceof LiveDevUnavailable) {
+    if (error instanceof CustomDomainConflict || error instanceof CustomDomainUnavailable) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    if (
+      error instanceof LiveDevStateError ||
+      error instanceof LiveDevUnavailable ||
+      error instanceof InstallationTypeStateError
+    ) {
       res.status(409).json({ error: error.message });
       return;
     }
