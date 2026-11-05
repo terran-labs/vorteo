@@ -1112,6 +1112,23 @@ test("background polls back off failed account setup per environment and resume 
   expect(await poll(15)).toEqual({ host: 3, container: 1 });
   expect(service.snapshot().sources.container.error).toBeNull();
   expect(await poll(15)).toEqual({ host: 3, container: 3 });
+  // A failure that spans an owner update cannot delay preparation for the new revision.
+  container.rejectAccountSetup = true;
+  const gate = Promise.withResolvers<void>();
+  container.accountSetupGate = gate.promise;
+  const attempts = container.accountSetupAttempts;
+  const pending = service.reconcile({ background: true });
+  while (container.accountSetupAttempts === attempts) await new Promise(setImmediate);
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { appendSystemPrompt: "Edited during account setup" },
+  });
+  gate.resolve();
+  container.accountSetupGate = null;
+  await pending;
+  container.rejectAccountSetup = false;
+  expect(await poll(5)).toEqual({ host: 1, container: 1 });
+  expect(service.snapshot().sources.container.error).toBeNull();
 });
 
 test("excluded account bindings are not recreated after local removal or coordinator recovery", async () => {

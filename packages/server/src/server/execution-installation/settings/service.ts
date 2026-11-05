@@ -781,9 +781,10 @@ export class InstallationSettingsService {
       ) ?? [];
     if (accounts.length) {
       const retry = this.accountRetries.get(environment.serverId);
+      // An owner update can commit during preparation; record a failure against the attempted revision.
+      const revision = this.state.revision;
       // A new owner revision retries at once; the previous error stays reported while waiting.
-      if (background && retry?.revision === this.state.revision && this.now() < retry.retryAt)
-        return null;
+      if (background && retry?.revision === revision && this.now() < retry.retryAt) return null;
       try {
         await environment.prepareProviderAccounts(accounts);
         this.accountRetries.delete(environment.serverId);
@@ -792,7 +793,7 @@ export class InstallationSettingsService {
         this.accountRetries.set(environment.serverId, {
           failures,
           retryAt: this.now() + accountRetryDelay(failures),
-          revision: this.state.revision,
+          revision,
         });
         this.recordStatus(environment.serverId, "account_binding_unavailable");
         return null;
