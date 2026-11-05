@@ -69,6 +69,12 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 - An installation whose Dev is not an installer-made deployment moves only its Host to the installer layout. Its Dev container, network, boot entry and Factory settings stay untouched, and release upgrades skip the Dev step instead of rebuilding it. Adoption treats Dev as unmanaged only when Docker shows a running container publishing the Dev endpoint from a folder without the installer marker; anything else fails closed. Upgrades, snapshots and restores then cover the Host only, and a restore refuses an older snapshot that holds Dev's home.
 - Host installations from before the one-command installer whose coordinator runs a configuration from a reviewed plan folder can now move to the installer layout in place, from Installation controls or `install.sh`. Detection found no installation there, so upgrades and release updates stayed unavailable. Adoption now reads the configuration the coordinator actually runs instead of a stale copy from setup, which would have dropped every later coordinator setting, and writes the result to the installation's own `coordinator.json` without touching the plan's hash-pinned file. Only a record with the same installation ID counts, and a resumed adoption stops if the coordinator's configuration changed meanwhile.
 
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- You can archive ordinary workspaces that share a local checkout with Factory roles. The checkout stays on disk, and Factory workspaces and their managed worktrees remain protected.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.

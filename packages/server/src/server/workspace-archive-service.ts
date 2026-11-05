@@ -239,7 +239,10 @@ async function resolveWorkspaceArchiveTarget(
   assertWorkspaceUnprotected(record);
   const isArchived = "archivedAt" in record && Boolean(record.archivedAt);
   const backing = await resolveWorkspaceBackingDirectory(record, dependencies);
-  await assertBackingNotFactoryManaged(dependencies, backing);
+  // A Factory member sharing the directory only matters when archive could delete it. A
+  // local checkout is never removed, so its other workspaces stay archivable (Factory role
+  // workspaces share the project's checkout). Removal still rechecks before teardown.
+  if (backing.isPaseoOwnedWorktree) await assertBackingNotFactoryManaged(dependencies, backing);
   return {
     backing,
     teardownTargets: isArchived ? [] : [{ workspaceId, cwd: record.cwd }],
@@ -259,7 +262,6 @@ async function resolveArchiveTarget(
   }
 
   const backing = await resolveBackingDirectory(scope.targetPath, dependencies);
-  await assertBackingNotFactoryManaged(dependencies, backing);
   const matchesBackingDirectory = createRealpathAwarePathMatcher(backing.path);
   const targetWorkspaces = (
     await Promise.all(
@@ -281,8 +283,14 @@ async function resolveArchiveTarget(
       ? recorded
       : null) ??
     targetWorkspaces[0];
+  const resolvedBacking = record
+    ? await resolveWorkspaceBackingDirectory(record, dependencies)
+    : backing;
+  // Active Factory targets are checked above; retained siblings only guard deletion.
+  if (resolvedBacking.isPaseoOwnedWorktree)
+    await assertBackingNotFactoryManaged(dependencies, resolvedBacking);
   return {
-    backing: record ? await resolveWorkspaceBackingDirectory(record, dependencies) : backing,
+    backing: resolvedBacking,
     teardownTargets:
       targetWorkspaces.length > 0
         ? targetWorkspaces.map((workspace) => ({
