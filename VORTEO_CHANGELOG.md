@@ -6,6 +6,18 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Maintenance
+
+- Merged current main into the Factory task template branch, retaining both sides of the documentation records.
+
+## Unreleased - 2026-11-04
+
+### Added
+
+- Added a Factory task issue template with prompts for the goal, acceptance criteria, scope limits and notes.
+
+## Unreleased - 2026-11-04
+
 ### Fixes
 
 - Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.
