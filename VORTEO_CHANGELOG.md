@@ -25,6 +25,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The thread Chrome switch shows a browser icon labeled On or Off, with the tooltip "Enable Chrome developer access" or "Disable Chrome developer access". While a change is on its way to the daemon, a spinning ring circles the icon and further presses are ignored, so a second tap can't undo the first.
 
+### Fixes
+
+- Host installations from before the one-command installer whose coordinator runs a configuration from a reviewed plan folder can now move to the installer layout in place, from Installation controls or `install.sh`. Detection found no installation there, so upgrades and release updates stayed unavailable. Adoption now reads the configuration the coordinator actually runs instead of a stale copy from setup, which would have dropped every later coordinator setting, and writes the result to the installation's own `coordinator.json` without touching the plan's hash-pinned file. Only a record with the same installation ID counts, and a resumed adoption stops if the coordinator's configuration changed meanwhile.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.

@@ -30,6 +30,7 @@ import {
   LAB_DIRECTORY,
   findLegacyDeployments,
   inspectHostRoot,
+  runningCoordinatorConfig,
   serviceArguments,
   tailscaleStatus,
 } from "./detect.mjs";
@@ -231,8 +232,25 @@ export function adoptionSteps({ devContainer, tailscale, build }) {
   ];
 }
 
+/**
+ * A resumed adoption continues only while the coordinator service still runs the config it
+ * planned from, or the one adoption already switched it to. A coordinator update in between
+ * selected a newer config, which this plan would miss.
+ */
+function assertResumable(context, plan) {
+  const running = runningCoordinatorConfig(context.home, context.root);
+  const planned = [plan.paths.coordinatorConfigSource, plan.paths.coordinatorConfig];
+  if (running && !planned.includes(running))
+    throw new InstallerError(
+      `The coordinator now runs ${running}, not the configuration this upgrade planned from.`,
+      "Remove the stopped upgrade's journal after checking it, then plan the upgrade again.",
+    );
+}
+
 function assertAdoptable(context) {
-  const host = inspectHostRoot(context.root);
+  const host = inspectHostRoot(context.root, {
+    configFile: runningCoordinatorConfig(context.home, context.root),
+  });
   if (host?.kind === "legacy-host") return host;
   if (host?.kind === "current")
     throw new InstallerError(
@@ -260,6 +278,11 @@ function adoptionDetails({ config, services, paths, links, current, build }) {
       file: services.coordinatorFile,
       from: path.join(current.coordinator.release, COORDINATOR_ENTRYPOINT),
       to: path.join(links.coordinator, COORDINATOR_ENTRYPOINT),
+    },
+    {
+      file: services.coordinatorFile,
+      from: paths.coordinatorConfigSource,
+      to: paths.coordinatorConfig,
     },
     ...(host
       ? [
@@ -326,7 +349,11 @@ function adoptionPaths({ context, found, config, hostHome, release, links, dev }
     journal: path.join(root, JOURNAL),
     ownerPassword: config.ownerPasswordFile ?? path.join(root, "owner-password"),
     record: path.join(root, "installation.json"),
-    coordinatorConfig: found.configFile,
+    // Adoption writes the installation's own config file and points the coordinator service at
+    // it. A config the service runs from a reviewed plan folder is read, never rewritten: its
+    // plan pinned that file by hash.
+    coordinatorConfig: path.join(root, "coordinator.json"),
+    coordinatorConfigSource: found.configFile,
     coordinatorState: config.stateDir,
     hostHome,
     release,
@@ -712,8 +739,10 @@ function serverIdOf(config, kind) {
 async function adoptConfig(s) {
   const { plan, outputs, manager } = s;
   const file = plan.paths.coordinatorConfig;
-  const config = JSON.parse(readFileSync(file, "utf8"));
-  if (config.deployment) return { skip: "The configuration already has its deployment." };
+  const written = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+  if (written?.deployment) return { skip: "The configuration already has its deployment." };
+  // Plans from before coordinatorConfigSource read and write the same file.
+  const config = JSON.parse(readFileSync(plan.paths.coordinatorConfigSource ?? file, "utf8"));
   if (plan.devContainer && outputs.containerServerId !== serverIdOf(config, "container"))
     throw new InstallerError(
       `Dev answers as ${outputs.containerServerId}, not ${serverIdOf(config, "container")} as this installation pins.`,
@@ -744,6 +773,8 @@ async function adoptConfig(s) {
   const record = JSON.parse(readFileSync(plan.adoption.record, "utf8"));
   writeJson(plan.adoption.record, {
     ...record,
+    // The coordinator service now runs this file; later tools read it from here.
+    configFile: file,
     installRoot: plan.paths.root,
     release: plan.paths.release,
     adoptedAt: s.context.now().toISOString(),
@@ -857,6 +888,7 @@ export async function adoptHost(context, { source, revision, outcome }, emit) {
       journal?.plan?.kind === "adopt-host"
         ? journal.plan
         : (await createHostAdoptionPlan(context, { source, revision })).plan;
+    if (journal?.plan?.kind === "adopt-host") assertResumable(context, plan);
     let failure = null;
     const ok = await applyPlan(plan, context, (line) => {
       if (line.status === "fail") failure = line;
