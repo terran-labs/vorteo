@@ -2,6 +2,10 @@
 
 ## Unreleased - 2026-11-05
 
+- Preserve the working setup token when an OAuth upgrade cannot verify a persisted, renewable grant. Temporary storage failures no longer trigger logout during upgrade verification.
+
+## Unreleased - 2026-11-05
+
 - Pin Claude Code 2.1.318, which fixes sign-outs caused by status commands exiting before a refresh is saved. Managed account health checks now read storage without launching Claude.
 - Keep account refresh recoverable through temporary outages, adopt credentials saved before a failed request, and distinguish unreadable storage from a missing login.
 - Keep dependent queued messages after a failed turn and show its delivery error without replaying accepted work.
