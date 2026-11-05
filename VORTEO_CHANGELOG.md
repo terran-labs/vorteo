@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-05
 
+### Added
+
+- Installer-made installations can set a custom domain from Installation controls. Saving it allows the domain on the Host and Dev daemons and restarts only the coordinator. If the coordinator does not come back, the previous settings are restored automatically.
+
+## Unreleased - 2026-11-05
+
 ### Tooling
 
 - Merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged.

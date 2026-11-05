@@ -669,7 +669,20 @@ Recovery checks the pinned local plan and requires Docker's bounded engine probe
 
 An owner-reviewed `recoveryOrigin` can select an already provisioned private HTTPS route to the native coordinator. It serves the same static interface and installation controls directly, even when that origin was previously a redirect. The interface receives that origin for installation requests and keeps the existing environment identities and endpoints. Owner password authentication, host-only session cookies and exact same-origin checks still apply; agent credentials cannot approve operations.
 
-Provision and verify the native private HTTPS route before configuring it. This setting does not create a listener, change DNS or move the canonical gateway. Preserve the native route as a recovery bookmark: a Docker-backed canonical address can still be unavailable when Docker fails, while the native interface and control path remain reachable. Configure the origin only through an exact reviewed coordinator configuration change.
+Provision and verify the native private HTTPS route before configuring it. This setting does not create a listener, change DNS or move the canonical gateway. Preserve the native route as a recovery bookmark: a Docker-backed canonical address can still be unavailable when Docker fails, while the native interface and control path remain reachable. Configure the origin only through a tracked change: an exact reviewed coordinator configuration change on installations with Host source updates, or the owner's Custom domain setting on installer-made installations.
+
+#### Custom domain on installer-made installations
+
+Installer-made installations run their coordinator through `releases/coordinator-current` and `coordinator.json`, which release upgrades keep. A reviewed coordinator plan would repoint that launcher at a separate prepared configuration, so these installations change `recoveryOrigin` from the Custom domain card in Installation controls instead. Only a signed-in owner can reach it; agent credentials cannot.
+
+Saving a domain:
+
+1. Admits the origin to the Host and Dev daemons' `daemon.cors.allowedOrigins`, live and add-only, through the same admission the `paseo daemon origins admit` command uses. Browsers open workspace connections to those daemons directly from the custom origin.
+2. Writes the candidate configuration privately and runs the coordinator's full startup validation on it.
+3. Keeps the previous `coordinator.json` under `<stateDir>/custom-domain/<change>/`, writes the candidate in place and starts the detached coordinator handoff helper.
+4. The helper restarts only the coordinator and waits for a new process of the same installation to answer. Otherwise it restores the previous file and restarts once more. Host and Dev daemons and their agents keep running.
+
+Removing the domain removes `recoveryOrigin` the same way. Daemon origins stay, because admission only adds. The card shows the last change's outcome. The setting does not create a listener, change DNS or provision TLS: route the domain's HTTPS to the coordinator first, and verify it with a forced resolution before moving DNS. Installations with Host source updates report the card unavailable and keep the reviewed coordinator path.
 
 ### One-time Host launcher update
 

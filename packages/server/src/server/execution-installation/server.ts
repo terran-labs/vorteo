@@ -59,6 +59,12 @@ import {
 } from "@getpaseo/protocol/plugin-installation";
 import { OwnerSessions, OWNER_SESSION_MAX_AGE } from "./owner-sessions.js";
 import { createLiveDev, LiveDevUnavailable } from "./live-dev/service.js";
+import {
+  createCustomDomain,
+  CustomDomainConflict,
+  CustomDomainUnavailable,
+} from "./custom-domain.js";
+import { launchHandoff } from "./coordinator-handoff.js";
 import { LiveDevStateError } from "./live-dev/state.js";
 import { createInstallationProfiles } from "./profiles/runtime.js";
 import { createInstallationNameStore } from "./installation-name.js";
@@ -694,6 +700,16 @@ export function createInstallationServer(
       ?.slice(cookieName(req).length + 1);
   const configuredPasswordFile =
     config.ownerPasswordFile ?? path.resolve(config.stateDir, "../..", "owner-password");
+  const customDomain = createCustomDomain({
+    config,
+    configFile: files?.configFile,
+    logger,
+    ports: {
+      connect: (kind) => connectInstallationDaemon(config, kind),
+      launch: launchHandoff,
+      now: () => new Date(),
+    },
+  });
   const liveDev = createLiveDev({
     config,
     logger,
@@ -2333,6 +2349,12 @@ export function createInstallationServer(
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
     void drainRestarts();
   });
+  app.post("/api/installation/owner/custom-domain/query", (_req, res, next) => {
+    void customDomain.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/custom-domain/change", (req, res, next) => {
+    void customDomain.change(req.body).then((status) => res.json(status), next);
+  });
   app.post("/api/installation/owner/live-dev/query", (_req, res, next) => {
     void liveDev.status().then((status) => res.json(status), next);
   });
@@ -2639,6 +2661,10 @@ export function createInstallationServer(
     }
     if (error instanceof InstructionRequestError) {
       res.status(error.status).json({ error: error.message });
+      return;
+    }
+    if (error instanceof CustomDomainConflict || error instanceof CustomDomainUnavailable) {
+      res.status(409).json({ error: error.message });
       return;
     }
     if (error instanceof LiveDevStateError || error instanceof LiveDevUnavailable) {
