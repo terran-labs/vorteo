@@ -8,6 +8,7 @@ import selectors
 import stat
 import subprocess
 import time
+import uuid
 from broker_deployment_kernel import DarwinKernel, ProcessGone
 from broker_deployment import sha, encode
 from channel_identity import read_file, file_identity, physical_directory, verify_channel
@@ -110,6 +111,12 @@ class NativeObservation:
             raise ValueError('Native process custody changed')
         return {'pid': pid, 'birth': before['birth'], 'uid': os.getuid(), 'argv': argv}
 
+    def owned(self, pid):
+        try:
+            return self.kernel.info(pid)['uids'] == [os.getuid()] * 3
+        except ProcessGone:
+            return False
+
     def old_process_exited(self, expected):
         if expected is None:
             return True
@@ -118,7 +125,8 @@ class NativeObservation:
 
     def state(self, binding):
         self.guard()
-        if self.kernel.boot() != self.plan['bootUUID']:
+        # Compare canonical forms: sysctl prints uppercase, the kernel adapter lowercase.
+        if str(uuid.UUID(self.kernel.boot())) != str(uuid.UUID(self.plan['bootUUID'])):
             raise ValueError('Deployment boot changed')
         domain = f'gui/{os.getuid()}'
         if binding['domain'] != domain:
@@ -180,6 +188,11 @@ class NativeObservation:
         routes = {str(Path(binding['root']) / name) for binding in self.bindings
                   for name in ('https_broker.py', 'https-preview.py')}
         for pid in self.kernel.pids(os.getuid()):
+            # The inventory filters by effective UID only, so it also lists processes
+            # such as loginwindow (euid owner, ruid and svuid root). Those cannot be
+            # our consumers; process() keeps its strict custody check for the rest.
+            if not self.owned(pid):
+                continue
             process = self.process(pid)
             if process is not None and any(arg in routes for arg in process['argv']):
                 if admitted.get(pid) != process:
