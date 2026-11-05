@@ -30,6 +30,7 @@ export function fakeRunner(rules = []) {
     return "";
   }
   run.calls = calls;
+  run.rules = rules;
   run.commands = () => calls.map((call) => [call.command, ...call.args].join(" "));
   return run;
 }

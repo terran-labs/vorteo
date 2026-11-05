@@ -122,6 +122,9 @@ export function createSystemdManager({ run, uid, home, user }) {
         renameSync(file(label), path.join(disabledDirectory, path.basename(file(label))));
       }
       await systemctl("daemon-reload");
+      // A service killed after its stop timeout stays listed as failed after its unit
+      // file is gone; clearing that leaves nothing of it registered.
+      await systemctl("reset-failed", unit(label)).catch(() => undefined);
     },
   };
 }

@@ -12,13 +12,15 @@ import { PLAN_VERSION, publicOrigin } from "./plan.mjs";
 import { InstallerError } from "./primitives.mjs";
 import { STEPS, STEP_TITLES, pointLink, remoteRoutes } from "./steps.mjs";
 import { ADOPTION_STEPS, ADOPTION_STEP_TITLES } from "./host-adoption.mjs";
+import { UPGRADE_STEPS, UPGRADE_STEP_TITLES } from "./upgrade.mjs";
 import { createSystemdManager } from "./systemd.mjs";
 import { createProcessManager } from "./process-manager.mjs";
 
-// Looked up when a step runs: host-adoption.mjs imports this module, so its tables are
-// not ready while this module first loads.
-const stepFor = (name) => STEPS[name] ?? ADOPTION_STEPS[name];
-const titleFor = (name) => STEP_TITLES[name] ?? ADOPTION_STEP_TITLES[name];
+// Looked up when a step runs: host-adoption.mjs and upgrade.mjs import this module, so
+// their tables are not ready while this module first loads.
+const stepFor = (name) => STEPS[name] ?? ADOPTION_STEPS[name] ?? UPGRADE_STEPS[name];
+const titleFor = (name) =>
+  STEP_TITLES[name] ?? ADOPTION_STEP_TITLES[name] ?? UPGRADE_STEP_TITLES[name];
 
 const RERUN =
   "Fix the problem above, then run the same apply command again; it resumes at this step.";
@@ -69,7 +71,7 @@ export function installResult(plan, outputs) {
   };
 }
 
-async function runSteps(steps, state, emit, { force = false } = {}) {
+export async function runSteps(steps, state, emit, { force = false } = {}) {
   for (const [index, step] of steps.entries()) {
     if (!force && state.journal.isDone(step)) {
       emit({ step, status: "skip", message: "Already done." });

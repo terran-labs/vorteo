@@ -136,6 +136,15 @@ export class InstallationSettingsNotInitialized extends Error {
   }
 }
 
+/** The poll runs every 5 seconds, so the first retry waits for the second tick after a failure. */
+const ACCOUNT_RETRY_BASE_MS = 10_000;
+const ACCOUNT_RETRY_MAX_MS = 5 * 60_000;
+
+/** Capped exponential delay: 10 s, 20 s, 40 s, 80 s, 160 s, then 5 minutes. */
+function accountRetryDelay(failures: number): number {
+  return Math.min(ACCOUNT_RETRY_BASE_MS * 2 ** (failures - 1), ACCOUNT_RETRY_MAX_MS);
+}
+
 /** A single installation authority. Environment observations never become edits after migration. */
 export class InstallationSettingsService {
   private state: InstallationSettingsSnapshot;
@@ -143,10 +152,16 @@ export class InstallationSettingsService {
   private projectionRevision: number | null = null;
   private readonly installationInstructions: string[] = [];
   private skillRemovalConfirmations: Record<string, readonly string[]> = {};
+  /** Failed account preparation per environment. Only background polls wait for retryAt. */
+  private readonly accountRetries = new Map<
+    string,
+    { failures: number; retryAt: number; revision: number }
+  >();
 
   constructor(
     private readonly journal: SettingsJournal,
     private readonly environments: readonly SettingsEnvironment[],
+    private readonly now: () => number = Date.now,
   ) {
     const ids = environments.map((environment) => environment.serverId);
     if (!ids.length || new Set(ids).size !== ids.length || ids.some((id) => !id))
@@ -245,7 +260,11 @@ export class InstallationSettingsService {
     return this.snapshot();
   }
 
-  reconcile(): Promise<InstallationSettingsSnapshot> {
+  /**
+   * `background` marks the periodic poll, which backs off failed account preparation.
+   * Explicit calls, such as after a sign-in, always retry.
+   */
+  reconcile(options: { background?: boolean } = {}): Promise<InstallationSettingsSnapshot> {
     return this.enqueue(async () => {
       this.projectionRevision = null;
       if (this.state.settings === null && this.state.conflicts === undefined) await this.migrate();
@@ -260,7 +279,8 @@ export class InstallationSettingsService {
       if (this.state.settings !== null) {
         const unavailable = await this.enrollPluginProviders();
         for (const environment of this.environments)
-          if (!unavailable.has(environment.serverId)) await this.project(environment);
+          if (!unavailable.has(environment.serverId))
+            await this.project(environment, options.background === true);
       }
       return this.snapshot();
     });
@@ -748,6 +768,7 @@ export class InstallationSettingsService {
   private async prepareEnvironment(
     environment: SettingsEnvironment,
     settings: InstallationSettings,
+    background: boolean,
   ) {
     const excluded = settings.resourceExclusions[environment.serverId]?.providerIds ?? [];
     const accounts =
@@ -759,9 +780,21 @@ export class InstallationSettingsService {
           !excluded.includes(definition.id),
       ) ?? [];
     if (accounts.length) {
+      const retry = this.accountRetries.get(environment.serverId);
+      // An owner update can commit during preparation; record a failure against the attempted revision.
+      const revision = this.state.revision;
+      // A new owner revision retries at once; the previous error stays reported while waiting.
+      if (background && retry?.revision === revision && this.now() < retry.retryAt) return null;
       try {
         await environment.prepareProviderAccounts(accounts);
+        this.accountRetries.delete(environment.serverId);
       } catch {
+        const failures = (retry?.failures ?? 0) + 1;
+        this.accountRetries.set(environment.serverId, {
+          failures,
+          retryAt: this.now() + accountRetryDelay(failures),
+          revision,
+        });
         this.recordStatus(environment.serverId, "account_binding_unavailable");
         return null;
       }
@@ -775,13 +808,13 @@ export class InstallationSettingsService {
     }
   }
 
-  private async project(environment: SettingsEnvironment): Promise<void> {
+  private async project(environment: SettingsEnvironment, background: boolean): Promise<void> {
     const state = this.state;
     this.projectionRevision = state.revision;
     if (state.settings === null) return;
     const confirmedRemovals = this.skillRemovalConfirmations[environment.serverId] ?? [];
     delete this.skillRemovalConfirmations[environment.serverId];
-    const inspected = await this.prepareEnvironment(environment, state.settings);
+    const inspected = await this.prepareEnvironment(environment, state.settings, background);
     if (!inspected) return;
     const {
       observed,
