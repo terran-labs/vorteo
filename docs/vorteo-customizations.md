@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): merged current main into the provider subagent polling fix, preserving synchronized Factory project memberships and the read-only list behavior. Both changelog entries are retained. Source only; not installed.
+
 Maintenance review (2026-11-04): `agent.provider_subagents.list` answers from the loaded session or the stored record and never loads the parent thread. Polling the list had started provider sessions and retried failing threads on every poll. An unloaded thread lists no provider subagents until it is opened; the wire shape is unchanged. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): merged current `main`, including the Dev boot-entry switch, the single sidebar footer block and later trackpad dictation, into the open question answer delivery fix; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
@@ -1874,6 +1876,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+November 4, 2026: Synchronized projects now move Factory-managed workspaces' sidebar memberships with a replaced project key, fixing a duplicate Vorteo System row after installation. The Synchronized projects feature is otherwise unchanged. README overview and onboarding are unchanged.
 
 November 3, 2026: Brand marks no longer load the 57 KB master into two image masks per logo, which delayed the startup loader and every themed logo. They draw the traced silhouette with an inline shading overlay instead, unchanged in color and shading. README overview and onboarding are unchanged.
 
