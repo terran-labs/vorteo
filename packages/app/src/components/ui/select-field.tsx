@@ -21,6 +21,7 @@ import {
 import { Field } from "@/components/ui/form-field";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 
 export interface SelectFieldDisplay {
   label: string;
@@ -78,7 +79,6 @@ export interface SelectFieldTriggerProps {
   label?: string;
   isPlaceholder?: boolean;
   placeholder: string;
-  hovered?: boolean;
   focused?: boolean;
   active?: boolean;
   disabled?: boolean;
@@ -131,7 +131,6 @@ export function SelectFieldTrigger({
   textStyle: customTextStyle,
   isPlaceholder: explicitIsPlaceholder,
   placeholder,
-  hovered = false,
   focused = false,
   active = false,
   disabled = false,
@@ -142,6 +141,10 @@ export function SelectFieldTrigger({
 }: SelectFieldTriggerProps): ReactElement {
   const sizeStyle = size === "sm" ? styles.triggerSm : styles.triggerMd;
   const textSizeStyle = size === "sm" ? styles.triggerTextSm : styles.triggerTextMd;
+  // Hover is CSS, so it clears as soon as the trigger moves away from a resting cursor. CSS
+  // :hover outranks the base class, so the hover rules step aside while active or disabled.
+  // The trigger must take pointer events for `:hover` to match: with `pointerEvents="none"` the
+  // browser hit-tests the parent Pressable instead and the hover rule never applies.
   const triggerStyle = useMemo(
     () => [
       styles.trigger,
@@ -149,16 +152,18 @@ export function SelectFieldTrigger({
       resolveControlInteractionStyles(
         {
           controlRest: styles.controlRest,
-          controlHover: styles.controlHover,
+          controlHover: null,
+          controlHoverable: styles.controlHoverable,
           controlActive: styles.controlActive,
           controlDisabled: styles.controlDisabled,
         },
-        { hovered, focused, active, disabled },
+        { focused, active, disabled },
       ),
       toolbar && styles.toolbar,
-      toolbar && (hovered || active) && styles.toolbarHover,
+      toolbar && active && styles.toolbarHover,
+      toolbar && !active && !disabled && styles.toolbarHoverable,
     ],
-    [active, disabled, focused, hovered, sizeStyle, toolbar],
+    [active, disabled, focused, sizeStyle, toolbar],
   );
   const label = explicitLabel ?? display?.label ?? placeholder;
   const isPlaceholder = explicitIsPlaceholder ?? display == null;
@@ -172,9 +177,9 @@ export function SelectFieldTrigger({
   );
 
   return (
-    <View pointerEvents="none" style={triggerStyle} testID={testID}>
+    <View style={triggerStyle} testID={testID}>
       {leading}
-      <Text style={textStyle} numberOfLines={1}>
+      <Text style={textStyle} numberOfLines={1} selectable={false}>
         {label}
       </Text>
       {loading ? (
@@ -322,12 +327,11 @@ export function SelectField<TValue>({
           accessibilityLabel={accessibilityLabel ?? `${label} (${displayLabel})`}
           testID={triggerTestID}
         >
-          {({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => (
+          {({ pressed }: PressableStateCallbackType) => (
             <SelectFieldTrigger
               toolbar={toolbar}
               display={selectedDisplay}
               placeholder={placeholder}
-              hovered={Boolean(hovered)}
               focused={triggerFocused}
               active={pressed || open}
               disabled={disabled}
@@ -381,6 +385,7 @@ const styles = StyleSheet.create((theme) => {
       borderRadius: theme.borderRadius["2xl"],
     },
     toolbarHover: { backgroundColor: theme.colors.surface2 },
+    toolbarHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
     trigger: {
       flexDirection: "row",
       alignItems: "center",
@@ -396,9 +401,7 @@ const styles = StyleSheet.create((theme) => {
     controlRest: {
       ...geometry.controlRest,
     },
-    controlHover: {
-      ...geometry.controlHover,
-    },
+    controlHoverable: hoverStyle(geometry.controlHover),
     controlActive: {
       ...geometry.controlActive,
     },

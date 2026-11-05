@@ -40,6 +40,7 @@ import {
   type EditingTextInputHandle,
 } from "@/components/ui/text-input";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { GitHubIcon } from "@/components/icons/github-icon";
 import {
   applyAvailableAddProjectHosts,
@@ -177,6 +178,10 @@ const ThemedTextInput = withUnistyles(TextInput, (theme) => ({
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+// On web the icon inherits the button's CSS color, so browser-owned :hover can brighten it.
+const inheritedIconColorMapping = isWeb
+  ? () => ({ color: "currentColor" })
+  : foregroundMutedColorMapping;
 
 const lastCloneParentByHost = new Map<string, string>();
 // The folder browser reopens where the owner last opened, created or cloned.
@@ -198,10 +203,10 @@ function FlowBackButton({ onPress }: { onPress: () => void }) {
       accessibilityLabel="Back"
       testID="add-project-flow-back"
     >
-      {({ hovered, pressed }) => (
+      {({ pressed }) => (
         <ThemedArrowLeft
           size={18}
-          uniProps={hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping}
+          uniProps={pressed ? foregroundColorMapping : inheritedIconColorMapping}
         />
       )}
     </Pressable>
@@ -219,9 +224,10 @@ interface LocationButtonProps {
 function LocationButton({ icon, label, disabled, onPress, testID }: LocationButtonProps) {
   const accessibilityState = useMemo(() => ({ disabled }), [disabled]);
   const buttonStyle = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.locationButton,
-      (hovered || pressed) && !disabled && styles.rowActive,
+      !disabled && styles.rowHoverable,
+      pressed && !disabled && styles.rowActive,
       disabled && styles.disabled,
     ],
     [disabled],
@@ -460,9 +466,10 @@ function FlowRow({
     [active, option.disabled],
   );
   const rowStyle = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
-      (active || hovered || pressed) && styles.rowActive,
+      styles.rowHoverable,
+      (active || pressed) && styles.rowActive,
       option.disabled && styles.disabled,
     ],
     [active, option.disabled],
@@ -1880,6 +1887,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
   titleGroup: {
     flex: 1,
@@ -1918,6 +1926,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[2],
   },
   rowActive: { backgroundColor: theme.colors.surface1 },
+  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surface1 }),
   disabled: { opacity: theme.opacity[50] },
   iconSlot: { width: 18, alignItems: "center" },
   rowText: { flex: 1, minWidth: 0 },

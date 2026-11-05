@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useVortonTouch } from "@/vorton-touch";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import { sidebarIndentStyle } from "./indent";
 import { SidebarCountBadge } from "./sidebar-count-badge";
 import { SidebarFolderIcon, SidebarLeadingSlot, type SidebarDisclosure } from "./leading-slot";
@@ -37,6 +38,19 @@ export const sidebarContainerRowStyles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
   },
+  /** A folder-like row nobody is pointing at takes the sidebar's calm look. */
+  calmTitle: { color: theme.colors.foregroundExtraMuted },
+}));
+
+/** CSS hover group for a section heading; its fill and title follow CSS hover. */
+const SECTION_ROW_HOVER_GROUP = "sidebar-section-row";
+
+const sectionRowStyles = StyleSheet.create((theme) => ({
+  group: hoverGroup(SECTION_ROW_HOVER_GROUP),
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  titleHoverable: groupHoverStyle(SECTION_ROW_HOVER_GROUP, {
+    color: theme.colors.foregroundMuted,
+  }),
 }));
 
 function collapsibleChevron(collapsible: boolean, collapsed: boolean): SidebarDisclosure {
@@ -66,7 +80,10 @@ export function SidebarSectionRow({
   onToggle: () => void;
   level: number;
   testID: string;
-  /** Rendered after the title, such as the focus button; receives the hover state. */
+  /**
+   * Rendered after the title, such as the focus button; receives the JS hover state, which also
+   * drives the leading arrow and folder icon. The row's fill and title use CSS hover.
+   */
   trailing?: (isHovered: boolean) => ReactNode;
 }) {
   const density = useSidebarRowDensity();
@@ -83,12 +100,14 @@ export function SidebarSectionRow({
   const rowStyle = useMemo(
     () => [
       sidebarContainerRowStyles.row,
+      sectionRowStyles.group,
       density,
       sidebarIndentStyle(level),
-      isHovered && sidebarContainerRowStyles.rowHovered,
+      // Touch layouts never showed hover, and the pressed fill wins over it.
+      !touch && !isPressed && sectionRowStyles.hoverable,
       isPressed && sidebarContainerRowStyles.rowPressed,
     ],
-    [density, level, isHovered, isPressed],
+    [density, level, touch, isPressed],
   );
   const countLabel = String(count);
 
@@ -113,9 +132,16 @@ export function SidebarSectionRow({
           chevron={collapsibleChevron(collapsible, collapsed)}
           revealChevron={isHovered}
         >
-          <SidebarFolderIcon />
+          <SidebarFolderIcon calm={!isHovered} />
         </SidebarLeadingSlot>
-        <Text style={sidebarContainerRowStyles.title} numberOfLines={1}>
+        <Text
+          style={[
+            sidebarContainerRowStyles.title,
+            sidebarContainerRowStyles.calmTitle,
+            !touch && sectionRowStyles.titleHoverable,
+          ]}
+          numberOfLines={1}
+        >
           {title}
         </Text>
         {collapsed ? (

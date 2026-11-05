@@ -59,6 +59,8 @@ import {
 import type { ProviderSecretsStatus } from "@getpaseo/protocol/provider-secrets";
 import { SettingsInput } from "@/components/settings";
 import { settingsStyles } from "@/styles/settings";
+import { hoverStyle } from "@/styles/hover";
+import { isWeb } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isConnectionError, toErrorMessage } from "@/utils/error-messages";
@@ -80,6 +82,8 @@ import { useProviderDetection } from "./use-provider-detection";
 const ThemedMore = withUnistyles(MoreHorizontal);
 const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const foregroundColor = (theme: Theme) => ({ color: theme.colors.foreground });
+// On web the icon inherits the menu button's CSS color, so browser-owned :hover brightens it.
+const inheritedIconColor = isWeb ? () => ({ color: "currentColor" }) : mutedColor;
 
 /** Lost connections are reported as toasts, so only host rejections stay on the page. */
 export function hostRejection(error: Error | null): Error | null {
@@ -584,9 +588,9 @@ function ConnectionMenu({
   onKeys(): void;
 }) {
   const triggerStyle = useCallback(
-    ({ hovered, open }: PressableStateCallbackType & { hovered?: boolean; open?: boolean }) => [
+    ({ open }: PressableStateCallbackType & { open?: boolean }) => [
       styles.menuButton,
-      (hovered || open) && styles.menuButtonHovered,
+      open && styles.menuButtonHovered,
     ],
     [],
   );
@@ -599,8 +603,8 @@ function ConnectionMenu({
         accessibilityLabel={`${name} actions`}
         testID={`provider-connection-menu-${accountId}`}
       >
-        {({ hovered, open }) => (
-          <ThemedMore size={16} uniProps={hovered || open ? foregroundColor : mutedColor} />
+        {({ open }) => (
+          <ThemedMore size={16} uniProps={open ? foregroundColor : inheritedIconColor} />
         )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width={220}>
@@ -1160,19 +1164,12 @@ function RemoveProviderRow({
     // The page's save mutation already reports a failed removal.
     remove().catch(() => undefined);
   }, [remove]);
-  const textStyle = useCallback(
-    ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.removeRow,
-      hovered && styles.removeRowHovered,
-    ],
-    [],
-  );
   return (
     <Pressable
       onPress={onPress}
       disabled={busy}
       accessibilityRole="button"
-      style={textStyle}
+      style={styles.removeRow}
       testID={`provider-detail-remove-${family.id}`}
     >
       <Text style={styles.removeText}>{`Remove ${family.name} from Vorteo`}</Text>
@@ -1210,6 +1207,10 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.md,
     alignItems: "center",
     justifyContent: "center",
+    ...hoverStyle(
+      { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
   menuButtonHovered: { backgroundColor: theme.colors.surface2 },
   removeRow: {
@@ -1217,8 +1218,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[3],
     alignSelf: "flex-start",
     borderRadius: theme.borderRadius.md,
+    ...hoverStyle({ opacity: 0.8 }),
   },
-  removeRowHovered: { opacity: 0.8 },
   removeText: { color: theme.colors.destructive, fontSize: theme.fontSize.sm },
 }));
 

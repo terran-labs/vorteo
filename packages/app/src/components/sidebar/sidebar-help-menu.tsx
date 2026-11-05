@@ -26,6 +26,9 @@ import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useSessionStore } from "@/stores/session-store";
 
 import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { isWeb } from "@/constants/platform";
+import { densityIconProps } from "@/styles/density";
+import { hoverStyle } from "@/styles/hover";
 import type { HostProfile } from "@/types/host-connection";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
 import { resolveAppVersion } from "@/utils/app-version";
@@ -35,6 +38,9 @@ import { openExternalUrl } from "@/utils/open-external-url";
 const DISCORD_URL = "https://discord.gg/jz8T2uahpH";
 const GITHUB_ISSUE_URL = "https://github.com/getpaseo/paseo/issues/new";
 const ThemedActivity = withUnistyles(Activity);
+const ThemedCircleHelp = withUnistyles(CircleHelp);
+// On web the trigger glyph strokes with the trigger's CSS color, so CSS hover recolors it.
+const currentColorTriggerIcon = densityIconProps("md", () => ({ color: "currentColor" }));
 const ThemedGift = withUnistyles(Gift);
 const ThemedKeyboard = withUnistyles(Keyboard);
 const ThemedDiscordIcon = withUnistyles(DiscordIcon);
@@ -123,14 +129,14 @@ export function SidebarHelpMenu({
               accessibilityRole="button"
               accessibilityLabel={t("sidebar.help.trigger")}
             >
-              {({ hovered, pressed, open: menuOpen }) => (
+              {({ pressed, open: menuOpen }) => (
                 <>
                   <SidebarFooterIconHighlight visible={pressed || menuOpen} />
-                  <DensityIcon
-                    icon={CircleHelp}
-                    size="md"
-                    color={hovered ? "foreground" : "foregroundMuted"}
-                  />
+                  {isWeb ? (
+                    <ThemedCircleHelp uniProps={currentColorTriggerIcon} />
+                  ) : (
+                    <DensityIcon icon={CircleHelp} size="md" color="foregroundMuted" />
+                  )}
                 </>
               )}
             </DropdownMenuTrigger>
@@ -208,6 +214,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     paddingVertical: theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   }),
   tooltipText: {
     fontSize: theme.fontSize.base,

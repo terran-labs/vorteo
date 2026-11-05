@@ -10,6 +10,7 @@ import { Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { Check, Download, Languages, Trash2 } from "lucide-react-native";
 import type { LocalSpeechModel, SpeechSettingsPatch } from "@getpaseo/protocol/speech/rpc-schemas";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
@@ -347,8 +348,6 @@ function progressLabel(
   return t("settings.voice.models.downloadingPercent", { percent: state.percent });
 }
 
-type HoverState = PressableStateCallbackType & { hovered?: boolean };
-
 function LocalModelRow({
   model,
   selected,
@@ -487,8 +486,9 @@ function LocalModelRow({
   }
 
   const rowStyle = useCallback(
-    ({ hovered, pressed }: HoverState) => [
-      !selectionLocked && hovered && styles.rowHovered,
+    ({ pressed }: PressableStateCallbackType) => [
+      // CSS :hover outranks the pressed class, so drop it while pressed.
+      !selectionLocked && !pressed && styles.rowHovered,
       !selectionLocked && pressed && styles.rowPressed,
     ],
     [selectionLocked],
@@ -550,9 +550,7 @@ const styles = StyleSheet.create((theme) => ({
   footerButton: {
     flex: 1,
   },
-  rowHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  rowHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   rowPressed: {
     backgroundColor: theme.colors.surface3,
   },

@@ -5,6 +5,7 @@ import { memo, useCallback, useMemo, useState, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { View, Text, type GestureResponderEvent } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverGroup, hoverStyle } from "@/styles/hover";
 import type { HostBadgeModel } from "@/hosts/appearance";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { density as densityTokens } from "@/styles/density";
@@ -28,9 +29,11 @@ import {
   SidebarWorkspaceMenu,
 } from "@/components/sidebar/sidebar-workspace-menu";
 import {
+  SIDEBAR_WORKSPACE_HOVER_GROUP,
   SidebarWorkspaceRowFrame,
   SidebarWorkspaceRowContent,
   resolveTrailingActionVisibility,
+  sidebarMenuBackdrop,
   SidebarWorkspaceTrailingActionBase,
   SidebarWorkspaceMenuReveal,
   SidebarWorkspaceTrailingActionSlot,
@@ -284,7 +287,7 @@ function WorkspaceRowBody({
           isDragging,
           isPressed,
           selected,
-          isHovered,
+          hoverable: !isTouchPlatform && !contextMenuOpen,
         });
         const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
         return (
@@ -333,6 +336,7 @@ function WorkspaceRowBody({
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
                 isHovered={isHovered}
+                selected={selected}
                 isLoading={isArchiving || isCreating}
                 isCreating={isCreating}
                 shortcutNumber={shortcutNumber}
@@ -342,7 +346,6 @@ function WorkspaceRowBody({
                   workspace={workspace}
                   backdrop={backdrop}
                   trailing={trailing}
-                  isHovered={isHovered}
                   isTouchPlatform={isTouchPlatform}
                   isCreating={isCreating}
                   showShortcutBadge={showShortcutBadge}
@@ -371,7 +374,6 @@ function WorkspaceRowTrailingActions({
   workspace,
   backdrop,
   trailing,
-  isHovered,
   isTouchPlatform,
   isCreating,
   showShortcutBadge,
@@ -390,7 +392,6 @@ function WorkspaceRowTrailingActions({
   workspace: SidebarWorkspaceEntry;
   backdrop: SidebarSurfaceBackdrop;
   trailing: SidebarWorkspaceTrailing;
-  isHovered: boolean;
   isTouchPlatform: boolean;
   isCreating: boolean;
   showShortcutBadge: boolean;
@@ -416,12 +417,12 @@ function WorkspaceRowTrailingActions({
     workspace,
     trailing,
     hasArchiveAction: Boolean(onArchive),
-    isHovered,
     isTouchPlatform,
     showShortcut,
   });
   const sessionMenu = useWorkspaceSessionMenu(workspace.serverId, workspace.workspaceId);
   const kebab = useOpenKebabMenuVisibility(showKebabInSlot);
+  const menuBackdrop = sidebarMenuBackdrop(backdrop, kebab.menuProps.open);
 
   return (
     <>
@@ -435,12 +436,16 @@ function WorkspaceRowTrailingActions({
             <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
           </SidebarWorkspaceTrailingActionBase>
           <SidebarWorkspaceTrailingDetails workspace={workspace} />
-          <SidebarWorkspaceMenuReveal visible={kebab.showKebab} backdrop={backdrop}>
+          <SidebarWorkspaceMenuReveal
+            visible={kebab.showKebab}
+            pinned={kebab.menuProps.open}
+            backdrop={menuBackdrop}
+          >
             {kebab.showKebab && onArchive ? (
               <SidebarWorkspaceMenu
                 {...sessionMenu}
                 {...kebab.menuProps}
-                backdrop={backdrop}
+                backdrop={menuBackdrop}
                 workspaceKey={workspace.workspaceKey}
                 serverId={workspace.serverId}
                 workspaceId={workspace.workspaceId}
@@ -468,16 +473,18 @@ function getWorkspaceRowStyle({
   isDragging,
   isPressed,
   selected,
-  isHovered,
+  hoverable,
 }: {
   isDragging: boolean;
   isPressed: boolean;
   selected: boolean;
-  isHovered: boolean;
+  hoverable: boolean;
 }) {
+  // CSS hover outranks the base class, so the selected, dragging and pressed fills win by
+  // leaving the hover fill out.
   return [
     styles.workspaceRow,
-    isHovered && styles.workspaceRowHovered,
+    hoverable && !selected && !isDragging && !isPressed && styles.workspaceRowHoverable,
     selected && styles.sidebarRowSelected,
     isDragging && styles.workspaceRowDragging,
     isPressed && styles.workspaceRowPressed,
@@ -489,6 +496,7 @@ export const MemoSidebarWorkspaceRow = memo(SidebarWorkspaceRow);
 const styles = StyleSheet.create((theme) => ({
   workspaceRowContainer: {
     position: "relative",
+    ...hoverGroup(SIDEBAR_WORKSPACE_HOVER_GROUP),
   },
   workspaceRow: {
     minHeight: densityTokens.rowHeight,
@@ -503,9 +511,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     userSelect: "none",
   },
-  workspaceRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  workspaceRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   workspaceRowPressed: {
     backgroundColor: theme.colors.surface2,
   },

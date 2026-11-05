@@ -12,6 +12,7 @@ import { create } from "zustand";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { HostStatusDotSlot } from "@/components/hosts/host-picker";
 import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { OverlayLayerProvider, useGlobalOverlayLayer } from "@/lib/overlay-root";
 import { useHosts } from "@/runtime/host-runtime";
@@ -104,9 +105,10 @@ function HostChooserRow({
   const { theme } = useUnistyles();
   const handlePress = useCallback(() => onChooseHost(host.serverId), [host.serverId, onChooseHost]);
   const rowStyle = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
-      (active || hovered || pressed) && styles.rowActive,
+      styles.rowHoverable,
+      (active || pressed) && styles.rowActive,
     ],
     [active],
   );
@@ -337,6 +339,7 @@ const styles = StyleSheet.create((theme) => ({
   rowActive: {
     backgroundColor: theme.colors.surface1,
   },
+  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surface1 }),
   rowIconSlot: {
     width: 18,
     alignItems: "center",

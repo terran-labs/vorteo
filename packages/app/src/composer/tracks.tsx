@@ -1,6 +1,6 @@
 import { TaskCardRow } from "@/agent-stream/task-card-row";
 import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import {
   MENU_ITEM_HEIGHT,
@@ -16,6 +16,7 @@ import {
 import { StatusRing } from "@/components/status-ring";
 import { STATUS_RING_HALO_INSET } from "@/components/status-ring/geometry";
 import { isWeb } from "@/constants/platform";
+import { hoverGroup, hoverStyle } from "@/styles/hover";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
@@ -132,9 +133,10 @@ function ComposerTrackPillTrigger({
   // attribute is set by hand — the same workaround header toggles use.
   const ariaExpandedProps = isWeb ? { "aria-expanded": open } : null;
   const pillStyle = useCallback(
-    ({ hovered, pressed, open: isOpen }: MenuTriggerState) => [
+    ({ pressed, open: isOpen }: MenuTriggerState) => [
       composerPillStyles.body,
-      (hovered || pressed || isOpen) && composerPillStyles.bodyActive,
+      styles.pillHoverable,
+      (pressed || isOpen) && composerPillStyles.bodyActive,
     ],
     [],
   );
@@ -196,7 +198,12 @@ export function ComposerTrackActions({
 }
 
 export interface ComposerTrackRowProps {
-  /** A function child receives the row's own hover/press state, for hover-revealed actions. */
+  /**
+   * A function child receives the row's JS hover/press state. Prefer CSS for hover visuals:
+   * style descendants with `groupHoverStyle(COMPOSER_TRACK_ROW_HOVER_GROUP, ...)` or
+   * `revealOnGroupHover(COMPOSER_TRACK_ROW_HOVER_GROUP)`, since the JS flag goes stale when a
+   * row moves under a resting cursor. Use `active` only where a style cannot follow hover.
+   */
   children: ReactNode | ((state: { active: boolean }) => ReactNode);
   /** Inline cards use ordinary navigation; popover rows select and dismiss their menu. */
   inline?: boolean;
@@ -227,11 +234,15 @@ export interface ComposerTrackRowProps {
  *
  * Hover lives on the outer plain View and press on the inner Pressable, per docs/hover.md: rows
  * carry action buttons, and a Pressable tracking its own hover fights every Pressable inside it.
+ * The row fill is browser-owned CSS hover on that View's group; the JS flag only feeds `active`.
  *
  * A press is a menu selection, not a bare callback: the panel is a menu surface, so dismissal —
  * and on iOS the wait for UIKit to finish tearing the sheet down before the action runs — belongs
  * to the engine that opened it. The row only decides whether choosing it ends the panel.
  */
+/** Hover group on every pressable track row, for descendants that react to the row's hover. */
+export const COMPOSER_TRACK_ROW_HOVER_GROUP = "track-row";
+
 export function ComposerTrackRow(props: ComposerTrackRowProps): ReactElement {
   return props.inline ? <TrackRowContent {...props} /> : <MenuTrackRow {...props} />;
 }
@@ -266,18 +277,18 @@ function TrackRowContent({
   const handlePointerLeave = useCallback(() => setHovered(false), []);
 
   const renderRow = useCallback(
-    (active: boolean) => {
+    (active: boolean, pressed: boolean, hoverable: boolean) => {
       const content = typeof children === "function" ? children({ active }) : children;
-      return inline ? (
-        <TaskCardRow>{content}</TaskCardRow>
-      ) : (
-        <View style={active ? styles.rowActive : styles.row}>{content}</View>
-      );
+      if (inline) return <TaskCardRow>{content}</TaskCardRow>;
+      let rowStyle: StyleProp<ViewStyle> = styles.row;
+      if (pressed) rowStyle = styles.rowActive;
+      else if (hoverable) rowStyle = ROW_HOVERABLE_STYLE;
+      return <View style={rowStyle}>{content}</View>;
     },
     [children, inline],
   );
   const renderPressed = useCallback(
-    ({ pressed }: { pressed: boolean }) => renderRow(hovered || pressed),
+    ({ pressed }: { pressed: boolean }) => renderRow(hovered || pressed, pressed, true),
     [hovered, renderRow],
   );
 
@@ -286,11 +297,15 @@ function TrackRowContent({
     [inline, disabled],
   );
   if (!onPress && !opensPage) {
-    return <View accessibilityLabel={accessibilityLabel}>{renderRow(false)}</View>;
+    return <View accessibilityLabel={accessibilityLabel}>{renderRow(false, false, false)}</View>;
   }
 
   return (
-    <View onPointerEnter={handlePointerEnter} onPointerLeave={handlePointerLeave}>
+    <View
+      style={styles.rowHoverGroup}
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
+    >
       <Pressable
         accessibilityRole={inline ? "button" : "menuitem"}
         dataSet={menuDataSet}
@@ -396,6 +411,10 @@ const styles = StyleSheet.create((theme) => {
     },
     row: trackRow,
     rowActive: { ...trackRow, backgroundColor: theme.colors.surface2 },
+    rowHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
+    rowHoverGroup: hoverGroup(COMPOSER_TRACK_ROW_HOVER_GROUP),
+    // Matches `composerPillStyles.bodyActive`; browser-owned so it clears when the pill moves.
+    pillHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
     // Segments sit twice as far apart as a mark sits from its own text, so a count reads as
     // belonging to the mark on its left rather than to the words on its right.
     segments: {
@@ -422,3 +441,5 @@ const styles = StyleSheet.create((theme) => {
     dotDone: statusDot("done"),
   };
 });
+
+const ROW_HOVERABLE_STYLE = [styles.row, styles.rowHoverable];

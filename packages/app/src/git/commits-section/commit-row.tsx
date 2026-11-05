@@ -4,6 +4,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { ThemedChevron, chevronColorMapping } from "@/git/themed-chevron";
 import type { ClassifiedCheckoutCommit } from "@/git/use-commits-query";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
+import { hoverStyle } from "@/styles/hover";
 import { useTimeAgo } from "@/hooks/use-time-ago";
 import { CommitGraphNode } from "./commit-graph-node";
 
@@ -14,11 +15,8 @@ interface CommitRowProps {
   onCommitPress: (sha: string) => void;
 }
 
-function commitRowPressableStyle({
-  hovered,
-  pressed,
-}: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.row, (Boolean(hovered) || pressed) && styles.rowActive];
+function commitRowPressableStyle({ pressed }: PressableStateCallbackType) {
+  return [styles.row, pressed && styles.rowActive];
 }
 
 export const CommitRow = memo(function CommitRow({
@@ -68,6 +66,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingLeft: theme.spacing[2],
     paddingRight: theme.spacing[2],
     paddingVertical: theme.spacing[1],
+    ...hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   },
   rowActive: {
     backgroundColor: theme.colors.surfaceSidebarHover,

@@ -57,6 +57,7 @@ import {
 } from "@/stores/navigation-active-workspace-store";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { density as densityTokens, densityIconBox, densityIconProps } from "@/styles/density";
+import { groupHoverStyle, hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 import { getSidebarRowBackdrop } from "@/components/sidebar/sidebar-row-backdrop";
@@ -139,6 +140,8 @@ import {
 } from "@/components/sidebar/use-limited-sidebar-group";
 import {
   sidebarWorkspaceRowStyles,
+  SIDEBAR_WORKSPACE_HOVER_GROUP,
+  sidebarMenuBackdrop,
   SidebarWorkspaceRowFrame,
   SidebarWorkspaceRowContent,
   SidebarWorkspaceShortcutBadge,
@@ -147,6 +150,8 @@ import {
   SidebarWorkspaceMenuReveal,
   SidebarWorkspaceTrailingActionSlot,
   SidebarWorkspaceTrailingDetails,
+  SIDEBAR_CALM_OPACITY,
+  isSidebarRowCalm,
 } from "@/components/sidebar/sidebar-workspace-row-content";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import {
@@ -158,7 +163,6 @@ import {
   SidebarWorkspaceTrailingContent,
   useSidebarWorkspaceTrailing,
 } from "@/components/sidebar/workspace-trailing";
-import { DensityIcon } from "@/components/ui/density-icon";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipText } from "@/components/ui/tooltip";
 import { Shortcut } from "@/components/ui/shortcut";
@@ -219,6 +223,7 @@ import {
   useSidebarDragSession,
 } from "@/sidebar-drop/session";
 import { SidebarFocusBreadcrumb } from "@/sidebar-focus/breadcrumb";
+import { useSidebarListReachReporter } from "@/components/sidebar/list-reach";
 import {
   SidebarFocusProvider,
   useSidebarFocusAction,
@@ -235,6 +240,7 @@ import {
   sidebarFocusRootDropTop,
   sidebarFocusRootRows,
   sidebarProjectBlockLevels,
+  sidebarFocusRootLevelOffset,
   sidebarFocusTrail,
   type SidebarFocusSection,
   type SidebarFocusTarget,
@@ -284,6 +290,16 @@ const foregroundColorMapping = (theme: Theme) => ({
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
+/**
+ * On web an icon strokes with its container's CSS color, so the container's CSS hover recolors
+ * it. Native has no hover and keeps the muted color.
+ */
+const currentColorMapping = isWeb ? () => ({ color: "currentColor" }) : foregroundMutedColorMapping;
+
+/** CSS hover groups. Nested groups need distinct names; see docs/hover.md. */
+const PROJECT_ROW_HOVER_GROUP = "sidebar-project";
+const PR_BADGE_HOVER_GROUP = "sidebar-pr-badge";
+const NEW_WORKSPACE_ROW_HOVER_GROUP = "sidebar-new-workspace";
 
 function isWorkspaceSelected(input: {
   selection: ActiveWorkspaceSelection | null;
@@ -416,7 +432,6 @@ interface WorkspaceRowInnerProps {
 
 export function PrBadge({ hint, style }: { hint: PrHint; style?: StyleProp<ViewStyle> }) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
 
   const handlePressIn = useCallback((event: GestureResponderEvent) => {
     event.stopPropagation();
@@ -430,9 +445,6 @@ export function PrBadge({ hint, style }: { hint: PrHint; style?: StyleProp<ViewS
     [hint.url],
   );
 
-  const handleHoverIn = useCallback(() => setIsHovered(true), []);
-  const handleHoverOut = useCallback(() => setIsHovered(false), []);
-
   // Callers that place the badge in a list of icon+text rows pass that row's layout in, so the
   // icon and text land on the same rails as their neighbors instead of on the badge's tighter
   // inline spacing.
@@ -445,9 +457,6 @@ export function PrBadge({ hint, style }: { hint: PrHint; style?: StyleProp<ViewS
     [style],
   );
 
-  const textStyle = isHovered
-    ? [prBadgeStyles.text, prBadgeStyles.textHovered]
-    : prBadgeStyles.text;
   const presentation = getForgePresentation(normalizeForge(hint.forge));
 
   return (
@@ -460,42 +469,38 @@ export function PrBadge({ hint, style }: { hint: PrHint; style?: StyleProp<ViewS
       hitSlop={4}
       onPressIn={handlePressIn}
       onPress={handlePress}
-      onHoverIn={handleHoverIn}
-      onHoverOut={handleHoverOut}
       style={pressableStyle}
     >
-      {isHovered ? (
-        <ThemedExternalLink size={12} uniProps={foregroundColorMapping} />
-      ) : (
+      {/* Both icons stay mounted; CSS swaps the state icon for the link icon on hover. */}
+      <View style={prBadgeStyles.hideOnHover}>
         <PullRequestStateIcon state={hint.state} size={12} />
-      )}
-      <Text style={textStyle} numberOfLines={1}>
+      </View>
+      <View style={prBadgeStyles.showOnHover}>
+        <ThemedExternalLink size={12} uniProps={foregroundColorMapping} />
+      </View>
+      <Text style={prBadgeStyles.text} numberOfLines={1}>
         {hint.number}
       </Text>
     </Pressable>
   );
 }
 
-function projectKebabStyle({
-  hovered = false,
-}: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.projectKebabButton, hovered && styles.projectKebabButtonHovered];
-}
-
 function getProjectWorkspaceRowStyle({
   isDragging,
   isPressed,
   selected,
-  isHovered,
+  hoverable,
 }: {
   isDragging: boolean;
   isPressed: boolean;
   selected: boolean;
-  isHovered: boolean;
+  hoverable: boolean;
 }) {
+  // CSS hover outranks the base class, so the selected, dragging and pressed fills win by
+  // leaving the hover fill out.
   return [
     styles.workspaceRow,
-    isHovered && styles.workspaceRowHovered,
+    hoverable && !selected && !isDragging && !isPressed && styles.workspaceRowHoverable,
     selected && styles.sidebarRowSelected,
     isDragging && styles.workspaceRowDragging,
     isPressed && styles.workspaceRowPressed,
@@ -507,6 +512,13 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
+    ...hoverGroup(PR_BADGE_HOVER_GROUP),
+  },
+  hideOnHover: groupHoverStyle(PR_BADGE_HOVER_GROUP, { display: "none" }),
+  // Hidden on native and touch web, which never showed the link icon.
+  showOnHover: {
+    display: "none",
+    ...groupHoverStyle(PR_BADGE_HOVER_GROUP, { display: "flex" }),
   },
   badgePressed: {
     opacity: 0.82,
@@ -516,9 +528,7 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     lineHeight: 14,
     color: theme.colors.foregroundMuted,
-  },
-  textHovered: {
-    color: theme.colors.foreground,
+    ...groupHoverStyle(PR_BADGE_HOVER_GROUP, { color: theme.colors.foreground }),
   },
 }));
 
@@ -562,7 +572,6 @@ function ProjectRowTrailingActions({
   worktreeTarget,
   settingsTarget,
   projectPath,
-  isHovered,
   isMobileBreakpoint,
   isProjectActive,
   expanded,
@@ -578,7 +587,6 @@ function ProjectRowTrailingActions({
   settingsTarget: { serverId: string; projectId: string } | null;
   projectPath: string;
   focus: SidebarRowFocus;
-  isHovered: boolean;
   isMobileBreakpoint: boolean;
   isProjectActive: boolean;
   expanded: boolean;
@@ -589,25 +597,23 @@ function ProjectRowTrailingActions({
 }) {
   const vortonTouch = useVortonTouch();
 
-  const persistActions = expanded;
-  const menuVisible = isHovered || platformIsNative || isMobileBreakpoint || vortonTouch;
-  const actionsVisible = persistActions || menuVisible;
+  // Touch and compact layouts have no hover, so their actions always show. Elsewhere CSS reveals
+  // them while the project row is hovered; an expanded project keeps New workspace shown.
+  const menuAlwaysShown = platformIsNative || isMobileBreakpoint || vortonTouch;
+  const actionsAlwaysShown = expanded || menuAlwaysShown;
   return (
     <View style={[styles.projectTrailingActions, styles.projectTrailingActionsVorton]}>
       {worktreeTarget ? (
         <NewWorktreeButton
           displayName={displayName}
           onPress={onBeginWorkspaceSetup}
-          visible={actionsVisible}
+          revealOnHover={!actionsAlwaysShown}
           showShortcutHint={isProjectActive}
           testID={`sidebar-project-new-worktree-${projectViewKey}`}
         />
       ) : null}
       {onRemoveProject ? (
-        <View
-          style={!menuVisible && styles.projectKebabButtonHidden}
-          pointerEvents={menuVisible ? "auto" : "none"}
-        >
+        <View style={!menuAlwaysShown && styles.projectActionReveal}>
           <ProjectKebabMenu
             projectViewKey={projectViewKey}
             projectName={displayName}
@@ -641,14 +647,9 @@ const openInNewWindowLeadingIcon = (
   <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />
 );
 
-const kebabTriggerIconProps = densityIconProps("sm", foregroundMutedColorMapping);
-const kebabTriggerIconHoveredProps = densityIconProps("sm", foregroundColorMapping);
-
-function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }) {
-  return (
-    <ThemedMoreVertical uniProps={hovered ? kebabTriggerIconHoveredProps : kebabTriggerIconProps} />
-  );
-}
+const kebabTriggerIcon = (
+  <ThemedMoreVertical uniProps={densityIconProps("sm", currentColorMapping)} />
+);
 
 function ProjectKebabMenu({
   projectViewKey,
@@ -669,13 +670,7 @@ function ProjectKebabMenu({
 }) {
   const { t } = useTranslation();
   const actionSize = useSidebarActionSize();
-  const actionStyle = useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) => [
-      projectKebabStyle(state),
-      actionSize,
-    ],
-    [actionSize],
-  );
+  const actionStyle = useMemo(() => [styles.projectKebabButton, actionSize], [actionSize]);
   return (
     <DropdownMenu compactMode="sheet">
       <Tooltip enabledOnDesktop enabledOnMobile={false}>
@@ -687,7 +682,7 @@ function ProjectKebabMenu({
             accessibilityLabel={t("sidebar.project.actions.menu")}
             testID={`sidebar-project-kebab-${projectViewKey}`}
           >
-            {renderKebabTriggerIcon}
+            {kebabTriggerIcon}
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent>
@@ -859,7 +854,6 @@ function ProjectMenuItems({
 function WorkspaceRowRightGroup({
   workspace,
   backdrop,
-  isHovered,
   isTouchPlatform,
   isCreating,
   showShortcutBadge,
@@ -879,7 +873,6 @@ function WorkspaceRowRightGroup({
 }: {
   workspace: SidebarWorkspaceEntry;
   backdrop: SidebarSurfaceBackdrop;
-  isHovered: boolean;
   isTouchPlatform: boolean;
   isCreating: boolean;
   showShortcutBadge: boolean;
@@ -910,11 +903,11 @@ function WorkspaceRowRightGroup({
     workspace,
     trailing,
     hasArchiveAction: Boolean(onArchive),
-    isHovered,
     isTouchPlatform,
     showShortcut,
   });
   const kebab = useOpenKebabMenuVisibility(showKebabInSlot);
+  const menuBackdrop = sidebarMenuBackdrop(backdrop, kebab.menuProps.open);
 
   return (
     <>
@@ -928,12 +921,16 @@ function WorkspaceRowRightGroup({
             <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
           </SidebarWorkspaceTrailingActionBase>
           <SidebarWorkspaceTrailingDetails workspace={workspace} />
-          <SidebarWorkspaceMenuReveal visible={kebab.showKebab} backdrop={backdrop}>
+          <SidebarWorkspaceMenuReveal
+            visible={kebab.showKebab}
+            pinned={kebab.menuProps.open}
+            backdrop={menuBackdrop}
+          >
             {onArchive ? (
               <SidebarWorkspaceMenu
                 {...sessionMenu}
                 {...kebab.menuProps}
-                backdrop={backdrop}
+                backdrop={menuBackdrop}
                 workspaceKey={workspace.workspaceKey}
                 projectViewKey={workspace.projectViewKey}
                 workspaceTitle={workspace.name}
@@ -965,14 +962,15 @@ function WorkspaceRowRightGroup({
 function NewWorktreeButton({
   displayName,
   onPress,
-  visible,
+  revealOnHover = false,
   loading = false,
   testID,
   showShortcutHint = false,
 }: {
   displayName: string;
   onPress: () => void;
-  visible: boolean;
+  /** Hidden until its project row is hovered or focused, by CSS. */
+  revealOnHover?: boolean;
   loading?: boolean;
   testID: string;
   showShortcutHint?: boolean;
@@ -982,13 +980,13 @@ function NewWorktreeButton({
   const actionSize = useSidebarActionSize();
 
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.projectIconActionButton,
       actionSize,
-      !visible && styles.projectIconActionButtonHidden,
-      (Boolean(hovered) || pressed) && !loading && styles.projectIconActionButtonHovered,
+      !loading && styles.projectIconActionButtonHoverable,
+      pressed && !loading && styles.projectIconActionButtonPressed,
     ],
-    [visible, loading, actionSize],
+    [loading, actionSize],
   );
 
   const handlePress = useCallback(
@@ -1002,11 +1000,14 @@ function NewWorktreeButton({
   return (
     <View
       dataSet={VORTON_ACTION_SLOT}
-      style={[styles.projectTrailingControlSlot, actionSize]}
-      pointerEvents={visible ? "auto" : "none"}
+      style={[
+        styles.projectTrailingControlSlot,
+        actionSize,
+        revealOnHover && styles.projectActionReveal,
+      ]}
     >
       <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-        <TooltipTrigger asChild disabled={!visible}>
+        <TooltipTrigger asChild>
           <Pressable
             style={pressableStyle}
             onPress={handlePress}
@@ -1017,15 +1018,13 @@ function NewWorktreeButton({
             })}
             testID={testID}
           >
-            {({ hovered, pressed }) =>
+            {({ pressed }) =>
               loading ? (
                 <ThemedLoadingSpinner size={14} uniProps={foregroundMutedColorMapping} />
               ) : (
                 <ThemedPlus
                   size={15}
-                  uniProps={
-                    hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping
-                  }
+                  uniProps={!isWeb && pressed ? foregroundColorMapping : currentColorMapping}
                 />
               )
             }
@@ -1045,6 +1044,9 @@ function NewWorktreeButton({
     </View>
   );
 }
+
+const ghostRowPlusIconProps = densityIconProps("sm", currentColorMapping);
+const ghostRowPlusIconPressedProps = densityIconProps("sm", foregroundColorMapping);
 
 function NewWorkspaceGhostRow({
   project,
@@ -1066,11 +1068,11 @@ function NewWorkspaceGhostRow({
     onBeforeNavigate: onWorkspacePress,
   });
   const rowStyle = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.newWorkspaceGhostRow,
       density,
       sidebarWorkspaceRowStyles.projectIndented,
-      hovered && !pressed && styles.newWorkspaceGhostRowHovered,
+      !pressed && styles.newWorkspaceGhostRowHoverable,
       pressed && styles.newWorkspaceGhostRowPressed,
     ],
     [density],
@@ -1086,21 +1088,20 @@ function NewWorkspaceGhostRow({
       style={rowStyle}
       testID={`sidebar-project-new-workspace-row-${project.viewKey}`}
     >
-      {({ hovered, pressed }) => (
+      {({ pressed }) => (
         <>
-          <View style={styles.newWorkspaceGhostIconSlot}>
-            <DensityIcon
-              icon={Plus}
-              size="sm"
-              color={hovered || pressed ? "foreground" : "foregroundMuted"}
+          <View
+            style={[
+              styles.newWorkspaceGhostIconSlot,
+              pressed && styles.newWorkspaceGhostIconSlotPressed,
+            ]}
+          >
+            <ThemedPlus
+              uniProps={!isWeb && pressed ? ghostRowPlusIconPressedProps : ghostRowPlusIconProps}
             />
           </View>
           <Text
-            style={
-              hovered || pressed
-                ? styles.newWorkspaceGhostTextHovered
-                : styles.newWorkspaceGhostText
-            }
+            style={[styles.newWorkspaceGhostText, pressed && styles.newWorkspaceGhostTextPressed]}
             numberOfLines={1}
           >
             {t("sidebar.workspace.actions.newWorkspace")}
@@ -1156,6 +1157,21 @@ function ProjectCollapsedTrailing({
       ) : null}
     </>
   );
+}
+
+/** A calm project row returns to full strength while CSS reports it hovered. */
+function projectTitleStyle(calm: boolean, hoverable: boolean) {
+  if (!calm) return styles.projectTitle;
+  return [styles.projectTitle, styles.calmTitle, hoverable && styles.calmTitleHoverable];
+}
+
+function projectTrailingStyle(calm: boolean, hoverable: boolean) {
+  if (!calm) return styles.projectTrailingGroup;
+  return [
+    styles.projectTrailingGroup,
+    styles.calmTrailing,
+    hoverable && styles.calmTrailingHoverable,
+  ];
 }
 
 function ProjectHeaderRow({
@@ -1241,18 +1257,25 @@ function ProjectHeaderRow({
     interaction.handlePressOut();
   }, [interaction]);
 
+  // The row's fill and calm look follow CSS hover, so they settle when the list moves under a
+  // resting cursor. JS hover still drives the leading arrow, the focus button and the badge
+  // backdrop. Touch layouts and an open context menu never showed hover.
+  const hoverable = !touch && !contextMenuOpen;
   const projectRowStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.projectRow,
+      styles.projectRowGroup,
       density,
       isDragging && styles.projectRowDragging,
       selected && styles.sidebarRowSelected,
-      isHovered && styles.projectRowHovered,
+      // Hover won over the selected and dragging fills; the pressed fill wins over hover.
+      hoverable && !pressed && styles.projectRowHoverable,
       pressed && styles.projectRowPressed,
     ],
-    [isDragging, selected, isHovered, density],
+    [isDragging, selected, hoverable, density],
   );
 
+  const calm = isSidebarRowCalm({ selected, hovered: false, bucket: statusBucket });
   const rowChildren = (
     <View style={styles.projectRowLeft}>
       <ProjectLeadingVisual
@@ -1272,7 +1295,7 @@ function ProjectHeaderRow({
       />
 
       <View style={styles.projectTitleGroup}>
-        <Text style={styles.projectTitle} numberOfLines={1}>
+        <Text style={projectTitleStyle(calm, hoverable)} numberOfLines={1}>
           {displayName}
         </Text>
       </View>
@@ -1282,31 +1305,32 @@ function ProjectHeaderRow({
   // Actions are siblings of the project button so each has its own accessible target.
   const trailingContent = (
     <>
-      {taskSummary ? (
-        <ProjectCollapsedTrailing
-          summary={taskSummary}
-          projectViewKey={project.viewKey}
-          displayName={displayName}
-          focusAction={rowFocus.hoverAction}
-        />
-      ) : (
-        <ProjectRowTrailingActions
-          projectViewKey={project.viewKey}
-          displayName={displayName}
-          worktreeTarget={worktreeTarget}
-          settingsTarget={settingsTarget}
-          projectPath={projectPath}
-          isHovered={isHovered}
-          isMobileBreakpoint={isMobileBreakpoint}
-          isProjectActive={isProjectActive}
-          expanded={chevron === "collapse"}
-          onBeginWorkspaceSetup={handleBeginWorkspaceSetup}
-          onRemoveProject={onRemoveProject}
-          removeProjectStatus={removeProjectStatus}
-          removeProjectBlockedReason={removeProjectBlockedReason}
-          focus={rowFocus}
-        />
-      )}
+      <View style={projectTrailingStyle(calm, hoverable)}>
+        {taskSummary ? (
+          <ProjectCollapsedTrailing
+            summary={taskSummary}
+            projectViewKey={project.viewKey}
+            displayName={displayName}
+            focusAction={rowFocus.hoverAction}
+          />
+        ) : (
+          <ProjectRowTrailingActions
+            projectViewKey={project.viewKey}
+            displayName={displayName}
+            worktreeTarget={worktreeTarget}
+            settingsTarget={settingsTarget}
+            projectPath={projectPath}
+            isMobileBreakpoint={isMobileBreakpoint}
+            isProjectActive={isProjectActive}
+            expanded={chevron === "collapse"}
+            onBeginWorkspaceSetup={handleBeginWorkspaceSetup}
+            onRemoveProject={onRemoveProject}
+            removeProjectStatus={removeProjectStatus}
+            removeProjectBlockedReason={removeProjectBlockedReason}
+            focus={rowFocus}
+          />
+        )}
+      </View>
       {showShortcutBadge && shortcutNumber !== null ? (
         <View style={styles.projectShortcutBadgeOverlay} pointerEvents="none">
           <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
@@ -1466,7 +1490,7 @@ function WorkspaceRowInner({
           isDragging,
           isPressed,
           selected,
-          isHovered,
+          hoverable: !isTouchPlatform && !contextMenuOpen,
         });
         const backdrop = getSidebarRowBackdrop({
           isDragging,
@@ -1526,6 +1550,7 @@ function WorkspaceRowInner({
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
                 isHovered={isHovered}
+                selected={selected}
                 isLoading={isArchiving || isCreating}
                 isCreating={isCreating}
                 shortcutNumber={shortcutNumber}
@@ -1535,7 +1560,6 @@ function WorkspaceRowInner({
                 <WorkspaceRowRightGroup
                   workspace={workspace}
                   backdrop={backdrop}
-                  isHovered={isHovered}
                   isTouchPlatform={isTouchPlatform}
                   isCreating={isCreating}
                   showShortcutBadge={showShortcutBadge}
@@ -2128,7 +2152,6 @@ function ProjectFocusActions({
         <NewWorktreeButton
           displayName={displayName}
           onPress={handleBeginWorkspaceSetup}
-          visible
           testID={`sidebar-focus-new-worktree-${project.viewKey}`}
         />
       ) : null}
@@ -3334,11 +3357,12 @@ function ProjectModeListContent({
     () => (focus ? sidebarFocusRootDropTop(focus, focusWorld) : null),
     [focus, focusWorld],
   );
+  const rootFocusOffset = sidebarFocusRootLevelOffset(focus, focusWorld);
   const rootTreeDrop = useSidebarTreeDrop({
     items: rootRows,
     describe: describeRootRow,
     top: rootDropTop,
-    baseLevel: 0,
+    baseLevel: rootFocusOffset,
     outside: "clamp",
     onDrop: handleRootDrop,
   });
@@ -3470,12 +3494,13 @@ function ProjectModeListContent({
       isActive,
       dragHandleProps,
     }: DraggableRenderItemInfo<SidebarTreeRow<SidebarProjectEntry>>) => {
+      const depth = row.depth + rootFocusOffset;
       if (row.kind === "folder") {
         return (
           <SidebarFolderRow
             row={row}
             scope={ROOT_FOLDER_SCOPE}
-            level={row.depth}
+            level={depth}
             drag={drag}
             isDragging={isActive}
             dragHandleProps={dragHandleProps}
@@ -3487,9 +3512,9 @@ function ProjectModeListContent({
         isDragging: isActive,
         dragHandleProps,
       });
-      return row.depth > 0 ? <View style={sidebarNestingStyle(row.depth)}>{block}</View> : block;
+      return depth > 0 ? <View style={sidebarNestingStyle(depth)}>{block}</View> : block;
     },
-    [renderProjectBlock],
+    [renderProjectBlock, rootFocusOffset],
   );
 
   const renderPinnedChatRow = useCallback(
@@ -3599,6 +3624,7 @@ function ProjectModeListContent({
 
   // Rows dissolve under the dividers above and below the list while more lies past them.
   const edgeFadeRef = useScrollEdgeFade();
+  const listReach = useSidebarListReachReporter(onContentSizeChange);
   const content = (
     <>
       {listTopComponent}
@@ -3665,7 +3691,8 @@ function ProjectModeListContent({
             showsVerticalScrollIndicator={false}
             onScroll={onScroll}
             scrollEventThrottle={16}
-            onContentSizeChange={onContentSizeChange}
+            onLayout={listReach.onLayout}
+            onContentSizeChange={listReach.onContentSizeChange}
             testID="sidebar-project-workspace-list-scroll"
           >
             <NestableScrollDivider onChange={onScrolledChange} />
@@ -3679,7 +3706,8 @@ function ProjectModeListContent({
             showsVerticalScrollIndicator={false}
             onScroll={onScroll}
             scrollEventThrottle={16}
-            onContentSizeChange={onContentSizeChange}
+            onLayout={listReach.onLayout}
+            onContentSizeChange={listReach.onContentSizeChange}
             testID="sidebar-project-workspace-list-scroll"
           >
             {content}
@@ -3735,10 +3763,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
     userSelect: "none",
+    ...hoverGroup(NEW_WORKSPACE_ROW_HOVER_GROUP),
   },
-  newWorkspaceGhostRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  newWorkspaceGhostRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   newWorkspaceGhostRowPressed: {
     backgroundColor: theme.colors.surface2,
   },
@@ -3750,19 +3777,22 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    // The plus strokes with this color on web.
+    ...groupHoverStyle(
+      NEW_WORKSPACE_ROW_HOVER_GROUP,
+      { color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
+  newWorkspaceGhostIconSlotPressed: { _web: { color: theme.colors.foreground } },
   newWorkspaceGhostText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     minWidth: 0,
     flexShrink: 1,
+    ...groupHoverStyle(NEW_WORKSPACE_ROW_HOVER_GROUP, { color: theme.colors.foreground }),
   },
-  newWorkspaceGhostTextHovered: {
-    fontSize: theme.fontSize.base,
-    minWidth: 0,
-    flexShrink: 1,
-    color: theme.colors.foreground,
-  },
+  newWorkspaceGhostTextPressed: { color: theme.colors.foreground },
   projectRow: {
     position: "relative",
     minHeight: densityTokens.rowHeight,
@@ -3783,9 +3813,8 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: "stretch",
     justifyContent: "center",
   },
-  projectRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  projectRowGroup: hoverGroup(PROJECT_ROW_HOVER_GROUP),
+  projectRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   projectRowPressed: {
     backgroundColor: theme.colors.surface2,
   },
@@ -3811,6 +3840,19 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minWidth: 0,
   },
+  // Groups the project's trailing summary and actions so a calm row can dim them together.
+  projectTrailingGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    flexShrink: 0,
+  },
+  calmTitle: { color: theme.colors.foregroundExtraMuted },
+  calmTitleHoverable: groupHoverStyle(PROJECT_ROW_HOVER_GROUP, {
+    color: theme.colors.foregroundMuted,
+  }),
+  calmTrailing: { opacity: SIDEBAR_CALM_OPACITY },
+  calmTrailingHoverable: groupHoverStyle(PROJECT_ROW_HOVER_GROUP, { opacity: 1 }),
   projectTitle: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
@@ -3841,13 +3883,19 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    // The plus strokes with this color on web.
+    _web: { color: theme.colors.foregroundMuted },
   },
-  projectIconActionButtonHovered: {
+  projectIconActionButtonHoverable: hoverStyle({
     backgroundColor: theme.colors.interactionHighlight,
+    color: theme.colors.foreground,
+  }),
+  projectIconActionButtonPressed: {
+    backgroundColor: theme.colors.interactionHighlight,
+    _web: { color: theme.colors.foreground },
   },
-  projectIconActionButtonHidden: {
-    opacity: 0,
-  },
+  // Project actions stay mounted; CSS shows them while the project row is hovered or focused.
+  projectActionReveal: revealOnGroupHover(PROJECT_ROW_HOVER_GROUP),
   projectTaskSummary: {
     flexDirection: "row",
     alignItems: "center",
@@ -3879,12 +3927,11 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
-  },
-  projectKebabButtonHidden: {
-    opacity: 0,
-  },
-  projectKebabButtonHovered: {
-    backgroundColor: theme.colors.surface2,
+    // The kebab strokes with this color on web.
+    ...hoverStyle(
+      { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
   projectTrailingControlSlot: {
     width: 24,
@@ -3941,9 +3988,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
     flexShrink: 0,
   },
-  workspaceRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  workspaceRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   workspaceRowPressed: {
     backgroundColor: theme.colors.surface2,
   },
@@ -3960,6 +4005,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceRowContainer: {
     position: "relative",
+    ...hoverGroup(SIDEBAR_WORKSPACE_HOVER_GROUP),
   },
   workspaceStatusDot: {
     position: "relative",

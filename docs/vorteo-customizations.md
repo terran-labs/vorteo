@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Hover highlights and hover-revealed actions use CSS hover, so they clear when a click moves layout out from under a resting cursor; live-dev release can now hand back individual files
+
 Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
 
 Maintenance review (2026-11-05): live tweak by Claude reset credits: Secret scanning no longer flags the Claude reset test, which used a random UUID as a request ID; pushes from this repository pass the pre-push scan again.

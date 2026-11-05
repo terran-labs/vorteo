@@ -30,6 +30,7 @@ import { BottomSheetFlatList, type BottomSheetFlatListMethods } from "@gorhom/bo
 import { useAgentDescriptor, resolveAgentLabel } from "@/agent-presentation";
 import { StatusIcon } from "@/components/status-icon";
 import { useWorkspaceStatus } from "@/workspace-status";
+import { hoverStyle } from "@/styles/hover";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import type { Theme } from "@/styles/theme";
 import { HighlightedText, type HighlightedTextProps } from "@/components/ui/highlighted-text";
@@ -451,11 +452,15 @@ const ResultRow = memo(function ResultRow({
     () => (isNative && choice ? { selected: choice.selected } : undefined),
     [choice],
   );
+  // The row fill is browser-owned hover (`rowHoverable`), so results that reflow under a resting
+  // cursor update it. The knockout backdrop below still follows the JS hover flag because
+  // StatusIcon takes a backdrop token, not a style.
   const style = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
+      styles.rowHoverable,
       { height },
-      (Boolean(hovered) || pressed || active) && styles.activeRow,
+      (pressed || active) && styles.activeRow,
     ],
     [active, height],
   );
@@ -1100,6 +1105,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   row: { paddingHorizontal: theme.spacing[4], justifyContent: "center" },
   activeRow: { backgroundColor: theme.colors.surface1 },
+  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surface1 }),
   rowContent: {
     flexDirection: "row",
     alignItems: "center",

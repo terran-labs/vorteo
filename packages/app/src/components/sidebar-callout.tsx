@@ -3,11 +3,12 @@ import { createContext, useContext, useCallback, useMemo, type ReactNode } from 
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
+import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import { useTranslation } from "react-i18next";
 
 const DismissIcon = withUnistyles(X);
 const normalIcon = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const hoveredIcon = (theme: Theme) => ({ color: theme.colors.foreground });
 
 const FloatingCalloutContext = createContext(false);
 export function FloatingCalloutPresentation({ children }: { children: ReactNode }) {
@@ -91,8 +92,11 @@ export function SidebarCallout({
                 accessibilityLabel={t("sidebarCallout.dismiss")}
                 accessibilityRole="button"
               >
-                {({ hovered }) => (
-                  <DismissIcon size={14} uniProps={hovered ? hoveredIcon : normalIcon} />
+                {/* On web the X strokes with the button's CSS color, so CSS hover recolors it. */}
+                {isWeb ? (
+                  <X size={14} color="currentColor" />
+                ) : (
+                  <DismissIcon size={14} uniProps={normalIcon} />
                 )}
               </Pressable>
             ) : null}
@@ -212,6 +216,7 @@ const styles = StyleSheet.create((theme) => ({
     height: 14,
     alignItems: "center",
     justifyContent: "center",
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
   floatingDismissButton: { width: 32, height: 32 },
   body: {

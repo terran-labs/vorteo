@@ -15,6 +15,7 @@ import { resolveModelSheetOpening } from "@/composer/agent-controls/model-sheet-
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 
 const SNAP_POINTS = ["80%", "90%"];
 const MODEL_LIST_TOP_INSET = 4;
@@ -230,9 +231,10 @@ export function CompactModelSheet({
   }, [close, isOpen, open]);
 
   const triggerStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.trigger,
-      hovered && styles.triggerHovered,
+      // CSS hover outranks the pressed and open fills, so leave it out while either shows.
+      !pressed && !isOpen && !disabled && styles.triggerHoverable,
       (pressed || isOpen) && styles.triggerPressed,
       disabled && styles.triggerDisabled,
     ],
@@ -384,9 +386,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius["2xl"],
     backgroundColor: "transparent",
   },
-  triggerHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  triggerHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   triggerPressed: {
     backgroundColor: theme.colors.surface0,
   },

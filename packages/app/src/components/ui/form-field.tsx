@@ -11,7 +11,6 @@ import {
   StyleSheet as RNStyleSheet,
   Text,
   View,
-  type PressableStateCallbackType,
   type TextStyle,
   type ViewStyle,
 } from "react-native";
@@ -24,6 +23,7 @@ import {
   type ControlSize,
 } from "@/components/ui/control-geometry";
 import { useContainedControlSize } from "@/components/ui/control-size";
+import { hoverStyle } from "@/styles/hover";
 
 const FIELD_CHROME = { sm: "chromeSm", md: "chromeMd" } as const satisfies Record<
   ControlSize,
@@ -198,19 +198,20 @@ export const FormTextInput = forwardRef<EditingTextInputHandle, FormTextInputPro
       () => [formInputStyles.input, inputSizeStyle, splitStyle.inputStyle],
       [inputSizeStyle, splitStyle.inputStyle],
     ) as AdaptiveTextInputProps["style"];
-    const chromeStyle = useCallback(
-      ({ hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    // Hover is CSS (`controlHoverable`), so the border clears as soon as the field moves away.
+    const chromeStyle = useMemo(
+      () => [
         formInputStyles.chrome,
         chromeSizeStyle,
         resolveControlInteractionStyles(
           {
             controlRest: formInputStyles.controlRest,
-            controlHover: formInputStyles.controlHover,
+            controlHover: null,
+            controlHoverable: formInputStyles.controlHoverable,
             controlActive: formInputStyles.controlActive,
             controlDisabled: formInputStyles.controlDisabled,
           },
           {
-            hovered,
             focused,
             disabled: isDisabled,
           },
@@ -280,9 +281,7 @@ const formInputStyles = StyleSheet.create((theme) => {
     controlRest: {
       ...geometry.controlRest,
     },
-    controlHover: {
-      ...geometry.controlHover,
-    },
+    controlHoverable: hoverStyle(geometry.controlHover),
     controlActive: {
       ...geometry.controlActive,
     },

@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Hover highlights and hover-revealed actions use CSS hover, so they clear when a click moves layout out from under a resting cursor; live-dev release can now hand back individual files
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
 
 ## Unreleased - 2026-11-05

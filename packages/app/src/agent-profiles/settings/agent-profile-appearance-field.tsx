@@ -11,6 +11,7 @@ import {
   type ControlSize,
 } from "@/components/ui/control-geometry";
 import { Field } from "@/components/ui/form-field";
+import { hoverStyle } from "@/styles/hover";
 import { identityForeground } from "@/styles/identity-colors";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { AgentProfileGlyph } from "../internal/agent-profile-glyph";
@@ -66,9 +67,8 @@ function IconCell({
   const handlePress = useCallback(() => onSelect(iconKey), [iconKey, onSelect]);
   const accessibilityState = useMemo(() => ({ selected }), [selected]);
   const cellStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.cell,
-      Boolean(hovered) && styles.cellHovered,
       pressed && styles.cellPressed,
       selected && styles.cellSelected,
     ],
@@ -186,18 +186,21 @@ export function AgentProfileAppearanceField({
   );
 
   const triggerStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.trigger,
       size === "sm" ? styles.triggerSm : styles.triggerMd,
       styles.triggerIconOnly,
       resolveControlInteractionStyles(
         {
           controlRest: styles.controlRest,
-          controlHover: styles.controlHover,
+          controlHover: null,
+          // Browser-owned hover border, left out while active or disabled since CSS :hover
+          // would otherwise outrank the active border.
+          controlHoverable: styles.triggerHoverable,
           controlActive: styles.controlActive,
           controlDisabled: styles.controlDisabled,
         },
-        { hovered: Boolean(hovered), active: pressed || open, disabled },
+        { active: pressed || open, disabled },
       ),
     ],
     [disabled, open, size],
@@ -298,7 +301,7 @@ const styles = StyleSheet.create((theme) => {
       paddingHorizontal: theme.spacing[2],
     },
     controlRest: { ...geometry.controlRest },
-    controlHover: { ...geometry.controlHover },
+    triggerHoverable: hoverStyle({ ...geometry.controlHover }),
     controlActive: { ...geometry.controlActive },
     controlDisabled: { ...geometry.controlDisabled },
 
@@ -334,9 +337,7 @@ const styles = StyleSheet.create((theme) => {
       borderRadius: theme.borderRadius.md,
       borderWidth: theme.borderWidth[1],
       borderColor: "transparent",
-    },
-    cellHovered: {
-      backgroundColor: theme.colors.surface2,
+      ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
     },
     cellPressed: {
       opacity: 0.7,

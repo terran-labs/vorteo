@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { Pressable, ScrollView, Text, View, type GestureResponderEvent } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, MessageSquarePlus } from "lucide-react-native";
 import { Button } from "@/components/ui/button";
@@ -232,12 +233,12 @@ function CheckRow({
   );
 }
 
-function headerPressableStyle({ hovered }: { hovered?: boolean }) {
-  return [styles.header, Boolean(hovered) && styles.hoverable];
+function headerPressableStyle() {
+  return [styles.header, styles.hoverable];
 }
 
-function rowPressableStyle({ hovered }: { hovered?: boolean }) {
-  return [sectionKitStyles.checkRow, Boolean(hovered) && styles.hoverable];
+function rowPressableStyle() {
+  return [sectionKitStyles.checkRow, styles.hoverable];
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -281,9 +282,7 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.medium,
     color: theme.colors.foregroundMuted,
   },
-  hoverable: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   addButton: {
     paddingHorizontal: theme.spacing[1],
   },

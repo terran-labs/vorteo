@@ -3,7 +3,7 @@
 //
 //   node scripts/live-dev.mjs status
 //   node scripts/live-dev.mjs claim --by <thread> <file>...
-//   node scripts/live-dev.mjs release --by <thread>
+//   node scripts/live-dev.mjs release --by <thread> [<file>...]
 //   node scripts/live-dev.mjs commit --by <thread> -m <message> [--note <changelog line>]
 //   node scripts/live-dev.mjs promote <local branch> --by <thread>
 //   node scripts/live-dev.mjs sync --by <thread>
@@ -198,11 +198,25 @@ export function claim(paths, by, files) {
   });
 }
 
-export function release(paths, by) {
+/** Drops this thread's claim, or only the named files when any are given. */
+export function release(paths, by, files = []) {
   return withLock(paths, by, () => {
+    const claims = readClaims(paths);
+    if (files.length === 0) {
+      writeClaims(
+        paths,
+        claims.filter((item) => item.by !== by),
+      );
+      return;
+    }
+    const dropped = new Set(files.map((file) => normalize(paths.checkout, file)));
     writeClaims(
       paths,
-      readClaims(paths).filter((item) => item.by !== by),
+      claims.flatMap((item) => {
+        if (item.by !== by) return [item];
+        const kept = item.files.filter((file) => !dropped.has(file));
+        return kept.length ? [{ ...item, files: kept }] : [];
+      }),
     );
   });
 }
@@ -413,7 +427,7 @@ function main() {
       console.log(JSON.stringify(claim(paths, requireBy(), args.positional), null, 2));
       return;
     case "release":
-      release(paths, requireBy());
+      release(paths, requireBy(), args.positional);
       return;
     case "commit":
       console.log(commit(paths, requireBy(), args.message, args.note));
