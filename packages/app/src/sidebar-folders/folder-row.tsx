@@ -27,12 +27,13 @@ import { useVortonTouch } from "@/vorton-touch";
 import { sidebarIndentStyle } from "@/components/sidebar/indent";
 import { sidebarContainerRowStyles } from "@/components/sidebar/container-row";
 import {
+  SIDEBAR_LEADING_HOVER_GROUP,
   SidebarFolderIcon,
   SidebarLeadingSlot,
   type SidebarDisclosure,
 } from "@/components/sidebar/leading-slot";
 import type { Theme } from "@/styles/theme";
-import { hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
+import { groupHoverStyle, hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import {
   toggleSidebarFolderCollapsed,
   useCreateSidebarFolderAction,
@@ -257,15 +258,16 @@ export function SidebarFolderRow({
         >
           <SidebarLeadingSlot
             chevron={folderChevron(rowFocus.isRoot, collapsed)}
-            revealChevron={isHovered}
+            cssHover
             testID={`sidebar-folder-leading-${folder.id}`}
           >
-            <SidebarFolderIcon calm={!(isHovered || contextMenuOpen)} />
+            <SidebarFolderIcon calm={!contextMenuOpen} cssHover />
           </SidebarLeadingSlot>
           <Text
             style={[
               sidebarContainerRowStyles.title,
-              !(isHovered || contextMenuOpen) && sidebarContainerRowStyles.calmTitle,
+              !contextMenuOpen && sidebarContainerRowStyles.calmTitle,
+              !contextMenuOpen && styles.titleHoverable,
             ]}
             numberOfLines={1}
           >
@@ -310,7 +312,9 @@ const styles = StyleSheet.create((theme) => ({
     zIndex: 3,
     ...theme.shadow.md,
   },
-  rowGroup: hoverGroup(FOLDER_ROW_HOVER_GROUP),
+  rowGroup: hoverGroup([FOLDER_ROW_HOVER_GROUP, SIDEBAR_LEADING_HOVER_GROUP]),
+  // A calm title regains full strength while the row is hovered.
+  titleHoverable: groupHoverStyle(FOLDER_ROW_HOVER_GROUP, { color: theme.colors.foregroundMuted }),
   rowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   kebabReveal: revealOnGroupHover(FOLDER_ROW_HOVER_GROUP),
   kebab: {

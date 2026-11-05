@@ -34,10 +34,12 @@ export function hoverStyle(hover: PseudoStyle, web?: WebStyle): { _web?: WebStyl
 /**
  * Marks an element as a named hover group, so a descendant can react to the whole row being
  * hovered with {@link groupHoverStyle}. Name groups by role, such as "row", so a reveal inside
- * nested groups follows the group it belongs to.
+ * nested groups follows the group it belongs to. Pass several names for an element in several groups.
  */
-export function hoverGroup(name: string, web?: WebStyle): { _web: WebStyle } {
-  return { _web: { ...web, _classNames: `vorteo-hover-${name}` } };
+export function hoverGroup(name: string | readonly string[], web?: WebStyle): { _web: WebStyle } {
+  // One style carries one `_classNames`, so an element in several groups lists them together.
+  const names = typeof name === "string" ? [name] : name;
+  return { _web: { ...web, _classNames: names.map((group) => `vorteo-hover-${group}`) } };
 }
 
 /**

@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Folder and section rows swap their icon for the disclosure arrow and lift their calm tone with CSS hover, so neither sticks after the sidebar reflows
+
 Maintenance review (2026-11-05): live tweak by Fix stale hover states: Hover highlights and hover-revealed actions use CSS hover, so they clear when a click moves layout out from under a resting cursor; live-dev release can now hand back individual files
 
 Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.

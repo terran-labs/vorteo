@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Folder and section rows swap their icon for the disclosure arrow and lift their calm tone with CSS hover, so neither sticks after the sidebar reflows
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Hover highlights and hover-revealed actions use CSS hover, so they clear when a click moves layout out from under a resting cursor; live-dev release can now hand back individual files
 
 ## Unreleased - 2026-11-05

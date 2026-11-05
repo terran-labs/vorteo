@@ -5,7 +5,12 @@ import { useVortonTouch } from "@/vorton-touch";
 import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import { sidebarIndentStyle } from "./indent";
 import { SidebarCountBadge } from "./sidebar-count-badge";
-import { SidebarFolderIcon, SidebarLeadingSlot, type SidebarDisclosure } from "./leading-slot";
+import {
+  SIDEBAR_LEADING_HOVER_GROUP,
+  SidebarFolderIcon,
+  SidebarLeadingSlot,
+  type SidebarDisclosure,
+} from "./leading-slot";
 import { useSidebarRowDensity } from "./use-sidebar-row-density";
 
 /** Geometry shared by folder-like rows: sidebar folders, Standing and Factory. */
@@ -46,7 +51,7 @@ export const sidebarContainerRowStyles = StyleSheet.create((theme) => ({
 const SECTION_ROW_HOVER_GROUP = "sidebar-section-row";
 
 const sectionRowStyles = StyleSheet.create((theme) => ({
-  group: hoverGroup(SECTION_ROW_HOVER_GROUP),
+  group: hoverGroup([SECTION_ROW_HOVER_GROUP, SIDEBAR_LEADING_HOVER_GROUP]),
   hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   titleHoverable: groupHoverStyle(SECTION_ROW_HOVER_GROUP, {
     color: theme.colors.foregroundMuted,
@@ -128,11 +133,8 @@ export function SidebarSectionRow({
         style={sidebarContainerRowStyles.main}
         testID={`${testID}-toggle`}
       >
-        <SidebarLeadingSlot
-          chevron={collapsibleChevron(collapsible, collapsed)}
-          revealChevron={isHovered}
-        >
-          <SidebarFolderIcon calm={!isHovered} />
+        <SidebarLeadingSlot chevron={collapsibleChevron(collapsible, collapsed)} cssHover>
+          <SidebarFolderIcon calm cssHover />
         </SidebarLeadingSlot>
         <Text
           style={[
