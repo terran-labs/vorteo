@@ -28,6 +28,8 @@ import {
   type DragStartEvent,
   type Modifier,
   type KeyboardCoordinateGetter,
+  type KeyboardSensorProps,
+  type SensorInstance,
 } from "@dnd-kit/core";
 import { getEventCoordinates, isKeyboardEvent } from "@dnd-kit/utilities";
 import { getDragActivationConstraints } from "./drag-reorder";
@@ -48,6 +50,73 @@ const DRAG_ACTIVATION_CONFIG = {
   touchHoldTolerance: 8,
 };
 const containerStyle: CSSProperties = { position: "relative" };
+const KEYBOARD_END_CODES = new Set(["Space", "Enter", "Tab"]);
+const KEYBOARD_CANCEL_CODES = new Set(["Escape"]);
+
+/**
+ * dnd-kit's KeyboardSensor attaches its keydown listener on a timer after pickup. Chrome can
+ * dispatch a queued key before that timer fires, so an arrow pressed right after Space was lost
+ * and the move showed no line. This sensor listens at once and skips only the activating key.
+ * It reuses dnd-kit's activator; the list's coordinate getter owns scrolling and positions.
+ */
+class ImmediateKeyboardSensor implements SensorInstance {
+  static activators = KeyboardSensor.activators;
+  autoScrollEnabled = false;
+  private reference: { x: number; y: number } | null = null;
+  private readonly document: Document;
+  private readonly window: Window;
+
+  constructor(private readonly props: KeyboardSensorProps) {
+    const target = props.event.target as Node | null;
+    this.document = target?.ownerDocument ?? document;
+    this.window = this.document.defaultView ?? window;
+    props.activeNode.node.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    props.onStart({ x: 0, y: 0 });
+    this.document.addEventListener("keydown", this.handleKeyDown);
+    this.window.addEventListener("resize", this.handleCancel);
+    this.document.addEventListener("visibilitychange", this.handleCancel);
+  }
+
+  private readonly handleKeyDown = (event: KeyboardEvent) => {
+    if (event === this.props.event) return;
+    if (KEYBOARD_END_CODES.has(event.code)) {
+      event.preventDefault();
+      this.detach();
+      this.props.onEnd();
+      return;
+    }
+    if (KEYBOARD_CANCEL_CODES.has(event.code)) {
+      this.handleCancel(event);
+      return;
+    }
+    const { active, context, options } = this.props;
+    const { collisionRect } = context.current;
+    const current = collisionRect
+      ? { x: collisionRect.left, y: collisionRect.top }
+      : { x: 0, y: 0 };
+    this.reference ??= current;
+    const next = options.coordinateGetter?.(event, {
+      active,
+      context: context.current,
+      currentCoordinates: current,
+    });
+    if (!next) return;
+    event.preventDefault();
+    this.props.onMove({ x: next.x - this.reference.x, y: next.y - this.reference.y });
+  };
+
+  private readonly handleCancel = (event: Event) => {
+    event.preventDefault();
+    this.detach();
+    this.props.onCancel();
+  };
+
+  private detach() {
+    this.document.removeEventListener("keydown", this.handleKeyDown);
+    this.window.removeEventListener("resize", this.handleCancel);
+    this.document.removeEventListener("visibilitychange", this.handleCancel);
+  }
+}
 const LINE_THICKNESS = 2;
 
 type TreeIndicator =
@@ -457,7 +526,7 @@ export function DraggableTreeList<T, P extends DraggableTreePlacement>({
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: activation.mouse }),
     useSensor(TouchSensor, { activationConstraint: activation.touch }),
-    useSensor(KeyboardSensor, { coordinateGetter: keyboardCoordinates }),
+    useSensor(ImmediateKeyboardSensor, { coordinateGetter: keyboardCoordinates }),
   );
   const externalIds = useMemo(
     () => new Set(externalDrop?.targets.map((target) => target.id)),

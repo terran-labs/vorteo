@@ -129,7 +129,7 @@ describe("buildSidebarProjection", () => {
       for (const group of projection.workspaceGroups) {
         for (const entry of group.rows) renderedProjectViewKeys.add(entry.projectViewKey);
       }
-      for (const project of projection.pinnedGroups.unpinnedProjects) {
+      for (const project of projection.pinnedGroups.projects) {
         renderedProjectViewKeys.add(project.viewKey);
         for (const entry of project.workspaces) renderedProjectViewKeys.add(entry.projectViewKey);
       }
@@ -145,34 +145,38 @@ describe("buildSidebarProjection", () => {
     expect(projection.pinnedGroups.pinnedChats.map((entry) => entry.workspaceId)).toEqual([
       "pinned",
     ]);
-    const remainingProject = projection.pinnedGroups.unpinnedProjects[0];
-    expect(remainingProject?.workspaces.map((entry) => entry.workspaceId)).toEqual(["unpinned"]);
+    // The pinned chat stays in its project too, but keeps the number it has under Pinned.
+    const project = projection.pinnedGroups.projects[0];
+    expect(project?.workspaces.map((entry) => entry.workspaceId)).toEqual(["pinned", "unpinned"]);
     expect(projection.shortcutModel.shortcutTargets).toEqual([
       { serverId: "srv", workspaceId: "pinned" },
       { serverId: "srv", workspaceId: "unpinned" },
     ]);
   });
 
-  it("keeps pinned chats above status groups and removes them from those groups", () => {
+  it("keeps pinned chats above status groups and in those groups", () => {
     const projection = buildSidebarProjection(projectionInput({ groupMode: "status" }));
 
-    expect(projection.workspaceGroups.map((group) => group.key)).toEqual(["needs_input"]);
-    expect(projection.workspaceGroups[0]?.rows.map((entry) => entry.workspaceId)).toEqual([
-      "unpinned",
+    expect(projection.workspaceGroups.map((group) => group.key)).toEqual([
+      "needs_input",
+      "running",
     ]);
+    expect(groupedRowIds(projection)).toEqual(["unpinned", "pinned"]);
+    // The pinned chat keeps the number it has under Pinned instead of taking a second one.
     expect(projection.shortcutModel.shortcutTargets).toEqual([
       { serverId: "srv", workspaceId: "pinned" },
       { serverId: "srv", workspaceId: "unpinned" },
     ]);
   });
 
-  it("does not number pinned chats while the pinned section is collapsed", () => {
+  it("numbers pinned chats in place while the pinned section is collapsed", () => {
     const projection = buildSidebarProjection(
       projectionInput({ groupMode: "status", pinnedCollapsed: true }),
     );
 
     expect(projection.shortcutModel.shortcutTargets).toEqual([
       { serverId: "srv", workspaceId: "unpinned" },
+      { serverId: "srv", workspaceId: "pinned" },
     ]);
   });
 });
@@ -229,7 +233,7 @@ function groupedRowIds(projection: ReturnType<typeof buildSidebarProjection>) {
 }
 
 function projectWorkspaceIds(projection: ReturnType<typeof buildSidebarProjection>) {
-  return projection.pinnedGroups.unpinnedProjects.map((project) => [
+  return projection.pinnedGroups.projects.map((project) => [
     project.viewKey,
     project.workspaces.map((workspace) => workspace.workspaceId),
   ]);

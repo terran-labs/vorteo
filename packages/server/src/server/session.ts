@@ -24,6 +24,8 @@ import { assertWorkspaceEnvironment } from "./execution-installation/settings/pr
 import {
   projectsFolderPolicyFor,
   ProjectsFolderError,
+  toLogicalProjectsPath,
+  projectsFolderLocation,
   type ProjectsFolderConfig,
   type ProjectsFolderPolicy,
 } from "./projects-folder.js";
@@ -276,7 +278,7 @@ import {
   matchesAgentUpdatesFilter,
   type AgentUpdatesService,
 } from "./session/agent-updates/agent-updates-service.js";
-import { expandTilde } from "../utils/path.js";
+import { areEquivalentPaths, expandTilde } from "../utils/path.js";
 import {
   searchDirectoryEntries,
   WORKSPACE_SEARCH_HIDDEN_DIRECTORIES,
@@ -3502,6 +3504,10 @@ export class Session {
         return this.handleWorkspaceTitleSetRequest(msg.workspaceId, msg.title, msg.requestId);
       case "workspace.project.set.request":
         return this.handleWorkspaceProjectSetRequest(msg);
+      case "project.sync.list.request":
+        return this.handleProjectSyncListRequest(msg.requestId);
+      case "project.sync.apply.request":
+        return this.handleProjectSyncApplyRequest(msg);
       case "workspace.lifecycle.set.request":
         return this.handleWorkspaceLifecycleSetRequest(msg);
       case "workspace.pin.set.request":
@@ -4512,7 +4518,9 @@ export class Session {
         const hasAssignedWorkspaces = projectWorkspaces.some(
           (workspace) => !workspace.archivedAt && workspace.projectMembership,
         );
-        if (hasAssignedWorkspaces) {
+        // A synchronized project keeps an archived record, so installation synchronization
+        // reads the removal instead of restoring the project from another host.
+        if (hasAssignedWorkspaces || project?.projectKeyPinned) {
           await this.projectRegistry.archive(resolvedProjectId, new Date().toISOString());
         } else {
           await this.projectRegistry.remove(resolvedProjectId);
@@ -4704,17 +4712,22 @@ export class Session {
     try {
       // Moving the local project with the group keeps a group from spanning several local
       // projects on one host, which would leave it without a usable folder for new workspaces.
+      const target =
+        msg.projectId !== undefined ? await this.projectRegistry.get(msg.projectId) : null;
       if (msg.projectId !== undefined) {
-        const target = await this.projectRegistry.get(msg.projectId);
         if (!target) throw new Error("That project no longer exists on this host.");
         if (target.archivedAt) throw new Error("Restore that project before moving work into it.");
       }
       const updated = await this.workspaceRegistry.update(msg.workspaceId, (workspace) => {
         assertWorkspaceNotFactoryManaged(workspace);
         if (workspace.archivedAt) throw new Error("Restore this workspace before moving it.");
-        // Repository checkouts and worktrees belong to their repository's project; only plain
-        // folders follow their group to another local project.
-        if (msg.projectId !== undefined && workspace.kind !== "directory") {
+        // Repository checkouts and worktrees belong to their repository's project, so they move
+        // only into it, which repairs one filed elsewhere. Plain folders follow their group.
+        if (
+          msg.projectId !== undefined &&
+          workspace.kind !== "directory" &&
+          !(target && isWorkspaceRepositoryProject(workspace, target))
+        ) {
           throw new Error(
             "Repository checkouts and worktrees stay with their repository's project.",
           );
@@ -4740,6 +4753,162 @@ export class Session {
       },
     });
     if (error === null) await this.emitWorkspaceUpdatesForWorkspaceIds([msg.workspaceId]);
+  }
+
+  /** Installation project synchronization: this host's projects, as the coordinator plans them. */
+  private async handleProjectSyncListRequest(requestId: string): Promise<void> {
+    try {
+      const folder = this.projectsFolder?.config ?? null;
+      const projects = (await this.projectRegistry.list()).map((project) => ({
+        projectId: project.projectId,
+        projectKey: project.projectKey,
+        projectKeyPinned: project.projectKeyPinned === true,
+        rootPath: project.rootPath,
+        // Kept paths, such as a Factory-bound root, still name a folder inside Projects.
+        logicalRootPath: folder
+          ? toLogicalProjectsPath({ root: folder.root, aliases: folder.aliases }, project.rootPath)
+          : project.rootPath,
+        kind: project.kind,
+        displayName: project.displayName,
+        customName: project.customName,
+        archived: project.archivedAt !== null,
+        system: project.systemProject !== undefined,
+        factory: project.factoryInstallation !== undefined,
+        previousKeys: project.previousProjectKeys?.length ? project.previousProjectKeys : undefined,
+        createdAt: project.createdAt,
+      }));
+      this.emit({
+        type: "project.sync.list.response",
+        payload: { requestId, projectsRoot: folder?.root ?? null, projects, error: null },
+      });
+    } catch (error) {
+      this.emit({
+        type: "project.sync.list.response",
+        payload: {
+          requestId,
+          projectsRoot: null,
+          projects: [],
+          error: getErrorMessageOr(error, "Failed to list projects"),
+        },
+      });
+    }
+  }
+
+  /**
+   * Applies the installation's project synchronization changes in order. Each change stands
+   * alone, so one refusal, such as a folder missing on this host, leaves the others applied.
+   */
+  private async handleProjectSyncApplyRequest(
+    msg: Extract<SessionInboundMessage, { type: "project.sync.apply.request" }>,
+  ): Promise<void> {
+    const results: { applied: boolean; projectId: string | null; error: string | null }[] = [];
+    const changedProjects = new Set<string>();
+    const changedWorkspaces = new Set<string>();
+    for (const change of msg.changes) {
+      try {
+        const projectId = await this.applyProjectSyncChange(change, changedWorkspaces);
+        if (projectId) changedProjects.add(projectId);
+        results.push({ applied: true, projectId, error: null });
+      } catch (error) {
+        this.sessionLogger.warn({ err: error, change }, "Project synchronization change refused");
+        results.push({
+          applied: false,
+          projectId: null,
+          error: getErrorMessageOr(error, "Project synchronization change failed"),
+        });
+      }
+    }
+    this.emit({
+      type: "project.sync.apply.response",
+      payload: { requestId: msg.requestId, results, error: null },
+    });
+    for (const projectId of changedProjects) {
+      const project = await this.projectRegistry.get(projectId);
+      if (project) await this.emitProjectUpdate({ kind: "upsert", project });
+    }
+    const workspaces = await this.workspaceRegistry.list();
+    for (const workspace of workspaces) {
+      if (changedProjects.has(workspace.projectId)) changedWorkspaces.add(workspace.workspaceId);
+    }
+    if (changedWorkspaces.size > 0)
+      await this.emitWorkspaceUpdatesForWorkspaceIds([...changedWorkspaces]);
+  }
+
+  /** Points matching workspaces' memberships at `to`. Factory-managed workspaces keep theirs. */
+  private async moveProjectMemberships(
+    matches: (workspace: PersistedWorkspaceRecord) => boolean,
+    from: string,
+    to: string,
+    now: string,
+    changedWorkspaces: Set<string>,
+  ): Promise<void> {
+    for (const workspace of await this.workspaceRegistry.list()) {
+      if (workspace.projectMembership?.key !== from || workspace.factoryMembership) continue;
+      if (!matches(workspace)) continue;
+      await this.workspaceRegistry.update(workspace.workspaceId, (current) =>
+        current.projectMembership?.key === from
+          ? {
+              ...current,
+              projectMembership: { ...current.projectMembership, key: to },
+              updatedAt: now,
+            }
+          : current,
+      );
+      changedWorkspaces.add(workspace.workspaceId);
+    }
+  }
+
+  private async applyProjectSyncChange(
+    change: Extract<
+      SessionInboundMessage,
+      { type: "project.sync.apply.request" }
+    >["changes"][number],
+    changedWorkspaces: Set<string>,
+  ): Promise<string | null> {
+    const setKey = this.projectRegistry.setSynchronizedKey?.bind(this.projectRegistry);
+    if (!setKey) throw new Error("Project synchronization is unavailable on this host.");
+    const now = new Date().toISOString();
+    if (change.kind === "set_key") {
+      const before = await this.projectRegistry.get(change.projectId);
+      const project = await setKey(change.projectId, change.projectKey, now);
+      if (!project) throw new Error("That project no longer exists on this host.");
+      // This project's own workspaces follow its new key even when another folder keeps the
+      // old one, as when a second clone of a repository gets its own identity.
+      const previous = before?.projectKey;
+      if (previous && previous !== project.projectKey)
+        await this.moveProjectMemberships(
+          (workspace) => workspace.projectId === project.projectId,
+          previous,
+          project.projectKey ?? change.projectKey,
+          now,
+          changedWorkspaces,
+        );
+      return project.projectId;
+    }
+    if (change.kind === "rename_key") {
+      await this.moveProjectMemberships(() => true, change.from, change.to, now, changedWorkspaces);
+      await this.sidebarState?.renameProjectKey(change.from, change.to);
+      return null;
+    }
+    const cwd = expandTilde(change.rootPath);
+    if (!(await this.filesystem.isDirectory(cwd).catch(() => false)))
+      throw new Error(`Directory not found on this host: ${cwd}`);
+    const projects = await this.projectRegistry.list();
+    const atRoot = projects.filter((project) => areEquivalentPaths(project.rootPath, cwd));
+    // The owner archived it here; synchronization never brings a project back.
+    if (atRoot.length > 0 && atRoot.every((project) => project.archivedAt))
+      throw new Error("That project is archived on this host.");
+    const rejection = await this.rejectNewProjectOutsideProjectsFolder(cwd);
+    if (rejection) throw new Error(rejection.message);
+    const created = await this.workspaceProvisioning.findOrCreateProjectForDirectory(cwd);
+    if (change.customName && !created.customName)
+      await this.projectRegistry.update(created.projectId, (current) => ({
+        ...current,
+        customName: change.customName,
+        updatedAt: now,
+      }));
+    await setKey(created.projectId, change.projectKey, now);
+    return created.projectId;
   }
 
   private async handleWorkspaceLifecycleSetRequest(
@@ -10367,4 +10536,19 @@ function createHostSession(options: SessionOptions, session: Session): Connected
 
 function hostSource(options: SessionOptions): string {
   return options.sourceId ?? "owner";
+}
+
+/** Whether a checkout or worktree belongs in `project`: the project's folder is its repository. */
+function isWorkspaceRepositoryProject(
+  workspace: PersistedWorkspaceRecord,
+  project: PersistedProjectRecord,
+): boolean {
+  const repositoryRoot = workspace.mainRepoRoot ?? workspace.worktreeRoot;
+  return (
+    repositoryRoot !== null &&
+    areEquivalentPaths(
+      projectsFolderLocation(repositoryRoot),
+      projectsFolderLocation(project.rootPath),
+    )
+  );
 }

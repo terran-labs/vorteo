@@ -128,3 +128,25 @@ test("names hosts only when questions come from more than one", () => {
   expect(threads.map((item) => item.hostLabel).sort()).toEqual(["DEV", "HOST"]);
   expect(new Set(threads.map((item) => item.key)).size).toBe(2);
 });
+
+test("counts an installation update that waits for the owner, but not one in progress", () => {
+  const upgrade = {
+    id: "0b6c9f4e-6c39-4e6e-9f6e-7a5d3c2b1a00",
+    revision: "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+    release: "release-26.10.3002",
+    sourceCommit: "a".repeat(40),
+    previousCommit: null,
+    createdAt: "2026-10-30T00:00:00.000Z",
+    status: "pending" as const,
+    detail: "",
+    steps: [],
+  };
+  const threads = collectThreadQuestions([
+    host("host", [
+      { id: "a", title: "A", workspaceId: "w1", archivedAt: null, questions: [question("q1")] },
+    ]),
+  ]);
+  expect(globalOpenQuestionCount(threads, { kind: "question", upgrade })).toBe(2);
+  expect(globalOpenQuestionCount([], { kind: "notice", upgrade })).toBe(1);
+  expect(globalOpenQuestionCount(threads, { kind: "progress", upgrade })).toBe(1);
+});
