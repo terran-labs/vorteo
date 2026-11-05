@@ -89,6 +89,7 @@ import {
 import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
+import { ThreadChromeSwitch } from "@/composer/agent-controls/thread-chrome-switch";
 import { CompactModelSheet } from "@/composer/agent-controls/model-sheet";
 import {
   useAgentProfileEditor,
@@ -1780,6 +1781,11 @@ export const AgentControls = memo(function AgentControls({
     },
     [agentId, agentProvider, client, toast, updatePreferences],
   );
+  // Sets a feature on this thread only, without saving it as a provider preference.
+  const setThreadFeature = useCallback(
+    (featureId: string, value: unknown) => client?.setAgentFeature(agentId, featureId, value),
+    [agentId, client],
+  );
 
   const commandCenterControls = useMemo<AgentControlCommandCenterSource>(
     () => ({
@@ -1892,6 +1898,12 @@ export const AgentControls = memo(function AgentControls({
           isCompactLayout={isCompactLayout}
         />
       )}
+      <ThreadChromeSwitch
+        visible={presetPicker !== null}
+        features={agent.features}
+        disabled={!client}
+        setFeature={setThreadFeature}
+      />
     </>
   );
 });

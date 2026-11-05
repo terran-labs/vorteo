@@ -3,8 +3,10 @@ import {
   UPGRADE_STEP_LABELS,
   type InstallationSnapshot,
   type InstallationUpgrade,
+  type ReleaseNotes,
   type SnapshotList,
   type SnapshotPartKind,
+  type UpgradeDecision,
   type UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
 
@@ -103,26 +105,121 @@ export function latestFinishedUpgrade(
   return newestUpgrades(status).find((upgrade) => !upgradeIsActive(upgrade)) ?? null;
 }
 
+/** The coordinator reports an update policy, so it accepts the policy routes and decisions. */
+export function supportsUpdatePolicy(status: UpgradeStatus | null | undefined): boolean {
+  return status?.policy !== undefined;
+}
+
 /**
  * The release to offer, or null. Offers need a coordinator that supports upgrades, a newer
- * published release and no upgrade already waiting or running.
+ * published release and no upgrade already waiting or running. A coordinator with an update
+ * policy checks its own channel, so its check replaces the app's stable-only GitHub check.
  */
 export function upgradeOffer(input: {
   status: UpgradeStatus | null | undefined;
   latestRelease: string | undefined;
   updateAvailable: boolean;
 }): string | null {
-  const { status, latestRelease } = input;
-  if (!status?.available || !latestRelease || !input.updateAvailable) return null;
+  const { status } = input;
+  if (!status?.available) return null;
+  const appRelease = input.updateAvailable ? input.latestRelease : undefined;
+  const latestRelease = supportsUpdatePolicy(status) ? status.check?.latest?.release : appRelease;
+  if (!latestRelease) return null;
   if (status.current?.release === latestRelease) return null;
   if (activeUpgrade(status)) return null;
   return latestRelease;
 }
 
-export function upgradeApprovalText(hasDev: boolean): string {
-  return hasDev
-    ? "Approval takes a safety snapshot, then restarts the Host daemon, replaces the installation coordinator and recreates the Dev container. Running agents are interrupted."
-    : "Approval takes a safety snapshot, then restarts the Host daemon and replaces the installation coordinator. Running agents are interrupted.";
+/** What approval does. `whenIdle` describes the path that waits for agents to finish. */
+export function upgradeApprovalText(hasDev: boolean, whenIdle = false): string {
+  const replaces = hasDev
+    ? "restarts the Host daemon, replaces the installation coordinator and recreates the Dev container"
+    : "restarts the Host daemon and replaces the installation coordinator";
+  const agents = whenIdle
+    ? "Install after current work holds new work and waits for running turns and Dev agents to finish."
+    : "Running agents are interrupted.";
+  return `Approval takes a safety snapshot, then ${replaces}. ${agents}`;
+}
+
+/** Decisions to offer for a pending upgrade, primary first. Older coordinators only approve now. */
+export function pendingUpgradeDecisions(
+  status: UpgradeStatus | null | undefined,
+): UpgradeDecision["decision"][] {
+  return supportsUpdatePolicy(status)
+    ? ["approve-after-work", "approve", "reject"]
+    : ["approve", "reject"];
+}
+
+/**
+ * What the owner can decide on an upgrade. Pending ones offer the install choices; one waiting
+ * for current work offers Install now, which ends the wait on coordinators with update policies.
+ */
+export function upgradeDecisions(
+  status: UpgradeStatus | null | undefined,
+  upgrade: InstallationUpgrade,
+): UpgradeDecision["decision"][] {
+  if (upgrade.status === "pending") return pendingUpgradeDecisions(status);
+  const waiting =
+    (upgrade.status === "approved" || upgrade.status === "running") &&
+    upgrade.restart === "after-work";
+  return waiting && supportsUpdatePolicy(status) ? ["approve"] : [];
+}
+
+/** "release-26.10.3001-beta" reads as "26.10.3001 beta". */
+export function releaseVersionLabel(release: string): string {
+  return release.replace(/^release-/, "").replace(/-beta$/, " beta");
+}
+
+/**
+ * The installation update the owner should see beside open questions: a pending upgrade to
+ * decide, an automatic upgrade that finished and was not dismissed, or one in progress.
+ * Questions and notices wait for the owner; progress is shown without counting.
+ */
+export type InstallationUpdateEntry =
+  | { kind: "question"; upgrade: InstallationUpgrade }
+  | { kind: "notice"; upgrade: InstallationUpgrade }
+  | { kind: "progress"; upgrade: InstallationUpgrade };
+
+export function installationUpdateEntry(
+  status: UpgradeStatus | null | undefined,
+): InstallationUpdateEntry | null {
+  if (!status?.available) return null;
+  const active = activeUpgrade(status);
+  if (active?.status === "pending") return { kind: "question", upgrade: active };
+  if (active) return { kind: "progress", upgrade: active };
+  // Acknowledging needs the policy routes; older coordinators never upgrade automatically.
+  if (!supportsUpdatePolicy(status)) return null;
+  const finished = latestFinishedUpgrade(status);
+  if (
+    finished?.automatic &&
+    (finished.status === "succeeded" || finished.status === "failed") &&
+    !finished.acknowledgedAt
+  )
+    return { kind: "notice", upgrade: finished };
+  return null;
+}
+
+/** The upgrade's own notes, or the update check's notes for the same release. */
+export function upgradeNotes(
+  status: UpgradeStatus | null | undefined,
+  upgrade: InstallationUpgrade,
+): ReleaseNotes | null {
+  if (upgrade.notes) return upgrade.notes;
+  const latest = status?.check?.latest;
+  return latest?.release === upgrade.release ? latest.notes : null;
+}
+
+/** Why a finished upgrade failed: its own detail, or the step that failed. */
+export function upgradeFailureDetail(upgrade: InstallationUpgrade): string {
+  if (upgrade.detail) return upgrade.detail;
+  const step = upgrade.steps.find((entry) => entry.status === "failed");
+  if (!step) return "No detail was reported.";
+  const label = UPGRADE_STEP_LABELS[step.name];
+  return step.detail ? `${label}: ${step.detail}` : `${label} failed.`;
+}
+
+export function installationUpdateNeedsOwner(entry: InstallationUpdateEntry | null): boolean {
+  return entry?.kind === "question" || entry?.kind === "notice";
 }
 
 const UPGRADE_STATUS_LABELS: Record<InstallationUpgrade["status"], string> = {

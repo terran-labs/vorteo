@@ -81,6 +81,7 @@ export function buildConfigOverrides(record: StoredAgentRecord): Partial<AgentSe
     usageLimitHold: config.usageLimitHold,
     quotaReserve: config.quotaReserve,
     mcpServers: config.mcpServers ?? undefined,
+    ...(config.toolAccess === "none" ? { toolAccess: "none" as const } : {}),
   });
 }
 
@@ -108,6 +109,7 @@ export function buildSessionConfig(
     usageLimitHold: overrides.usageLimitHold,
     quotaReserve: overrides.quotaReserve,
     mcpServers: overrides.mcpServers,
+    ...(overrides.toolAccess === "none" ? { toolAccess: "none" as const } : {}),
   });
 }
 

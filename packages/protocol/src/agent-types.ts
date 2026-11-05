@@ -583,12 +583,17 @@ export interface AgentSessionConfig {
   providerOptions?: ProviderOptions;
   toolPolicy?: ToolPolicy;
   mcpServers?: Record<string, McpServerConfig>;
+  /** "none" launches a Claude-family agent that cannot call any tool. Owner-only, set at creation. */
+  toolAccess?: AgentToolAccessSetting;
   /**
    * Internal agents are hidden from listings and don't trigger notifications.
    * They are used for ephemeral system tasks like commit/PR generation.
    */
   internal?: boolean;
 }
+
+/** The only stored tool access setting; absence means the provider's default tools. */
+export type AgentToolAccessSetting = "none";
 
 export interface AgentRuntimeInfo {
   provider: AgentProvider;
