@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Scroll edge fades: The sidebar workspace list now fades under its top and bottom dividers while more workspaces lie past them, through a shared scroll edge fade hook.
+
 Maintenance review (2026-11-05): live tweak by Redesign lower left sidebar layout: Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
 
 Maintenance review (2026-11-04): live tweak by builds: Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.

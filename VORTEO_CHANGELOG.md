@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- The sidebar workspace list now fades under its top and bottom dividers while more workspaces lie past them, through a shared scroll edge fade hook.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
 
 ## Unreleased - 2026-11-04

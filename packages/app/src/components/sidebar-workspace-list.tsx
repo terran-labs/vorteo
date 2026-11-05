@@ -23,6 +23,7 @@ import { DiffStat } from "@/components/diff-stat";
 import { aggregateProjectTasks, type ProjectTaskSummary } from "./sidebar/project-task-summary";
 import { useVortonTouch, VORTON_ACTION_SLOT } from "@/vorton-touch";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { useScrollEdgeFade } from "@/components/ui/scroll-edge-fade";
 import {
   View,
   Text,
@@ -3596,6 +3597,8 @@ function ProjectModeListContent({
       />
     );
 
+  // Rows dissolve under the dividers above and below the list while more lies past them.
+  const edgeFadeRef = useScrollEdgeFade();
   const content = (
     <>
       {listTopComponent}
@@ -3670,6 +3673,7 @@ function ProjectModeListContent({
           </NestableScrollContainer>
         ) : (
           <ScrollView
+            ref={edgeFadeRef}
             style={styles.list}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
