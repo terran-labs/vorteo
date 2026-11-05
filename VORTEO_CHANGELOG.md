@@ -8,6 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- The secret scan allowlists a random test request ID in one earlier commit, so pushes are no longer blocked by it.
 - The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
 - Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
 - The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.

@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): added a narrow gitleaks allowlist entry for a random test request UUID in one live commit's Claude reset test, matching the entry on `live/main`, so the all-refs pre-push secret scan passes. Tooling only; product functionality, README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): simplified the review hourglass. Each bulb's sand is the bulb's whole interior and the bottom bulb mirrors the top, so the loop turns over without a jump; drain and pile share one linear timing on web and native, and the stream's first grain falls under gravity. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
