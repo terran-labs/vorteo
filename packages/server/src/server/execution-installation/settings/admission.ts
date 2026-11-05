@@ -111,6 +111,7 @@ const ClientConfigSchema = z.object({
 
 export function createInstallationSettingsReader(
   configFile: string | undefined,
+  fetchAdmission: typeof fetch = fetch,
 ): InstallationSettingsReader {
   const config = configFile
     ? ClientConfigSchema.parse(JSON.parse(readFileSync(configFile, "utf8")))
@@ -143,7 +144,7 @@ export function createInstallationSettingsReader(
       const url = new URL("/api/installation/settings/admission?projectPolicies=1", config.origin);
       let response: Response;
       try {
-        response = await fetch(url, {
+        response = await fetchAdmission(url, {
           headers: { Authorization: `Bearer ${config.token}` },
           redirect: "error",
           signal: AbortSignal.timeout(ADMISSION_TIMEOUT_MS),

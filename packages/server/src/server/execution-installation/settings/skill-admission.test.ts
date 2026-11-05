@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, test, vi } from "vitest";
+import { expect, test } from "vitest";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
 import type { SkillPreview } from "@getpaseo/protocol/skill-library";
 import {
@@ -112,11 +112,11 @@ test("a timed-out admission read names the unreachable origin and keeps the caus
   const origin = "https://coordinator.example:8443";
   writeFileSync(configFile, JSON.stringify({ origin, token: "secret-token", kind: "host-agent" }));
   const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
-  vi.stubGlobal("fetch", async () => {
+  const fetchAdmission: typeof fetch = async () => {
     throw timeout;
-  });
+  };
   try {
-    const error = await createInstallationSettingsReader(configFile)
+    const error = await createInstallationSettingsReader(configFile, fetchAdmission)
       .read({
         installationId: "4c07b582-7d41-4be4-9725-36f975708983",
         serverId: "host",
@@ -129,7 +129,6 @@ test("a timed-out admission read names the unreachable origin and keeps the caus
     expect((error as Error).message).not.toContain("secret-token");
     expect((error as Error).cause).toBe(timeout);
   } finally {
-    vi.unstubAllGlobals();
     rmSync(dir, { recursive: true, force: true });
   }
 });

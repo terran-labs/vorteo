@@ -1,6 +1,6 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-05): a timed-out settings admission read raises the existing installation settings admission error naming the unreachable coordinator origin, with the timeout kept as its cause; callers already surface that error's message, so logs and failed requests now show the cause. Other fetch failures are unchanged. Source only; not installed. README overview and onboarding are unchanged.
+Maintenance review (2026-11-05): a timed-out settings admission read raises the existing installation settings admission error naming the unreachable coordinator origin, with the timeout kept as its cause; callers already surface that error's message, so logs and failed requests now show the cause. Other fetch failures are unchanged. The reader takes an optional fetch implementation so its test injects a fake instead of replacing the global. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
 

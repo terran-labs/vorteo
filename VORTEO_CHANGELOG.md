@@ -10,6 +10,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - A settings admission read that times out now reports which installation coordinator origin did not respond, keeping the timeout as its cause, instead of logging a bare `TimeoutError`.
 
+### Tests
+
+- The settings admission timeout test injects a fake fetch into the settings reader instead of replacing the global `fetch`.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
