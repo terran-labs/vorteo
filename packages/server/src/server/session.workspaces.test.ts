@@ -2896,6 +2896,70 @@ test("timeline requests read saved history without resuming an unavailable provi
   );
 });
 
+test.each([false, true])(
+  "provider subagent polling never loads a thread (previous load failed: %s)",
+  async (previousLoadFailed) => {
+    const startSession = vi.fn(async () => {
+      throw new Error("thread not loaded");
+    });
+    const session = createSessionForWorkspaceTests({
+      agentManager: {
+        getRegisteredProviderIds: () => ["codex"],
+        waitForAgentClose: async () => {},
+        needsTimelineHydration: () => false,
+        createAgent: startSession,
+        resumeAgentFromPersistence: startSession,
+      },
+    });
+    const record = makeStoredAgent({
+      id: "broken-parent",
+      cwd: "/tmp/missing-worktree",
+      updatedAt: "2026-11-04T21:03:00.000Z",
+    });
+    session.agentStorage.get = async () => record;
+    const emitted: unknown[] = [];
+    session.emit = (message) => emitted.push(message);
+
+    if (previousLoadFailed) {
+      await session.handleMessage({
+        type: "agent.timeline.list_prompts.request",
+        requestId: "initial-load",
+        agentId: record.id,
+      });
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(emitted).toContainEqual({
+        type: "agent.timeline.list_prompts.response",
+        payload: {
+          requestId: "initial-load",
+          agentId: record.id,
+          epoch: "",
+          prompts: [],
+          error: "thread not loaded",
+        },
+      });
+      emitted.length = 0;
+      startSession.mockClear();
+    }
+
+    // Consecutive polls never retry a failed load, regardless of elapsed time.
+    for (const requestId of ["poll-1", "poll-2", "poll-3"]) {
+      await session.handleMessage({
+        type: "agent.provider_subagents.list.request",
+        requestId,
+        parentAgentId: record.id,
+      });
+    }
+
+    expect(startSession).not.toHaveBeenCalled();
+    expect(emitted).toEqual(
+      ["poll-1", "poll-2", "poll-3"].map((requestId) => ({
+        type: "agent.provider_subagents.list.response",
+        payload: { requestId, parentAgentId: record.id, subagents: [], error: null },
+      })),
+    );
+  },
+);
+
 test("active directory retains scheduled history when its saved provider is unavailable", async () => {
   const session = createSessionForWorkspaceTests({ appVersion: "0.1.45" });
   const now = "2026-03-01T12:00:00.000Z";

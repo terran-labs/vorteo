@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Listing a thread's provider subagents no longer starts or resumes its provider session. Sidebar polling no longer retries threads that cannot load. An unloaded thread now answers at once with no subagents; opening the thread loads it, and its subagents arrive through live updates.
+
 ## Unreleased - 2026-11-03
 
 ### Maintenance
