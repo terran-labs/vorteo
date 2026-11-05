@@ -4,6 +4,10 @@ Maintenance review (2026-11-05): OAuth upgrade verification now requires a reada
 
 Maintenance review (2026-11-05): Claude connection reliability repair pins CLI 2.1.318, makes managed health checks passive, and preserves refresh recovery through temporary failures. Credential read errors no longer imply sign-out; completed refreshes are adopted even after request failure. Queued dependent messages stop on failed turns, and Claude (CLI) is distinct from installation accounts with one creation flow. Focused regression checks pass; installation and sustained live refresh acceptance remain pending. README overview and onboarding are unchanged.
 
+Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): live checkout preparation now runs `build:server` before `build:app-deps`, because the commit hook typechecks `packages/cli` against the server's built declarations and the first live commit on VortLab failed without them. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): merged current `main` into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
@@ -28,6 +32,9 @@ Maintenance review (2026-11-04): owner answers to open questions steer into a bu
 Maintenance review (2026-11-04): the heavy-job queue uses an atomic populated-directory rename for exclusive slot ownership and recovers dead owners without deleting successor claims. Ticket rewrites are atomic. The CLI and environment variables are unchanged. Not yet installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): trackpad dictation. A triple click anywhere in the window toggles dictation into the active message field and stops without sending, so a lone Magic Trackpad can drive dictation. Not yet installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): live tweak by Redesign lower left sidebar layout: Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
+
 Maintenance review (2026-11-04): live tweak by builds: Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
 
 Maintenance review (2026-11-04): merged main into the sidebar keyboard move fix again, bringing in the combined sidebar footer block and the Dev boot-entry switch fix. The only conflict was the changelog, which keeps every dated entry. The keyboard move fix is unchanged. README overview and onboarding are unchanged.
