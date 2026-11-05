@@ -10,7 +10,11 @@ import {
   type HandoffPorts,
 } from "./coordinator-handoff.js";
 import { createServiceControl } from "./service-control.js";
-import { createInstallationSnapshots, dockerSnapshotPorts } from "./snapshots.js";
+import {
+  createInstallationSnapshots,
+  dockerSnapshotPorts,
+  mountedHomeRestore,
+} from "./snapshots.js";
 
 // Detached helper started by the coordinator: node coordinator-handoff-main.js <plan.json>.
 const planFile = process.argv[2];
@@ -44,6 +48,7 @@ if (plan.kind === "coordinator-swap") {
     ...ports,
     snapshots,
     importDocker: dockerSnapshotPorts.importDocker,
+    mountedHome: mountedHomeRestore,
     writeStatus: (next) =>
       writePrivateFileAtomicSync(plan.statusFile, JSON.stringify(next, null, 2)),
   });

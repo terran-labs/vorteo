@@ -19,8 +19,12 @@ import {
   snapshotPartKinds,
   snapshotSources,
   devHomeThroughContainer,
+  mountedHomeScript,
+  type MountedHomeRestore,
   type SnapshotSource,
+  type StoredPart,
 } from "./snapshots.js";
+import { execFileSync } from "node:child_process";
 import { InstallationConfigSchema } from "./config.js";
 
 // Host snapshots and upgrades run only on macOS and Linux Hosts; Windows Hosts are #35.
@@ -256,6 +260,68 @@ posixTest(
   },
 );
 
+posixTest(
+  "a bind-mounted Dev home is replaced, then kept or put back with the restore",
+  async () => {
+    const source = {
+      type: "docker" as const,
+      kind: "dev-home" as const,
+      docker: "/usr/bin/docker",
+      container: "paseo-x-paseo-1",
+      path: "/home/paseo",
+      mounted: true as const,
+    };
+    const part = {
+      part: { kind: "dev-home", source: "docker:paseo-x-paseo-1:/home/paseo" },
+      source,
+      stored: "/snapshot/dev-home.tar",
+    } as unknown as StoredPart;
+    const run = async (failStart?: ManagedService) => {
+      const calls: string[] = [];
+      const mounted: MountedHomeRestore = {
+        replace: async (_source, file) => void calls.push(`replace ${file}`),
+        revert: async () => void calls.push("revert"),
+        discard: async () => void calls.push("discard"),
+      };
+      await executeRestore({
+        restoreId: "r1",
+        parts: [part],
+        steps: planRestore([part], true),
+        ports: {
+          services: recordingServices([], failStart),
+          snapshot: { importDocker: async () => void calls.push("overlay"), mounted },
+          verifyCoordinator: async () => undefined,
+          progress: () => undefined,
+        },
+      }).catch(() => calls.push("failed"));
+      return calls;
+    };
+    expect(await run()).toEqual(["replace /snapshot/dev-home.tar", "discard"]);
+    expect(await run("host")).toEqual(["replace /snapshot/dev-home.tar", "revert", "failed"]);
+  },
+);
+
+posixTest("the mounted home scripts replace, put back and discard the contents", () => {
+  const home = path.join(root, "home");
+  write(path.join(home, "old.txt"), "old");
+  write(path.join(home, ".config/settings"), "old settings");
+  const snapshot = path.join(root, "snapshot");
+  write(path.join(snapshot, "kept.txt"), "from snapshot");
+  const archive = path.join(root, "home.tar");
+  execFileSync("tar", ["-C", snapshot, "-cf", archive, "."]);
+  const sh = (action: "replace" | "revert" | "discard", input?: Buffer) =>
+    execFileSync("/bin/sh", ["-c", mountedHomeScript(action), "restore", home, "r1"], { input });
+  sh("replace", readFileSync(archive));
+  const entries = () => readdirSync(home).filter((name) => !name.startsWith(".before-restore-"));
+  expect(entries()).toEqual(["kept.txt"]);
+  sh("revert");
+  expect(readdirSync(home).sort()).toEqual([".config", "old.txt"]);
+  expect(readFileSync(path.join(home, ".config/settings"), "utf8")).toBe("old settings");
+  sh("replace", readFileSync(archive));
+  sh("discard");
+  expect(readdirSync(home)).toEqual(["kept.txt"]);
+});
+
 posixTest("snapshot sources follow the installation layout", () => {
   const { container } = installation();
   const config = InstallationConfigSchema.parse({
@@ -311,6 +377,7 @@ posixTest("snapshot sources follow the installation layout", () => {
     docker: "/usr/bin/docker",
     container: "paseo-x-paseo-1",
     path: "/home/paseo",
+    mounted: true,
   });
   expect(
     devHomeThroughContainer(linux, { platform: "darwin", docker: "/d", container: "c" }),

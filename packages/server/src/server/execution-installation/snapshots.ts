@@ -50,6 +50,11 @@ export const SnapshotSourceSchema = z.discriminatedUnion("type", [
     docker: z.string().startsWith("/"),
     container: z.string().min(1),
     path: z.string().startsWith("/"),
+    /**
+     * The path is a bind mount of the Host (Linux Dev's home). A restore then replaces
+     * its contents as root through Dev's own mounts, and puts them back on failure.
+     */
+    mounted: z.literal(true).optional(),
   }),
 ]);
 export type SnapshotSource = z.infer<typeof SnapshotSourceSchema>;
@@ -119,7 +124,7 @@ export function devContainerName(directory: string | undefined): string | null {
 /**
  * On Linux, Dev's bind-mounted home belongs to the container's user with private modes,
  * so the Host cannot read it. Its snapshot part goes through the running container
- * instead, and a restore unpacks it the same way (`importDocker`). Docker Desktop on
+ * instead, and a restore replaces it through Dev's mounts (`mountedHomeRestore`). Docker Desktop on
  * macOS shows the files as the Host user's, so the folder is copied there as before.
  */
 export function devHomeThroughContainer(
@@ -130,7 +135,14 @@ export function devHomeThroughContainer(
   if (platform !== "linux" || !docker || !container) return sources;
   return sources.map((source) =>
     source.type === "directory" && source.kind === "dev-home"
-      ? { type: "docker", kind: "dev-home", docker, container, path: DEV_HOME_IN_CONTAINER }
+      ? {
+          type: "docker",
+          kind: "dev-home",
+          docker,
+          container,
+          path: DEV_HOME_IN_CONTAINER,
+          mounted: true,
+        }
       : source,
   );
 }
@@ -385,9 +397,22 @@ export function planRestore(parts: readonly StoredPart[], hasDev: boolean): Rest
   ];
 }
 
+type DockerSource = Extract<SnapshotSource, { type: "docker" }>;
+
+/**
+ * Replaces a bind-mounted Dev home from a snapshot: its current contents move aside within
+ * the same mount, the snapshot unpacks with its owners, and the aside copy is put back
+ * after a failure or discarded once the whole restore succeeds.
+ */
+export interface MountedHomeRestore {
+  replace(source: DockerSource, file: string, restoreId: string): Promise<void>;
+  revert(source: DockerSource, restoreId: string): Promise<void>;
+  discard(source: DockerSource, restoreId: string): Promise<void>;
+}
+
 export interface RestorePorts {
   services: ServiceControl;
-  snapshot: Pick<SnapshotPorts, "importDocker">;
+  snapshot: Pick<SnapshotPorts, "importDocker"> & { mounted?: MountedHomeRestore };
   verifyCoordinator(): Promise<void>;
   progress(step: string): void;
 }
@@ -404,7 +429,9 @@ async function restorePart(
 ): Promise<void> {
   const { source, stored } = part;
   if (source.type === "docker") {
-    await ports.snapshot.importDocker(source, stored);
+    if (source.mounted && ports.snapshot.mounted)
+      await ports.snapshot.mounted.replace(source, stored, restoreId);
+    else await ports.snapshot.importDocker(source, stored);
     return;
   }
   if (source.type === "file") {
@@ -431,9 +458,12 @@ async function restorePart(
 }
 
 /** Puts a moved-aside part back after a failed restore. */
-function revertPart(part: StoredPart, restoreId: string): void {
+async function revertPart(part: StoredPart, restoreId: string, ports: RestorePorts) {
   const { source } = part;
-  if (source.type === "docker") return;
+  if (source.type === "docker") {
+    if (source.mounted) await ports.snapshot.mounted?.revert(source, restoreId);
+    return;
+  }
   const aside = asideName(source.path, restoreId);
   if (!existsSync(aside)) return;
   if (source.type === "directory" && source.excludeTopLevel?.length) {
@@ -449,8 +479,11 @@ function revertPart(part: StoredPart, restoreId: string): void {
   renameSync(aside, source.path);
 }
 
-function discardAside(part: StoredPart, restoreId: string): void {
-  if (part.source.type === "docker") return;
+async function discardAside(part: StoredPart, restoreId: string, ports: RestorePorts) {
+  if (part.source.type === "docker") {
+    if (part.source.mounted) await ports.snapshot.mounted?.discard(part.source, restoreId);
+    return;
+  }
   rmSync(asideName(part.source.path, restoreId), { recursive: true, force: true });
 }
 
@@ -485,14 +518,15 @@ export async function executeRestore(input: {
     }
   } catch (error) {
     ports.progress("Restore failed; putting back the replaced files");
-    for (const part of replaced.toReversed()) revertPart(part, restoreId);
+    for (const part of replaced.toReversed())
+      await revertPart(part, restoreId, ports).catch(() => undefined);
     // Start in the plan's order: Dev, then the Host, then the coordinator.
     const order: ManagedService[] = ["dev", "host", "coordinator"];
     for (const service of order.filter((item) => stopped.includes(item)))
       await ports.services.start(service).catch(() => undefined);
     throw error;
   }
-  for (const part of replaced) discardAside(part, restoreId);
+  for (const part of replaced) await discardAside(part, restoreId, ports);
 }
 
 function describeStep(step: RestoreStep, parts: readonly StoredPart[]): string {
@@ -516,6 +550,92 @@ export const dockerSnapshotPorts: Omit<SnapshotPorts, "now"> = {
   importDocker(source, file) {
     // `docker cp` from stdin overlays the archive; files created after the snapshot remain.
     return pipeFromFile(source.docker, ["cp", "-", `${source.container}:${source.path}`], file);
+  },
+};
+
+// Runs as root in a one-shot container with Dev's mounts, so ownership is kept. The aside
+// copy lives inside the mount, where a move is a rename.
+const MOUNTED_HOME_SCRIPTS = {
+  replace: `set -eu
+home="$1"; aside="$home/.before-restore-$2"
+mkdir "$aside"
+find "$home" -mindepth 1 -maxdepth 1 ! -path "$aside" -exec mv {} "$aside"/ \\;
+tar -C "$home" --same-owner -xpf -`,
+  revert: `set -eu
+home="$1"; aside="$home/.before-restore-$2"
+[ -d "$aside" ] || exit 0
+find "$home" -mindepth 1 -maxdepth 1 ! -path "$aside" -exec rm -rf {} +
+find "$aside" -mindepth 1 -maxdepth 1 -exec mv {} "$home"/ \\;
+rmdir "$aside"`,
+  discard: `set -eu
+rm -rf "$1/.before-restore-$2"`,
+};
+
+/** The script for `action`, for running in a shell; exported for tests. */
+export function mountedHomeScript(action: keyof typeof MOUNTED_HOME_SCRIPTS): string {
+  return MOUNTED_HOME_SCRIPTS[action];
+}
+
+async function mountedHomeArgs(
+  source: DockerSource,
+  action: keyof typeof MOUNTED_HOME_SCRIPTS,
+  restoreId: string,
+): Promise<string[]> {
+  // The image Dev's container was created from, present even while it is stopped.
+  const image = await new Promise<string>((resolve, reject) => {
+    const child = spawn(source.docker, ["inspect", "--format", "{{.Image}}", source.container], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(output.trim());
+      else reject(new Error(`docker inspect exited with ${code}`));
+    });
+  });
+  return [
+    "run",
+    "--rm",
+    "-i",
+    "--network",
+    "none",
+    "--user",
+    "0:0",
+    "--volumes-from",
+    source.container,
+    "--entrypoint",
+    "/bin/sh",
+    image,
+    "-c",
+    MOUNTED_HOME_SCRIPTS[action],
+    "restore",
+    source.path,
+    restoreId,
+  ];
+}
+
+function runToEnd(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "ignore"] });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${path.basename(command)} exited with ${code}`));
+    });
+  });
+}
+
+/** Production restore of a bind-mounted Dev home. */
+export const mountedHomeRestore: MountedHomeRestore = {
+  async replace(source, file, restoreId) {
+    await pipeFromFile(source.docker, await mountedHomeArgs(source, "replace", restoreId), file);
+  },
+  async revert(source, restoreId) {
+    await runToEnd(source.docker, await mountedHomeArgs(source, "revert", restoreId));
+  },
+  async discard(source, restoreId) {
+    await runToEnd(source.docker, await mountedHomeArgs(source, "discard", restoreId));
   },
 };
 

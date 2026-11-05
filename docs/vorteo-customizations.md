@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): snapshot restore replaces a bind-mounted Linux Dev home through a one-shot root container with Dev's mounts, and rolls it back with the rest of a failed restore. README unchanged.
+
 Maintenance review (2026-11-05): merged current `main` into the installer upgrade branch; only the changelog and this inventory conflicted, and both sides' entries are kept. README unchanged.
 
 Maintenance review (2026-11-05): snapshots on Linux take Dev's home through the running container (`docker exec ... tar`), since its bind mount is private to the container's user; upgrades with Dev on Linux had stopped at the snapshot. README unchanged.

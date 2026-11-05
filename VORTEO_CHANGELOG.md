@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-05
 
+### Fixes
+
+- Restoring a snapshot replaces a Linux Dev home instead of unpacking over it, and puts the previous contents back if the restore fails. A one-shot root container with Dev's mounts moves the current home aside within the mount, unpacks the snapshot with its owners, and keeps or discards the aside copy with the rest of the restore.
+
+## Unreleased - 2026-11-05
+
 ### Maintenance
 
 - Merge current `main` into the installer upgrade branch, keeping both sides' changelog and inventory entries.

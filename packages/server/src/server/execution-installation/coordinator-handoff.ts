@@ -180,6 +180,7 @@ export async function runCoordinatorSwap(
 export interface RestoreHandoffPorts extends HandoffPorts {
   snapshots: Pick<InstallationSnapshots, "read" | "storedParts">;
   importDocker: RestorePorts["snapshot"]["importDocker"];
+  mountedHome?: RestorePorts["snapshot"]["mounted"];
   writeStatus(status: SnapshotRestoreStatus): void;
 }
 
@@ -210,7 +211,7 @@ export async function runRestore(
       steps: planRestore(parts, plan.services.dev !== undefined),
       ports: {
         services: ports.services,
-        snapshot: { importDocker: ports.importDocker },
+        snapshot: { importDocker: ports.importDocker, mounted: ports.mountedHome },
         verifyCoordinator: () => waitForCoordinator(plan.health, plan.timeoutMs, ports, null),
         progress: (step) => update({ step }),
       },
