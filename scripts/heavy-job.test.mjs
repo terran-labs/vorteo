@@ -229,11 +229,39 @@ test(
   { timeout: 90000 },
   async () => {
     const dir = temp();
-    const a = launchJob(dir, "a", { duration: 800 });
+    const finishMarker = path.join(dir, "finish-a");
+    const a = launchJob(dir, "a", { finishMarker });
     await until(() => events(dir).includes("start-a"));
+    const status = () =>
+      execFileSync(process.execPath, [path.resolve("scripts/heavy-job.mjs"), "status"], {
+        env: {
+          ...process.env,
+          VORTEO_HEAVY_QUEUE_DIR: path.join(dir, "queue"),
+          VORTEO_BUILDS_GATE_MARKER: path.join(dir, "none"),
+        },
+        encoding: "utf8",
+      })
+        .trim()
+        .split("\n");
+    const running = status();
+    assert.equal(running.length, 1, "guards and ticket render as one logical job");
+    assert.match(running[0], new RegExp(`^1\\. running: .*pid ${a.pid}\\b`));
+    const guard = fs
+      .readdirSync(path.join(dir, "queue"))
+      .map((name) =>
+        name.endsWith(".json")
+          ? JSON.parse(fs.readFileSync(path.join(dir, "queue", name), "utf8"))
+          : null,
+      )
+      .find((ticket) => ticket?.identity?.group);
     a.kill("SIGKILL"); // Only this test's wrapper; its job deliberately keeps running.
     await a.done;
+    const surviving = status();
+    assert.equal(surviving.length, 1, "a surviving child still renders as one job");
+    assert.match(surviving[0], new RegExp(`^1\\. running: .*pid ${guard.pid}\\b`));
     const b = launchJob(dir, "b");
+    await until(() => fs.readdirSync(path.join(dir, "queue")).some((name) => /^\d/.test(name)));
+    fs.writeFileSync(finishMarker, "");
     assert.equal(await b.done, 0);
     assert.deepEqual(events(dir), ["start-a", "end-a", "start-b", "end-b"]);
   },
@@ -299,5 +327,55 @@ fs.writeFileSync=(file,data,...args)=>{if(process.env.PROBE_PHASE==='post-check'
         assert.deepEqual(lines, ["start-new", "end-new", "start-old", "end-old"]);
       else assert.ok(lines.indexOf("start-old") < lines.indexOf("end-new"), lines.join(" "));
     }
+  },
+);
+
+test(
+  "foreground contract releases the slot when the original group ends, excluding setsid descendants",
+  { timeout: 90000 },
+  async () => {
+    const dir = temp();
+    const log = path.join(dir, "events");
+    const finish = path.join(dir, "finish-grandchild");
+    const code = `import os,time
+pid=os.fork()
+if pid==0:
+ os.setsid()
+ with open(${JSON.stringify(log)},'a') as f: f.write('start-grandchild\\n')
+ deadline=time.monotonic()+60
+ while not os.path.exists(${JSON.stringify(finish)}) and time.monotonic()<deadline: time.sleep(0.01)
+ with open(${JSON.stringify(log)},'a') as f: f.write('end-grandchild\\n')
+ os._exit(0)
+while not os.path.exists(${JSON.stringify(log)}): time.sleep(0.01)
+os._exit(0)`;
+    const a = spawn(
+      process.execPath,
+      [path.resolve("scripts/heavy-job.mjs"), "run", "--", "python3", "-c", code],
+      {
+        env: {
+          ...process.env,
+          VORTEO_HEAVY_QUEUE_DIR: path.join(dir, "queue"),
+          VORTEO_BUILDS_GATE_MARKER: path.join(dir, "none"),
+          VORTEO_HEAVY_POLL_MS: "20",
+        },
+        stdio: "ignore",
+        timeout: 90000,
+        killSignal: "SIGKILL",
+      },
+    );
+    const done = new Promise((resolve, reject) => {
+      a.once("exit", resolve);
+      a.once("error", reject);
+    });
+    try {
+      await until(() => events(dir).includes("start-grandchild"));
+      assert.equal(await done, 0);
+      const b = launchJob(dir, "b");
+      assert.equal(await b.done, 0);
+      assert.deepEqual(events(dir), ["start-grandchild", "start-b", "end-b"]);
+    } finally {
+      fs.writeFileSync(finish, "");
+    }
+    await until(() => events(dir).includes("end-grandchild"));
   },
 );

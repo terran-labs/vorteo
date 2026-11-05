@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): heavy-job status groups compatibility guards into one logical command and shows surviving child ownership after wrapper death. The queue contract covers foreground commands in their original process group; escaped sessions and daemonized descendants do not retain ownership. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): heavy-job review fixes add boot and process-start identity, child process-group ownership with a launch handshake, and legacy-visible guards. Legacy callers already past their final queue check retain a bounded rollout window until old copies pick up main and their jobs finish. Not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): merged current `main`, including the Dev boot-entry switch, the single sidebar footer block and later trackpad dictation, into the open question answer delivery fix; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.

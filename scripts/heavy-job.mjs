@@ -5,6 +5,9 @@
 //   node scripts/heavy-job.mjs run [--label <text>] -- <command> [args...]
 //   node scripts/heavy-job.mjs status
 //
+// Foreground commands only: the slot follows the original job process group.
+// Daemonizing or moving descendants into another session/group is unsupported.
+//
 // Tickets determine polling order; an atomic directory rename grants the slot.
 // A populated slot cannot be overwritten. Ownership follows process identity
 // and the job process group, so wrapper death does not release a running job.
@@ -89,6 +92,8 @@ export function identityAlive(identity) {
   if (!identity.group) return current !== null;
   // A process group keeps its ID until its last member exits, even if the
   // original leader dies. A new leader with a different start time is reuse.
+  // Foreground-only contract: descendants that daemonize or call setsid leave
+  // this group and do not retain the slot. We do not follow escaped processes.
   const groups = execFileSync("ps", ["-axo", "pgid=,stat="], { encoding: "utf8" });
   return groups.split("\n").some((line) => {
     const [pgid, state] = line.trim().split(/\s+/);
@@ -166,6 +171,7 @@ export function acquireSlot(
         identity: processId,
         startedAt: Date.now(),
         slotGuard: true,
+        originTicket: ticket,
       });
     }
   }
@@ -208,6 +214,7 @@ export function acquireSlot(
         identity: wrapper,
         startedAt: Date.now(),
         slotGuard: true,
+        originTicket: ticket,
       });
     }
     const release = () => {
@@ -364,7 +371,9 @@ async function run(args) {
   const labelIndex = args.indexOf("--label");
   const label = labelIndex !== -1 && labelIndex < separator ? args[labelIndex + 1] : command[0];
   if (command.length === 0) {
-    console.error("usage: heavy-job.mjs run [--label <text>] -- <command> [args...]");
+    console.error(
+      "usage: heavy-job.mjs run [--label <text>] -- <command> [args...] (foreground commands only; daemonizing or changing session/group is unsupported)",
+    );
     return 2;
   }
   const dir = defaultQueueDir();
@@ -434,7 +443,18 @@ async function run(args) {
 }
 
 function status() {
-  const queue = readQueue(defaultQueueDir());
+  const jobs = new Map();
+  for (const entry of readQueue(defaultQueueDir())) {
+    const key = entry.originTicket || entry.file;
+    const previous = jobs.get(key);
+    // Prefer the live wrapper ticket; if it died, show its surviving child.
+    const primary = entry.file === key;
+    const survivingChild = previous?.slotGuard && entry.identity?.group;
+    if (!previous || primary || survivingChild) {
+      jobs.set(key, { ...entry, startedAt: entry.startedAt || previous?.startedAt });
+    }
+  }
+  const queue = [...jobs.values()];
   if (queue.length === 0) {
     console.log("The heavy slot is free.");
     return 0;
@@ -451,6 +471,8 @@ if (isMainModule(import.meta.url)) {
   const [subcommand, ...rest] = process.argv.slice(2);
   if (subcommand === "run") process.exit(await run(rest));
   if (subcommand === "status") process.exit(status());
-  console.error("usage: heavy-job.mjs run|status");
+  console.error(
+    "usage: heavy-job.mjs run|status (foreground commands only; slot ends with the original process group)",
+  );
   process.exit(2);
 }
