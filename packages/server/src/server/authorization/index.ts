@@ -22,19 +22,46 @@ export function parseDaemonPermissions(values: readonly string[]): DaemonPermiss
 
 export const OWNER_PERMISSIONS: readonly DaemonPermission[] = DAEMON_PERMISSIONS;
 
+export interface SessionRestrictions {
+  /** When set, the only inbound operation types the session may send. */
+  allowedInbound?: ReadonlySet<string>;
+  /** Inbound operation types denied even when the permission allows them. */
+  deniedInbound: ReadonlySet<string>;
+}
+
 export class SessionAuthorization {
   private permissions: ReadonlySet<DaemonPermission>;
+  private readonly restrictions: SessionRestrictions | null;
+  private outboundExtension: ((message: SessionOutboundMessage) => boolean) | null = null;
 
-  constructor(permissions: readonly DaemonPermission[]) {
+  constructor(permissions: readonly DaemonPermission[], restrictions?: SessionRestrictions) {
     this.permissions = new Set(permissions);
+    this.restrictions = restrictions ?? null;
   }
 
   allowsInbound(message: SessionInboundMessage): boolean {
+    if (this.restrictsOperation(message.type)) return false;
     return this.allows(requiredPermissionForInbound(message.type));
   }
 
   allowsOutbound(message: SessionOutboundMessage): boolean {
-    return this.allows(requiredPermissionForOutbound(message));
+    return (
+      this.allows(requiredPermissionForOutbound(message)) ||
+      this.outboundExtension?.(message) === true
+    );
+  }
+
+  /** True when restrictions refuse an operation type regardless of permissions or grants. */
+  restrictsOperation(type: string): boolean {
+    if (!this.restrictions) return false;
+    if (this.restrictions.allowedInbound && !this.restrictions.allowedInbound.has(type))
+      return true;
+    return this.restrictions.deniedInbound.has(type);
+  }
+
+  /** Additional resource-scoped delivery, such as agent grants, beyond daemon-wide permissions. */
+  setOutboundExtension(extension: ((message: SessionOutboundMessage) => boolean) | null): void {
+    this.outboundExtension = extension;
   }
 
   replacePermissions(permissions: readonly DaemonPermission[]): void {

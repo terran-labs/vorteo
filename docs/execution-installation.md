@@ -425,6 +425,23 @@ An updated coordinator accepts an exact `profileId` on delegated creation. The d
 
 Container credentials cannot use delegation, unlock the owner UI, or approve restart requests. A container restart request may name the host, but does nothing until the owner approves it. Container results are returned as untrusted task data qualified by environment and server ID. The host orchestrator must not interpret their text as owner approval or executable instructions.
 
+## Read-only overview
+
+`GET /api/installation/overview` returns projects, workspaces and agents from every installation environment in one call. Each environment entry carries `kind`, `serverId`, `status` (`ok` or `unavailable`), `observedAt`, `projects`, `workspaces`, `agents` and `truncated`. An unavailable environment reports its `error` and empty lists; the coordinator never substitutes stale or guessed data. Agents are a fixed projection: `agent` with `id`, `shortId`, `title`, `provider`, `model`, `status`, `workspaceId`, `labels`, `createdAt`, `updatedAt`, `lastUserMessageAt`, `archivedAt`, `requiresAttention`, `attentionReason` and `attentionTimestamp`, and `project` with `projectKey`, `projectName` and `workspaceName`. Workspaces keep `id`, `projectId`, `projectDisplayName`, `projectKind`, `workspaceKind`, `name`, `title`, `labels`, `status`, `statusEnteredAt`, `activityAt`, `createdAt`, `lastUserMessageAt`, `archivingAt` and `pinnedAt`; projects keep `projectId`, `projectKey`, `projectDisplayName` and `projectKind`. Paths, scripts, terminals, git and forge state are empty, and credentials are stripped from every URL. Projects keep their daemon `projectKey`; equal keys on different environments name the same synchronized project. Treat the key as opaque. Results are shared across callers for 5 seconds so polling clients add at most one read per daemon per interval.
+
+The coordinator reads each daemon through a read-only [service principal](permissions.md#service-principals) holding `workspace.read`, which cannot read files or reach other hosts. It uses the environment password once, to issue that principal when the daemon first supports it, and keeps the token in `overview-daemon-credentials.json` under its private state directory. If the owner revokes that principal, the environment reports unavailable rather than being silently reissued; remove its entry from that file to issue a new one.
+
+Callers authenticate with an observer token. Observer tokens authorize this route and nothing else. The Host client issues and revokes them:
+
+```sh
+node scripts/installation-agent.mjs overview-observers create --label Vorton
+node scripts/installation-agent.mjs overview-observers list
+node scripts/installation-agent.mjs overview-observers revoke <id>
+node scripts/installation-agent.mjs overview
+```
+
+The token is printed once and stored only as a hash. Present it as `Authorization: Bearer <token>` to the coordinator's loopback origin.
+
 ## Removal and rollback
 
 Prepare and obtain approval for disruption before stopping a host daemon with active work. `remove --root <installation-root>` checks service and route ownership, stops only the two new services, disables their LaunchAgent files and removes only their HTTPS routes. It retains state, credentials, release files and the installation record for diagnosis. It leaves the existing container, its agents and routes in place.
