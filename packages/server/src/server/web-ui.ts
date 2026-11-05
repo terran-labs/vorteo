@@ -297,6 +297,12 @@ function serveWebUiFile(options: ServeWebUiFileOptions): void {
   stream.pipe(res);
 }
 
+/**
+ * `res.locals` key for HTML that an earlier middleware asks to place before `</body>` of a served
+ * index page, such as the Live dev indicator on the static fallback.
+ */
+export const INJECTED_BODY_HTML = "vorteoInjectedBodyHtml";
+
 export interface WebUiHtmlResponse {
   status: 200 | 406;
   body: Buffer;
@@ -336,6 +342,11 @@ export async function prepareWebUiHtml(options: WebUiHtmlOptions): Promise<WebUi
   return { status: 200, body: bytes, contentEncoding: null };
 }
 
+function beforeBodyEnd(html: string, fragment: string): string {
+  const end = html.lastIndexOf("</body>");
+  return end === -1 ? `${html}${fragment}` : `${html.slice(0, end)}${fragment}${html.slice(end)}`;
+}
+
 async function sendIndexHtml(
   res: Response,
   filePath: string,
@@ -344,7 +355,9 @@ async function sendIndexHtml(
   installation?: ExecutionInstallation,
 ): Promise<void> {
   try {
-    const html = readFileSync(filePath, "utf-8");
+    const raw = readFileSync(filePath, "utf-8");
+    const extra: unknown = res.locals[INJECTED_BODY_HTML];
+    const html = typeof extra === "string" ? beforeBodyEnd(raw, extra) : raw;
     const result = await prepareWebUiHtml({ html, req, label, installation });
     if (res.destroyed) return;
     if (result.contentEncoding) res.setHeader("Content-Encoding", result.contentEncoding);

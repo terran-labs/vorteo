@@ -8,15 +8,66 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Tooling
 
+- Merged current main into the Factory Overview branch again before delivery.
+
+## 26.11.500 - 2026-11-05
+
+Beta for VortLab, delivered by Upgrade from Installation controls.
+
+### Features
+
+- Live dev status indicator: in Live dev mode, every owner page shows a small status circle (live, safe, slow, starting or down) that opens an explanation with links to the static interface, Live dev and Installation settings. It replaces the purple Live dev marker.
+
+### Fixes
+
+- When a fresh live page times out under load, the live dev proxy serves the last page from the same dev server instead of silently falling back to the static interface.
+- Live dev preparation builds the server package, so the first live commit's typecheck no longer fails on missing declarations.
+- Usage rings and the context donut no longer log an invalid DOM property warning in development.
+
+## Unreleased - 2026-11-05
+
+### Fixed
+
+- Site wrappers such as Unite now build a sharp Vorteo app icon. The web interface serves a 1024px touch icon from its `apple-touch-icon` link and from the precomposed and iPhone fallback paths, which previously returned the page instead of an image.
+
+## Unreleased - 2026-11-05
+
+### Tooling
+
 - Merged current main into the Factory Overview branch.
+
+- Merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merged current main into the Factory task template branch, retaining both sides of the documentation records.
+
+## Unreleased - 2026-11-04
+
+### Added
+
+- Added a Factory task issue template with prompts for the goal, acceptance criteria, scope limits and notes.
 
 ## Unreleased - 2026-11-04
 
 ### Fixes
 
+- Heavy-job status now shows one logical job instead of listing compatibility guards as queued jobs, and falls back to surviving child ownership after wrapper death. The documented workload contract covers foreground commands in the original process group; daemonized or `setsid` descendants do not retain the slot.
+
+- Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.
+
+- Listing a thread's provider subagents no longer starts or resumes its provider session. Sidebar polling no longer retries threads that cannot load. An unloaded thread now answers at once with no subagents; opening the thread loads it, and its subagents arrive through live updates.
 - Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
+- Heavy-job claims now validate process start and boot identity, retain ownership while the job process group survives its wrapper, and publish legacy-visible guards. New callers wait for marked legacy holders; an old caller already past its final queue check remains a documented rollout window.
+- The heavy-job queue now acquires its slot atomically, preventing overlapping jobs when a delayed caller publishes an older ticket or a ticket rewrite briefly hides the holder. Waiters recover exited owners without removing a successor's claim. CLI options and environment variables are unchanged.
 
 ### Tooling
+
+- Merged current `main` into the heavy-job queue fix, preserving both sides' entries. The approved queue implementation and tests are unchanged.
+
+- Merged current `main` into the provider subagent polling fix, retaining the service principals changes.
 
 - Merged current `main` into the service principals branch before handback.
 
@@ -155,6 +206,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
 
+### Live tweaks
+
+- Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
+
 ## Unreleased - 2026-11-04
 
 ### Live tweaks
@@ -189,6 +244,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Live dev mode's first tweak commit no longer fails its typecheck. Preparing the live checkout now builds the server stack, whose declarations the command-line package typechecks against.
+
+## Unreleased - 2026-11-04
+
 - Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer, and Pi and OMP, whose steer acknowledgements cannot prove delivery, still receive the answer when the turn finishes; reliable answer steering for Pi and OMP will follow separately. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment. Pausing the queue no longer holds an answer back from a busy thread, and a steer whose acknowledgement is lost is settled from provider history instead of being sent again.
 
 ### Maintenance
@@ -209,7 +268,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Features
 
-- Factory Overview shows per-project status, issue stage profiles, work in progress and role controls. Standing workspaces join the Factory folder after its roles, and adopted roles follow daemon workspace assignments. Older daemons retain the controls they support. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed.
+- Factory Overview names the project in its heading and shows per-project status, issue stage profiles, work in progress and role controls. Standing workspaces join the Factory folder after its roles, and adopted roles follow daemon workspace assignments. Older daemons retain the controls they support. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed.
 
 - A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
 - Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.

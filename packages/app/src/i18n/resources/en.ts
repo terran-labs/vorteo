@@ -1,6 +1,7 @@
 export const en = {
   projectFactory: {
     overview: "Factory Overview",
+    projectHeading: "{{project}} Factory",
     overviewHost: "Factory Overview ({{host}})",
     unknownHost: "Environment",
     turnOnHint: "Open the project menu and choose Turn on Factory to get started.",

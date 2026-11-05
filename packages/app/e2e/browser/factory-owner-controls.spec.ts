@@ -5,7 +5,6 @@ import { expect, test } from "../support/fixtures";
 import { gotoAppShell } from "../support/helpers/app";
 import { connectNewWorkspaceDaemonClient } from "../support/helpers/new-workspace";
 import { pluginRequirements } from "../support/helpers/plugin-fixture";
-import { openMobileAgentSidebar } from "../support/helpers/sidebar";
 import { getServerId } from "../support/helpers/server-id";
 
 // Real plugin loaders, transport and SDK controls. The isolated handler exercises
@@ -84,8 +83,7 @@ export default function contribute(server) {
       page.getByText("Factory control applied. Current state is shown below.", { exact: true }),
     ).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
-    await openMobileAgentSidebar(page);
-    await page.getByRole("button", { name: "Factory controls test", exact: true }).click();
+    // The plugin surface remains open after resizing and uses a compact back header.
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     await expect(page.getByText("Factory paused", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Resume", exact: true }).click();

@@ -1,3 +1,4 @@
+import { projectNameForWorkspace } from "@/hooks/sidebar-workspaces-view-model";
 import { useIsFocused } from "expo-router/react-navigation";
 import { useDirectoryDemand } from "@/hooks/use-directory-demand";
 import { useCallback } from "react";
@@ -48,18 +49,25 @@ export function FactoryOverview({ serverId, projectId }: Target) {
   const plugin = useInstalledPlugins().find(
     (entry) => entry.id === "factory" && entry.serverId === serverId,
   );
-  const name = useSessionStore(
-    (store) =>
-      store.sessions[serverId]?.projects.get(projectId)?.projectCustomName ??
-      store.sessions[serverId]?.projects.get(projectId)?.projectDisplayName,
-  );
+  const name = useSessionStore((store) => {
+    const session = store.sessions[serverId];
+    const workspace = Array.from(session?.workspaces.values() ?? []).find(
+      (entry) => entry.projectId === projectId,
+    );
+    const project = session?.projects.get(projectId);
+    return workspace
+      ? projectNameForWorkspace(workspace)
+      : (project?.projectCustomName ?? project?.projectDisplayName);
+  });
   const unavailable = !plugin && catalogStatus !== "loading";
   const loading = !factory.data && !factory.error && !unavailable;
   return (
-    <PageLayout title={t("projectFactory.overview")} testID="factory-overview">
-      <Text style={styles.project}>
-        {name ?? factory.data?.repository ?? t("projectFactory.folder")}
-      </Text>
+    <PageLayout
+      title={
+        name ? t("projectFactory.projectHeading", { project: name }) : t("projectFactory.overview")
+      }
+      testID="factory-overview"
+    >
       {factory.error ? (
         <View>
           <Text style={styles.text} accessibilityRole="alert">
@@ -286,11 +294,6 @@ function Role({
 
 const styles = StyleSheet.create((theme) => ({
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
-  project: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-    marginBottom: theme.spacing[3],
-  },
   actions: {
     flexDirection: "row",
     flexWrap: "wrap",

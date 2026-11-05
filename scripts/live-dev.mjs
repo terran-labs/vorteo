@@ -372,6 +372,10 @@ function installAndBuild(paths, log) {
   const options = { cwd: paths.checkout, stdio: "inherit" };
   log("Installing live checkout dependencies.");
   execFileSync(process.execPath, ["scripts/install-dependencies.mjs"], options);
+  // The commit hook typechecks every package, and packages/cli imports the server's built
+  // declarations, so a fresh checkout needs the server stack built before its first commit.
+  log("Building the server stack.");
+  execFileSync("npm", ["run", "build:server"], options);
   log("Building app dependencies.");
   execFileSync("npm", ["run", "build:app-deps"], options);
   // Recorded only after success, so a failed install is retried next time.
