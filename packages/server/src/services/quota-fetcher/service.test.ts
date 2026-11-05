@@ -667,7 +667,7 @@ describe("real provider usage fetchers", () => {
     fetchApi = mockFetch(
       new Map([
         [
-          "https://api.anthropic.com/api/oauth/usage",
+          "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
           () =>
             jsonResponse(
               makeClaudeResponse({
@@ -691,7 +691,7 @@ describe("real provider usage fetchers", () => {
       ]),
     });
     expect(fetchApi).toHaveBeenCalledWith(
-      "https://api.anthropic.com/api/oauth/usage",
+      "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -701,7 +701,7 @@ describe("real provider usage fetchers", () => {
     fetchApi = mockFetch(
       new Map([
         [
-          "https://api.anthropic.com/api/oauth/usage",
+          "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
           () =>
             jsonResponse({
               five_hour: { utilization: 0, resets_at: null },
@@ -740,7 +740,7 @@ describe("real provider usage fetchers", () => {
     let usageCalls = 0;
     fetchApi = vi.fn(async (url: RequestInfo | URL) => {
       const endpoint = url.toString();
-      if (endpoint === "https://api.anthropic.com/api/oauth/usage") {
+      if (endpoint === "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1") {
         usageCalls += 1;
         return new Response(null, { status: 401 });
       }
@@ -773,7 +773,7 @@ describe("real provider usage fetchers", () => {
     expect(findProvider(result, "claude").status).toBe("unavailable");
     expect(usageFetch).toHaveBeenCalledTimes(1);
     expect(usageFetch).toHaveBeenCalledWith(
-      "https://api.anthropic.com/api/oauth/usage",
+      "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer at_expired" }),
       }),
@@ -1544,7 +1544,7 @@ describe("usage bars escalate as they fill", () => {
       fetch: mockFetch(
         new Map([
           [
-            "https://api.anthropic.com/api/oauth/usage",
+            "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
             () =>
               jsonResponse({
                 seven_day: { utilization, resets_at: "2026-06-04T00:00:00Z" },
@@ -1650,7 +1650,12 @@ describe("ClaudeQuotaProvider scoped weekly limits", () => {
       claudeHome,
       claudeKeychainReader: async () => null,
       fetch: mockFetch(
-        new Map([["https://api.anthropic.com/api/oauth/usage", () => jsonResponse(body)]]),
+        new Map([
+          [
+            "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
+            () => jsonResponse(body),
+          ],
+        ]),
       ),
     });
     return { provider, logger };
@@ -1768,7 +1773,12 @@ describe("ClaudeQuotaProvider scoped limit reconciliation", () => {
       claudeHome,
       claudeKeychainReader: async () => null,
       fetch: mockFetch(
-        new Map([["https://api.anthropic.com/api/oauth/usage", () => jsonResponse(body)]]),
+        new Map([
+          [
+            "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
+            () => jsonResponse(body),
+          ],
+        ]),
       ),
     }).fetchUsage();
     return usage.windows;

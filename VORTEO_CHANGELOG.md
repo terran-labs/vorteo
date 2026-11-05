@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Claude accounts with full web sign-in show their limit resets in the account picker and can spend one from the existing reset dialog. Vorteo reads the grants with the usage check it already makes, the same request Claude Code sends; setup-token accounts still have no resets.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
 ## Unreleased - 2026-11-05

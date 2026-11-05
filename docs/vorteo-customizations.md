@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Claude reset credits: Claude accounts with full web sign-in show their limit resets in the account picker and can spend one from the existing reset dialog. Vorteo reads the grants with the usage check it already makes, the same request Claude Code sends; setup-token accounts still have no resets.
+
 Maintenance review (2026-11-05): live tweak by Hourglass calm and flip: The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
 Maintenance review (2026-11-05): live tweak by Fix duplicate account spinners: Profile picker accounts show a single refresh ring around the account icon instead of two spinners, and the compact reset button is shorter.
