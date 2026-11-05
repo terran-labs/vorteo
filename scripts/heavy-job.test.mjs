@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { enqueue, launchSpec, memoryDeferral, readQueue } from "./heavy-job.mjs";
+import { acquireSlot, enqueue, launchSpec, memoryDeferral, readQueue } from "./heavy-job.mjs";
 
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "heavy-job-"));
 
@@ -79,4 +79,42 @@ test("concurrent runs never overlap", async () => {
     assert.equal(lines[i].replace("start-", ""), lines[i + 1].replace("end-", ""), lines.join(" "));
   }
   assert.deepEqual(fs.readdirSync(path.join(dir, "queue")), [], "finished jobs release the slot");
+});
+
+// Reproduce a preempted caller publishing an older timestamp after the holder
+// has passed its queue check. Both callers see themselves first without a lock.
+test("late publication cannot steal a claimed slot, and dead owners are recoverable", () => {
+  const dir = temp();
+  const options = { gateMarker: path.join(dir, "none"), alive: () => true };
+  const first = enqueue(dir, { now: 2000, pid: 1 });
+  assert.equal(readQueue(dir, options)[0].file, first);
+  const release = acquireSlot(dir);
+  assert.equal(typeof release, "function");
+  const late = enqueue(dir, { now: 1000, pid: 2 });
+  assert.equal(readQueue(dir, options)[0].file, late, "queue snapshots can grant two holders");
+  assert.equal(acquireSlot(dir), null, "an older ticket cannot overwrite the claimed slot");
+  release();
+  // Simulate death after claim publication. No timeout can evict a live owner.
+  acquireSlot(dir, { pid: 123456789 });
+  const recovered = acquireSlot(dir, { alive: (pid) => pid !== 123456789 });
+  assert.equal(typeof recovered, "function");
+  recovered();
+  acquireSlot(dir, { pid: 123456789 });
+  const staleOwner = fs.readdirSync(path.join(dir, ".slot"))[0];
+  let successor;
+  assert.equal(
+    acquireSlot(dir, {
+      alive: () => {
+        // Pause stale cleanup until another reader has already recovered the slot.
+        fs.rmSync(path.join(dir, ".slot", staleOwner));
+        fs.rmdirSync(path.join(dir, ".slot"));
+        successor = acquireSlot(dir);
+        return false;
+      },
+    }),
+    null,
+    "a delayed stale reader cannot remove a successor's claim",
+  );
+  successor();
+  assert.equal(fs.existsSync(path.join(dir, ".slot")), false);
 });

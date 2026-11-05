@@ -5,10 +5,9 @@
 //   node scripts/heavy-job.mjs run [--label <text>] -- <command> [args...]
 //   node scripts/heavy-job.mjs status
 //
-// Each caller writes a ticket named by its arrival time; the oldest ticket
-// whose process is alive holds the slot, so jobs never overlap and run in
-// arrival order. A ticket whose process has exited is removed by the next
-// reader. A live Builds gate marker holds the slot ahead of every ticket.
+// Tickets determine polling order; an atomic directory rename grants the slot.
+// A populated slot cannot be overwritten, and dead owners are removed by PID.
+// Ticket rewrites use atomic replacement so polling never misses a running job.
 //
 // The holder starts only when memory allows: critical kernel memory pressure,
 // low free memory or active swapping defers the start with the reason shown.
@@ -64,21 +63,75 @@ function readJson(file) {
   }
 }
 
-/** Adds a ticket at the back of the queue and returns its path. */
-export function enqueue(dir, { label, pid = process.pid, now = Date.now() } = {}) {
-  fs.mkdirSync(dir, { recursive: true });
-  const ticket = {
-    pid,
-    label: label || "heavy job",
-    cwd: process.cwd(),
-    queuedAt: now,
-  };
+function ticketName(queuedAt, pid) {
   // Zero-padded arrival time sorts lexically; the pid breaks same-millisecond ties.
-  const file = path.join(dir, `${String(now).padStart(15, "0")}-${pid}.json`);
+  return `${String(queuedAt).padStart(15, "0")}-${pid}.json`;
+}
+
+function ticketNames(dir) {
+  try {
+    return fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+}
+
+/** Replaces a ticket atomically so a concurrent reader sees the old or new content, never neither. */
+function writeTicket(file, ticket) {
   const temp = `${file}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(ticket));
   fs.renameSync(temp, file);
+}
+
+/** Adds a ticket and returns its path. Ticket order is advisory, not a lock. */
+export function enqueue(dir, { label, pid = process.pid, now = Date.now() } = {}) {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, ticketName(now, pid));
+  writeTicket(file, { pid, label: label || "heavy job", cwd: process.cwd(), queuedAt: now });
   return file;
+}
+
+function removeEmptySlot(slot) {
+  try {
+    fs.rmdirSync(slot);
+  } catch (error) {
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) throw error;
+  }
+}
+
+/** Atomically claims the slot; returns a release function, or null when held. */
+export function acquireSlot(dir, { pid = process.pid, alive = processAlive } = {}) {
+  const slot = path.join(dir, ".slot");
+  // Prepare ownership before publishing. A crash cannot leave an unowned lock.
+  const candidate = fs.mkdtempSync(path.join(dir, `.claim-${pid}-`));
+  const owner = `${pid}-${path.basename(candidate)}`;
+  fs.writeFileSync(path.join(candidate, owner), "");
+  try {
+    // Only remove the exact dead owner's entry. Concurrent stale readers must
+    // never recursively remove a successor's populated directory (the ABA race).
+    let owners = [];
+    try {
+      owners = fs.readdirSync(slot);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    for (const name of owners) {
+      if (!alive(Number.parseInt(name, 10))) fs.rmSync(path.join(slot, name), { force: true });
+    }
+    removeEmptySlot(slot);
+    try {
+      fs.renameSync(candidate, slot);
+    } catch (error) {
+      if (["ENOTEMPTY", "EEXIST"].includes(error.code)) return null;
+      throw error;
+    }
+    return () => {
+      fs.rmSync(path.join(slot, owner), { force: true });
+      removeEmptySlot(slot);
+    };
+  } finally {
+    fs.rmSync(candidate, { recursive: true, force: true });
+  }
 }
 
 /** Live tickets in grant order, with the Builds gate marker first when live. Prunes dead tickets. */
@@ -93,13 +146,7 @@ export function readQueue(dir, { gateMarker = defaultGateMarker(), alive = proce
       gate: true,
     });
   }
-  let names = [];
-  try {
-    names = fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
-  } catch {
-    return entries;
-  }
-  for (const name of names.sort()) {
+  for (const name of ticketNames(dir).sort()) {
     const file = path.join(dir, name);
     const ticket = readJson(file);
     if (ticket && alive(ticket.pid)) {
@@ -191,7 +238,13 @@ async function waitForSlot(dir, ticket, log) {
       continue;
     }
     const reason = memoryDeferral(await sampleMemory());
-    if (!reason) return;
+    if (!reason) {
+      const release = acquireSlot(dir);
+      if (release) return release;
+      say("Waiting for the running heavy job to release the slot.");
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      continue;
+    }
     say(`Holding the heavy slot but deferring the start: ${reason}.`);
   }
 }
@@ -207,7 +260,11 @@ async function run(args) {
   }
   const dir = defaultQueueDir();
   const ticket = enqueue(dir, { label });
-  const release = () => fs.rmSync(ticket, { force: true });
+  let releaseSlot;
+  const release = () => {
+    releaseSlot?.();
+    fs.rmSync(ticket, { force: true });
+  };
   process.on("exit", release);
   const log = (message) => console.error(`[heavy-job] ${message}`);
   const stop = (signal) => {
@@ -217,8 +274,8 @@ async function run(args) {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
 
-  await waitForSlot(dir, ticket, log);
-  fs.writeFileSync(ticket, JSON.stringify({ ...readJson(ticket), startedAt: Date.now() }));
+  releaseSlot = await waitForSlot(dir, ticket, log);
+  writeTicket(ticket, { ...readJson(ticket), startedAt: Date.now() });
   log(`Starting ${label} with background priority.`);
 
   const spec = launchSpec(command);

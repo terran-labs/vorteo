@@ -9,6 +9,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Fixes
 
 - Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
+- The heavy-job queue now acquires its slot atomically, preventing overlapping jobs when a delayed caller publishes an older ticket or a ticket rewrite briefly hides the holder. Waiters recover exited owners without removing a successor's claim. CLI options and environment variables are unchanged.
 
 ## Unreleased - 2026-11-03
 
