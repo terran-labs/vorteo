@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): the Factory Mechanic and the Vorteo System Optimizer charters gain a standing CI, test and build efficiency duty with alert thresholds, after a day where every PR push ran about 30 jobs and cheap required checks waited an hour for runners. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): OAuth upgrade verification now requires a readable, unexpired grant with a refresh token before retiring setup-token access. Missing or unreadable credentials preserve the setup definition and do not trigger logout. Independent re-review and installation remain pending.
 
 Maintenance review (2026-11-05): Claude connection reliability repair pins CLI 2.1.318, makes managed health checks passive, and preserves refresh recovery through temporary failures. Credential read errors no longer imply sign-out; completed refreshes are adopted even after request failure. Queued dependent messages stop on failed turns, and Claude (CLI) is distinct from installation accounts with one creation flow. Focused regression checks pass; installation and sustained live refresh acceptance remain pending. README overview and onboarding are unchanged.

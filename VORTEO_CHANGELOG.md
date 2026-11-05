@@ -2,6 +2,13 @@
 
 ## Unreleased - 2026-11-05
 
+### Factory charter changes
+
+- Mechanic: every review now measures CI, test and build cost (jobs per push, required-check runner wait, superseded and flaky runs, rebase churn) and proposes fixes through a PR, such as routing heavy suites to the merge queue, nightly or release, path filters, caching, concurrency cancellation and conflict-free changelog fragments. Required-check and merge queue changes go to the owner. It alerts when required checks wait over 15 minutes or one push starts over 10 jobs.
+- Optimizer (Vorteo System): reviews the Vorteo repository's CI and build cost the same way, read only.
+
+## Unreleased - 2026-11-05
+
 - Preserve the working setup token when an OAuth upgrade cannot verify a persisted, renewable grant. Temporary storage failures no longer trigger logout during upgrade verification.
 
 ## Unreleased - 2026-11-05
