@@ -1,10 +1,16 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): merged current `main` into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): heavy-job status groups compatibility guards into one logical command and shows surviving child ownership after wrapper death. The queue contract covers foreground commands in their original process group; escaped sessions and daemonized descendants do not retain ownership. Source only; not installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): heavy-job review fixes add boot and process-start identity, child process-group ownership with a launch handshake, and legacy-visible guards. Legacy callers already past their final queue check retain a bounded rollout window until old copies pick up main and their jobs finish. Not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): merged current main into the Factory task template branch, retaining both maintenance reviews and all changelog entries. The template is unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-04): added a Markdown Factory task issue template with four author prompts and a title prefix matching the existing template convention. Labels and chooser configuration are unchanged. The chooser will list it after merge to the default branch. Product functionality, README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): successful provider history hydration publishes the parent's final subagent descriptors through existing updates, including quiet hydration when opening a thread. This restores children after an unloaded sidebar list without replaying timeline history or changing load retries. Source only; not installed.
 
