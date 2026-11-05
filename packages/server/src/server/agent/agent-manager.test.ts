@@ -16647,7 +16647,7 @@ test("an answer saved before a failed delivery is delivered once when its thread
   }
 });
 
-test("an answer to a busy thread steers in once, through a pause, an ambiguous steer and a restart", async () => {
+test("an answer to a busy thread steers in once, through a pause, an ambiguous steer and a restart, and waits on a Pi-like provider", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "question-steer-"));
   const storagePath = join(workdir, "agents");
   const queuePath = join(workdir, "queue");
@@ -16655,10 +16655,8 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
   const providerHistory: AgentStreamEvent[] = [];
   class AnswerSession extends SteeringTestSession {
     loseAcknowledgement = false;
-    // Pi and OMP: the provider holds the steer, but the turn ended before it applied.
-    turnEndsAfterSubmit = false;
-    // Pi and OMP emit an entry without a client ID when its text has conflicting owners.
-    conflictingEcho = false;
+    // Pi and OMP: a steer acknowledgement cannot prove delivery, so answers never steer.
+    ambiguousSteerAcknowledgement = false;
     override async steerActiveTurn(
       prompt: AgentPromptInput,
       options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
@@ -16680,7 +16678,7 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
           type: "user_message",
           text,
           messageId: nativeId,
-          ...(this.conflictingEcho ? {} : { clientMessageId: options.clientMessageId }),
+          clientMessageId: options.clientMessageId,
         },
       });
       providerHistory.push({
@@ -16690,7 +16688,6 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
         item: { type: "user_message", text, messageId: nativeId },
       });
       if (this.loseAcknowledgement) throw new Error("steer acknowledgement timed out");
-      if (this.turnEndsAfterSubmit) return { status: "unavailable", submitted: true };
       return { status: "accepted" };
     }
   }
@@ -16707,15 +16704,10 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
       })({ provider: "codex", cwd: workdir });
     }
   })();
-  const manager = new AgentManager({
-    clients: { codex: client },
-    registry: new AgentStorage(storagePath, logger),
-    logger,
-  });
-  const queue = new MessageQueueService(
-    new MessageQueueStore(queuePath),
-    new QueueAttachmentStore(queuePath),
-  );
+  const storage = new AgentStorage(storagePath, logger);
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const firstAttachments = new QueueAttachmentStore(queuePath);
+  const queue = new MessageQueueService(new MessageQueueStore(queuePath), firstAttachments);
   manager.setMessageQueueControl(queue);
   let reopened: AgentManager | undefined;
   let nextQueue: MessageQueueService | undefined;
@@ -16739,7 +16731,6 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
     const first = await ask("Ship the beta tonight?");
     const second = await ask("Ship the stable tonight?");
     const third = await ask("Ship the docs tonight?");
-    const fourth = await ask("Ship the website tonight?");
     void drainAsyncGenerator(manager.streamAgent(agent.id, "long work"));
     await manager.waitForAgentRunStart(agent.id);
     const answerMessages = async () =>
@@ -16771,6 +16762,44 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
     await manager.answerQuestion(agent.id, first);
     expect(session.steerCount).toBe(2);
 
+    // A Pi-like provider: the third answer stays queued, never steers, and is delivered
+    // once as the next turn after the busy one ends.
+    session.ambiguousSteerAcknowledgement = true;
+    await manager.answerQuestion(agent.id, third);
+    await manager.answerQuestion(agent.id, third);
+    expect(session.steerCount).toBe(2);
+    expect((await question(third.questionId))?.answerDeliveredAt).toBeUndefined();
+    expect((await queue.read(agent.id)).items).toMatchObject([
+      { id: `question-answer-${third.questionId}`, delivery: { status: "queued" } },
+    ]);
+    await queue.mutate(agent.id, {
+      kind: "pause",
+      operationId: "resume",
+      paused: false,
+      expectedRevision: (await queue.read(agent.id)).revision,
+    });
+    await queue.startDelivery(
+      createAgentQueueDelivery({
+        attachments: firstAttachments,
+        agentManager: manager,
+        agentStorage: storage,
+        logger,
+      }),
+    );
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+    await expect
+      .poll(async () => (await question(third.questionId))?.answerDeliveredAt, { timeout: 10_000 })
+      .toBeDefined();
+    expect(session.startCount).toBe(2);
+    expect((await queue.read(agent.id)).items).toEqual([]);
+    await manager.answerQuestion(agent.id, third);
+    expect(session.startCount).toBe(2);
+    expect(session.steerCount).toBe(2);
+    expect(await answerMessages()).toBe(2);
+    session.ambiguousSteerAcknowledgement = false;
+    // Pause again so only the restarted daemon reads provider history below.
+    await queue.pause(agent.id);
+
     // The provider takes the second answer but its acknowledgement is lost: only provider
     // history may settle it, so a retry must not steer it again.
     session.loseAcknowledgement = true;
@@ -16781,25 +16810,6 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
     expect((await queue.read(agent.id)).items).toMatchObject([
       { id: `question-answer-${second.questionId}`, delivery: { status: "uncertain" } },
     ]);
-
-    // The provider receives the third answer, then the turn ends before it is acknowledged.
-    // That is not a refusal, so the answer must not return to the queue for another send.
-    session.loseAcknowledgement = false;
-    session.turnEndsAfterSubmit = true;
-    await manager.answerQuestion(agent.id, third);
-    await manager.answerQuestion(agent.id, third);
-    expect(session.steerCount).toBe(4);
-    expect((await question(third.questionId))?.answerDeliveredAt).toBeUndefined();
-    expect((await queue.read(agent.id)).items).toMatchObject([
-      { id: `question-answer-${second.questionId}`, delivery: { status: "uncertain" } },
-      { id: `question-answer-${third.questionId}`, delivery: { status: "uncertain" } },
-    ]);
-
-    // The adapter could not tell whose entry the fourth answer's was, so it gave no client ID.
-    // With no recorded mapping, history cannot prove delivery and the answer fails closed.
-    session.conflictingEcho = true;
-    await manager.answerQuestion(agent.id, fourth);
-    expect(session.steerCount).toBe(5);
     await manager.closeAgent(agent.id);
     await manager.flush();
     queue.close();
@@ -16827,13 +16837,9 @@ test("an answer to a busy thread steers in once, through a pause, an ambiguous s
       .poll(() => reopened!.getAgent(agent.id)?.journal?.length, { timeout: 10_000 })
       .toBe(3);
     expect((await question(second.questionId, reopened))?.answerDeliveredAt).toBeDefined();
-    expect((await question(third.questionId, reopened))?.answerDeliveredAt).toBeDefined();
-    expect((await question(fourth.questionId, reopened))?.answerDeliveredAt).toBeUndefined();
-    expect((await nextQueue.read(agent.id)).items).toMatchObject([
-      { id: `question-answer-${fourth.questionId}`, delivery: { status: "uncertain" } },
-    ]);
+    expect((await nextQueue.read(agent.id)).items).toEqual([]);
     expect(await nextQueue.acceptedHistory(agent.id)).toHaveLength(3);
-    expect(session.steerCount).toBe(5);
+    expect(session.steerCount).toBe(3);
   } finally {
     queue.close();
     nextQueue?.close();

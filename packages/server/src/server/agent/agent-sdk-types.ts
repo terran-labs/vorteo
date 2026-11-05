@@ -247,12 +247,7 @@ export interface AgentSteerOptions extends AgentRunOptions {
 // mints one. Rewinding to the message needs it.
 export type SteerResult =
   | { status: "accepted"; providerMessageId?: string }
-  /**
-   * `submitted` means the provider received the message before the steer stopped
-   * applying, for example because the turn ended first, so it may still act on it.
-   * Without it, `unavailable` promises the provider never took the message.
-   */
-  | { status: "unavailable"; submitted?: true };
+  | { status: "unavailable" };
 
 export interface SteerActiveTurnOptions extends AgentSteerOptions {
   expectedTurnId: string;
@@ -838,6 +833,11 @@ export interface AgentUsageSession {
 export interface AgentSession {
   /** Opt in only when startTurn checks automaticRecoveryPermit and cannot implicitly resume native work. */
   readonly supportsAutomaticRecoveryDispatch?: boolean;
+  /**
+   * Set when a steer can reach the provider yet report unavailable or fail, so its
+   * acknowledgement cannot prove delivery. Owner answers then wait for the turn to end.
+   */
+  readonly ambiguousSteerAcknowledgement?: boolean;
   usageSession?(): AgentUsageSession | null;
   readonly provider: AgentProvider;
   readonly id: string | null;

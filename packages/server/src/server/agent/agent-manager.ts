@@ -279,14 +279,6 @@ export class SteerNotAdmittedError extends Error {
   }
 }
 
-/** The provider received the steer but the turn moved on before it applied; it may still act. */
-export class SteerSubmissionUncertainError extends Error {
-  constructor() {
-    super("The provider received the steer, but the turn changed before it was confirmed");
-    this.name = "SteerSubmissionUncertainError";
-  }
-}
-
 export class AgentRunCancellationError extends Error {
   constructor(agentId: string, action: "reload" | "replace" | "rewind" | "stop") {
     super(
@@ -5379,8 +5371,8 @@ export class AgentManager {
 
   /**
    * The answer is enqueued under a stable ID first, so retries and reloads deliver it once.
-   * It then steers into an active turn like a peer message; a provider that cannot steer
-   * leaves it queued until the turn ends. Only the queue's acceptance marks it delivered.
+   * It then steers into an active turn like a peer message; a provider that cannot steer,
+   * or whose steer acknowledgement is ambiguous, leaves it queued until the turn ends. Only the queue's acceptance marks it delivered.
    */
   private async deliverAnswer(
     agentId: string,
@@ -5397,15 +5389,20 @@ export class AgentManager {
     const steered = await queue.steerQueuedMessage?.(agentId, messageId, async (item) => {
       const agent = this.agents.get(agentId);
       const turnId = agent?.activeForegroundTurnId ?? agent?.activeTurnId;
-      if (!turnId || !agent?.session?.steerActiveTurn) return null;
+      // An ambiguous acknowledgement cannot prove delivery, so those answers wait in the queue.
+      if (
+        !turnId ||
+        !agent?.session?.steerActiveTurn ||
+        agent.session.ambiguousSteerAcknowledgement
+      )
+        return null;
       try {
         this.assertQuotaNotPaused(agentId);
       } catch {
         return null;
       }
-      // Null only for a certain refusal before submission. A submitted steer whose turn
-      // moved on throws SteerSubmissionUncertainError and, like any other failure, is
-      // left to provider history.
+      // Null only for a certain refusal before submission. Any other failure may have
+      // reached the provider, so it is left to provider history.
       try {
         const result = await this.steerAgentRun(agentId, item.text, { clientMessageId: item.id });
         return result.status === "accepted" ? { turnId } : null;
@@ -5846,9 +5843,6 @@ export class AgentManager {
       }
       return admission;
     });
-    // A submitted steer may still be acted on, so it must never be retried as unsent.
-    if (result.status === "unavailable" && result.submitted)
-      throw new SteerSubmissionUncertainError();
     // An unavailable answer is only safe to fall back from while this admission
     // still owns the active turn. Never let an A admission replace a later B.
     if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
@@ -5895,8 +5889,6 @@ export class AgentManager {
     if (result.status === "accepted") {
       return { status: "steered" };
     }
-    // Starting or replacing a turn with a submitted steer would deliver it twice.
-    if ("submitted" in result && result.submitted) throw new SteerSubmissionUncertainError();
 
     // Providers without autonomous steering keep their existing dispatch behavior. The shared
     // admission may recognize the turn, but only an accepted steer can own it without replacement.

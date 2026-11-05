@@ -235,10 +235,6 @@ interface StartTurnResult {
 interface PiPendingSteerSubmission {
   text: string;
   clientMessageId: string | null;
-  /** Pi may hold this steer though it was never acknowledged as applied to its turn. */
-  ambiguous?: boolean;
-  /** An entry already claimed this submission, so it must never correlate again. */
-  consumed?: boolean;
 }
 
 // COMPAT(piSteerFallback): added in v0.5.0, remove after 2027-03-01 once the pi floor
@@ -1204,6 +1200,8 @@ function createRuntime(
 export class PiRpcAgentSession implements AgentSession {
   readonly provider: AgentProvider;
   readonly capabilities: AgentCapabilityFlags;
+  // A steer can land after its turn ends; text echoes cannot reliably prove which one arrived.
+  readonly ambiguousSteerAcknowledgement = true;
 
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly activeToolCalls = new Map<string, PiTrackedToolCall>();
@@ -1216,19 +1214,10 @@ export class PiRpcAgentSession implements AgentSession {
   private activeTurnStartedEmitted = false;
   private pendingSettledMessages: PiAgentMessage[] | null = null;
   private activeNoTurnPromptText: string | null = null;
-  // The latest foreground prompt, kept past its turn: an equal entry text is a conflict.
-  private foregroundPromptText: string | null = null;
   private readonly pendingNoTurnOutputs: Array<{ turnId: string; message: string }> = [];
   private activePromptRequestId: string | null = null;
   private readonly pendingPromptResults = new Map<string, boolean>();
   private readonly pendingSteerSubmissions: PiPendingSteerSubmission[] = [];
-  // An ambiguous steer keeps its client ID after its turn ends, because Pi can still surface
-  // its entry and the daemon proves delivery from history through that correlation. Entries
-  // stay until claimed; dropping one could let its late entry claim another ID.
-  private readonly retiredSteerSubmissions: PiPendingSteerSubmission[] = [];
-  // Texts whose entries could belong to more than one submission. They never correlate, so
-  // the answers involved stay uncertain for the owner instead of taking a guessed ID.
-  private readonly conflictedSteerTexts = new Set<string>();
   currentLeafOverrideId: string | null | undefined;
   private readonly treeUserEntriesById = new Map<string, PiCapturedEntry>();
   private readonly pendingExtensionResults = new Map<string, PendingExtensionResult>();
@@ -1337,14 +1326,12 @@ export class PiRpcAgentSession implements AgentSession {
     this.activeTurnStartedEmitted = false;
     this.pendingSettledMessages = null;
     this.activePromptRequestId = null;
-    this.retirePendingSteerSubmissions();
+    this.pendingSteerSubmissions.length = 0;
     this.clearNoTurnBuffers();
-    this.foregroundPromptText = null;
     const payload = await convertPromptInput(prompt, { model: this.state.model });
     if (this.closed) throw new Error("Pi session is closed");
     if (this.activeTurnId !== turnId) return { turnId };
     this.activeNoTurnPromptText = payload.text;
-    this.foregroundPromptText = payload.text;
     const shouldProbeForNoTurnPrompt = this.parseSlashCommandInput(payload.text) !== null;
 
     void (async () => {
@@ -1385,7 +1372,7 @@ export class PiRpcAgentSession implements AgentSession {
         this.activeTurnStartedEmitted = false;
         this.pendingSettledMessages = null;
         this.activeAssistantMessageId = null;
-        this.retirePendingSteerSubmissions();
+        this.pendingSteerSubmissions.length = 0;
         this.clearNoTurnBuffers();
         if (isPiRequestAbortError(error)) {
           this.emit({
@@ -1424,28 +1411,23 @@ export class PiRpcAgentSession implements AgentSession {
       return { status: "unavailable" };
     }
 
-    // Register before dispatch: Pi can surface the entry while the steer RPC is in flight.
-    const submission: PiPendingSteerSubmission = {
-      text: payload.text,
-      clientMessageId: options.clientMessageId ?? null,
-    };
-    this.pendingSteerSubmissions.push(submission);
     try {
       await this.runtimeSession.steer(payload.text, payload.images);
     } catch (error) {
       if (isPiDefinitiveSteerRejection(error)) {
-        this.forgetSteerSubmission(submission);
         return { status: "unavailable" };
       }
-      this.retainAmbiguousSteer(submission);
       throw error;
     }
     // The steer is already queued inside pi; if the turn moved on meanwhile its fate
     // is ambiguous, so surface it instead of replacing the wrong turn.
     if (this.closed || this.activeTurnId !== options.expectedTurnId) {
-      this.retainAmbiguousSteer(submission);
-      return { status: "unavailable", submitted: true };
+      return { status: "unavailable" };
     }
+    this.pendingSteerSubmissions.push({
+      text: payload.text,
+      clientMessageId: options.clientMessageId ?? null,
+    });
     if (options.clearPendingPermissions) {
       await this.clearPendingPermissionsForSteer();
     }
@@ -1463,58 +1445,13 @@ export class PiRpcAgentSession implements AgentSession {
     }
   }
 
-  /**
-   * Returns the submission an entry belongs to, null when it must carry no client ID, or
-   * undefined when it is not a steer. A retired steer correlates only as the sole candidate.
-   */
-  private takeSteerCorrelation(text: string): PiPendingSteerSubmission | null | undefined {
-    const matches = (submission: PiPendingSteerSubmission) => submission.text === text;
-    const retired = this.retiredSteerSubmissions.filter(matches);
-    if (!retired.length && !this.conflictedSteerTexts.has(text)) {
-      const index = this.pendingSteerSubmissions.findIndex(matches);
-      if (index < 0) return undefined;
-      return this.consumeSteerSubmission(this.pendingSteerSubmissions[index]!);
+  private takePendingSteerSubmission(text: string): PiPendingSteerSubmission | undefined {
+    const index = this.pendingSteerSubmissions.findIndex((submission) => submission.text === text);
+    if (index < 0) {
+      return undefined;
     }
-    const pending = this.pendingSteerSubmissions.filter(matches);
-    const foreground = this.foregroundPromptText === text;
-    if (
-      retired.length === 1 &&
-      !pending.length &&
-      !foreground &&
-      !this.conflictedSteerTexts.has(text)
-    )
-      return this.consumeSteerSubmission(retired[0]!);
-    this.conflictedSteerTexts.add(text);
-    for (const submission of [...retired, ...pending]) this.consumeSteerSubmission(submission);
-    return null;
-  }
-
-  private consumeSteerSubmission(submission: PiPendingSteerSubmission): PiPendingSteerSubmission {
-    submission.consumed = true;
-    for (const submissions of [this.pendingSteerSubmissions, this.retiredSteerSubmissions]) {
-      const index = submissions.indexOf(submission);
-      if (index >= 0) submissions.splice(index, 1);
-    }
+    const [submission] = this.pendingSteerSubmissions.splice(index, 1);
     return submission;
-  }
-
-  private forgetSteerSubmission(submission: PiPendingSteerSubmission): void {
-    const index = this.pendingSteerSubmissions.indexOf(submission);
-    if (index >= 0) this.pendingSteerSubmissions.splice(index, 1);
-  }
-
-  /** The turn may already have discarded the submission, so restore it unless it was claimed. */
-  private retainAmbiguousSteer(submission: PiPendingSteerSubmission): void {
-    submission.ambiguous = true;
-    if (submission.consumed || this.pendingSteerSubmissions.includes(submission)) return;
-    this.retiredSteerSubmissions.push(submission);
-  }
-
-  /** Accepted steers lose correlation with their turn; unclaimed ambiguous ones are retained. */
-  private retirePendingSteerSubmissions(): void {
-    this.retiredSteerSubmissions.push(
-      ...this.pendingSteerSubmissions.splice(0).filter((submission) => submission.ambiguous),
-    );
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
@@ -1634,7 +1571,7 @@ export class PiRpcAgentSession implements AgentSession {
         this.activeTurnStartedEmitted = false;
         this.pendingSettledMessages = null;
         this.activeAssistantMessageId = null;
-        this.retirePendingSteerSubmissions();
+        this.pendingSteerSubmissions.length = 0;
         this.clearNoTurnBuffers();
         this.emit({
           type: "turn_failed",
@@ -1658,7 +1595,7 @@ export class PiRpcAgentSession implements AgentSession {
       this.activeTurnStartedEmitted = false;
       this.pendingSettledMessages = null;
       this.activeAssistantMessageId = null;
-      this.retirePendingSteerSubmissions();
+      this.pendingSteerSubmissions.length = 0;
       this.clearNoTurnBuffers();
       this.emit({
         type: "turn_canceled",
@@ -2102,9 +2039,10 @@ export class PiRpcAgentSession implements AgentSession {
     if (!entry) {
       return true;
     }
-    const steer = this.takeSteerCorrelation(entry.text);
-    const clientMessageId =
-      steer === undefined ? this.activeClientMessageId : steer?.clientMessageId;
+    const pendingSteer = this.takePendingSteerSubmission(entry.text);
+    const clientMessageId = pendingSteer
+      ? pendingSteer.clientMessageId
+      : this.activeClientMessageId;
     this.emit({
       type: "timeline",
       provider: this.provider,
@@ -2272,7 +2210,7 @@ export class PiRpcAgentSession implements AgentSession {
     this.activeTurnStarted = false;
     this.activeTurnStartedEmitted = false;
     this.pendingSettledMessages = null;
-    this.retirePendingSteerSubmissions();
+    this.pendingSteerSubmissions.length = 0;
     this.clearNoTurnBuffers();
     this.emit({
       type: "turn_failed",
@@ -2625,7 +2563,7 @@ export class PiRpcAgentSession implements AgentSession {
     this.activeTurnStarted = false;
     this.activeTurnStartedEmitted = false;
     this.pendingSettledMessages = null;
-    this.retirePendingSteerSubmissions();
+    this.pendingSteerSubmissions.length = 0;
     this.clearNoTurnBuffers();
     if (typeof errorMessage === "string" && errorMessage.length > 0) {
       this.usagePoller.stopTurn();

@@ -2576,7 +2576,7 @@ describe("PiRpcAgentSession steering", () => {
   });
 
   test("reports unavailable when the expected turn is not the active one", async () => {
-    const { pi, session, events } = await createSession();
+    const { pi, session } = await createSession();
     const fakeSession = pi.latestSession();
     const { turnId } = await session.startTurn("run");
 
@@ -2590,48 +2590,6 @@ describe("PiRpcAgentSession steering", () => {
     const idle = await session.steerActiveTurn("steer", { expectedTurnId: turnId });
     expect(idle).toEqual({ status: "unavailable" });
     expect(fakeSession.steerCalls).toEqual([]);
-
-    // Pi surfaces a steer's entry while the steer RPC is still in flight.
-    const next = await session.startTurn("run again");
-    const steer = fakeSession.steer.bind(fakeSession);
-    fakeSession.steer = async (...args) => {
-      await steer(...args);
-      fakeSession.finishSubmittedUserMessage({ id: "entry-early", parentId: null, text: "early" });
-    };
-    await session.steerActiveTurn("early", {
-      expectedTurnId: next.turnId,
-      clientMessageId: "client-early",
-    });
-    // Pi already holds a steer whose turn ends before it applies; it is not a refusal, and
-    // the entry Pi surfaces afterwards still carries the steer's client ID.
-    fakeSession.steer = async (...args) => {
-      await steer(...args);
-      fakeSession.finishTurn();
-      await flushTurnScheduling();
-    };
-    const submitted = await session.steerActiveTurn("late", {
-      expectedTurnId: next.turnId,
-      clientMessageId: "client-late",
-    });
-    expect(submitted).toEqual({ status: "unavailable", submitted: true });
-    fakeSession.finishSubmittedUserMessage({ id: "entry-late", parentId: null, text: "late" });
-    const steered = events.timelineItems().filter((item) => item.type === "user_message");
-    expect(steered).toEqual(
-      expect.arrayContaining([
-        {
-          type: "user_message",
-          text: "early",
-          messageId: "entry-early",
-          clientMessageId: "client-early",
-        },
-        {
-          type: "user_message",
-          text: "late",
-          messageId: "entry-late",
-          clientMessageId: "client-late",
-        },
-      ]),
-    );
   });
 
   test("keeps slash-command steers on the interrupt fallback", async () => {
@@ -2734,147 +2692,6 @@ describe("PiRpcAgentSession steering", () => {
     const userMessages = events.timelineItems().filter((item) => item.type === "user_message");
     expect(userMessages).toEqual([
       { type: "user_message", text: "stale steer", messageId: "entry-late" },
-    ]);
-  });
-
-  test("correlates an ambiguous steer only when no other submission could own its entry", async () => {
-    type Mode = "finish" | "echo_finish" | "finish_throw" | "noecho";
-    const scenario = async (
-      run: (
-        setup: Awaited<ReturnType<typeof createSession>> & { mode: (next: Mode) => void },
-      ) => Promise<void>,
-    ) => {
-      const setup = await createSession();
-      const fakeSession = setup.pi.latestSession();
-      const steer = fakeSession.steer.bind(fakeSession);
-      let mode: Mode = "noecho";
-      fakeSession.steer = async (message, images) => {
-        await steer(message, images);
-        if (mode === "echo_finish")
-          fakeSession.finishSubmittedUserMessage({
-            id: "actual-answer",
-            parentId: null,
-            text: message,
-          });
-        if (mode !== "noecho") {
-          fakeSession.finishTurn();
-          await flushTurnScheduling();
-        }
-        if (mode === "finish_throw") throw new Error("Pi RPC socket closed");
-      };
-      await run({ ...setup, mode: (next) => (mode = next) });
-      return setup.events.timelineItems().filter((item) => item.type === "user_message");
-    };
-
-    // A claimed submission never correlates again, even for a later copy of its text.
-    expect(
-      await scenario(async ({ pi, session, mode }) => {
-        const turn = await session.startTurn("initial");
-        mode("echo_finish");
-        await session.steerActiveTurn("same text", {
-          expectedTurnId: turn.turnId,
-          clientMessageId: "answer-A",
-        });
-        await session.startTurn("same text", { clientMessageId: "manual-new" });
-        pi.latestSession().finishSubmittedUserMessage({
-          id: "manual-copy",
-          parentId: null,
-          text: "same text",
-        });
-      }),
-    ).toEqual([
-      {
-        type: "user_message",
-        text: "same text",
-        messageId: "actual-answer",
-        clientMessageId: "answer-A",
-      },
-      {
-        type: "user_message",
-        text: "same text",
-        messageId: "manual-copy",
-        clientMessageId: "manual-new",
-      },
-    ]);
-    // A steer that throws after its turn ended is still retained.
-    expect(
-      await scenario(async ({ pi, session, mode }) => {
-        const turn = await session.startTurn("initial");
-        mode("finish_throw");
-        await expect(
-          session.steerActiveTurn("same text", {
-            expectedTurnId: turn.turnId,
-            clientMessageId: "answer-A",
-          }),
-        ).rejects.toThrow("Pi RPC socket closed");
-        pi.latestSession().finishSubmittedUserMessage({
-          id: "late-answer",
-          parentId: null,
-          text: "same text",
-        });
-      }),
-    ).toEqual([
-      {
-        type: "user_message",
-        text: "same text",
-        messageId: "late-answer",
-        clientMessageId: "answer-A",
-      },
-    ]);
-    // Two submissions could own the same text, so neither entry takes an ID.
-    expect(
-      await scenario(async ({ pi, session, mode }) => {
-        const first = await session.startTurn("initial");
-        mode("finish");
-        await session.steerActiveTurn("same text", {
-          expectedTurnId: first.turnId,
-          clientMessageId: "answer-A",
-        });
-        const second = await session.startTurn("next");
-        mode("noecho");
-        await session.steerActiveTurn("same text", {
-          expectedTurnId: second.turnId,
-          clientMessageId: "answer-B",
-        });
-        pi.latestSession().finishSubmittedUserMessage({
-          id: "native-A",
-          parentId: null,
-          text: "same text",
-        });
-        pi.latestSession().finishSubmittedUserMessage({
-          id: "native-B",
-          parentId: null,
-          text: "same text",
-        });
-      }),
-    ).toEqual([
-      { type: "user_message", text: "same text", messageId: "native-A" },
-      { type: "user_message", text: "same text", messageId: "native-B" },
-    ]);
-    // Unclaimed ambiguous steers are never evicted.
-    expect(
-      await scenario(async ({ pi, session, mode }) => {
-        mode("finish");
-        for (let index = 0; index < 17; index += 1) {
-          const turn = await session.startTurn(`initial-${index}`);
-          await session.steerActiveTurn(`answer-${index}`, {
-            expectedTurnId: turn.turnId,
-            clientMessageId: `client-${index}`,
-          });
-        }
-        pi.latestSession().finishSubmittedUserMessage({
-          id: "native-oldest",
-          parentId: null,
-          text: "answer-0",
-        });
-      }),
-    ).toEqual([
-      {
-        type: "user_message",
-        text: "answer-0",
-        messageId: "native-oldest",
-        clientMessageId: "client-0",
-      },
     ]);
   });
 });

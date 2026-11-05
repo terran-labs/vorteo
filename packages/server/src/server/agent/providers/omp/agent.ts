@@ -610,12 +610,6 @@ function createRuntime(
   });
 }
 
-interface OmpClientMessage {
-  clientMessageId: string | null;
-  text: string;
-  /** An echo already claimed this message, so it must never correlate again. */
-  consumed?: boolean;
-}
 class OmpHistorySession implements AgentSession {
   readonly provider: AgentProvider;
   readonly capabilities: AgentCapabilityFlags = withOmpCapabilities();
@@ -698,20 +692,16 @@ class OmpHistorySession implements AgentSession {
 export class OmpAgentSession implements AgentSession {
   readonly provider: AgentProvider = OMP_PROVIDER;
   readonly capabilities: AgentCapabilityFlags = withOmpCapabilities();
+  // A steer can land after its turn ends; text echoes cannot reliably prove which one arrived.
+  readonly ambiguousSteerAcknowledgement = true;
 
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly activeToolCalls = new Map<string, OmpTrackedToolCall>();
   private readonly pendingExtensionUiRequests = new Map<string, AgentPermissionRequest>();
   private readonly questionUi = new OmpQuestionUi();
   private activeTurnId: string | null = null;
-  // An ambiguous steer keeps its client ID after its turn ends, because OMP can still surface
-  // its entry and the daemon proves delivery from history through that correlation. Entries
-  // stay until claimed; dropping one could let its late echo claim another ID.
-  private readonly retiredClientMessages: OmpClientMessage[] = [];
-  // Echo texts that could belong to more than one message. They never correlate, so the
-  // answers involved stay uncertain for the owner instead of taking a guessed ID.
-  private readonly conflictedEchoTexts = new Set<string>();
-  private readonly pendingClientMessages: OmpClientMessage[] = [];
+  private readonly pendingClientMessages: Array<{ clientMessageId: string | null; text: string }> =
+    [];
   private activeAssistantMessageId: string | null = null;
   private activeTurnTerminalAssistantMessage: OmpAgentMessage | null = null;
   private activeTurnStarted = false;
@@ -964,18 +954,12 @@ export class OmpAgentSession implements AgentSession {
     try {
       await this.runtimeSession.steer(payload.text, payload.images);
     } catch (error) {
-      if (isOmpSteerTransportFailure(error)) {
-        this.retainAmbiguousClientMessage(submission);
-        throw error;
-      }
       this.forgetClientMessage(submission);
+      if (isOmpSteerTransportFailure(error)) throw error;
       return { status: "unavailable" };
     }
-    // OMP already holds the steer, so a turn that moved on leaves its fate ambiguous.
-    if (this.closed || this.activeTurnId !== options.expectedTurnId) {
-      this.retainAmbiguousClientMessage(submission);
-      return { status: "unavailable", submitted: true };
-    }
+    if (this.closed || this.activeTurnId !== options.expectedTurnId)
+      return { status: "unavailable" };
     if (options.clearPendingPermissions) {
       for (const requestId of this.pendingExtensionUiRequests.keys()) {
         await this.respondToPermission(requestId, {
@@ -987,54 +971,26 @@ export class OmpAgentSession implements AgentSession {
     return { status: "accepted" };
   }
 
-  private rememberClientMessage(clientMessageId: string | null, text: string): OmpClientMessage {
-    const submission: OmpClientMessage = { clientMessageId, text };
+  private rememberClientMessage(
+    clientMessageId: string | null,
+    text: string,
+  ): {
+    clientMessageId: string | null;
+    text: string;
+  } {
+    const submission = { clientMessageId, text };
     this.pendingClientMessages.push(submission);
     if (this.pendingClientMessages.length > 16) this.pendingClientMessages.shift();
     return submission;
   }
 
-  private forgetClientMessage(submission: OmpClientMessage): void {
+  private forgetClientMessage(submission: { clientMessageId: string | null; text: string }): void {
     const index = this.pendingClientMessages.indexOf(submission);
     if (index >= 0) this.pendingClientMessages.splice(index, 1);
   }
 
-  private takeClientMessage(): OmpClientMessage | undefined {
-    const submission = this.pendingClientMessages.shift();
-    if (submission) submission.consumed = true;
-    return submission;
-  }
-
-  /**
-   * Pending messages pair with echoes in order, so an ambiguous steer leaves that order and
-   * matches only by text, and only as the sole candidate. Otherwise no message claims the
-   * echo, and the pending order is dropped because it can no longer be trusted.
-   */
-  private takeEchoCorrelation(text: string): OmpClientMessage | undefined {
-    const retired = this.retiredClientMessages.filter((submission) => submission.text === text);
-    if (!retired.length && !this.conflictedEchoTexts.has(text)) return this.takeClientMessage();
-    if (
-      retired.length === 1 &&
-      !this.pendingClientMessages.length &&
-      !this.conflictedEchoTexts.has(text)
-    ) {
-      this.retiredClientMessages.splice(this.retiredClientMessages.indexOf(retired[0]!), 1);
-      retired[0]!.consumed = true;
-      return retired[0];
-    }
-    this.conflictedEchoTexts.add(text);
-    for (const submission of retired) {
-      this.retiredClientMessages.splice(this.retiredClientMessages.indexOf(submission), 1);
-      submission.consumed = true;
-    }
-    while (this.takeClientMessage());
-    return undefined;
-  }
-
-  /** The turn may already have discarded the message, so restore it unless it was claimed. */
-  private retainAmbiguousClientMessage(submission: OmpClientMessage): void {
-    this.forgetClientMessage(submission);
-    if (!submission.consumed) this.retiredClientMessages.push(submission);
+  private takeClientMessage(): { clientMessageId: string | null; text: string } | undefined {
+    return this.pendingClientMessages.shift();
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
@@ -2113,7 +2069,7 @@ export class OmpAgentSession implements AgentSession {
         }
         this.emittedUserMessageIds.add(resolvedMessageId);
       }
-      const clientMessageId = this.takeEchoCorrelation(text)?.clientMessageId;
+      const clientMessageId = this.takeClientMessage()?.clientMessageId;
       this.emit({
         type: "timeline",
         provider: this.provider,
