@@ -237,6 +237,8 @@ export function createLiveDev(options: LiveDevServiceOptions) {
       installation,
       logger,
       secureCookies: options.secureCookies,
+      liveMode: () => record?.mode === "live",
+      serverStatus,
     });
   }
 
