@@ -1,6 +1,6 @@
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { createContext, useContext } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 
 export const SidebarInsetContext = createContext(0);
@@ -35,4 +35,34 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.divider,
   },
+}));
+
+/**
+ * The full-width rule between sections of the sidebar footer block. It reaches the card's edges
+ * through the sidebar inset, and the line sits on the row's top edge so a scrolling section above
+ * is clipped exactly at the line. A resizable section passes its height handle as `children`,
+ * which overlays the line so the rule itself is the grip.
+ */
+export function SidebarSectionRule({
+  testID,
+  children,
+}: {
+  testID?: string;
+  children?: ReactNode;
+}) {
+  const inset = useContext(SidebarInsetContext);
+  return (
+    <View
+      style={[ruleStyles.row, inlineUnistylesStyle({ marginHorizontal: -inset })]}
+      testID={testID}
+    >
+      <View pointerEvents="none" style={ruleStyles.line} />
+      {children}
+    </View>
+  );
+}
+
+const ruleStyles = StyleSheet.create((theme) => ({
+  row: { height: 8, flexShrink: 0 },
+  line: { height: theme.borderWidth[1], backgroundColor: theme.colors.divider },
 }));

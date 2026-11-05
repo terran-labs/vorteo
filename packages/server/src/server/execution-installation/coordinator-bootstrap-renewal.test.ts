@@ -1394,6 +1394,44 @@ test.runIf(process.platform === "darwin")(
         configurationChanges: [{ setting: "hostLauncherUpdate", value: launcherUpdate }],
       }),
     ).resolves.toBeUndefined();
+    // The Dev boot-entry switch rides an owner-reviewed renewal as a listed change, only
+    // with matching candidate bytes.
+    const bootEntrySwitch = {
+      docker: "/fixture/docker",
+      socket: "/fixture/docker.sock",
+      container: "a".repeat(64),
+      current: {
+        pointer: { path: "/etc/paseo-server-entry", sha256: "b".repeat(64) },
+        entry: { path: "/fixture/old-entry.mjs", sha256: "c".repeat(64) },
+      },
+      target: { path: "/fixture/new-entry.mjs", sha256: "d".repeat(64) },
+      node: { path: "/fixture/node", sha256: "e".repeat(64) },
+      supervisorEntry: { path: "/fixture/supervisor.mjs", sha256: "f".repeat(64) },
+      supervisor: { config: "/fixture/supervisord.conf", program: "paseo-server" },
+      expectBootForm: "launcher",
+      factoryVerify: {
+        script: "/fixture/factory-verify.sh",
+        sha256: "1".repeat(64),
+        lockInode: 3901122,
+        ownerMode: "paused",
+      },
+    };
+    const bootConfig = JSON.parse(readFileSync(candidateConfig.path, "utf8"));
+    const bootPlanned = f.save(path.join(f.root, "boot-entry-switch.json"), {
+      ...bootConfig,
+      container: { ...bootConfig.container, bootEntrySwitch },
+    });
+    const bootChange = [{ setting: "bootEntrySwitch", value: bootEntrySwitch }];
+    await expect(
+      verifyRenewalPlan(setup, { ...plan, configurationChanges: bootChange }),
+    ).rejects.toThrow("outside its approved policy");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...plan,
+        candidate: { ...f.host, configuration: bootPlanned },
+        configurationChanges: bootChange,
+      }),
+    ).resolves.toBeUndefined();
     // Release seals ride an owner-reviewed renewal as a listed change; the launcher
     // verifier binds the candidate launcher's VORTEO_RELEASE_SEALS to the same entry.
     const sealsConfig = JSON.parse(readFileSync(candidateConfig.path, "utf8"));
@@ -1430,6 +1468,139 @@ test.runIf(process.platform === "darwin")(
         factoryRuntimeAdoptionConfiguration: null,
       }),
     ).resolves.toBeUndefined();
+  },
+);
+
+test.runIf(process.platform === "darwin")(
+  "renewal attaches one broker section alone and retains the live configuration for rollback",
+  async () => {
+    const f = await fixture();
+    const setup = (await f.derive())!;
+    const pin = (name: string) => ({ path: `/fixture/${name}`, sha256: sha(name) });
+    const recovery = {
+      node: pin("node"),
+      journal: pin("journal.js"),
+      queue: pin("queue.js"),
+      configModule: pin("config.js"),
+    };
+    const binding = (root: string) => ({
+      root,
+      domain: `gui/${process.getuid!()}`,
+      label: "local.fixture.broker",
+      plist: pin("broker.plist"),
+      interpreter: "/usr/bin/python3",
+      argv: ["/usr/bin/python3", `${root}/https_broker.py`, "--serve"],
+    });
+    const deployment = {
+      docker: "/fixture/docker",
+      socket: "/fixture/docker.sock",
+      containerId: "a".repeat(64),
+      roots: ["/fixture/native", "/fixture/dev"] as [string, string],
+      bindings: [binding("/fixture/native"), binding("/fixture/dev")],
+      scope: pin("scope.json"),
+      nativeInspector: pin("inspector"),
+      python: pin("python3"),
+      worker: pin("worker.py"),
+      modules: [pin("broker_deployment.py")],
+      evidenceRoot: "/fixture/evidence",
+      recovery,
+    };
+    const broker = {
+      docker: "/fixture/docker",
+      socket: "/fixture/docker.sock",
+      containerId: "a".repeat(64),
+      configPaths: ["/fixture/native/config.json", "/fixture/dev/config.json"],
+      python: pin("python3"),
+      worker: pin("broker_rebind.py"),
+      identityModule: pin("channel_identity.py"),
+      consumerFiles: ["native", "dev"].flatMap((root) =>
+        ["https_broker.py", "https-preview.py", "host_config.py"].map((name) =>
+          pin(`${root}/${name}`),
+        ),
+      ),
+      evidenceRoot: "/fixture/evidence",
+      recovery,
+    };
+    const base = {
+      ...f.plan,
+      previous: f.coordinator,
+      automaticRecovery: "restore-compatible" as const,
+      compatibleRecovery: f.host,
+    };
+    const attach = (name: string, section: Record<string, unknown>) => ({
+      ...base,
+      candidate: {
+        ...f.host,
+        configuration: f.save(path.join(f.root, `${name}.json`), { ...f.config, ...section }),
+      },
+    });
+    const deploying = attach("broker-deployment", { previewBrokerDeployment: deployment });
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...deploying,
+        configurationChanges: [{ setting: "previewBrokerDeployment", value: deployment }],
+      }),
+    ).resolves.toBeUndefined();
+    const brokering = attach("broker", { previewBroker: broker });
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...brokering,
+        configurationChanges: [{ setting: "previewBroker", value: broker }],
+      }),
+    ).resolves.toBeUndefined();
+    // The rollback reader must keep the live configuration, never the attached section.
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...brokering,
+        compatibleRecovery: brokering.candidate,
+        configurationChanges: [{ setting: "previewBroker", value: broker }],
+      }),
+    ).rejects.toThrow("Recovery must preserve");
+    const both = attach("broker-both", {
+      previewBrokerDeployment: deployment,
+      previewBroker: broker,
+    });
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...both,
+        configurationChanges: [
+          { setting: "previewBrokerDeployment", value: deployment },
+          { setting: "previewBroker", value: broker },
+        ],
+      }),
+    ).rejects.toThrow("single configuration change");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...deploying,
+        configurationChanges: [
+          { setting: "previewBrokerDeployment", value: deployment },
+          { setting: "claudeHostRefresh", value: true },
+        ],
+      }),
+    ).rejects.toThrow("single configuration change");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...deploying,
+        configurationChanges: [
+          { setting: "previewBrokerDeployment", value: { ...deployment, modules: [] } },
+        ],
+      }),
+    ).rejects.toThrow("Invalid value for configuration setting: previewBrokerDeployment");
+    await expect(
+      verifyRenewalPlan(setup, {
+        ...brokering,
+        configurationChanges: [{ setting: "previewBroker", value: { ...broker, worker: "x" } }],
+      }),
+    ).rejects.toThrow("Invalid value for configuration setting: previewBroker");
+    // Policy, helper and monitor stay outside renewal.
+    for (const refused of [
+      { hostRequestsAfter: "2026-10-11T00:00:00.000Z" },
+      { nativeHelperConfiguration: null },
+      { configurationChanges: [{ setting: "previewMonitor", value: null }] },
+    ])
+      await expect(verifyRenewalPlan(setup, { ...deploying, ...refused })).rejects.toThrow(
+        "cannot change policy, helper or monitor",
+      );
   },
 );
 

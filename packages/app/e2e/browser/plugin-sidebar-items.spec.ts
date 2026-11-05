@@ -38,7 +38,7 @@ async function qaScreenshot(page: Page, name: string, area?: Locator) {
 }
 
 /**
- * Footer rows sit at the bottom of the sidebar, above the footer separator and within its span.
+ * Footer rows sit in the sidebar footer block, below their full-width rule and within its span.
  * The footer's icon line moved to the toolbar above the projects (471d7f22a).
  */
 async function expectFooterRow(page: Page, row: Locator) {
@@ -48,12 +48,12 @@ async function expectFooterRow(page: Page, row: Locator) {
       const separator = (await visibleTestId(page, "sidebar-footer-separator").boundingBox())!;
       const box = (await row.boundingBox())!;
       return {
-        aboveSeparator: box.y + box.height <= separator.y + 1,
+        belowSeparator: box.y >= separator.y + separator.height - 1,
         withinSpan:
           box.x >= separator.x - 1 && box.x + box.width <= separator.x + separator.width + 1,
       };
     })
-    .toEqual({ aboveSeparator: true, withinSpan: true });
+    .toEqual({ belowSeparator: true, withinSpan: true });
 }
 
 function botRow(page: Page, rowId: string): Locator {

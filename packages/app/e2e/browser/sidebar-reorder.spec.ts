@@ -12,7 +12,10 @@ import {
   sidebarProjectForWorkspace,
   waitForSidebarHydration,
 } from "../support/helpers/workspace-ui";
-import { selectSidebarStatusGrouping } from "../support/helpers/sidebar";
+import {
+  openSidebarDisplayPreferences,
+  selectSidebarStatusGrouping,
+} from "../support/helpers/sidebar";
 
 async function rowTestIds(rows: Locator) {
   return rows.evaluateAll((elements) =>
@@ -512,7 +515,7 @@ test("protected workspace drop explains the block", async ({ page }) => {
 });
 
 async function selectWorkspaceSort(page: Page, name: "Manual" | "Created" | "Last prompt") {
-  await page.getByLabel("Display preferences", { exact: true }).click();
+  await openSidebarDisplayPreferences(page);
   await page.getByRole("menuitem", { name: /^Sort/ }).click();
   await page.getByRole("menuitem", { name, exact: true }).click();
 }
@@ -523,7 +526,7 @@ async function reconnectSidebar(page: Page): Promise<void> {
 }
 
 async function expectNoWorkspaceSortChoice(page: Page): Promise<void> {
-  await page.getByLabel("Display preferences", { exact: true }).click();
+  await openSidebarDisplayPreferences(page);
   await expect(page.getByRole("menuitem", { name: /^Sort/ })).toHaveCount(0);
 }
 
@@ -622,7 +625,7 @@ async function revealWorkspaces(list: Locator, action: "Show more" | "Show less"
 }
 
 async function selectProjectGrouping(page: Page) {
-  await page.getByLabel("Display preferences", { exact: true }).click();
+  await openSidebarDisplayPreferences(page);
   await page.getByRole("menuitem", { name: /^Group/ }).click();
   await page.getByTestId("sidebar-grouping-project").click();
 }

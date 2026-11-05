@@ -7,6 +7,7 @@ import path from "node:path";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import {
+  BootEntrySwitchConfigurationSchema,
   EngineRestartConfigurationSchema,
   EngineRecoveryConfigurationSchema,
   RecoveryOriginSchema,
@@ -14,6 +15,7 @@ import {
   FactoryGateConfigurationSchema,
   HostLauncherUpdateConfigurationSchema,
   FactoryRuntimeAdoptionConfigurationSchema,
+  SupervisorMaintenanceConfigurationSchema,
   installationHasContainer,
   validateExecutionInstallation,
 } from "@getpaseo/protocol/execution-installation";
@@ -68,14 +70,10 @@ const ContainerDaemonSchema = DaemonConnectionSchema.extend({
   factoryRuntimeAdoption: FactoryRuntimeAdoptionConfigurationSchema.optional(),
   engineRestart: EngineRestartConfigurationSchema.optional(),
   engineRecovery: EngineRecoveryConfigurationSchema.optional(),
+  /** Coordinator-tracked switch of Dev's daemon boot entry; refused with persistentRegistration. */
+  bootEntrySwitch: BootEntrySwitchConfigurationSchema.optional(),
   factoryGate: FactoryGateConfigurationSchema.optional(),
-  supervisorMaintenance: z
-    .strictObject({
-      node: z.string().startsWith("/"),
-      script: z.string().startsWith("/"),
-      sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    })
-    .optional(),
+  supervisorMaintenance: SupervisorMaintenanceConfigurationSchema.optional(),
 });
 export type ContainerDaemonConfig = z.infer<typeof ContainerDaemonSchema>;
 

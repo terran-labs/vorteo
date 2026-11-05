@@ -57,6 +57,8 @@ A pending or approved plain restart for the same target is shared. Later `reques
 
 Requests do not expire. The queue runs without the browser open and survives coordinator restarts before dispatch. An unreachable or incompatible daemon keeps it waiting; an empty or failed inventory is not proof of idleness.
 
+`update-status` is read-only and needs no Builds variable. It returns the installation's update policy (`mode` manual or automatic, `channel` stable or beta), the last release check (installed version, newest release above it with its notes summary, security flag and Factory charter changes, or the check's error) and the release upgrade waiting or running. The coordinator offers each new release once in the owner's Open questions and, under the automatic policy, approves it to install after current work. Never raise your own update question, run the installer for a release or approve an upgrade; report a stale offer or a failing check as a finding.
+
 `restart-status <request-id>` returns the durable result and `approvalUrl`. General controls are at [Installation settings](INSTALLATION_SETTINGS_URL); append `&restart=<request-id>` to focus a request. Never put an agent token or owner password in a link. A missing or superseded request must not approve a different request.
 
 - `pending`: no decision yet.

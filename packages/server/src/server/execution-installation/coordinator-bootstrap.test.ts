@@ -361,6 +361,17 @@ test("only explicit maintenance delegation approves a release seal change automa
   }
 });
 
+test("maintenance delegation never approves a Dev boot-entry switch plan automatically", async () => {
+  // The switch itself is approved by digest, so the owner reviews its plan here.
+  const f = automaticCoordinatorFixture(true);
+  f.plan.configurationChanges = [{ setting: "bootEntrySwitch", value: null }];
+  f.plan.candidate.configuration.sha256 = "f".repeat(64);
+  const submitted = await f.submit();
+  await expect(
+    f.service().approveAutomatic(automaticCoordinatorIdentity(submitted)),
+  ).rejects.toThrow("require exact owner review");
+});
+
 test("loaded coordinator PID parsing rejects nested, foreign and incomplete records", () => {
   const service = "gui/501/local.vorteo.fixture.installation";
   expect(loadedCoordinatorPid(service, `${service} = {\n\tpid = 123\n}`)).toBe(123);
@@ -7210,4 +7221,16 @@ test("explicit maintenance delegation approves exact coordinator settings and st
   f.advance();
   f.disable();
   await expect(f.service().claimDispatch(automaticCoordinatorIdentity(approved))).rejects.toThrow();
+});
+
+test("maintenance delegation may approve attaching broker configuration", async () => {
+  // Owner decision 2026-11-03: attaching the broker sections is delegable. Consumer deployment
+  // and channel rebind, the trust decisions, stay owner-only in their own executors.
+  for (const setting of ["previewBrokerDeployment", "previewBroker"]) {
+    const f = automaticCoordinatorFixture(true);
+    f.plan.configurationChanges = [{ setting, value: null }];
+    f.plan.candidate.configuration.sha256 = "f".repeat(64);
+    const submitted = await f.submit();
+    await f.service().approveAutomatic(automaticCoordinatorIdentity(submitted));
+  }
 });

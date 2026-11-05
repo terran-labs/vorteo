@@ -67,6 +67,8 @@ export const EngineRecoveryConfigurationSchema = EngineRestartConfigurationSchem
       ownerSequence: z.number().int().nonnegative(),
       custodyCount: z.number().int().nonnegative(),
       custodyDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      // COMPAT(bootEntrySwitch): added 2026-11-04; absent means Dev booted through the launcher.
+      bootForm: z.enum(["launcher", "plain"]).optional(),
     }),
   }),
 });
@@ -97,6 +99,66 @@ export const HostLauncherUpdateConfigurationSchema = z.strictObject({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 export type HostLauncherUpdateConfiguration = z.infer<typeof HostLauncherUpdateConfigurationSchema>;
+
+/** A protected Host Node script that repairs the Dev supervisor. The coordinator
+ * runs the exact verified bytes once per approved tracked request. */
+export const SupervisorMaintenanceConfigurationSchema = z.strictObject({
+  node: z.string().startsWith("/"),
+  script: z.string().startsWith("/"),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type SupervisorMaintenanceConfiguration = z.infer<
+  typeof SupervisorMaintenanceConfigurationSchema
+>;
+const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const PinnedFileSchema = z.strictObject({ path: z.string().startsWith("/"), sha256: Sha256Schema });
+
+/**
+ * Operator-prepared switch of Dev's daemon boot entry (`/etc/paseo-server-entry` names the
+ * module `node` runs at container start). One reviewed plan moves the pointer from the
+ * current entry to the target entry and restarts Dev's supervisor program so the entry is
+ * re-read. The same shape rolls back: a target that already exists in Dev (no `source`)
+ * is selected again. Every file is pinned by digest; any difference refuses before effect.
+ */
+export const BootEntrySwitchConfigurationSchema = z.strictObject({
+  docker: z.string().startsWith("/"),
+  /** Docker socket path, without a `unix://` prefix. */
+  socket: z.string().startsWith("/"),
+  container: ContainerIdSchema,
+  /** The pointer file and the entry it must name before the switch. */
+  current: z.strictObject({
+    pointer: PinnedFileSchema,
+    entry: PinnedFileSchema,
+  }),
+  /**
+   * The entry selected after the switch. With `source`, a pinned Host file is copied to
+   * `path` (root-owned, 0644) first; without it, `path` must already hold `sha256`.
+   */
+  target: z.strictObject({
+    path: z.string().startsWith("/"),
+    sha256: Sha256Schema,
+    source: z.string().startsWith("/").optional(),
+  }),
+  /** The node and supervisor entry the target execs; the new supervisor must run exactly these. */
+  node: PinnedFileSchema,
+  supervisorEntry: PinnedFileSchema,
+  /** The supervisord program that runs the boot entry. */
+  supervisor: z.strictObject({
+    config: z.string().startsWith("/"),
+    program: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
+  }),
+  /** Which boot form Factory's check must report afterwards: no launcher, or the launcher. */
+  expectBootForm: z.enum(["plain", "launcher"]),
+  /**
+   * Factory's read-only check (version 4 or later), run before and after; its boot form must
+   * change as expected. Required: without it nothing proves the boot form changed, and the
+   * coordinator's Factory gates must already pin the same script.
+   */
+  factoryVerify: FactoryVerifyConfigurationSchema,
+  /** Bound on the supervisor restart and readiness checks. */
+  deadlineSeconds: z.number().int().min(60).max(1800).optional(),
+});
+export type BootEntrySwitchConfiguration = z.infer<typeof BootEntrySwitchConfigurationSchema>;
 
 export const InstallationEnvironmentSchema = z.strictObject({
   kind: ExecutionEnvironmentKindSchema,
@@ -247,6 +309,12 @@ export const RestartRequestSchema = z.strictObject({
   // COMPAT(hostLauncherUpdate): optional exact-plan binding for the one-time Host launcher update.
   // Projected out for clients that do not negotiate it; their approvals cannot authorize it.
   hostLauncherPlanSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  // COMPAT(bootEntrySwitch): added 2026-11-04; optional exact-plan binding for the Dev boot-entry
+  // switch. Projected out for clients that do not negotiate it; their approvals cannot authorize it.
+  bootEntrySwitchPlanSha256: z
     .string()
     .regex(/^[a-f0-9]{64}$/)
     .optional(),
@@ -582,6 +650,12 @@ export type RestartJob = z.infer<typeof RestartJobSchema>;
 
 export const RestartDecisionSchema = z.strictObject({
   hostLauncherPlanSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  // COMPAT(bootEntrySwitch): added 2026-11-04; optional exact-plan binding for the Dev boot-entry
+  // switch. Projected out for clients that do not negotiate it; their approvals cannot authorize it.
+  bootEntrySwitchPlanSha256: z
     .string()
     .regex(/^[a-f0-9]{64}$/)
     .optional(),

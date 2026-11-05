@@ -26,7 +26,7 @@ import { isTrustedCredentialsFile } from "./claude-oauth-credentials-file.js";
  *
  * Unverified: on macOS the grant is expected in the Keychain item the pinned CLI derives from
  * that directory, with `.credentials.json` only as its fallback. That location comes from static
- * analysis of Claude Code 2.1.284 and awaits the owner's live sign-in check.
+ * analysis of Claude Code 2.1.284 and 2.1.311 and awaits the owner's live sign-in check.
  */
 
 /** The CLI refreshes only within 5 minutes of expiry; ask inside that window with margin. */

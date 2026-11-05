@@ -35,8 +35,9 @@ function Ring({
               stroke={accent}
               strokeWidth={2.5}
               strokeDasharray={`${(circumference * remaining) / 100} ${circumference * (1 - remaining / 100)}`}
-              rotation={-90}
-              origin="14, 14"
+              // A transform string, not rotation/origin: react-native-svg's web layer turns
+              // origin into a transform-origin DOM attribute, which React rejects.
+              transform="rotate(-90 14 14)"
             />
           ) : null}
         </Svg>

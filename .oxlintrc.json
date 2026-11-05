@@ -104,6 +104,8 @@
               // TODO: Chrome integration checks one native-host manifest synchronously at session setup; move the probe to async startup.
               "server/agent/providers/claude/chrome-integration.ts": ["existsSync"],
               "server/agent/providers/claude/project-dir.ts": ["realpathSync"],
+              // TODO: Codex Chrome checks the Chrome profile and resolves npx synchronously at session setup; move both probes to async startup.
+              "server/agent/providers/codex/chrome-devtools.ts": ["existsSync", "realpathSync"],
               // TODO: live subagent output is read by a synchronous event mapper; add bounded async loading at ingestion.
               // TODO: setup-token sign-in creates its private config directory synchronously; move it to the async sign-in boundary.
               "server/agent/providers/claude/setup-token-runtime.ts": ["mkdirSync"],
@@ -552,6 +554,13 @@
                 "renameSync",
                 "rmSync",
                 "symlinkSync"
+              ],
+              // TODO: the boot-entry switch capability digest is synchronous like the Docker restart's; it binds the Docker executable and the owner-controlled target entry bytes.
+              "server/execution-installation/boot-entry-switch.ts": [
+                "accessSync",
+                "lstatSync",
+                "readFileSync",
+                "realpathSync"
               ],
               // TODO: standing automation consent is descriptor-bound and durably recorded; migrate ordered authority mutations together.
               "server/execution-installation/daemon-automation.ts": [
