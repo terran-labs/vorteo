@@ -6,7 +6,6 @@ import {
   FLIP_TRACK,
   HourglassOutline,
   layers,
-  PILE_FADE_TRACK,
   PILE_TRACK,
   PileSand,
   SAND_PERIOD_MS,
@@ -16,21 +15,19 @@ import {
   type SandTrack,
 } from "./review-wait-hourglass-frame";
 
+// Linear between keyframes: drain and pile must move at one rate to stay mirrors of each other,
+// and the stream's gravity curve is already sampled into its keyframes.
 const translate = (track: SandTrack, sign = 1): Keyframe[] =>
   track.offsets.map((offset, index) => ({
     offset,
     transform: `translateY(${sign * track.values[index]}px)`,
-    easing: "ease-in-out",
   }));
-const fade = (track: SandTrack): Keyframe[] =>
-  track.offsets.map((offset, index) => ({ offset, opacity: track.values[index] }));
 
 const DRAIN = translate(DRAIN_TRACK);
 const DRAIN_COUNTER = translate(DRAIN_TRACK, -1);
 const PILE = translate(PILE_TRACK);
 const PILE_COUNTER = translate(PILE_TRACK, -1);
-const PILE_FADE = fade(PILE_FADE_TRACK);
-const STREAM = fade(STREAM_TRACK);
+const STREAM = translate(STREAM_TRACK);
 // Ease only the turn itself, so it starts and settles gently.
 const FLIP: Keyframe[] = FLIP_TRACK.offsets.map((offset, index) => ({
   offset,
@@ -80,7 +77,6 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
   const drainCounter = useSandLoop(DRAIN_COUNTER);
   const pile = useSandLoop(PILE);
   const pileCounter = useSandLoop(PILE_COUNTER);
-  const pileFade = useSandLoop(PILE_FADE);
   const stream = useSandLoop(STREAM);
   const flip = useSandLoop(FLIP);
   return (
@@ -91,15 +87,15 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
             <TopSand muted={muted} />
           </View>
         </View>
-        <View ref={pileFade} style={layers.full}>
-          <View ref={pile} style={layers.pileWindow}>
-            <View ref={pileCounter} style={layers.pileContent}>
-              <PileSand muted={muted} />
-            </View>
+        <View ref={pile} style={layers.pileWindow}>
+          <View ref={pileCounter} style={layers.pileContent}>
+            <PileSand muted={muted} />
           </View>
         </View>
-        <View ref={stream} style={layers.stream}>
-          <StreamGrain muted={muted} />
+        <View style={layers.streamWindow}>
+          <View ref={stream} style={layers.streamContent}>
+            <StreamGrain muted={muted} />
+          </View>
         </View>
         <HourglassOutline muted={muted} />
       </View>

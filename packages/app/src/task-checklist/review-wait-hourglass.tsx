@@ -16,11 +16,10 @@ import {
   FLIP_START,
   HourglassOutline,
   layers,
-  PILE_FADE_TRACK,
   PILE_TRACK,
   PileSand,
   SAND_PERIOD_MS,
-  STREAM_TRACK,
+  streamOffset,
   StreamGrain,
   TopSand,
 } from "./review-wait-hourglass-frame";
@@ -97,21 +96,9 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
       },
     ],
   }));
-  const pileFade = useAnimatedStyle(() => ({
-    opacity: interpolate(
-      phase.value,
-      PILE_FADE_TRACK.offsets,
-      PILE_FADE_TRACK.values,
-      Extrapolation.CLAMP,
-    ),
-  }));
+  // Evaluated directly each frame, so the gravity fall is exact rather than sampled.
   const stream = useAnimatedStyle(() => ({
-    opacity: interpolate(
-      phase.value,
-      STREAM_TRACK.offsets,
-      STREAM_TRACK.values,
-      Extrapolation.CLAMP,
-    ),
+    transform: [{ translateY: streamOffset(phase.value) }],
   }));
 
   // The turn is eased on its own segment, so it starts and settles gently.
@@ -128,16 +115,16 @@ export const ReviewWaitHourglass = memo(function ReviewWaitHourglass({
             <TopSand muted={muted} />
           </Animated.View>
         </Animated.View>
-        <Animated.View style={[layers.full, pileFade]}>
-          <Animated.View style={[layers.pileWindow, pile]}>
-            <Animated.View style={[layers.pileContent, pileCounter]}>
-              <PileSand muted={muted} />
-            </Animated.View>
+        <Animated.View style={[layers.pileWindow, pile]}>
+          <Animated.View style={[layers.pileContent, pileCounter]}>
+            <PileSand muted={muted} />
           </Animated.View>
         </Animated.View>
-        <Animated.View style={[layers.stream, stream]}>
-          <StreamGrain muted={muted} />
-        </Animated.View>
+        <View style={layers.streamWindow}>
+          <Animated.View style={[layers.streamContent, stream]}>
+            <StreamGrain muted={muted} />
+          </Animated.View>
+        </View>
         <HourglassOutline muted={muted} />
       </Animated.View>
     </View>

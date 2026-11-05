@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
+
 Maintenance review (2026-11-05): live tweak by Claude reset credits: Secret scanning no longer flags the Claude reset test, which used a random UUID as a request ID; pushes from this repository pass the pre-push scan again.
 
 Maintenance review (2026-11-05): live tweak by Claude reset credits: Claude accounts with full web sign-in show their limit resets in the account picker and can spend one from the existing reset dialog. Vorteo reads the grants with the usage check it already makes, the same request Claude Code sends; setup-token accounts still have no resets.

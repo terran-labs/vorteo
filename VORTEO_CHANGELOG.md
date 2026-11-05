@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Secret scanning no longer flags the Claude reset test, which used a random UUID as a request ID; pushes from this repository pass the pre-push scan again.
 
 ## Unreleased - 2026-11-05
