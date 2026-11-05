@@ -254,8 +254,9 @@ export class ProjectFactoryService {
 
   private async getQueue(projectId: string): Promise<ProjectFactoryQueue> {
     await this.requireProject(projectId);
-    const project = await this.requireConfiguredProject(projectId);
+    const project = await this.readProject(projectId);
     const now = this.now();
+    if (!project) return { fetchedAt: now.toISOString(), error: null, issues: [] };
     const cached = this.issueQueues.get(projectId);
     if (cached && cached.repository === project.repository && cached.expiresAt > now.getTime())
       return cached.result;

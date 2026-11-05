@@ -35,7 +35,9 @@ const prSchema = z.object({
     pageInfo: z.object({ hasPreviousPage: z.boolean() }),
   }),
   comments: z.object({
-    nodes: z.array(z.object({ body: z.string() })),
+    nodes: z.array(
+      z.object({ body: z.string(), author: z.object({ login: z.string() }).nullable() }),
+    ),
     pageInfo: z.object({ hasPreviousPage: z.boolean() }),
   }),
 });
@@ -57,9 +59,11 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
     const issues: z.infer<typeof issueSchema>[] = [];
     const prs: PullRequest[] = [];
     let cursor: string | null = null;
+    let viewerLogin = "";
     do {
       const response = await input.gh.graphql(
         `query($owner:String!,$name:String!,$cursor:String) {
+        ${cursor === null ? "viewer { login }" : ""}
         repository(owner:$owner,name:$name) {
           issues(first:100,after:$cursor,states:OPEN,orderBy:{field:CREATED_AT,direction:ASC}) {
             nodes { number title url labels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } } }
@@ -72,6 +76,12 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       const page = z
         .object({ nodes: z.array(issueSchema), pageInfo })
         .parse(repositoryData(response).issues);
+      if (cursor === null) {
+        const viewer = z
+          .object({ data: z.object({ viewer: z.object({ login: z.string().min(1) }) }) })
+          .parse(response);
+        viewerLogin = viewer.data.viewer.login;
+      }
       issues.push(...page.nodes);
       cursor = nextCursor(page.pageInfo, cursor);
     } while (cursor);
@@ -84,7 +94,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
             nodes { number url headRefName headRefOid reviewDecision
               commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
               latestReviews(last:100) { nodes { state commit { oid } } pageInfo { hasPreviousPage } }
-              comments(last:100) { nodes { body } pageInfo { hasPreviousPage } }
+              comments(last:100) { nodes { body author { login } } pageInfo { hasPreviousPage } }
             }
             pageInfo { hasNextPage endCursor }
           }
@@ -111,7 +121,7 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
       const agents = issueAgents(records, input.workspaceIds, issue.number);
       // The Foreman charter requires this exact branch suffix, avoiding issue 1 matching 10.
       const pull = prs.find((pr) => pr.headRefName.endsWith(`/factory-issue-${issue.number}`));
-      const pr = pull ? describePr(pull) : null;
+      const pr = pull ? describePr(pull, viewerLogin) : null;
       const item: QueueIssue = {
         number: issue.number,
         title: issue.title,
@@ -121,18 +131,33 @@ export async function readIssueQueue(input: QueueInput): Promise<ProjectFactoryQ
         pr,
         agents,
       };
-      item.stage = deriveStage(item, pull ? approvedHead(pull) : false);
+      item.stage = deriveStage(item, pull ? approvedHead(pull, viewerLogin) : false);
       queue.push(item);
     }
     return { fetchedAt, error: null, issues: queue };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const stderr =
+      typeof error === "object" &&
+      error !== null &&
+      "stderr" in error &&
+      typeof error.stderr === "string"
+        ? error.stderr
+        : "";
+    const detail = firstErrorLine(stderr) || firstErrorLine(message);
     return {
       fetchedAt,
-      error: message.split(/\r?\n/)[0] || "Could not read the Factory queue.",
+      error: detail || "Could not read the Factory queue.",
       issues: [],
     };
   }
+}
+
+function firstErrorLine(text: string): string | undefined {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^gh: /, ""))
+    .find((line) => line.length > 0);
 }
 
 function repositoryData(response: unknown): Record<string, unknown> {
@@ -169,7 +194,7 @@ function issueAgents(
     return [{ role, agentId: record.id, status: record.lastStatus }];
   });
 }
-function describePr(pr: PullRequest): NonNullable<QueueIssue["pr"]> {
+function describePr(pr: PullRequest, viewerLogin: string): NonNullable<QueueIssue["pr"]> {
   const state = pr.commits.nodes[0]!.commit.statusCheckRollup?.state;
   let checks: NonNullable<QueueIssue["pr"]>["checks"] = null;
   if (state === "SUCCESS") checks = "passing";
@@ -177,7 +202,7 @@ function describePr(pr: PullRequest): NonNullable<QueueIssue["pr"]> {
   else if (state) checks = "pending";
   const changesRequested =
     pr.latestReviews.nodes.some((review) => review.state === "CHANGES_REQUESTED") ||
-    recordedReview(pr) === "changes";
+    recordedReview(pr, viewerLogin) === "changes";
   const reviewDecision = changesRequested ? "CHANGES_REQUESTED" : pr.reviewDecision;
   return {
     number: pr.number,
@@ -187,18 +212,19 @@ function describePr(pr: PullRequest): NonNullable<QueueIssue["pr"]> {
     reviewDecision,
   };
 }
-function approvedHead(pr: PullRequest): boolean {
+function approvedHead(pr: PullRequest, viewerLogin: string): boolean {
   if (pr.reviewDecision === "CHANGES_REQUESTED") return false;
   const approvedReview = pr.latestReviews.nodes.some(
     (review) => review.state === "APPROVED" && review.commit?.oid === pr.headRefOid,
   );
-  return approvedReview || recordedReview(pr) === "approved";
+  return approvedReview || recordedReview(pr, viewerLogin) === "approved";
 }
-function recordedReview(pr: PullRequest): "approved" | "changes" | null {
+function recordedReview(pr: PullRequest, viewerLogin: string): "approved" | "changes" | null {
   // The Foreman records its read-only reviewer's reply. This is display evidence,
   // never merge authorization; its charter still requires all merge gates.
   for (const comment of pr.comments.nodes.toReversed()) {
-    if (!comment.body.startsWith("(AI Generated).")) continue;
+    if (comment.author?.login !== viewerLogin || !comment.body.startsWith("(AI Generated)."))
+      continue;
     const lines = comment.body.split(/\r?\n/).map((line) => line.trim());
     if (lines.includes(`APPROVE ${pr.headRefOid}`)) return "approved";
     const findings =

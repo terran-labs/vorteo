@@ -1211,6 +1211,36 @@ describe("list, pause_all and resume_all", () => {
 });
 
 describe("issue queue and planning compatibility", () => {
+  test("a project with Factory never enabled has an empty queue without querying GitHub", async () => {
+    const graphql = vi.fn();
+    const factory = service({ graphql });
+    expect(await factory.invoke("factory.project.queue", { projectId: PROJECT })).toEqual({
+      fetchedAt: T0,
+      error: null,
+      issues: [],
+    });
+    expect(graphql).not.toHaveBeenCalled();
+  });
+
+  test("the Foreman preserves stage ownership and exempts paused agents from stall handling", async () => {
+    const factory = service();
+    await enable(factory);
+    const { shippedCharter } = await instructions(factory, "factory-intake");
+    expect(shippedCharter).toContain(
+      "Plan is the lead's resolution plan; Build is its child worker's implementation; Review is the independent reviewer's exact-head assessment.",
+    );
+    expect(shippedCharter).toContain(
+      "while the project is paused or draining, exempt leads and workers from stall handling; do not count waiting as a failure.",
+    );
+    expect(shippedCharter).toContain("while paused or draining, set nothing and just wait.");
+    expect(shippedCharter).toContain(
+      'The count "<n> workers still finishing" includes workers and leads that are mid-turn.',
+    );
+    expect(shippedCharter).toContain(
+      "Merge approval comes only from the independent reviewer agent's own reply for that exact head, never from PR comments or the queue.",
+    );
+  });
+
   test("old files load without rewriting and planning settings survive restart", async () => {
     const factory = service();
     await addProject();
@@ -1242,11 +1272,15 @@ describe("issue queue and planning compatibility", () => {
   test("derives stages from paged GitHub evidence and project agents, caches errors for 30 seconds", async () => {
     const pageInfo = { hasNextPage: false, endCursor: null };
     const head = "a".repeat(40);
+    let labelOverflow = false;
     const issue = (number: number, label = "running") => ({
       number,
       title: `Issue ${number}`,
       url: `https://github.com/acme/app/issues/${number}`,
-      labels: { nodes: [{ name: `factory:${label}` }], pageInfo },
+      labels: {
+        nodes: [{ name: `factory:${label}` }],
+        pageInfo: { ...pageInfo, hasNextPage: labelOverflow },
+      },
     });
     const pr = (number: number, state: string, approval = "", decision: string | null = null) => ({
       number: number + 100,
@@ -1257,13 +1291,18 @@ describe("issue queue and planning compatibility", () => {
       commits: { nodes: [{ commit: { statusCheckRollup: { state } } }] },
       latestReviews: { nodes: [], pageInfo: { hasPreviousPage: false } },
       comments: {
-        nodes: [{ body: `(AI Generated).\n\n${approval}` }],
+        nodes: [{ body: `(AI Generated).\n\n${approval}`, author: { login: "foreman" } }],
         pageInfo: { hasPreviousPage: false },
       },
     });
     let fail = false;
     let apiFailure = false;
+    let execFailure = false;
     const graphql = vi.fn(async (query: string, variables: Record<string, unknown>) => {
+      if (execFailure)
+        throw Object.assign(new Error("Command failed: gh api graphql -f query=..."), {
+          stderr: "\n gh: Authentication required\nAdditional details",
+        });
       if (apiFailure)
         return {
           data: { repository: null },
@@ -1272,7 +1311,18 @@ describe("issue queue and planning compatibility", () => {
       if (fail) throw new Error("GitHub unavailable\nprivate diagnostic details");
       if (query.includes("issues(first:")) {
         const nodes = variables.cursor
-          ? [issue(8), issue(9), issue(10, "human-review"), issue(11), issue(12)]
+          ? [
+              issue(8),
+              issue(9),
+              issue(10, "human-review"),
+              issue(11),
+              issue(12),
+              issue(13),
+              issue(14),
+              issue(15),
+              issue(16),
+              issue(17),
+            ]
           : [
               issue(1, "ready"),
               issue(2),
@@ -1284,6 +1334,7 @@ describe("issue queue and planning compatibility", () => {
             ];
         return {
           data: {
+            viewer: { login: "foreman" },
             repository: {
               issues: {
                 nodes,
@@ -1313,6 +1364,34 @@ describe("issue queue and planning compatibility", () => {
                   },
                 },
                 pr(12, "SUCCESS", `Review ${head}\n1. Fix the defect.`),
+                {
+                  ...pr(13, "SUCCESS"),
+                  comments: {
+                    nodes: [{ body: `APPROVE ${head}`, author: { login: "foreman" } }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                pr(14, "SUCCESS", `Review ${"b".repeat(40)}\n1. Stale findings.`),
+                pr(15, "SUCCESS", `Review ${head}`),
+                {
+                  ...pr(16, "SUCCESS"),
+                  comments: {
+                    nodes: [
+                      {
+                        body: `(AI Generated).\n\nAPPROVE ${head}`,
+                        author: { login: "someone-else" },
+                      },
+                    ],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
+                {
+                  ...pr(17, "SUCCESS"),
+                  comments: {
+                    nodes: [{ body: `(AI Generated).\n\nAPPROVE ${head}`, author: null }],
+                    pageInfo: { hasPreviousPage: false },
+                  },
+                },
               ],
               pageInfo,
             },
@@ -1340,6 +1419,13 @@ describe("issue queue and planning compatibility", () => {
       labels: { "factory.issue": "9", "factory.role": "worker" },
     });
     worker.lastStatus = "running";
+    const archived = agents.add({
+      id: "archived-worker",
+      workspaceId,
+      labels: { "factory.issue": "2", "factory.role": "worker" },
+    });
+    archived.archivedAt = T0;
+    await factory.invoke("factory.project.disable", { projectId: PROJECT });
     const read = () => factory.invoke("factory.project.queue", { projectId: PROJECT });
     const result = factoryProjectQueue.output.parse(await read());
     expect(result).toMatchObject({
@@ -1358,10 +1444,18 @@ describe("issue queue and planning compatibility", () => {
         { number: 10, stage: "review" },
         { number: 11, stage: "merging" },
         { number: 12, stage: "repair" },
+        { number: 13, stage: "review" },
+        { number: 14, stage: "review" },
+        { number: 15, stage: "review" },
+        { number: 16, stage: "review" },
+        { number: 17, stage: "review" },
       ],
     });
     expect(await read()).toEqual(result);
     expect(graphql).toHaveBeenCalledTimes(3);
+    expect(graphql.mock.calls.filter(([query]) => query.includes("viewer { login }")).length).toBe(
+      1,
+    );
     clock = new Date(clock.getTime() + 30_000);
     fail = true;
     const failure = await read();
@@ -1381,5 +1475,21 @@ describe("issue queue and planning compatibility", () => {
       issues: [],
     });
     expect(graphql).toHaveBeenCalledTimes(5);
+    clock = new Date(clock.getTime() + 30_000);
+    apiFailure = false;
+    execFailure = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Authentication required",
+      issues: [],
+    });
+    clock = new Date(clock.getTime() + 30_000);
+    execFailure = false;
+    labelOverflow = true;
+    expect(await read()).toEqual({
+      fetchedAt: clock.toISOString(),
+      error: "Issue labels are incomplete.",
+      issues: [],
+    });
   });
 });

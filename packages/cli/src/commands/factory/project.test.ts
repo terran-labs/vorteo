@@ -91,6 +91,14 @@ describe("paseo factory project", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("omits unsupported planning settings from an older daemon", async () => {
+    invoke.mockResolvedValue(state);
+    await run("show", "prj_app");
+    expect(stdout.join("")).not.toContain("Planner profile:");
+    expect(stdout.join("")).not.toContain("Planning:");
+    expect(stdout.join("")).toContain("Worker profile: worker-p");
+  });
+
   it("enables with a repository and repeatable adoptions", async () => {
     invoke.mockResolvedValue(state);
     await run(

@@ -62,8 +62,12 @@ const stateSchema: OutputSchema<ProjectFactoryState> = {
       `Project: ${state.projectId}`,
       `Factory: ${state.state}${state.reason ? ` (${state.reason})` : ""}`,
       `Repository: ${state.repository ?? "none"}`,
-      `Planner profile: ${state.workers.plannerProfileId ?? "default"}`,
-      `Planning: ${state.workers.planning === false ? "off" : "on"}`,
+      ...(state.workers.plannerProfileId !== undefined
+        ? [`Planner profile: ${state.workers.plannerProfileId ?? "default"}`]
+        : []),
+      ...(state.workers.planning !== undefined
+        ? [`Planning: ${state.workers.planning ? "on" : "off"}`]
+        : []),
       `Worker profile: ${state.workers.workerProfileId ?? "default"}`,
       `Reviewer profile: ${state.workers.reviewerProfileId ?? "default"}`,
       `Drain: ${state.drain ? `${state.drain.id} (${state.drain.reason}, ${state.drain.pausedAt})` : "none"}`,
