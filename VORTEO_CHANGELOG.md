@@ -75,6 +75,16 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 
 - You can archive ordinary workspaces that share a local checkout with Factory roles. The checkout stays on disk, and Factory workspaces and their managed worktrees remain protected.
 
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- A settings admission read that times out now reports which installation coordinator origin did not respond, keeping the timeout as its cause, instead of logging a bare `TimeoutError`.
+
+### Tests
+
+- The settings admission timeout test injects a fake fetch into the settings reader instead of replacing the global `fetch`.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
