@@ -1869,6 +1869,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 4, 2026: Synchronized projects now move Factory-managed workspaces' sidebar memberships with a replaced project key, fixing a duplicate Vorteo System row after installation. The Synchronized projects feature is otherwise unchanged. README overview and onboarding are unchanged.
+
 November 3, 2026: Brand marks no longer load the 57 KB master into two image masks per logo, which delayed the startup loader and every themed logo. They draw the traced silhouette with an inline shading overlay instead, unchanged in color and shading. README overview and onboarding are unchanged.
 
 Maintenance review: tracked Dev supervisor maintenance can now recover the outage where a failed Dev source activation leaves the supervisord `paseo` program FATAL. The reviewed configuration registry carries `supervisorMaintenance`, a protected recovery plan in `scripts/maintenance/` selects the previous release from the protected receipts and starts only `paseo`, and the coordinator runs the plan when Dev does not answer. The review offers an immediate exact-plan approval for an unanswering Dev. Configuration approval and repair approval stay separate, and the existing supervisor permission and delegation rules are unchanged. Source only; not yet installed. README overview and onboarding are unchanged.
