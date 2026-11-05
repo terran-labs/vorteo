@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Secret scanning no longer flags the Claude reset test, which used a random UUID as a request ID; pushes from this repository pass the pre-push scan again.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Claude accounts with full web sign-in show their limit resets in the account picker and can spend one from the existing reset dialog. Vorteo reads the grants with the usage check it already makes, the same request Claude Code sends; setup-token accounts still have no resets.
 
 ## Unreleased - 2026-11-05

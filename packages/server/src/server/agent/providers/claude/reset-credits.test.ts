@@ -10,7 +10,8 @@ import {
 
 const ACCOUNT = "acct-1";
 const ORG = "org-1";
-const KEY = "5b0b3c4e-7f2a-4d61-9c3e-2a8f6d1e4b90";
+// An obviously fake request ID: the schema requires a UUID, nothing more.
+const REQUEST_ID = "00000000-0000-4000-8000-000000000000";
 const STATUS = {
   eligible: true,
   at_limit: true,
@@ -73,7 +74,7 @@ describe("ClaudeResetCreditSession", () => {
     recordClaudeResetStatus(configDir, STATUS);
     const outcome = await session(fetchApi).consume({
       accountId: ACCOUNT,
-      idempotencyKey: KEY,
+      idempotencyKey: REQUEST_ID,
       creditId: "weekly_reset",
     });
     expect(outcome).toBe("reset");
@@ -85,7 +86,7 @@ describe("ClaudeResetCreditSession", () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       program: "cedar_ember",
       grant_id: "weekly_reset",
-      request_id: KEY,
+      request_id: REQUEST_ID,
     });
     const headers = (init?.headers ?? {}) as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer token-1");
@@ -94,7 +95,7 @@ describe("ClaudeResetCreditSession", () => {
   test("refuses to spend a reset when the signed-in account changed", async () => {
     const fetchApi = vi.fn<typeof fetch>();
     await expect(
-      session(fetchApi).consume({ accountId: "someone-else", idempotencyKey: KEY }),
+      session(fetchApi).consume({ accountId: "someone-else", idempotencyKey: REQUEST_ID }),
     ).rejects.toMatchObject({ code: "account_changed" });
     expect(fetchApi).not.toHaveBeenCalled();
   });
