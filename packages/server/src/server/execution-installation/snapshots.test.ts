@@ -415,6 +415,25 @@ posixTest(
   },
 );
 
+posixTest("the mounted home export script archives the home without excluded entries", () => {
+  const home = path.join(root, "home");
+  write(path.join(home, ".config/settings"), "settings");
+  write(path.join(home, ".cache/blob"), "cache");
+  write(path.join(home, ".before-restore-r0/old.txt"), "aside");
+  const archive = execFileSync("/bin/sh", [
+    "-c",
+    mountedHomeScript("export"),
+    "restore",
+    home,
+    "--exclude=./.before-restore-*",
+    "--exclude=.cache",
+  ]);
+  const listing = execFileSync("tar", ["-tf", "-"], { input: archive }).toString();
+  expect(listing).toContain(".config/settings");
+  expect(listing).not.toContain(".cache");
+  expect(listing).not.toContain(".before-restore-");
+});
+
 posixTest("the mounted home scripts replace, put back and discard the contents", () => {
   const home = path.join(root, "home");
   write(path.join(home, "old.txt"), "old");

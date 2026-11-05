@@ -9,7 +9,7 @@ import {
   statSync,
 } from "node:fs";
 import { createReadStream, createWriteStream } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -579,10 +579,18 @@ function describeStep(step: RestoreStep, parts: readonly StoredPart[]): string {
   return "Waiting for the coordinator";
 }
 
-/** Production Docker transfer for a Dev home that is not bind-mounted. */
+/** Production Docker transfer for Dev's home. */
 export const dockerSnapshotPorts: Omit<SnapshotPorts, "now"> = {
-  exportDocker(source, file) {
+  async exportDocker(source, file) {
     const exclusions = SNAPSHOT_EXCLUDED_NAMES.flatMap((name) => [`--exclude=${name}`]);
+    // Dev runs as root without CAP_DAC_OVERRIDE, so `docker exec` cannot read the Dev
+    // user's private folders; a bind-mounted home is read through Dev's mounts instead.
+    if (source.mounted)
+      return pipeToFile(
+        source.docker,
+        await mountedHomeArgs(source, "export", ["--exclude=./.before-restore-*", ...exclusions]),
+        file,
+      );
     return pipeToFile(
       source.docker,
       ["exec", source.container, "tar", "-C", source.path, ...exclusions, "-cf", "-", "."],
@@ -595,9 +603,18 @@ export const dockerSnapshotPorts: Omit<SnapshotPorts, "now"> = {
   },
 };
 
-// Runs as root in a one-shot container with Dev's mounts, so ownership is kept. The aside
-// copy lives inside the mount, where a move is a rename.
+// Runs as root in a one-shot container with Dev's mounts and Docker's default capabilities,
+// so every file is readable and ownership is kept. The aside copy lives inside the mount,
+// where a move is a rename.
 const MOUNTED_HOME_SCRIPTS = {
+  // The remaining arguments are tar options, such as exclusions. Dev keeps running, and
+  // GNU tar exits 1 when a file changed while it was read; the archive is still whole.
+  export: `set -eu
+home="$1"; shift
+status=0
+tar -C "$home" "$@" -cf - . || status=$?
+[ "$status" -eq 1 ] && exit 0
+exit "$status"`,
   // Moves every entry aside one at a time, stopping at the first failure, and marks the
   // aside copy complete before unpacking. Without the mark nothing was unpacked yet.
   replace: `set -eu
@@ -640,19 +657,20 @@ export function mountedHomeScript(action: keyof typeof MOUNTED_HOME_SCRIPTS): st
 async function mountedHomeArgs(
   source: DockerSource,
   action: keyof typeof MOUNTED_HOME_SCRIPTS,
-  restoreId: string,
+  rest: string[],
 ): Promise<string[]> {
   // The image Dev's container was created from, present even while it is stopped.
   const image = await new Promise<string>((resolve, reject) => {
     const child = spawn(source.docker, ["inspect", "--format", "{{.Image}}", source.container], {
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
+    const errors = collectStderr(child);
     child.stdout.on("data", (chunk) => (output += chunk));
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve(output.trim());
-      else reject(new Error(`docker inspect exited with ${code}`));
+      else reject(exitError("docker inspect", code, errors()));
     });
   });
   return [
@@ -672,17 +690,30 @@ async function mountedHomeArgs(
     MOUNTED_HOME_SCRIPTS[action],
     "restore",
     source.path,
-    restoreId,
+    ...rest,
   ];
+}
+
+/** Keeps the end of a child's stderr for its error message. */
+function collectStderr(child: ChildProcess): () => string {
+  let text = "";
+  child.stderr?.on("data", (chunk) => (text = (text + chunk).slice(-2000)));
+  return () => text.trim().split("\n").slice(-5).join("\n");
+}
+
+function exitError(command: string, code: number | null, stderr: string): Error {
+  const name = path.basename(command);
+  return new Error(`${name} exited with ${code}${stderr ? `: ${stderr}` : ""}`);
 }
 
 function runToEnd(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "ignore", "ignore"] });
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const errors = collectStderr(child);
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`${path.basename(command)} exited with ${code}`));
+      else reject(exitError(command, code, errors()));
     });
   });
 }
@@ -690,37 +721,39 @@ function runToEnd(command: string, args: string[]): Promise<void> {
 /** Production restore of a bind-mounted Dev home. */
 export const mountedHomeRestore: MountedHomeRestore = {
   async replace(source, file, restoreId) {
-    await pipeFromFile(source.docker, await mountedHomeArgs(source, "replace", restoreId), file);
+    await pipeFromFile(source.docker, await mountedHomeArgs(source, "replace", [restoreId]), file);
   },
   async revert(source, restoreId) {
-    await runToEnd(source.docker, await mountedHomeArgs(source, "revert", restoreId));
+    await runToEnd(source.docker, await mountedHomeArgs(source, "revert", [restoreId]));
   },
   async discard(source, restoreId) {
-    await runToEnd(source.docker, await mountedHomeArgs(source, "discard", restoreId));
+    await runToEnd(source.docker, await mountedHomeArgs(source, "discard", [restoreId]));
   },
 };
 
 function pipeToFile(command: string, args: string[], file: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const output = createWriteStream(file, { mode: 0o600, flags: "wx" });
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const errors = collectStderr(child);
     child.stdout.pipe(output);
     child.on("error", reject);
     child.on("close", (code) => {
       output.close();
       if (code === 0) resolve();
-      else reject(new Error(`${path.basename(command)} exited with ${code}`));
+      else reject(exitError(command, code, errors()));
     });
   });
 }
 
 function pipeFromFile(command: string, args: string[], file: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"] });
+    const errors = collectStderr(child);
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`${path.basename(command)} exited with ${code}`));
+      else reject(exitError(command, code, errors()));
     });
     createReadStream(file).on("error", reject).pipe(child.stdin);
   });

@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- A Linux upgrade no longer stops at its snapshot. Dev runs as root without the capability to read other users' files, so `docker exec tar` could not open the Dev user's private folders; the bind-mounted Dev home is now archived by the one-shot root container a restore uses. Docker failures name the end of their error output, and uninstall clears a systemd unit left failed after its stop timed out.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
 - A failed snapshot restore also stops a service whose start failed part way, changes files back only once every such service has stopped, and leaves the installation stopped for recovery when a stop or a revert fails, rather than starting it on partially recovered data.
 
 ## Unreleased - 2026-11-05
