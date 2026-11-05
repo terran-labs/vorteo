@@ -21,6 +21,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - A middle click anywhere in Vorteo outside a link now starts and stops dictation like a triple click. Map a three-finger tap to middle click, on a Mac with a helper such as MiddleClick or on an Android touchpad, to dictate with a three-finger tap. iPads cannot make that mapping, so use the triple click there.
 
+### Fixes
+
+- The thread Chrome switch shows a browser icon labeled On or Off, with the tooltip "Enable Chrome developer access" or "Disable Chrome developer access". While a change is on its way to the daemon, a spinning ring circles the icon and further presses are ignored, so a second tap can't undo the first.
+
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
