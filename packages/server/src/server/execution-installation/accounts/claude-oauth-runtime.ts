@@ -18,11 +18,8 @@ import {
   ClaudeOAuthProjectionReceiptSchema,
   type ClaudeOAuthProjectionDelivery,
 } from "./claude-oauth-delivery.js";
-import {
-  createClaudeHostCli,
-  readClaudeOAuthGrant,
-  type ClaudeHostCli,
-} from "./claude-oauth-host.js";
+import { createClaudeHostCli, type ClaudeHostCli } from "./claude-oauth-host.js";
+import { readClaudeOAuthGrant } from "./claude-oauth-storage.js";
 import { ClaudeOAuthRefresher, type ClaudeOAuthPolicy } from "./claude-oauth-refresher.js";
 
 // Sign-in start failures surface a short message in the interface; the cause goes to the log.
@@ -280,11 +277,6 @@ export function createClaudeOAuthRuntime(
     return supported;
   }
 
-  /**
-   * Runs while the attempt is verifying. Before the definition changes, any failure signs the
-   * new grant out again and leaves the setup token in use. After it changes, offline environments
-   * catch up through the settings, setup-token and refresh reconcilers.
-   */
   /** The label of another Claude definition whose recorded sign-in is this email, if any. */
   function duplicateIdentity(
     definitionId: string,
@@ -300,8 +292,26 @@ export function createClaudeOAuthRuntime(
     return null;
   }
 
+  /**
+   * Verify persisted access before retiring the setup token. Later validation failures may
+   * sign out a verified grant; unreadable storage must never trigger destructive cleanup.
+   */
   async function finishUpgrade(definitionId: string, upgrade: PendingUpgrade) {
+    let verifiedGrant = false;
     try {
+      // Display metadata can survive a failed login. Verify persisted, renewable access before
+      // retiring the setup token, and never log out storage we could not reliably read.
+      const grant = await readGrant(upgrade.configDir);
+      if (
+        !grant?.accessToken ||
+        !grant.hasRefreshToken ||
+        grant.expiresAt === null ||
+        grant.expiresAt <= now()
+      )
+        throw new ProviderLoginRefusal(
+          "Claude did not save a usable sign-in. Your setup token is unchanged. Try the upgrade again.",
+        );
+      verifiedGrant = true;
       const identity = await cli.identity(upgrade.configDir);
       if (!identity)
         throw new ProviderLoginRefusal(
@@ -340,7 +350,8 @@ export function createClaudeOAuthRuntime(
         // Status then asks for sign-in again; the definition already uses full sign-in.
       });
     } catch (error) {
-      if (upgrades.has(definitionId)) await cli.logout(upgrade.configDir).catch(() => {});
+      if (verifiedGrant && upgrades.has(definitionId))
+        await cli.logout(upgrade.configDir).catch(() => {});
       upgrades.delete(definitionId);
       throw error;
     }

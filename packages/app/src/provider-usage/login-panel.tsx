@@ -72,8 +72,8 @@ function LoginPanelContent(props: LoginPanelContentProps) {
       <View style={styles.body}>
         <Text style={styles.text}>
           This built-in connection uses the Claude CLI login on this machine, so it cannot connect
-          here. To connect Claude once for this whole installation, add a Claude account from Add
-          provider.
+          here. To connect Claude once for this whole installation, use Add connection in Accounts
+          &amp; profiles.
         </Text>
       </View>
     );

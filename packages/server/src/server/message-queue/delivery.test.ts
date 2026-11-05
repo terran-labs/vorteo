@@ -411,3 +411,54 @@ it("restart admission holds queued work without marking it failed or manually pa
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it("retains dependent messages after an authentication failure and recovers without replay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-delivery-auth-"));
+  try {
+    const store = new MessageQueueStore(root);
+    for (const id of ["first", "second"])
+      await store.mutate("agent", {
+        kind: "enqueue",
+        operationId: id,
+        messageId: id,
+        text: id,
+        attachments: [],
+      });
+    let ready = true;
+    const received: string[] = [];
+    const failures: unknown[] = [];
+    const worker = new QueueDeliveryWorker(store, {
+      prepare: async () => ready,
+      load: async (item) => item.text,
+      start: (_agentId, item) =>
+        (async function* () {
+          received.push(item.id);
+          yield { type: "turn_started", provider: "claude", turnId: item.id };
+          if (item.id === "first") {
+            ready = false;
+            yield { type: "turn_failed", provider: "claude", error: "OAuth token revoked" };
+          } else yield { type: "turn_completed", provider: "claude", turnId: item.id };
+        })(),
+      changed: () => {},
+      failed: (error) => {
+        failures.push(error);
+      },
+    });
+    await worker.wake("agent");
+    await worker.wake("agent");
+    expect(received).toEqual(["first"]);
+    expect((await store.read("agent")).items.map((item) => item.id)).toEqual(["second"]);
+    expect((await store.read("agent")).deliveryError).toBe("OAuth token revoked");
+    expect(failures).toHaveLength(1);
+    ready = true;
+    await worker.wake("agent");
+    expect(received).toEqual(["first", "second"]);
+    expect((await store.acceptedHistory("agent")).map((entry) => entry.item.id)).toEqual([
+      "first",
+      "second",
+    ]);
+    worker.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -95,6 +95,8 @@ export interface UpgradePorts {
   /** How long adoption (Dev and gate image builds included) may take before it is judged failed. */
   adoptionDeadlineMs: number;
   hasContainer: boolean;
+  /** Dev exists but the installer does not manage its deployment; upgrades leave it alone. */
+  devUnmanaged?: boolean;
   /** Null when the coordinator can replace itself; otherwise why it cannot. */
   coordinatorReplacement: string | null;
   /** Installed Host source commit. */
@@ -496,6 +498,12 @@ export class InstallationUpgrades {
   }
 
   private async runDev(record: UpgradeRecord): Promise<StepResult> {
+    if (this.ports.devUnmanaged)
+      return {
+        status: "skipped",
+        detail:
+          "Dev is not managed by the installer, so it is left as it is. Update it through Dev source updates.",
+      };
     if (!this.ports.hasContainer)
       return { status: "skipped", detail: "This installation has no Dev container." };
     let state = record.private;

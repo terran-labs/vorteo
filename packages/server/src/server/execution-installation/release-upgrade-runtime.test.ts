@@ -45,7 +45,10 @@ function legacyInstallation(): { config: InstallationConfig; configFile: string;
     path.join(release, "scripts/installer/main.mjs"),
     'import { appendFileSync } from "node:fs";\nappendFileSync(process.env.ENGINE_LOG ?? "/dev/null", JSON.stringify(process.argv.slice(2)) + "\\n");\n',
   );
-  touch(path.join(root, "installation.json"), "{}");
+  touch(
+    path.join(root, "installation.json"),
+    JSON.stringify({ installationId: "791360b7-0000-4000-8000-000000000001" }),
+  );
   const configFile = path.join(root, "coordinator.json");
   const config = {
     public: {
@@ -114,9 +117,17 @@ posixTest("an installation from before the installer offers upgrades, which adop
   expect(status.detail).toContain("predates the one-command installer");
 });
 
-test("a configuration without the old installer's record is not adopted", () => {
+test("only a configuration under the old installer's record is adopted, plan copies included", () => {
   const { config } = legacyInstallation();
-  expect(adoptionRequired(config, path.join(root, "elsewhere", "coordinator.json"))).toBe(false);
+  const elsewhere = mkdtempSync(path.join(tmpdir(), "not-an-installation-"));
+  try {
+    expect(adoptionRequired(config, path.join(elsewhere, "coordinator.json"))).toBe(false);
+  } finally {
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+  // A coordinator updated through a reviewed plan runs a copy inside its root's plan folder.
+  const plan = path.join(root, "coordinator-plans", "ordinary-prepared-1", "candidate-config.json");
+  expect(adoptionRequired(config, plan)).toBe(true);
 });
 
 test("a Host source update seen to succeed starts adoption once, detached", async () => {

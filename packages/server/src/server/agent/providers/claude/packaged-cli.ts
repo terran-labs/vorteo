@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
-export const PACKAGED_CLAUDE_VERSION = "2.1.311";
+export const PACKAGED_CLAUDE_VERSION = "2.1.318";
 const packageName = "@anthropic-ai/claude-code";
 const require = createRequire(import.meta.url);
 const Manifest = z.object({

@@ -1,5 +1,7 @@
 import { claudeConfigDir } from "./project-dir.js";
-import { readClaudeSetupToken, claudeSetupTokenEnvironment } from "./setup-token-runtime.js";
+import { readClaudeSetupToken } from "./setup-token-runtime.js";
+import { claudeSignInMode } from "./sign-in-mode.js";
+import { readClaudeOAuthGrant } from "../../../execution-installation/accounts/claude-oauth-storage.js";
 import { z } from "zod";
 import { execCommand } from "../../../../utils/spawn.js";
 import {
@@ -44,23 +46,32 @@ interface AuthenticationCheck {
   runtimeSettings?: ProviderRuntimeSettings;
   signal?: AbortSignal;
   run?: typeof execCommand;
+  readGrant?: typeof readClaudeOAuthGrant;
 }
 
 /** Use the CLI's effective auth configuration, including API keys and cloud providers. */
 export async function requireClaudeAuthentication(input: AuthenticationCheck): Promise<void> {
   const run = input.run ?? execCommand;
   const env = createProviderEnv({ runtimeSettings: input.runtimeSettings });
+  if (claudeSignInMode(env) === "full") {
+    let grant;
+    try {
+      grant = await (input.readGrant ?? readClaudeOAuthGrant)(claudeConfigDir(env));
+    } catch {
+      throw new ClaudeAuthenticationError("CHECK_FAILED");
+    }
+    if (!grant) throw new ClaudeAuthenticationError("SIGN_IN_REQUIRED");
+    // Expiry is handled by the refresh owner. A status read must never consume a grant.
+    return;
+  }
   const credential = await readClaudeSetupToken(env);
-  const authEnv = credential
-    ? claudeSetupTokenEnvironment(credential, claudeConfigDir(env))
-    : undefined;
+  if (credential) return;
   const args = [...input.args];
-  if (credential) args.push("--settings", JSON.stringify({ apiKeyHelper: "" }));
   args.push("auth", "status");
   let stdout: string;
   let commandSucceeded = true;
   const options = {
-    ...createProviderEnvSpec({ runtimeSettings: input.runtimeSettings, overlays: [authEnv] }),
+    ...createProviderEnvSpec({ runtimeSettings: input.runtimeSettings }),
     timeout: AUTH_STATUS_TIMEOUT_MS,
     maxBuffer: 64 * 1024,
     signal: input.signal,
@@ -94,9 +105,4 @@ export async function requireClaudeAuthentication(input: AuthenticationCheck): P
   if (!status.success) throw new ClaudeAuthenticationError("CHECK_FAILED");
   if (!status.data.loggedIn) throw new ClaudeAuthenticationError("SIGN_IN_REQUIRED");
   if (!commandSucceeded) throw new ClaudeAuthenticationError("CHECK_FAILED");
-  if (
-    credential &&
-    (status.data.authMethod !== "oauth_token" || status.data.apiProvider !== "firstParty")
-  )
-    throw new ClaudeAuthenticationError("CHECK_FAILED");
 }

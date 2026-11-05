@@ -154,11 +154,13 @@ async function withIcon(f, name, bytes) {
 
 test("fallback migration only accepts exact approved bytes and fixed names", async () => {
   for (const [name, hashes] of Object.entries(fallbackIcons)) {
-    assert.equal(isReviewedFallback(name, hashes.before, hashes.after), true);
+    for (const before of hashes.before) {
+      assert.equal(isReviewedFallback(name, before, hashes.after), true);
+      assert.throws(() => isReviewedFallback(name, before, digest("new")));
+    }
     assert.equal(isReviewedFallback(name, hashes.after, hashes.after), true);
     assert.equal(isReviewedFallback(name, null, hashes.after), true);
     assert.throws(() => isReviewedFallback(name, digest("unknown"), hashes.after));
-    assert.throws(() => isReviewedFallback(name, hashes.before, digest("new")));
     const bytes = await fs.readFile(path.resolve("packages/app/public", name));
     assert.equal(digest(bytes), hashes.after);
   }
