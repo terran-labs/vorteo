@@ -606,6 +606,8 @@ function createSessionForWorkspaceTests(
     workspaceRuntimeStore?: WorkspaceRuntimeStore;
     workspaceGitService?: ReturnType<typeof createNoopWorkspaceGitService>;
     terminalManager?: TerminalManager | null;
+    liveAgentManager?: AgentManager;
+    providerSnapshotManager?: SessionOptions["providerSnapshotManager"];
     agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
     agentStorage?: { [K in keyof SessionOptions["agentStorage"]]?: unknown };
     projectRegistry?: SessionOptions["projectRegistry"];
@@ -628,21 +630,23 @@ function createSessionForWorkspaceTests(
     warn: vi.fn(),
     error: vi.fn(),
   };
-  const agentManager = asAgentManager({
-    subscribe: () => () => {},
-    listAgents: () => [],
-    listProviderSubagentActivity: () => [],
-    getAgent: () => null,
-    getLastAssistantMessage: async () => null,
-    assertWorkspaceArchiveAllowed: async () => {},
-    archiveAgent: async () => ({ archivedAt: new Date().toISOString() }),
-    archiveSnapshot: async () => ({}),
-    unarchiveSnapshot: async () => true,
-    clearAgentAttention: async () => {},
-    markAgentUnread: async () => {},
-    notifyAgentState: () => {},
-    ...options.agentManager,
-  });
+  const agentManager =
+    options.liveAgentManager ??
+    asAgentManager({
+      subscribe: () => () => {},
+      listAgents: () => [],
+      listProviderSubagentActivity: () => [],
+      getAgent: () => null,
+      getLastAssistantMessage: async () => null,
+      assertWorkspaceArchiveAllowed: async () => {},
+      archiveAgent: async () => ({ archivedAt: new Date().toISOString() }),
+      archiveSnapshot: async () => ({}),
+      unarchiveSnapshot: async () => true,
+      clearAgentAttention: async () => {},
+      markAgentUnread: async () => {},
+      notifyAgentState: () => {},
+      ...options.agentManager,
+    });
   const workspaceRegistry: SessionOptions["workspaceRegistry"] = options.workspaceRegistry ?? {
     initialize: async () => {},
     existsOnDisk: async () => true,
@@ -690,7 +694,8 @@ function createSessionForWorkspaceTests(
     remove: async () => {},
   };
   const workspaceGitService = options.workspaceGitService ?? createNoopWorkspaceGitService();
-  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const providerSnapshotManager =
+    options.providerSnapshotManager ?? createProviderSnapshotManagerStub().manager;
 
   const session = asTestSession(
     new Session({
@@ -2894,6 +2899,160 @@ test("timeline requests read saved history without resuming an unavailable provi
       }),
     }),
   );
+});
+
+test.each([false, true])(
+  "provider subagent polling never loads a thread (previous load failed: %s)",
+  async (previousLoadFailed) => {
+    const startSession = vi.fn(async () => {
+      throw new Error("thread not loaded");
+    });
+    const session = createSessionForWorkspaceTests({
+      agentManager: {
+        getRegisteredProviderIds: () => ["codex"],
+        waitForAgentClose: async () => {},
+        needsTimelineHydration: () => false,
+        createAgent: startSession,
+        resumeAgentFromPersistence: startSession,
+      },
+    });
+    const record = makeStoredAgent({
+      id: "broken-parent",
+      cwd: "/tmp/missing-worktree",
+      updatedAt: "2026-11-04T21:03:00.000Z",
+    });
+    session.agentStorage.get = async () => record;
+    const emitted: unknown[] = [];
+    session.emit = (message) => emitted.push(message);
+
+    if (previousLoadFailed) {
+      await session.handleMessage({
+        type: "agent.timeline.list_prompts.request",
+        requestId: "initial-load",
+        agentId: record.id,
+      });
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(emitted).toContainEqual({
+        type: "agent.timeline.list_prompts.response",
+        payload: {
+          requestId: "initial-load",
+          agentId: record.id,
+          epoch: "",
+          prompts: [],
+          error: "thread not loaded",
+        },
+      });
+      emitted.length = 0;
+      startSession.mockClear();
+    }
+
+    // Consecutive polls never retry a failed load, regardless of elapsed time.
+    for (const requestId of ["poll-1", "poll-2", "poll-3"]) {
+      await session.handleMessage({
+        type: "agent.provider_subagents.list.request",
+        requestId,
+        parentAgentId: record.id,
+      });
+    }
+
+    expect(startSession).not.toHaveBeenCalled();
+    expect(emitted).toEqual(
+      ["poll-1", "poll-2", "poll-3"].map((requestId) => ({
+        type: "agent.provider_subagents.list.response",
+        payload: { requestId, parentAgentId: record.id, subagents: [], error: null },
+      })),
+    );
+  },
+);
+
+test("provider subagent polling before opening restores children after quiet hydration", async () => {
+  const workdir = mkdtempSync(path.join(tmpdir(), "provider-child-open-"));
+  const logger = asSessionLogger(createTestLogger());
+  const storage = new AgentStorage(path.join(workdir, "agents"), logger);
+  class ChildHistorySession extends CreateAgentTestSession {
+    override async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
+      yield {
+        type: "provider_subagent",
+        provider: "codex",
+        event: {
+          type: "upsert",
+          id: "restored-child",
+          title: "Restored child",
+          status: "completed",
+        },
+      };
+    }
+  }
+  class ChildHistoryClient extends CreateAgentTestClient {
+    override async resumeSession(
+      _handle: AgentPersistenceHandle,
+      overrides?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      return new ChildHistorySession({ provider: "codex", cwd: overrides?.cwd ?? workdir });
+    }
+  }
+  const manager = new AgentManager({
+    clients: { codex: new ChildHistoryClient() },
+    registry: storage,
+    logger,
+  });
+  const record = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000115",
+    cwd: workdir,
+    updatedAt: "2026-11-04T21:03:00.000Z",
+  });
+  record.persistence = { provider: "codex", sessionId: "parent-session" };
+  await storage.upsert(record);
+  const emitted: SessionOutboundMessage[] = [];
+  const providers = createProviderSnapshotManagerStub();
+  providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+  const session = createSessionForWorkspaceTests({
+    liveAgentManager: manager,
+    providerSnapshotManager: providers.manager,
+    agentStorage: { get: (id: string) => storage.get(id), list: async () => [] },
+    onMessage: (message) => emitted.push(message),
+  });
+  try {
+    await session.handleMessage({
+      type: "session.events.set_subscription.request",
+      requestId: "updates",
+      events: ["agent.provider_subagents.update"],
+    });
+    await session.handleMessage({
+      type: "agent.provider_subagents.list.request",
+      requestId: "before-open",
+      parentAgentId: record.id,
+    });
+    expect(findByType(emitted, "agent.provider_subagents.list.response")?.payload).toEqual({
+      requestId: "before-open",
+      parentAgentId: record.id,
+      subagents: [],
+      error: null,
+    });
+    expect(manager.getAgent(record.id)).toBeNull();
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "open-parent",
+      agentId: record.id,
+    });
+    expect(findByType(emitted, "fetch_agent_timeline_response")?.payload.error).toBeNull();
+    expect(filterByType(emitted, "agent.provider_subagents.update")).toContainEqual({
+      type: "agent.provider_subagents.update",
+      payload: {
+        kind: "upsert",
+        subagent: expect.objectContaining({
+          id: "restored-child",
+          parentAgentId: record.id,
+          title: "Restored child",
+          status: "completed",
+        }),
+      },
+    });
+  } finally {
+    await manager.closeAgent(record.id);
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("active directory retains scheduled history when its saved provider is unavailable", async () => {

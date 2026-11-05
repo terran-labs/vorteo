@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-04
 
+### Maintenance
+
+- Merged current main into the Factory task template branch, retaining both sides of the documentation records.
+
+## Unreleased - 2026-11-04
+
 ### Added
 
 - Added a Factory task issue template with prompts for the goal, acceptance criteria, scope limits and notes.
@@ -14,9 +20,14 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Fixes
 
+- Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.
+
+- Listing a thread's provider subagents no longer starts or resumes its provider session. Sidebar polling no longer retries threads that cannot load. An unloaded thread now answers at once with no subagents; opening the thread loads it, and its subagents arrive through live updates.
 - Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
 
 ### Tooling
+
+- Merged current `main` into the provider subagent polling fix, retaining the service principals changes.
 
 - Merged current `main` into the service principals branch before handback.
 
