@@ -6,7 +6,8 @@
 //   node scripts/heavy-job.mjs status
 //
 // Tickets determine polling order; an atomic directory rename grants the slot.
-// A populated slot cannot be overwritten, and dead owners are removed by PID.
+// A populated slot cannot be overwritten. Ownership follows process identity
+// and the job process group, so wrapper death does not release a running job.
 // Ticket rewrites use atomic replacement so polling never misses a running job.
 //
 // The holder starts only when memory allows: critical kernel memory pressure,
@@ -55,6 +56,46 @@ export function processAlive(pid) {
   }
 }
 
+let bootIdentity;
+function bootId() {
+  if (bootIdentity) return bootIdentity;
+  bootIdentity =
+    process.platform === "linux"
+      ? fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+      : execFileSync("sysctl", ["-n", "kern.bootsessionuuid"], { encoding: "utf8" }).trim();
+  return bootIdentity;
+}
+
+export function processIdentity(pid) {
+  if (!processAlive(pid)) return null;
+  try {
+    const result = execFileSync("ps", ["-o", "stat=,lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!result || result.startsWith("Z")) return null;
+    return { pid, boot: bootId(), start: result.replace(/^\S+\s+/, "") };
+  } catch (error) {
+    if (error.status === 1) return null;
+    throw error;
+  }
+}
+
+export function identityAlive(identity) {
+  if (!identity || identity.boot !== bootId()) return false;
+  const current = processIdentity(identity.pid);
+  if (current && current.start !== identity.start) return false;
+  if (!identity.group) return current !== null;
+  // A process group keeps its ID until its last member exits, even if the
+  // original leader dies. A new leader with a different start time is reuse.
+  const groups = execFileSync("ps", ["-axo", "pgid=,stat="], { encoding: "utf8" });
+  return groups.split("\n").some((line) => {
+    const [pgid, state] = line.trim().split(/\s+/);
+    return Number(pgid) === identity.pid && !state.startsWith("Z");
+  });
+}
+
 function readJson(file) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -84,10 +125,16 @@ function writeTicket(file, ticket) {
 }
 
 /** Adds a ticket and returns its path. Ticket order is advisory, not a lock. */
-export function enqueue(dir, { label, pid = process.pid, now = Date.now() } = {}) {
+export function enqueue(dir, { label, pid = process.pid, now = Date.now(), identity } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, ticketName(now, pid));
-  writeTicket(file, { pid, label: label || "heavy job", cwd: process.cwd(), queuedAt: now });
+  writeTicket(file, {
+    pid,
+    label: label || "heavy job",
+    cwd: process.cwd(),
+    queuedAt: now,
+    identity,
+  });
   return file;
 }
 
@@ -100,15 +147,32 @@ function removeEmptySlot(slot) {
 }
 
 /** Atomically claims the slot; returns a release function, or null when held. */
-export function acquireSlot(dir, { pid = process.pid, alive = processAlive } = {}) {
+export function acquireSlot(
+  dir,
+  { pid = process.pid, identity = processIdentity, live = identityAlive, ticket } = {},
+) {
   const slot = path.join(dir, ".slot");
-  // Prepare ownership before publishing. A crash cannot leave an unowned lock.
   const candidate = fs.mkdtempSync(path.join(dir, `.claim-${pid}-`));
   const owner = `${pid}-${path.basename(candidate)}`;
-  fs.writeFileSync(path.join(candidate, owner), "");
+  const entries = [owner];
+  const wrapper = identity(pid);
+  function publish(directory, name, processId) {
+    const guard = `!${name}.json`;
+    writeTicket(path.join(directory, name), { identity: processId, guard });
+    if (ticket && directory === slot) {
+      writeTicket(path.join(dir, guard), {
+        ...readJson(ticket),
+        pid: processId.pid,
+        identity: processId,
+        startedAt: Date.now(),
+        slotGuard: true,
+      });
+    }
+  }
+  // Populate before the atomic rename. Publishing child ownership later uses a
+  // separate immutable entry: a stale wrapper snapshot cannot erase its child.
+  publish(candidate, owner, wrapper);
   try {
-    // Only remove the exact dead owner's entry. Concurrent stale readers must
-    // never recursively remove a successor's populated directory (the ABA race).
     let owners = [];
     try {
       owners = fs.readdirSync(slot);
@@ -116,7 +180,18 @@ export function acquireSlot(dir, { pid = process.pid, alive = processAlive } = {
       if (error.code !== "ENOENT") throw error;
     }
     for (const name of owners) {
-      if (!alive(Number.parseInt(name, 10))) fs.rmSync(path.join(slot, name), { force: true });
+      const previous = readJson(path.join(slot, name));
+      // Pre-review claims had no identity payload. A real caller also owns a
+      // ticket; an isolated PID-shaped file is not evidence of a running job.
+      const oldPid = Number.parseInt(name, 10);
+      const oldTicket = ticketNames(dir).some(
+        (file) => readJson(path.join(dir, file))?.pid === oldPid,
+      );
+      const running = previous ? live(previous.identity) : oldTicket && processAlive(oldPid);
+      if (!running) {
+        fs.rmSync(path.join(slot, name), { force: true });
+        if (previous?.guard) fs.rmSync(path.join(dir, previous.guard), { force: true });
+      }
     }
     removeEmptySlot(slot);
     try {
@@ -125,10 +200,33 @@ export function acquireSlot(dir, { pid = process.pid, alive = processAlive } = {
       if (["ENOTEMPTY", "EEXIST"].includes(error.code)) return null;
       throw error;
     }
-    return () => {
-      fs.rmSync(path.join(slot, owner), { force: true });
+    if (ticket) {
+      const guard = `!${owner}.json`;
+      writeTicket(path.join(dir, guard), {
+        ...readJson(ticket),
+        pid: wrapper.pid,
+        identity: wrapper,
+        startedAt: Date.now(),
+        slotGuard: true,
+      });
+    }
+    const release = () => {
+      for (const name of entries) {
+        const held = readJson(path.join(slot, name));
+        // An exception in the wrapper also triggers exit cleanup. Leave the
+        // child's entry and guard intact until the actual group has finished.
+        if (name !== owner && live(held?.identity)) continue;
+        fs.rmSync(path.join(slot, name), { force: true });
+        if (held?.guard) fs.rmSync(path.join(dir, held.guard), { force: true });
+      }
       removeEmptySlot(slot);
     };
+    release.addChild = (child) => {
+      const name = `${child.pid}-${owner}`;
+      publish(slot, name, child);
+      entries.push(name);
+    };
+    return release;
   } finally {
     fs.rmSync(candidate, { recursive: true, force: true });
   }
@@ -149,7 +247,8 @@ export function readQueue(dir, { gateMarker = defaultGateMarker(), alive = proce
   for (const name of ticketNames(dir).sort()) {
     const file = path.join(dir, name);
     const ticket = readJson(file);
-    if (ticket && alive(ticket.pid)) {
+    const running = ticket?.identity ? identityAlive(ticket.identity) : ticket && alive(ticket.pid);
+    if (running) {
       entries.push({ file, ...ticket });
     } else if (ticket) {
       fs.rmSync(file, { force: true });
@@ -239,8 +338,18 @@ async function waitForSlot(dir, ticket, log) {
     }
     const reason = memoryDeferral(await sampleMemory());
     if (!reason) {
-      const release = acquireSlot(dir);
-      if (release) return release;
+      const release = acquireSlot(dir, { ticket });
+      if (release) {
+        // Legacy callers honor the earliest guard and we drain marked holders.
+        // An old caller paused AFTER its last check can still launch: new code
+        // cannot revoke that decision. This rollout window ends as old copies
+        // pick up main and their finite jobs finish; fresh CI is single-version.
+        while (readQueue(dir).some((entry) => entry.startedAt && !entry.identity && !entry.gate)) {
+          say("Waiting for the running legacy heavy job to finish.");
+          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        }
+        return release;
+      }
       say("Waiting for the running heavy job to release the slot.");
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       continue;
@@ -259,7 +368,7 @@ async function run(args) {
     return 2;
   }
   const dir = defaultQueueDir();
-  const ticket = enqueue(dir, { label });
+  const ticket = enqueue(dir, { label, identity: processIdentity(process.pid) });
   let releaseSlot;
   const release = () => {
     releaseSlot?.();
@@ -279,16 +388,18 @@ async function run(args) {
   log(`Starting ${label} with background priority.`);
 
   const spec = launchSpec(command);
-  const child = spawn(spec.argv[0], spec.argv.slice(1), {
-    stdio: "inherit",
-    env: spec.env,
-  });
-  process.removeListener("SIGINT", stop);
-  process.removeListener("SIGTERM", stop);
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.on(signal, () => child.kill(signal));
-  }
-  return await new Promise((resolve) => {
+  // The job cannot execute until its identity and legacy guard are durable.
+  // If the wrapper dies before granting permission, EOF makes the shell exit.
+  const child = spawn(
+    "sh",
+    ["-c", 'read -r token <&3 || exit 125; exec 3<&-; exec "$@"', "heavy-job", ...spec.argv],
+    {
+      stdio: ["inherit", "inherit", "inherit", "pipe"],
+      detached: true,
+      env: spec.env,
+    },
+  );
+  const done = new Promise((resolve) => {
     child.on("error", (error) => {
       log(error.message);
       resolve(127);
@@ -297,6 +408,29 @@ async function run(args) {
       resolve(code ?? (signal ? 128 + os.constants.signals[signal] : 1)),
     );
   });
+  const job = child.pid ? { ...processIdentity(child.pid), group: true } : null;
+  if (job?.pid) {
+    releaseSlot.addChild(job);
+    child.stdio[3].end("go\n");
+  } else {
+    child.stdio[3]?.destroy();
+  }
+  process.removeListener("SIGINT", stop);
+  process.removeListener("SIGTERM", stop);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => {
+      try {
+        process.kill(-child.pid, signal);
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    });
+  }
+  const code = await done;
+  if (job) {
+    while (identityAlive(job)) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+  return code;
 }
 
 function status() {
