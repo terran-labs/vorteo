@@ -8,6 +8,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
 - The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
 ## 26.11.500 - 2026-11-05
