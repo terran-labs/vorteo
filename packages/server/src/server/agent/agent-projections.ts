@@ -124,11 +124,12 @@ export function toStoredAgentRecord(
 
 function projectLaunchMetadata(
   config: StoredAgentRecord["config"],
-): Pick<AgentSnapshotPayload, "profile" | "quotaPausedAt" | "usageLimitHold"> {
+): Pick<AgentSnapshotPayload, "profile" | "quotaPausedAt" | "usageLimitHold" | "toolAccess"> {
   const profile = config?.profileLaunch?.profile;
   const quota = {
     ...(config?.quotaPausedAt ? { quotaPausedAt: config.quotaPausedAt } : {}),
     ...(config?.usageLimitHold ? { usageLimitHold: config.usageLimitHold } : {}),
+    ...(config?.toolAccess === "none" ? { toolAccess: "none" as const } : {}),
   };
   if (!profile) return quota;
   const modelChanged = Boolean(profile.model && profile.model !== config?.model);
@@ -452,6 +453,15 @@ function buildSerializableConfig(config: AgentSessionConfig): SerializableAgentC
   if (config.systemPrompt) {
     serializable.systemPrompt = config.systemPrompt;
   }
+  copyLaunchState(config, serializable);
+  if (config.mcpServers) {
+    serializable.mcpServers = config.mcpServers;
+  }
+  return Object.keys(serializable).length ? serializable : null;
+}
+
+/** Launch and quota state set by the daemon rather than by the agent's provider settings. */
+function copyLaunchState(config: AgentSessionConfig, serializable: SerializableAgentConfig): void {
   if (config.profileLaunch) serializable.profileLaunch = config.profileLaunch;
   if (config.skillSnapshot) serializable.skillSnapshot = config.skillSnapshot;
   if (config.controllerExecutionId)
@@ -460,10 +470,7 @@ function buildSerializableConfig(config: AgentSessionConfig): SerializableAgentC
   if (config.quotaResetAt) serializable.quotaResetAt = config.quotaResetAt;
   if (config.usageLimitHold) serializable.usageLimitHold = config.usageLimitHold;
   if (config.quotaReserve) serializable.quotaReserve = config.quotaReserve;
-  if (config.mcpServers) {
-    serializable.mcpServers = config.mcpServers;
-  }
-  return Object.keys(serializable).length ? serializable : null;
+  if (config.toolAccess === "none") serializable.toolAccess = "none";
 }
 
 function sanitizePendingPermissions(
