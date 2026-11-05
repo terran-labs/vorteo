@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-04): successful provider history hydration publishes the parent's final subagent descriptors through existing updates, including quiet hydration when opening a thread. This restores children after an unloaded sidebar list without replaying timeline history or changing load retries. Source only; not installed.
+
 Maintenance review (2026-11-04): merged current main again into the provider subagent polling fix, retaining service principals, synchronized Factory project memberships and the read-only list behavior. Incoming changelog entries are retained. Source only; not installed.
 
 Maintenance review (2026-11-04): `agent.provider_subagents.list` answers from the loaded session or the stored record and never loads the parent thread. Polling the list had started provider sessions and retried failing threads on every poll. An unloaded thread lists no provider subagents until it is opened; the wire shape is unchanged. Source only; not installed. README overview and onboarding are unchanged.
