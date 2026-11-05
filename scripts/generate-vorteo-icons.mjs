@@ -104,13 +104,19 @@ const publicDir = "packages/app/public";
 fs.copyFileSync(white, `${publicDir}/vorteo-logo-white-${hash}.png`);
 fs.writeFileSync(`${publicDir}/vorteo-pinned-tab-${hash}.svg`, pinnedMask);
 fs.writeFileSync("packages/website/public/safari-pinned-tab.svg", pinnedMask);
-png(white, "packages/website/public/apple-touch-icon.png", 180, "#52535b");
+// Unite and other site wrappers build Dock icons from the touch icon, so it
+// must carry enough pixels for a 1024px macOS icon. Platforms apply their own
+// rounded mask, so the tile stays full-bleed and opaque.
+png(white, "packages/website/public/apple-touch-icon.png", 1024, "#52535b");
 png(white, `${publicDir}/vorteo-favicon-${hash}.png`, 256, "#52535b");
 for (const size of [192, 512])
   png(white, `${publicDir}/vorteo-icon-${size}-${hash}.png`, size, "#52535b");
 png(white, `${publicDir}/vorteo-apple-touch-${hash}.png`, 180, "#52535b");
+png(white, `${publicDir}/vorteo-apple-touch-1024-${hash}.png`, 1024, "#52535b");
 // Fixed fallback URLs are reviewed publisher aliases, not immutable versioned assets.
-fs.copyFileSync(`${publicDir}/vorteo-apple-touch-${hash}.png`, `${publicDir}/apple-touch-icon.png`);
+// Unite probes the precomposed and iPhone names before the plain one.
+for (const alias of ["apple-touch-icon", "apple-touch-icon-precomposed", "touch-icon-iphone"])
+  fs.copyFileSync(`${publicDir}/vorteo-apple-touch-1024-${hash}.png`, `${publicDir}/${alias}.png`);
 for (const size of [192, 512])
   fs.copyFileSync(
     `${publicDir}/vorteo-icon-${size}-${hash}.png`,
@@ -139,8 +145,8 @@ html = html
   .replace(/href="\/vorteo-favicon-[^"]+\.png"/, `href="/vorteo-favicon-${hash}.png"`)
   .replace(/href="\/manifest-[^"]+\.json"/, `href="/manifest-vorteo-${hash}.json"`)
   .replace(
-    /href="\/(?:apple-touch-icon|vorteo-apple-touch-[^"]+)\.png"/,
-    `href="/vorteo-apple-touch-${hash}.png"`,
+    /<link\s+rel="apple-touch-icon"[^>]*>/,
+    `<link rel="apple-touch-icon" sizes="1024x1024" href="/vorteo-apple-touch-1024-${hash}.png" />`,
   );
 html = html.replace(/\s*<link rel="mask-icon"[^>]*>/g, "");
 html = html.replace(
