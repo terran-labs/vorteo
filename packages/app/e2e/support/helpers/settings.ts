@@ -440,7 +440,9 @@ export async function expectDirectHostUriHidden(page: Page): Promise<void> {
 }
 
 export async function expectDiagnosticsContent(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "Run" })).toBeVisible();
+  await expect(
+    page.getByTestId("app-diagnostic-row").getByRole("button", { name: "Run", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Play test" })).toBeVisible();
 }
 
