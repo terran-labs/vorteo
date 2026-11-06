@@ -16,10 +16,10 @@ import {
   View,
   Text,
   Pressable,
-  ScrollView,
   type GestureResponderEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { NestableScrollContainer } from "react-native-draggable-flatlist";
 import { useSidebarListReachReporter } from "@/components/sidebar/list-reach";
 import type { GestureType } from "react-native-gesture-handler";
@@ -33,7 +33,7 @@ import type { HostBadgeModel } from "@/hosts/appearance";
 import { isWeb as platformIsWeb, isNative as platformIsNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { StyleSheet } from "react-native-unistyles";
-import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
+import { groupHoverStyle, hoverGroup, hoverStyle, hoverSurface, rowSurface } from "@/styles/hover";
 import { useVortonTouch } from "@/vorton-touch";
 
 import { density, densityIconBox, densityIconProps } from "@/styles/density";
@@ -900,7 +900,7 @@ function StatusWorkspaceRowInnerContent({
 
   return (
     <SidebarWorkspaceRowFrame workspace={workspace} isDragging={isDragging}>
-      {({ isHovered, contextMenuOpen, onContextMenuOpenChange, hoverHandlers }) => {
+      {({ contextMenuOpen, onContextMenuOpenChange }) => {
         const showShortcut = showShortcutBadge && shortcutNumber !== null;
         const {
           trailingPresentation,
@@ -920,14 +920,13 @@ function StatusWorkspaceRowInnerContent({
           inStatusGroup,
           isDragging,
         });
-        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
+        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected });
         return (
           <View
             {...dragAttributes}
             {...dragHandleProps?.listeners}
             ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
             style={styles.workspaceRowContainer}
-            {...hoverHandlers}
           >
             <SidebarWorkspaceContextMenu
               contextMenuOpen={contextMenuOpen}
@@ -968,7 +967,6 @@ function StatusWorkspaceRowInnerContent({
                 leadingProjectIconDataUri={projectIconDataUri}
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
-                isHovered={isHovered}
                 selected={selected}
                 isLoading={isArchiving}
                 shortcutNumber={shortcutNumber}
@@ -1200,9 +1198,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     userSelect: "none",
   },
-  workspaceRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  // Publishes the row's surface so status rings and badge cutouts follow its CSS hover fill.
+  workspaceRowHoverable: hoverSurface(
+    theme.colors.surfaceSidebar,
+    theme.colors.surfaceSidebarHover,
+  ),
   workspaceRowPressed: {
     backgroundColor: theme.colors.surface2,
+    ...rowSurface(theme.colors.surface2),
   },
   workspaceRowDragging: {
     backgroundColor: theme.colors.surface2,
@@ -1211,8 +1214,10 @@ const styles = StyleSheet.create((theme) => ({
     transform: [{ scale: 1.02 }],
     zIndex: 3,
     ...theme.shadow.md,
+    ...rowSurface(theme.colors.surface2),
   },
   sidebarRowSelected: {
     backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
   },
 }));

@@ -3,7 +3,6 @@ import { Modal } from "@/components/ui/modal";
 import equal from "fast-deep-equal";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import {
-  FlatList,
   Pressable,
   Text,
   View,
@@ -13,6 +12,7 @@ import {
   type NativeSyntheticEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { BottomSheetFlatList, FlatList } from "@/components/ui/scroll-view";
 import {
   memo,
   useCallback,
@@ -26,11 +26,11 @@ import {
 import { useTranslation } from "react-i18next";
 import { Check, ChevronRight, Folder, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { BottomSheetFlatList, type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
+import { type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
 import { useAgentDescriptor, resolveAgentLabel } from "@/agent-presentation";
 import { StatusIcon } from "@/components/status-icon";
 import { useWorkspaceStatus } from "@/workspace-status";
-import { hoverStyle } from "@/styles/hover";
+import { hoverSurface, rowSurface } from "@/styles/hover";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import type { Theme } from "@/styles/theme";
 import { HighlightedText, type HighlightedTextProps } from "@/components/ui/highlighted-text";
@@ -453,14 +453,15 @@ const ResultRow = memo(function ResultRow({
     [choice],
   );
   // The row fill is browser-owned hover (`rowHoverable`), so results that reflow under a resting
-  // cursor update it. The knockout backdrop below still follows the JS hover flag because
-  // StatusIcon takes a backdrop token, not a style.
+  // cursor update it. It also publishes the row surface, so status-ring halos and dot borders
+  // follow it on web; the backdrop token below only tracks press and the active row.
   const style = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.row,
       styles.rowHoverable,
       { height },
       (pressed || active) && styles.activeRow,
+      (pressed || active) && styles.activeRowSurface,
     ],
     [active, height],
   );
@@ -476,17 +477,11 @@ const ResultRow = memo(function ResultRow({
         result.kind === "file" ? `command-center-file-row-${result.filePath}` : choice?.testId
       }
     >
-      {(state) => (
+      {({ pressed }) => (
         <ResultContent
           result={result}
           query={query}
-          backdrop={
-            active ||
-            state.pressed ||
-            Boolean((state as PressableStateCallbackType & { hovered?: boolean }).hovered)
-              ? "surface1"
-              : "surface0"
-          }
+          backdrop={active || pressed ? "surface1" : "surface0"}
         />
       )}
     </Pressable>
@@ -1105,7 +1100,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   row: { paddingHorizontal: theme.spacing[4], justifyContent: "center" },
   activeRow: { backgroundColor: theme.colors.surface1 },
-  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surface1 }),
+  rowHoverable: hoverSurface(theme.colors.surface0, theme.colors.surface1),
+  activeRowSurface: rowSurface(theme.colors.surface1),
   rowContent: {
     flexDirection: "row",
     alignItems: "center",

@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Command center and sidebar status-list rows publish their CSS hover surface, so their status rings follow hover; includes the shared-scroller import swap for both files
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Upgrade approval text states the expected duration, measured from this installation's last successful upgrade or a typical range without one, and when Host agents are interrupted.
 
 ## Unreleased - 2026-11-05
