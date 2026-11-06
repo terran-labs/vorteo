@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): settings and profile admission accept a gate-mode Dev's coordinator origin, `http://host.docker.internal:<listenPort>`, which the managed Dev client already accepted, so a gate-mode Dev no longer fails its first settings read. One shared rule in `client-origin.ts` decides for all three: HTTPS, Host loopback, or that gate host with a four- or five-digit port from a container client while `PASEO_NETWORK_MODE` is `gate`. Plain HTTP stays refused elsewhere. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): prepared beta release 26.11.503 for VortLab, superseding the untagged 26.11.501 and 26.11.502 after main moved, and adding the Mechanic CI duty. Version and changelog only. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.502 for VortLab, superseding the untagged 26.11.501 after main moved. Version and changelog only. README overview and onboarding are unchanged.
