@@ -179,23 +179,6 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 - Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
 - The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
-## Unreleased - 2026-11-05
-
-### Features
-
-- Add `paseo factory project list`, `pause-all` and `resume-all` for draining Factory work before a restart or upgrade. Pause-all pauses every project whose Factory is on and records each drain with its own id, reason and time; resume-all resumes only those, so projects an operator paused by hand stay paused. A manual pause, resume or turn off takes a project out of the drain, and the record survives a daemon restart.
-- Pause-all sends each paused project's Foreman one drain notice carrying the drain id, steered into its current turn, and clears its status line; the Foreman acknowledges with "Drained <id>: <n> workers still finishing", so an earlier drain's reply cannot satisfy a new one. Resume-all tells it the drain ended. A failed notice is retried by the next pause-all, notices skip archived or missing projects until they are restored, and a drain recorded before ids existed gets a new notice with its id.
-
-### Changes
-
-- A damaged Factory state file makes list, pause-all and resume-all refuse instead of reporting an empty or successful drain.
-- Charters: the Mechanic reads `installation-agent.mjs update-status` and copes while it does not exist yet; Builds drains with pause-all and waits for the Foreman's acknowledgment, orders lifecycle actions, keeps release notes append-only and proposes restoring the pre-install snapshot on a regression; the Foreman checks the drain before every admission and cancels superseded CI runs; and every role gains the operating rules Builds learned running delivery.
-
-### Tooling
-
-- Merged current `main`, including release 26.11.500, into the Factory drain and update duties branch; both sides' entries are kept.
-- Merged current `main` into the Factory drain and update duties branch; both sides' entries are kept.
-
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
