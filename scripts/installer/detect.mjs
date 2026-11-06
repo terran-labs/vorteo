@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { InstallerError } from "./primitives.mjs";
+import { describeInstalled } from "./upgrade.mjs";
 
 export const LAB_DIRECTORY = path.join(".local", "share", "vorteo-lab");
 export const JOURNAL = path.join("state", "install.json");
@@ -328,6 +329,8 @@ function currentInstallation(root) {
       ...(paths.container ? { container: paths.container } : {}),
     },
     origin: journal?.outputs?.origin ?? readJson(record)?.origin,
+    // The release each service runs, read from the release links of any installer layout.
+    installed: describeInstalled(root),
   };
 }
 
