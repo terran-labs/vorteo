@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
 
 ## Unreleased - 2026-11-05

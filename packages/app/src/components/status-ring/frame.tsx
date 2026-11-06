@@ -16,6 +16,10 @@ import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geome
 
 export interface StatusRingProps {
   variant?: "agent" | "task";
+  /** "calm": a task ring drawn in the muted color calm sidebar rows use for text and icons. */
+  tone?: "calm";
+  /** "calm": turns at a third of the default rate, as sidebar rows do. */
+  tempo?: "calm";
   // The surface the ring is drawn on top of, named rather than resolved, because theme colours
   // are only legible inside `StyleSheet.create` — see docs/unistyles.md. The frame fills itself
   // with this so the ring reads as a hole punched in whatever it overlaps: the agent icon under a
@@ -45,9 +49,13 @@ const AgentRadar = withUnistyles(RadarRing, (theme) => ({
   color: getStatusDotColor({ theme, bucket: "running" }) ?? theme.colors.foreground,
 }));
 const TaskRadar = withUnistyles(RadarRing, (theme) => ({ color: theme.colors.foreground }));
+const CalmTaskRadar = withUnistyles(RadarRing, (theme) => ({
+  color: theme.colors.foregroundExtraMuted,
+}));
 
-export function StatusRingArc({ variant }: Pick<StatusRingProps, "variant">) {
-  const Ring = variant === "task" ? TaskRadar : AgentRadar;
+export function StatusRingArc({ variant, tone }: Pick<StatusRingProps, "variant" | "tone">) {
+  let Ring = variant === "task" ? TaskRadar : AgentRadar;
+  if (variant === "task" && tone === "calm") Ring = CalmTaskRadar;
   return (
     <Ring
       size={STATUS_RING_SIZE}
