@@ -2587,6 +2587,22 @@ export function createInstallationServer(
     gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
   }));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
+  // The custom domain follows Live dev too, presenting its own origin to the interface.
+  // `?interface=safe` on either address still serves the published interface.
+  const recoveryLiveWebUi = config.recoveryOrigin
+    ? liveDev.middleware(
+        () => ({
+          ...config.public,
+          name: installationName.read(),
+          origin: config.recoveryOrigin!,
+          environments: config.public.environments,
+          profileSharing: true,
+          idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
+          gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+        }),
+        config.recoveryOrigin,
+      )
+    : null;
   const localWebUi = new Map<string, ReturnType<typeof webUi>>();
   app.use((req, res, next) => {
     const origin = localOrigin(req);
@@ -2600,11 +2616,12 @@ export function createInstallationServer(
       return;
     }
     if (isRecoveryRequest(req)) {
-      recoveryWebUi(req, res, next);
+      if (recoveryLiveWebUi) recoveryLiveWebUi(req, res, () => recoveryWebUi(req, res, next));
+      else recoveryWebUi(req, res, next);
       return;
     }
-    // The recovery and local origins always serve the static interface, so a broken live
-    // edit can never take every route to Installation controls with it.
+    // Local origins always serve the static interface, and `?interface=safe` does on every
+    // origin, so a broken live edit can never take every route to Installation controls.
     liveDevWebUi(req, res, () => canonicalWebUi(req, res, next));
   });
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

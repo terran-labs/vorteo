@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- The custom domain follows Live dev: the signed-in owner gets the live interface there, with hot reload, while ?interface=safe still serves the published build on either address.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Lab self-updates now really move the Host daemon onto the new build; before, they could report success while the Host still ran the previous release.
 
 ## Unreleased - 2026-11-05
