@@ -1,5 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
+  CoordinatorFollowDecision,
+  CoordinatorFollowJob,
   InstallationUpgrade,
   UpdatePolicyChange,
   UpgradeDecision,
@@ -7,10 +9,11 @@ import type {
 } from "@getpaseo/protocol/installation-upgrades";
 import { useFetchQuery } from "@/data/query";
 import type { InstallationClient } from "./client";
-import { activeUpgrade } from "./installation-upgrades-model";
+import { activeUpgrade, coordinatorFollowInProgress } from "./installation-upgrades-model";
 
 export const INSTALLATION_UPGRADES_KEY = ["installation-upgrades"] as const;
 export const INSTALLATION_SNAPSHOTS_KEY = ["installation-snapshots"] as const;
+export const COORDINATOR_FOLLOW_KEY = ["installation-coordinator-follow"] as const;
 
 function requireClient(client: InstallationClient | null): InstallationClient {
   if (!client) throw new Error("Unlock installation controls first");
@@ -79,4 +82,34 @@ export function useInstallationSnapshots(client: InstallationClient | null, rest
       restoring || query.state.data?.restore?.status === "running" ? 3000 : 60_000,
     retry: false,
   });
+}
+
+/** Coordinator update status; data is null when the coordinator predates it. */
+export function useCoordinatorFollowStatus(client: InstallationClient | null) {
+  return useFetchQuery({
+    dataShape: "value",
+    queryKey: COORDINATOR_FOLLOW_KEY,
+    queryFn: () => requireClient(client).coordinatorFollowStatus(),
+    enabled: client !== null,
+    staleTimeMs: 0,
+    refetchInterval: (query) => (coordinatorFollowInProgress(query.state.data) ? 3000 : 60_000),
+    retry: false,
+  });
+}
+
+export function useCoordinatorFollowActions(client: InstallationClient | null) {
+  const queryClient = useQueryClient();
+  const refresh = () => queryClient.invalidateQueries({ queryKey: COORDINATOR_FOLLOW_KEY });
+  const start = useMutation({
+    mutationFn: (next: string) => requireClient(client).updateCoordinator(next),
+    onSettled: refresh,
+  });
+  const decide = useMutation({
+    mutationFn: (input: {
+      job: CoordinatorFollowJob;
+      decision: CoordinatorFollowDecision["decision"];
+    }) => requireClient(client).decideCoordinatorFollow(input.job, input.decision),
+    onSettled: refresh,
+  });
+  return { start, decide };
 }
