@@ -258,6 +258,8 @@ export function createReleaseUpgradeRuntime(input: {
   entrypoint?: string;
   /** Replaces the GitHub Releases API in tests. */
   listReleases?: ReleaseUpdatePorts["listReleases"];
+  /** Other lifecycle work a coordinator update must not interrupt, such as coordinator requests. */
+  coordinatorFollowConflict?: () => string | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
@@ -727,7 +729,16 @@ export function createReleaseUpgradeRuntime(input: {
   const coordinatorFollow = new CoordinatorFollow(createCoordinatorFollowJournal(followDirectory), {
     now: () => new Date(),
     replacement: coordinatorReplacement(config, services),
-    conflict: () => (upgrades?.active() ? "Wait for the release upgrade to finish." : null),
+    // Checked at request, approval and dispatch: never restart the coordinator under other
+    // lifecycle work it coordinates.
+    conflict: () => {
+      if (upgrades?.active()) return "Wait for the release upgrade to finish.";
+      const busy = restarts
+        .list()
+        .find((job) => job.target === "host" && ["approved", "running"].includes(job.status));
+      if (busy) return "Wait for the approved Host restart or update to finish.";
+      return input.coordinatorFollowConflict?.() ?? null;
+    },
     hostRelease: () => ports.hostRelease(),
     runningRelease: () => ports.runningRelease(),
     coordinatorRelease: () => ports.coordinatorRelease(),

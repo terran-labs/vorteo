@@ -248,6 +248,16 @@ describe("coordinatorFollowView", () => {
       status: { available: false, detail: "", current, job },
       kind: "job",
     },
+    {
+      name: "a rolled-back job when the Host is still ahead, so the owner can retry",
+      status: {
+        available: true,
+        detail: "",
+        current,
+        job: { ...job, status: "rolled-back" as const },
+      },
+      kind: "offer",
+    },
   ])("$name shows $kind", ({ status, kind }) => {
     expect(coordinatorFollowView(status).kind).toBe(kind);
   });
