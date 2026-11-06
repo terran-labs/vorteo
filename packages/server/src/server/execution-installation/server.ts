@@ -111,7 +111,11 @@ import {
   inspectInstallationCoordinator,
 } from "./daemon.js";
 import { CoordinatorBootstrapPreparationSchema } from "@getpaseo/protocol/coordinator-bootstrap";
-import { delegateToContainer, DelegationRequestSchema } from "./delegation.js";
+import {
+  ContainerAdmissionRefused,
+  delegateToContainer,
+  DelegationRequestSchema,
+} from "./delegation.js";
 import {
   InstallationSettingsUpdateSchema,
   type InstallationSettingsSnapshot,
@@ -2788,6 +2792,11 @@ export function createInstallationServer(
       error instanceof InstallationTypeStateError
     ) {
       res.status(409).json({ error: error.message });
+      return;
+    }
+    // Dev answered with a cause the owner can act on; relay it instead of a bare 500.
+    if (error instanceof ContainerAdmissionRefused) {
+      res.status(502).json({ error: error.message });
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {

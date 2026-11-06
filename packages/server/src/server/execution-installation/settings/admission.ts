@@ -27,7 +27,12 @@ export interface InstallationSettingsReader {
   read(binding: InstallationBinding): Promise<InstallationSettingsAdmission>;
 }
 
+/** Creation snapshots carry this as `errorCode`, so the Host can tell an admission failure,
+ * whose message names at most an origin, from an arbitrary Dev error it must not relay. */
+export const INSTALLATION_SETTINGS_ADMISSION_ERROR_CODE = "installation_settings_admission";
+
 export class InstallationSettingsAdmissionError extends Error {
+  readonly code = INSTALLATION_SETTINGS_ADMISSION_ERROR_CODE;
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "InstallationSettingsAdmissionError";
@@ -103,7 +108,8 @@ export function assertInstallationSettingsProjection({
   }
 }
 
-const ADMISSION_TIMEOUT_MS = 5000;
+/** The Host's delegated creation deadline must exceed this; a test asserts the margin. */
+export const INSTALLATION_SETTINGS_ADMISSION_TIMEOUT_MS = 5000;
 
 const ClientConfigSchema = z.object({
   origin: z.url(),
@@ -155,13 +161,13 @@ export function createInstallationSettingsReader(
         response = await fetchAdmission(url, {
           headers: { Authorization: `Bearer ${config.token}` },
           redirect: "error",
-          signal: AbortSignal.timeout(ADMISSION_TIMEOUT_MS),
+          signal: AbortSignal.timeout(INSTALLATION_SETTINGS_ADMISSION_TIMEOUT_MS),
         });
       } catch (error) {
         if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
         // The origin was validated as bare scheme, host and port above, so it carries no secret.
         throw new InstallationSettingsAdmissionError(
-          `Installation settings authority at ${config.origin} did not respond within ${ADMISSION_TIMEOUT_MS / 1000} seconds.`,
+          `Installation settings authority at ${config.origin} did not respond within ${INSTALLATION_SETTINGS_ADMISSION_TIMEOUT_MS / 1000} seconds.`,
           { cause: error },
         );
       }
