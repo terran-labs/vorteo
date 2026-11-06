@@ -221,18 +221,6 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 
 - Added a Factory task issue template with prompts for the goal, acceptance criteria, scope limits and notes.
 
-## Unreleased - 2026-11-05
-
-### Tooling
-
-- Merged current `main` via the Factory drain branch into the issue stages branch.
-
-## Unreleased - 2026-11-05
-
-### Tooling
-
-- Merged current `main` into the Factory drain and update duties branch; both sides' entries are kept.
-
 ## Unreleased - 2026-11-04
 
 ### Fixes
@@ -495,17 +483,8 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 
 ### Features
 
-- Add Factory issue planning and supervision with a configurable planner profile and a planning switch, plus a cached issue queue showing stages, pull request checks and participating agents. The Foreman assigns one lead per issue, routes repairs through it and records independent review results against the exact PR head. Planning off preserves the existing worker and reviewer flow. Paused leads and workers are exempt from stall recovery, and drains count mid-turn leads as well as workers. Queue comments must come from the authenticated GitHub viewer, CLI errors show the underlying diagnostic, and older daemons do not display unsupported planning settings.
-
-- Add `paseo factory project list`, `pause-all` and `resume-all` for draining Factory work before a restart or upgrade. Pause-all pauses every project whose Factory is on and records each drain with its own id, reason and time; resume-all resumes only those, so projects an operator paused by hand stay paused. A manual pause, resume or turn off takes a project out of the drain, and the record survives a daemon restart.
-- Pause-all sends each paused project's Foreman one drain notice carrying the drain id, steered into its current turn, and clears its status line; the Foreman acknowledges with "Drained <id>: <n> workers still finishing", so an earlier drain's reply cannot satisfy a new one. Resume-all tells it the drain ended. A failed notice is retried by the next pause-all, notices skip archived or missing projects until they are restored, and a drain recorded before ids existed gets a new notice with its id.
 - A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
 - Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
-
-### Changes
-
-- A damaged Factory state file makes list, pause-all and resume-all refuse instead of reporting an empty or successful drain.
-- Charters: the Mechanic reads `installation-agent.mjs update-status` and copes while it does not exist yet; Builds drains with pause-all and waits for the Foreman's acknowledgment, orders lifecycle actions, keeps release notes append-only and proposes restoring the pre-install snapshot on a regression; the Foreman checks the drain before every admission and cancels superseded CI runs; and every role gains the operating rules Builds learned running delivery.
 
 ### Fixes
 

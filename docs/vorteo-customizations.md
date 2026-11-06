@@ -1,11 +1,5 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-05): merged current `main` via the Factory drain branch into the issue stages branch. No source conflicts required resolution. README overview and onboarding are unchanged.
-
-Maintenance review (2026-11-04): Factory issues gain an optional Plan stage with one lead supervising the worker. Planner profile and planning settings are configurable through the project RPC and CLI; old state files read without a rewrite. The queue RPC caches GitHub evidence for 30 seconds, reports failures and shows issue stages, PR checks and labeled agents in role workspaces. Foreman records independent review results for display, accepted only from the authenticated GitHub viewer; merge approval requires the independent reviewer's own exact-head reply. Paused leads and workers are exempt from stall handling, and drain counts include mid-turn leads. CLI errors preserve the underlying diagnostic and older daemons omit unsupported planning settings. Source only, not installed. README overview and onboarding are unchanged.
-
-Maintenance review (2026-11-04): Factory drains for updates. `paseo factory project list`, `pause-all` and `resume-all` pause every active project's Factory before a restart or upgrade and resume only what they paused; each drain has an id that the Foreman's drain notice and its "Drained <id>" acknowledgment carry, and a damaged state file refuses instead of reporting success. The Mechanic charter reads update status and the Builds charter drains before restarts; every role gains the operating rules Builds learned running delivery. This source is not installed. README overview and onboarding are unchanged.
-
 Maintenance review (2026-11-06): snapshots run one at a time and fail when their own files go missing; only a source file that is really gone is skipped. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-06): snapshot capture is asynchronous, skips entries that vanish mid-copy and clones files where supported; restore is unchanged. README overview and onboarding are unchanged.
