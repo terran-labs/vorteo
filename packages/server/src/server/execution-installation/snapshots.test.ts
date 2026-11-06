@@ -10,7 +10,19 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+// A daemon log rotated away between listing its folder and copying it: the snapshot of a
+// live Host home must skip it, not fail (seen on a real upgrade).
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    lstat: ((file: string, ...rest: unknown[]) =>
+      String(file).endsWith("rotated-away.log")
+        ? Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" }))
+        : (actual.lstat as (...args: unknown[]) => unknown)(file, ...rest)) as typeof actual.lstat,
+  };
+});
 import type { ManagedService, ServiceControl } from "./service-control.js";
 import { createServiceControl, managedServices } from "./service-control.js";
 import {
@@ -53,6 +65,7 @@ function installation() {
   const config = path.join(root, "vorteo/host/coordinator.json");
   write(path.join(state, "restarts.json"), "[]");
   write(path.join(host, "config.json"), '{"daemon":{}}');
+  write(path.join(host, "rotated-away.log"), "log");
   write(path.join(host, ".cache/huge.bin"), "cache");
   write(path.join(container, "data/home/.bashrc"), "export A=1");
   write(path.join(container, "data/home/.npm/_cacache/x"), "cache");
@@ -113,6 +126,7 @@ posixTest("captures every part with a manifest and leaves caches out", async () 
   const stored = service.storedParts(snapshot);
   expect(existsSync(path.join(stored[2].stored, "config.json"))).toBe(true);
   expect(existsSync(path.join(stored[2].stored, ".cache"))).toBe(false);
+  expect(existsSync(path.join(stored[2].stored, "rotated-away.log"))).toBe(false);
   expect(existsSync(path.join(stored[3].stored, ".bashrc"))).toBe(true);
   expect(existsSync(path.join(stored[3].stored, ".npm"))).toBe(false);
   expect(existsSync(path.join(stored[3].stored, "project/.cache"))).toBe(false);
