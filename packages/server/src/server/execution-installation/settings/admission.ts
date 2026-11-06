@@ -11,6 +11,7 @@ import {
   InstallationSettingsSchema,
   InstallationSettingsFieldSchema,
 } from "@getpaseo/protocol/installation-settings";
+import { installationClientOriginAllowed } from "../client-origin.js";
 import { projectInstallationSettings, readInstallationSettings } from "./projection.js";
 
 export const InstallationSettingsAdmissionSchema = z.object({
@@ -118,29 +119,26 @@ const ClientConfigSchema = z.object({
 });
 
 /** Internal installation transport credentials, never an RPC response. */
-export function readInstallationClientConfig(configFile: string | undefined) {
+export function readInstallationClientConfig(
+  configFile: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+) {
   const config = configFile
     ? ClientConfigSchema.parse(JSON.parse(readFileSync(configFile, "utf8")))
     : null;
-  if (config) {
-    const origin = new URL(config.origin);
-    const loopback = origin.hostname === "localhost" || origin.hostname === "127.0.0.1";
-    if (
-      origin.origin !== config.origin ||
-      (origin.protocol !== "https:" && !(origin.protocol === "http:" && loopback))
-    )
-      throw new InstallationSettingsAdmissionError(
-        "Installation admission requires a fixed HTTPS or loopback origin.",
-      );
-  }
+  if (config && !installationClientOriginAllowed(config.origin, config.kind, env))
+    throw new InstallationSettingsAdmissionError(
+      "Installation admission requires a fixed HTTPS, loopback or gate route origin.",
+    );
   return config;
 }
 
 export function createInstallationSettingsReader(
   configFile: string | undefined,
   fetchAdmission: typeof fetch = fetch,
+  env: NodeJS.ProcessEnv = process.env,
 ): InstallationSettingsReader {
-  const config = readInstallationClientConfig(configFile);
+  const config = readInstallationClientConfig(configFile, env);
   return {
     async read(binding) {
       if (!config)
