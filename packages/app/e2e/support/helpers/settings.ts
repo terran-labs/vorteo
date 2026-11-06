@@ -270,7 +270,9 @@ export async function seedSavedSettingsHosts(
   page: Page,
   hosts: SavedSettingsHostInput[],
 ): Promise<void> {
-  await page.goto("/");
+  // This visit only establishes storage and the fixture nonce; callers reload the real app next.
+  await page.goto("/", { waitUntil: "commit" });
+  await page.waitForFunction((key) => Boolean(localStorage.getItem(key)), SEED_NONCE_KEY);
   const nowIso = new Date().toISOString();
   const registry = hosts.map((host) =>
     buildSeededHost({
@@ -488,7 +490,11 @@ export async function expectHostInjectMcpCard(page: Page): Promise<void> {
  * the resume-after-restart and idle-release switches for the selected host.
  */
 export async function openHostRestartBehavior(page: Page, serverId: string): Promise<void> {
-  await openHostSection(page, serverId, "agents");
+  const selected = page
+    .getByTestId(`settings-environment-${serverId}`)
+    .filter({ visible: true })
+    .first();
+  if (!(await selected.isVisible())) await selectSettingsHost(page, serverId);
   await revealSettingsLocation(page, "system.overview");
   await expect(page.getByTestId("system-restart-behavior")).toBeVisible();
 }

@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
-import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { openSettings } from "../support/helpers/app";
 import { addConnectedHostAndReload } from "../support/helpers/hosts";
 import {
   selectSettingsHost,
@@ -37,7 +37,8 @@ test("System details show the restarted Host version without reloading", async (
   hostDaemon = host;
   const otherHostVersion =
     await test.step("the connected host reports its current daemon version", async () => {
-      await gotoAppShell(page);
+      // Seed this origin before loading the app once with both Hosts.
+      await page.goto("/", { waitUntil: "commit" });
       await addConnectedHostAndReload(page, {
         serverId: host.serverId,
         label: HOST_LABEL,
