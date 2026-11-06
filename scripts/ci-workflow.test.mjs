@@ -572,6 +572,25 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       );
     }
   }
+  // Desktop suites run only on manual runs while PWA is the only release channel.
+  const desktopApps = /^      desktop_apps: \$\{\{ (.+) \}\}$/m.exec(
+    jobs.get("changes").join("\n"),
+  )[1];
+  for (const [event, ref, expected] of [
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+    ["schedule", "refs/heads/main", false],
+    ["push", "refs/tags/release-26.11.500-beta", false],
+    ["workflow_dispatch", "refs/heads/main", true],
+  ]) {
+    const outputs = {
+      ...all,
+      heavy: "true",
+      desktop_apps: String(runInNewContext(desktopApps, contextFor(event, ref))),
+    };
+    for (const jobId of ["desktop-tests-ubuntu", "desktop-tests-windows"]) {
+      assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
+    }
+  }
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
   assert.match(
@@ -586,6 +605,14 @@ test("Nix packaging runs on main without allocating pull-request runners", () =>
   assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
   assert.doesNotMatch(trigger, /pull_request/);
   assert.doesNotMatch(source, /dorny\/paths-filter/);
+  // Desktop packages build only on manual runs while PWA is the only release channel.
+  assert.match(trigger, /^  workflow_dispatch:/m);
+  const darwin = jobBlocks(source).get("build-desktop-darwin").join("\n");
+  assert.match(darwin, /^    if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}$/m);
+  assert.match(
+    source,
+    /if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}\n\s+run: nix build \.#desktop -o result-desktop/,
+  );
 });
 
 test("container installation smokes run after merge and on demand, not on pull requests", () => {
@@ -599,10 +626,10 @@ test("container installation smokes run after merge and on demand, not on pull r
   assert.match(source, /bash docker\/multiplex\/smoke.sh paseo-container:check/);
 });
 
-test("desktop packaging smokes main pushes and manual runs, not pull requests", () => {
+test("desktop packaging smokes run only on manual runs while PWA is the only channel", () => {
   const source = readFileSync(new URL(".github/workflows/desktop-packages.yml", repoRoot), "utf8");
   const trigger = source.split("jobs:", 1)[0];
-  assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
+  assert.doesNotMatch(trigger, /^  push:/m);
   assert.doesNotMatch(trigger, /^  pull_request:/m);
   assert.match(trigger, /^  workflow_dispatch:/m);
   assert.doesNotMatch(source, /dorny\/paths-filter/);
