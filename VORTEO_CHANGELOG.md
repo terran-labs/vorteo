@@ -7,6 +7,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 ### Performance
 
 - Most Dev upgrades restart only Dev's daemon on a release the Host builds, instead of rebuilding and recreating Dev's image. The image is rebuilt only when its own files change, and Dev returns to the previous release if the new one is unhealthy. The first upgrade after this change still rebuilds the image once.
+- A Dev release that fails and is rolled back is swapped in again when the installer reruns, instead of being reported as installed, and returning Dev to an earlier image also returns it to the release that image ran.
 - Dev image rebuilds reuse Docker's cache for the dependency install, the agent command-line tools and Tailscale, so upgrades rebuild only the packages that changed. A version bump or new build commit alone no longer reinstalls every dependency. First installs are unchanged.
 
 ## Unreleased - 2026-11-06

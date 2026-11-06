@@ -25,8 +25,16 @@ import { fileURLToPath } from "node:url";
 const COMMIT = /^[a-f0-9]{40}$/;
 const RECEIPT = ".vorteo-dev-release.json";
 const MOUNT = "/opt/vorteo/dev-releases";
-/** The image's own inputs: a change here needs a new image, not just a new release. */
-export const DEV_IMAGE_INPUTS = ["docker/base", "docker/tailscale"];
+/**
+ * A change here needs a new image, or at least a recreated container, not just a new
+ * release: the image's own files, and the Compose files a plain restart would not apply.
+ */
+export const DEV_IMAGE_INPUTS = [
+  "docker/base",
+  "docker/tailscale",
+  "docker/multiplex/compose.yaml",
+  "docker/multiplex/compose.gate.yaml",
+];
 /** Lifecycle files the installer keeps in a Dev deployment, from docker/multiplex. */
 export const DEPLOYMENT_SCRIPTS = [
   "common.sh",
@@ -112,8 +120,12 @@ export async function refreshDeploymentScripts({ run, git, source, commit, deplo
       if (!existsSync(from) || statSync(from).size === 0) continue;
       if (existsSync(to) && readFileSync(to).equals(readFileSync(from))) continue;
       if (existsSync(to)) copyFileSync(to, `${to}.previous`);
-      copyFileSync(from, to);
-      chmodSync(to, name.endsWith(".sh") ? 0o700 : 0o600);
+      // A new file renamed into place: bash reads a running script as it goes, so
+      // rewriting it in place could run a mix of old and new bytes.
+      const next = `${to}.next`;
+      copyFileSync(from, next);
+      chmodSync(next, name.endsWith(".sh") ? 0o700 : 0o600);
+      renameSync(next, to);
       changed.push(name);
     }
     return changed;
@@ -178,7 +190,9 @@ export async function buildDevRelease({ run, docker, git, source, commit, deploy
   const root = releasesOf(deployment);
   const release = path.join(root, commit);
   if (devReleaseReceipt(deployment, commit)) return release;
+  // Dev's daemon user reads it, and a umask or an earlier mkdir can leave it private.
   mkdirSync(root, { recursive: true, mode: 0o755 });
+  chmodSync(root, 0o755);
   const work = path.join(os.tmpdir(), `vorteo-dev-release-${randomUUID()}`);
   const staging = path.join(root, `.staging-${commit}`);
   rmSync(staging, { recursive: true, force: true });
@@ -203,6 +217,7 @@ export async function buildDevRelease({ run, docker, git, source, commit, deploy
       { timeout: 60 * 60_000 },
     );
     renameSync(staging, release);
+    chmodSync(release, 0o755);
     if (!devReleaseReceipt(deployment, commit))
       throw new Error(`The Dev release for ${commit} has no valid receipt`);
     return release;

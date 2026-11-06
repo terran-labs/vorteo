@@ -23,6 +23,12 @@ current_release() {
   if [[ -L "$releases/current" ]]; then readlink "$releases/current"; else echo none; fi
 }
 
+# The release each image last ran, so returning to an image, by this script's own
+# rollback or a caller's, also returns to its release.
+selection_file() {
+  echo "$releases/.image-$(printf %s "$1" | cksum | cut -d' ' -f1)"
+}
+
 # Swaps Dev's daemon to a Host-built release (scripts/installer/dev-release.mjs builds it)
 # and restarts only the paseo service. The image, its mounts and the gate stay as they are.
 # Restores the previous selection when Dev does not come back healthy on the new one.
@@ -92,9 +98,22 @@ cp -p "$deployment/.env" "$deployment/.env.previous"
 umask 077
 paseo_env_set "$deployment/.env" "${settings[@]}"
 # A new image bakes in its own daemon, which an older selected release must not shadow.
-# The selection comes back with the previous image on rollback.
+# An image Dev ran before gets back the release it ran with.
+mkdir -p "$releases"
+chmod 0755 "$releases"
+previous_image="$(sed -n 's/^PASEO_IMAGE=//p' "$deployment/.env.previous" | tail -1)"
 previous_release="$(current_release)"
-select_release none
+if [[ -n "$previous_image" ]]; then
+  echo "$previous_release" > "$(selection_file "$previous_image")"
+fi
+next_release=none
+if [[ -f "$(selection_file "$image")" ]]; then
+  next_release="$(cat "$(selection_file "$image")")"
+  if [[ "$next_release" != none && ! -f "$releases/$next_release/.vorteo-dev-release.json" ]]; then
+    next_release=none
+  fi
+fi
+select_release "$next_release"
 echo 'Replacing this instance. Active tasks will be interrupted; persistent state is retained.'
 # Dev has no network without the gate, so in gate mode both are recreated together.
 services=(paseo)

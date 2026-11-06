@@ -520,17 +520,22 @@ export class InstallationUpgrades {
    * back to a release that predates them can still read the journal.
    */
   private async runDev(record: UpgradeRecord): Promise<StepResult> {
-    const result = await this.runDevStep(record);
+    const forget = {
+      devMode: undefined,
+      devPreviousRelease: undefined,
+      devReleaseBuilt: undefined,
+    } satisfies Partial<UpgradePrivate>;
+    let result: StepResult;
+    try {
+      result = await this.runDevStep(record);
+    } catch (error) {
+      // Thrown before any swap (preparation or a build), so a retry can start over.
+      const latest = this.records.find((item) => item.id === record.id) ?? record;
+      this.save(latest, { private: { ...latest.private, ...forget } });
+      throw error;
+    }
     if (result.status === "waiting") return result;
-    return {
-      ...result,
-      private: {
-        ...result.private,
-        devMode: undefined,
-        devPreviousRelease: undefined,
-        devReleaseBuilt: undefined,
-      },
-    };
+    return { ...result, private: { ...result.private, ...forget } };
   }
 
   private async runDevStep(record: UpgradeRecord): Promise<StepResult> {

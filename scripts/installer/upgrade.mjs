@@ -767,6 +767,8 @@ async function devStep(s) {
     commit: plan.to.revision,
     deployment,
   };
+  // Before touching the deployment: an interface upgrade may be running its update.sh.
+  assertNoInterfaceUpgrade(s);
   await refreshDeploymentScripts(input);
   if (!s.outputs.devMode) journal.output({ devMode: (await devUpgradeMode(input)).mode });
   return s.outputs.devMode === "release" ? devReleaseStep(s, input) : devImageStep(s);
@@ -799,6 +801,8 @@ async function devReleaseStep(s, input) {
     }
     await waitForDev(s);
   } catch (error) {
+    // A rerun must swap again, never trust a swap this rollback undid.
+    journal.output({ devReleaseSwapped: false });
     let restored = `Dev runs ${previous === "none" ? "its image's daemon" : `release ${previous}`} again.`;
     try {
       if (currentDevRelease(deployment) !== previous) await swap(previous);
