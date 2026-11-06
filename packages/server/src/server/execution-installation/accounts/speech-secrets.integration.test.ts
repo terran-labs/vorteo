@@ -245,6 +245,31 @@ async function assertUnboundMarkerCleanup(home: string, store: DaemonConfigStore
 test("speech adoption and atomic saves reach every environment without returning keys to clients", async () => {
   const h = await installation();
   try {
+    // Before a speech-capable coordinator reconciles, an upgraded Host remains a passive
+    // recipient. Legacy admission and rejected local key edits must leave its key usable.
+    const host = h.stores.host!;
+    const hostHome = h.homes.host!;
+    const before = await readFile(join(hostHome, "config.json"), "utf8");
+    await host.readInstallationSettingsAuthority();
+    await expect(
+      host.patchFromClient({ features: { dictation: { stt: { apiKey: OTHER } } } }),
+    ).rejects.toThrow("shared Voice settings");
+    expect(await readFile(join(hostHome, "config.json"), "utf8")).toBe(before);
+    expect(
+      resolveSpeechConfig({
+        paseoHome: hostHome,
+        persisted: loadPersistedConfig(hostHome),
+        env: {},
+      }).openai?.dictationStt?.apiKey,
+    ).toBe(KEY);
+    expect(
+      loadPersistedConfig(hostHome).features?.dictation?.stt?.credentialsManaged,
+    ).toBeUndefined();
+    await expect(stat(join(hostHome, "speech-secrets"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(h.root, "provider-secrets", "speech.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
     await h.runtime.reconcile();
     for (const home of Object.values(h.homes)) {
       expect(loadPersistedConfig(home).features?.dictation?.stt?.apiKey).toBe(KEY);

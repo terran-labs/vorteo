@@ -1,12 +1,45 @@
 # Vorteo changelog
 
+The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
+
+## Unreleased - 2026-11-06
+
+### Fixes
+
+- Take one safety snapshot at a time. With capture no longer blocking, a second snapshot could remove the first one's partial files, and the first would then save an incomplete snapshot as a success. A file is now skipped only when it is really gone from the source.
+
+## Unreleased - 2026-11-06
+
+### Fixes
+
+- Safety snapshots no longer fail when a file in the live Host home disappears mid-copy, as a rotated daemon log did on the first release upgrade here. Snapshots also copy without blocking the coordinator, so the interface keeps answering while a large Host home copies, and they clone files where the file system supports it.
+
+## 26.11.504 - 2026-11-05
+
+### Added
+
+- Rerunning the one-command installer on an existing installation now shows the installed and latest versions, asks to upgrade and whether to change settings, and upgrades the Host, coordinator and Dev in place. Tested from 26.11.103 and 26.11.206 on Linux with Dev and on macOS.
+
+### Fixed
+
+- Linux upgrades with a Dev container snapshot Dev's home through a one-shot container, so the upgrade no longer stops with permission denied.
+- Installation adoption runs the macOS Tailscale app as a CLI under launchd instead of reporting that Tailscale is signed out.
+
+### Maintenance
+
+- Release preparation for 26.11.504. Several batches in this release were merged without waiting for CI at the owner's direction; install tests passed on the installer upgrade itself.
+
 ## Unreleased - 2026-11-05
 
 ### Maintenance
 
-- Integrate shared Voice credential sync with current main, including the latest installation authority retry behavior. Validated credential adoption, delivery, revision conflicts and standalone fallback with focused tests and typechecks before deployment.
+- Put the installer runner's doc comment back on `run()`; the Tailscale CLI-mode helper sat between them.
 
-The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- In-place adoption no longer reports "Tailscale is not signed in" on a signed-in Mac. Started by the coordinator under launchd, the Tailscale app's binary opened its GUI instead of answering as a CLI, so the status read as signed out. Every installer call to Tailscale now sets `TAILSCALE_BE_CLI=1`.
 
 ## 26.11.503 - 2026-11-05
 
@@ -20,6 +53,12 @@ Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supe
 
 - Mechanic: every review now measures CI, test and build cost (jobs per push, required-check runner wait, superseded and flaky runs, rebase churn) and proposes fixes through a PR, such as routing heavy suites to the merge queue, nightly or release, path filters, caching, concurrency cancellation and conflict-free changelog fragments. Required-check and merge queue changes go to the owner. It alerts when required checks wait over 15 minutes or one push starts over 10 jobs.
 - Optimizer (Vorteo System): reviews the Vorteo repository's CI and build cost the same way, read only.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge current `main`, including Host-only adoption of an unmanaged Dev, into the installer upgrade branch, keeping both sides' changelog and inventory entries.
 
 ## Unreleased - 2026-11-05
 
@@ -60,7 +99,47 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 - Installer-made installations can set a custom domain from Installation controls. Saving it allows the domain on the Host and Dev daemons and restarts only the coordinator. If the coordinator does not come back, the previous settings are restored automatically.
 - Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
+### Maintenance
+
+- Merge current `main` into the installer upgrade branch again, keeping both sides' changelog and inventory entries.
+
 ## Unreleased - 2026-11-05
+
+### Fixes
+
+- Shared settings reconcile backs off failed provider account preparation per environment, retrying after 10 seconds and doubling to at most 5 minutes, instead of every 5 seconds. A success, owner edit or explicit reconcile retries at once, including an owner edit saved while a failing attempt is still running, and healthy reconcile timing is unchanged.
+
+- A Linux upgrade no longer stops at its snapshot. Dev runs as root without the capability to read other users' files, so `docker exec tar` could not open the Dev user's private folders; the bind-mounted Dev home is now archived by the one-shot root container a restore uses. Docker failures name the end of their error output, and uninstall clears a systemd unit left failed after its stop timed out.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- A failed snapshot restore also stops a service whose start failed part way, changes files back only once every such service has stopped, and leaves the installation stopped for recovery when a stop or a revert fails, rather than starting it on partially recovered data.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- A failed snapshot restore stops the services it had already started before putting files back, keeps untouched originals when moving a Linux Dev home aside stopped midway, and reports that recovery is needed, keeping the previous copies, when putting a part back fails.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Restoring a snapshot replaces a Linux Dev home instead of unpacking over it, and puts the previous contents back if the restore fails. A one-shot root container with Dev's mounts moves the current home aside within the mount, unpacks the snapshot with its owners, and keeps or discards the aside copy with the rest of the restore.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge current `main` into the installer upgrade branch, keeping both sides' changelog and inventory entries.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Snapshots on Linux read Dev's home through its running container. Linux keeps the bind-mounted home private to the container's user, so the Host could not read it and every upgrade with Dev on Linux, from the interface or the installer, stopped at its snapshot. Restores already unpack such a snapshot through the container. Found by the install tests' Linux upgrade jobs.
 
 ### Features
 
@@ -74,6 +153,31 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 
 - An installation whose Dev is not an installer-made deployment moves only its Host to the installer layout. Its Dev container, network, boot entry and Factory settings stay untouched, and release upgrades skip the Dev step instead of rebuilding it. Adoption treats Dev as unmanaged only when Docker shows a running container publishing the Dev endpoint from a folder without the installer marker; anything else fails closed. Upgrades, snapshots and restores then cover the Host only, and a restore refuses an older snapshot that holds Dev's home.
 - Host installations from before the one-command installer whose coordinator runs a configuration from a reviewed plan folder can now move to the installer layout in place, from Installation controls or `install.sh`. Detection found no installation there, so upgrades and release updates stayed unavailable. Adoption now reads the configuration the coordinator actually runs instead of a stale copy from setup, which would have dropped every later coordinator setting, and writes the result to the installation's own `coordinator.json` without touching the plan's hash-pinned file. Only a record with the same installation ID counts, and a resumed adoption stops if the coordinator's configuration changed meanwhile.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- You can archive ordinary workspaces that share a local checkout with Factory roles. The checkout stays on disk, and Factory workspaces and their managed worktrees remain protected.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- A settings admission read that times out now reports which installation coordinator origin did not respond, keeping the timeout as its cause, instead of logging a bare `TimeoutError`.
+
+### Tests
+
+- The settings admission timeout test injects a fake fetch into the settings reader instead of replacing the global `fetch`.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The secret scan allowlists a random test request ID in one earlier commit, so pushes are no longer blocked by it.
+- The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
+- Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+- The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
 ## 26.11.500 - 2026-11-05
 
@@ -121,6 +225,50 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 
 ### Fixes
 
+- An installer upgrade from a checkout, as the install tests run it, names no release instead of passing the commit as one, which the snapshot step refused.
+
+## Unreleased - 2026-11-04
+
+### Tests
+
+- The Linux upgrade jobs build the old release's Dev image with its commit SHA, which the app build requires, instead of its tag name.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge current `main`, which now carries the release updates branch, into the installer upgrade branch. No conflicts.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- The installer upgrade lock appears complete in one step and is never taken from another run, so two runs cannot both reclaim it; it is released on every exit, including Ctrl-C, and a lock left by a killed run names the file to remove.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- An installer upgrade checks for an interface upgrade again after building Dev's image, right before recreating Dev, and takes its lock atomically, so two installer runs can no longer both proceed.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Installer upgrades roll a service back even when its restart itself fails, recreate Dev after an interrupted image switch by checking the image the container runs, check again for an interface upgrade before each restart, and refuse a second concurrent installer upgrade.
+
+## Unreleased - 2026-11-04
+
+### Tests
+
+- The install tests' upgrade jobs install each old release from a checkout of its tag, running that release's own installer without GitHub API calls, which shared macOS runners had exhausted.
+
+## Unreleased - 2026-11-04
+
+### Added
+
+- Rerunning the installer upgrades an installation it made. It fetches the latest release first, shows the installed and latest versions, and asks to upgrade in place and whether to change the installation name or in-app update policy meanwhile. The upgrade builds the release beside the running one, takes a snapshot, then restarts the Host daemon, coordinator and Dev on it; each returns to its previous release if it does not come back healthy, and a rerun resumes a stopped upgrade. Installations from release 26.11.103 on can upgrade this way, including those whose in-app upgrade never finished. `--repair` still repairs offline without upgrading.
+- The install tests workflow gains upgrade jobs that install releases 26.11.103 and 26.11.206 with their own installers on Linux with Dev and on macOS, then upgrade them with the commit under test and check that the upgraded installation offers in-app updates.
 - Heavy-job status now shows one logical job instead of listing compatibility guards as queued jobs, and falls back to surviving child ownership after wrapper death. The documented workload contract covers foreground commands in the original process group; daemonized or `setsid` descendants do not retain the slot.
 
 - Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.
@@ -623,8 +771,6 @@ Prepared but never tagged; superseded by 26.11.301.
 
 ### Fixes
 
-- Harden shared Voice credentials: reject endpoint-only adoption, validate endpoint URLs, require revision-checked atomic saves before provider switches, and keep empty or conflicted delivery from persisting local fallbacks. Expire adoption nonces, bind pushes to authenticated server identity, and release stale shared markers on unbinding.
-- Share Voice OpenAI keys and endpoints across every installation environment through the existing secret authority. Adopt existing values once, hold conflicting key and endpoint pairs for owner resolution, and keep standalone Voice saves local.
 - Docker restart preflight reads container state as JSON, so containers without a healthcheck, such as the gateway's Tailscale and Caddy, no longer fail with "not found". Refusals now name the real Docker error.
 
 ## Unreleased - 2026-11-03

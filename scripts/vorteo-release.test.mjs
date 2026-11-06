@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -38,6 +39,7 @@ import {
   releaseNotes,
   tagName,
 } from "./vorteo-release.mjs";
+import { changelogEntries } from "./vorteo-version.mjs";
 
 const roots = [];
 after(() => {
@@ -221,10 +223,43 @@ test("prepare picks the next build; tags go only on prepared commits, never repe
         packages: { "": {} },
       })}\n`,
     );
+    // Fragments fold into the new entry above existing Unreleased entries, then disappear.
+    writeFileSync(
+      path.join(prepared, "VORTEO_CHANGELOG.md"),
+      "# Vorteo changelog\n\n## Unreleased - 2026-10-29\n\n- Older entry\n",
+    );
+    mkdirSync(path.join(prepared, "docs"));
+    writeFileSync(path.join(prepared, "docs", "vorteo-customizations.md"), "# Inventory\n\nBody\n");
+    mkdirSync(path.join(prepared, "changes"));
+    const fragment = (name, notes, review) =>
+      writeFileSync(
+        path.join(prepared, "changes", name),
+        `${notes}\n\n## Maintenance review\n\n${review}\n`,
+      );
+    fragment(
+      "2026-10-29-old.md",
+      "### Fixes\n\n- Old fix\n\n### Features\n\n- Old feature",
+      "Old.",
+    );
+    fragment("2026-10-30-new.md", "### Fixes\n\n- New fix", "New.");
     run(prepared, "add", ".");
     run(prepared, "commit", "--quiet", "-m", "legacy");
     const day = { cwd: prepared, channel: "beta", date: "2026-10-30" };
-    assert.equal(prepareVersion({ ...day, tags: [] }).version, "26.10.3000");
+    const folded = prepareVersion({ ...day, tags: [] });
+    assert.equal(folded.version, "26.10.3000");
+    assert.equal(folded.fragments.length, 2);
+    const changelog = readFileSync(path.join(prepared, "VORTEO_CHANGELOG.md"), "utf8");
+    assert.equal(
+      changelog,
+      "# Vorteo changelog\n\n## 26.10.3000 - 2026-10-30\n\n### Fixes\n\n- New fix\n- Old fix\n\n### Features\n\n- Old feature\n\n## Unreleased - 2026-10-29\n\n- Older entry\n",
+    );
+    // The tag check still finds the version at the top.
+    assert.equal(changelogEntries(changelog)[0].label, "26.10.3000");
+    assert.equal(
+      readFileSync(path.join(prepared, "docs", "vorteo-customizations.md"), "utf8"),
+      "# Inventory\n\nMaintenance review (2026-10-30): New.\n\nMaintenance review (2026-10-29): Old.\n\nBody\n",
+    );
+    assert.deepEqual(readdirSync(path.join(prepared, "changes")), []);
     run(prepared, "commit", "--quiet", "-am", "prepare");
     const tags = [{ version: "26.10.3001" }, { version: "26.10.2999" }];
     const next = prepareVersion({ ...day, tags });
@@ -302,6 +337,12 @@ test("ruleset validation keeps merge commits, no bypass and release-* tags", () 
     "squash",
   ];
   assert.throws(() => validateRuleset(squash, "main.json"), /merge commits only/);
+  const squashQueue = structuredClone(main);
+  squashQueue.rules.find((rule) => rule.type === "merge_queue").parameters.merge_method = "SQUASH";
+  assert.throws(() => validateRuleset(squashQueue, "main.json"), /merge queue must merge/);
+  const noQueue = structuredClone(main);
+  noQueue.rules = noQueue.rules.filter((rule) => rule.type !== "merge_queue");
+  assert.throws(() => validateRuleset(noQueue, "main.json"), /up-to-date branches/);
   assert.throws(
     () => validateRuleset({ ...main, bypass_actors: [{ actor_id: 1 }] }, "main.json"),
     /no bypass/,
@@ -355,8 +396,9 @@ function workflows() {
     });
 }
 
-// secret-scan.yml runs on every push, tags included; it only reads the repository.
-const HARMLESS_ON_TAGS = new Set(["secret-scan.yml"]);
+// secret-scan.yml runs on every push, tags included; it only reads the repository. ci.yml
+// runs the heavy test suites on release-* tags; it tests and publishes nothing.
+const HARMLESS_ON_TAGS = new Set(["secret-scan.yml", "ci.yml"]);
 
 test("release tags start no upstream workflow; GitHub Releases start only guarded jobs", () => {
   const all = workflows();

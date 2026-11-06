@@ -602,11 +602,7 @@ describe("apply", () => {
     const { ok } = await adopt(context);
     expect(ok).toBe(true);
     expect(state.gateMode).toBe(false);
-    expect(
-      context.run.calls.filter((call) =>
-        call.args.some((arg) => /gate\.sh|docker\/base\/Dockerfile/.test(String(arg))),
-      ),
-    ).toEqual([]);
+    expect(context.run.calls.filter(touchesDevImageOrGate)).toEqual([]);
     const config = JSON.parse(readFileSync(path.join(legacy.root, "coordinator.json"), "utf8"));
     expect(config.public.environments).toEqual(legacy.config.public.environments);
     expect(config.container).toEqual(legacy.config.container);
@@ -624,6 +620,11 @@ describe("apply", () => {
     await expect(createHostAdoptionPlan(context)).rejects.toThrow("No running container publishes");
   });
 });
+
+/** A recorded command that would build the Dev image or switch Dev to gate mode. */
+function touchesDevImageOrGate(call) {
+  return call.args.some((arg) => /gate\.sh|docker\/base\/Dockerfile/.test(String(arg)));
+}
 
 describe("coordinator configuration contract", () => {
   const reader = path.resolve(
