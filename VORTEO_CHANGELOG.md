@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Keep metadata picker viewport checks independent of the available model count while preserving bounds, width and interaction coverage. Update plugin Back coverage for its Projects & integrations parent.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
 - Merge the current main-sync revision into the Settings fixes branch, preserving bundled skill management and custom domain support.
 
 ## 26.11.503 - 2026-11-05

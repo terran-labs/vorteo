@@ -150,12 +150,20 @@ for (const viewport of [
             top: rect.top >= 0,
             right: rect.right <= window.innerWidth,
             bottom: rect.bottom <= window.innerHeight,
-            height: rect.height,
+            // The model count controls height; containment must hold for every count.
+            heightWithinRange: rect.height >= 220 && rect.height <= 400,
             width: rect.width,
           };
         }),
       )
-      .toEqual({ left: true, top: true, right: true, bottom: true, height: 400, width: 360 });
+      .toEqual({
+        left: true,
+        top: true,
+        right: true,
+        bottom: true,
+        heightWithinRange: true,
+        width: 360,
+      });
     await page.screenshot({ path: testInfo.outputPath("metadata-picker-viewport.png") });
     await page.keyboard.press("Escape");
     await expect(picker).toHaveCount(0);
