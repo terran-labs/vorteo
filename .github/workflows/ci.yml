@@ -89,9 +89,12 @@ jobs:
       - name: Validate CI contracts
         run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs scripts/publish-instance-web.test.mjs scripts/dependency-cache.test.mjs scripts/heavy-job.test.mjs scripts/instance-builds.test.mjs scripts/release/latest.test.mjs
 
+  # Heavy jobs wait for required checks so a merge group does not fill its runner
+  # slots before those checks start. Keep !cancelled() in each job condition:
+  # failed or skipped prerequisites must not change which suites run.
   installer-tests:
     name: installer (${{ matrix.os }})
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     # macOS is the only place bash 3.2 runs install.sh.
     strategy:
@@ -328,7 +331,7 @@ jobs:
 
   server-tests-windows:
     name: server-tests (windows-latest)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: windows-latest
     steps:
@@ -351,7 +354,7 @@ jobs:
   # Keep the serial integration chain off the Windows unit critical path.
   server-integration-windows:
     name: server-integration (windows-latest)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: windows-latest
     steps:
@@ -373,7 +376,7 @@ jobs:
   # bound runtime.
   server-tests-macos:
     name: server-tests (macos-15, file observation)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: macos-15
     steps:
@@ -408,7 +411,7 @@ jobs:
 
   desktop-tests-ubuntu:
     name: desktop-tests (ubuntu-latest)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -485,7 +488,7 @@ jobs:
 
   desktop-tests-windows:
     name: desktop-tests (windows-latest)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: windows-latest
     timeout-minutes: 30
@@ -522,7 +525,7 @@ jobs:
 
   playwright-1:
     name: playwright (shard 1/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     # A hung browser or daemon must fail the shard instead of holding a runner for hours.
@@ -583,7 +586,7 @@ jobs:
 
   playwright-2:
     name: playwright (shard 2/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -594,7 +597,7 @@ jobs:
 
   playwright-3:
     name: playwright (shard 3/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -605,7 +608,7 @@ jobs:
 
   playwright-4:
     name: playwright (shard 4/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -616,7 +619,7 @@ jobs:
 
   playwright-5:
     name: playwright (shard 5/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -626,7 +629,7 @@ jobs:
 
   playwright-6:
     name: playwright (shard 6/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -636,7 +639,7 @@ jobs:
 
   playwright-7:
     name: playwright (shard 7/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -646,7 +649,7 @@ jobs:
 
   playwright-8:
     name: playwright (shard 8/8)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -686,7 +689,7 @@ jobs:
 
   cli-tests-1:
     name: cli-tests (shard 1/3)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
     env:
@@ -721,7 +724,7 @@ jobs:
 
   cli-tests-2:
     name: cli-tests (shard 2/3)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
     env:
@@ -734,7 +737,7 @@ jobs:
 
   cli-tests-3:
     name: cli-tests (shard 3/3)
-    needs: changes
+    needs: [changes, format, lint, typecheck]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
     env:
