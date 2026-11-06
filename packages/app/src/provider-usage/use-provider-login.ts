@@ -1,4 +1,8 @@
-import { readExecutionInstallation } from "@/execution-installation/policy";
+import { useOwnerAccess } from "@/execution-installation/owner-access";
+import {
+  readExecutionInstallation,
+  findInstallationEnvironment,
+} from "@/execution-installation/policy";
 import {
   claudeFullSignInAvailable,
   claudeSetupRequest,
@@ -16,6 +20,14 @@ import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useForceProviderUsageRefresh } from "./use-provider-usage";
 
+function useOwnerAllowed(serverId?: string | null) {
+  const { status } = useOwnerAccess();
+  const localConnection =
+    serverId !== undefined &&
+    findInstallationEnvironment(readExecutionInstallation(), serverId ?? "") === null;
+  return localConnection || status === "unlocked" || status === "none";
+}
+
 /**
  * Whether this account signs in once for the installation through the coordinator. Claude always
  * does inside an installation. Codex does when the coordinator runs Host-owned Codex sign-in;
@@ -25,6 +37,7 @@ export function useSharedInstallationSignIn(
   serverId: string | null,
   provider: "claude" | "codex",
 ): boolean {
+  const ownerAllowed = useOwnerAllowed(serverId);
   const installation = readExecutionInstallation();
   const inInstallation = Boolean(
     installation?.environments.some((environment) => environment.serverId === serverId),
@@ -32,7 +45,7 @@ export function useSharedInstallationSignIn(
   const codex = useFetchQuery({
     queryKey: ["codex-installation-sign-in", installation?.installationId],
     queryFn: codexInstallationSignInAvailable,
-    enabled: inInstallation && provider === "codex",
+    enabled: ownerAllowed && inInstallation && provider === "codex",
     staleTimeMs: 60_000,
     dataShape: "value",
     retry: false,
@@ -50,8 +63,9 @@ export function useInstallationConnectOnce(enabled: boolean): {
   claude: boolean | undefined;
   codex: boolean | undefined;
 } {
+  const ownerAllowed = useOwnerAllowed();
   const installation = readExecutionInstallation();
-  const active = enabled && installation !== null;
+  const active = ownerAllowed && enabled && installation !== null;
   const claude = useFetchQuery({
     queryKey: ["claude-full-sign-in", installation?.installationId],
     queryFn: claudeFullSignInAvailable,
@@ -79,12 +93,13 @@ export function useInstallationConnectOnce(enabled: boolean): {
  * until the coordinator confirms that it and every environment's daemon support the upgrade.
  */
 export function useClaudeSignInUpgradeAvailable(serverId: string | null, providerId: string) {
+  const ownerAllowed = useOwnerAllowed(serverId);
   const installation = readExecutionInstallation();
   const shared = useSharedInstallationSignIn(serverId, "claude");
   const query = useFetchQuery({
     queryKey: claudeUpgradeAvailabilityKey(installation?.installationId, serverId, providerId),
     queryFn: () => claudeUpgradeAvailable(serverId!, providerId),
-    enabled: shared,
+    enabled: ownerAllowed && shared,
     staleTimeMs: 60_000,
     dataShape: "value",
     retry: false,
@@ -160,10 +175,11 @@ export function useProviderLogin(
 ) {
   const client = useHostRuntimeClient(serverId ?? "");
   const hostConnected = useHostRuntimeIsConnected(serverId ?? "");
+  const ownerAllowed = useOwnerAllowed(serverId);
   const installation = readExecutionInstallation();
   const shared = useSharedInstallationSignIn(serverId, provider);
   const sharedClaude = shared && provider === "claude";
-  const connected = shared || hostConnected;
+  const connected = ownerAllowed && (shared || hostConnected);
   const cache = useQueryClient();
   const key = useMemo(
     () =>
@@ -223,6 +239,7 @@ export function useProviderLogin(
     gcTime: 0,
     retry: false,
   });
+  const synchronizing = ownerAllowed && shared && flow === "connect";
   const synchronization = useFetchQuery({
     queryKey: [
       provider === "claude" ? "claude-setup-connection" : "codex-installation-connection",
@@ -232,8 +249,8 @@ export function useProviderLogin(
     ],
     queryFn: async () =>
       (await installationRequest(provider, serverId!, providerId, "read")).connection,
-    enabled: shared && flow === "connect",
-    refetchInterval: shared && flow === "connect" ? 2000 : false,
+    enabled: synchronizing,
+    refetchInterval: synchronizing ? 2000 : false,
     staleTimeMs: 0,
     dataShape: "value",
     gcTime: 0,

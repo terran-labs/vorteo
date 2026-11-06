@@ -69,7 +69,12 @@ test("inspects skills and preserves an edit made after removal preview", async (
   await revealSettingsLocation(page, "skills");
   await page.getByPlaceholder("Name, provider, ownership, or environment").fill("browser-example");
   await expect(page.getByText("browser-example", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await page
+    .getByTestId("settings-pane-agents.skills")
+    .filter({ visible: true })
+    .first()
+    .getByRole("button", { name: "Details", exact: true })
+    .click();
   await expect(page.getByText("Reviewed fixture instructions", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Preview removal", exact: true }).click();
   await expect(
@@ -102,7 +107,12 @@ test("groups provider links and keeps removal scoped to the selected path", asyn
   await expect(page.getByText("personal, claude, codex, Inspected", { exact: true })).toBeVisible();
   await page.getByPlaceholder("Name, provider, ownership, or environment").fill("claude");
   await expect(page.getByText("linked-example", { exact: true })).toHaveCount(1);
-  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await page
+    .getByTestId("settings-pane-agents.skills")
+    .filter({ visible: true })
+    .first()
+    .getByRole("button", { name: "Details", exact: true })
+    .click();
   await page.getByRole("button", { name: "Inspect claude path", exact: true }).click();
   await page.getByRole("button", { name: "Preview removal", exact: true }).click();
   const link = path.join(skillHome, ".claude/skills/linked-example");
@@ -125,8 +135,12 @@ test.describe("Legacy product preference migration", () => {
     await revealSettingsLocation(page, "skills");
     await expect(page.getByPlaceholder("Name, provider, ownership, or environment")).toBeVisible();
     await openSettingsHost(page, getServerId());
-    await revealSettingsLocation(page, "agents");
+    await revealSettingsLocation(page, "agents.skills");
     await expect(page.getByText("Orchestration skills", { exact: true }).first()).toBeVisible();
-    await expect(page.getByRole("button", { name: "Skill library", exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByTestId("settings-pane-agents.skills")
+        .getByPlaceholder("Name, provider, ownership, or environment"),
+    ).toBeVisible();
   });
 });

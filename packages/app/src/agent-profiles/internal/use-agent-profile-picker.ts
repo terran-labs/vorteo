@@ -1,3 +1,4 @@
+import { isProviderSelectable, isProviderDetecting } from "../provider-availability";
 import {
   resolveProviderType,
   isSharedWorkflowProfile,
@@ -546,8 +547,8 @@ export function useAgentProfilePicker(
     Boolean(
       entries?.some(
         (entry) =>
-          entry.enabled &&
-          entry.status === "loading" &&
+          isProviderSelectable(entry) &&
+          isProviderDetecting(entry) &&
           profiles?.some((profile) => profile.provider === entry.provider),
       ),
     );

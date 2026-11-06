@@ -159,3 +159,36 @@ it("keeps the reason separate from the fixed approval label", () => {
     }),
   ).toMatchObject({ reason, action: { label: "Approve restart" } });
 });
+
+it("keeps a standalone update in progress ahead of its old version and lost connection", () => {
+  expect(
+    derive({
+      ...base,
+      reconnectingAfterAction: true,
+      availableVersion: "v2",
+      connection: { connectionStatus: "offline", lastError: "Updating" },
+    }),
+  ).toEqual({ status: "updating", action: null });
+});
+
+it("offers tracked Dev recovery instead of reconnecting to a worker that cannot answer", () => {
+  expect(
+    derive({
+      ...base,
+      target: "container-daemon",
+      connection: { connectionStatus: "offline", lastError: "Dev is not answering" },
+      restartJobs: [
+        {
+          id: "recovery",
+          target: "container-daemon",
+          status: "pending",
+          reason: "Repair Dev",
+          supervisorPlanSha256: "a".repeat(64),
+          impact: { error: "Unavailable" } as NonNullable<
+            SystemEnvironmentInput["restartJobs"]
+          >[number]["impact"],
+        },
+      ],
+    }).action,
+  ).toEqual({ kind: "approve-restart", id: "recovery", label: "Repair Dev" });
+});

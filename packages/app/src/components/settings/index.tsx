@@ -27,7 +27,7 @@ import { settingsStyles } from "@/styles/settings";
 import { ControlSizeProvider } from "@/components/ui/control-size";
 import { useSettingsRowLayout } from "./row-density";
 export { SettingsGroup } from "./headings/settings-group";
-export { SettingsSection } from "./headings/settings-section";
+export { SettingsSection, SettingsPaneScope } from "./headings/settings-section";
 export { SettingsCollapsibleRow } from "./collapsible-row";
 export { SettingsDetailRow } from "./detail-row";
 export { SettingsInfoTip } from "./headings/settings-info-tip";

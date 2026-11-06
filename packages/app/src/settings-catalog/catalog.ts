@@ -13,16 +13,15 @@
  */
 
 export const SETTINGS_SECTION_IDS = [
+  "interface",
+  "privacy",
   "general",
-  "accounts",
+  "providers",
   "agents",
-  "chat",
-  "terminal",
-  "appearance",
-  "workspaces",
+  "voice",
   "environments",
-  "plugins",
-  "maintenance",
+  "projects",
+  "system",
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
@@ -48,6 +47,7 @@ export interface SettingsAvailability {
 
 export interface SettingsSectionDefinition {
   id: SettingsSectionId;
+  group: "This device" | "Vorteo";
   label: string;
   /** Extra words people use for this whole section. */
   keywords: readonly string[];
@@ -59,6 +59,8 @@ export interface SettingsPaneDefinition extends SettingsAvailability {
   label: string;
   /** Old `/settings/<slug>` routes that now open this pane. */
   legacySlugs?: readonly string[];
+  /** A subgroup within the section. */
+  group?: string;
   keywords?: readonly string[];
 }
 
@@ -77,251 +79,284 @@ export interface SettingsEntryDefinition extends SettingsAvailability {
 
 export const SETTINGS_SECTIONS: readonly SettingsSectionDefinition[] = [
   {
-    id: "general",
-    label: "General",
+    id: "interface",
+    group: "This device",
+    label: "Interface",
     keywords: [
-      "home",
-      "attention",
-      "notifications",
-      "about",
-      "version",
-      "release notes",
-      "changelog",
-      "github",
-      "hosts",
-      "diagnostics",
+      "appearance",
+      "language",
+      "chat",
+      "editor",
+      "vim",
+      "sending",
+      "files",
+      "terminal",
+      "shortcuts",
     ],
   },
   {
-    id: "accounts",
-    label: "Accounts & profiles",
+    id: "privacy",
+    group: "This device",
+    label: "Notifications & privacy",
+    keywords: ["notifications", "microphone", "browser", "privacy", "data", "saver"],
+  },
+  {
+    id: "general",
+    group: "Vorteo",
+    label: "General",
     keywords: [
-      "providers",
+      "home",
+      "status",
+      "attention",
+      "installation",
+      "name",
+      "workspace",
+      "defaults",
+      "archive",
+    ],
+  },
+  {
+    id: "providers",
+    group: "Vorteo",
+    label: "Providers",
+    keywords: [
       "accounts",
       "profiles",
+      "providers",
       "presets",
       "usage",
       "quota",
-      "sign in",
       "login",
+      "sign",
+      "in",
     ],
   },
   {
     id: "agents",
-    label: "Agent behavior",
-    keywords: ["agents", "tools", "skills", "system prompt", "metadata", "browser", "permissions"],
+    group: "Vorteo",
+    label: "Agents",
+    keywords: ["tools", "skills", "system", "prompt", "metadata", "browser", "terminal", "hooks"],
   },
   {
-    id: "chat",
-    label: "Chat & editor",
-    keywords: [
-      "chat",
-      "timeline",
-      "editor",
-      "vim",
-      "shortcuts",
-      "keyboard",
-      "open location",
-      "sending",
-    ],
-  },
-  {
-    id: "terminal",
-    label: "Terminal",
-    keywords: ["terminal", "shell", "scrollback", "hooks"],
-  },
-  {
-    id: "appearance",
-    label: "Appearance",
-    keywords: ["theme", "fonts", "dark mode", "light mode", "language", "look"],
-  },
-  {
-    id: "workspaces",
-    label: "Workspaces & projects",
-    keywords: ["projects", "repositories", "worktrees", "archive", "new workspace", "defaults"],
+    // Its own section by the owner's choice: speech input and output, configured on the Host.
+    id: "voice",
+    group: "Vorteo",
+    label: "Voice",
+    keywords: ["voice", "dictation", "speech", "transcription", "speaking", "listening", "tts"],
   },
   {
     id: "environments",
+    group: "Vorteo",
     label: "Environments",
     keywords: ["hosts", "daemons", "machines", "connections", "pair", "devices", "servers"],
   },
   {
-    id: "plugins",
-    label: "Plugins & integrations",
-    keywords: ["plugins", "extensions", "integrations", "cli"],
+    id: "projects",
+    group: "Vorteo",
+    label: "Projects & integrations",
+    keywords: [
+      "projects",
+      "repositories",
+      "worktrees",
+      "plugins",
+      "extensions",
+      "integrations",
+      "cli",
+    ],
   },
   {
-    id: "maintenance",
-    label: "Maintenance",
-    keywords: ["installation", "restart", "updates", "upstream", "diagnostics", "owner"],
+    id: "system",
+    group: "Vorteo",
+    label: "System",
+    keywords: [
+      "maintenance",
+      "installation",
+      "restart",
+      "updates",
+      "upstream",
+      "diagnostics",
+      "about",
+      "version",
+    ],
   },
 ];
 
 export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
-  // About was its own section; its routes now open these panes. It leads General with the
-  // installation's name, type and delivery mode.
   {
-    id: "general.about",
-    section: "general",
-    label: "About",
-    legacySlugs: ["about"],
-    keywords: ["installation", "name", "lab", "stable", "delivery mode", "live dev"],
+    id: "appearance.appearance",
+    section: "interface",
+    label: "Appearance",
+    legacySlugs: ["appearance.appearance", "appearance", "sidebar"],
   },
-  { id: "general.attention", section: "general", label: "Needs attention" },
   {
-    id: "general.notifications",
-    section: "general",
-    label: "Notifications",
-    legacySlugs: ["notifications"],
+    id: "appearance.language",
+    legacySlugs: ["appearance.language"],
+    section: "interface",
+    label: "Language",
+  },
+  { id: "chat.chat", section: "interface", label: "Chat", legacySlugs: ["chat.chat", "chat"] },
+  {
+    id: "chat.sending",
+    legacySlugs: ["chat.sending"],
+    section: "interface",
+    label: "Sending",
+    hardwareKeyboardOnly: true,
+    webOnly: true,
+  },
+  {
+    id: "chat.files",
+    section: "interface",
+    label: "Files",
+    legacySlugs: ["chat.files", "files"],
+    keywords: ["file", "panel", "associations", "open with"],
+  },
+  {
+    id: "chat.editor",
+    section: "interface",
+    label: "Editor",
+    legacySlugs: ["chat.editor", "editor"],
+    webOnly: true,
+  },
+  {
+    id: "chat.openLocation",
+    legacySlugs: ["chat.openLocation"],
+    section: "interface",
+    label: "Open location",
     desktopOnly: true,
   },
   {
-    id: "general.hosts",
-    section: "general",
-    label: "Connected hosts",
-    legacySlugs: ["diagnostics"],
-    keywords: ["diagnostics", "connection check"],
+    id: "terminal.terminal",
+    section: "interface",
+    label: "Terminal",
+    legacySlugs: ["terminal.terminal", "terminal"],
   },
-
+  {
+    id: "chat.shortcuts",
+    section: "interface",
+    label: "Keyboard shortcuts",
+    legacySlugs: ["chat.shortcuts", "shortcuts"],
+    hardwareKeyboardOnly: true,
+  },
+  {
+    id: "general.notifications",
+    section: "privacy",
+    label: "Notifications",
+    legacySlugs: ["general.notifications", "notifications"],
+    desktopOnly: true,
+  },
+  {
+    id: "agents.browserData",
+    section: "privacy",
+    label: "Browser data",
+    legacySlugs: ["agents.browserData", "browser"],
+    desktopOnly: true,
+  },
+  {
+    id: "agents.permissions",
+    section: "privacy",
+    label: "Permissions",
+    legacySlugs: ["agents.permissions", "permissions"],
+    desktopOnly: true,
+  },
+  {
+    id: "privacy.dataSaver",
+    legacySlugs: ["privacy.dataSaver"],
+    section: "privacy",
+    label: "Data saver",
+    webOnly: true,
+  },
+  {
+    id: "general.attention",
+    legacySlugs: ["general.attention"],
+    section: "general",
+    label: "Status",
+  },
+  {
+    id: "general.installation",
+    legacySlugs: ["general.installation"],
+    section: "general",
+    label: "Installation",
+    requiresInstallation: true,
+    keywords: ["name", "title", "rename", "type", "lab", "stable"],
+  },
+  {
+    id: "workspaces.newWorkspace",
+    legacySlugs: ["workspaces.newWorkspace"],
+    section: "general",
+    label: "New workspace",
+    keywords: ["default", "new chat"],
+  },
+  {
+    id: "workspaces.workspaces",
+    section: "general",
+    label: "Workspaces",
+    legacySlugs: ["workspaces.workspaces", "workspaces"],
+    requiresHost: true,
+  },
   {
     id: "accounts.providers",
-    section: "accounts",
+    section: "providers",
     label: "Providers",
-    legacySlugs: ["providers"],
+    legacySlugs: ["accounts.providers", "providers", "accounts"],
     requiresHost: true,
   },
   {
     id: "accounts.profiles",
-    section: "accounts",
+    section: "providers",
     label: "Profiles",
-    legacySlugs: ["profiles"],
+    legacySlugs: ["accounts.profiles", "profiles"],
     requiresHost: true,
     // Each provider's details show its profiles when an installation exists.
     withoutInstallation: true,
   },
   {
     id: "accounts.usage",
-    section: "accounts",
+    section: "providers",
     label: "Usage",
-    legacySlugs: ["usage"],
+    legacySlugs: ["accounts.usage", "usage"],
     requiresHost: true,
     // Usage sits on each connection in a provider's details when an installation exists.
     withoutInstallation: true,
   },
-
   {
     id: "agents.tools",
     section: "agents",
     label: "Agent tools",
-    legacySlugs: ["agents"],
+    legacySlugs: ["agents.tools", "agents"],
     requiresHost: true,
   },
   {
     id: "agents.skills",
     section: "agents",
     label: "Skills",
-    legacySlugs: ["skills"],
+    legacySlugs: ["agents.skills", "skills"],
+  },
+  {
+    id: "voice.voice",
+    section: "voice",
+    label: "Voice",
+    legacySlugs: ["voice.voice", "voice"],
+    requiresHost: true,
   },
   {
     id: "agents.metadata",
     section: "agents",
     label: "Metadata generation",
-    legacySlugs: ["metadata"],
+    legacySlugs: ["agents.metadata", "metadata"],
     requiresHost: true,
-  },
-  {
-    id: "agents.browserData",
-    section: "agents",
-    label: "Browser data",
-    legacySlugs: ["browser"],
-    desktopOnly: true,
-  },
-  {
-    id: "agents.permissions",
-    section: "agents",
-    label: "Permissions",
-    legacySlugs: ["permissions"],
-    desktopOnly: true,
-  },
-
-  { id: "chat.chat", section: "chat", label: "Chat", legacySlugs: ["chat"] },
-  { id: "chat.sending", section: "chat", label: "Sending" },
-  {
-    id: "chat.openLocation",
-    section: "chat",
-    label: "Open location",
-    desktopOnly: true,
-  },
-  {
-    id: "chat.editor",
-    section: "chat",
-    label: "Editor",
-    legacySlugs: ["editor"],
-    webOnly: true,
-  },
-  {
-    id: "chat.files",
-    section: "chat",
-    label: "Files",
-    legacySlugs: ["files"],
-    keywords: ["file", "panel", "associations", "open with"],
-  },
-  {
-    id: "chat.shortcuts",
-    section: "chat",
-    label: "Keyboard shortcuts",
-    legacySlugs: ["shortcuts"],
-    hardwareKeyboardOnly: true,
-  },
-
-  {
-    id: "terminal.terminal",
-    section: "terminal",
-    label: "Terminal",
-    legacySlugs: ["terminal"],
   },
   {
     id: "terminal.profiles",
-    section: "terminal",
+    section: "agents",
     label: "Terminal profiles",
-    legacySlugs: ["terminals"],
+    legacySlugs: ["terminal.profiles", "terminals"],
     requiresHost: true,
   },
-
-  {
-    id: "appearance.appearance",
-    section: "appearance",
-    label: "Appearance",
-    legacySlugs: ["appearance", "sidebar"],
-  },
-  { id: "appearance.language", section: "appearance", label: "Language" },
-
-  {
-    id: "workspaces.newWorkspace",
-    section: "workspaces",
-    label: "New workspace",
-    keywords: ["default", "new chat"],
-  },
-  {
-    id: "workspaces.projects",
-    section: "workspaces",
-    label: "Projects",
-    legacySlugs: ["projects"],
-    requiresHost: true,
-  },
-  {
-    id: "workspaces.workspaces",
-    section: "workspaces",
-    label: "Workspaces",
-    legacySlugs: ["workspaces"],
-    requiresHost: true,
-  },
-
   {
     id: "environments.environments",
     section: "environments",
     label: "Environments",
-    legacySlugs: ["environments"],
+    legacySlugs: ["environments.environments", "environments"],
     requiresHost: true,
   },
   {
@@ -329,39 +364,57 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     section: "environments",
     label: "Connections",
     // Device pairing was retired in favor of authenticated direct connections.
-    legacySlugs: ["connections", "pair-device"],
+    legacySlugs: ["environments.connections", "connections", "pair-device"],
   },
-
+  {
+    id: "workspaces.projects",
+    section: "projects",
+    label: "Projects",
+    legacySlugs: ["workspaces.projects", "projects"],
+    requiresHost: true,
+  },
   {
     id: "plugins.plugins",
-    section: "plugins",
+    section: "projects",
     label: "Plugins",
-    legacySlugs: ["plugins"],
+    legacySlugs: ["plugins.plugins", "plugins"],
     requiresHost: true,
   },
   {
     id: "plugins.integrations",
-    section: "plugins",
+    section: "projects",
     label: "Integrations",
-    legacySlugs: ["integrations"],
+    legacySlugs: ["plugins.integrations", "integrations"],
     desktopOnly: true,
   },
-
+  {
+    // Host and Dev status, one action each, restarts, updates and technical details.
+    id: "system.overview",
+    section: "system",
+    label: "System",
+    legacySlugs: ["system.overview", "maintenance.updates", "maintenance.upstream"],
+    keywords: ["status", "health", "restart", "update", "daemon", "host", "dev", "upstream"],
+  },
+  {
+    id: "general.about",
+    section: "system",
+    label: "About",
+    legacySlugs: ["general.about", "about"],
+  },
+  {
+    id: "general.hosts",
+    section: "system",
+    label: "Connected hosts",
+    legacySlugs: ["general.hosts", "diagnostics"],
+    keywords: ["diagnostics", "connection check"],
+  },
   {
     id: "maintenance.installation",
-    section: "maintenance",
-    label: "Installation",
+    section: "system",
+    label: "Installation controls",
+    group: "Advanced",
+    legacySlugs: ["maintenance.installation", "maintenance"],
     requiresInstallation: true,
-  },
-  {
-    id: "maintenance.updates",
-    section: "maintenance",
-    label: "Vorteo updates",
-  },
-  {
-    id: "maintenance.upstream",
-    section: "maintenance",
-    label: "Paseo upstream updates",
   },
 ];
 
@@ -371,8 +424,24 @@ const environment = "environment" as const;
 
 export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
+    id: "privacy.dataSaver.enabled",
+    pane: "privacy.dataSaver",
+    label: "Use less data in this browser",
+    keywords: ["data saver", "bandwidth", "fonts", "diagrams"],
+    scope: device,
+    webOnly: true,
+  },
+  {
+    id: "privacy.dataSaver.icons",
+    pane: "privacy.dataSaver",
+    label: "Optional custom icons",
+    keywords: ["data saver", "download icons"],
+    scope: device,
+    webOnly: true,
+  },
+  {
     id: "general.installation.name",
-    pane: "general.about",
+    pane: "general.installation",
     label: "Installation name",
     hint: "Shown in the browser tab, the welcome page and the sidebar.",
     keywords: ["name", "title", "rename"],
@@ -381,7 +450,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "general.installation.type",
-    pane: "general.about",
+    pane: "general.installation",
     label: "Installation type",
     hint: "Stable installs tagged releases; Lab evolves itself from its live checkout.",
     keywords: ["lab", "stable", "self-update", "release channel"],
@@ -389,12 +458,37 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     requiresInstallation: true,
   },
   {
-    id: "maintenance.installation.deliveryMode",
+    id: "general.help.shortcuts",
     pane: "general.about",
-    label: "Delivery mode",
-    keywords: ["live dev", "fast refresh", "reliable", "live checkout"],
-    scope: installation,
-    requiresInstallation: true,
+    label: "Keyboard shortcuts",
+    labelKey: "sidebar.help.shortcuts",
+    keywords: ["help", "keyboard", "keys"],
+    scope: device,
+    hardwareKeyboardOnly: true,
+  },
+  {
+    id: "general.help.diagnostics",
+    pane: "general.about",
+    label: "Run diagnostics",
+    labelKey: "sidebar.help.diagnostics",
+    keywords: ["help", "debug", "support", "logs"],
+    scope: device,
+  },
+  {
+    id: "general.help.discord",
+    pane: "general.about",
+    label: "Discord",
+    labelKey: "sidebar.help.discord",
+    keywords: ["help", "support", "report issue", "community"],
+    scope: device,
+  },
+  {
+    id: "general.help.github",
+    pane: "general.about",
+    label: "Create GitHub issue",
+    labelKey: "sidebar.help.github",
+    keywords: ["help", "support", "report bug", "issue"],
+    scope: device,
   },
   // General
   {
@@ -446,7 +540,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "general.about.releaseChannel",
-    pane: "general.about",
+    pane: "system.overview",
     label: "Release channel",
     labelKey: "settings.about.releaseChannel.label",
     keywords: ["beta", "stable"],
@@ -455,7 +549,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "general.about.appUpdates",
-    pane: "general.about",
+    pane: "system.overview",
     label: "App updates",
     labelKey: "settings.about.updates.label",
     keywords: ["desktop update", "install update"],
@@ -472,14 +566,14 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "general.hosts.connectionCheck",
-    pane: "general.hosts",
+    pane: "system.overview",
     label: "Connection check",
     keywords: ["connection check", "host", "dev", "dns", "tailscale", "latency", "reachability"],
     scope: device,
   },
   {
     id: "general.hosts.legacyTerminalRenderer",
-    pane: "general.hosts",
+    pane: "terminal.terminal",
     label: "Use legacy terminal renderer",
     labelKey: "settings.diagnostics.legacyTerminalRenderer.label",
     keywords: ["webview", "terminal"],
@@ -536,7 +630,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "accounts.profiles.default",
-    pane: "accounts.profiles",
+    pane: "workspaces.newWorkspace",
     label: "Default profile",
     keywords: ["preset", "default configuration"],
     scope: installation,
@@ -609,9 +703,42 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "agents.tools.orchestrationSkills",
-    pane: "agents.tools",
+    pane: "agents.skills",
     label: "Orchestration skills",
     keywords: ["skill library"],
+    scope: environment,
+  },
+  {
+    id: "voice.voice.dictation",
+    pane: "voice.voice",
+    label: "Dictation",
+    labelKey: "settings.voice.dictation.enabled",
+    hint: "Speak into the message box instead of typing.",
+    keywords: ["dictate", "speech to text", "microphone"],
+    scope: environment,
+  },
+  {
+    id: "voice.voice.mode",
+    pane: "voice.voice",
+    label: "Voice mode",
+    labelKey: "settings.voice.voiceMode.enabled",
+    hint: "Talk with your agents hands-free.",
+    keywords: ["hands-free", "read aloud", "conversation"],
+    scope: environment,
+  },
+  {
+    id: "voice.voice.models",
+    pane: "voice.voice",
+    label: "Speech models",
+    keywords: [
+      "speech-to-text",
+      "listening",
+      "speaking",
+      "whisper",
+      "openai",
+      "local model",
+      "download",
+    ],
     scope: environment,
   },
   {
@@ -650,6 +777,8 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "chat.sending.shortcut",
     pane: "chat.sending",
+    hardwareKeyboardOnly: true,
+    webOnly: true,
     label: "Send shortcut",
     labelKey: "settings.general.sendShortcut.label",
     keywords: ["enter", "command", "control", "keyboard"],
@@ -687,14 +816,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     keywords: ["jump between prompts", "navigation"],
     scope: device,
   },
-  {
-    id: "chat.sending.defaultSend",
-    pane: "chat.sending",
-    label: "Default send",
-    labelKey: "settings.general.defaultSend.label",
-    keywords: ["enter", "steer", "queue", "interrupt", "submit"],
-    scope: device,
-  },
+
   {
     id: "chat.openLocation.destinations",
     pane: "chat.openLocation",
@@ -714,8 +836,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "chat.shortcuts.list",
     pane: "chat.shortcuts",
-    label: "Shortcuts",
-    labelKey: "settings.sections.shortcuts",
+    label: "Keyboard shortcuts",
     keywords: ["keyboard shortcuts", "hotkeys", "keybindings", "rebind"],
     scope: device,
   },
@@ -942,6 +1063,47 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
 
   // Maintenance
   {
+    id: "system.overview.customDomain",
+    pane: "system.overview",
+    label: "Custom domain",
+    keywords: ["advanced", "https", "dns", "tls", "installation address"],
+    requiresInstallation: true,
+    scope: installation,
+  },
+  {
+    id: "system.overview.domain",
+    pane: "system.overview",
+    label: "Domain",
+    keywords: ["custom domain", "advanced", "https", "installation address"],
+    requiresInstallation: true,
+    scope: installation,
+  },
+  {
+    id: "system.overview.resumeOnStartup",
+    pane: "system.overview",
+    label: "Resume agents after restart",
+    labelKey: "settings.host.agents.resumeOnStartup.title",
+    hint: "Continue interrupted work automatically.",
+    keywords: ["restart", "crash", "resume prompt", "interrupted"],
+    scope: environment,
+  },
+  {
+    id: "system.overview.idleRuntimeCleanup",
+    pane: "system.overview",
+    label: "Release idle agents",
+    labelKey: "settings.host.agents.idleRuntimeCleanup.title",
+    hint: "Free up memory after an hour of inactivity.",
+    keywords: ["memory", "idle", "stop process"],
+    scope: environment,
+  },
+  {
+    id: "maintenance.installation.access",
+    pane: "maintenance.installation",
+    label: "Installation owner",
+    keywords: ["owner password", "unlock", "lock controls"],
+    scope: installation,
+  },
+  {
     id: "maintenance.installation.owner",
     pane: "maintenance.installation",
     label: "Owner password",
@@ -958,7 +1120,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "maintenance.installation.automatic",
     pane: "maintenance.installation",
-    label: "Automatic daemon updates and restarts",
+    label: "Automatic updates and restarts",
     keywords: ["auto update", "idle restart"],
     scope: installation,
   },
@@ -976,6 +1138,13 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     scope: installation,
   },
   {
+    id: "maintenance.installation.deliveryMode",
+    pane: "system.overview",
+    label: "Delivery mode",
+    keywords: ["live dev", "fast refresh", "reliable", "live checkout"],
+    scope: installation,
+  },
+  {
     id: "maintenance.installation.sessionHost",
     pane: "maintenance.installation",
     label: "Session host",
@@ -984,7 +1153,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "maintenance.updates.vorteo",
-    pane: "maintenance.updates",
+    pane: "system.overview",
     label: "Vorteo updates",
     labelKey: "settings.about.vortonUpdates.title",
     keywords: ["check for updates", "new commits", "host update task"],
@@ -992,7 +1161,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "maintenance.upstream.merge",
-    pane: "maintenance.upstream",
+    pane: "system.overview",
     label: "Paseo upstream updates",
     labelKey: "settings.about.upstreamUpdates.title",
     keywords: ["upstream merge", "host merge task", "copy host prompt"],
@@ -1017,7 +1186,9 @@ export function isSettingsSectionId(value: string): value is SettingsSectionId {
  */
 export function resolveSettingsTarget(slug: string): SettingsTarget {
   if (isSettingsSectionId(slug)) return { section: slug, pane: null };
-  const pane = SETTINGS_PANES.find((candidate) => candidate.legacySlugs?.includes(slug));
+  const pane = SETTINGS_PANES.find(
+    (candidate) => candidate.id === slug || candidate.legacySlugs?.includes(slug),
+  );
   if (pane) return { section: pane.section, pane: pane.id };
   return { section: "general", pane: null };
 }

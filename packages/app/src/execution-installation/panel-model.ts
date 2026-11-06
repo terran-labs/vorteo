@@ -314,7 +314,7 @@ export class InstallationPanelModel {
         this.client.restartSummary(),
         this.refreshEnrollmentStatus(),
         this.refreshRecoveryAccess(),
-        this.refreshServiceQueue(),
+        this.readServiceQueue(true),
       ]);
       this.publish({ restartSummary });
       if (!this.state.unlocked) return;
@@ -422,7 +422,9 @@ export class InstallationPanelModel {
     }
   }
 
-  refreshServiceQueue = async (): Promise<void> => {
+  refreshServiceQueue = (): Promise<void> => this.readServiceQueue(false);
+
+  private async readServiceQueue(preserveError: boolean): Promise<void> {
     if (
       !this.state.unlocked ||
       !this.client.maintenanceServices ||
@@ -430,11 +432,19 @@ export class InstallationPanelModel {
     )
       return;
     const generation = this.accessGeneration;
+    const previousError = this.state.serviceQueueError;
     this.publish({ serviceQueueRefreshing: true });
     try {
       const serviceQueue = await this.client.maintenanceServices();
       if (generation === this.accessGeneration)
-        this.publish({ serviceQueue, serviceQueueError: null });
+        this.publish({
+          serviceQueue,
+          // A cancellation can fail while this read is in flight. Keep that error for review.
+          serviceQueueError:
+            preserveError || this.state.serviceQueueError !== previousError
+              ? this.state.serviceQueueError
+              : null,
+        });
     } catch (error) {
       if (generation !== this.accessGeneration) return;
       if (error instanceof OwnerAccessExpired) this.fail(error);
@@ -446,7 +456,7 @@ export class InstallationPanelModel {
     } finally {
       if (generation === this.accessGeneration) this.publish({ serviceQueueRefreshing: false });
     }
-  };
+  }
 
   cancelMaintenanceService = async (job: MaintenanceServiceView): Promise<void> => {
     if (this.state.busy || !this.state.unlocked || !this.client.cancelMaintenanceService) return;
@@ -1144,6 +1154,21 @@ export function restartActionDisabledReason(
   if (!job.update)
     return "No validated installation artifact is ready. The submitting agent must finish preparation and resubmit the update.";
   return null;
+}
+
+/** The same delayed Force escape hatch applies to ordinary Host and Dev restarts. */
+export function restartForceDeadline(job: RestartJob): number | null {
+  if (
+    (job.target !== "host" && job.target !== "container-daemon") ||
+    job.update ||
+    job.sourceBatch ||
+    restartOperationView(job) ||
+    !job.approvedAt ||
+    !["approved", "running"].includes(job.status)
+  )
+    return null;
+  const deadline = Date.parse(job.approvedAt) + 60_000;
+  return Number.isFinite(deadline) ? deadline : null;
 }
 
 export function restartRequestSummary(job: RestartJob): string {

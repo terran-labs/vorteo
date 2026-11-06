@@ -1,3 +1,8 @@
+import {
+  findInstallationEnvironment,
+  readExecutionInstallation,
+} from "@/execution-installation/policy";
+import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 import { installationConnectionStatus } from "./claude-connection-status";
 import { claudeProviderConnectsToInstallation } from "./claude-setup-login";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -16,7 +21,20 @@ import { useSessionStore } from "@/stores/session-store";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { openExternalUrl } from "@/utils/open-external-url";
 
-export function ProviderLoginPanel({
+export function ProviderLoginPanel(props: Parameters<typeof UnlockedProviderLoginPanel>[0]) {
+  return (
+    <OwnerSettingsGate
+      title="Provider sign-in"
+      required={
+        findInstallationEnvironment(readExecutionInstallation(), props.serverId ?? "") !== null
+      }
+    >
+      <UnlockedProviderLoginPanel {...props} />
+    </OwnerSettingsGate>
+  );
+}
+
+function UnlockedProviderLoginPanel({
   serverId,
   providerId,
   name,

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
-import type { AgentProfile } from "@getpaseo/protocol/messages";
-import { AgentProfileEditModal } from "./settings/agent-profile-edit-modal";
+import type { SharedProviderPreferences, AgentProfile } from "@getpaseo/protocol/messages";
+import { AgentProfileCenteredModal } from "./settings/agent-profile-page";
+import { useSharedProviderProfiles } from "./settings/use-shared-provider-profiles";
 import { generateAgentProfileId } from "./internal/profile-id";
 import type { AgentProfileSeed, AgentProfileValue } from "./internal/profile-form-model";
 import { useAgentProfiles } from "./internal/use-agent-profiles";
@@ -14,21 +15,37 @@ export interface AgentProfileEditorControls {
   element: ReactElement | null;
 }
 
-type EditorRequest =
-  | { mode: "create"; seed?: AgentProfileSeed }
-  | { mode: "edit"; profile: AgentProfile };
+interface EditorRequest {
+  mode: "create" | "edit";
+  profile: AgentProfile;
+  shared?: SharedProviderPreferences;
+}
 
 /**
  * The model chooser's create/edit surface. Owns the write path so call sites
  * never see `saveProfiles` or construct profile records themselves.
  */
 export function useAgentProfileEditor(serverId: string | null): AgentProfileEditorControls {
-  const { profiles, saveProfiles } = useAgentProfiles(serverId);
+  const { profiles, legacyProfiles, saveProfiles, supportsSharedPreferences } =
+    useAgentProfiles(serverId);
   const [request, setRequest] = useState<EditorRequest | null>(null);
+  const sharedProfiles = useSharedProviderProfiles(serverId ?? "", request?.profile.provider ?? "");
 
-  const openCreateFromModel = useCallback((seed: AgentProfileSeed) => {
-    setRequest({ mode: "create", seed });
-  }, []);
+  const openCreateFromModel = useCallback(
+    (seed: AgentProfileSeed) => {
+      setRequest({
+        mode: "create",
+        shared: supportsSharedPreferences ? sharedProfiles.shared : undefined,
+        profile: {
+          id: generateAgentProfileId(),
+          name: seed.name ?? "",
+          provider: seed.provider,
+          ...(seed.modelId ? { model: seed.modelId } : {}),
+        },
+      });
+    },
+    [supportsSharedPreferences, sharedProfiles.shared],
+  );
 
   const openEdit = useCallback(
     (profileId: string) => {
@@ -36,16 +53,30 @@ export function useAgentProfileEditor(serverId: string | null): AgentProfileEdit
       if (!profile) {
         return;
       }
-      setRequest({ mode: "edit", profile });
+      setRequest({
+        mode: "edit",
+        profile,
+        shared: supportsSharedPreferences ? sharedProfiles.shared : undefined,
+      });
     },
-    [profiles],
+    [profiles, supportsSharedPreferences, sharedProfiles.shared],
   );
 
   const close = useCallback(() => setRequest(null), []);
 
   const handleSave = useCallback(
     async (value: AgentProfileValue) => {
-      const current = profiles ?? [];
+      if (supportsSharedPreferences) {
+        if (!request?.shared) throw new Error("Reconnect to load shared profiles before saving.");
+        const id =
+          request.mode === "edit"
+            ? decodeURIComponent(request.profile.id.split("/")[2] ?? request.profile.id)
+            : request.profile.id;
+        await sharedProfiles.saveWorkflow({ ...value, id }, request.shared);
+        setRequest(null);
+        return;
+      }
+      const current = legacyProfiles;
       const editing = request?.mode === "edit" ? request.profile : undefined;
       if (
         editing &&
@@ -61,26 +92,58 @@ export function useAgentProfileEditor(serverId: string | null): AgentProfileEdit
               ? { id: entry.id, isDefault: entry.isDefault, ...value }
               : entry,
           )
-        : [...current, { id: generateAgentProfileId(), ...value }];
+        : [...current, { id: request?.profile.id ?? generateAgentProfileId(), ...value }];
       await saveProfiles(next);
       setRequest(null);
     },
-    [profiles, request, saveProfiles],
+    [legacyProfiles, request, saveProfiles, sharedProfiles, supportsSharedPreferences],
   );
 
+  const handleDelete = useCallback(async () => {
+    if (request?.mode !== "edit") return;
+    if (supportsSharedPreferences) {
+      if (!request.shared) throw new Error("Reconnect to load shared profiles before deleting.");
+      await sharedProfiles.deleteWorkflow(
+        decodeURIComponent(request.profile.id.split("/")[2] ?? request.profile.id),
+        request.shared,
+      );
+      setRequest(null);
+      return;
+    }
+    const current = legacyProfiles;
+    if (
+      JSON.stringify(current.find((entry) => entry.id === request.profile.id)) !==
+      JSON.stringify(request.profile)
+    ) {
+      throw new Error(
+        "This profile changed while you were editing. Close and reopen it before deleting.",
+      );
+    }
+    await saveProfiles(current.filter((entry) => entry.id !== request.profile.id));
+    setRequest(null);
+  }, [legacyProfiles, request, saveProfiles, sharedProfiles, supportsSharedPreferences]);
+  const sharedScope = useMemo(
+    () =>
+      request?.shared
+        ? { kind: "workflow" as const, providerType: sharedProfiles.providerType }
+        : undefined,
+    [request?.shared, sharedProfiles.providerType],
+  );
   const element = useMemo(
-    () => (
-      <AgentProfileEditModal
-        serverId={serverId ?? ""}
-        visible={request !== null}
-        mode={request?.mode ?? "create"}
-        {...(request?.mode === "edit" && request.profile ? { profile: request.profile } : {})}
-        {...(request?.mode === "create" && request.seed ? { seed: request.seed } : {})}
-        onClose={close}
-        onSave={handleSave}
-      />
-    ),
-    [close, handleSave, request, serverId],
+    () =>
+      request ? (
+        <AgentProfileCenteredModal
+          key={request.profile.id}
+          serverId={serverId ?? ""}
+          mode={request.mode}
+          profile={request.profile}
+          sharedScope={sharedScope}
+          onBack={close}
+          onSave={handleSave}
+          onDelete={request.mode === "edit" ? handleDelete : undefined}
+        />
+      ) : null,
+    [close, handleSave, handleDelete, request, serverId, sharedScope],
   );
 
   return useMemo(

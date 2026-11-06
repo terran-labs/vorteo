@@ -1,3 +1,5 @@
+import type { Page } from "@playwright/test";
+import { wsRoutePatternForPort } from "./daemon-port";
 import { fork, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { killProcessTree } from "./spawn-node";
@@ -90,4 +92,43 @@ async function waitForDaemon(
       resolve(message);
     });
   });
+}
+
+/** Hold one real update request so pending-state assertions do not race its error response. */
+export async function holdDaemonUpdateRequest(page: Page, endpoint: string) {
+  const held = Promise.withResolvers<void>();
+  let forward: (() => void) | null = null;
+  let claimed = false;
+  await page.routeWebSocket(wsRoutePatternForPort(new URL(`http://${endpoint}`).port), (socket) => {
+    const server = socket.connectToServer();
+    server.onMessage((message) => socket.send(message));
+    socket.onMessage((message) => {
+      let type: unknown;
+      try {
+        const envelope = JSON.parse(
+          typeof message === "string" ? message : message.toString("utf8"),
+        ) as {
+          type?: unknown;
+          message?: { type?: unknown };
+        };
+        type = envelope.type === "session" ? envelope.message?.type : envelope.type;
+      } catch {
+        server.send(message);
+        return;
+      }
+      if (type === "daemon.update.request" && !claimed) {
+        claimed = true;
+        forward = () => server.send(message);
+        held.resolve();
+      } else server.send(message);
+    });
+  });
+  return {
+    waitUntilHeld: () => held.promise,
+    release: () => {
+      const send = forward;
+      forward = null;
+      send?.();
+    },
+  };
 }

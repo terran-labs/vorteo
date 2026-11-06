@@ -1,3 +1,4 @@
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useMutation } from "@tanstack/react-query";
 import { DraggableList, type DraggableRenderItemInfo } from "@/components/draggable-list";
 import type { DraggableListDragHandleProps } from "@/components/draggable-list.types";
@@ -425,18 +426,8 @@ function ProviderCatalogInstallation({ serverId }: { serverId: string }) {
       }
       await refresh([entry.id]);
     },
-    onError: (error) => {
-      if (isConnectionError(error)) reportActionError(error);
-    },
+    onError: reportActionError,
   });
-  const isRejected = install.isError && !isConnectionError(install.error);
-  const installError = useMemo(
-    () =>
-      isRejected && install.variables
-        ? { providerId: install.variables.id, message: toErrorMessage(install.error) }
-        : null,
-    [isRejected, install.variables, install.error],
-  );
   const handleInstall = useCallback(
     (entry: AcpProviderCatalogItem) => {
       if (!install.isPending) install.mutate(entry);
@@ -448,7 +439,7 @@ function ProviderCatalogInstallation({ serverId }: { serverId: string }) {
     <ProviderCatalogList
       serverId={serverId}
       installingProviderId={installingProviderId}
-      installError={installError}
+      installError={null}
       onInstall={handleInstall}
     />
   );
@@ -599,6 +590,9 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
     [t, supportsCredentialRemoval, client, toast],
   );
 
+  let connectionStatus: string | null = null;
+  if (!hasServer || !isConnected) connectionStatus = t("settings.providers.unavailable");
+  else if (isLoading && !entries) connectionStatus = t("settings.providers.loading");
   return (
     <>
       {!runtimeOnly ? (
@@ -608,13 +602,9 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
           testID="host-page-providers-card"
           style={styles.sectionSpacing}
         >
-          {!hasServer || !isConnected ? (
-            <View style={[settingsStyles.card, styles.emptyCard]}>
-              <Text style={styles.emptyText}>{t("settings.providers.unavailable")}</Text>
-            </View>
-          ) : null}
-          {hasServer && isConnected && isLoading ? <ProviderRowsSkeleton /> : null}
-          {hasServer && isConnected && !isLoading && providerDefinitions.length > 0 ? (
+          <SettingsStatusLine message={connectionStatus} testID="providers-connection-status" />
+          {!entries ? <ProviderRowsSkeleton /> : null}
+          {entries && providerDefinitions.length > 0 ? (
             <ProviderList
               reorder={reorder}
               serverId={serverId}
@@ -632,7 +622,7 @@ export function ProvidersSection({ serverId, runtimeOnly = false }: ProvidersSec
         </SettingsSection>
       ) : null}
 
-      {hasServer && isConnected ? (
+      {hasServer ? (
         <SettingsSection
           title={t("settings.providers.addProvider")}
           testID="host-page-add-provider-card"

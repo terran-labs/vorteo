@@ -32,6 +32,10 @@ export const gotoHome = async (page: Page) => {
 };
 
 export const openSettings = async (page: Page) => {
+  if ((page.viewportSize()?.width ?? 1280) < 600) {
+    const menu = page.getByTestId("menu-button").filter({ visible: true }).first();
+    if (await menu.isVisible()) await menu.click();
+  }
   // Navigate through the real app control so route changes stay aligned with UI behavior.
   // Settings sits in the toolbar when there is room, otherwise in its overflow menu.
   const settingsButton = page.locator('[data-testid="sidebar-settings"]:visible').first();
@@ -43,12 +47,19 @@ export const openSettings = async (page: Page) => {
     .catch(() => false);
   if (!inToolbar && (await overflow.isVisible())) {
     await overflow.click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    const menuSettings = page.getByRole("menuitem", { name: "Settings", exact: true });
+    // Toolbar measurement can move Settings out of More while the menu is opening.
+    await expect(menuSettings.or(settingsButton).first()).toBeVisible();
+    if (await menuSettings.isVisible()) await menuSettings.click();
+    else {
+      await page.keyboard.press("Escape");
+      await settingsButton.click();
+    }
   } else {
     await expect(settingsButton).toBeVisible();
     await settingsButton.click();
   }
-  await expect(page).toHaveURL(/\/settings\/general$/);
+  await expect(page).toHaveURL(/\/settings(?:\/general)?$/);
 };
 
 export const setWorkingDirectory = async (page: Page, directory: string) => {

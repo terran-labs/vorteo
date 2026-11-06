@@ -11,6 +11,8 @@ export const BottomSheetModalProvider = PassThrough;
 export const BottomSheetBackdrop = Stub;
 export const BottomSheetHandle = Stub;
 export const BottomSheetScrollView = PassThrough;
+// Shared web scrollers also import the sheet list even when no native sheet is mounted.
+export const BottomSheetFlatList = PassThrough;
 export const BottomSheetView = PassThrough;
 export const BottomSheetTextInput = Stub;
 

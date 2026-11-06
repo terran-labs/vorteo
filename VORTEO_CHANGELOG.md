@@ -2,6 +2,47 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+- Keep System on the Host selected in Environment tabs, restore password re-add guidance, and expose the restart menu as an accessible button. Update upstream maintenance checks to open System disclosures.
+
+- Let browser bundle warm-up use its configured HTTP deadline instead of stopping at Node’s shorter default.
+
+- Merge the latest main into Settings round 4, keeping custom domain controls under System Advanced and retaining tracked Dev recovery.
+
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Preserve wrong-password errors after clearing the owner-password draft, and reject failed unlock attempts so the dialog keeps its reserved error message.
+- Check metadata picker height against its unclamped content and borders, capped at 400px, while retaining viewport containment and interaction checks.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Keep metadata picker viewport checks independent of the available model count while preserving bounds, width and interaction coverage. Update plugin Back coverage for its Projects & integrations parent.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge the current main-sync revision into the Settings fixes branch, preserving bundled skill management and custom domain support.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge main 26.11.503 into Settings round 4. The new Custom domain card sits in owner-unlocked Installation controls between daemon automation and delivery mode, and its change result and errors use the fixed-height status line.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Keep tracked Dev repair available when Dev cannot answer, and verify session-host upgrade holders in System Details.
+- Restore bundled skill selection and installation controls inside the single Skills library. Navigation coverage includes the Voice section.
+- Merge current main into Settings round 4. Preserve installation release policies and safe approval choices in System updates, live delivery mode in Advanced, recovery reviews in Restart, and service access in environment details.
+
 ## Unreleased - 2026-11-06
 
 ### Fixes
@@ -311,6 +352,8 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 - Merged current `main` into the service principals branch before delivery.
 
 ## Unreleased - 2026-11-03
+
+- Settings now groups eight sections by device and installation scope, keeps search in the top bar, and closes Command Center when Settings opens. Keyboard shortcuts opens from a drill-in row and owner access has a reserved location. Pane headers show the scope of their settings. The search shortcut ignores hidden retained pages. Sidebar scrolling stays put during font changes. Connection checks cover phone bottom sheets and the collapsed workspace menu, and phone Settings toggling preserves the conversation draft. Existing settings links remain valid; desktop and phone browser checks account for the shorter section list and use visible navigation controls to cover header search, overlay dismissal and returning from Settings.
 
 ### Maintenance
 
@@ -868,6 +911,22 @@ Prepared but never tagged; superseded by 26.11.301.
 
 ### Fixes
 
+- Align owner-session fixtures and Settings search with the integrated owner controls. Keep broker and monitor review checks tied to the persistent badge, and verify helper failures use the reserved System status line.
+
+- Restore broker and System browser checks after moving restart controls, status and notices. Standalone System views follow the selected Settings host while installation environments keep their identities, using only the host identity fields selection needs; version checks retain the last observation during reconnects.
+
+- Keep session-host review actions under System details and report their failures in a fixed status line; cover the single attention notice while owner controls are locked.
+
+- Consolidate Host and Dev status, confirmed restart reviews, updates and maintenance details into a System pane with one attention notice. Remove duplicate Host controls and Skills editor, center composer profile edits, preserve reviewed shared-profile revisions, and disable repeated update actions while a request is running.
+- Consolidate Host and Dev status, confirmed restart reviews, updates and maintenance details into a System pane with one attention notice. Remove duplicate Host controls and Skills editor, center composer profile edits, and preserve reviewed shared-profile revisions.
+- Merge the live profile page crash fix and point the owner-lock profile test at expo-router navigation.
+- Resume agents after restart and Release idle agents move from the Host page into a When the Host restarts section on the System page, beside the Restart action. Search finds both, and the existing restart options are unchanged.
+- Voice is its own Settings section, after Agents: dictation, voice mode and the speech models for listening and speaking, configured on the Host. Search finds each of them.
+- Settings opens the System section on its System page: Host and Dev status with one action each, restarts, updates, the release channel and the connection check. The separate update pages and the duplicate app update row in About are gone, and old links to them open System.
+- Keep Retry for failed account choices and offer a separate Provider settings link, keep provider and metadata settings steady through loading and reconnects, and report install and save failures with toasts. Update packaged provider tests for grouped installation rows and ordering.
+- Reset the owner unlock dialog and peek state when access changes, so locking controls again keeps their groups collapsed instead of reopening the password prompt. Expose the disclosure state on web.
+
+- Put installation owner unlock in a centered dialog and gate shared Settings, installation naming, project exclusions, provider sign-in and profile changes until owner access is unlocked. Unlocking enables controls without reloading the page. Keep Unlock reachable beside profile actions before there are unsaved edits. Keep password errors in the unlock dialog and report failed Lock actions beside the initiating control. Preserve sign-in and account creation on unrelated hosts.
 - Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
 
 ## Unreleased - 2026-11-03

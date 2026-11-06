@@ -51,7 +51,7 @@ function OperationalNotices() {
       >
         <View>
           <FloatingCalloutPresentation>
-            <InstallationRestartBanner />
+            <InstallationRestartBanner placement="floating" />
             <SidebarCalloutViewport />
           </FloatingCalloutPresentation>
         </View>
