@@ -1,4 +1,6 @@
 import {
+  type CoordinatorFollowJob,
+  type CoordinatorFollowStatus,
   SNAPSHOT_PART_LABELS,
   UPGRADE_STEP_LABELS,
   type InstallationSnapshot,
@@ -250,4 +252,29 @@ export function upgradeStepRows(upgrade: InstallationUpgrade): UpgradeStepRow[] 
     status: step.status,
     detail: step.detail,
   }));
+}
+
+/**
+ * What the coordinator update card shows: nothing, the offer to move onto the Host release, or
+ * a job waiting, running or recently finished. Older coordinators and installations where the
+ * coordinator already runs the Host release show nothing.
+ */
+export type CoordinatorFollowView =
+  | { kind: "hidden" }
+  | { kind: "offer"; next: string }
+  | { kind: "job"; job: CoordinatorFollowJob };
+
+export function coordinatorFollowView(
+  status: CoordinatorFollowStatus | null | undefined,
+): CoordinatorFollowView {
+  if (status?.job) return { kind: "job", job: status.job };
+  if (status?.available && status.current)
+    return { kind: "offer", next: status.current.hostRelease };
+  return { kind: "hidden" };
+}
+
+/** Polling follows a job closely while it runs; the coordinator restarts during it. */
+export function coordinatorFollowInProgress(status: CoordinatorFollowStatus | null | undefined) {
+  const job = status?.job?.status;
+  return job === "approved" || job === "running";
 }

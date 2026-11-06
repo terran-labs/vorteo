@@ -3,6 +3,7 @@ import { useCallback } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type {
+  CoordinatorFollowJob,
   InstallationUpgrade,
   UpgradeDecision,
   UpgradeStatus,
@@ -17,6 +18,7 @@ import { useVortonTouch } from "@/vorton-touch";
 import type { InstallationClient } from "./client";
 import {
   activeUpgrade,
+  coordinatorFollowView,
   upgradeDecisions,
   releaseVersionLabel,
   supportsUpdatePolicy,
@@ -27,6 +29,8 @@ import {
   type UpgradeStepRow,
 } from "./installation-upgrades-model";
 import {
+  useCoordinatorFollowActions,
+  useCoordinatorFollowStatus,
   useInstallationUpgradeActions,
   useInstallationUpgradeStatus,
 } from "./use-installation-upgrades";
@@ -40,6 +44,103 @@ const STATUS_VARIANTS: Record<InstallationUpgrade["status"], StatusBadgeVariant>
   rejected: "muted",
   cancelled: "muted",
 };
+
+const FOLLOW_STATUS: Record<
+  CoordinatorFollowJob["status"],
+  { label: string; variant: StatusBadgeVariant }
+> = {
+  pending: { label: "Waiting for approval", variant: "warning" },
+  approved: { label: "Approved", variant: "warning" },
+  running: { label: "Restarting", variant: "warning" },
+  succeeded: { label: "Updated", variant: "success" },
+  failed: { label: "Failed", variant: "error" },
+  "rolled-back": { label: "Rolled back", variant: "error" },
+  rejected: { label: "Rejected", variant: "muted" },
+  cancelled: { label: "Cancelled", variant: "muted" },
+};
+
+const FOLLOW_CONFIRMATION =
+  "The coordinator restarts on the Host release and this interface disconnects briefly. If the new coordinator does not answer within 2 minutes, the previous one is restored automatically. Agents keep running.";
+
+/**
+ * Moves the installation coordinator onto the Host release after Host source updates replaced
+ * it. Hidden on older coordinators and when the coordinator already runs the Host release.
+ */
+export function CoordinatorFollowCard({ client }: { client: InstallationClient | null }) {
+  const controlSize = useVortonTouch() ? "md" : "sm";
+  const status = useCoordinatorFollowStatus(client);
+  const { start, decide } = useCoordinatorFollowActions(client);
+  const view = coordinatorFollowView(status.data);
+  const job = view.kind === "job" ? view.job : null;
+  const offer = view.kind === "offer" ? view.next : null;
+  const confirmAndStart = useCallback(async () => {
+    const confirmed = await confirmDialog({
+      title: "Update the coordinator?",
+      message: FOLLOW_CONFIRMATION,
+      confirmLabel: "Update the coordinator",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    if (job?.status === "pending") decide.mutate({ job, decision: "approve" });
+    else if (offer) start.mutate(offer);
+  }, [decide, job, offer, start]);
+  const press = useCallback(() => void confirmAndStart(), [confirmAndStart]);
+  const cancel = useCallback(() => {
+    if (job) decide.mutate({ job, decision: "cancel" });
+  }, [decide, job]);
+  if (!client || view.kind === "hidden") return null;
+  const pending = start.isPending || decide.isPending;
+  const canStart = offer !== null || job?.status === "pending";
+  const canCancel = job?.status === "pending" || job?.status === "approved";
+  const error = start.error ?? decide.error;
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="coordinator-follow-card">
+      <View style={styles.header}>
+        <Text style={settingsStyles.rowTitle}>Installation coordinator</Text>
+        {job ? (
+          <StatusBadge
+            label={FOLLOW_STATUS[job.status].label}
+            variant={FOLLOW_STATUS[job.status].variant}
+          />
+        ) : null}
+      </View>
+      <Text style={styles.text}>
+        {job ? job.detail : "The coordinator runs an older release than the Host."}
+      </Text>
+      {canStart || canCancel ? (
+        <View style={styles.actions}>
+          {canStart ? (
+            <Button
+              size={controlSize}
+              onPress={press}
+              loading={pending}
+              disabled={pending}
+              testID="coordinator-follow-start"
+            >
+              Update the coordinator
+            </Button>
+          ) : null}
+          {canCancel ? (
+            <Button
+              variant="outline"
+              size={controlSize}
+              onPress={cancel}
+              disabled={pending}
+              testID="coordinator-follow-cancel"
+            >
+              Cancel
+            </Button>
+          ) : null}
+        </View>
+      ) : null}
+      {error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {toErrorMessage(error)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
 
 const STEP_STATUS_LABELS: Record<UpgradeStepRow["status"], string> = {
   pending: "Waiting",

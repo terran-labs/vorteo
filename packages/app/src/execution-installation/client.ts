@@ -52,11 +52,16 @@ import {
 } from "@getpaseo/protocol/instruction-requests";
 
 import {
+  CoordinatorFollowJobSchema,
+  CoordinatorFollowStatusSchema,
   InstallationSnapshotSchema,
   InstallationUpgradeSchema,
   SnapshotListSchema,
   SnapshotRestoreStatusSchema,
   UpgradeStatusSchema,
+  type CoordinatorFollowDecision,
+  type CoordinatorFollowJob,
+  type CoordinatorFollowStatus,
   type InstallationSnapshot,
   type InstallationUpgrade,
   type ReleaseTag,
@@ -180,6 +185,8 @@ const SNAPSHOT_READER = tolerant(InstallationSnapshotSchema);
 const SNAPSHOT_RESTORE_READER = tolerant(SnapshotRestoreStatusSchema);
 const UPGRADE_STATUS_READER = tolerant(UpgradeStatusSchema);
 const UPGRADE_READER = tolerant(InstallationUpgradeSchema);
+const COORDINATOR_FOLLOW_STATUS_READER = tolerant(CoordinatorFollowStatusSchema);
+const COORDINATOR_FOLLOW_READER = tolerant(CoordinatorFollowJobSchema);
 
 export class InstallationClient {
   private password: string | null = null;
@@ -830,6 +837,42 @@ export class InstallationClient {
     return result;
   }
 
+  /** Null when the coordinator cannot move itself onto the Host release, so the card hides. */
+  async coordinatorFollowStatus(): Promise<CoordinatorFollowStatus | null> {
+    try {
+      return COORDINATOR_FOLLOW_STATUS_READER.parse(
+        await this.request("coordinator-follow/query", {}),
+      );
+    } catch (error) {
+      // COMPAT(coordinatorFollow): older coordinators answer 404 for these routes.
+      if (error instanceof InstallationRouteUnavailable) return null;
+      throw error;
+    }
+  }
+
+  /** Creates the update for the reviewed Host release, then approves it. */
+  async updateCoordinator(next: string): Promise<CoordinatorFollowJob> {
+    const job = COORDINATOR_FOLLOW_READER.parse(await this.request("coordinator-follow", { next }));
+    if (job.next !== next)
+      throw new Error("Coordinator update names another release. Refresh before another action.");
+    return this.decideCoordinatorFollow(job, "approve");
+  }
+
+  async decideCoordinatorFollow(
+    job: CoordinatorFollowJob,
+    decision: CoordinatorFollowDecision["decision"],
+  ): Promise<CoordinatorFollowJob> {
+    const result = COORDINATOR_FOLLOW_READER.parse(
+      await this.request(`coordinator-follow/${job.id}/decision`, {
+        revision: job.revision,
+        decision,
+      }),
+    );
+    if (result.id !== job.id)
+      throw new Error("Coordinator update receipt changed. Refresh before another action.");
+    return result;
+  }
+
   /** Saves the update policy and re-checks. Call only when the status reports `policy`. */
   async changeUpdatePolicy(change: UpdatePolicyChange): Promise<UpgradeStatus> {
     return UPGRADE_STATUS_READER.parse(await this.request("update-policy", change));
@@ -879,6 +922,7 @@ export async function requestInstallationOwner(
       "instruction-requests/query",
       "snapshots/query",
       "upgrades/query",
+      "coordinator-follow/query",
       "claude/oauth/read",
       "claude/oauth/upgrade/read",
     ].includes(path) &&

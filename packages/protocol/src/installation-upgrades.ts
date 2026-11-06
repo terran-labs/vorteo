@@ -238,6 +238,69 @@ export const UpgradeDecisionSchema = z.strictObject({
 export type UpgradeDecision = z.infer<typeof UpgradeDecisionSchema>;
 
 /**
+ * Moves an installer-layout coordinator onto the Host's selected release, which Host source
+ * updates replace without touching the coordinator. Served under
+ * /api/installation/owner/coordinator-follow; older coordinators return 404.
+ */
+export const CoordinatorFollowJobSchema = z.object({
+  id: z.string().uuid(),
+  /** Changes on every transition; decisions must name the revision they reviewed. */
+  revision: z.string().uuid(),
+  createdAt: z.string().datetime(),
+  status: z.enum([
+    "pending",
+    "approved",
+    "running",
+    "succeeded",
+    "failed",
+    "rolled-back",
+    "rejected",
+    "cancelled",
+  ]),
+  detail: z.string(),
+  /** The Host release the owner reviewed. The coordinator moves to exactly this release. */
+  next: z.string(),
+  /** The release the coordinator link selected when the replacement started. */
+  previous: z.string().optional(),
+  approvedAt: z.string().datetime().optional(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+});
+export type CoordinatorFollowJob = z.infer<typeof CoordinatorFollowJobSchema>;
+
+/** Reply to POST /api/installation/owner/coordinator-follow/query. */
+export const CoordinatorFollowStatusSchema = z.object({
+  /** True when the coordinator can move onto the Host release now. */
+  available: z.boolean(),
+  /** Why it cannot, or what differs. */
+  detail: z.string(),
+  current: z
+    .object({
+      /** The release the coordinator service link selects. */
+      coordinatorRelease: z.string(),
+      /** The release the running coordinator process was started from. */
+      runningRelease: z.string(),
+      /** The Host release selected now. */
+      hostRelease: z.string(),
+    })
+    .nullable(),
+  /** The job waiting or running, or the newest one that finished recently. */
+  job: CoordinatorFollowJobSchema.nullable(),
+});
+export type CoordinatorFollowStatus = z.infer<typeof CoordinatorFollowStatusSchema>;
+
+/** POST /api/installation/owner/coordinator-follow. `next` repeats the reviewed Host release. */
+export const CoordinatorFollowRequestSchema = z.strictObject({ next: z.string().startsWith("/") });
+export type CoordinatorFollowRequest = z.infer<typeof CoordinatorFollowRequestSchema>;
+
+/** POST /api/installation/owner/coordinator-follow/:id/decision. */
+export const CoordinatorFollowDecisionSchema = z.strictObject({
+  revision: z.string().uuid(),
+  decision: z.enum(["approve", "reject", "cancel"]),
+});
+export type CoordinatorFollowDecision = z.infer<typeof CoordinatorFollowDecisionSchema>;
+
+/**
  * GET /api/installation/update-status, read-only for Host and Dev agents such as the Mechanic
  * and Builds. Older coordinators return 404.
  */
@@ -246,5 +309,11 @@ export const AgentUpdateStatusSchema = z.object({
   check: UpdateCheckSchema,
   /** The upgrade waiting for approval or running, without coordinator-private state. */
   active: InstallationUpgradeSchema.nullable(),
+  /** Absent from coordinators without the coordinator replacement. Agents never decide it. */
+  coordinatorFollow: CoordinatorFollowStatusSchema.pick({
+    available: true,
+    detail: true,
+    job: true,
+  }).optional(),
 });
 export type AgentUpdateStatus = z.infer<typeof AgentUpdateStatusSchema>;

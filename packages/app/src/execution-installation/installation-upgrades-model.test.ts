@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
+  CoordinatorFollowStatus,
   InstallationSnapshot,
   InstallationUpgrade,
   SnapshotList,
@@ -7,6 +8,7 @@ import type {
 } from "@getpaseo/protocol/installation-upgrades";
 import {
   activeUpgrade,
+  coordinatorFollowView,
   installationUpdateEntry,
   latestFinishedUpgrade,
   pendingUpgradeDecisions,
@@ -212,5 +214,41 @@ describe("release upgrades", () => {
         detail: "20261030T120000Z",
       },
     ]);
+  });
+});
+
+describe("coordinatorFollowView", () => {
+  const current = {
+    coordinatorRelease: "/releases/old",
+    runningRelease: "/releases/old",
+    hostRelease: "/releases/new",
+  };
+  const job: NonNullable<CoordinatorFollowStatus["job"]> = {
+    id: "6f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    revision: "7f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    createdAt: "2026-11-05T12:00:00.000Z",
+    status: "running",
+    detail: "",
+    next: "/releases/new",
+  };
+  it.each([
+    { name: "an older coordinator", status: null, kind: "hidden" },
+    {
+      name: "a coordinator on the Host release",
+      status: { available: false, detail: "", current, job: null },
+      kind: "hidden",
+    },
+    {
+      name: "a coordinator behind the Host",
+      status: { available: true, detail: "", current, job: null },
+      kind: "offer",
+    },
+    {
+      name: "a running job, even while unavailable",
+      status: { available: false, detail: "", current, job },
+      kind: "job",
+    },
+  ])("$name shows $kind", ({ status, kind }) => {
+    expect(coordinatorFollowView(status).kind).toBe(kind);
   });
 });

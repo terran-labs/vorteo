@@ -3,6 +3,8 @@ import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js
 import { coordinatorDispatchStatuses } from "./coordinator-bootstrap-dispatch-status.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
+  CoordinatorFollowDecisionSchema,
+  CoordinatorFollowRequestSchema,
   SnapshotRestoreRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
@@ -589,10 +591,13 @@ export function createInstallationServer(
     config,
     restarts,
     logger,
-    conflict: () =>
-      releaseRuntime?.upgrades?.active()
-        ? "Wait for the release upgrade to finish before a lab self-update."
-        : null,
+    conflict: () => {
+      if (releaseRuntime?.upgrades?.active())
+        return "Wait for the release upgrade to finish before a lab self-update.";
+      if (releaseRuntime?.coordinatorFollow.dispatching())
+        return "Wait for the coordinator update to finish before a lab self-update.";
+      return null;
+    },
   });
   const startupReleased = () => {
     if (startupFence && !startupFence.released()) return false;
@@ -682,6 +687,9 @@ export function createInstallationServer(
         void releaseRuntime?.upgrades
           ?.drain()
           .catch((error) => logger.error({ err: error }, "Installation upgrade failed"));
+        // Moving the coordinator onto the Host release restarts this process; the next one
+        // resumes the job from its journal here.
+        releaseRuntime?.coordinatorFollow.drain();
         // Lab builds run for minutes; like upgrades they advance beside the drain.
         void labRuntime.updates
           .drain()
@@ -2673,6 +2681,37 @@ export function createInstallationServer(
     res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
     void drainRestarts();
   });
+  app.post("/api/installation/owner/coordinator-follow/query", (_req, res) =>
+    res.json(requireReleaseRuntime().coordinatorFollow.status()),
+  );
+  // Lab self-updates also replace the coordinator release; one replacement runs at a time.
+  const refuseDuringLabUpdate = async () => {
+    if (await labRuntime.updates.active())
+      throw new RestartRequestError(
+        "Wait for the lab self-update to finish before updating the coordinator.",
+      );
+  };
+  app.post("/api/installation/owner/coordinator-follow", (req, res, next) => {
+    const request = CoordinatorFollowRequestSchema.parse(req.body);
+    void refuseDuringLabUpdate()
+      .then(() => requireReleaseRuntime().coordinatorFollow.request(request.next))
+      .then((job) => res.status(201).json(job), next);
+  });
+  app.post("/api/installation/owner/coordinator-follow/:id/decision", (req, res, next) => {
+    const decision = CoordinatorFollowDecisionSchema.parse(req.body);
+    void (decision.decision === "approve" ? refuseDuringLabUpdate() : Promise.resolve())
+      .then(() =>
+        requireReleaseRuntime().coordinatorFollow.decide(
+          req.params.id,
+          decision.revision,
+          decision.decision,
+        ),
+      )
+      .then((job) => {
+        void drainRestarts();
+        return res.json(job);
+      }, next);
+  });
   const requireUpdates = () => {
     const releaseUpdates = requireReleaseRuntime().updates;
     if (!releaseUpdates)
@@ -2699,7 +2738,10 @@ export function createInstallationServer(
   });
   // Read-only for agents: the Mechanic reports stale offers and Builds plans drains from it.
   app.get("/api/installation/update-status", authenticateUpdate, (_req, res) => {
-    res.json(requireUpdates().agentStatus());
+    res.json({
+      ...requireUpdates().agentStatus(),
+      coordinatorFollow: requireReleaseRuntime().coordinatorFollow.agentStatus(),
+    });
   });
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({

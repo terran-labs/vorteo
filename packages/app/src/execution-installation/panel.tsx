@@ -90,7 +90,7 @@ import {
 import { installationHasDev, readExecutionInstallation } from "./policy";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
-import { InstallationUpgradeCard } from "./installation-upgrade-card";
+import { CoordinatorFollowCard, InstallationUpgradeCard } from "./installation-upgrade-card";
 import {
   InstallationPanelModel,
   restartRequestSummary,
@@ -575,6 +575,7 @@ function InstallationPanel({
             ) : null}
             <SafetySnapshotsCard client={panelClient} />
             <InstallationUpgradeCard client={panelClient} />
+            <CoordinatorFollowCard client={panelClient} />
             {hasDev ? (
               <View style={[styles.cardBody, settingsStyles.rowBorder]}>
                 <View style={styles.requestHeader}>

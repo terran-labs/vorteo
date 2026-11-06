@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): added the owner-approved coordinator update, which moves an installer-layout coordinator onto the selected Host release through the release upgrade's coordinator swap, with its own journal, routes, Installation controls card and read-only agent summary. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-06): snapshots run one at a time and fail when their own files go missing; only a source file that is really gone is skipped. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-06): snapshot capture is asynchronous, skips entries that vanish mid-copy and clones files where supported; restore is unchanged. README overview and onboarding are unchanged.
