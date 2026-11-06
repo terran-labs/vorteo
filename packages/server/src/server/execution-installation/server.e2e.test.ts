@@ -59,7 +59,16 @@ import type {
   ExecutionEnvironmentKind,
 } from "@getpaseo/protocol/execution-installation";
 import type { InstallationConfig } from "./config.js";
-import { delegateToContainer, type DelegationClient } from "./delegation.js";
+import {
+  ContainerAdmissionRefused,
+  delegateToContainer,
+  type DelegationClient,
+} from "./delegation.js";
+import {
+  INSTALLATION_SETTINGS_ADMISSION_TIMEOUT_MS,
+  InstallationSettingsAdmissionError,
+} from "./settings/admission.js";
+import { REQUEST_TIMEOUT_MS } from "../../../../../scripts/installation-agent.mjs";
 import {
   RestartJobSchema,
   SourceBatchSchema,
@@ -728,6 +737,42 @@ test("delegated creation rejects an unknown workspace before starting a worker",
     }),
   ).rejects.toThrow("Container workspace was not found");
   expect(createAgent).not.toHaveBeenCalled();
+});
+
+test("delegated creation relays only Dev's admission cause, inside the Host deadline", async () => {
+  // Dev must time out and report before the Host client abandons the request.
+  expect(REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * INSTALLATION_SETTINGS_ADMISSION_TIMEOUT_MS);
+  const admission = new InstallationSettingsAdmissionError(
+    "Installation settings authority at https://coordinator.example:8443 did not respond within 5 seconds.",
+  );
+  const other = new Error("provider rejected the request");
+  const createAgent = vi
+    .fn()
+    // The client rethrows Dev's reported failure with its creation error code.
+    .mockRejectedValueOnce(Object.assign(new Error(admission.message), { code: admission.code }))
+    .mockRejectedValueOnce(other);
+  const client = {
+    fetchWorkspaces: async () => ({
+      entries: [{ id: "workspace-id", workspaceDirectory: "/worktrees/worker" }],
+      pageInfo: { hasMore: false, nextCursor: null },
+    }),
+    createAgent,
+  } as unknown as DelegationClient;
+  const request = {
+    operation: "create" as const,
+    idempotencyKey: randomUUID(),
+    provider: "codex",
+    workspaceId: "workspace-id",
+    title: "Worker",
+    initialPrompt: "Inspect the workspace",
+  };
+  const refused = delegateToContainer(client, request);
+  await expect(refused).rejects.toBeInstanceOf(ContainerAdmissionRefused);
+  await expect(refused).rejects.toThrow(
+    "Dev could not admit the agent: Installation settings authority at https://coordinator.example:8443",
+  );
+  // Arbitrary Dev errors stay behind the generic 500 rather than reaching the owner.
+  await expect(delegateToContainer(client, request)).rejects.toBe(other);
 });
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).toReversed()) await cleanup();

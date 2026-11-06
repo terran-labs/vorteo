@@ -1,13 +1,8 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
-import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { openSettings } from "../support/helpers/app";
 import { addConnectedHostAndReload } from "../support/helpers/hosts";
-import {
-  selectSettingsHost,
-  revealSettingsLocation,
-  clickSettingsBackToWorkspace,
-} from "../support/helpers/settings";
-import { openSidebarHelpMenu } from "../support/helpers/sidebar";
+import { selectSettingsHost, revealSettingsLocation } from "../support/helpers/settings";
 import { getServerId } from "../support/helpers/server-id";
 import {
   startRestartableHostDaemon,
@@ -37,19 +32,21 @@ test("System details show the restarted Host version without reloading", async (
   hostDaemon = host;
   const otherHostVersion =
     await test.step("the connected host reports its current daemon version", async () => {
-      await gotoAppShell(page);
+      // Seed this origin before loading the app once with both Hosts.
+      await page.goto("/", { waitUntil: "commit" });
       await addConnectedHostAndReload(page, {
         serverId: host.serverId,
         label: HOST_LABEL,
         port: host.port,
       });
-      const version = await readHelpHostVersion(page, getServerId());
-      await expectHelpHostVersion(page, host.serverId, PREVIOUS_VERSION);
-      await openHostPage(page, host);
+      await openSettings(page);
+      const versions = await readConnectedHostVersions(page, [getServerId(), host.serverId]);
+      expect(versions[host.serverId]).toContain(`v${PREVIOUS_VERSION}`);
+      await showSystemHostDetails(page, host);
       await expect(page.getByTestId("system-pane").filter({ visible: true })).toBeVisible();
       await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toBeVisible();
       await markPageForNoReloadCheck(page, NO_RELOAD_MARKER);
-      return version;
+      return versions[getServerId()];
     });
 
   await test.step("the last known version remains in System details when the Host stops", async () => {
@@ -70,29 +67,29 @@ test("System details show the restarted Host version without reloading", async (
   await test.step("System details follow the new version", async () => {
     await expect(hostVersionBadge(page, UPDATED_VERSION)).toBeVisible({ timeout: 30_000 });
     await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toHaveCount(0);
-    await clickSettingsBackToWorkspace(page);
-    await expectHelpHostVersion(page, host.serverId, UPDATED_VERSION);
-    expect(await readHelpHostVersion(page, getServerId())).toBe(otherHostVersion);
+    const versions = await readConnectedHostVersions(page, [host.serverId, getServerId()]);
+    expect(versions[host.serverId]).toContain(`v${UPDATED_VERSION}`);
+    expect(versions[getServerId()]).toBe(otherHostVersion);
     await expectNoReloadSinceMarker(page);
   });
 });
 
-async function readHelpHostVersion(page: Page, serverId: string): Promise<string> {
-  await openSidebarHelpMenu(page);
-  const row = page.getByTestId(`sidebar-help-host-version-${serverId}`);
-  await expect(row).toBeVisible();
-  const text = await row.innerText();
-  await page.keyboard.press("Escape");
-  return text;
+/** Read both rows in the open Settings page; closing a former Help menu is no longer needed. */
+async function readConnectedHostVersions(
+  page: Page,
+  serverIds: readonly string[],
+): Promise<Record<string, string>> {
+  await revealSettingsLocation(page, "general.hosts");
+  const versions: Record<string, string> = {};
+  for (const serverId of serverIds) {
+    const row = page.getByTestId(`settings-host-version-${serverId}`);
+    await expect(row).toBeVisible();
+    versions[serverId] = await row.innerText();
+  }
+  return versions;
 }
 
-async function expectHelpHostVersion(page: Page, serverId: string, version: string): Promise<void> {
-  const text = await readHelpHostVersion(page, serverId);
-  expect(text).toContain(`v${version}`);
-}
-
-async function openHostPage(page: Page, host: RestartableHostDaemon): Promise<void> {
-  await openSettings(page);
+async function showSystemHostDetails(page: Page, host: RestartableHostDaemon): Promise<void> {
   await selectSettingsHost(page, host.serverId);
   await revealSettingsLocation(page, "system.overview");
   await page.getByRole("button", { name: "Host Details", exact: true }).click();

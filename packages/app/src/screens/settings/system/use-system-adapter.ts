@@ -52,7 +52,7 @@ export function useSystemAdapter(serverId?: string) {
   });
   const hostInfo = useSessionStore((store) => store.sessions[hostId ?? ""]?.serverInfo);
   const devInfo = useSessionStore((store) => store.sessions[devId ?? ""]?.serverInfo);
-  const [updating, setUpdating] = useState<string | null>(null);
+  const [updating, setUpdating] = useState<{ serverId: string; action: SystemAction } | null>(null);
   const toast = useToast();
   const previousNotice = useRef(state?.notice);
   useEffect(() => {
@@ -95,7 +95,7 @@ export function useSystemAdapter(serverId?: string) {
             updateStandalone: async (selectedId) => {
               const runtime = getHostRuntimeStore().getClient(selectedId);
               if (!runtime) throw new Error("Reconnect before updating.");
-              setUpdating(selectedId);
+              setUpdating({ serverId: selectedId, action });
               await updateDaemonFromSettings(selectedId, {
                 updateDaemon: () => runtime.updateDaemon(`settings_update_${selectedId}`),
                 getStatus: async () => ({
@@ -109,7 +109,10 @@ export function useSystemAdapter(serverId?: string) {
           },
         );
       } catch (error) {
-        toast.error(toErrorMessage(error));
+        const detail = toErrorMessage(error);
+        toast.error(
+          !installation && action.kind === "update" ? `Could not update Host: ${detail}` : detail,
+        );
       } finally {
         setUpdating(null);
       }
@@ -136,6 +139,7 @@ export function useSystemAdapter(serverId?: string) {
     client,
     upgrades,
     runAction,
+    pendingUpdate: updating,
     busy: Boolean(
       state?.busy || upgradeActions.create.isPending || upgradeActions.decide.isPending || updating,
     ),
@@ -149,7 +153,7 @@ export function useSystemAdapter(serverId?: string) {
       offer,
       standaloneVersion: version(hostInfo),
       installation,
-      updating,
+      updating: updating?.serverId ?? null,
     }),
   };
 }

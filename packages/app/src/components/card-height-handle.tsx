@@ -3,6 +3,7 @@ import { View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { ReduceMotion, useAnimatedStyle, withTiming } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
+import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 import { usePointerResize } from "@/components/use-pointer-resize";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
@@ -43,7 +44,6 @@ export function CardHeightHandle({
   testID: string;
 }) {
   const finePointer = useHasFinePointer();
-  const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
   const lastPress = useRef(0);
   const start = useRef(height);
@@ -99,11 +99,9 @@ export function CardHeightHandle({
     const reset = Gesture.Tap().runOnJS(true).numberOfTaps(2).onEnd(onReset);
     return Gesture.Race(pan, reset);
   }, [clamp, height, onCommit, onPreview, onReset]);
-  const enter = useCallback(() => setHovered(true), []);
-  const leave = useCallback(() => setHovered(false), []);
   const divider = placement === "divider";
-  let opacity = hovered && finePointer ? 0.18 : 0;
-  if (pressed) opacity = 0.34;
+  // Hover is a separate CSS layer so the browser clears it when a reset moves the handle away.
+  const opacity = pressed ? 0.34 : 0;
   const highlightStyle = useAnimatedStyle(
     () => ({ opacity: withTiming(opacity, { duration: 180, reduceMotion: ReduceMotion.System }) }),
     [opacity],
@@ -120,12 +118,21 @@ export function CardHeightHandle({
         divider ? styles.dividerTarget : styles.target,
         finePointer ? styles.pointerTarget : styles.touchTarget,
         divider && !finePointer && styles.touchDividerTarget,
+        styles.hoverGroup,
         webCursor,
       ]}
       onPointerDown={isWeb ? onPointerDown : undefined}
-      onPointerEnter={enter}
-      onPointerLeave={leave}
     >
+      {finePointer ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.hoverHighlight,
+            divider ? styles.dividerHoverHighlight : styles.bottomHoverHighlight,
+            !pressed && styles.hoverHighlightVisible,
+          ]}
+        />
+      ) : null}
       <Animated.View
         pointerEvents="none"
         style={[styles.highlight, divider && styles.dividerHighlight, highlightStyle]}
@@ -176,6 +183,25 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 999,
     backgroundColor: theme.colors.foreground,
   },
+  hoverGroup: hoverGroup("card-height-handle"),
+  // Same line as `highlight`, absolutely placed inside the 8px pointer target.
+  hoverHighlight: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: theme.colors.foreground,
+    opacity: 0,
+    _web: { transition: "opacity 180ms" },
+  },
+  bottomHoverHighlight: { bottom: 1 },
+  dividerHoverHighlight: { top: 3 },
+  hoverHighlightVisible: groupHoverStyle(
+    "card-height-handle",
+    { opacity: 0.18 },
+    { transition: "opacity 180ms" },
+  ),
 }));
 
 /**

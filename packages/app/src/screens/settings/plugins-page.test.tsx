@@ -99,13 +99,14 @@ vi.mock("react-native-reanimated", () => ({
 
 vi.mock("@gorhom/bottom-sheet", async () => {
   const ReactModule = await vi.importActual<typeof import("react")>("react");
-  const { ScrollView, TextInput } =
+  const { FlatList, ScrollView, TextInput } =
     await vi.importActual<typeof import("react-native")>("react-native");
   return {
     BottomSheetBackdrop: () => null,
     BottomSheetHandle: () => null,
     BottomSheetModal: ReactModule.forwardRef(() => null),
     BottomSheetScrollView: ScrollView,
+    BottomSheetFlatList: FlatList,
     BottomSheetTextInput: TextInput,
     useBottomSheetInternal: () => null,
   };

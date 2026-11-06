@@ -1,3 +1,10 @@
+import { saveVoiceSettings } from "./save-voice-settings";
+import { readExecutionInstallation } from "@/execution-installation/policy";
+import {
+  useProviderSecrets,
+  describeSecretDelivery,
+} from "@/execution-installation/provider-secrets";
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { useCallback, useState } from "react";
 import { View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -34,6 +41,7 @@ interface OpenSheet {
   siteId: SpeechSiteId;
   visible: boolean;
   openCount: number;
+  secretRevisions: ReadonlyMap<string, number | undefined>;
 }
 
 function errorMessage(error: unknown): string {
@@ -48,15 +56,25 @@ export function HostVoicePage({ serverId }: { serverId: string }) {
   const { config, patchConfig } = useDaemonConfig(serverId);
   const localModels = useLocalSpeechModels(serverId);
   const { refresh: refreshModels } = localModels;
+  const shared = readExecutionInstallation() !== null;
+  const secrets = useProviderSecrets(shared, "speech");
+  const { saveSpeechSecrets } = secrets;
   const [sheet, setSheet] = useState<OpenSheet | null>(null);
 
   // Selecting a model changes which models are in use, so the catalog is re-read after a save.
   const save = useCallback<SavePatch>(
     async (patch) => {
-      await patchConfig({ features: patch });
+      await saveVoiceSettings(patch, {
+        shared,
+        revisions:
+          sheet?.secretRevisions ??
+          new Map([...secrets.byDefinition].map(([id, status]) => [id, status.revision])),
+        local: (features) => patchConfig({ features }),
+        credentials: saveSpeechSecrets,
+      });
       refreshModels();
     },
-    [patchConfig, refreshModels],
+    [patchConfig, refreshModels, shared, secrets.byDefinition, saveSpeechSecrets, sheet],
   );
   const saveSwitch = useCallback(
     (patch: SpeechSettingsPatch) => {
@@ -74,13 +92,21 @@ export function HostVoicePage({ serverId }: { serverId: string }) {
     (enabled: boolean) => saveSwitch({ voiceMode: { enabled } }),
     [saveSwitch],
   );
-  const openSheet = useCallback((siteId: SpeechSiteId) => {
-    setSheet((current) => ({
-      siteId,
-      visible: true,
-      openCount: (current?.openCount ?? 0) + 1,
-    }));
-  }, []);
+  const openSheet = useCallback(
+    (siteId: SpeechSiteId) => {
+      // Keep the version the editor opened against, even when background status polls advance.
+      const secretRevisions = new Map(
+        [...secrets.byDefinition].map(([id, status]) => [id, status.revision]),
+      );
+      setSheet((current) => ({
+        siteId,
+        visible: true,
+        openCount: (current?.openCount ?? 0) + 1,
+        secretRevisions,
+      }));
+    },
+    [secrets.byDefinition],
+  );
   const closeSheet = useCallback(() => {
     setSheet((current) => (current ? { ...current, visible: false } : null));
   }, []);
@@ -116,8 +142,19 @@ export function HostVoicePage({ serverId }: { serverId: string }) {
   );
   const sheetSite = sheet ? getSpeechSite(features, sheet.siteId) : null;
 
+  const secretStatus = [...secrets.byDefinition.values()]
+    .map((status) => {
+      if (status.conflicts.length)
+        return `${siteLabel(t, status.definitionId as SpeechSiteId)}: Different Voice credentials were found. Save the API key and base URL once to use them everywhere.`;
+      return describeSecretDelivery(status);
+    })
+    .filter(Boolean)
+    .join(" ");
+  let deliveryStatus: string | null = null;
+  if (shared) deliveryStatus = secrets.error ? errorMessage(secrets.error) : secretStatus;
   return (
     <View testID="voice-settings">
+      <SettingsStatusLine message={deliveryStatus} testID="voice-secret-status" />
       <SettingsSection title={t("settings.voice.dictation.title")} testID="voice-dictation">
         <SettingsCard>
           <FeatureSwitchRow

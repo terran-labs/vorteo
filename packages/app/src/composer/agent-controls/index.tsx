@@ -103,6 +103,7 @@ import {
 import { buildSettingsHostSectionRoute, buildSettingsSectionRoute } from "@/utils/host-routes";
 import { readExecutionInstallation } from "@/execution-installation/policy";
 import { PresetControls, activePresetPicker } from "@/agent-profiles/preset-controls";
+import { hoverStyle } from "@/styles/hover";
 import {
   clearProfilePickerRequest,
   useIsProfilePickerRequested,
@@ -348,9 +349,10 @@ function makeBadgePressableStyle(
   disabled: boolean,
   isOpen: boolean,
 ) {
-  return ({ pressed, hovered }: PressableStateCallbackType) => [
+  return ({ pressed }: PressableStateCallbackType) => [
     baseStyle,
-    hovered && styles.modeBadgeHovered,
+    // CSS hover outranks the pressed and open fills, so leave it out while either shows.
+    !pressed && !isOpen && !disabled && styles.modeBadgeHoverable,
     (pressed || isOpen) && styles.modeBadgePressed,
     disabled && disabledStyle,
   ];
@@ -2129,9 +2131,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: "transparent",
     borderRadius: theme.borderRadius.full,
   },
-  modeBadgeHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  modeBadgeHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   modeBadgePressed: {
     backgroundColor: theme.colors.surface0,
   },

@@ -1,5 +1,5 @@
 import { Text } from "react-native";
-import { forwardRef, useCallback, useMemo, useState, type ComponentProps } from "react";
+import { forwardRef, useMemo, type ComponentProps } from "react";
 import type {
   CodeBlockRendererProps,
   LinkRendererProps,
@@ -10,6 +10,7 @@ import { useFileLink } from "@/assistant-file-links";
 import { useForgeShorthand } from "@/git/forge-shorthand";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
+import { CAN_HOVER } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import { MermaidFence } from "./fence/mermaid";
 import { markdownLinkSource } from "./source";
@@ -28,8 +29,20 @@ function WebCodeBlock({ code, language }: CodeBlockRendererProps) {
   return <ThemedCodeBlock code={code} language={language} uniProps={codeStyle} />;
 }
 
-// The library styles links inline, so a stylesheet :hover rule cannot underline them.
-const LINK_HOVER_STYLE = { textDecoration: "underline" } as const;
+// Browser-owned hover underline, so a link that reflows out from under a resting cursor drops it.
+// The library sets `textDecoration` inline, so the rule needs `!important` to outrank it.
+const LINK_HOVER_CLASS = "vorteo-markdown-link";
+const LINK_HOVER_STYLE_ID = "vorteo-markdown-link-hover";
+const LINK_HOVER_CSS = `.${LINK_HOVER_CLASS}:hover { text-decoration: underline !important; }`;
+function ensureLinkHoverRule() {
+  if (!CAN_HOVER || typeof document === "undefined") return;
+  if (document.getElementById(LINK_HOVER_STYLE_ID)) return;
+  const styleElement = document.createElement("style");
+  styleElement.id = LINK_HOVER_STYLE_ID;
+  styleElement.textContent = LINK_HOVER_CSS;
+  document.head.appendChild(styleElement);
+}
+ensureLinkHoverRule();
 
 function WebLink({ link, anchorProps, children }: LinkRendererProps) {
   const forgeShorthand = useForgeShorthand();
@@ -39,24 +52,16 @@ function WebLink({ link, anchorProps, children }: LinkRendererProps) {
     forgeUrl ? markdownLinkSource(forgeUrl) : markdownLinkSource(link.url, link.sourceType),
   );
   const tooltip = forgeUrl ?? tooltipPath;
-  const [hovered, setHovered] = useState(false);
-  const handleMouseEnter = useCallback(() => setHovered(true), []);
-  const handleMouseLeave = useCallback(() => setHovered(false), []);
   const anchorStyle = useMemo(
-    () => ({
-      ...anchorProps.style,
-      overflowWrap: "anywhere" as const,
-      ...(hovered ? LINK_HOVER_STYLE : null),
-    }),
-    [anchorProps.style, hovered],
+    () => ({ ...anchorProps.style, overflowWrap: "anywhere" as const }),
+    [anchorProps.style],
   );
   const anchor = (
     <a
       {...anchorProps}
       href={forgeUrl ?? anchorProps.href}
+      className={LINK_HOVER_CLASS}
       style={anchorStyle}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
       {children}
     </a>

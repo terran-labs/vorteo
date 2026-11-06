@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import Animated, {
   cancelAnimation,
   Easing,

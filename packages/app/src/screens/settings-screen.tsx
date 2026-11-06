@@ -6,6 +6,7 @@ import { useAddHost } from "@/hosts/add-host";
 import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
+import { HelpSection } from "@/screens/settings/general/help-section";
 import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
 import { SystemPane } from "@/screens/settings/system/system-pane";
 import { InstallationRestartBanner, InstallationControls } from "@/execution-installation/panel";
@@ -18,7 +19,8 @@ import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout"
 import { usePanelStore } from "@/stores/panel-store";
 import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
-import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -77,6 +79,7 @@ import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { openChangelog } from "@/changelog";
 import { useAppDiagnosticStore } from "@/diagnostics/store";
 import { settingsStyles } from "@/styles/settings";
+import { hoverStyle } from "@/styles/hover";
 import { floatingPanelStyles, FLOATING_PANEL_INSET } from "@/styles/floating-panel";
 import { THINKING_TONE_NATIVE_PCM_BASE64 } from "@/utils/thinking-tone.native-pcm";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -256,17 +259,12 @@ function useSearchEntries(
 // Trigger + sidebar style helpers
 // ---------------------------------------------------------------------------
 
-function sidebarItemStyle({ hovered }: PressableStateCallbackType & { hovered?: boolean }) {
-  return [sidebarStyles.item, Boolean(hovered) && sidebarStyles.itemHovered];
-}
+// Hover is CSS, so the fill clears when the list moves out from under a resting cursor. The
+// selected item already wears the hover fill, so it needs no hover entry.
 
-function selectedSidebarItemStyle({ hovered }: PressableStateCallbackType & { hovered?: boolean }) {
-  return [
-    sidebarStyles.item,
-    Boolean(hovered) && sidebarStyles.itemHovered,
-    sidebarStyles.itemSelected,
-  ];
-}
+// On web a row's trailing glyph strokes with the row's CSS color, which brightens on hover.
+const trailingGlyphColor = (theme: { colors: { foregroundMuted: string } }) =>
+  isWeb ? "currentColor" : theme.colors.foregroundMuted;
 
 function getActiveLocale(language: string | undefined): SupportedLocale {
   const parsed = parseAppLanguage(language);
@@ -488,26 +486,19 @@ function GitHubRow() {
 
   return (
     <Pressable
-      style={[settingsStyles.row, settingsStyles.rowBorder]}
+      style={[settingsStyles.row, settingsStyles.rowBorder, styles.trailingGlyphTint]}
       onPress={openGitHub}
       accessibilityRole="link"
       testID="settings-github"
     >
-      {({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => (
-        <>
-          <View style={styles.githubTitle}>
-            <GitHubIcon color={theme.colors.foreground} size={theme.iconSize.sm} />
-            <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>{t("settings.about.github")}</Text>
-              <Text style={settingsStyles.rowHint}>{t("settings.about.githubHint")}</Text>
-            </View>
-          </View>
-          <ExternalLink
-            size={theme.iconSize.sm}
-            color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
-          />
-        </>
-      )}
+      <View style={styles.githubTitle}>
+        <GitHubIcon color={theme.colors.foreground} size={theme.iconSize.sm} />
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>{t("settings.about.github")}</Text>
+          <Text style={settingsStyles.rowHint}>{t("settings.about.githubHint")}</Text>
+        </View>
+      </View>
+      <ExternalLink size={theme.iconSize.sm} color={trailingGlyphColor(theme)} />
     </Pressable>
   );
 }
@@ -518,23 +509,16 @@ function WhatsNewRow() {
 
   return (
     <Pressable
-      style={[settingsStyles.row, settingsStyles.rowBorder]}
+      style={[settingsStyles.row, settingsStyles.rowBorder, styles.trailingGlyphTint]}
       onPress={openChangelog}
       accessibilityRole="button"
       testID="settings-whats-new"
     >
-      {({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => (
-        <>
-          <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>{t("changelog.title")}</Text>
-            <Text style={settingsStyles.rowHint}>{t("settings.about.whatsNewHint")}</Text>
-          </View>
-          <ChevronRight
-            size={theme.iconSize.sm}
-            color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
-          />
-        </>
-      )}
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("changelog.title")}</Text>
+        <Text style={settingsStyles.rowHint}>{t("settings.about.whatsNewHint")}</Text>
+      </View>
+      <ChevronRight size={theme.iconSize.sm} color={trailingGlyphColor(theme)} />
     </Pressable>
   );
 }
@@ -630,7 +614,9 @@ function HostVersionRow({
           <Text style={settingsStyles.rowHint}>{t("settings.about.versionDiffers")}</Text>
         ) : null}
       </View>
-      <Text style={valueStyle}>{valueText}</Text>
+      <Text style={valueStyle} testID={`settings-host-version-${host.serverId}`}>
+        {valueText}
+      </Text>
     </View>
   );
 }
@@ -654,9 +640,9 @@ function SidebarSectionButton({
 }: SidebarSectionButtonProps) {
   const { theme } = useUnistyles();
   const compact = useIsCompactFormFactor();
-  const itemStyle = useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) => [
-      isSelected ? selectedSidebarItemStyle(state) : sidebarItemStyle(state),
+  const itemStyle = useMemo(
+    () => [
+      isSelected ? selectedSidebarItemStyle : sidebarItemStyle,
       compact && sidebarStyles.touchItem,
     ],
     [compact, isSelected],
@@ -870,6 +856,8 @@ interface PaneContext {
   isDesktopApp: boolean;
   settings: AppSettings;
   restartRequestId: string | null;
+  focusedSettingId: string | null;
+  focusRequestNonce: number;
   voiceAudioEngine: ReturnType<typeof useVoiceAudioEngineOptional>;
   isPlaybackTestRunning: boolean;
   playbackTestResult: string | null;
@@ -905,9 +893,14 @@ function installationPane(section: InstallationPaneSection) {
 /** Each catalog pane's body. Panes reuse the existing settings components. */
 const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "general.attention": (context) => <AttentionSection onOpenPane={context.onOpenPane} />,
-  "general.installation": () => <InstallationNameSection />,
   "general.notifications": () => <DesktopNotificationsSection />,
-  "general.about": (context) => <AboutSection appVersionText={context.appVersionText} />,
+  "general.installation": () => <InstallationNameSection />,
+  "general.about": (context) => (
+    <>
+      <AboutSection appVersionText={context.appVersionText} />
+      <HelpSection />
+    </>
+  ),
   "general.hosts": (context) => <ConnectedHostsSection context={context} />,
   "privacy.dataSaver": () => <DataSaverSection />,
   "accounts.providers": installationPane("providers"),
@@ -963,7 +956,13 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
     </>
   ),
   // One view of Host and Dev status, restarts, updates and their technical details.
-  "system.overview": () => <SystemPane />,
+  "system.overview": (context) => (
+    <SystemPane
+      restartRequestId={context.restartRequestId}
+      focusedSettingId={context.focusedSettingId}
+      focusRequestNonce={context.focusRequestNonce}
+    />
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1059,7 @@ export default function SettingsScreen({
   const navigation = useSettingsNavigation({
     view,
     installationRequested,
+    restartRequestId,
     settingId,
     isCompactLayout,
     hasInstallation: availability.hasInstallation,
@@ -1183,6 +1183,8 @@ export default function SettingsScreen({
       isDesktopApp,
       settings,
       restartRequestId,
+      focusedSettingId: request.entry?.id ?? null,
+      focusRequestNonce: request.nonce,
       voiceAudioEngine,
       isPlaybackTestRunning,
       playbackTestResult,
@@ -1208,6 +1210,8 @@ export default function SettingsScreen({
       openShortcuts,
       playbackTestResult,
       restartRequestId,
+      request.entry,
+      request.nonce,
       settings,
       voiceAudioEngine,
     ],
@@ -1384,6 +1388,7 @@ const styles = StyleSheet.create((theme) => ({
   scrollView: {
     flex: 1,
   },
+  aboutInstallation: { marginBottom: theme.spacing[3] },
   aboutValue: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
@@ -1396,6 +1401,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     marginTop: theme.spacing[1],
   },
+  trailingGlyphTint: hoverStyle(
+    { color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
   githubTitle: {
     flex: 1,
     flexDirection: "row",
@@ -1490,9 +1499,7 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
   },
   touchItem: { minHeight: 44 },
-  itemHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  itemHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   itemSelected: {
     backgroundColor: theme.colors.surfaceSidebarHover,
   },
@@ -1529,3 +1536,7 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
 }));
+
+// Declared after sidebarStyles: module-level arrays read it at load time.
+const sidebarItemStyle = [sidebarStyles.item, sidebarStyles.itemHoverable];
+const selectedSidebarItemStyle = [sidebarStyles.item, sidebarStyles.itemSelected];

@@ -1,7 +1,8 @@
 import { getInterfaceScale } from "@/appearance/interface-zoom";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverGroup } from "@/styles/hover";
 import { useVortonTouch } from "@/vorton-touch";
 import {
   FIT_TRANSFORM,
@@ -66,8 +67,6 @@ export function ZoomableViewport({
   const [viewport, setViewport] = useState<ViewportSize | null>(null);
   const [transform, setTransform] = useState<ViewportTransform>(FIT_TRANSFORM);
   const [isDragging, setIsDragging] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
-  const [isFocusWithin, setIsFocusWithin] = useState(false);
   const [hasTouchInput, setHasTouchInput] = useState(false);
   const touchControls = useVortonTouch();
   const fittedContent = useMemo(
@@ -286,17 +285,10 @@ export function ZoomableViewport({
     }),
     [fittedContent, transform],
   );
-  const controlsVisible = isHovered || isFocusWithin || hasTouchInput || touchControls;
-  const handleFocus = useCallback(() => setIsFocusWithin(true), []);
-  const handleBlur = useCallback(() => setIsFocusWithin(false), []);
-  // Modal mounting can omit React's synthesized enter event. Track the bubbling
-  // events, but treat the canvas and toolbar as one hover region.
-  const handlePointerOver = useCallback(() => setIsHovered(true), []);
-  const handlePointerOut = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    const next = event.relatedTarget;
-    if (next instanceof Node && event.currentTarget.parentElement?.contains(next)) return;
-    setIsHovered(false);
-  }, []);
+  // Touch keeps the controls shown. Otherwise the toolbar reveals itself through CSS while the
+  // root (canvas and toolbar together) is hovered or holds focus, which also survives modal
+  // mounts that never deliver a pointer enter event.
+  const controlsVisible = hasTouchInput || touchControls;
 
   return (
     <View style={[styles.root, style]} testID={testID}>
@@ -305,10 +297,6 @@ export function ZoomableViewport({
         data-testid={testID ? `${testID}-canvas` : undefined}
         onClick={handleCanvasClick}
         onDoubleClick={reset}
-        onFocusCapture={handleFocus}
-        onBlurCapture={handleBlur}
-        onPointerOver={handlePointerOver}
-        onPointerOut={handlePointerOut}
         onPointerCancel={endPointer}
         onPointerDown={beginPointer}
         onPointerMove={movePointer}
@@ -319,13 +307,7 @@ export function ZoomableViewport({
       >
         <div style={renderedContentStyle}>{children}</div>
       </div>
-      <div
-        onBlurCapture={handleBlur}
-        onFocusCapture={handleFocus}
-        onPointerOver={handlePointerOver}
-        onPointerOut={handlePointerOut}
-        style={toolbarDomStyle}
-      >
+      <div style={toolbarDomStyle}>
         <ViewportToolbar
           actions={actions}
           maxScale={maxScale}
@@ -342,7 +324,13 @@ export function ZoomableViewport({
 }
 
 const styles = StyleSheet.create(() => ({
-  root: { flex: 1, minHeight: 0, overflow: "hidden", position: "relative" },
+  root: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "hidden",
+    position: "relative",
+    ...hoverGroup("zoom-viewport"),
+  },
 }));
 
 const canvasDomStyle: React.CSSProperties = {

@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { X } from "lucide-react-native";
@@ -6,6 +6,7 @@ import { isNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import type { AttachmentMetadata } from "@/attachments/types";
 import { useAttachmentPreviewUrl } from "@/attachments/use-attachment-preview-url";
+import { hoverGroup, revealOnGroupHover } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 
 // Every attachment pill body — image thumbnail or labelled — renders at this
@@ -32,26 +33,18 @@ export function AttachmentPill({
   children,
 }: AttachmentPillProps) {
   const isCompact = useIsCompactFormFactor();
-  const [isBodyHovered, setIsBodyHovered] = useState(false);
-  const [isCloseHovered, setIsCloseHovered] = useState(false);
+  // Desktop reveals the remove button with CSS hover on the pill; touch and compact always show it.
   const alwaysShow = isNative || isCompact;
-  const showRemove = alwaysShow || isBodyHovered || isCloseHovered;
   const closeButtonStyle = useMemo(
-    () => [styles.closeButton, !showRemove && styles.closeButtonHidden],
-    [showRemove],
+    () => [styles.closeButton, !alwaysShow && styles.closeButtonReveal],
+    [alwaysShow],
   );
-  const handleBodyHoverIn = useCallback(() => setIsBodyHovered(true), []);
-  const handleBodyHoverOut = useCallback(() => setIsBodyHovered(false), []);
-  const handleCloseHoverIn = useCallback(() => setIsCloseHovered(true), []);
-  const handleCloseHoverOut = useCallback(() => setIsCloseHovered(false), []);
   return (
     <View style={styles.wrapper}>
       <Pressable
         testID={testID}
         onPress={onOpen}
         disabled={disabled}
-        onHoverIn={handleBodyHoverIn}
-        onHoverOut={handleBodyHoverOut}
         accessibilityRole="button"
         accessibilityLabel={openAccessibilityLabel}
         style={styles.frame}
@@ -61,8 +54,6 @@ export function AttachmentPill({
       <Pressable
         onPress={onRemove}
         disabled={disabled}
-        onHoverIn={handleCloseHoverIn}
-        onHoverOut={handleCloseHoverOut}
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel={removeAccessibilityLabel}
@@ -147,6 +138,7 @@ const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.fore
 const styles = StyleSheet.create((theme) => ({
   wrapper: {
     position: "relative",
+    ...hoverGroup("attachment-pill"),
   },
   frame: {
     borderRadius: theme.borderRadius.md,
@@ -203,8 +195,5 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     zIndex: 1,
   },
-  closeButtonHidden: {
-    opacity: 0,
-    pointerEvents: "none",
-  },
+  closeButtonReveal: revealOnGroupHover("attachment-pill"),
 }));

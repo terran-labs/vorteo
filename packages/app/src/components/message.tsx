@@ -1,4 +1,11 @@
 import { SharedQueueAttachments } from "@/message-queue/shared-attachments";
+import {
+  CAN_HOVER,
+  groupHoverStyle,
+  hoverGroup,
+  hoverStyle,
+  revealOnGroupHover,
+} from "@/styles/hover";
 import type { QueuePresentation } from "@getpaseo/protocol/message-queue";
 
 import { MessagePreview, MessageSender } from "@/components/user-message";
@@ -306,6 +313,7 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     alignItems: "flex-end",
     maxWidth: "100%",
     cursor: "auto",
+    ...hoverGroup("user-message"),
   },
   containerSpacing: {
     marginBottom: theme.spacing[1],
@@ -366,9 +374,7 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   trailingRowHidden: {
     opacity: 0,
   },
-  trailingRowVisible: {
-    opacity: 1,
-  },
+  trailingRowReveal: revealOnGroupHover("user-message"),
   timestampText: {
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
@@ -394,6 +400,12 @@ function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessage
 
 const MESSAGE_TEXT_DATASET = { messageText: "true" };
 
+/** Desktop reveals the row with CSS hover on the message; touch and compact layouts always show it. */
+function userMessageTrailingRowMode(pending: boolean, alwaysShown: boolean) {
+  if (pending) return "hidden";
+  return alwaysShown ? "visible" : "hover";
+}
+
 export const UserMessage = memo(function UserMessage({
   queue,
   queueMessageId,
@@ -415,7 +427,6 @@ export const UserMessage = memo(function UserMessage({
 }: UserMessageProps) {
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
   const [lightboxMetadata, setLightboxMetadata] = useState<UserMessageImageAttachment | null>(null);
   const handleLightboxClose = useCallback(() => setLightboxMetadata(null), []);
   const lightboxSource = useMemo<ImageLightboxSource | null>(
@@ -426,15 +437,13 @@ export const UserMessage = memo(function UserMessage({
   const hasText = message.trim().length > 0;
   const hasImages = images.length > 0;
   const hasAttachments = attachments.length > 0;
-  const showTrailingRow = !isPending && hasText && (isCompact || isNative || isHovered);
+  const trailingRowMode = userMessageTrailingRowMode(isPending, isCompact || isNative);
   const formattedTimestamp = useMemo(
     () => formatMessageTimestamp(new Date(timestamp)),
     [timestamp],
   );
   const rewindMutation = useRewindAgentMutation({ serverId, agentId, client, messageId });
 
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const getMessageContent = useCallback(() => message, [message]);
   const handleRewind = useCallback(
     (input: { mode: RewindMode; rewoundText: string }) => {
@@ -471,20 +480,15 @@ export const UserMessage = memo(function UserMessage({
   const trailingRowStyle = useMemo(
     () => [
       userMessageStylesheet.trailingRow,
-      showTrailingRow
-        ? userMessageStylesheet.trailingRowVisible
-        : userMessageStylesheet.trailingRowHidden,
+      trailingRowMode === "hidden" && userMessageStylesheet.trailingRowHidden,
+      trailingRowMode === "hover" && userMessageStylesheet.trailingRowReveal,
     ],
-    [showTrailingRow],
+    [trailingRowMode],
   );
 
   return (
     <View style={containerStyle} testID="user-message" aria-busy={isPending}>
-      <View
-        style={userMessageStylesheet.content}
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
-      >
+      <View style={userMessageStylesheet.content}>
         {sender ? <MessageSender sender={sender} serverId={serverId} /> : null}
         <View style={userMessageStylesheet.bubble}>
           <SharedQueueAttachments
@@ -539,7 +543,7 @@ export const UserMessage = memo(function UserMessage({
         {hasText ? (
           <View
             style={trailingRowStyle}
-            pointerEvents={showTrailingRow ? "auto" : "none"}
+            pointerEvents={trailingRowMode === "hidden" ? "none" : undefined}
             testID="user-message-trailing-row"
           >
             <Text style={userMessageStylesheet.timestampText} testID="user-message-timestamp">
@@ -601,7 +605,22 @@ const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
   },
+  // Web swaps duration for timestamp with CSS hover on the label, so both stay mounted.
+  labelHoverGroup: hoverGroup("turn-footer-label"),
+  labelHideOnHover: groupHoverStyle("turn-footer-label", { opacity: 0 }),
+  labelShowOnHover: {
+    opacity: 0,
+    ...groupHoverStyle("turn-footer-label", { opacity: 1 }),
+  },
 }));
+const TURN_FOOTER_PRIMARY_WEB_STYLE = [
+  assistantTurnFooterStylesheet.labelOverlay,
+  assistantTurnFooterStylesheet.labelHideOnHover,
+];
+const TURN_FOOTER_TIMESTAMP_WEB_STYLE = [
+  assistantTurnFooterStylesheet.labelOverlay,
+  assistantTurnFooterStylesheet.labelShowOnHover,
+];
 
 const TIMESTAMP_REVEAL_MS = 3000;
 
@@ -617,7 +636,6 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   onFork,
 }: AssistantTurnFooterProps) {
   const { t } = useTranslation();
-  const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -642,10 +660,10 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
 
   const primaryLabel = durationLabel || timestampLabel;
   const canSwap = Boolean(durationLabel && timestampLabel);
-  const showTimestamp = canSwap && (isWeb ? hovered : pressedReveal);
+  // Web swaps on CSS hover (see `labelHoverGroup`); native swaps on a timed press.
+  const swapOnHover = isWeb && canSwap;
+  const showTimestamp = canSwap && !isWeb && pressedReveal;
 
-  const handleHoverIn = useCallback(() => setHovered(true), []);
-  const handleHoverOut = useCallback(() => setHovered(false), []);
   const handlePress = useCallback(() => {
     if (isWeb || !canSwap) return;
     if (revealTimerRef.current) {
@@ -677,8 +695,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
       {primaryLabel ? (
         <Pressable
           onPress={handlePress}
-          onHoverIn={handleHoverIn}
-          onHoverOut={handleHoverOut}
+          style={swapOnHover ? assistantTurnFooterStylesheet.labelHoverGroup : undefined}
           accessibilityRole={canSwap ? "button" : undefined}
           accessibilityLabel={canSwap ? `${durationLabel}, ended ${timestampLabel}` : primaryLabel}
         >
@@ -688,9 +705,18 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
             <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden>
               {primaryLabel.length >= timestampLabel.length ? primaryLabel : timestampLabel}
             </Text>
-            <Text style={assistantTurnFooterStylesheet.labelOverlay}>
-              {showTimestamp ? timestampLabel : primaryLabel}
-            </Text>
+            {swapOnHover ? (
+              <>
+                <Text style={TURN_FOOTER_PRIMARY_WEB_STYLE}>{primaryLabel}</Text>
+                <Text style={TURN_FOOTER_TIMESTAMP_WEB_STYLE} aria-hidden>
+                  {timestampLabel}
+                </Text>
+              </>
+            ) : (
+              <Text style={assistantTurnFooterStylesheet.labelOverlay}>
+                {showTimestamp ? timestampLabel : primaryLabel}
+              </Text>
+            )}
           </View>
         </Pressable>
       ) : null}
@@ -810,12 +836,11 @@ const turnCopyButtonStylesheet = StyleSheet.create((theme) => ({
     padding: theme.spacing[2],
     paddingTop: 0,
     marginTop: theme.spacing[2],
+    // On web the icon strokes with this CSS color, which brightens on browser :hover.
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
   iconColor: {
     color: theme.colors.foregroundMuted,
-  },
-  iconHoveredColor: {
-    color: theme.colors.foreground,
   },
 }));
 
@@ -867,6 +892,7 @@ export const TurnCopyButton = memo(function TurnCopyButton({
     () => [turnCopyButtonStylesheet.container, containerStyle],
     [containerStyle],
   );
+  const turnCopyIconColor = isWeb ? "currentColor" : turnCopyButtonStylesheet.iconColor.color;
 
   return (
     <Pressable
@@ -879,16 +905,11 @@ export const TurnCopyButton = memo(function TurnCopyButton({
           : (accessibilityLabel ?? t("message.actions.copyTurn"))
       }
     >
-      {({ hovered }) => {
-        const iconColor = hovered
-          ? turnCopyButtonStylesheet.iconHoveredColor.color
-          : turnCopyButtonStylesheet.iconColor.color;
-        return copied ? (
-          <Check size={ICON_SIZE.sm} color={iconColor} />
-        ) : (
-          <Copy size={ICON_SIZE.sm} color={iconColor} />
-        );
-      }}
+      {copied ? (
+        <Check size={ICON_SIZE.sm} color={turnCopyIconColor} />
+      ) : (
+        <Copy size={ICON_SIZE.sm} color={turnCopyIconColor} />
+      )}
     </Pressable>
   );
 });
@@ -911,6 +932,9 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
     overflow: "hidden",
   },
+  // The group sits on the header, not the container, so nested badges in the details do not
+  // light up with their parent.
+  headerHoverGroup: hoverGroup("tool-badge"),
   pressablePressed: {
     opacity: 0.9,
   },
@@ -932,7 +956,16 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     justifyContent: "center",
     marginRight: theme.spacing[1],
     backgroundColor: "transparent",
+    // Tool icons inherit this CSS color on web (`restIconColorMapping`).
+    ...groupHoverStyle(
+      "tool-badge",
+      { color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
+  iconHideOnHover: groupHoverStyle("tool-badge", { display: "none" }),
+  chevronShowOnHover: groupHoverStyle("tool-badge", { display: "flex" }, { display: "none" }),
+  labelHover: groupHoverStyle("tool-badge", { color: theme.colors.foreground }),
   label: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
@@ -973,7 +1006,13 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     padding: theme.spacing[1],
     borderRadius: theme.borderRadius.md,
     flexShrink: 0,
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
+  // Hover-capable web shows the open-file button only while the header is hovered; touch web
+  // keeps it visible so the control is never hover-only.
+  openFileReveal: CAN_HOVER
+    ? groupHoverStyle("tool-badge", { display: "flex" }, { display: "none" })
+    : {},
   openFileButtonPlaceholderIcon: {
     width: 14,
     height: 14,
@@ -1037,6 +1076,15 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     left: 0,
   },
 }));
+const OPEN_FILE_BUTTON_STYLE = [
+  expandableBadgeStylesheet.openFileButton,
+  expandableBadgeStylesheet.openFileReveal,
+];
+// The shimmer overlay mirrors the button's geometry, including when hover hides it.
+const OPEN_FILE_PLACEHOLDER_STYLE = OPEN_FILE_BUTTON_STYLE;
+// On web these icons stroke with their wrapper's CSS color, which brightens on browser hover.
+const inheritedColorMapping = () => ({ color: "currentColor" });
+const restIconColorMapping = isWeb ? inheritedColorMapping : mutedForegroundColorMapping;
 
 interface NativeExpandableBadgeShimmerProps {
   label: string;
@@ -1557,7 +1605,7 @@ function ExpandableBadgeWebShimmerOverlay({
         </Text>
       ) : null}
       {showOpenFileButton ? (
-        <View style={expandableBadgeStylesheet.openFileButton}>
+        <View style={OPEN_FILE_PLACEHOLDER_STYLE}>
           <View style={expandableBadgeStylesheet.openFileButtonPlaceholderIcon} />
         </View>
       ) : null}
@@ -1587,11 +1635,9 @@ interface ExpandableBadgeLabelRowProps {
   onLabelRowLayout: (event: LayoutChangeEvent) => void;
   onLabelLayout: (event: LayoutChangeEvent) => void;
   onSecondaryLayout: (event: LayoutChangeEvent) => void;
+  /** Mounts the open-file button; on hover-capable web it shows only while the header is hovered. */
   showOpenFileButton: boolean;
-  isOpenFileHovered: boolean;
   onOpenFilePress: (event: GestureResponderEvent) => void;
-  onOpenFileHoverIn: () => void;
-  onOpenFileHoverOut: () => void;
 }
 
 function ExpandableBadgeLabelRow({
@@ -1614,10 +1660,7 @@ function ExpandableBadgeLabelRow({
   onLabelLayout,
   onSecondaryLayout,
   showOpenFileButton,
-  isOpenFileHovered,
   onOpenFilePress,
-  onOpenFileHoverIn,
-  onOpenFileHoverOut,
 }: ExpandableBadgeLabelRowProps) {
   const { t } = useTranslation();
   return (
@@ -1641,18 +1684,13 @@ function ExpandableBadgeLabelRow({
       {showOpenFileButton ? (
         <Pressable
           onPress={onOpenFilePress}
-          onHoverIn={onOpenFileHoverIn}
-          onHoverOut={onOpenFileHoverOut}
           accessibilityRole="button"
           accessibilityLabel={t("message.actions.openFile")}
           testID="tool-call-open-file"
-          style={expandableBadgeStylesheet.openFileButton}
+          style={OPEN_FILE_BUTTON_STYLE}
           hitSlop={6}
         >
-          <ThemedFileSymlinkIcon
-            size={14}
-            uniProps={isOpenFileHovered ? foregroundColorMapping : foregroundMutedColorMapping}
-          />
+          <ThemedFileSymlinkIcon size={14} uniProps={inheritedColorMapping} />
         </Pressable>
       ) : null}
       {isWebShimmer ? (
@@ -1701,11 +1739,11 @@ const LUCIDE_CHEVRON_NUDGE_LEFT: ViewStyle = { marginLeft: -4 };
 
 function renderExpandableBadgeIcon({
   isError,
-  isActive,
+  isExpanded,
   ThemedIcon,
 }: {
   isError: boolean;
-  isActive: boolean;
+  isExpanded: boolean;
   ThemedIcon: ComponentType<{ size?: number; uniProps?: typeof foregroundColorMapping }> | null;
 }): ReactNode {
   if (isError) {
@@ -1720,7 +1758,7 @@ function renderExpandableBadgeIcon({
       <View style={LUCIDE_TOOL_ICON_NUDGE_LEFT}>
         <ThemedIcon
           size={12}
-          uniProps={isActive ? foregroundColorMapping : mutedForegroundColorMapping}
+          uniProps={isExpanded ? foregroundColorMapping : restIconColorMapping}
         />
       </View>
     );
@@ -1728,20 +1766,31 @@ function renderExpandableBadgeIcon({
   return null;
 }
 
+/**
+ * `hover` keeps both the icon and the chevron mounted and lets CSS group hover on the header swap
+ * them, so a badge that moves under a resting cursor swaps too.
+ */
 function renderExpandableBadgeIconSlot({
-  showChevron,
+  chevron,
   chevronStyle,
   iconNode,
 }: {
-  showChevron: boolean;
+  chevron: "visible" | "hover" | "hidden";
   chevronStyle: StyleProp<ViewStyle>;
   iconNode: ReactNode;
 }): ReactNode {
-  if (showChevron) {
+  const chevronNode = <ThemedChevronRightIcon size={12} uniProps={foregroundColorMapping} />;
+  if (chevron === "visible") {
+    return <View style={chevronStyle}>{chevronNode}</View>;
+  }
+  if (chevron === "hover") {
     return (
-      <View style={chevronStyle}>
-        <ThemedChevronRightIcon size={12} uniProps={foregroundColorMapping} />
-      </View>
+      <>
+        <View style={expandableBadgeStylesheet.iconHideOnHover}>{iconNode}</View>
+        <View style={[chevronStyle, expandableBadgeStylesheet.chevronShowOnHover]}>
+          {chevronNode}
+        </View>
+      </>
     );
   }
   return iconNode;
@@ -1867,19 +1916,15 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   testID,
 }: ExpandableBadgeProps) {
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
-  const [isHovered, setIsHovered] = useState(false);
-  const [isOpenFileHovered, setIsOpenFileHovered] = useState(false);
   const [isPressed, setIsPressed] = useState(false);
   const isInteractive = Boolean(onToggle);
   const hasDetailContent = Boolean(renderDetails);
   const detailContent = hasDetailContent && isExpanded ? renderDetails?.() : null;
   const detailWrapperRef = useRef<View | null>(null);
 
-  const handleHoverIn = useCallback(() => setIsHovered(true), []);
-  const handleHoverOut = useCallback(() => {
-    setIsHovered(false);
-    setIsPressed(false);
-  }, []);
+  // Hover visuals are CSS group hover on the header (`headerHoverGroup`). Leaving still clears a
+  // press so a drag off the header cannot strand the pressed opacity.
+  const handlePointerLeave = useCallback(() => setIsPressed(false), []);
   const handlePressIn = useCallback(() => setIsPressed(true), []);
   const handlePressOut = useCallback(() => setIsPressed(false), []);
   const handleDetailHoverIn = useCallback(() => onDetailHoverChange?.(true), [onDetailHoverChange]);
@@ -1894,8 +1939,6 @@ export const ExpandableBadge = memo(function ExpandableBadge({
     },
     [onOpenFile],
   );
-  const handleOpenFileHoverIn = useCallback(() => setIsOpenFileHovered(true), []);
-  const handleOpenFileHoverOut = useCallback(() => setIsOpenFileHovered(false), []);
 
   const nativeGradientIdRef = useRef(
     `shimmer-gradient-${Math.random().toString(36).substring(2, 9)}`,
@@ -2032,6 +2075,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   const pressableStyle = useMemo(
     () => [
       expandableBadgeStylesheet.pressable,
+      expandableBadgeStylesheet.headerHoverGroup,
       isPressed && isInteractive ? expandableBadgeStylesheet.pressablePressed : null,
       isExpanded && expandableBadgeStylesheet.pressableExpanded,
       isExpanded &&
@@ -2055,23 +2099,23 @@ export const ExpandableBadge = memo(function ExpandableBadge({
     [isExpanded, isInteractive],
   );
 
-  const isActive = isHovered || isExpanded;
-
   const labelStyle = useMemo(
     () => [
       expandableBadgeStylesheet.label,
-      isActive && expandableBadgeStylesheet.labelActive,
+      expandableBadgeStylesheet.labelHover,
+      isExpanded && expandableBadgeStylesheet.labelActive,
       isLoading && expandableBadgeStylesheet.labelLoading,
     ],
-    [isActive, isLoading],
+    [isExpanded, isLoading],
   );
 
   const secondaryLabelStyle = useMemo(
     () => [
       expandableBadgeStylesheet.secondaryLabel,
-      isActive && expandableBadgeStylesheet.secondaryLabelActive,
+      expandableBadgeStylesheet.labelHover,
+      isExpanded && expandableBadgeStylesheet.secondaryLabelActive,
     ],
-    [isActive],
+    [isExpanded],
   );
 
   const shimmerLabelTextStyle = useMemo(
@@ -2105,12 +2149,11 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   );
 
   const ThemedIcon = useMemo(() => (icon ? withUnistyles(icon) : null), [icon]);
-  const iconNode = renderExpandableBadgeIcon({ isError, isActive, ThemedIcon });
-  const iconSlotNode = renderExpandableBadgeIconSlot({
-    showChevron: isInteractive && (isHovered || isExpanded),
-    chevronStyle,
-    iconNode,
-  });
+  const iconNode = renderExpandableBadgeIcon({ isError, isExpanded, ThemedIcon });
+  let chevron: "visible" | "hover" | "hidden" = "hidden";
+  if (isInteractive && isExpanded) chevron = "visible";
+  else if (isInteractive && isWeb) chevron = "hover";
+  const iconSlotNode = renderExpandableBadgeIconSlot({ chevron, chevronStyle, iconNode });
 
   const pressHandlers = isInteractive
     ? {
@@ -2125,8 +2168,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
     <View
       style={containerStyle}
       testID={testID}
-      onPointerEnter={isWeb ? handleHoverIn : undefined}
-      onPointerLeave={isWeb ? handleHoverOut : undefined}
+      onPointerLeave={isWeb ? handlePointerLeave : undefined}
     >
       <Pressable
         {...pressHandlers}
@@ -2155,11 +2197,8 @@ export const ExpandableBadge = memo(function ExpandableBadge({
             onLabelRowLayout={handleLabelRowLayout}
             onLabelLayout={handleLabelLayout}
             onSecondaryLayout={handleSecondaryLayout}
-            showOpenFileButton={Boolean(onOpenFile && isHovered)}
-            isOpenFileHovered={isOpenFileHovered}
+            showOpenFileButton={Boolean(onOpenFile && isWeb)}
             onOpenFilePress={handleOpenFilePress}
-            onOpenFileHoverIn={handleOpenFileHoverIn}
-            onOpenFileHoverOut={handleOpenFileHoverOut}
           />
         </View>
       </Pressable>

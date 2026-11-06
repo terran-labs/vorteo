@@ -11,6 +11,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import { type RewindMode, useRewindCapabilities } from "./use-rewind-capabilities";
 import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
 
@@ -81,6 +83,8 @@ export const RewindMenu = memo(function RewindMenu({
     [isLocked, onRewind, rewoundText],
   );
 
+  // On web the icon strokes with the trigger's CSS color, which brightens on browser :hover.
+  const restIconColor = isWeb ? "currentColor" : theme.colors.foregroundMuted;
   const triggerStyle = useCallback(
     () => [styles.trigger, isLocked ? styles.triggerDisabled : null],
     [isLocked],
@@ -111,11 +115,8 @@ export const RewindMenu = memo(function RewindMenu({
               style={triggerStyle}
               testID={`${testID}-trigger`}
             >
-              {({ hovered, open }) => (
-                <Undo2
-                  size={16}
-                  color={hovered || open ? theme.colors.foreground : theme.colors.foregroundMuted}
-                />
+              {({ open }) => (
+                <Undo2 size={16} color={open ? theme.colors.foreground : restIconColor} />
               )}
             </DropdownMenuTrigger>
           </View>
@@ -152,6 +153,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "transparent",
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
   triggerDisabled: {
     opacity: theme.opacity[50],

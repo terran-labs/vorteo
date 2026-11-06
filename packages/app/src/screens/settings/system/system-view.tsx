@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Text, View, Pressable, StyleSheet, ScrollView, useWindowDimensions } from "react-native";
 import { Button } from "@/components/ui/button";
 import type { SystemAction, SystemStatus } from "./system-status-model";
@@ -12,12 +12,16 @@ export interface SystemEnvironmentRow {
   name: "Host" | "Dev";
   status: SystemStatus;
   action: SystemAction | null;
+  /** A confirmed request stays visible as a disabled control until it finishes. */
+  pendingAction?: SystemAction;
   disabled?: boolean;
   reason?: string;
   onAction: (action: SystemAction) => void;
   /** Caller supplies the overflow menu containing Restart…. */
   restartMenu?: ReactNode;
   details?: ReactNode;
+  /** Reveal a linked review once; subsequent polls must respect manual collapse. */
+  detailsRequestId?: string | null;
 }
 function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
   const { width } = useWindowDimensions();
@@ -28,11 +32,15 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
     [compact],
   );
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (row.detailsRequestId) setExpanded(true);
+  }, [row.detailsRequestId]);
   const toggle = useCallback(() => setExpanded((current) => !current), []);
   const act = useCallback(() => {
     if (row.action) row.onAction(row.action);
   }, [row]);
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  const displayedAction = row.action ?? row.pendingAction;
   return (
     <View>
       <View style={rowStyle}>
@@ -44,17 +52,17 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
         </View>
         <Text accessibilityRole="text">{labels[row.status]}</Text>
         <View style={styles.action}>
-          {row.action ? (
+          {displayedAction ? (
             <Button
               onPress={act}
-              disabled={row.disabled}
+              disabled={row.disabled || !row.action}
               testID={
-                row.action.kind === "update"
+                displayedAction.kind === "update"
                   ? "host-page-update-button"
                   : `system-primary-${row.name.toLowerCase()}`
               }
             >
-              {row.action.label}
+              {displayedAction.label}
             </Button>
           ) : null}
         </View>

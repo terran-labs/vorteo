@@ -195,7 +195,14 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     label: "Language",
   },
   { id: "chat.chat", section: "interface", label: "Chat", legacySlugs: ["chat.chat", "chat"] },
-  { id: "chat.sending", legacySlugs: ["chat.sending"], section: "interface", label: "Sending" },
+  {
+    id: "chat.sending",
+    legacySlugs: ["chat.sending"],
+    section: "interface",
+    label: "Sending",
+    hardwareKeyboardOnly: true,
+    webOnly: true,
+  },
   {
     id: "chat.files",
     section: "interface",
@@ -268,9 +275,9 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     id: "general.installation",
     legacySlugs: ["general.installation"],
     section: "general",
-    label: "Installation name",
+    label: "Installation",
     requiresInstallation: true,
-    keywords: ["name", "title", "rename", "lab"],
+    keywords: ["name", "title", "rename", "type", "lab", "stable"],
   },
   {
     id: "workspaces.newWorkspace",
@@ -440,6 +447,48 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     keywords: ["name", "title", "rename"],
     scope: installation,
     requiresInstallation: true,
+  },
+  {
+    id: "general.installation.type",
+    pane: "general.installation",
+    label: "Installation type",
+    hint: "Stable installs tagged releases; Lab evolves itself from its live checkout.",
+    keywords: ["lab", "stable", "self-update", "release channel"],
+    scope: installation,
+    requiresInstallation: true,
+  },
+  {
+    id: "general.help.shortcuts",
+    pane: "general.about",
+    label: "Keyboard shortcuts",
+    labelKey: "sidebar.help.shortcuts",
+    keywords: ["help", "keyboard", "keys"],
+    scope: device,
+    hardwareKeyboardOnly: true,
+  },
+  {
+    id: "general.help.diagnostics",
+    pane: "general.about",
+    label: "Run diagnostics",
+    labelKey: "sidebar.help.diagnostics",
+    keywords: ["help", "debug", "support", "logs"],
+    scope: device,
+  },
+  {
+    id: "general.help.discord",
+    pane: "general.about",
+    label: "Discord",
+    labelKey: "sidebar.help.discord",
+    keywords: ["help", "support", "report issue", "community"],
+    scope: device,
+  },
+  {
+    id: "general.help.github",
+    pane: "general.about",
+    label: "Create GitHub issue",
+    labelKey: "sidebar.help.github",
+    keywords: ["help", "support", "report bug", "issue"],
+    scope: device,
   },
   // General
   {
@@ -728,6 +777,8 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "chat.sending.shortcut",
     pane: "chat.sending",
+    hardwareKeyboardOnly: true,
+    webOnly: true,
     label: "Send shortcut",
     labelKey: "settings.general.sendShortcut.label",
     keywords: ["enter", "command", "control", "keyboard"],
@@ -765,14 +816,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     keywords: ["jump between prompts", "navigation"],
     scope: device,
   },
-  {
-    id: "chat.sending.defaultSend",
-    pane: "chat.sending",
-    label: "Default send",
-    labelKey: "settings.general.defaultSend.label",
-    keywords: ["enter", "steer", "queue", "interrupt", "submit"],
-    scope: device,
-  },
+
   {
     id: "chat.openLocation.destinations",
     pane: "chat.openLocation",
@@ -1019,6 +1063,22 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
 
   // Maintenance
   {
+    id: "system.overview.customDomain",
+    pane: "system.overview",
+    label: "Custom domain",
+    keywords: ["advanced", "https", "dns", "tls", "installation address"],
+    requiresInstallation: true,
+    scope: installation,
+  },
+  {
+    id: "system.overview.domain",
+    pane: "system.overview",
+    label: "Domain",
+    keywords: ["custom domain", "advanced", "https", "installation address"],
+    requiresInstallation: true,
+    scope: installation,
+  },
+  {
     id: "system.overview.resumeOnStartup",
     pane: "system.overview",
     label: "Resume agents after restart",
@@ -1079,7 +1139,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
   {
     id: "maintenance.installation.deliveryMode",
-    pane: "maintenance.installation",
+    pane: "system.overview",
     label: "Delivery mode",
     keywords: ["live dev", "fast refresh", "reliable", "live checkout"],
     scope: installation,

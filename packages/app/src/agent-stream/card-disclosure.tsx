@@ -8,6 +8,7 @@ import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useVortonTouch } from "@/vorton-touch";
+import { hoverStyle } from "@/styles/hover";
 import {
   TASK_CARD_ICON_CENTER,
   TASK_CARD_TOUCH_ICON_CENTER,
@@ -66,7 +67,7 @@ function disclosureLayout(
   };
 }
 
-/** Counts stay at the trailing edge inside the complete heading hover target. */
+/** Counts stay at the trailing edge inside the complete heading hover target, highlighted by CSS hover. */
 export function CardDisclosure({
   title,
   status,
@@ -112,22 +113,14 @@ export function CardDisclosure({
   const label = status ? `${title} (${status})` : title;
   const indicator = compactTile ? compactIndicator : null;
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
-  const [hovered, setHovered] = useState(false);
-  const enter = useCallback(() => setHovered(true), []);
-  const leave = useCallback(() => setHovered(false), []);
   return (
-    <View
-      style={styles.hoverTarget}
-      onLayout={measure}
-      onPointerEnter={enter}
-      onPointerLeave={leave}
-    >
+    <View style={styles.hoverTarget} onLayout={measure}>
       <CardDisclosureHint enabled={!expanded} label={label}>
         <Pressable
           style={[
             taskCardStyles.accordionTrigger,
             styles.trigger,
-            hovered && styles.hovered,
+            styles.hoverable,
             touch && taskCardStyles.touchAccordionTrigger,
             touch && styles.touchTrigger,
             compactTile && styles.compactTrigger,
@@ -219,7 +212,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   compactMetadata: { marginLeft: 0, minWidth: 0, flexShrink: 1 },
   stackedMetadata: { maxWidth: "100%", justifyContent: "center", flexWrap: "wrap", gap: 2 },
-  hovered: { backgroundColor: theme.colors.interactionHighlight },
+  hoverable: hoverStyle({ backgroundColor: theme.colors.interactionHighlight }),
   status: {
     fontSize: Math.round(theme.fontSize.sm * 0.8),
     fontWeight: theme.fontWeight.normal,

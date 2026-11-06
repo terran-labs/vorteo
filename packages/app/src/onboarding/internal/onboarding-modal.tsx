@@ -1,7 +1,8 @@
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { Check } from "lucide-react-native";
 import {
   AdaptiveModalSheet,
@@ -239,12 +240,8 @@ function StepRailItem({
   const label = t(`onboarding.setup.steps.${step}.label`);
   const handlePress = useCallback(() => onSelect(step), [onSelect, step]);
   const accessibilityState = useMemo(() => ({ selected: current }), [current]);
-  const itemStyle = useCallback(
-    ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.railItem,
-      hovered && !current && styles.railItemHovered,
-      current && styles.railItemCurrent,
-    ],
+  const itemStyle = useMemo(
+    () => [styles.railItem, !current && styles.railItemHovered, current && styles.railItemCurrent],
     [current],
   );
   return (
@@ -316,9 +313,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[2],
     borderRadius: theme.borderRadius.full,
   },
-  railItemHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  railItemHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   railItemCurrent: {
     backgroundColor: theme.colors.surface2,
   },

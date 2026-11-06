@@ -54,6 +54,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ComponentProps,
@@ -66,6 +67,7 @@ import { Field, FormTextInput } from "@/components/ui/form-field";
 import { usePathname, useRouter } from "expo-router";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
+import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 
 import { confirmDialog } from "@/utils/confirm-dialog";
@@ -95,6 +97,7 @@ import { SafetySnapshotsCard } from "./safety-snapshots";
 import {
   InstallationPanelModel,
   restartRequestSummary,
+  restartForceDeadline,
   restartBlockingReason,
   restartRepairGuidance,
   restartActionDisabledReason,
@@ -247,9 +250,6 @@ const PasswordCopyIcon = withUnistyles(Copy, (theme) => ({ color: theme.colors.f
 // The coordinator reports the path only when the file exists. The command runs
 // on the Host; the password itself never passes through this page.
 export function PasswordFileHint({ passwordFile, wide }: { passwordFile: string; wide: boolean }) {
-  const [hovered, setHovered] = useState(false);
-  const enter = useCallback(() => setHovered(true), []);
-  const leave = useCallback(() => setHovered(false), []);
   const command = passwordCopyCommand(passwordFile);
   const toast = useToast();
   const copy = useCallback(async () => {
@@ -273,7 +273,7 @@ export function PasswordFileHint({ passwordFile, wide }: { passwordFile: string;
         Run this command in Terminal on the computer hosting Vorteo. Then paste it into the owner
         password field.
       </Text>
-      <View style={styles.passwordCommandHover} onPointerEnter={enter} onPointerLeave={leave}>
+      <View style={styles.passwordCommandHover}>
         <Pressable
           style={styles.passwordCommand}
           accessibilityRole="button"
@@ -288,10 +288,7 @@ export function PasswordFileHint({ passwordFile, wide }: { passwordFile: string;
           >
             {command}
           </Text>
-          <View
-            style={[styles.passwordCopy, hovered && styles.passwordCopyHighlighted]}
-            pointerEvents="none"
-          >
+          <View style={[styles.passwordCopy, styles.passwordCopyHighlighted]} pointerEvents="none">
             <PasswordCopyIcon size={18} />
           </View>
         </Pressable>
@@ -465,10 +462,16 @@ function InstallationPanel(_props: { model: InstallationPanelModel; requestId: s
 export function useInstallationSystemModel(): InstallationPanelModel | null {
   return getInstallationPanel(useHostRegistryLoaded());
 }
-export function InstallationSystemDetails({ target }: { target: "host" | "container-daemon" }) {
+export function InstallationSystemDetails({
+  target,
+  requestId = null,
+}: {
+  target: "host" | "container-daemon";
+  requestId?: string | null;
+}) {
   const model = useInstallationSystemModel();
   return model ? (
-    <InstallationSystemDetailsBody model={model} target={target} requestId={null} />
+    <InstallationSystemDetailsBody model={model} target={target} requestId={requestId} />
   ) : null;
 }
 export function InstallationSystemAdvanced() {
@@ -578,7 +581,6 @@ function InstallationSystemDetailsBody({
               onRefresh={model.refreshServiceQueue}
               onCancel={model.cancelMaintenanceService}
             />
-
             {target === "host" ? <InstallationServiceRequests model={model} state={state} /> : null}
             {active.map((job) => (
               <RestartRequest
@@ -1044,7 +1046,7 @@ function ProfileSharingEnvironment({
   );
 }
 
-function RestartRequest({
+export function RestartRequest({
   job,
   model,
   busy,
@@ -1548,6 +1550,28 @@ const LIVE_SERVER_TEXT: Record<LiveDevStatus["server"]["state"], string> = {
   failed: "The live dev server is not running.",
 };
 
+/**
+ * Delivery mode for General > About. It shares Installation controls' owner session and loads
+ * its status on first show; nothing renders until controls are unlocked.
+ */
+export function DeliveryModeSetting() {
+  const model = getInstallationPanel(useHostRegistryLoaded());
+  return model ? <DeliveryModeSettingBody model={model} /> : null;
+}
+
+function DeliveryModeSettingBody({ model }: { model: InstallationPanelModel }) {
+  const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+  const needsLoad = state.unlocked && !state.liveDev;
+  // Once per unlock: a coordinator without live dev mode keeps reporting no status.
+  const loaded = useRef(false);
+  useEffect(() => {
+    if (!needsLoad || loaded.current) return;
+    loaded.current = true;
+    void model.refresh();
+  }, [model, needsLoad]);
+  return <DeliveryModeCard model={model} state={state} />;
+}
+
 /** Reliable serves the published interface; Live dev serves the Host's live checkout. */
 function DeliveryModeCard({
   model,
@@ -1958,10 +1982,6 @@ function isPlanBound(job: RestartJob): boolean {
   return restartOperationView(job) !== undefined;
 }
 
-function isPlainHostRestart(job: RestartJob): boolean {
-  return job.target === "host" && !job.update && !job.sourceBatch && !isPlanBound(job);
-}
-
 function finishLabel(job: RestartJob): string {
   return restartOperationView(job)?.finishLabel ?? "Finish turns and restart";
 }
@@ -2256,14 +2276,8 @@ function RestartEscalation({
   const [timedOut, setTimedOut] = useState(false);
   useEffect(() => {
     setTimedOut(false);
-    if (
-      !isPlainHostRestart(job) ||
-      !job.approvedAt ||
-      !["approved", "running"].includes(job.status)
-    )
-      return;
-    const deadline = Date.parse(job.approvedAt) + 60_000;
-    if (!Number.isFinite(deadline)) return;
+    const deadline = restartForceDeadline(job);
+    if (deadline === null) return;
     const delay = Math.max(0, deadline - Date.now());
     const timer = setTimeout(() => setTimedOut(true), delay);
     return () => clearTimeout(timer);
@@ -2403,8 +2417,11 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftColor: theme.colors.border,
     paddingLeft: theme.spacing[6],
   },
-  passwordCommandHover: { position: "relative" },
-  passwordCopyHighlighted: { backgroundColor: theme.colors.surface2 },
+  // The command box is the copy icon's hover group; CSS hover clears without pointer movement.
+  passwordCommandHover: { position: "relative", ...hoverGroup("password-command") },
+  passwordCopyHighlighted: groupHoverStyle("password-command", {
+    backgroundColor: theme.colors.surface2,
+  }),
   passwordCopy: {
     position: "absolute",
     top: 0,

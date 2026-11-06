@@ -47,7 +47,14 @@ export const openSettings = async (page: Page) => {
     .catch(() => false);
   if (!inToolbar && (await overflow.isVisible())) {
     await overflow.click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    const menuSettings = page.getByRole("menuitem", { name: "Settings", exact: true });
+    // Toolbar measurement can move Settings out of More while the menu is opening.
+    await expect(menuSettings.or(settingsButton).first()).toBeVisible();
+    if (await menuSettings.isVisible()) await menuSettings.click();
+    else {
+      await page.keyboard.press("Escape");
+      await settingsButton.click();
+    }
   } else {
     await expect(settingsButton).toBeVisible();
     await settingsButton.click();

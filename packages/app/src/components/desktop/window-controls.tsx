@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { Pressable, View } from "react-native";
 import Svg, { Line, Rect } from "react-native-svg";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet } from "react-native-unistyles";
 import {
   closeDesktopWindow,
   minimizeDesktopWindow,
@@ -13,7 +13,7 @@ import {
   type DesktopWindowControlsPresentation,
 } from "@/desktop/window-chrome-presentation";
 import { useCustomDesktopWindowControls } from "@/utils/desktop-window";
-import type { Theme } from "@/styles/theme";
+import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 
 type WindowControlKind = "minimize" | "maximize" | "restore" | "close";
 
@@ -75,9 +75,8 @@ function WindowControlGlyph({
   );
 }
 
-const ThemedWindowControlGlyph = withUnistyles(WindowControlGlyph);
-const mutedGlyphMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const whiteGlyphMapping = () => ({ color: "#ffffff" });
+const CONTROL_HOVER_GROUP = "window-control";
+const CLOSE_HOVER = { backgroundColor: "rgba(232, 17, 35, 0.9)", color: "#ffffff" };
 
 function WindowControl({
   kind,
@@ -90,10 +89,10 @@ function WindowControl({
   onPress: () => void;
   presentation: DesktopWindowControlsPresentation;
 }) {
+  // Hover is browser-owned CSS on the control's hover group; only the press highlight is JS.
   const glyph = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => {
-      const highlighted = hovered || pressed;
-      const closeHighlighted = kind === "close" && highlighted;
+    ({ pressed }: { pressed: boolean }) => {
+      const isClose = kind === "close";
       return (
         <View
           style={[
@@ -101,15 +100,17 @@ function WindowControl({
             presentation.hoverShape === "circle"
               ? styles.circularControlSurface
               : styles.fullControlSurface,
-            highlighted ? styles.controlHovered : null,
-            closeHighlighted ? styles.closeHovered : null,
+            isClose ? styles.closeHoverable : styles.controlHoverable,
+            pressed ? styles.controlHovered : null,
+            pressed && isClose ? styles.closeHovered : null,
           ]}
         >
-          <ThemedWindowControlGlyph
+          {/* The glyph strokes with the surface's CSS color, so hover can recolor it. */}
+          <WindowControlGlyph
             kind={kind}
             size={presentation.glyphSize}
             strokeWidth={presentation.glyphStrokeWidth}
-            uniProps={closeHighlighted ? whiteGlyphMapping : mutedGlyphMapping}
+            color="currentColor"
           />
         </View>
       );
@@ -117,7 +118,7 @@ function WindowControl({
     [kind, presentation],
   );
   const controlStyle = useMemo(
-    () => [styles.control, { width: presentation.controlWidth }],
+    () => [styles.control, styles.controlGroup, { width: presentation.controlWidth }],
     [presentation.controlWidth],
   );
   return (
@@ -186,7 +187,14 @@ const styles = StyleSheet.create((theme) => ({
   controlSurface: {
     alignItems: "center",
     justifyContent: "center",
+    // Desktop window controls only render in Electron, so the glyph's color is always web CSS.
+    _web: { color: theme.colors.foregroundMuted },
   },
+  controlGroup: hoverGroup(CONTROL_HOVER_GROUP),
+  controlHoverable: groupHoverStyle(CONTROL_HOVER_GROUP, {
+    backgroundColor: theme.colors.interactionHighlight,
+  }),
+  closeHoverable: groupHoverStyle(CONTROL_HOVER_GROUP, CLOSE_HOVER),
   fullControlSurface: {
     width: "100%",
     height: "100%",
@@ -203,6 +211,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.interactionHighlight,
   },
   closeHovered: {
-    backgroundColor: "rgba(232, 17, 35, 0.9)",
+    backgroundColor: CLOSE_HOVER.backgroundColor,
+    _web: { color: CLOSE_HOVER.color },
   },
 }));

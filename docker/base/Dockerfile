@@ -1,23 +1,31 @@
 # syntax=docker/dockerfile:1
 
 ARG NODE_IMAGE=node:22-bookworm-slim
-FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS source-pack
+# Dependency manifests with this repository's per-commit version normalized, so the install
+# layer below stays cached until a real dependency changes. See dependency-manifests.mjs.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS dependency-manifests
+COPY . /tmp/paseo-src
+RUN node /tmp/paseo-src/docker/base/dependency-manifests.mjs /tmp/paseo-src /tmp/paseo-manifests
 
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS source-pack
+ENV ONNXRUNTIME_NODE_INSTALL=skip
+
+WORKDIR /tmp/paseo-src
+COPY --from=dependency-manifests /tmp/paseo-manifests/ ./
+RUN npm ci
+
+# Declared after the install: a new commit every release must not invalidate that layer.
 ARG PASEO_VERSION
 ARG PASEO_BUILD_COMMIT
 ENV PASEO_BUILD_COMMIT=${PASEO_BUILD_COMMIT}
 
-ENV ONNXRUNTIME_NODE_INSTALL=skip
-
-WORKDIR /tmp/paseo-src
+# The real source replaces the normalized manifests; node_modules is excluded from the context.
 COPY . .
-
 RUN set -eux; \
     if [ -n "${PASEO_VERSION:-}" ]; then \
       test "$(node -p "require('./package.json').version")" = "${PASEO_VERSION}"; \
     fi; \
-    node -e 'const fs=require("node:fs"); const pkg=JSON.parse(fs.readFileSync("package.json","utf8")); delete pkg.scripts.prepare; fs.writeFileSync("package.json", `${JSON.stringify(pkg)}\n`);'; \
-    npm ci
+    node -e 'const fs=require("node:fs"); const pkg=JSON.parse(fs.readFileSync("package.json","utf8")); delete pkg.scripts.prepare; fs.writeFileSync("package.json", `${JSON.stringify(pkg)}\n`);'
 
 RUN set -eux; \
     mkdir -p /tmp/paseo-packs; \
@@ -28,6 +36,34 @@ RUN set -eux; \
     npm pack --workspace=@getpaseo/plugin --pack-destination /tmp/paseo-packs; \
     npm pack --workspace=@getpaseo/server --pack-destination /tmp/paseo-packs; \
     npm pack --workspace=@getpaseo/cli --pack-destination /tmp/paseo-packs
+
+# The package tarballs the release and the image install. A build can replace this stage
+# with `--build-context packs=<folder>` of tarballs packed from the Host release built for
+# the same commit, which skips the compile stages above (dev-release.mjs does that).
+FROM scratch AS packs
+COPY --from=source-pack /tmp/paseo-packs/ /
+
+# A Dev release: the packages below installed under one prefix with this image's Node, so
+# Dev can run a new daemon from a read-only Host mount without rebuilding the image.
+# Only `docker build --target dev-release --output type=local,dest=<folder>` builds it;
+# scripts/installer/dev-release.mjs owns that, and server-entry.cjs selects it at startup.
+FROM ${NODE_IMAGE} AS dev-release-install
+ENV ONNXRUNTIME_NODE_INSTALL=skip
+ARG PASEO_BUILD_COMMIT
+COPY --from=packs / /tmp/paseo-packs
+# BuildKit keeps npm's download cache between releases; it never enters the output.
+RUN --mount=type=cache,id=vorteo-dev-release-npm,target=/root/.npm \
+    set -eux; \
+    echo "${PASEO_BUILD_COMMIT:-}" | grep -Eqx '[a-f0-9]{40}'; \
+    npm install -g --prefix /opt/vorteo-release /tmp/paseo-packs/*.tgz; \
+    entry=/opt/vorteo-release/lib/node_modules/@getpaseo/server/dist/scripts/supervisor-entrypoint.js; \
+    node --check "$entry"; \
+    test -s "$(dirname "$entry")/../server/web-ui/index.html"; \
+    node -e 'const r={format:1,sourceCommit:process.argv[1],node:process.version,modules:process.versions.modules,arch:process.arch}; require("node:fs").writeFileSync("/opt/vorteo-release/.vorteo-dev-release.json", JSON.stringify(r)+"\n")' "$PASEO_BUILD_COMMIT"
+
+FROM scratch AS dev-release
+COPY --from=dev-release-install /opt/vorteo-release/ /
+
 
 FROM ${NODE_IMAGE}
 
@@ -63,16 +99,6 @@ RUN set -eux; \
     xargs apt-get install -y --no-install-recommends < /opt/paseo/chromium-packages.txt; \
     rm -rf /var/lib/apt/lists/*; \
     gh --version
-
-COPY --from=source-pack /tmp/paseo-packs /tmp/paseo-packs
-RUN set -eux; \
-	npm install -g /tmp/paseo-packs/*.tgz; \
-    rm -rf /tmp/paseo-packs; \
-    npm cache clean --force; \
-    server_entry="$(npm root -g)/@getpaseo/server/dist/scripts/supervisor-entrypoint.js"; \
-    test -f "$server_entry"; \
-    printf '%s\n' "$server_entry" > /etc/paseo-server-entry; \
-    node --check "$server_entry"
 
 # Fork and downstream images can add one agent package without copying this
 # Dockerfile or baking provider credentials into an image layer.
@@ -146,9 +172,19 @@ RUN set -eux; \
     install -m 0755 "/tmp/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}/tailscale" /usr/local/bin/tailscale; \
     install -m 0755 "/tmp/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}/tailscaled" /usr/local/sbin/tailscaled; \
     rm -rf /tmp/tailscale* /var/lib/apt/lists/*; \
-    entry="$(cat /etc/paseo-server-entry)"; \
-    test -s "$(dirname "$entry")/../server/web-ui/index.html"; \
     command -v setpriv
+
+# Paseo itself changes on every release, so it installs after every stable layer above.
+COPY --from=packs / /tmp/paseo-packs
+RUN set -eux; \
+	npm install -g /tmp/paseo-packs/*.tgz; \
+    rm -rf /tmp/paseo-packs; \
+    npm cache clean --force; \
+    server_entry="$(npm root -g)/@getpaseo/server/dist/scripts/supervisor-entrypoint.js"; \
+    test -f "$server_entry"; \
+    printf '%s\n' "$server_entry" > /etc/paseo-server-entry; \
+    node --check "$server_entry"; \
+    test -s "$(dirname "$server_entry")/../server/web-ui/index.html"
 
 COPY --chown=root:root docker/tailscale/entrypoint docker/tailscale/start-paseo docker/tailscale/healthcheck docker/tailscale/initialize-web.mjs docker/tailscale/network.py /opt/personal-tailscale/
 COPY --chown=root:root docker/tailscale/supervisord.conf /etc/personal-tailscale/supervisord.conf
@@ -161,5 +197,11 @@ RUN chmod 0755 /opt/personal-tailscale /opt/personal-tailscale/* /usr/local/bin/
 ENV PASEO_WEB_UI_DIST_DIR=/home/paseo/.paseo/web-ui \
     PASEO_RELAY_ENABLED=false
 LABEL sh.paseo.container-contract="tailscale-v1"
+# This image starts a mounted Dev release when one is selected (server-entry.cjs).
+LABEL sh.vorteo.dev-release="v1"
 ENTRYPOINT ["/usr/bin/tini", "--", "/bin/bash", "/opt/personal-tailscale/entrypoint"]
 HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=3 CMD ["/usr/bin/python3", "-I", "/opt/personal-tailscale/healthcheck"]
+# Last, so a new commit changes only metadata. Upgrades compare it with the target commit
+# to decide whether the image itself needs a rebuild or a Dev release is enough.
+ARG PASEO_BUILD_COMMIT
+LABEL sh.vorteo.dev-image-commit="${PASEO_BUILD_COMMIT}"

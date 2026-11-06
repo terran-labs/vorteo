@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { SCROLL_EDGE_STICKY_DATASET } from "@/components/ui/scroll-edge-fade";
 import { Text, View, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
@@ -43,7 +44,7 @@ export function EnvironmentsPane({ onHostRemoved }: { onHostRemoved: () => void 
   return (
     <View testID="settings-environment-scroll">
       {hosts.length > 1 ? (
-        <View style={[styles.tabs, stickyPosition]}>
+        <View style={[styles.tabs, stickyPosition]} dataSet={SCROLL_EDGE_STICKY_DATASET}>
           <SettingsTabs
             options={options}
             value={selected.serverId}

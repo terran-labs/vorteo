@@ -1,4 +1,6 @@
-import { Text } from "react-native";
+import { Text, View } from "react-native";
+import { settingsStyles } from "@/styles/settings";
+import { InstallationTypeRow } from "./installation-type-section";
 import { OwnerSettingsGate } from "@/components/settings/owner-lock";
 import { useToast } from "@/contexts/toast-context";
 import { useCallback, useMemo, useState } from "react";
@@ -46,10 +48,10 @@ function UnlockedInstallationNameSection() {
   if (!readExecutionInstallation()) return null;
   const unchanged = draft.trim() === name || (!draft.trim() && name === DEFAULT_INSTALLATION_NAME);
   return (
-    <SettingsSection title="Installation name" testID="settings-installation-name">
-      <SettingsCard>
+    <SettingsSection title="Installation" testID="settings-installation-name">
+      <SettingsCard testID="settings-about-installation">
         <SettingsRow
-          label="Name"
+          label="Installation name"
           hint={`Shown in the browser tab, the welcome page and the sidebar. Leave empty for "${DEFAULT_INSTALLATION_NAME}".`}
         >
           <FormTextInput
@@ -74,6 +76,9 @@ function UnlockedInstallationNameSection() {
             {saving ? "Saving..." : "Save"}
           </Button>
         </SettingsRow>
+        <View style={settingsStyles.rowBorder}>
+          <InstallationTypeRow />
+        </View>
       </SettingsCard>
     </SettingsSection>
   );

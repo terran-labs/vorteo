@@ -2460,6 +2460,7 @@ export const ptBR: TranslationResources = {
       openai: {
         apiKey: "Chave de API",
         apiKeyHint: "Salva no host e nunca mostrada novamente.",
+        apiKeySharedHint: en.settings.voice.openai.apiKeySharedHint,
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "Salva",
         missingKey: "Chave de API ausente",

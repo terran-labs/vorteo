@@ -164,11 +164,17 @@ export async function scrollSettingsDetailDown(page: Page): Promise<number> {
   await expect
     .poll(() => scrollBody.evaluate((node) => node.scrollHeight - node.clientHeight))
     .toBeGreaterThan(0);
+  const before = await scrollBody.evaluate((node) => ({
+    top: node.scrollTop,
+    maximum: node.scrollHeight - node.clientHeight,
+  }));
+  const target = Math.min(before.top + 1000, before.maximum);
+  expect(target).toBeGreaterThan(before.top);
   await scrollBody.hover();
   await page.mouse.wheel(0, 1000);
-  await expect.poll(() => scrollBody.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
-  const offset = await scrollBody.evaluate((node) => node.scrollTop);
-  return offset;
+  // Continuous Settings already has a positive offset before the wheel event arrives.
+  await expect.poll(() => scrollBody.evaluate((node) => node.scrollTop)).toBe(target);
+  return target;
 }
 
 export async function expectSettingsDetailScrollOffset(page: Page, offset: number): Promise<void> {
@@ -270,7 +276,9 @@ export async function seedSavedSettingsHosts(
   page: Page,
   hosts: SavedSettingsHostInput[],
 ): Promise<void> {
-  await page.goto("/");
+  // This visit only establishes storage and the fixture nonce; callers reload the real app next.
+  await page.goto("/", { waitUntil: "commit" });
+  await page.waitForFunction((key) => Boolean(localStorage.getItem(key)), SEED_NONCE_KEY);
   const nowIso = new Date().toISOString();
   const registry = hosts.map((host) =>
     buildSeededHost({
@@ -432,7 +440,9 @@ export async function expectDirectHostUriHidden(page: Page): Promise<void> {
 }
 
 export async function expectDiagnosticsContent(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "Run" })).toBeVisible();
+  await expect(
+    page.getByTestId("app-diagnostic-row").getByRole("button", { name: "Run", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Play test" })).toBeVisible();
 }
 
@@ -488,7 +498,11 @@ export async function expectHostInjectMcpCard(page: Page): Promise<void> {
  * the resume-after-restart and idle-release switches for the selected host.
  */
 export async function openHostRestartBehavior(page: Page, serverId: string): Promise<void> {
-  await openHostSection(page, serverId, "agents");
+  const selected = page
+    .getByTestId(`settings-environment-${serverId}`)
+    .filter({ visible: true })
+    .first();
+  if (!(await selected.isVisible())) await selectSettingsHost(page, serverId);
   await revealSettingsLocation(page, "system.overview");
   await expect(page.getByTestId("system-restart-behavior")).toBeVisible();
 }

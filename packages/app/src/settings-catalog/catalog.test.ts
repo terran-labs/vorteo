@@ -19,6 +19,11 @@ const SRC = path.resolve(__dirname, "..");
  * these files, so a new row without a catalog entry fails here.
  */
 const PANE_SOURCES: Record<string, readonly string[]> = {
+  "general.installation": [
+    "screens/settings/general/installation-name-section.tsx",
+    "screens/settings/general/installation-type-section.tsx",
+  ],
+  "general.about": ["screens/settings/general/help-section.tsx"],
   "workspaces.newWorkspace": ["screens/settings/general/workspace-defaults-section.tsx"],
   "chat.sending": ["screens/settings/general/sending-section.tsx"],
   "general.notifications": ["desktop/components/desktop-notifications-section.tsx"],
@@ -33,6 +38,7 @@ const PANE_SOURCES: Record<string, readonly string[]> = {
   "agents.metadata": ["screens/settings/metadata-generation-page.tsx"],
   "agents.browserData": ["desktop/browser/settings/browser-data-section.tsx"],
   "maintenance.installation": ["execution-installation/panel.tsx"],
+  "system.overview": ["execution-installation/panel.tsx"],
 };
 
 /** Labels in pane sources that are not settings rows: dialogs, form fields and states. */
@@ -77,6 +83,16 @@ function rowLabels(source: string): string[] {
 }
 
 describe("settings catalog", () => {
+  it("indexes installation identity, Help and delivery mode in their rendered panes", () => {
+    const pane = (id: string) => SETTINGS_ENTRIES.find((entry) => entry.id === id)?.pane;
+    expect(pane("general.installation.name")).toBe("general.installation");
+    expect(pane("general.installation.type")).toBe("general.installation");
+    expect(pane("general.help.diagnostics")).toBe("general.about");
+    expect(pane("general.help.shortcuts")).toBe("general.about");
+    expect(pane("general.help.discord")).toBe("general.about");
+    expect(pane("general.help.github")).toBe("general.about");
+    expect(pane("maintenance.installation.deliveryMode")).toBe("system.overview");
+  });
   it("lists every section once, in order", () => {
     expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual([...SETTINGS_SECTION_IDS]);
   });
@@ -130,18 +146,22 @@ describe("settings catalog", () => {
   it("has an entry for every row label a pane renders", () => {
     const missing: string[] = [];
     let scanned = 0;
+    // A shared module can export bodies for several panes. Every row must still be indexed
+    // by a pane that actually renders that module, including System's Advanced controls.
+    const sourcePanes = new Map<string, string[]>();
     for (const [paneId, files] of Object.entries(PANE_SOURCES)) {
-      const entries = SETTINGS_ENTRIES.filter((entry) => entry.pane === paneId);
+      for (const file of files) sourcePanes.set(file, [...(sourcePanes.get(file) ?? []), paneId]);
+    }
+    for (const [file, paneIds] of sourcePanes) {
+      const entries = SETTINGS_ENTRIES.filter((entry) => paneIds.includes(entry.pane));
       const known = new Set(entries.flatMap((entry) => [entry.label, entry.labelKey ?? ""]));
-      for (const file of files) {
-        const source = readFileSync(path.join(SRC, file), "utf8");
-        for (const label of rowLabels(source)) {
-          scanned += 1;
-          if (NOT_ROWS.has(label) || known.has(label)) continue;
-          const translated = lookup(label);
-          if (translated && known.has(translated)) continue;
-          missing.push(`${paneId}: ${label}`);
-        }
+      const source = readFileSync(path.join(SRC, file), "utf8");
+      for (const label of rowLabels(source)) {
+        scanned += 1;
+        if (NOT_ROWS.has(label) || known.has(label)) continue;
+        const translated = lookup(label);
+        if (translated && known.has(translated)) continue;
+        missing.push(`${paneIds.join(", ")}: ${label}`);
       }
     }
     expect(missing).toEqual([]);

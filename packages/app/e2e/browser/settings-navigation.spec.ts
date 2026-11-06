@@ -1,4 +1,8 @@
-import { selectSettingsHost, expectSettingsHostPickerLabel } from "../support/helpers/settings";
+import {
+  selectSettingsHost,
+  expectSettingsHostPickerLabel,
+  revealSettingsLocation,
+} from "../support/helpers/settings";
 import { test, expect } from "../support/fixtures";
 import {
   buildHostWorkspaceRoute,
@@ -55,6 +59,26 @@ import { getServerId } from "../support/helpers/server-id";
 import { expectAppRoute } from "../support/helpers/route-assertions";
 import { clickNewChat, gotoWorkspace } from "../support/helpers/launcher";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
+
+for (const width of [1280, 390]) {
+  test(`Help stays reachable in Settings at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await gotoAppShell(page);
+    await openSettings(page);
+    await revealSettingsLocation(page, "general.about");
+    const help = page.getByTestId("settings-help");
+    await expect(help).toBeVisible();
+    await expect(help.getByTestId("settings-help-discord")).toHaveAccessibleName(/Discord/);
+    await expect(help.getByTestId("settings-help-github")).toHaveAccessibleName(
+      /Create GitHub issue/,
+    );
+    await help.getByTestId("settings-help-diagnostics").click();
+    await expect(page.getByTestId("app-diagnostic-sheet")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("app-diagnostic-sheet")).not.toBeVisible();
+    await expect(help).toBeVisible();
+  });
+}
 
 async function openWorkspace(
   page: import("@playwright/test").Page,

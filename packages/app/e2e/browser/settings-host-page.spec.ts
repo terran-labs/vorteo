@@ -10,6 +10,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { holdDaemonUpdateRequest } from "../support/helpers/daemon-update";
 import { getE2EDaemonPort } from "../support/helpers/daemon-port";
 import { TEST_HOST_LABEL } from "../support/helpers/daemon-registry";
 import { startIsolatedHostDaemon } from "../support/helpers/isolated-host-daemon";
@@ -106,6 +107,7 @@ test.describe("Settings host page", () => {
     page,
     outdatedDaemon,
   }) => {
+    const update = await holdDaemonUpdateRequest(page, outdatedDaemon.endpoint);
     await seedSavedSettingsHosts(page, [outdatedDaemon]);
     await page.reload();
     await openSettings(page);
@@ -122,11 +124,13 @@ test.describe("Settings host page", () => {
     const updateButton = pane.getByTestId("host-page-update-button");
     page.once("dialog", (dialog) => dialog.accept());
     await updateButton.click();
+    await update.waitUntilHeld();
     await expect(updateButton).toBeDisabled();
     await expect(pane.getByText("Updating", { exact: true })).toBeVisible();
+    update.release();
     const error = page
       .getByTestId("app-toast-message")
-      .filter({ hasText: "Failed to update the daemon:" });
+      .filter({ hasText: "Could not update Host:" });
     await expect(error).toBeVisible();
     await expect(updateButton).toBeEnabled();
   });
@@ -193,8 +197,7 @@ test.describe("Settings host page", () => {
       expect((await client.reloadDaemonConfig()).restartRequiredPaths).toEqual([]);
       expect((await client.getDaemonStatus()).pid).toBe(originalPid);
     };
-    // Vorteo's Agents pane uses the installation authority, or the first host in an
-    // unmanaged fixture. Environment tabs do not retarget installation-wide controls.
+    // System follows the selected standalone Host. Each Host retains its own restart settings.
     const hosts = [
       {
         serverId: daemon.serverId,
@@ -234,7 +237,7 @@ test.describe("Settings host page", () => {
       await test.step("other hosts keep their own setting", async () => {
         await selectSettingsHost(page, primaryServerId);
         await openHostRestartBehavior(page, primaryServerId);
-        await expectIdleAgentRelease(page, false);
+        await expectIdleAgentRelease(page, true);
         expect((await otherClient.getDaemonConfig()).config.idleRuntimeCleanup).toBe(true);
         await expectLiveSavedSetting(false);
       });
@@ -292,11 +295,9 @@ test.describe("Settings host page", () => {
 });
 
 test("restart recovery defaults off and persists opt-in and custom prompt", async ({ page }) => {
-  const serverId = getServerId();
-  await gotoAppShell(page);
-  await openSettings(page);
-  await openSettingsHost(page, serverId);
-  await openHostRestartBehavior(page, serverId);
+  // Exercise the owning card directly; environment navigation has separate coverage.
+  await page.goto("/settings/system");
+  await expect(page.getByTestId("system-restart-behavior")).toBeVisible();
   await expectRestartRecoveryEnabled(page, false);
   await setRestartRecoveryEnabled(page, true);
   await page.reload();

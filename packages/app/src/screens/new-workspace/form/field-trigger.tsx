@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, type ReactElement, type ReactNode } from "react";
 import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { ChevronDown } from "lucide-react-native";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
@@ -78,9 +79,10 @@ export function FieldTriggerContent({
 /** Pressable style for a field trigger, for triggers that bring their own Pressable. */
 export function useFieldTriggerStyle(variant: FieldTriggerVariant, disabled: boolean) {
   return useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) => [
+    (state: PressableStateCallbackType) => [
       variant === "field" ? styles.field : styles.badge,
-      !disabled && Boolean(state.hovered) && styles.highlighted,
+      // CSS :hover outranks the pressed class, so a pressed badge drops it to show its own fill.
+      !disabled && !(state.pressed && variant === "badge") && styles.highlightedOnHover,
       !disabled &&
         state.pressed &&
         (variant === "field" ? styles.highlighted : styles.badgePressed),
@@ -163,6 +165,7 @@ const styles = StyleSheet.create((theme) => ({
   highlighted: {
     backgroundColor: theme.colors.surface2,
   },
+  highlightedOnHover: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   badgePressed: {
     backgroundColor: theme.colors.surface0,
   },

@@ -7,6 +7,10 @@ import {
 } from "../../server/agent/providers/claude/limit-observation.js";
 import type { ProviderApiFetch, ProviderUsageConfigMap, ProviderUsageFetcher } from "./provider.js";
 import { unavailableUsage } from "./usage.js";
+import { ProviderUsageHistory } from "./usage-history.js";
+
+/** Background readings keep the history going while no client is polling. */
+const HISTORY_SAMPLE_INTERVAL_MS = 10 * 60 * 1000;
 
 export interface ProviderUsageServiceOptions {
   logger: Logger;
@@ -18,6 +22,8 @@ export interface ProviderUsageServiceOptions {
   claudeLimitObservations?: ClaudeLimitObservations;
   cacheTtlMs?: number;
   now?: () => number;
+  /** Where usage history persists across restarts; null keeps it in memory only. */
+  historyFile?: string | null;
 }
 
 export interface ProviderUsageListResult {
@@ -36,6 +42,8 @@ export class ProviderUsageService {
   private inFlight: Promise<ProviderUsageListResult> | null = null;
   private generation = 0;
   private readonly claudeLimitObservations: ClaudeLimitObservations;
+  private readonly history: ProviderUsageHistory;
+  private sampler: ReturnType<typeof setInterval> | null = null;
 
   invalidate(): void {
     this.generation += 1;
@@ -66,6 +74,31 @@ export class ProviderUsageService {
           });
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;
+    this.history = new ProviderUsageHistory({
+      file: options.historyFile ?? null,
+      logger: this.logger,
+      now: this.now,
+    });
+  }
+
+  /**
+   * Reads usage every ten minutes so the history keeps growing while nobody has the app open.
+   * The two-minute cache absorbs overlap with client polls.
+   */
+  startHistorySampling(intervalMs = HISTORY_SAMPLE_INTERVAL_MS): void {
+    if (this.sampler) return;
+    this.sampler = setInterval(() => {
+      void this.listUsage().catch((error: unknown) => {
+        this.logger.debug({ err: error }, "Background usage sample failed");
+      });
+    }, intervalMs);
+    this.sampler.unref?.();
+  }
+
+  async stopHistorySampling(): Promise<void> {
+    if (this.sampler) clearInterval(this.sampler);
+    this.sampler = null;
+    await this.history.flush();
   }
 
   async listUsage(options?: { forceRefresh?: boolean }): Promise<ProviderUsageListResult> {
@@ -113,7 +146,15 @@ export class ProviderUsageService {
       });
     });
 
-    const result = { fetchedAt: new Date(nowMs).toISOString(), providers };
+    try {
+      await this.history.record(providers, nowMs);
+    } catch (error) {
+      this.logger.warn({ err: error }, "Could not record provider usage history");
+    }
+    const result = {
+      fetchedAt: new Date(nowMs).toISOString(),
+      providers: this.history.attach(providers),
+    };
     if (generation === this.generation) this.cached = { fetchedAtMs: nowMs, result };
     return result;
   }

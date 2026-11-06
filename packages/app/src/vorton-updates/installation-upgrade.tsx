@@ -68,7 +68,7 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
       {offer ? (
         <>
           <Text style={styles.hint}>
-            {`System services can update to ${offer} after you review it. ${upgradeApprovalText(status.data.container, policy)}`}
+            {`System services can update to ${offer} after you review it. ${upgradeApprovalText(status.data.container, policy, status.data.upgrades)}`}
           </Text>
           <View style={styles.actions}>
             <Button

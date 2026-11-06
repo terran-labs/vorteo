@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { View, Text, Pressable } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
+import { BottomSheetScrollView } from "@/components/ui/scroll-view";
 import { X } from "lucide-react-native";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import {

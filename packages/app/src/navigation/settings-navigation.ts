@@ -46,7 +46,7 @@ export function returnFromSettings(view: SettingsView): void {
   }
 
   let parent: Href = buildSettingsRoute();
-  if (view.kind === "plugin") parent = buildSettingsSectionRoute("plugins");
+  if (view.kind === "plugin") parent = buildSettingsSectionRoute("projects");
   if (view.kind === "project") parent = buildSettingsSectionRoute("projects");
   router.dismissTo(parent as Href);
 }
