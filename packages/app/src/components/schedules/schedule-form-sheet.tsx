@@ -712,14 +712,12 @@ function ScheduleTargetFields({
       selectedModelLabel,
       disabled,
       isOpen,
-      hovered,
       pressed,
     }: {
       selectedModelLabel: string;
       onPress: () => void;
       disabled: boolean;
       isOpen: boolean;
-      hovered: boolean;
       pressed: boolean;
     }): ReactNode => {
       const displayLabel = state.selectedModelDisplay?.label ?? selectedModelLabel;
@@ -730,7 +728,8 @@ function ScheduleTargetFields({
           placeholder={displayLabel}
           leading={modelTriggerLeading}
           disabled={disabled}
-          active={hovered || pressed || isOpen}
+          // Hover is the trigger's own CSS hover style, so only press and open are passed here.
+          active={pressed || isOpen}
           size={controlSize}
           testID="schedule-model-trigger"
         />

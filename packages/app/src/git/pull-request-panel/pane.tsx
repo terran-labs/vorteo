@@ -1,6 +1,7 @@
 import { ActionFooter } from "@/components/ui/action-footer";
 import { useCallback, useMemo, useState } from "react";
-import { Image, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
+import { Image, Pressable, Text, View, type ViewStyle } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   CircleCheck,
@@ -36,7 +37,8 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceAttachmentsStore } from "@/attachments/workspace-attachments-store";
 import { useToast } from "@/contexts/toast-context";
 import { useCheckoutGitActionsStore } from "@/git/actions-store";
-import { isNative } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
+import { CAN_HOVER, hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import {
   PaneContentToolbar,
@@ -97,7 +99,6 @@ const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedRotateCw = withUnistyles(RotateCw);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 
-const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const mergedColorMapping = (theme: Theme) => ({ color: theme.colors.statusMerged });
 
 const CLIENT_PANE_CONTRIBUTIONS: readonly PaneNativeContribution[] =
@@ -112,7 +113,7 @@ function resolvePaneContribution(
   return CLIENT_PANE_CONTRIBUTIONS.find((contribution) => contribution.guard(facts)) ?? null;
 }
 
-type IconColorMapping = typeof foregroundColorMapping;
+type IconColorMapping = (theme: Theme) => { color: string };
 
 interface PrStatePresentation {
   Icon: typeof ThemedGitPullRequest;
@@ -142,30 +143,22 @@ function handleMarkdownLinkPress(url: string): boolean {
   return false;
 }
 
-function entryHeaderPressableStyle({ hovered }: { hovered?: boolean }) {
-  return [styles.entryHeaderPressable, Boolean(hovered) && styles.hoverable];
+function entryHeaderPressableStyle() {
+  return [styles.entryHeaderPressable, styles.hoverable];
 }
 
-function kebabTriggerStyle({
-  hovered = false,
-}: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.kebabButton, hovered && styles.kebabButtonHovered];
+function kebabTriggerStyle() {
+  return styles.kebabButton;
 }
 
-function refreshButtonStyle(
-  { hovered, pressed }: PressableStateCallbackType & { hovered?: boolean },
-  isCompact: boolean,
-) {
-  return paneContentToolbarIconButtonStyle({ hovered, pressed }, false, isCompact);
+function refreshButtonStyle({ pressed }: PressableStateCallbackType, isCompact: boolean) {
+  return paneContentToolbarIconButtonStyle({ pressed }, false, isCompact);
 }
 
-function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }) {
-  return (
-    <ThemedMoreVertical
-      size={14}
-      uniProps={hovered ? foregroundColorMapping : foregroundMutedColorMapping}
-    />
-  );
+/** Web tints through the trigger's CSS `color`, which follows `:hover`; native has no hover. */
+function renderKebabTriggerIcon() {
+  if (isWeb) return <MoreVertical size={14} color="currentColor" />;
+  return <ThemedMoreVertical size={14} uniProps={foregroundMutedColorMapping} />;
 }
 
 function addLoadingCheck(current: ReadonlySet<string>, checkKey: string): ReadonlySet<string> {
@@ -526,33 +519,29 @@ export function PullRequestPane({
         </PaneContentToolbar>
 
         <Pressable onPress={handleOpenPrUrl} style={styles.header}>
-          {({ hovered }) => (
-            <>
-              <Text style={styles.title} testID="pr-pane-title">
-                {data.title}
-                <Text style={styles.titleNumber}>
-                  {" "}
-                  {forgePresentation.numberPrefix}
-                  {data.number}
-                </Text>
+          <Text style={styles.title} testID="pr-pane-title">
+            {data.title}
+            <Text style={styles.titleNumber}>
+              {" "}
+              {forgePresentation.numberPrefix}
+              {data.number}
+            </Text>
+          </Text>
+          <View style={styles.metaLine}>
+            <StateIcon size={14} uniProps={statePresentation.iconColor} />
+            <Text style={stateLabelStyle(data.state)} testID="pr-pane-state">
+              {t(getStateLabelKey(data.state))}
+            </Text>
+            {nativeHeaderMeta}
+            {repoIdentity ? (
+              <Text style={styles.repoRef} numberOfLines={1}>
+                {repoIdentity}
               </Text>
-              <View style={styles.metaLine}>
-                <StateIcon size={14} uniProps={statePresentation.iconColor} />
-                <Text style={stateLabelStyle(data.state)} testID="pr-pane-state">
-                  {t(getStateLabelKey(data.state))}
-                </Text>
-                {nativeHeaderMeta}
-                {repoIdentity ? (
-                  <Text style={styles.repoRef} numberOfLines={1}>
-                    {repoIdentity}
-                  </Text>
-                ) : null}
-                <View style={hovered ? styles.headerLinkIcon : styles.headerLinkIconHidden}>
-                  <ThemedExternalLink size={12} uniProps={foregroundMutedColorMapping} />
-                </View>
-              </View>
-            </>
-          )}
+            ) : null}
+            <View style={styles.headerLinkIcon}>
+              <ThemedExternalLink size={12} uniProps={foregroundMutedColorMapping} />
+            </View>
+          </View>
         </Pressable>
 
         {nativeChecksSection ?? (
@@ -663,26 +652,33 @@ function TimelineEntryCard({
   return <SingleActivityCard entry={entry} collapsed={collapsed} {...callbacks} />;
 }
 
-function useRevealOnHover() {
+/** CSS hover groups for revealed kebabs. Nested cards need distinct names (entry > thread > comment). */
+type RevealGroup = "pr-entry" | "pr-thread" | "pr-comment";
+
+/**
+ * Kebabs stay mounted and reveal through CSS while their group is hovered or focused. They stay
+ * shown on native, compact layouts and while their menu is open, since the cursor then rests on
+ * the menu portal outside the group.
+ */
+function useRevealActions() {
   const isCompact = useIsCompactFormFactor();
-  const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const actionsVisible = isHovered || menuOpen || isNative || isCompact;
-  return { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen };
+  const actionsAlwaysVisible = menuOpen || isNative || isCompact;
+  return { actionsAlwaysVisible, setMenuOpen };
 }
 
 function ActivityKebab({
   activity,
-  visible,
+  alwaysVisible,
+  group,
   attachEnabled,
   brandLabel,
   onMenuOpenChange,
   onAddToChat,
 }: {
   activity: PrPaneActivity;
-  visible: boolean;
+  alwaysVisible: boolean;
+  group: RevealGroup;
   attachEnabled: boolean;
   brandLabel: string;
   onMenuOpenChange: (open: boolean) => void;
@@ -698,7 +694,7 @@ function ActivityKebab({
   }, [activity.url]);
 
   return (
-    <View style={kebabSlotStyle(visible)} pointerEvents={visible ? "auto" : "none"}>
+    <View style={kebabSlotStyle(alwaysVisible, group)}>
       <DropdownMenu onOpenChange={onMenuOpenChange}>
         <DropdownMenuTrigger
           hitSlop={8}
@@ -727,8 +723,11 @@ function ActivityKebab({
   );
 }
 
-function kebabSlotStyle(visible: boolean) {
-  return visible ? styles.kebabSlot : styles.kebabSlotHidden;
+function kebabSlotStyle(alwaysVisible: boolean, group: RevealGroup) {
+  if (alwaysVisible) return styles.kebabSlot;
+  if (group === "pr-thread") return [styles.kebabSlot, styles.kebabRevealThread];
+  if (group === "pr-comment") return [styles.kebabSlot, styles.kebabRevealComment];
+  return [styles.kebabSlot, styles.kebabRevealEntry];
 }
 
 function ActivityAvatar({ activity, size }: { activity: PrPaneActivity; size: number }) {
@@ -819,8 +818,7 @@ function SingleActivityCard({
 }) {
   const { t } = useTranslation();
   const { activity } = entry;
-  const { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen } =
-    useRevealOnHover();
+  const { actionsAlwaysVisible, setMenuOpen } = useRevealActions();
   const hasBody = activity.body.trim() !== "";
   const handleAddToChat = useCallback(() => onAddToChat(activity), [activity, onAddToChat]);
   const handleHeaderPress = useCallback(() => {
@@ -833,17 +831,13 @@ function SingleActivityCard({
 
   if (!hasBody) {
     return (
-      <View
-        style={styles.eventRow}
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
-        testID="pr-pane-activity-row"
-      >
+      <View style={[styles.eventRow, styles.entryGroup]} testID="pr-pane-activity-row">
         <Pressable onPress={handleHeaderPress} style={entryHeaderPressableStyle}>
           <ActivityHeader activity={activity} avatarSize={20}>
             <ActivityKebab
               activity={activity}
-              visible={actionsVisible}
+              alwaysVisible={actionsAlwaysVisible}
+              group="pr-entry"
               attachEnabled={attachEnabled}
               brandLabel={brandLabel}
               onMenuOpenChange={setMenuOpen}
@@ -856,17 +850,13 @@ function SingleActivityCard({
   }
 
   return (
-    <View
-      style={styles.card}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-      testID="pr-pane-activity-row"
-    >
+    <View style={[styles.card, styles.entryGroup]} testID="pr-pane-activity-row">
       <Pressable onPress={handleHeaderPress} style={entryHeaderPressableStyle}>
         <ActivityHeader activity={activity} avatarSize={20}>
           <ActivityKebab
             activity={activity}
-            visible={actionsVisible}
+            alwaysVisible={actionsAlwaysVisible}
+            group="pr-entry"
             attachEnabled={attachEnabled}
             brandLabel={brandLabel}
             onMenuOpenChange={setMenuOpen}
@@ -940,8 +930,7 @@ function ReviewCard({
 }) {
   const { t } = useTranslation();
   const { review, threads } = entry;
-  const { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen } =
-    useRevealOnHover();
+  const { actionsAlwaysVisible, setMenuOpen } = useRevealActions();
   const hasBody = review.body.trim() !== "";
   const handleAddToChat = useCallback(() => onAddToChat(review), [onAddToChat, review]);
   const handleHeaderPress = useCallback(() => {
@@ -949,12 +938,7 @@ function ReviewCard({
   }, [collapsed, entry.id, onToggleCollapsed]);
 
   return (
-    <View
-      style={styles.card}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-      testID="pr-pane-activity-row"
-    >
+    <View style={[styles.card, styles.entryGroup]} testID="pr-pane-activity-row">
       <Pressable onPress={handleHeaderPress} style={entryHeaderPressableStyle}>
         <ActivityHeader activity={review} avatarSize={20}>
           {collapsed && attachEnabled && canAddPullRequestActivityToChat(review) ? (
@@ -976,7 +960,8 @@ function ReviewCard({
           ) : null}
           <ActivityKebab
             activity={review}
-            visible={actionsVisible}
+            alwaysVisible={actionsAlwaysVisible}
+            group="pr-entry"
             attachEnabled={attachEnabled}
             brandLabel={brandLabel}
             onMenuOpenChange={setMenuOpen}
@@ -1044,8 +1029,7 @@ function ThreadBlock({
   onToggleCollapsed: (entryId: string, collapsed: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen } =
-    useRevealOnHover();
+  const { actionsAlwaysVisible, setMenuOpen } = useRevealActions();
   const handleHeaderPress = useCallback(() => {
     onToggleCollapsed(thread.id, collapsed);
   }, [collapsed, onToggleCollapsed, thread.id]);
@@ -1060,7 +1044,7 @@ function ThreadBlock({
   const [root, ...replies] = thread.comments;
 
   return (
-    <View onPointerEnter={handlePointerEnter} onPointerLeave={handlePointerLeave}>
+    <View style={styles.threadGroup}>
       <Pressable onPress={handleHeaderPress} style={threadHeaderPressableStyle}>
         <Text style={styles.threadPath} numberOfLines={1}>
           {thread.location
@@ -1080,10 +1064,7 @@ function ThreadBlock({
               <Text style={styles.ageText}>{thread.comments.length}</Text>
             </View>
           ) : null}
-          <View
-            style={kebabSlotStyle(actionsVisible)}
-            pointerEvents={actionsVisible ? "auto" : "none"}
-          >
+          <View style={kebabSlotStyle(actionsAlwaysVisible, "pr-thread")}>
             <DropdownMenu onOpenChange={setMenuOpen}>
               <DropdownMenuTrigger
                 hitSlop={8}
@@ -1142,12 +1123,14 @@ function ThreadBlock({
   );
 }
 
-function threadHeaderPressableStyle({ hovered }: { hovered?: boolean }) {
-  return [styles.threadHeader, Boolean(hovered) && styles.hoverable];
+function threadHeaderPressableStyle() {
+  return [styles.threadHeader, styles.hoverable];
 }
 
 function threadCommentStyle(contentStyle?: ViewStyle) {
-  return contentStyle ? [styles.threadComment, contentStyle] : styles.threadComment;
+  return contentStyle
+    ? [styles.threadComment, styles.commentGroup, contentStyle]
+    : [styles.threadComment, styles.commentGroup];
 }
 
 function ThreadComment({
@@ -1163,19 +1146,15 @@ function ThreadComment({
   onAddToChat: (activity: PrPaneActivity) => void;
   contentStyle?: ViewStyle;
 }) {
-  const { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen } =
-    useRevealOnHover();
+  const { actionsAlwaysVisible, setMenuOpen } = useRevealActions();
   return (
-    <View
-      style={threadCommentStyle(contentStyle)}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-    >
+    <View style={threadCommentStyle(contentStyle)}>
       <View style={styles.threadCommentHeader}>
         <ActivityHeader activity={comment} avatarSize={16}>
           <ActivityKebab
             activity={comment}
-            visible={actionsVisible}
+            alwaysVisible={actionsAlwaysVisible}
+            group="pr-comment"
             attachEnabled={attachEnabled}
             brandLabel={brandLabel}
             onMenuOpenChange={setMenuOpen}
@@ -1205,14 +1184,13 @@ const styles = StyleSheet.create((theme) => ({
   invisible: {
     opacity: 0,
   },
-  hoverable: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   header: {
     flexDirection: "column",
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[4],
+    ...hoverGroup("pr-header"),
   },
   title: {
     fontSize: theme.fontSize.base,
@@ -1255,12 +1233,10 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     marginLeft: theme.spacing[1],
   },
+  // Shown only while the header is hovered or focused; hidden on touch, as before.
   headerLinkIcon: {
     marginLeft: theme.spacing[1],
-  },
-  headerLinkIconHidden: {
-    marginLeft: theme.spacing[1],
-    opacity: 0,
+    ...(CAN_HOVER ? revealOnGroupHover("pr-header") : { opacity: 0 }),
   },
   divider: {
     height: 1,
@@ -1373,18 +1349,19 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
-  kebabSlotHidden: {
-    width: 22,
-    alignItems: "center",
-    justifyContent: "center",
-    opacity: 0,
-  },
+  entryGroup: hoverGroup("pr-entry"),
+  threadGroup: hoverGroup("pr-thread"),
+  commentGroup: hoverGroup("pr-comment"),
+  kebabRevealEntry: revealOnGroupHover("pr-entry"),
+  kebabRevealThread: revealOnGroupHover("pr-thread"),
+  kebabRevealComment: revealOnGroupHover("pr-comment"),
   kebabButton: {
     padding: 2,
     borderRadius: 4,
-  },
-  kebabButtonHovered: {
-    backgroundColor: theme.colors.surface2,
+    ...hoverStyle(
+      { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
   cardBody: {
     paddingHorizontal: theme.spacing[3],

@@ -1,5 +1,59 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Calm spinner: Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
+
+Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
+
+Maintenance review (2026-11-05): live tweak by Breadcrumb plus: When drilled into a project, its new workspace plus is always visible in the breadcrumb; the menu still appears on hover.
+
+Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev shows the sidebar version as v<version>+N, the commits on the live branch since that version's release commit, and the live checkout's branch check no longer fails when another ref shares the live branch name.
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Command center and sidebar status-list rows publish their CSS hover surface, so their status rings follow hover; includes the shared-scroller import swap for both files
+
+Maintenance review (2026-11-05): live tweak by Upgrade time estimate: Upgrade approval text states the expected duration, measured from this installation's last successful upgrade or a typical range without one, and when Host agents are interrupted.
+
+Maintenance review (2026-11-05): live tweak by Static interface fallback button: A Live dev page that cannot start offers Load static interface beside the other fallback buttons. Live dev's declaration watchers now stamp their output, so commit hooks in the live checkout no longer rebuild declarations under the running dev server.
+
+Maintenance review (2026-11-05): live tweak by Quota usage history: Quota charts now build real history while the app is open; frequent polling had kept each account at a single sample.
+
+Maintenance review (2026-11-05): live tweak by Calm sidebar rows: Idle sidebar rows are quieter, and drilling into a project no longer shifts the rows below.
+
+Maintenance review (2026-11-05): live tweak by Lower left sidebar: The sidebar footer now pairs the installation name with small per-account quota charts that show each account's week and flag accounts that will run out before their reset; View preferences live in the main menu, and Help moved to Settings.
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Sidebar calm rows, project arrows, status-ring halos, menu triggers and desktop tab chips follow CSS hover, so no visual hover sticks after layout moves under a resting cursor
+
+Maintenance review (2026-11-05): live tweak by Markdown preview edges: Scroll areas across the app now fade their content at an edge with more to scroll, through the shared scrollers; a lint rule keeps new scrollers on the pattern. Pane separators match the toolbar rule.
+
+Maintenance review (2026-11-05): live tweak by Live dev on custom domain: The custom domain follows Live dev: the signed-in owner gets the live interface there, with hot reload, while ?interface=safe still serves the published build on either address.
+
+Maintenance review (2026-11-05): live tweak by Lab self-update Host restart: Lab self-updates now really move the Host daemon onto the new build; before, they could report success while the Host still ran the previous release.
+
+Maintenance review (2026-11-05): live tweak by Quota usage history: Quota charts in the sidebar footer can draw how each account's usage climbed this week: the daemon now records usage readings over time and keeps them across restarts.
+
+Maintenance review (2026-11-05): live tweak by Live dev indicator tooltip: The Live dev panel now looks like the app's tooltips, with a tail, closes when you click elsewhere or press Escape, and keeps Vorteo's colors on the static interface.
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Folder and section rows swap their icon for the disclosure arrow and lift their calm tone with CSS hover, so neither sticks after the sidebar reflows
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Hover highlights and hover-revealed actions use CSS hover, so they clear when a click moves layout out from under a resting cursor; live-dev release can now hand back individual files
+
+Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
+
+Maintenance review (2026-11-05): live tweak by Claude reset credits: Secret scanning no longer flags the Claude reset test, which used a random UUID as a request ID; pushes from this repository pass the pre-push scan again.
+
+Maintenance review (2026-11-05): live tweak by Claude reset credits: Claude accounts with full web sign-in show their limit resets in the account picker and can spend one from the existing reset dialog. Vorteo reads the grants with the usage check it already makes, the same request Claude Code sends; setup-token accounts still have no resets.
+
+Maintenance review (2026-11-05): live tweak by Hourglass calm and flip: The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
+
+Maintenance review (2026-11-05): live tweak by Fix duplicate account spinners: Profile picker accounts show a single refresh ring around the account icon instead of two spinners, and the compact reset button is shorter.
+
+Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+
+Maintenance review (2026-11-05): live tweak by Questions card drafts: Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
+
+Maintenance review (2026-11-05): live tweak by Lab self-update: Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
+
+Maintenance review (2026-11-05): live tweak by Scroll edge fades: The sidebar workspace list now fades under its top and bottom dividers while more workspaces lie past them, through a shared scroll edge fade hook.
+
 Maintenance review (2026-11-06): snapshots run one at a time and fail when their own files go missing; only a source file that is really gone is skipped. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-06): snapshot capture is asynchronous, skips entries that vanish mid-copy and clones files where supported; restore is unchanged. README overview and onboarding are unchanged.
@@ -17,8 +71,6 @@ Maintenance review (2026-11-05): the gitleaks config allows UUID values in the C
 Maintenance review (2026-11-05): merged current `main`, including the Unite touch icon fix, into the VortLab lab beta branch; both sides kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.501 for VortLab with custom domains and lab self-update; live design tweaks were held out by the owner. Version and changelog only. README overview and onboarding are unchanged.
-
-Maintenance review (2026-11-05): live tweak by Lab self-update: Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
 Maintenance review (2026-11-05): the Factory Mechanic and the Vorteo System Optimizer charters gain a standing CI, test and build efficiency duty with alert thresholds, after a day where every PR push ran about 30 jobs and cheap required checks waited an hour for runners. README overview and onboarding are unchanged.
 
@@ -55,6 +107,7 @@ Maintenance review (2026-11-04): review fixes for installer upgrades: rollback c
 Maintenance review (2026-11-04): the install tests' upgrade jobs install old releases from a checkout of their tag, because the old installers' GitHub API lookup was refused on shared macOS runners. Test only; installer behavior unchanged. README unchanged.
 
 Maintenance review (2026-11-04): the installer upgrades installations it made. Rerunning `install.sh` fetches the target release first, shows the installed and latest versions, and offers an in-place upgrade with an optional name and update policy change, built beside the running release with a snapshot, per-service rollback and a resumable journal. It supports every installer release since 26.11.103. Not yet released. README onboarding updated.
+
 Maintenance review (2026-11-05): OAuth upgrade verification now requires a readable, unexpired grant with a refresh token before retiring setup-token access. Missing or unreadable credentials preserve the setup definition and do not trigger logout. Independent re-review and installation remain pending.
 
 Maintenance review (2026-11-05): Claude connection reliability repair pins CLI 2.1.318, makes managed health checks passive, and preserves refresh recovery through temporary failures. Credential read errors no longer imply sign-out; completed refreshes are adopted even after request failure. Queued dependent messages stop on failed turns, and Claude (CLI) is distinct from installation accounts with one creation flow. Focused regression checks pass; installation and sustained live refresh acceptance remain pending. README overview and onboarding are unchanged.
@@ -72,10 +125,6 @@ Maintenance review (2026-11-05): a timed-out settings admission read raises the 
 Maintenance review (2026-11-05): added a narrow gitleaks allowlist entry for a random test request UUID in one live commit's Claude reset test, matching the entry on `live/main`, so the all-refs pre-push secret scan passes. Tooling only; product functionality, README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): simplified the review hourglass. Each bulb's sand is the bulb's whole interior and the bottom bulb mirrors the top, so the loop turns over without a jump; drain and pile share one linear timing on web and native, and the stream's first grain falls under gravity. README overview and onboarding are unchanged.
-
-Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
-
-Maintenance review (2026-11-05): live tweak by Hourglass calm and flip: The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
 
@@ -102,6 +151,7 @@ Maintenance review (2026-11-04): `agent.provider_subagents.list` answers from th
 Maintenance review (2026-11-04): merged current `main`, including the Dev boot-entry switch, the single sidebar footer block and later trackpad dictation, into the open question answer delivery fix; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): owner answers to open questions steer into a busy thread's active turn instead of waiting behind it, falling back to the message queue when the provider cannot steer. Delivery, the thread message and the journal entry are recorded when the agent receives the answer, and the card shows queued answers as queued. After review, a steer that throws is settled as uncertain and reconciled from provider history rather than requeued, and a paused queue no longer blocks answer steering. Review rounds then found repeated ordering hazards in text-based steer correlation for Pi and OMP, so that correlation was reverted: those adapters match upstream again and mark their steer acknowledgements as ambiguous, and their answers wait in the queue until the turn ends. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): the heavy-job queue uses an atomic populated-directory rename for exclusive slot ownership and recovers dead owners without deleting successor claims. Ticket rewrites are atomic. The CLI and environment variables are unchanged. Not yet installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): trackpad dictation. A triple click anywhere in the window toggles dictation into the active message field and stops without sending, so a lone Magic Trackpad can drive dictation. Not yet installed. README overview and onboarding are unchanged.
@@ -1084,7 +1134,7 @@ Maintenance review (2026-10-22): web builds trim themselves to their sealed expo
 - **One-command installation.** `curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash` creates the installation before any environment boots, on macOS or Linux, Host-only or with Dev behind the network gate, with Tailscale or local-only access, and wraps legacy container-only deployments. A Host installation from before the installer upgrades to its layout in place, through an interface upgrade, a Host source update or the same command, keeping its root, identity and data and moving Dev to gate mode. Later upgrades to tagged releases happen in the interface and cover the Host, coordinator and Dev image after a safety snapshot. Source only; no real install has run yet.
 - **Environment network gate.** With `PASEO_NETWORK_MODE=gate`, Dev runs on an internal Docker network with no Tailscale, `NET_ADMIN` or Host gateway. A reviewed gate container proxies every outbound connection, refuses tailnet, Host, local-network and metadata destinations after resolving them, relays inbound daemon traffic and logs each connection. See [network gate](plans/execution-environments/network-gate.md).
 - **One-command installation.** `curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash` creates the installation before any environment boots, on macOS or Linux, Host-only or with Dev behind the network gate, with Tailscale or local-only access, and wraps legacy container-only deployments. It offers to install missing Node.js 24, Git, Docker and Tailscale, each after an explicit yes. Later upgrades to tagged releases happen in the interface and cover the Host, coordinator and Dev image after a safety snapshot. Source only; no real install has run yet.
-- **Environment network gate.** With `PASEO_NETWORK_MODE=gate`, Dev runs on an internal Docker network with no Tailscale, `NET_ADMIN` or Host gateway. A reviewed gate container proxies every outbound connection, refuses tailnet, Host, local-network and metadata destinations after resolving them, relays inbound daemon traffic and logs each connection. See [network gate](execution-installation.md#dev-network-gate).
+- **Environment network gate.** With `PASEO_NETWORK_MODE=gate`, Dev runs on an internal Docker network with no Tailscale, `NET_ADMIN` or Host gateway. A reviewed gate container proxies every outbound connection, refuses tailnet, Host, local-network and metadata destinations after resolving them, relays inbound daemon traffic and logs each connection. Dev reaches the coordinator over plain HTTP at `http://host.docker.internal:<listenPort>` through the gate; the managed Dev client, settings admission and profile admission accept that origin only from a container client in gate mode, and every other plain-HTTP origin outside Host loopback is refused. See [network gate](execution-installation.md#dev-network-gate).
 - **Installation names.** The owner names an installation in General settings; the tab, welcome page and sidebar footers show it, so a lab and production are never confused.
 - **Installation update workflows.** Source update checks prepare editable update and upstream-merge tasks. Persistent publication uses guarded builds and receipts; a web-only update cannot activate new daemon behavior. Web builds delete their snapshot and dependencies once the export is sealed and prune stale build directories, so each no longer leaves about 3 GB behind. Installation connections survive reloads and domain migration. See [instance continuity](instance-continuity.md).
 
@@ -1868,7 +1918,7 @@ Source batching preserves complete historical release-note entries, including du
 - **Read-only service access and one installation overview.** The owner can issue service principals, non-interactive credentials with chosen daemon permissions, from `paseo access service` or host Settings, and revoke them immediately. Only `workspace.read` is issuable, service sessions are refused every path-addressed and host-routing operation, the daemon stores only token hashes, and a service token has no header-bearer or HTTP authority. The Host coordinator's `/api/installation/overview` returns projects, workspaces and agents from every environment in one call, reading each daemon through its own read-only principal and reporting unreachable environments with their error and no data. Observer tokens authorize only that route. Agent grants give a service principal read authority over exact agents or a workspace's agents, and steering-message or cancel authority over exact agents only, and nothing else; broader workspace-scoped grants for files and git are not implemented. The owner can create a Claude-family thread with `toolAccess: "none"`, which the daemon and Claude provider launch without any tool, so a message grant on it cannot act through tools. See [permissions](permissions.md#service-principals) and [read-only overview](execution-installation.md#read-only-overview).
 - **Host orchestration of container workers.** Trusted host orchestrators can manage agents through the coordinator's fixed container-management interface. Container credentials cannot use that interface to approve restarts or obtain host-shell authority. See [agent management](execution-installation.md#agent-management).
 - **Fresh workspace bases and local service settings.** Upstream Paseo branches an unqualified base such as `main` from the local branch first. Vorteo fetches `origin/main` and uses it when the local branch is strictly behind, keeping local-first behavior for unpushed commits, so a primary checkout that only receives work through other worktrees no longer seeds stale workspaces. The daemon also merges untracked `paseo.local.json` script entries over `paseo.json`, advertised as `localProjectConfig`; the preview helper writes its launch wrapper there so previews never dirty a shared checkout. See [development](development.md#paseojson-service-scripts).
-- **Private workspace previews and host folders.** Workspace services reuse the task's existing workspace, configured service and HTTPS reservation. Sidebar preview globes use a neutral color and a four-pixel right inset; service health remains in the accessible label. Administrators can enable bounded recovery after daemon restarts for active, unchanged, previously verified services. Recovery rechecks listener ownership and TLS; explicit stops remain stopped. Shared host folders are explicit mounts, and preview registration does not authorize broader host access or duplicate workspaces. A service may be declared only in the untracked `paseo.local.json`. A stale or symlinked workspace registration no longer blocks other workspaces from reserving a port. See [preview workspace reuse](../docker/tailscale/AGENT-INSTRUCTIONS.md#preview-workspace-reuse).
+- **Private workspace previews and host folders.** Workspace services reuse the task's existing workspace, configured service and HTTPS reservation. Sidebar preview globes use a neutral color and a four-pixel right inset; service health remains in the accessible label. Administrators can enable bounded recovery after daemon restarts for active, unchanged, previously verified services. Recovery rechecks listener ownership and TLS; explicit stops remain stopped. Shared host folders are explicit mounts, and preview registration does not authorize broader host access or duplicate workspaces. A service may be declared only in the untracked `paseo.local.json`. A stale or symlinked workspace registration no longer blocks other workspaces from reserving a port. Dev registrations using a Host-path alias are accepted only when live bind metadata and Dev path resolution prove the same configured destination; mount changes and ambiguous aliases remain rejected. See [preview workspace reuse](../docker/tailscale/AGENT-INSTRUCTIONS.md#preview-workspace-reuse).
 - **Optional private custom domains.** A separate Tailscale and Caddy gateway gives the application a custom HTTPS hostname without publishing host ports or enabling Funnel. DNS validation renews certificates, and application authentication remains required. See [private domains](private-domain.md).
 - **Managed preview monitor replacement.** A separate Host-requested operation binds owner approval to reviewed monitor bytes, container identity and directory ancestry. Atomic exchange retains the displaced entry; ambiguous results fence later lifecycle work without replay or automatic rollback. Older clients retain cancellation but cannot approve hidden configuration changes. Source preparation is complete; managed activation and live acceptance remain pending. See [monitor maintenance](preview-monitor-maintenance.md).
 - **Installation update workflows.** Source update checks prepare editable update and upstream-merge tasks. Persistent publication uses guarded builds and receipts; a web-only update cannot activate new daemon behavior. Installation connections survive reloads and domain migration. See [instance continuity](instance-continuity.md).
@@ -1980,6 +2030,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+November 5, 2026: The Dev image Dockerfile installs dependencies from version-normalized manifests and installs Paseo after the agent tools and Tailscale, so upgrades reuse cached layers. Image contents are unchanged. README overview and onboarding are unchanged.
 
 November 5, 2026: Moved the Custom domain card above Delivery mode in Installation controls, so it stays put when Delivery mode moves to About. No behavior change.
 

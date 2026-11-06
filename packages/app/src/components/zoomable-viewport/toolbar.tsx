@@ -3,6 +3,8 @@ import { Pressable, View } from "react-native";
 import { Scan, ZoomIn, ZoomOut } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
+import { isWeb } from "@/constants/platform";
+import { CAN_HOVER, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import { useVortonTouch } from "@/vorton-touch";
 import {
   iconButtonChromeGlyphSize,
@@ -85,14 +87,15 @@ function ViewportToolbarButton({
   const isCompact = useVortonTouch();
   const iconSize = iconButtonChromeGlyphSize("small", isCompact);
   const buttonStyle = React.useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) =>
+    ({ pressed }: { pressed: boolean }) =>
       iconButtonChromeStyle({
         size: "small",
         compact: isCompact,
-        state: { hovered, pressed },
+        state: { pressed },
         disabled,
         style: [
-          visible ? styles.button : styles.buttonHidden,
+          visible ? styles.button : styles.buttonReveal,
+          disabled ? styles.iconTintDisabled : styles.iconTint,
           isCompact ? styles.touchButton : null,
         ],
       }),
@@ -108,9 +111,8 @@ function ViewportToolbarButton({
       style={buttonStyle}
       testID={action.testID}
     >
-      {({ hovered }) => (
-        <Icon size={iconSize} color={hovered ? styles.iconHovered.color : styles.icon.color} />
-      )}
+      {/* Web tints through the button's CSS `color`, which follows `:hover`. */}
+      <Icon size={iconSize} color={isWeb ? "currentColor" : styles.icon.color} />
     </Pressable>
   );
 }
@@ -130,11 +132,15 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 1,
     pointerEvents: "auto",
   },
-  buttonHidden: {
+  // `visible` is false only on web without touch: shown while the viewport hover group is
+  // hovered or focused (see index.web.tsx), and always shown on devices without hover.
+  // The toolbar overlay is click-through, so shown buttons must opt back into pointer events.
+  buttonReveal: {
     backgroundColor: theme.colors.surface2,
-    opacity: 0,
-    pointerEvents: "none",
+    ...(CAN_HOVER ? revealOnGroupHover("zoom-viewport") : { opacity: 1, pointerEvents: "auto" }),
   },
+  iconTint: hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
+  // Disabled buttons never reported hover, so they keep the muted tint.
+  iconTintDisabled: { _web: { color: theme.colors.foregroundMuted } },
   icon: { color: theme.colors.foregroundMuted },
-  iconHovered: { color: theme.colors.foreground },
 }));

@@ -4,7 +4,6 @@ import {
   default as React,
   useCallback,
   useMemo,
-  useState,
   type ComponentType,
   type PropsWithChildren,
   type ReactElement,
@@ -24,7 +23,12 @@ import {
   createControlGeometry,
   type ControlSize,
 } from "@/components/ui/control-geometry";
+import { isWeb } from "@/constants/platform";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
+
+/** Hover is browser-owned CSS on this group, so it clears when the button moves away. */
+const BUTTON_HOVER_GROUP = "button";
 
 type ButtonVariant = "default" | "secondary" | "outline" | "ghost" | "destructive";
 
@@ -84,6 +88,8 @@ const accentForegroundIconMapping = (theme: Theme) => ({
 const destructiveForegroundIconMapping = (theme: Theme) => ({
   iconColor: theme.colors.destructiveForeground,
 });
+// A ghost icon strokes with the button's CSS color on web, so CSS hover recolors it.
+const currentColorIconMapping = () => ({ iconColor: "currentColor" });
 
 const styles = StyleSheet.create((theme) => {
   const geometry = createControlGeometry(theme);
@@ -121,25 +127,29 @@ const styles = StyleSheet.create((theme) => {
     ghost: {
       backgroundColor: "transparent",
       borderColor: "transparent",
+      _web: { color: theme.colors.foregroundMuted },
     },
     destructive: {
       backgroundColor: theme.colors.destructive,
       borderColor: theme.colors.destructive,
     },
-    hoveredNeutral: {
+    group: hoverGroup(BUTTON_HOVER_GROUP),
+    hoveredNeutral: hoverStyle({ backgroundColor: theme.colors.interactionHighlight }),
+    hoveredGhost: hoverStyle({
       backgroundColor: theme.colors.interactionHighlight,
-    },
-    hoveredPrimary: {
+      color: theme.colors.foreground,
+    }),
+    hoveredPrimary: hoverStyle({
       backgroundColor: theme.colors.accentBright,
       borderColor: theme.colors.accentBright,
-    },
-    hoveredSecondary: {
+    }),
+    hoveredSecondary: hoverStyle({
       backgroundColor: theme.colors.surface4,
       borderColor: theme.colors.surface4,
-    },
-    hoveredDestructive: {
+    }),
+    hoveredDestructive: hoverStyle({
       borderColor: theme.colors.destructiveForeground,
-    },
+    }),
     pressed: {
       opacity: 0.85,
     },
@@ -163,9 +173,7 @@ const styles = StyleSheet.create((theme) => {
     textGhost: {
       color: theme.colors.foregroundMuted,
     },
-    textGhostHovered: {
-      color: theme.colors.foreground,
-    },
+    textGhostHoverable: groupHoverStyle(BUTTON_HOVER_GROUP, { color: theme.colors.foreground }),
   };
 });
 
@@ -196,7 +204,6 @@ export function Button({
     loading?: boolean;
   }
 >) {
-  const [hovered, setHovered] = useState(false);
   const containedSize = useContainedControlSize();
   const size = sizeProp ?? containedSize ?? "md";
   const isDisabled = disabled || loading;
@@ -217,27 +224,28 @@ export function Button({
   const isIconOnly = children == null && leftIcon != null;
   const sizeStyle = size === "sm" ? styles.sm : styles.md;
   const iconOnlyStyle = size === "sm" ? styles.iconOnlySm : styles.iconOnlyMd;
-  const isGhostHovered = hovered && !isDisabled && variant === "ghost";
-  let hoverStyle: ViewStyle = styles.hoveredNeutral;
-  if (variant === "default") hoverStyle = styles.hoveredPrimary;
-  else if (variant === "secondary") hoverStyle = styles.hoveredSecondary;
-  else if (variant === "destructive") hoverStyle = styles.hoveredDestructive;
+  const isGhostHoverable = !isDisabled && variant === "ghost";
+  let variantHoverStyle = styles.hoveredNeutral;
+  if (variant === "default") variantHoverStyle = styles.hoveredPrimary;
+  else if (variant === "secondary") variantHoverStyle = styles.hoveredSecondary;
+  else if (variant === "destructive") variantHoverStyle = styles.hoveredDestructive;
+  else if (variant === "ghost") variantHoverStyle = styles.hoveredGhost;
 
-  const handleHoverIn = useCallback(() => setHovered(true), []);
-  const handleHoverOut = useCallback(() => setHovered(false), []);
-
+  // CSS :hover outranks the base class, so a disabled button leaves the hover rule out. A caller
+  // `style` merges into the same class but cannot outrank the hover rule.
   const pressableStyle = useCallback(
     ({ pressed }: PressableStateCallbackType): StyleProp<ViewStyle> => [
       styles.base,
+      styles.group,
       sizeStyle,
       isIconOnly ? iconOnlyStyle : null,
       variantStyle,
-      hovered && !isDisabled ? hoverStyle : null,
+      isDisabled ? null : variantHoverStyle,
       pressed ? styles.pressed : null,
       isDisabled ? styles.disabled : null,
       style,
     ],
-    [sizeStyle, isIconOnly, iconOnlyStyle, variantStyle, isDisabled, style, hovered, hoverStyle],
+    [sizeStyle, isIconOnly, iconOnlyStyle, variantStyle, isDisabled, style, variantHoverStyle],
   );
 
   const resolvedTextStyle = useMemo(
@@ -248,9 +256,9 @@ export function Button({
       variant === "destructive" ? styles.textDestructive : null,
       variant === "ghost" ? styles.textGhost : null,
       textStyle,
-      isGhostHovered ? styles.textGhostHovered : null,
+      isGhostHoverable ? styles.textGhostHoverable : null,
     ],
-    [size, variant, textStyle, isGhostHovered],
+    [size, variant, textStyle, isGhostHoverable],
   );
 
   const accessibilityState = useMemo(
@@ -266,7 +274,7 @@ export function Button({
       return destructiveForegroundIconMapping;
     }
     if (variant === "ghost") {
-      return isGhostHovered ? foregroundIconMapping : foregroundMutedIconMapping;
+      return isWeb && !loading ? currentColorIconMapping : foregroundMutedIconMapping;
     }
     return foregroundIconMapping;
   }
@@ -277,8 +285,6 @@ export function Button({
       accessibilityRole={accessibilityRole ?? "button"}
       accessibilityState={accessibilityState}
       disabled={isDisabled}
-      onHoverIn={handleHoverIn}
-      onHoverOut={handleHoverOut}
       style={pressableStyle}
     >
       <ThemedButtonIcon

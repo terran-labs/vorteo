@@ -26,6 +26,7 @@ function fixture() {
     platform: "linux" as const,
     homeDir,
     uid: process.getuid?.(),
+    env: {} as NodeJS.ProcessEnv,
   };
   return { file, config, input };
 }
@@ -93,4 +94,20 @@ test.each([
   expect(() => resolveManagedInstallationClient({ ...input, uid })).toThrow(
     "The paired Dev installation client is missing or invalid. Repair its managed installation client before starting the daemon.",
   );
+});
+
+const GATE = { PASEO_NETWORK_MODE: "gate" };
+test.each([
+  ["the gate route in gate mode", "http://host.docker.internal:6770", GATE, true],
+  ["HTTPS to the gate host in any mode", "https://host.docker.internal:6770", {}, true],
+  ["the gate route outside gate mode", "http://host.docker.internal:6770", {}, false],
+  ["another plain-HTTP host in gate mode", "http://gate:6770", GATE, false],
+  ["the gate host without its listen port", "http://host.docker.internal", GATE, false],
+  ["the gate host on a short port", "http://host.docker.internal:80", GATE, false],
+])("gate route origins: %s", (_case, origin, env, accepted) => {
+  const { file, config, input } = fixture();
+  writeFileSync(file, JSON.stringify({ ...config, origin }));
+  const resolve = () => resolveManagedInstallationClient({ ...input, env });
+  if (accepted) expect(resolve()).toBe(file);
+  else expect(resolve).toThrow("The paired Dev installation client is missing or invalid.");
 });

@@ -156,6 +156,7 @@ function fakeGh({
   viewer = "owner",
   author = "owner",
   queue = 0,
+  refuseAutoMerge = false,
 }) {
   const calls = [];
   const prs = [];
@@ -179,19 +180,38 @@ function fakeGh({
     pr.mergeCommit = { oid: run(merger, "rev-parse", "HEAD").trim() };
   };
   const find = (number) => prs.find((entry) => String(entry.number) === String(number));
-  const merge = (args) => {
-    const pr = find(args[2]);
-    assert.equal(args[args.indexOf("--match-head-commit") + 1], pr.headRefOid);
-    assert.ok(args.includes("--merge"));
-    if (!queue) return land(pr);
+  const enqueue = (pr) => {
     pr.inQueue = true;
     pr.queuePolls = queue;
   };
+  const merge = (args) => {
+    const pr = find(args[2]);
+    if (refuseAutoMerge) {
+      throw new Error(
+        "GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)",
+      );
+    }
+    assert.equal(args[args.indexOf("--match-head-commit") + 1], pr.headRefOid);
+    assert.ok(args.includes("--merge"));
+    if (!queue) return land(pr);
+    enqueue(pr);
+  };
   // The publisher's GraphQL merge-state query; a queued entry lands after its polls.
   const mergeState = (args) => {
+    const id = args.find((arg) => arg.startsWith("id="));
+    if (id) {
+      const pr = find(id.slice("id=PR_".length));
+      assert.equal(
+        args.find((arg) => arg.startsWith("head=")).slice("head=".length),
+        pr.headRefOid,
+      );
+      enqueue(pr);
+      return "";
+    }
     const pr = find(args.find((arg) => arg.startsWith("number=")).slice("number=".length));
     if (pr.inQueue && (pr.queuePolls -= 1) < 0) land(pr);
     return JSON.stringify({
+      id: `PR_${pr.number}`,
       state: pr.state,
       headRefOid: pr.headRefOid,
       mergeCommit: pr.mergeCommit ?? null,
@@ -333,6 +353,18 @@ test("a conflicting pull request is refused; one behind main waits in the merge 
   for (const commitId of [head, behind, result.mergeCommit]) {
     assert.equal(run(clone, "merge-base", "--is-ancestor", commitId, result.main), "");
   }
+});
+
+test("when gh falls back to the disallowed auto-merge, the pull request is enqueued directly", async () => {
+  const { clone, root, origin } = branchFixture();
+  const env = fakeGitleaks(root);
+  const head = commit(clone, "a.txt", "a\n", "Add a");
+  const { gh, calls } = fakeGh({ root, origin, checks: passing, queue: 1, refuseAutoMerge: true });
+  const plan = planFor(clone, env, gh);
+  const pr = await openPullRequest(plan, { env, gh, pollMs: 0 });
+  const result = await mergePullRequest(plan, pr, { gh, wait: { pollMs: 0 } });
+  assert.ok(calls.some((call) => call.args.some((arg) => arg.startsWith("id="))));
+  assert.equal(run(clone, "merge-base", "--is-ancestor", head, result.main), "");
 });
 
 test("publishing opens a pull request, waits for required checks and merges with a merge commit", async () => {

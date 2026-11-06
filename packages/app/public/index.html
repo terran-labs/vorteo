@@ -256,6 +256,7 @@
             </button>
             <button id="boot-check" type="button">Check endpoint</button>
             <button id="boot-retry-script" type="button" hidden>Retry interface download</button>
+            <button id="boot-static" type="button" hidden>Load static interface</button>
             <button id="boot-copy" type="button">Copy diagnostics</button>
             <button type="button" onclick="window.location.reload()">Reload</button>
           </div>
@@ -858,6 +859,22 @@
       window.addEventListener("error", bootResourceError, true);
       window.addEventListener("load", bootResourceLoaded, true);
       window.addEventListener("securitypolicyviolation", bootPolicyViolation);
+      // A Live dev page that cannot start offers the published interface. The coordinator marks
+      // live pages with its indicator; `?interface=safe` keeps this browser on the static build
+      // until the owner picks Live dev again.
+      (function () {
+        var button = document.getElementById("boot-static");
+        var reveal = function () {
+          var marker = document.getElementById("vorteo-live-dev-marker");
+          if (marker && marker.getAttribute("data-state") === "live") button.hidden = false;
+        };
+        if (document.readyState === "loading")
+          document.addEventListener("DOMContentLoaded", reveal);
+        else reveal();
+        button.addEventListener("click", function () {
+          window.location.href = "/?interface=safe";
+        });
+      })();
       document.getElementById("boot-retry-script").addEventListener("click", function () {
         if (
           !bootFailedScript ||

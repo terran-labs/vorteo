@@ -179,6 +179,7 @@ export function ContextMenuTrigger({
     [onContextMenu, openAtEvent],
   );
 
+  // `hovered` is deprecated on MenuTriggerState; callers should style hover with `hoverStyle`.
   const resolveDynamicStyle = useCallback(
     ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => {
       if (typeof style === "function") {

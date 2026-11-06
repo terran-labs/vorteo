@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { Copy, RotateCw } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { useTranslation } from "react-i18next";
 
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
@@ -154,17 +155,19 @@ export function AppDiagnosticSheet({
   }, [diagnostic, t, toast]);
 
   const iconButtonStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.iconButton,
-      (Boolean(hovered) || pressed) && styles.iconButtonHovered,
+      styles.iconButtonHoverable,
+      pressed && styles.iconButtonHovered,
     ],
     [],
   );
 
   const disabledIconButtonStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.iconButton,
-      (Boolean(hovered) || pressed) && Boolean(diagnostic) && styles.iconButtonHovered,
+      Boolean(diagnostic) && styles.iconButtonHoverable,
+      pressed && Boolean(diagnostic) && styles.iconButtonHovered,
       diagnostic ? null : styles.disabled,
     ],
     [diagnostic],
@@ -360,6 +363,7 @@ const styles = StyleSheet.create((theme) => ({
   iconButtonHovered: {
     backgroundColor: theme.colors.surface2,
   },
+  iconButtonHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   disabled: {
     opacity: 0.5,
   },

@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { Pressable, Text, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 
 export interface TerminalPasteActionProps {
   /** Clipboard holds text or an image, so a paste attempt can do something. */
@@ -63,10 +64,12 @@ function TerminalActionButton({
   variant,
 }: TerminalActionButtonProps) {
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       variant === "floating" ? styles.floatingButton : styles.keyButton,
       disabled && styles.keyButtonDisabled,
-      (Boolean(hovered) || pressed) &&
+      // CSS hover, left out while disabled because `:hover` outranks the base class.
+      !disabled && (variant === "floating" ? styles.floatingButtonHover : styles.keyButtonHover),
+      pressed &&
         !disabled &&
         (variant === "floating" ? styles.floatingButtonHovered : styles.keyButtonHovered),
     ],
@@ -115,6 +118,7 @@ const styles = StyleSheet.create((theme) => ({
   keyButtonHovered: {
     backgroundColor: theme.colors.surface2,
   },
+  keyButtonHover: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   keyButtonDisabled: {
     opacity: 0.45,
   },
@@ -133,6 +137,7 @@ const styles = StyleSheet.create((theme) => ({
   floatingButtonHovered: {
     backgroundColor: "rgba(48, 48, 48, 0.92)",
   },
+  floatingButtonHover: hoverStyle({ backgroundColor: "rgba(48, 48, 48, 0.92)" }),
   floatingButtonText: {
     color: "#f5f5f5",
     fontSize: theme.fontSize.sm,

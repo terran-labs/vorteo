@@ -3,6 +3,7 @@ import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { findInstallationEnvironment, readExecutionInstallation } from "./policy";
+import { useSidebarRowTone } from "@/components/sidebar/row-tone";
 
 const ThemedBox = withUnistyles(Box);
 const ThemedMonitor = withUnistyles(Monitor);
@@ -14,17 +15,27 @@ export function ExecutionEnvironmentIcon({
   serverId,
   hostOnly = false,
   muted = false,
+  columnWidth,
 }: {
   serverId: string | null;
   hostOnly?: boolean;
   muted?: boolean;
+  /** Centers the icon in a fixed-width column, so it lines up with the icons beside it. */
+  columnWidth?: number;
 }) {
+  // Inside a sidebar row the icon takes the row's tone, like the lock and schedule marks beside it.
+  const tone = useSidebarRowTone();
   const environment = serverId
     ? findInstallationEnvironment(readExecutionInstallation(), serverId)
     : null;
   if (!environment || (hostOnly && environment.kind !== "host")) return null;
   const size = ICON_SIZE.sm;
-  if (environment.kind === "container")
+  const icon = environmentGlyph(environment.kind, size, muted || tone === "calm");
+  return columnWidth ? <View style={[styles.column, { width: columnWidth }]}>{icon}</View> : icon;
+}
+
+function environmentGlyph(kind: string, size: number, muted: boolean) {
+  if (kind === "container")
     return (
       <View
         style={styles.monitor}
@@ -53,6 +64,7 @@ export function useHasExecutionEnvironment(serverId: string | null) {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  column: { alignItems: "center", justifyContent: "center", flexShrink: 0 },
   monitor: {
     width: theme.iconSize.sm + theme.spacing[1],
     height: theme.iconSize.sm,

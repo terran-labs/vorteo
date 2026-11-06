@@ -10,8 +10,8 @@ import {
   useIconButtonChromeStyle,
 } from "@/components/ui/icon-button-chrome";
 
+/** Press state only: hover is CSS-owned by the icon button chrome, so no caller reads it. */
 interface HeaderToggleButtonState {
-  hovered: boolean;
   pressed: boolean;
 }
 
@@ -62,8 +62,7 @@ export function HeaderToggleButton({
         style={combinedStyle}
       >
         {typeof children === "function"
-          ? (state: { pressed: boolean; hovered?: boolean }) =>
-              children({ hovered: Boolean(state.hovered), pressed: state.pressed })
+          ? (state: { pressed: boolean }) => children({ pressed: state.pressed })
           : children}
       </TooltipTrigger>
       <TooltipContent testID={tooltipTestID} side={tooltipSide} align="center" offset={8}>

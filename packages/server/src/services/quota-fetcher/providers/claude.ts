@@ -18,6 +18,11 @@ import type {
   ClaudeLimitObservationReader,
 } from "../../../server/agent/providers/claude/limit-observation.js";
 import {
+  CLAUDE_API_ORIGIN,
+  CLAUDE_USAGE_WITH_RESETS_PATH,
+  recordClaudeResetStatus,
+} from "../../../server/agent/providers/claude/reset-credits.js";
+import {
   ApiNumberSchema,
   fetchProviderApi,
   toneFromUsedPct,
@@ -80,6 +85,8 @@ const ClaudeUsageResponseSchema = z.object({
       is_enabled: z.boolean().optional(),
     })
     .nullish(),
+  // Reset grants, present because the request asks for them. Parsed in reset-credits.ts.
+  cedar_ember: z.unknown().optional(),
 });
 
 type ClaudeCredentials = z.infer<typeof ClaudeCredentialsSchema>;
@@ -635,6 +642,8 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
       return unavailableUsage(this);
     }
 
+    if (this.claudeHome) recordClaudeResetStatus(this.claudeHome, resp.cedar_ember, this.now());
+
     const scoped = reconcileScopedLimits(
       legacyScopedLimits(resp),
       this.scopedLimitsFromResponse(resp.limits),
@@ -761,13 +770,18 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   ): Promise<
     ClaudeUsageResponse | "NEEDS_AUTH" | "AUTH_REJECTED" | { rateLimitedForMs: number | null }
   > {
-    const res = await fetchProviderApi(this.fetchApi, "https://api.anthropic.com/api/oauth/usage", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-        "anthropic-beta": CLAUDE_OAUTH_BETA,
+    // The same query Claude Code uses for its reset read, so one poll serves usage and resets.
+    const res = await fetchProviderApi(
+      this.fetchApi,
+      `${CLAUDE_API_ORIGIN}${CLAUDE_USAGE_WITH_RESETS_PATH}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+          "anthropic-beta": CLAUDE_OAUTH_BETA,
+        },
       },
-    });
+    );
     if (res.status === 401) return "AUTH_REJECTED";
     if (res.status === 403) return "NEEDS_AUTH";
     if (res.status === 429)

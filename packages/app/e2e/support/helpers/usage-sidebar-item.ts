@@ -160,17 +160,25 @@ export async function expectUnpinnableRows(card: Locator): Promise<void> {
   expect(focusable).toBe(0);
 }
 
-/** The left sidebar's Quota card, which lists each account on the usage host. */
-export function quotaCard(page: Page): Locator {
-  return visible(page, "global-quota-card");
+/**
+ * The quotas the sidebar footer's chart opens, listing each account on the usage host. Opens
+ * them when they are not already showing.
+ */
+export async function openQuotas(page: Page): Promise<Locator> {
+  const popover = visible(page, "sidebar-footer-quota-popover");
+  if (!(await popover.isVisible())) {
+    await visible(page, "sidebar-footer-quota").click({ timeout: 30_000 });
+  }
+  await expect(popover).toBeVisible();
+  return popover;
 }
 
 /**
- * The Quota card's Open Usage link: the supported sidebar entry to Usage, shown while the card
+ * The quotas' Open Usage link: the supported sidebar entry to Usage, shown while the footer
  * lists an account. On a phone the sidebar drawer has to be open.
  */
 export async function openUsageFromQuotaCard(page: Page): Promise<void> {
-  await quotaCard(page).getByTestId("global-quota-open-usage").click({ timeout: 30_000 });
+  await (await openQuotas(page)).getByTestId("global-quota-open-usage").click({ timeout: 30_000 });
   await expect(page).toHaveURL(/\/usage$/);
   await expect(usageModal(page)).toBeVisible();
 }

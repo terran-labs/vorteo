@@ -1,12 +1,12 @@
 import { forwardRef, useMemo, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import {
-  ScrollView,
   StyleSheet,
   type ScrollViewProps,
   type StyleProp,
   type View,
   type ViewStyle,
 } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import Animated from "react-native-reanimated";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 

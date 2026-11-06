@@ -38,10 +38,11 @@ async function fakeMetro(seen: string[]): Promise<number> {
   });
 }
 
-async function app(metroPort: number, owner: boolean): Promise<number> {
+async function app(metroPort: number, owner: boolean, upstreamHost?: string): Promise<number> {
   const server = express();
   server.use(
     createLiveDevMiddleware({
+      ...(upstreamHost ? { upstreamHost } : {}),
       port: () => metroPort,
       ownerSession: () => owner,
       label: "Vorteo",
@@ -107,6 +108,19 @@ test("only the owner gets live code, and only through allowlisted Metro paths", 
     await get(owner, target, page);
   }
   expect(seen.filter((url) => url !== "/" && !url.endsWith("platform=web"))).toEqual([]);
+});
+
+test("the custom domain reaches Metro as the canonical host it admits", async () => {
+  const hosts: string[] = [];
+  const metro = await listen((req, res) => {
+    hosts.push(req.headers.host ?? "");
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end("<html><head></head><body>live page</body></html>");
+  });
+  const owner = await app(metro, true, "lab.tail0.ts.net:44444");
+  const live = await get(owner, "/", { ...page, host: "lab.example.com" });
+  expect(live.body).toContain("live page");
+  expect(hosts).toEqual(["lab.tail0.ts.net:44444"]);
 });
 
 test("a slow live page reuses the last one instead of falling back to static", async () => {

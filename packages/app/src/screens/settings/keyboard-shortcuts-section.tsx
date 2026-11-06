@@ -9,6 +9,8 @@ import { View, Text, type PressableStateCallbackType } from "react-native";
 import { useIsFocused } from "expo-router/react-navigation";
 import { MoreVertical, Pencil, Undo2, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import { settingsStyles } from "@/styles/settings";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
@@ -49,6 +51,10 @@ const ThemedX = withUnistyles(X);
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+// On web the icon inherits the menu button's CSS color, so browser-owned :hover brightens it.
+const inheritedIconColorMapping = isWeb
+  ? () => ({ color: "currentColor" })
+  : foregroundMutedColorMapping;
 
 const bindLeadingIcon = <ThemedPencil size={14} uniProps={foregroundMutedColorMapping} />;
 const clearLeadingIcon = <ThemedX size={14} uniProps={foregroundMutedColorMapping} />;
@@ -180,13 +186,11 @@ function ShortcutActionsMenu({
 }) {
   const { t } = useTranslation();
   const triggerStyle = useCallback(
-    ({
-      pressed,
-      hovered,
-      open,
-    }: PressableStateCallbackType & { hovered?: boolean; open?: boolean }) => [
+    ({ pressed, open }: PressableStateCallbackType & { open?: boolean }) => [
       styles.menuButton,
-      (hovered || open) && styles.menuButtonHovered,
+      // CSS :hover outranks the pressed class, so drop it while pressed.
+      !pressed && styles.menuButtonHoverable,
+      open && styles.menuButtonHovered,
       pressed && styles.menuButtonPressed,
     ],
     [],
@@ -201,10 +205,10 @@ function ShortcutActionsMenu({
         accessibilityLabel={t("settings.shortcuts.actions.menu", { name: t(row.labelKey) })}
         testID={`shortcut-actions-${row.id}`}
       >
-        {({ hovered, open }) => (
+        {({ pressed, open }) => (
           <ThemedMoreVertical
             size={14}
-            uniProps={hovered || open ? foregroundColorMapping : foregroundMutedColorMapping}
+            uniProps={pressed || open ? foregroundColorMapping : inheritedIconColorMapping}
           />
         )}
       </DropdownMenuTrigger>
@@ -526,10 +530,15 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
     alignItems: "center",
     justifyContent: "center",
+    _web: { color: theme.colors.foregroundMuted },
   },
   menuButtonHovered: {
     backgroundColor: theme.colors.surface2,
   },
+  menuButtonHoverable: hoverStyle({
+    backgroundColor: theme.colors.surface2,
+    color: theme.colors.foreground,
+  }),
   menuButtonPressed: {
     backgroundColor: theme.colors.surface3,
   },

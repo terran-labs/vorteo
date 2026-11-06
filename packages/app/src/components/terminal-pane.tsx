@@ -102,6 +102,7 @@ import {
   type WorkspaceFileOpenRequest,
 } from "@/workspace/file-open";
 import { toErrorMessage } from "@/utils/error-messages";
+import { hoverStyle } from "@/styles/hover";
 
 interface TerminalPaneProps {
   serverId: string;
@@ -168,10 +169,10 @@ interface ModifierButtonProps {
 function ModifierButton({ modifier, active, onToggle }: ModifierButtonProps) {
   const handlePress = useCallback(() => onToggle(modifier), [onToggle, modifier]);
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.keyButton,
       active && styles.keyButtonActive,
-      (Boolean(hovered) || pressed) && styles.keyButtonHovered,
+      pressed && styles.keyButtonHovered,
     ],
     [active],
   );
@@ -204,9 +205,9 @@ interface VirtualKeyButtonProps {
 function VirtualKeyButton({ id, label, keyValue, onSend }: VirtualKeyButtonProps) {
   const handlePress = useCallback(() => onSend(keyValue), [onSend, keyValue]);
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.keyButton,
-      (Boolean(hovered) || pressed) && styles.keyButtonHovered,
+      pressed && styles.keyButtonHovered,
     ],
     [],
   );
@@ -237,9 +238,9 @@ function KeyboardToggleButton({
   const label = isKeyboardVisible ? "Hide keyboard" : "Show keyboard";
   const Icon = isKeyboardVisible ? KeyboardOffIcon : KeyboardIcon;
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.keyButton,
-      (Boolean(hovered) || pressed) && styles.keyButtonHovered,
+      pressed && styles.keyButtonHovered,
     ],
     [],
   );
@@ -1331,6 +1332,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     paddingHorizontal: theme.spacing[1],
     backgroundColor: theme.colors.surface1,
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   keyButtonHovered: {
     backgroundColor: theme.colors.surface2,

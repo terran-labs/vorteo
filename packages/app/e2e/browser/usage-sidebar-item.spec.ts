@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
-import { openSidebarHelpMenu } from "../support/helpers/sidebar";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
@@ -78,13 +77,12 @@ async function expectConnectedFixtureHome(page: Page) {
   } finally {
     await client.close();
   }
-  // Settings mounts its Usage pane. Help reads connection state without opening reports.
-  await openSidebarHelpMenu(page);
-  const host = page.getByTestId(`sidebar-help-host-version-${getServerId()}`);
+  // Settings lists each host's version under Connected hosts without opening usage reports.
+  await openSettings(page);
+  const host = page.getByTestId(`settings-host-version-${getServerId()}`);
   await expect(host).toBeVisible();
-  await expect(host.getByText(expectedVersion, { exact: true })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("sidebar-help-menu")).not.toBeVisible();
+  await expect(host).toHaveText(expectedVersion);
+  await page.getByTestId("settings-back-to-workspace").click();
   await expectSettledHome(page);
 }
 

@@ -16,11 +16,12 @@ import {
   View,
   Text,
   Pressable,
-  ScrollView,
   type GestureResponderEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { NestableScrollContainer } from "react-native-draggable-flatlist";
+import { useSidebarListReachReporter } from "@/components/sidebar/list-reach";
 import type { GestureType } from "react-native-gesture-handler";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
@@ -32,6 +33,8 @@ import type { HostBadgeModel } from "@/hosts/appearance";
 import { isWeb as platformIsWeb, isNative as platformIsNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { StyleSheet } from "react-native-unistyles";
+import { groupHoverStyle, hoverGroup, hoverStyle, hoverSurface, rowSurface } from "@/styles/hover";
+import { useVortonTouch } from "@/vorton-touch";
 
 import { density, densityIconBox, densityIconProps } from "@/styles/density";
 import { withUnistyles } from "react-native-unistyles";
@@ -54,9 +57,11 @@ import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import { useWorkspaceReadState } from "@/hooks/use-workspace-read-state";
 import {
+  SIDEBAR_WORKSPACE_HOVER_GROUP,
   SidebarWorkspaceRowFrame,
   SidebarWorkspaceRowContent,
   resolveTrailingActionVisibility,
+  sidebarMenuBackdrop,
   type SidebarWorkspaceTrailingPresentation,
   SidebarWorkspaceTrailingActionBase,
   SidebarWorkspaceMenuReveal,
@@ -282,6 +287,7 @@ export function SidebarStatusWorkspaceList({
     </>
   );
 
+  const listReach = useSidebarListReachReporter();
   return (
     <View style={styles.container}>
       {platformIsNative ? (
@@ -291,6 +297,8 @@ export function SidebarStatusWorkspaceList({
           showsVerticalScrollIndicator={false}
           onScroll={onScroll}
           scrollEventThrottle={16}
+          onLayout={listReach.onLayout}
+          onContentSizeChange={listReach.onContentSizeChange}
           testID="sidebar-status-list-scroll"
         >
           <NestableScrollDivider onChange={onScrolledChange} />
@@ -303,6 +311,8 @@ export function SidebarStatusWorkspaceList({
           showsVerticalScrollIndicator={false}
           onScroll={onScroll}
           scrollEventThrottle={16}
+          onLayout={listReach.onLayout}
+          onContentSizeChange={listReach.onContentSizeChange}
           testID="sidebar-status-list-scroll"
         >
           {content}
@@ -457,6 +467,9 @@ function buildStatusRowProjectPresentation({
   };
 }
 
+/** CSS hover group for a status group heading, which swaps its icon for the arrow on hover. */
+const STATUS_GROUP_HOVER_GROUP = "sidebar-status-group";
+
 function StatusGroupHeader({
   group,
   collapsed,
@@ -465,42 +478,27 @@ function StatusGroupHeader({
   collapsed: boolean;
 }) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
   const toggleWorkspaceGroupCollapsed = useSidebarCollapsedSectionsStore(
     (state) => state.toggleWorkspaceGroupCollapsed,
   );
   const handlePress = useCallback(() => {
     toggleWorkspaceGroupCollapsed(group.key);
   }, [group.key, toggleWorkspaceGroupCollapsed]);
-  const handleHoverIn = useCallback(() => setIsHovered(true), []);
-  const handleHoverOut = useCallback(() => setIsHovered(false), []);
-  const rowStyle = useCallback(
-    ({ pressed }: PressableStateCallbackType) => [
-      styles.statusGroupRow,
-      isHovered && styles.statusGroupRowHovered,
-      pressed && styles.statusGroupRowPressed,
-    ],
-    [isHovered],
-  );
   const accessibilityState = useMemo(() => ({ expanded: !collapsed }), [collapsed]);
 
   return (
-    <View onPointerEnter={handleHoverIn} onPointerLeave={handleHoverOut}>
+    <View>
       <Pressable
         accessibilityRole={platformIsWeb ? undefined : "button"}
         accessibilityLabel={t("sidebar.statusGroupAccessibility", { label: group.label })}
         accessibilityState={accessibilityState}
-        style={rowStyle}
+        style={statusGroupRowStyle}
         onPress={handlePress}
         testID={`sidebar-status-group-${group.key}`}
       >
         <View style={styles.statusGroupRowLeft}>
           <View style={styles.statusGroupLeadingVisualSlot}>
-            <StatusGroupLeadingVisual
-              leading={group.leading}
-              collapsed={collapsed}
-              showChevron={isHovered}
-            />
+            <StatusGroupLeadingVisual leading={group.leading} collapsed={collapsed} />
           </View>
           <View style={styles.statusGroupTitleGroup}>
             <Text style={styles.statusGroupTitle} numberOfLines={1}>
@@ -513,22 +511,37 @@ function StatusGroupHeader({
   );
 }
 
+function statusGroupRowStyle({ pressed }: PressableStateCallbackType) {
+  // CSS hover outranks the base class, so the pressed fill wins by leaving the hover fill out.
+  return [
+    styles.statusGroupRow,
+    !pressed && styles.statusGroupRowHoverable,
+    pressed && styles.statusGroupRowPressed,
+  ];
+}
+
+/** Both glyphs stay mounted; CSS swaps the status icon for the disclosure arrow on hover. */
 function StatusGroupLeadingVisual({
   leading,
   collapsed,
-  showChevron,
 }: {
   leading: SidebarWorkspaceGroup["leading"];
   collapsed: boolean;
-  showChevron: boolean;
 }) {
-  if (!showChevron) {
-    return <StatusGroupIcon bucket={leading.bucket} />;
-  }
-  if (collapsed) {
-    return <ThemedChevronRight uniProps={mutedGroupIconProps} />;
-  }
-  return <ThemedChevronDown uniProps={mutedGroupIconProps} />;
+  return (
+    <>
+      <View style={styles.statusGroupIconHideOnHover}>
+        <StatusGroupIcon bucket={leading.bucket} />
+      </View>
+      <View style={styles.statusGroupChevronShowOnHover}>
+        {collapsed ? (
+          <ThemedChevronRight uniProps={mutedGroupIconProps} />
+        ) : (
+          <ThemedChevronDown uniProps={mutedGroupIconProps} />
+        )}
+      </View>
+    </>
+  );
 }
 
 function StatusGroupIcon({ bucket }: { bucket: StatusBucket }) {
@@ -843,6 +856,9 @@ function StatusWorkspaceRowInnerContent({
 }) {
   const isCompact = useIsCompactFormFactor();
   const isTouchPlatform = platformIsNative || isCompact;
+  // The row frame never reports hover on touch layouts, so neither do the CSS hover styles.
+  const vortonTouch = useVortonTouch();
+  const hoverUnavailable = isTouchPlatform || vortonTouch;
   const [isPressed, setIsPressed] = useState(false);
   const trailing = useSidebarWorkspaceTrailing();
   const {
@@ -882,7 +898,7 @@ function StatusWorkspaceRowInnerContent({
 
   return (
     <SidebarWorkspaceRowFrame workspace={workspace} isDragging={isDragging}>
-      {({ isHovered, contextMenuOpen, onContextMenuOpenChange, hoverHandlers }) => {
+      {({ contextMenuOpen, onContextMenuOpenChange }) => {
         const showShortcut = showShortcutBadge && shortcutNumber !== null;
         const {
           trailingPresentation,
@@ -892,24 +908,22 @@ function StatusWorkspaceRowInnerContent({
           workspace,
           trailing,
           hasArchiveAction: Boolean(onArchive),
-          isHovered,
-          isTouchPlatform,
+          isTouchPlatform: hoverUnavailable,
           showShortcut,
         });
         const workspaceRowStyle = getStatusWorkspaceRowStyle({
           isPressed,
           selected,
-          isHovered,
+          hoverable: !hoverUnavailable && !contextMenuOpen,
           isDragging,
         });
-        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
+        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected });
         return (
           <View
             {...dragAttributes}
             {...dragHandleProps?.listeners}
             ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
             style={styles.workspaceRowContainer}
-            {...hoverHandlers}
           >
             <SidebarWorkspaceContextMenu
               contextMenuOpen={contextMenuOpen}
@@ -950,7 +964,7 @@ function StatusWorkspaceRowInnerContent({
                 leadingProjectIconDataUri={projectIconDataUri}
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
-                isHovered={isHovered}
+                selected={selected}
                 isLoading={isArchiving}
                 shortcutNumber={shortcutNumber}
                 showShortcutBadge={showShortcutBadge}
@@ -1028,6 +1042,7 @@ function StatusWorkspaceActionSlot({
 }) {
   const sessionMenu = useWorkspaceSessionMenu(workspace.serverId, workspace.workspaceId);
   const kebab = useOpenKebabMenuVisibility(showKebab);
+  const menuBackdrop = sidebarMenuBackdrop(backdrop, kebab.menuProps.open);
   return (
     <SidebarWorkspaceTrailingActionSlot>
       {sessionMenu.sheet}
@@ -1035,12 +1050,16 @@ function StatusWorkspaceActionSlot({
         <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
       </SidebarWorkspaceTrailingActionBase>
       <SidebarWorkspaceTrailingDetails workspace={workspace} showPinMarker={showPinMarker} />
-      <SidebarWorkspaceMenuReveal visible={kebab.showKebab} backdrop={backdrop}>
+      <SidebarWorkspaceMenuReveal
+        visible={kebab.showKebab}
+        pinned={kebab.menuProps.open}
+        backdrop={menuBackdrop}
+      >
         {kebab.showKebab && onArchive ? (
           <SidebarWorkspaceMenu
             {...sessionMenu}
             {...kebab.menuProps}
-            backdrop={backdrop}
+            backdrop={menuBackdrop}
             workspaceKey={workspace.workspaceKey}
             serverId={workspace.serverId}
             workspaceId={workspace.workspaceId}
@@ -1067,19 +1086,21 @@ function StatusWorkspaceActionSlot({
 function getStatusWorkspaceRowStyle({
   isPressed,
   selected,
-  isHovered,
+  hoverable,
   isDragging,
 }: {
   isPressed: boolean;
   selected: boolean;
-  isHovered: boolean;
+  hoverable: boolean;
   isDragging: boolean;
 }) {
+  // CSS hover outranks the base class, so the selected, dragging and pressed fills win by
+  // leaving the hover fill out.
   return [
     styles.workspaceRow,
     // Status groups and the Pinned section both indent their rows from their heading.
     sidebarWorkspaceRowStyles.rowIndented,
-    isHovered && styles.workspaceRowHovered,
+    hoverable && !selected && !isDragging && !isPressed && styles.workspaceRowHoverable,
     selected && styles.sidebarRowSelected,
     isDragging && styles.workspaceRowDragging,
     isPressed && styles.workspaceRowPressed,
@@ -1118,10 +1139,9 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     gap: theme.spacing[2],
     userSelect: "none",
+    ...hoverGroup(STATUS_GROUP_HOVER_GROUP),
   },
-  statusGroupRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  statusGroupRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   statusGroupRowPressed: {
     backgroundColor: theme.colors.surface2,
   },
@@ -1140,6 +1160,12 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
+  statusGroupIconHideOnHover: groupHoverStyle(STATUS_GROUP_HOVER_GROUP, { display: "none" }),
+  // Hidden on native and touch web, where the group shows its status icon at rest as before.
+  statusGroupChevronShowOnHover: {
+    display: "none",
+    ...groupHoverStyle(STATUS_GROUP_HOVER_GROUP, { display: "flex" }),
+  },
   statusGroupTitleGroup: {
     flexDirection: "row",
     alignItems: "center",
@@ -1156,6 +1182,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceRowContainer: {
     position: "relative",
+    ...hoverGroup(SIDEBAR_WORKSPACE_HOVER_GROUP),
   },
   workspaceRow: {
     minHeight: density.rowHeight,
@@ -1170,11 +1197,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     userSelect: "none",
   },
-  workspaceRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  // Publishes the row's surface so status rings and badge cutouts follow its CSS hover fill.
+  workspaceRowHoverable: hoverSurface(
+    theme.colors.surfaceSidebar,
+    theme.colors.surfaceSidebarHover,
+  ),
   workspaceRowPressed: {
     backgroundColor: theme.colors.surface2,
+    ...rowSurface(theme.colors.surface2),
   },
   workspaceRowDragging: {
     backgroundColor: theme.colors.surface2,
@@ -1183,8 +1213,10 @@ const styles = StyleSheet.create((theme) => ({
     transform: [{ scale: 1.02 }],
     zIndex: 3,
     ...theme.shadow.md,
+    ...rowSurface(theme.colors.surface2),
   },
   sidebarRowSelected: {
     backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
   },
 }));

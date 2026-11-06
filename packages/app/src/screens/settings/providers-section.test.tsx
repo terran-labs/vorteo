@@ -173,6 +173,7 @@ vi.mock("@/components/settings/headings/settings-info-tip", () => ({
 vi.mock("@/components/ui/external-link", () => ({
   ExternalLink: () => null,
   ExternalLinkLabel: () => null,
+  EXTERNAL_LINK_HOVER_GROUP: "external-link",
 }));
 
 vi.mock("@/components/ui/dropdown-menu", () => ({

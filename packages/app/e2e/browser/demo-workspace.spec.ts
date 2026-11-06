@@ -587,10 +587,14 @@ test("compact rail focuses projects from its flyout", async ({ page }) => {
     page.getByTestId("sidebar-workspace-row-vorteo-demo:demo-workspace-0-0"),
   ).toBeVisible();
 
-  // Keyboard without hover: the breadcrumb's actions reveal while focus is inside them.
+  // Keyboard without hover: the breadcrumb's menu reveals while focus is inside the breadcrumb;
+  // the new workspace plus after it is always visible.
   const actions = page.getByTestId("sidebar-focus-actions");
+  const create = page.getByTestId("sidebar-focus-persistent-actions");
   await page.mouse.move(1700, 900);
   await expect(actions).toHaveCSS("opacity", "0");
+  await expect(create).toBeVisible();
+  await expect(create).toHaveCSS("opacity", "1");
   await page.getByTestId("sidebar-focus-crumb-all").focus();
   await page.keyboard.press("Tab");
   await expect
@@ -599,7 +603,7 @@ test("compact rail focuses projects from its flyout", async ({ page }) => {
   await expect(actions).toHaveCSS("opacity", "1");
   await page.keyboard.press("Tab");
   await expect
-    .poll(() => actions.evaluate((group) => group.contains(document.activeElement)))
+    .poll(() => create.evaluate((group) => group.contains(document.activeElement)))
     .toBe(true);
   await expect(actions).toHaveCSS("opacity", "1");
   await page.getByTestId("sidebar-focus-crumb-all").focus();

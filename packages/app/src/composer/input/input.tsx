@@ -31,6 +31,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
+import { hoverStyle } from "@/styles/hover";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ArrowUp, Mic, MicOff, CornerDownLeft, ListPlus, Plus, Square } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
@@ -258,23 +259,20 @@ interface TextAreaHandle {
 }
 
 function AttachButtonIcon({
-  hovered,
   onAttachButtonRef,
   buttonIconSize,
 }: {
-  hovered: boolean;
   onAttachButtonRef: ((node: View | null) => void) | undefined;
   buttonIconSize: number;
 }) {
   const touch = useVortonTouch();
-  const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
   return (
     <View
       ref={onAttachButtonRef}
       collapsable={false}
       style={[styles.attachButtonAnchor, touch && styles.touchButton]}
     >
-      <ThemedPlus size={buttonIconSize} uniProps={colorMapping} />
+      <ThemedPlus size={buttonIconSize} uniProps={iconInheritedColorMapping} />
     </View>
   );
 }
@@ -310,7 +308,7 @@ function AttachmentDropdown({
   isConnected: boolean;
   disabled: boolean;
   attachButtonStyle: React.ComponentProps<typeof DropdownMenuTrigger>["style"];
-  renderAttachButtonIcon: (input: { hovered?: boolean }) => React.ReactElement;
+  renderAttachButtonIcon: () => React.ReactElement;
   attachmentMenuItems: AttachmentMenuItem[];
   addAttachmentLabel: string;
 }) {
@@ -349,12 +347,10 @@ function AttachmentDropdown({
 }
 
 function VoiceButtonIcon({
-  hovered,
   isDictating,
   isMutedRealtime,
   buttonIconSize,
 }: {
-  hovered: boolean;
   isDictating: boolean;
   isMutedRealtime: boolean;
   buttonIconSize: number;
@@ -362,11 +358,10 @@ function VoiceButtonIcon({
   if (isDictating) {
     return <Square size={buttonIconSize} color="white" fill="white" />;
   }
-  const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
   if (isMutedRealtime) {
-    return <ThemedMicOff size={buttonIconSize} uniProps={colorMapping} />;
+    return <ThemedMicOff size={buttonIconSize} uniProps={iconInheritedColorMapping} />;
   }
-  return <ThemedMic size={buttonIconSize} uniProps={colorMapping} />;
+  return <ThemedMic size={buttonIconSize} uniProps={iconInheritedColorMapping} />;
 }
 
 type ShortcutChord = NonNullable<React.ComponentProps<typeof Shortcut>["chord"]>;
@@ -793,7 +788,7 @@ function VoiceButtonTooltip({
   isDictationStartEnabled: boolean;
   voiceButtonAccessibilityLabel: string;
   voiceButtonStyle: React.ComponentProps<typeof TooltipTrigger>["style"];
-  renderVoiceButtonIcon: (input: { hovered?: boolean }) => React.ReactElement;
+  renderVoiceButtonIcon: () => React.ReactElement;
   voiceTooltipText: string;
   isRealtimeVoiceForCurrentAgent: boolean;
   voiceMuteToggleKeys: ShortcutChord | null | undefined;
@@ -2105,21 +2100,24 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [t, toast],
     );
 
-    const attachButtonStyle = useCallback(
-      ({ hovered }: { hovered?: boolean }) => [
+    // Hover is browser-owned CSS; disabled buttons and the recording state keep their own look.
+    const attachButtonStyle = useMemo(
+      () => [
         styles.attachButton,
         touch && styles.touchButton,
-        Boolean(hovered) && styles.iconButtonHovered,
+        !isConnected || disabled ? styles.iconButtonRest : styles.iconButtonHoverable,
         (!isConnected || disabled) && styles.buttonDisabled,
       ],
       [isConnected, disabled, touch],
     );
 
-    const voiceButtonStyle = useCallback(
-      ({ hovered }: { hovered?: boolean }) => [
+    const voiceButtonStyle = useMemo(
+      () => [
         styles.voiceButton,
         touch && styles.touchDictationButton,
-        Boolean(hovered) && !isDictating && styles.iconButtonHovered,
+        !isDictating && isDictationStartEnabled
+          ? styles.iconButtonHoverable
+          : styles.iconButtonRest,
         !isDictationStartEnabled && styles.buttonDisabled,
         isDictating && styles.voiceButtonRecording,
       ],
@@ -2200,20 +2198,15 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     );
 
     const renderAttachButtonIcon = useCallback(
-      ({ hovered }: { hovered?: boolean }) => (
-        <AttachButtonIcon
-          hovered={Boolean(hovered)}
-          onAttachButtonRef={onAttachButtonRef}
-          buttonIconSize={buttonIconSize}
-        />
+      () => (
+        <AttachButtonIcon onAttachButtonRef={onAttachButtonRef} buttonIconSize={buttonIconSize} />
       ),
       [onAttachButtonRef, buttonIconSize],
     );
 
     const renderVoiceButtonIcon = useCallback(
-      ({ hovered }: { hovered?: boolean }) => (
+      () => (
         <VoiceButtonIcon
-          hovered={Boolean(hovered)}
           isDictating={isDictating}
           isMutedRealtime={Boolean(isRealtimeVoiceForCurrentAgent && voice?.isMuted)}
           buttonIconSize={buttonIconSize}
@@ -2726,9 +2719,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
     fontWeight: theme.fontWeight.medium,
     color: theme.colors.accentForeground,
   },
-  iconButtonHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  // `color` tints the icon, which inherits it on web through `iconInheritedColorMapping`.
+  iconButtonHoverable: hoverStyle(
+    { backgroundColor: theme.colors.surface2, color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
+  iconButtonRest: { _web: { color: theme.colors.foregroundMuted } },
   tooltipRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2765,4 +2761,8 @@ const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 
 const iconForegroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+// On web the icon inherits its button's CSS color, so browser-owned hover can brighten it.
+const iconInheritedColorMapping = isWeb
+  ? () => ({ color: "currentColor" })
+  : iconForegroundMutedMapping;
 const iconAccentForegroundMapping = (theme: Theme) => ({ color: theme.colors.accentForeground });

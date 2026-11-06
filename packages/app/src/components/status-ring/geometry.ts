@@ -31,10 +31,12 @@ export const STATUS_RING_HEAD_OPACITY = 0.9;
 // phase from one UI-thread clock. A row that appears mid-flight therefore lands in step with the
 // rings already turning.
 export const STATUS_RING_PERIOD_MS = 900;
+/** The sidebar's calmer tempo: a third of the default rate, still phase-locked to wall time. */
+export const STATUS_RING_CALM_PERIOD_MS = STATUS_RING_PERIOD_MS * 3;
 
-export function getStatusRingRotation(nowMs: number): number {
+export function getStatusRingRotation(nowMs: number, periodMs = STATUS_RING_PERIOD_MS): number {
   "worklet";
-  return ((nowMs % STATUS_RING_PERIOD_MS) / STATUS_RING_PERIOD_MS) * 360;
+  return ((nowMs % periodMs) / periodMs) * 360;
 }
 
 /**

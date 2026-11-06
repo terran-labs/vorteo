@@ -58,7 +58,10 @@ test.each(["malformed", JSON.stringify({ accessToken: "synthetic-expired", expir
       canRedeem: false,
       snapshot: { status: "unsupported" },
     });
-    await expect(reset.prepare("claude", "synthetic-other-account")).rejects.toThrow("unavailable");
+    // A setup-token account's reset session refuses by its error code; the wording names the fix.
+    await expect(reset.prepare("claude", "synthetic-other-account")).rejects.toMatchObject({
+      code: "unavailable",
+    });
     expect(readFile).not.toHaveBeenCalled();
     expect(keychain).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();

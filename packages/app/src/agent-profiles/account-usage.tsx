@@ -5,7 +5,7 @@ import { quotaReading, resetDescription } from "@/provider-usage/quota-reading";
 import { formatPct } from "@/provider-usage/format";
 import { ProviderResetControl } from "@/provider-usage/reset-control";
 import type { ProviderUsageView } from "@/provider-usage/types";
-import { ProfileLoadingSpinner, profileTileStyles } from "./profile-selector-tile";
+import { profileTileStyles } from "./profile-selector-tile";
 
 const OBSERVED_NOTE = "From last limit message";
 
@@ -16,9 +16,9 @@ interface UsageProps {
   compact?: boolean;
 }
 
+/** Refresh progress shows as a ring around the account icon, not in this badge. */
 export function AccountUsageBadge({ view, providerId, now, compact = false }: UsageProps) {
   const { window, statusLabel, prepaidLabel } = quotaReading(view, providerId, now);
-  const loading = view.kind === "loading" || (view.kind === "ready" && view.isRefreshing);
   const critical = Boolean(window && window.remainingPct < 5);
   const meterValue = useMemo(
     () => ({ min: 0, max: 100, now: window?.remainingPct ?? 0 }),
@@ -26,11 +26,6 @@ export function AccountUsageBadge({ view, providerId, now, compact = false }: Us
   );
   return (
     <View style={styles.badge} testID={`preset-usage-${providerId}`}>
-      {loading ? (
-        <View testID={`preset-usage-loading-${providerId}`}>
-          <ProfileLoadingSpinner />
-        </View>
-      ) : null}
       {prepaidLabel ? (
         <Text
           style={[styles.remaining, styles.prepaid]}
@@ -76,12 +71,10 @@ export function AccountUsageDetails({
   now,
   serverId,
   name,
-  resetLoading,
   localStatus,
 }: UsageProps & {
   serverId: string | null;
   name: string;
-  resetLoading: boolean;
   localStatus?: string;
 }) {
   const { window, usage, statusLabel, authRecovery, prepaidLabel, observed } = quotaReading(
@@ -115,7 +108,6 @@ export function AccountUsageDetails({
         {description}
         {observedNote ? ` · ${observedNote}` : null}
       </Text>
-      {resetLoading ? <ProfileLoadingSpinner /> : null}
       {!localStatus && !authRecovery ? (
         <View style={styles.reset}>
           <ProviderResetControl

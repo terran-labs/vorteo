@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { ZoomableViewport } from "@/components/zoomable-viewport";
+import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import type { MarkdownFenceRendererProps } from "./types";
 import { MermaidFullscreenViewer } from "./fullscreen-viewer.web";
@@ -107,12 +108,8 @@ function MermaidFenceHostImpl({
               onPress={showDiagramPress}
               style={controlStyles.sourceButton}
             >
-              {({ hovered }) => (
-                <Workflow
-                  size={14}
-                  color={hovered ? controlStyles.iconHovered.color : controlStyles.icon.color}
-                />
-              )}
+              {/* The icon strokes with the button's CSS color, which brightens on browser :hover. */}
+              <Workflow size={14} color="currentColor" />
             </Pressable>
           ) : null}
         </View>
@@ -182,9 +179,8 @@ const controlStyles = StyleSheet.create((theme) => ({
     top: theme.spacing[2],
     right: theme.spacing[2],
     padding: theme.spacing[1],
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
-  icon: { color: theme.colors.foregroundMuted },
-  iconHovered: { color: theme.colors.foreground },
 }));
 const mapColorScheme = (theme: Theme) => ({ colorScheme: theme.colorScheme });
 const ThemedMermaidFenceHost = withUnistyles(MermaidFenceHostImpl);

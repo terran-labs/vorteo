@@ -48,6 +48,11 @@ export function MenuRoot({
 
 export interface MenuTriggerState {
   pressed: boolean;
+  /**
+   * @deprecated JS hover only updates when the pointer moves, so it sticks when a click moves the
+   * trigger out from under a resting cursor. Use `hoverStyle` or the group helpers from
+   * `@/styles/hover` instead. Kept until the remaining callers migrate; see docs/hover.md.
+   */
   hovered: boolean;
   open: boolean;
 }

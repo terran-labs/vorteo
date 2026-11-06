@@ -1,5 +1,5 @@
 import { TruncatedText } from "@/components/ui/truncated-text";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { View, type LayoutChangeEvent, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { DiffStat } from "@/components/diff-stat";
@@ -11,6 +11,7 @@ import {
   WORKSPACE_TREE_ICON_SIZE,
 } from "@/components/tree-primitives";
 import { type Theme } from "@/styles/theme";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { FileActionsContextMenuContent } from "@/components/file-actions-menu";
@@ -38,13 +39,11 @@ interface DiffFolderRowProps {
   testID?: string;
 }
 
-function folderRowPressableStyle(
-  { hovered, pressed }: PressableStateCallbackType & { hovered?: boolean },
-  isSelected: boolean,
-) {
+function folderRowPressableStyle({ pressed }: PressableStateCallbackType, isSelected: boolean) {
   return [
     workspaceTreeRowStyles.row,
-    (Boolean(hovered) || pressed || isSelected) && workspaceTreeRowStyles.active,
+    styles.rowHover,
+    (pressed || isSelected) && workspaceTreeRowStyles.active,
   ];
 }
 
@@ -71,9 +70,6 @@ export function DiffFolderRow({
   const handleSelect = useCallback(() => {
     onSelect(dirPath);
   }, [dirPath, onSelect]);
-  const [isHovered, setIsHovered] = useState(false);
-  const showNameHover = useCallback(() => setIsHovered(true), []);
-  const hideNameHover = useCallback(() => setIsHovered(false), []);
 
   const handlePress = useCallback(() => {
     const selection = isWeb ? window.getSelection() : null;
@@ -85,8 +81,7 @@ export function DiffFolderRow({
   }, [dirPath, handleSelect, onToggle]);
 
   const pressableStyle = useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) =>
-      folderRowPressableStyle(state, isSelected),
+    (state: PressableStateCallbackType) => folderRowPressableStyle(state, isSelected),
     [isSelected],
   );
 
@@ -144,8 +139,6 @@ export function DiffFolderRow({
           onLongPress={handleSelect}
           onContextMenu={handleSelect}
           style={pressableStyle}
-          onHoverIn={showNameHover}
-          onHoverOut={hideNameHover}
           accessibilityRole="button"
           accessibilityState={accessibilityState}
           aria-selected={isSelected}
@@ -156,11 +149,7 @@ export function DiffFolderRow({
               <TreeChevron expanded={!collapsed} />
             </View>
             <TruncatedText
-              style={[
-                styles.folderName,
-                workspaceTreeRowStyles.name,
-                isHovered && workspaceTreeRowStyles.nameHovered,
-              ]}
+              style={[styles.folderName, workspaceTreeRowStyles.name, styles.nameHover]}
               numberOfLines={1}
               testID={testID ? `${testID}-name` : undefined}
             >
@@ -195,6 +184,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
   container: {
     overflow: "hidden",
   },
+  // CSS hover so the highlight clears when a collapse moves the row out from under the cursor.
+  rowHover: hoverGroup(
+    "tree-row",
+    hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover })._web,
+  ),
+  nameHover: groupHoverStyle("tree-row", { opacity: 1 }),
   left: {
     flexDirection: "row",
     alignItems: "center",

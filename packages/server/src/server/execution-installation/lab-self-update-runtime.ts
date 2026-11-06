@@ -33,7 +33,7 @@ import {
 import { liveDevPaths } from "./live-dev/supervisor.js";
 import { releaseOfEntrypoint } from "./release-upgrade-runtime.js";
 import { RestartRequestError, type InstallationRestarts } from "./restarts.js";
-import { managedServices } from "./service-control.js";
+import { createServiceControl, managedServices } from "./service-control.js";
 
 const COORDINATOR_READY_TIMEOUT_MS = 120_000;
 const BUILD_TIMEOUT_MS = 60 * 60_000;
@@ -478,6 +478,13 @@ export function createLabSelfUpdateRuntime(input: {
       return job.id;
     },
     hostRestart,
+    async restartHostService() {
+      if (typeof services === "string") throw new Error(services);
+      // The installer engine restarts the Host the same way: the supervisor starts over and
+      // resolves host-current, so the worker it launches runs the selected release.
+      await createServiceControl(services).restart("host");
+      logger.info("Lab self-update restarted the Host service");
+    },
     cancelHostRestart(jobId) {
       const job = restarts.list().find((item) => item.id === jobId);
       if (!job) return false;

@@ -7,7 +7,6 @@ test.use({ vortonMode: true });
 
 async function openShowPreferences(page: Page): Promise<void> {
   await page.getByTestId("sidebar-footer-overflow").click();
-  await page.getByTestId("sidebar-display-preferences-action").click();
   await page.getByTestId("sidebar-display-show").click();
 }
 
