@@ -4,4 +4,4 @@
 
 ## Maintenance review
 
-Merged main into the Dev image layer caching branch and moved its changelog entry into a change fragment. No behavior change.
+Merged main into the Dev image layer caching branch and moved its changelog entry into a change fragment, then formatted the manifest script, which failed the format check. No behavior change.
