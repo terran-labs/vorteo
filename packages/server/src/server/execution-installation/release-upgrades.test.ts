@@ -518,6 +518,20 @@ test.each([
     },
   },
   {
+    name: "a reported success fails while the coordinator still runs its previous release",
+    run: () => {
+      // A service pinned to a release restarts on it however the link moves.
+      const fake = followPorts();
+      const follow = new CoordinatorFollow(createCoordinatorFollowJournal(directory), fake.ports);
+      approvedFollow(follow);
+      follow.drain();
+      fake.report("succeeded");
+      follow.drain();
+      expect(follow.status().job).toMatchObject({ status: "failed" });
+      expect(follow.status().job?.detail).toContain("release link");
+    },
+  },
+  {
     name: "a helper that never reports is judged by the running release after the deadline",
     run: () => {
       const fake = followPorts();

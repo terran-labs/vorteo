@@ -94,14 +94,20 @@ const COORDINATOR_LINK_MISSING =
 
 /**
  * Why the coordinator cannot move itself to another release, or null. It needs the installer's
- * coordinator release link and service descriptors.
+ * coordinator release link and service descriptors, and must start through that link: a
+ * service pinned to one release keeps running it after the link moves.
  */
 function coordinatorReplacement(
   config: InstallationConfig,
   services: ReturnType<typeof managedServices>,
+  entrypoint: string,
 ): string | null {
-  if (!config.deployment?.coordinator) return COORDINATOR_LINK_MISSING;
-  return typeof services === "string" ? services : null;
+  const link = config.deployment?.coordinator?.releaseLink;
+  if (!link) return COORDINATOR_LINK_MISSING;
+  if (typeof services === "string") return services;
+  if (!entrypoint.startsWith(`${link}/`))
+    return "The coordinator service starts a fixed release instead of its release link, so moving the link would not move it. Report this; the installer cannot move it either.";
+  return null;
 }
 
 /** The release root a coordinator entrypoint runs from. */
@@ -264,6 +270,14 @@ export function createReleaseUpgradeRuntime(input: {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
   const entrypoint = input.entrypoint ?? process.argv[1] ?? "";
+  // Resolved once: a link moved later without a restart must not pass for the new release.
+  const startedRelease: { release: string } | { error: unknown } = (() => {
+    try {
+      return { release: releaseOfEntrypoint(entrypoint) };
+    } catch (error) {
+      return { error };
+    }
+  })();
   const root = snapshotRoot(config);
   const snapshots = root
     ? createInstallationSnapshots({
@@ -640,7 +654,10 @@ export function createReleaseUpgradeRuntime(input: {
       if (!config.sourceUpdates) throw new Error("Host source updates are unavailable");
       return realpathSync(config.sourceUpdates.currentReleaseLink);
     },
-    runningRelease: () => releaseOfEntrypoint(entrypoint),
+    runningRelease: () => {
+      if ("error" in startedRelease) throw startedRelease.error;
+      return startedRelease.release;
+    },
     coordinatorRelease() {
       const link = config.deployment?.coordinator?.releaseLink;
       if (!link) throw new Error("The coordinator release link is unknown");
@@ -728,7 +745,7 @@ export function createReleaseUpgradeRuntime(input: {
 
   const coordinatorFollow = new CoordinatorFollow(createCoordinatorFollowJournal(followDirectory), {
     now: () => new Date(),
-    replacement: coordinatorReplacement(config, services),
+    replacement: coordinatorReplacement(config, services, entrypoint),
     // Checked at request, approval and dispatch: never restart the coordinator under other
     // lifecycle work it coordinates.
     conflict: () => {

@@ -767,6 +767,15 @@ export class CoordinatorFollow {
       launchedAt: job.startedAt ?? job.createdAt,
       next: job.next,
     });
+    if (result.status === "succeeded" && this.ports.runningRelease() !== job.next) {
+      // The helper sees only a new process answer. One started outside the link runs on.
+      this.finish(
+        job,
+        "failed",
+        "The coordinator restarted but still runs its previous release. Its service does not start through the release link.",
+      );
+      return;
+    }
     if (result.status !== "waiting") this.finish(job, result.status, result.detail);
   }
 

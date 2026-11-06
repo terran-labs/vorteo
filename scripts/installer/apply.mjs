@@ -71,7 +71,11 @@ export function installResult(plan, outputs) {
   };
 }
 
-export async function runSteps(steps, state, emit, { force = false } = {}) {
+/**
+ * Runs `steps` in order and journals each one. `stopAfter` is asked after every journaled
+ * failure or success; true ends the run there, so an exit always follows a saved step.
+ */
+export async function runSteps(steps, state, emit, { force = false, stopAfter } = {}) {
   for (const [index, step] of steps.entries()) {
     if (!force && state.journal.isDone(step)) {
       emit({ step, status: "skip", message: "Already done." });
@@ -127,6 +131,7 @@ export async function runSteps(steps, state, emit, { force = false } = {}) {
     } catch (error) {
       state.journal.mark(step, "fail", error.message);
       emit({ step, status: "fail", message: error.message, fix: error.fix ?? RERUN });
+      stopAfter?.();
       return false;
     }
     state.journal.mark(step, "done", result?.skip ?? result?.message);
@@ -138,6 +143,7 @@ export async function runSteps(steps, state, emit, { force = false } = {}) {
         message: result.message,
         ...(result.fix ? { fix: result.fix } : {}),
       });
+    if (stopAfter?.()) return false;
   }
   return true;
 }
