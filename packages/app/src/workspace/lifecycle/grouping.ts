@@ -1,3 +1,4 @@
+import type { ProjectFactoryState } from "@/components/sidebar/factory-state";
 import {
   PROJECT_FACTORY_ROLE_IDS,
   fallbackFactoryRoleTitle,
@@ -6,6 +7,14 @@ import type {
   SidebarWorkspaceEntry,
   SidebarWorkspacePlacement,
 } from "@/hooks/sidebar-workspaces-view-model";
+
+type FactoryWorkspaceState = Pick<ProjectFactoryState, "serverId" | "projectId" | "state"> & {
+  roles: readonly { workspaceId: string | null }[];
+};
+function hasProjectFactory(state: FactoryWorkspaceState): boolean {
+  if (state.state === "on" || state.state === "paused") return true;
+  return state.state === "unavailable" && state.roles.some((role) => role.workspaceId !== null);
+}
 
 export function splitStandingWorkspaces(
   workspaces: readonly SidebarWorkspacePlacement[],
@@ -24,12 +33,9 @@ export function splitFactoryWorkspaces(
   workspaces: readonly SidebarWorkspacePlacement[],
   entries: ReadonlyMap<string, SidebarWorkspaceEntry>,
   supportedHosts: ReadonlyMap<string, boolean>,
-  states: readonly {
-    serverId: string;
-    projectId: string;
-    roles: readonly { workspaceId: string | null }[];
-  }[] = [],
+  states: readonly FactoryWorkspaceState[] = [],
 ) {
+  const activeStates = states.filter(hasProjectFactory);
   const factory: SidebarWorkspacePlacement[] = [];
   const remaining: SidebarWorkspacePlacement[] = [];
   const projectHosts = new Set(
@@ -41,23 +47,30 @@ export function splitFactoryWorkspaces(
         : [];
     }),
   );
+  for (const state of activeStates) {
+    projectHosts.add(JSON.stringify([state.serverId, state.projectId]));
+  }
   for (const workspace of workspaces) {
     const entry = entries.get(workspace.workspaceKey);
-    const mechanic =
-      entry?.systemMembership?.role === "optimization-runner" &&
-      projectHosts.has(JSON.stringify([entry.serverId, entry.projectId]));
+    const state = activeStates.find(
+      (candidate) =>
+        candidate.serverId === workspace.serverId && candidate.projectId === entry?.projectId,
+    );
+    const roleMember = state?.roles.some((role) => role.workspaceId === workspace.workspaceId);
+    const projectHasFactory = projectHosts.size > 0;
     const supported = supportedHosts.get(workspace.serverId) === true;
-    if (
-      (supported && entry?.factoryMembership?.installationId.startsWith("project-factory:")) ||
-      mechanic
-    )
-      factory.push(workspace);
+    const nativeMember =
+      supported && entry?.factoryMembership?.installationId.startsWith("project-factory:");
+    const standingMember = projectHasFactory && entry?.standing;
+    const systemMechanic =
+      !state && projectHasFactory && entry?.systemMembership?.role === "optimization-runner";
+    if (roleMember || nativeMember || standingMember || systemMechanic) factory.push(workspace);
     else remaining.push(workspace);
   }
   const roles = PROJECT_FACTORY_ROLE_IDS;
   const rank = (workspace: SidebarWorkspacePlacement) => {
     const entry = entries.get(workspace.workspaceKey);
-    const state = states.find(
+    const state = activeStates.find(
       (candidate) =>
         candidate.serverId === workspace.serverId && candidate.projectId === entry?.projectId,
     );
@@ -68,6 +81,8 @@ export function splitFactoryWorkspaces(
     // Display-only fallback until daemon state arrives. Membership is established above.
     if (entry?.systemMembership?.role === "optimization-runner")
       return roles.indexOf("factory-mechanic");
+    if (!entry?.factoryMembership?.installationId.startsWith("project-factory:"))
+      return roles.length;
     const title = entry?.title ?? entry?.name ?? "";
     const index = roles.findIndex((role) => title.endsWith(`:: ${fallbackFactoryRoleTitle(role)}`));
     return index < 0 ? roles.length : index;
@@ -81,6 +96,7 @@ export function factoryOverviewTargets(
   workspaces: readonly SidebarWorkspacePlacement[],
   entries: ReadonlyMap<string, SidebarWorkspaceEntry>,
   availableHosts: ReadonlySet<string>,
+  states: readonly FactoryWorkspaceState[] = [],
 ) {
   const targets = new Map<
     string,
@@ -99,12 +115,33 @@ export function factoryOverviewTargets(
       continue;
     const key = JSON.stringify([membership.serverId, membership.projectId]);
     const previous = targets.get(key);
-    if (previous && previous.installationId !== membership.installationId) ambiguous.add(key);
+    const currentIsProjectFactory = membership.installationId.startsWith("project-factory:");
+    const previousIsProjectFactory = previous?.installationId.startsWith("project-factory:");
+    if (previousIsProjectFactory && !currentIsProjectFactory) continue;
+    if (currentIsProjectFactory && !previousIsProjectFactory) {
+      ambiguous.delete(key);
+    }
+    if (
+      previous &&
+      previousIsProjectFactory === currentIsProjectFactory &&
+      previous.installationId !== membership.installationId
+    )
+      ambiguous.add(key);
     targets.set(key, {
       serverId: membership.serverId,
       projectId: membership.projectId,
       installationId: membership.installationId,
     });
+  }
+  for (const state of states) {
+    if (!availableHosts.has(state.serverId) || !hasProjectFactory(state)) continue;
+    const key = JSON.stringify([state.serverId, state.projectId]);
+    targets.set(key, {
+      serverId: state.serverId,
+      projectId: state.projectId,
+      installationId: `project-factory:${state.projectId}`,
+    });
+    ambiguous.delete(key);
   }
   return Array.from(targets.entries())
     .filter(([key]) => !ambiguous.has(key))

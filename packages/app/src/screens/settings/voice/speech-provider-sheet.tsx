@@ -1,3 +1,4 @@
+import { readExecutionInstallation } from "@/execution-installation/policy";
 import {
   useCallback,
   useEffect,
@@ -210,6 +211,7 @@ function LanguageField({ state, model }: FormProps) {
 
 function OpenAiFields({ state, model }: FormProps) {
   const { t } = useTranslation();
+  const shared = readExecutionInstallation() !== null;
   const modelOptions = useMemo(
     () => buildOpenAiModelOptions(state.kind, state.openAiModel),
     [state.kind, state.openAiModel],
@@ -219,10 +221,12 @@ function OpenAiFields({ state, model }: FormProps) {
     () => (
       <SettingsInfoTip
         title={t("settings.voice.openai.apiKey")}
-        info={t("settings.voice.openai.apiKeyHint")}
+        info={t(
+          shared ? "settings.voice.openai.apiKeySharedHint" : "settings.voice.openai.apiKeyHint",
+        )}
       />
     ),
-    [t],
+    [t, shared],
   );
   const baseUrlInfo = useMemo(
     () => (

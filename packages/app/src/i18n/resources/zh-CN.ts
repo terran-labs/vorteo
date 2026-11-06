@@ -2397,6 +2397,7 @@ export const zhCN: TranslationResources = {
       openai: {
         apiKey: "API 密钥",
         apiKeyHint: "保存在主机上，不会再次显示。",
+        apiKeySharedHint: en.settings.voice.openai.apiKeySharedHint,
         keyPlaceholder: "sk-...",
         savedKeyPlaceholder: "已保存",
         missingKey: "缺少 API 密钥",

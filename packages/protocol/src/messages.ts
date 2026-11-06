@@ -4427,6 +4427,8 @@ export const ServerInfoStatusPayloadSchema = z
         codexInstallationSignIn: z.boolean().optional(),
         // COMPAT(providerSecretDelivery): receives coordinator-held provider API keys and tokens.
         providerSecretDelivery: z.boolean().optional(),
+        // COMPAT(speechSecretDelivery): shared Voice keys and endpoint delivery.
+        speechSecretDelivery: z.boolean().optional(),
         providerCredentialRemoval: z.boolean().optional(),
         providerOrdering: z.boolean().optional(),
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
