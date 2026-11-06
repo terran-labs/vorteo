@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Breadcrumb plus: When drilled into a project, its new workspace plus is always visible in the breadcrumb; the menu still appears on hover.
+
 Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev shows the sidebar version as v<version>+N, the commits on the live branch since that version's release commit, and the live checkout's branch check no longer fails when another ref shares the live branch name.
 
 Maintenance review (2026-11-05): live tweak by Fix stale hover states: Command center and sidebar status-list rows publish their CSS hover surface, so their status rings follow hover; includes the shared-scroller import swap for both files

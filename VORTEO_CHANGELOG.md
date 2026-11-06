@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- When drilled into a project, its new workspace plus is always visible in the breadcrumb; the menu still appears on hover.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Live dev shows the sidebar version as v<version>+N, the commits on the live branch since that version's release commit, and the live checkout's branch check no longer fails when another ref shares the live branch name.
 
 ## Unreleased - 2026-11-05
