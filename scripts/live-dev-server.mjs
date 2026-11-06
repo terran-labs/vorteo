@@ -4,7 +4,8 @@
 // See docs/live-dev-mode.md.
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const origin = new URL(process.env.PASEO_LIVE_DEV_ORIGIN ?? "");
@@ -41,9 +42,31 @@ process.env.EXPO_PACKAGER_PROXY_URL = origin.origin;
 // The watchers share this process group, so stopping the server stops them.
 const root = fileURLToPath(new URL("..", import.meta.url));
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const watchers = ["watch:protocol", "watch:client"].map((script) =>
-  spawn(npm, ["run", script], { cwd: root, stdio: "inherit", env: process.env }),
-);
+// Each watcher keeps its package's declarations current, so after a clean compile it stamps them
+// the way scripts/ensure-fresh-declarations.mjs does. The commit hook then sees fresh declarations
+// and skips its own rebuild, which would otherwise race these watchers in the tree Metro bundles.
+const DECLARATION_STAMPS = {
+  "watch:protocol": "packages/protocol/dist/.vorteo-build-stamp",
+  "watch:client": "packages/client/dist/.vorteo-build-stamp",
+};
+const CLEAN_COMPILE = /Found 0 errors\. Watching for file changes/;
+const watchers = Object.entries(DECLARATION_STAMPS).map(([script, stamp]) => {
+  const watcher = spawn(npm, ["run", script], {
+    cwd: root,
+    stdio: ["ignore", "pipe", "inherit"],
+    env: process.env,
+  });
+  watcher.stdout.on("data", (chunk) => {
+    process.stdout.write(chunk);
+    if (!CLEAN_COMPILE.test(chunk.toString())) return;
+    try {
+      writeFileSync(path.join(root, stamp), `${new Date().toISOString()}\n`);
+    } catch {
+      // The first compile has not created dist yet; the next clean compile stamps it.
+    }
+  });
+  return watcher;
+});
 process.on("exit", () => {
   for (const watcher of watchers) watcher.kill("SIGTERM");
 });

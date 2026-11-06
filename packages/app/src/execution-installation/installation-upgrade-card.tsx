@@ -36,6 +36,8 @@ import {
   supportsUpdatePolicy,
   upgradeApprovalText,
   upgradeDecisions,
+  upgradeDurationEstimate,
+  upgradeDurationText,
   upgradeNotes,
 } from "./installation-upgrades-model";
 import {
@@ -297,6 +299,9 @@ export function UpgradeReleaseNotes({
         </Text>
       ) : null}
       <Text style={styles.text}>
+        {upgradeDurationText(upgradeDurationEstimate(status.upgrades), status.container)}
+      </Text>
+      <Text style={styles.text}>
         A safety snapshot is taken first; restore it from Installation controls if anything breaks.
       </Text>
       {notes ? (
@@ -345,7 +350,7 @@ export function UpgradeDecisionButtons({
       if (decision === "approve" && canWait) {
         const confirmed = await confirmDialog({
           title: `Install Vorteo ${releaseVersionLabel(upgrade.release)} now?`,
-          message: upgradeApprovalText(status.container),
+          message: upgradeApprovalText(status.container, false, status.upgrades),
           confirmLabel: "Install now",
           destructive: true,
         });
@@ -353,7 +358,7 @@ export function UpgradeDecisionButtons({
       }
       decide.mutate({ upgrade, decision });
     },
-    [canWait, decide, status.container, upgrade],
+    [canWait, decide, status.container, status.upgrades, upgrade],
   );
   if (decisions.length === 0) return null;
   return (

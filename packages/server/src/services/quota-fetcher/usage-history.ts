@@ -6,8 +6,12 @@ import type { ProviderUsage, ProviderUsageWindow } from "../../server/messages.j
 
 /** Long enough for a weekly window plus a day of the previous one. */
 const RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
-/** Readings closer together than this replace the latest sample instead of adding one. */
-const MIN_SAMPLE_SPACING_MS = 5 * 60 * 1000;
+/**
+ * One sample per five-minute bucket: a reading replaces the latest sample only when both fall in
+ * the same bucket. The buckets are fixed, so frequent polling cannot keep sliding one sample
+ * forward and stop the series from growing.
+ */
+const SAMPLE_BUCKET_MS = 5 * 60 * 1000;
 /** Points sent per window; the sidebar chart is a few dozen pixels wide. */
 const MAX_SENT_POINTS = 96;
 const WRITE_DELAY_MS = 5_000;
@@ -75,7 +79,9 @@ export class ProviderUsageHistory {
         const key = `${provider.providerId}\u0000${window.id}`;
         const points = (this.series.get(key) ?? []).filter(([time]) => time >= cutoff);
         const last = points[points.length - 1];
-        if (last && at - last[0] < MIN_SAMPLE_SPACING_MS) points[points.length - 1] = [at, used];
+        const sameBucket =
+          last && Math.floor(last[0] / SAMPLE_BUCKET_MS) === Math.floor(at / SAMPLE_BUCKET_MS);
+        if (sameBucket) points[points.length - 1] = [at, used];
         else points.push([at, used]);
         this.series.set(key, points);
         changed = true;
