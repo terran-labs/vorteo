@@ -277,12 +277,6 @@
                 "writeFileSync"
               ],
               // TODO: read approved OAuth bytes through their verified descriptor; asynchronous migration must retain file identity and bounds.
-              "server/execution-installation/accounts/claude-oauth-host.ts": [
-                "closeSync",
-                "fstatSync",
-                "openSync",
-                "readFileSync"
-              ],
               // TODO: setup consumer validates and secures the exact credential descriptor before use; migrate admission and disposal together.
               "server/execution-installation/accounts/claude-setup-consumer.ts": [
                 "closeSync",
