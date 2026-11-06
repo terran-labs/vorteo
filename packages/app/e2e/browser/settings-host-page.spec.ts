@@ -10,6 +10,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { holdDaemonUpdateRequest } from "../support/helpers/daemon-update";
 import { getE2EDaemonPort } from "../support/helpers/daemon-port";
 import { TEST_HOST_LABEL } from "../support/helpers/daemon-registry";
 import { startIsolatedHostDaemon } from "../support/helpers/isolated-host-daemon";
@@ -106,6 +107,7 @@ test.describe("Settings host page", () => {
     page,
     outdatedDaemon,
   }) => {
+    const update = await holdDaemonUpdateRequest(page, outdatedDaemon.endpoint);
     await seedSavedSettingsHosts(page, [outdatedDaemon]);
     await page.reload();
     await openSettings(page);
@@ -122,11 +124,13 @@ test.describe("Settings host page", () => {
     const updateButton = pane.getByTestId("host-page-update-button");
     page.once("dialog", (dialog) => dialog.accept());
     await updateButton.click();
+    await update.waitUntilHeld();
     await expect(updateButton).toBeDisabled();
     await expect(pane.getByText("Updating", { exact: true })).toBeVisible();
+    update.release();
     const error = page
       .getByTestId("app-toast-message")
-      .filter({ hasText: "Failed to update the daemon:" });
+      .filter({ hasText: "Could not update Host:" });
     await expect(error).toBeVisible();
     await expect(updateButton).toBeEnabled();
   });

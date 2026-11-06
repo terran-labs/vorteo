@@ -213,6 +213,10 @@ export function SystemPane({
             {
               name: "Host" as const,
               ...adapter.hostStatus,
+              pendingAction:
+                adapter.pendingUpdate?.serverId === adapter.hostId
+                  ? adapter.pendingUpdate.action
+                  : undefined,
               disabled: adapter.busy,
               onAction: hostAction,
               restartMenu: (
@@ -243,6 +247,10 @@ export function SystemPane({
             {
               name: "Dev" as const,
               ...adapter.devStatus,
+              pendingAction:
+                adapter.pendingUpdate?.serverId === adapter.devId
+                  ? adapter.pendingUpdate.action
+                  : undefined,
               disabled: adapter.busy,
               onAction: devAction,
               restartMenu: (

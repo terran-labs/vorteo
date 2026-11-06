@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ReactNode } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SystemView } from "./system-view";
 import { deriveSystemEnvironment } from "./system-status-model";
@@ -29,8 +29,16 @@ vi.mock("react-native", () => ({
   ),
 }));
 vi.mock("@/components/ui/button", () => ({
-  Button: ({ children, onPress }: { children: ReactNode; onPress: () => void }) => (
-    <button type="button" onClick={onPress}>
+  Button: ({
+    children,
+    onPress,
+    disabled,
+  }: {
+    children: ReactNode;
+    onPress: () => void;
+    disabled?: boolean;
+  }) => (
+    <button type="button" onClick={onPress} disabled={disabled}>
       {children}
     </button>
   ),
@@ -51,4 +59,28 @@ it("keeps the full reason accessible on a single secondary line outside the appr
   );
   expect(screen.getByLabelText(reason).getAttribute("data-lines")).toBe("1");
   expect(screen.getByLabelText(reason).textContent).toBe(reason);
+});
+
+it("keeps a pending update unavailable and enables its retry after failure", () => {
+  const onAction = vi.fn();
+  const action = { kind: "update" as const, label: "Update Host" };
+  const row = { name: "Host" as const, status: "attention" as const, action, onAction };
+  const { rerender } = render(<SystemView environments={[row]} />);
+  rerender(
+    <SystemView
+      environments={[
+        { ...row, status: "updating", action: null, pendingAction: action, disabled: true },
+      ]}
+    />,
+  );
+  const button = screen.getByRole("button", { name: action.label }) as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
+  fireEvent.click(button);
+  expect(onAction).not.toHaveBeenCalled();
+  rerender(<SystemView environments={[row]} />);
+  expect((screen.getByRole("button", { name: action.label }) as HTMLButtonElement).disabled).toBe(
+    false,
+  );
+  fireEvent.click(screen.getByRole("button", { name: action.label }));
+  expect(onAction).toHaveBeenCalledWith(action);
 });

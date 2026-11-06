@@ -12,6 +12,8 @@ export interface SystemEnvironmentRow {
   name: "Host" | "Dev";
   status: SystemStatus;
   action: SystemAction | null;
+  /** A confirmed request stays visible as a disabled control until it finishes. */
+  pendingAction?: SystemAction;
   disabled?: boolean;
   reason?: string;
   onAction: (action: SystemAction) => void;
@@ -33,6 +35,7 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
     if (row.action) row.onAction(row.action);
   }, [row]);
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  const displayedAction = row.action ?? row.pendingAction;
   return (
     <View>
       <View style={rowStyle}>
@@ -44,17 +47,17 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
         </View>
         <Text accessibilityRole="text">{labels[row.status]}</Text>
         <View style={styles.action}>
-          {row.action ? (
+          {displayedAction ? (
             <Button
               onPress={act}
-              disabled={row.disabled}
+              disabled={row.disabled || !row.action}
               testID={
-                row.action.kind === "update"
+                displayedAction.kind === "update"
                   ? "host-page-update-button"
                   : `system-primary-${row.name.toLowerCase()}`
               }
             >
-              {row.action.label}
+              {displayedAction.label}
             </Button>
           ) : null}
         </View>
