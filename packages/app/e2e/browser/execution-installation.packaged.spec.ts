@@ -1289,14 +1289,15 @@ test("force restart requires an approved queue and operator escalation", async (
     const card = page.getByTestId(`restart-request-${dev.id}`);
     const hostCard = page.getByTestId(`restart-request-${host.id}`);
     await expect(card).toBeVisible();
-    await expect(card.getByRole("button")).toHaveText([
+    // Explanation hit targets have no text and are separate from the labelled restart actions.
+    await expect(card.getByRole("button").filter({ hasText: /\S/ })).toHaveText([
       "Details",
       "Restart when idle",
       "Finish turns and restart",
       "Cancel",
     ]);
     await openSystemRestart(page, "Host");
-    await expect(hostCard.getByRole("button")).toHaveText([
+    await expect(hostCard.getByRole("button").filter({ hasText: /\S/ })).toHaveText([
       "Details",
       "Restart when idle",
       "Finish turns and restart",
@@ -1318,7 +1319,11 @@ test("force restart requires an approved queue and operator escalation", async (
     await card.getByRole("button", { name: "Restart when idle", exact: true }).click();
     await expect(card.getByTestId(`restart-force-${dev.id}`)).toHaveCount(0);
     await page.clock.fastForward(60_001);
-    await expect(card.getByRole("button")).toHaveText(["Details", "Cancel", "Force restart now"]);
+    await expect(card.getByRole("button").filter({ hasText: /\S/ })).toHaveText([
+      "Details",
+      "Cancel",
+      "Force restart now",
+    ]);
     const banner = page.getByTestId("installation-restart-banner").filter({ visible: true });
     // Compact navigation hides the sidebar until opened.
     if (await banner.count()) {
@@ -1352,7 +1357,10 @@ test("force restart requires an approved queue and operator escalation", async (
     page.once("dialog", (dialog) => dialog.accept());
     await retryCard.getByRole("button", { name: "Finish turns and restart", exact: true }).click();
     await expect(retryCard).toContainText("Finishing current turns");
-    await expect(retryCard.getByRole("button")).toHaveText(["Details", "Cancel"]);
+    await expect(retryCard.getByRole("button").filter({ hasText: /\S/ })).toHaveText([
+      "Details",
+      "Cancel",
+    ]);
     await expect(retryCard.getByTestId(`restart-force-${retry.id}`)).toHaveCount(0);
     await page.clock.fastForward(60_001);
     page.once("dialog", (dialog) => dialog.accept());
