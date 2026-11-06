@@ -11,7 +11,12 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useHosts } from "@/runtime/host-runtime";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { useInstallationSettings } from "@/execution-installation/settings";
-import { usePrimaryConnection } from "@/execution-installation/primary-connection";
+import {
+  primaryConnectionAvailability,
+  usePrimaryConnection,
+} from "@/execution-installation/primary-connection";
+import { useDaemonPrimaryConnection } from "@/hooks/use-daemon-primary-connection";
+import { useProviderUsage } from "@/provider-usage/use-provider-usage";
 import { providersNeedingAttention } from "../shared-providers-model";
 import { useProviderDetection } from "../use-provider-detection";
 
@@ -59,22 +64,97 @@ function useProviderAttentionItems(): AttentionItem[] | null {
   return items;
 }
 
+const PRIMARY_MISSING: AttentionItem = {
+  id: "primary-connection",
+  label: "Choose a primary connection for system threads",
+  hint: "The Optimizer and Factory wait until you choose one in Providers.",
+  pane: "accounts.providers",
+  action: "Open Providers",
+};
+const PRIMARY_UNAVAILABLE: AttentionItem = {
+  ...PRIMARY_MISSING,
+  label: "Your primary connection is unavailable. Choose another for system threads.",
+  hint: "It is off, signed out or not ready anywhere, so the Optimizer and Factory wait.",
+};
+
+/** Local provider ids whose usage reading asks for a new sign-in. */
+function useSignedOut(serverId: string | null): Set<string> {
+  const { view } = useProviderUsage(serverId, { enabled: Boolean(serverId) });
+  const providers = view.kind === "ready" ? view.payload.providers : [];
+  return new Set(providers.filter((usage) => usage.authRecovery).map((usage) => usage.providerId));
+}
+
+type Availability = ReturnType<typeof primaryConnectionAvailability>;
+
+function primaryAttention(
+  primary: { loaded: boolean; primary: object | null | undefined },
+  availability: () => Availability,
+): AttentionItem | null {
+  if (!primary.loaded) return null;
+  if (!primary.primary) return PRIMARY_MISSING;
+  return availability() === "unavailable" ? PRIMARY_UNAVAILABLE : null;
+}
+
+/** The installation's primary connection, checked against every environment. */
+function useSharedPrimaryItem(): AttentionItem | null {
+  const installation = readExecutionInstallation();
+  const environments = installation?.environments ?? NO_ENVIRONMENTS;
+  const shared = usePrimaryConnection();
+  const settings = useInstallationSettings(shared.supported);
+  const detection = useProviderDetection(environments);
+  const hostId = environments.find((environment) => environment.kind === "host")?.serverId;
+  const signedOut = useSignedOut(shared.loaded ? (hostId ?? null) : null);
+  return primaryAttention(shared, () =>
+    primaryConnectionAvailability({
+      primary: shared.primary!,
+      definitions: settings.data?.settings?.providerDefinitions ?? [],
+      sources: detection,
+      signedOut,
+    }),
+  );
+}
+
+/** A standalone daemon names its provider directly, so it reads as a one-environment catalog. */
+function useStandalonePrimaryItem(): AttentionItem | null {
+  const hosts = useHosts();
+  const serverId = readExecutionInstallation() ? null : (hosts[0]?.serverId ?? null);
+  const standalone = useDaemonPrimaryConnection(serverId);
+  const local = useProvidersSnapshot(standalone.supported ? serverId : null);
+  const signedOut = useSignedOut(standalone.loaded ? serverId : null);
+  const provider = standalone.primary?.provider ?? "";
+  return primaryAttention(standalone, () =>
+    primaryConnectionAvailability({
+      primary: { providerId: provider },
+      definitions: [
+        {
+          id: provider,
+          providerType: provider,
+          bindings: { [serverId ?? ""]: provider },
+          policy: {},
+        },
+      ],
+      sources: [{ serverId: serverId ?? "", entries: local.entries }],
+      signedOut,
+    }),
+  );
+}
+
+/**
+ * Asks for a primary connection while none is chosen, or for another one while the chosen one
+ * cannot run anywhere. Nothing is ever switched for the owner. Silent until settings load.
+ */
+function usePrimaryConnectionItem(): AttentionItem | null {
+  const shared = useSharedPrimaryItem();
+  const standalone = useStandalonePrimaryItem();
+  return shared ?? standalone;
+}
+
 function useAttentionItems(): AttentionItem[] | null {
   const restarts = useRestartsAwaitingApproval();
   const update = useVortonUpdate();
   const providerItems = useProviderAttentionItems();
-  const primary = usePrimaryConnection();
-  const items: AttentionItem[] = [];
-  // Only once settings load, so a slow read never shows a choice that is already made.
-  if (primary.loaded && !primary.primary) {
-    items.push({
-      id: "primary-connection",
-      label: "Choose a primary connection for system threads",
-      hint: "The Optimizer and Factory wait until you choose one in Providers.",
-      pane: "accounts.providers",
-      action: "Open Providers",
-    });
-  }
+  const primaryItem = usePrimaryConnectionItem();
+  const items: AttentionItem[] = primaryItem ? [primaryItem] : [];
   if (restarts > 0) {
     items.push({
       id: "restarts",

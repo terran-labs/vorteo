@@ -1419,3 +1419,74 @@ function removeDefinition<T extends { id: string; removed?: boolean }>(
   for (const entry of next) if (entry.id === id) entry.removed = true;
   return next;
 }
+
+test("an explicit primary connection must be live and keep a profile of its own type", async () => {
+  const { service, host } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+    "codex-account": { extends: "codex", label: "Codex 1", enabled: true },
+  };
+  host.usableProviders = ["claude-account", "codex-account"];
+  const initial = await service.reconcile();
+  const definitions = initial.settings?.providerDefinitions ?? [];
+  const claude = definitions.find((entry) => entry.bindings.host === "claude-account");
+  const codex = definitions.find((entry) => entry.bindings.host === "codex-account");
+  if (!claude || !codex) throw new Error("Expected both connections");
+  const refuse = (settings: Parameters<typeof service.update>[0]["settings"]) =>
+    expect(
+      service.update({ expectedRevision: service.snapshot().revision, settings }),
+    ).rejects.toMatchObject({
+      reason: "primary-connection-unavailable",
+      message: "That connection is no longer available.",
+    });
+
+  // A profile of another provider type, or one environment's local profile.
+  await refuse({
+    primaryConnection: { providerId: claude.id, profileId: "shared-profile/codex/a" },
+  });
+  await refuse({ primaryConnection: { providerId: claude.id, profileId: "local-profile" } });
+
+  // Removed, or turned off, by an update that raced the choice.
+  const removed = await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { providerDefinitions: removeDefinition(definitions, claude.id) },
+  });
+  await refuse({ primaryConnection: { providerId: claude.id } });
+  await service.update({
+    expectedRevision: removed.revision,
+    settings: {
+      providerDefinitions: disableDefinition(removed.settings?.providerDefinitions, codex.id),
+    },
+  });
+  await refuse({ primaryConnection: { providerId: codex.id } });
+});
+
+test("turning off the primary connection clears it for the owner to choose again", async () => {
+  const { service, host } = fixture();
+  host.config.installationPrimaryConnection = null;
+  host.config.providers = {
+    "claude-account": { extends: "claude", label: "Claude 1", enabled: true },
+  };
+  host.usableProviders = ["claude-account"];
+  const adopted = await service.reconcile();
+  const claude = adopted.settings?.providerDefinitions?.[0];
+  if (!claude || adopted.settings?.primaryConnection?.providerId !== claude.id)
+    throw new Error("Expected the adopted primary connection");
+  const off = await service.update({
+    expectedRevision: adopted.revision,
+    settings: {
+      providerDefinitions: disableDefinition(adopted.settings.providerDefinitions, claude.id),
+    },
+  });
+  expect(off.settings?.primaryConnection).toBeNull();
+});
+
+function disableDefinition<T extends { id: string; policy: { enabled?: boolean } }>(
+  definitions: readonly T[] | undefined,
+  id: string,
+): T[] {
+  const next = structuredClone([...(definitions ?? [])]);
+  for (const entry of next) if (entry.id === id) entry.policy.enabled = false;
+  return next;
+}

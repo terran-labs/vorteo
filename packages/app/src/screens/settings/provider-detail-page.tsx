@@ -41,6 +41,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import {
   canMakePrimary as offersMakePrimary,
+  confirmDisablePrimary,
   confirmPrimaryConnection,
   isPrimaryConnection,
   usePrimaryConnection,
@@ -481,7 +482,9 @@ function ConnectionRow({
   );
 
   const toggle = useCallback(
-    (enabled: boolean) => {
+    async (enabled: boolean) => {
+      if (!enabled && primary === true && !(await confirmDisablePrimary(name, confirmDialog)))
+        return;
       const ids = new Set(account.definitions.map((entry) => entry.id));
       save({
         expectedRevision: snapshot.revision,
@@ -492,7 +495,7 @@ function ConnectionRow({
         },
       });
     },
-    [account, snapshot, save],
+    [account, snapshot, save, primary, name],
   );
   const attention = states.some((state) => state.kind === "attention" || state.kind === "offline");
   return (

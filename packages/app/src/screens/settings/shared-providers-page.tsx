@@ -28,9 +28,11 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import {
+  confirmDisablePrimary,
   isPrimaryConnection,
   usePrimaryConnection,
 } from "@/execution-installation/primary-connection";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { isWeb } from "@/constants/platform";
 import { useInstallationSettings } from "@/execution-installation/settings";
 import { settingsStyles } from "@/styles/settings";
@@ -82,7 +84,8 @@ function ProviderFamilyCard({
   showDrag?: boolean;
 }) {
   const toggle = useCallback(
-    (enabled: boolean) =>
+    async (enabled: boolean) => {
+      if (!enabled && primary && !(await confirmDisablePrimary(family.name, confirmDialog))) return;
       save({
         expectedRevision: snapshot.revision,
         settings: {
@@ -92,8 +95,9 @@ function ProviderFamilyCard({
               : entry,
           ),
         },
-      }),
-    [save, snapshot, family.id],
+      });
+    },
+    [save, snapshot, family.id, family.name, primary],
   );
   const toggleExpanded = useCallback(
     () => onToggleExpanded(family.id),

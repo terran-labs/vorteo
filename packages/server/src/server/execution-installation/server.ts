@@ -2780,7 +2780,8 @@ export function createInstallationServer(
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {
-      res.status(400).json({ error: error.message });
+      // The reason lets clients tell a stale primary connection choice from other refusals.
+      res.status(400).json({ error: error.message, reason: error.reason });
       return;
     }
     if (

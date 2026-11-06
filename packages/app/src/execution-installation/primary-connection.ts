@@ -1,14 +1,22 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  InstallationPrimaryConnection,
-  InstallationSettingsSnapshot,
-  InstallationSettingsUpdate,
+import {
+  primaryConnectionBinding,
+  type InstallationPrimaryConnection,
+  type InstallationSettingsSnapshot,
+  type InstallationSettingsUpdate,
 } from "@getpaseo/protocol/installation-settings";
 import type { InstallationProvider } from "@getpaseo/protocol/installation-provider";
 import { useHostFeature } from "@/runtime/host-features";
 import { installationHostServerId, readExecutionInstallation } from "./policy";
-import { requestInstallationSettings, useInstallationSettings } from "./settings";
+import { PrimaryConnectionUnavailableError } from "./primary-connection-error";
+import {
+  InstallationSettingsConflictError,
+  requestInstallationSettings,
+  useInstallationSettings,
+} from "./settings";
+
+export { PrimaryConnectionUnavailableError };
 
 export type PrimaryConnectionChoice = InstallationPrimaryConnection;
 
@@ -80,16 +88,88 @@ export async function confirmPrimaryConnection(input: {
 }
 
 /**
- * Records the setup guide's single connection as the installation's primary connection.
- * Reads the current revision first, so it never overwrites a newer owner change silently:
- * a concurrent edit makes the write fail with the usual "Shared settings changed" error.
- * Requires unlocked Installation controls, like every shared settings write.
+ * Whether the primary connection can run system threads anywhere: on in the catalog, ready in
+ * an environment that binds it, and not waiting for a sign-in. "unknown" while an environment
+ * that binds it is still checking, so the Status row never flickers on a slow first read.
  */
-export async function recordPrimaryConnection(choice: PrimaryConnectionChoice) {
-  const current = await requestInstallationSettings();
-  if (!current.settings)
-    throw new Error("Shared settings are still being set up. Try again in a moment.");
-  return requestInstallationSettings(primaryConnectionUpdate(current, choice));
+export function primaryConnectionAvailability(input: {
+  primary: InstallationPrimaryConnection;
+  definitions: readonly InstallationProvider[];
+  sources: readonly {
+    serverId: string;
+    entries: readonly { provider: string; status: string; enabled?: boolean }[] | undefined;
+  }[];
+  /** Local provider ids whose usage reading asks for a new sign-in. */
+  signedOut?: ReadonlySet<string>;
+}): "available" | "unavailable" | "unknown" {
+  let checking = false;
+  for (const source of input.sources) {
+    const definition = primaryConnectionBinding(
+      { primaryConnection: input.primary, providerDefinitions: [...input.definitions] },
+      source.serverId,
+    );
+    if (!definition || definition.policy.enabled === false) continue;
+    const localId = definition.bindings[source.serverId]!;
+    if (!source.entries) {
+      checking = true;
+      continue;
+    }
+    const entry = source.entries.find((candidate) => candidate.provider === localId);
+    if (entry?.status === "loading") checking = true;
+    if (entry?.status === "ready" && entry.enabled !== false && !input.signedOut?.has(localId))
+      return "available";
+  }
+  return checking ? "unknown" : "unavailable";
+}
+
+/**
+ * Turning off the primary connection asks first: system threads then wait until the owner
+ * chooses another, because Vorteo never picks one for them.
+ */
+export function confirmDisablePrimary(
+  name: string,
+  confirm: (dialog: {
+    title: string;
+    message: string;
+    confirmLabel: string;
+    destructive?: boolean;
+  }) => Promise<boolean>,
+): Promise<boolean> {
+  return confirm({
+    title: `Turn off ${name}?`,
+    message: `${name} is the primary connection. System threads, such as the Optimizer and Factory, will wait until you choose another primary connection.`,
+    confirmLabel: "Turn off",
+    destructive: true,
+  });
+}
+
+/** A fixed choice, or one worked out from the exact settings snapshot about to be written. */
+export type PrimaryConnectionInput =
+  | PrimaryConnectionChoice
+  | ((snapshot: InstallationSettingsSnapshot) => PrimaryConnectionChoice | null);
+
+/**
+ * Records the setup guide's single connection as the installation's primary connection.
+ * A resolver runs against the snapshot that is read, and the write carries that snapshot's
+ * revision, so a choice is never saved against settings it was not made from. When another
+ * owner saves first, it reads again, resolves again and retries once. A resolver returning
+ * null, or the server refusing a removed or turned off connection, rejects with
+ * PrimaryConnectionUnavailableError and writes nothing. Requires unlocked Installation
+ * controls, like every shared settings write.
+ */
+export async function recordPrimaryConnection(input: PrimaryConnectionInput) {
+  for (let attempt = 1; ; attempt += 1) {
+    const current = await requestInstallationSettings();
+    if (!current.settings)
+      throw new Error("Shared settings are still being set up. Try again in a moment.");
+    const choice = typeof input === "function" ? input(current) : input;
+    if (!choice) throw new PrimaryConnectionUnavailableError();
+    try {
+      return await requestInstallationSettings(primaryConnectionUpdate(current, choice));
+    } catch (failure) {
+      if (!(failure instanceof InstallationSettingsConflictError) || attempt >= 2) throw failure;
+    }
+  }
 }
 
 /**

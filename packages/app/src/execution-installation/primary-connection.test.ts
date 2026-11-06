@@ -2,18 +2,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/runtime/host-features", () => ({ useHostFeature: () => true }));
 vi.mock("./settings", () => ({
+  InstallationSettingsConflictError: class InstallationSettingsConflictError extends Error {},
   requestInstallationSettings: vi.fn(),
   useInstallationSettings: () => ({ data: undefined }),
 }));
 
 import {
   canMakePrimary,
+  confirmDisablePrimary,
+  primaryConnectionAvailability,
   confirmPrimaryConnection,
   isPrimaryConnection,
   primaryConnectionUpdate,
+  PrimaryConnectionUnavailableError,
   recordPrimaryConnection,
 } from "./primary-connection";
-import { requestInstallationSettings } from "./settings";
+import { InstallationSettingsConflictError, requestInstallationSettings } from "./settings";
 
 const request = vi.mocked(requestInstallationSettings);
 
@@ -98,5 +102,113 @@ describe("primary connection", () => {
       "still being set up",
     );
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the primary connection as unavailable only when no environment can run it", () => {
+    const definition = {
+      id: "claude-def",
+      providerType: "claude",
+      bindings: { host: "claude-1", dev: "claude-1" },
+      policy: {},
+    };
+    const primary = { providerId: "claude-def" };
+    const ready = [{ provider: "claude-1", status: "ready" }];
+    const failing = [{ provider: "claude-1", status: "error" }];
+    const read = (
+      sources: { serverId: string; entries?: { provider: string; status: string }[] }[],
+      overrides: { policy?: { enabled?: boolean }; signedOut?: Set<string> } = {},
+    ) =>
+      primaryConnectionAvailability({
+        primary,
+        definitions: [{ ...definition, policy: overrides.policy ?? {} }],
+        sources: sources.map((source) => ({ serverId: source.serverId, entries: source.entries })),
+        signedOut: overrides.signedOut,
+      });
+    expect(
+      read([
+        { serverId: "host", entries: failing },
+        { serverId: "dev", entries: ready },
+      ]),
+    ).toBe("available");
+    expect(read([{ serverId: "host", entries: failing }])).toBe("unavailable");
+    expect(read([{ serverId: "host", entries: ready }], { policy: { enabled: false } })).toBe(
+      "unavailable",
+    );
+    expect(read([{ serverId: "host", entries: ready }], { signedOut: new Set(["claude-1"]) })).toBe(
+      "unavailable",
+    );
+    expect(read([{ serverId: "host", entries: undefined }])).toBe("unknown");
+    // Removed: nothing binds it any more.
+    expect(
+      primaryConnectionAvailability({
+        primary,
+        definitions: [{ ...definition, removed: true }],
+        sources: [{ serverId: "host", entries: ready }],
+      }),
+    ).toBe("unavailable");
+  });
+
+  it("warns that system threads wait before the primary connection is turned off", async () => {
+    const confirm = vi.fn(async () => false);
+    expect(await confirmDisablePrimary("Claude 1", confirm)).toBe(false);
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Turn off Claude 1?",
+        message: expect.stringContaining("will wait until you choose another primary connection"),
+      }),
+    );
+  });
+
+  it("resolves against each snapshot it writes, retrying once after a conflict", async () => {
+    const first = { revision: 7, settings: {} };
+    const second = { revision: 9, settings: {} };
+    request
+      .mockResolvedValueOnce(first as never)
+      .mockRejectedValueOnce(new InstallationSettingsConflictError())
+      .mockResolvedValueOnce(second as never)
+      .mockResolvedValueOnce({ revision: 10 } as never);
+    const resolve = vi.fn((snapshot: { revision: number }) => ({
+      providerId: `claude-${snapshot.revision}`,
+    }));
+    await recordPrimaryConnection(resolve as never);
+    expect(resolve.mock.calls.map(([snapshot]) => snapshot)).toEqual([first, second]);
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      primaryConnectionUpdate(first, { providerId: "claude-7" }),
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      4,
+      primaryConnectionUpdate(second, { providerId: "claude-9" }),
+    );
+
+    // A second conflict is the owner's to review.
+    request.mockReset();
+    request
+      .mockResolvedValueOnce(first as never)
+      .mockRejectedValueOnce(new InstallationSettingsConflictError())
+      .mockResolvedValueOnce(second as never)
+      .mockRejectedValueOnce(new InstallationSettingsConflictError());
+    await expect(recordPrimaryConnection(resolve as never)).rejects.toBeInstanceOf(
+      InstallationSettingsConflictError,
+    );
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it("writes nothing when the resolver finds no usable connection", async () => {
+    request.mockResolvedValueOnce({ revision: 7, settings: {} } as never);
+    await expect(recordPrimaryConnection(() => null)).rejects.toBeInstanceOf(
+      PrimaryConnectionUnavailableError,
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the server's refusal through as the typed error without retrying", async () => {
+    request
+      .mockResolvedValueOnce({ revision: 7, settings: {} } as never)
+      .mockRejectedValueOnce(new PrimaryConnectionUnavailableError());
+    await expect(recordPrimaryConnection({ providerId: "removed" })).rejects.toThrow(
+      "That connection is no longer available.",
+    );
+    expect(request).toHaveBeenCalledTimes(2);
   });
 });

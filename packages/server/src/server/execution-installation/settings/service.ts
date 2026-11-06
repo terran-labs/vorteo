@@ -111,6 +111,12 @@ export class InstallationSettingsConflict extends Error {
   }
 }
 
+const INVALID_UPDATE_MESSAGES: Partial<Record<string, string>> = {
+  "project-policy":
+    "A project must stay available in at least one environment, keyed by its absolute root path.",
+  "primary-connection-unavailable": "That connection is no longer available.",
+};
+
 export class InstallationSettingsInvalidUpdate extends Error {
   constructor(
     readonly reason:
@@ -123,12 +129,12 @@ export class InstallationSettingsInvalidUpdate extends Error {
       | "metadata-provider"
       | "installation-instructions"
       | "project-policy"
-      | "primary-connection",
+      | "primary-connection"
+      | "primary-connection-unavailable",
   ) {
     super(
-      reason === "project-policy"
-        ? "A project must stay available in at least one environment, keyed by its absolute root path."
-        : "Shared settings reference an unknown environment or resource.",
+      INVALID_UPDATE_MESSAGES[reason] ??
+        "Shared settings reference an unknown environment or resource.",
     );
     this.name = "InstallationSettingsInvalidUpdate";
   }
@@ -226,6 +232,7 @@ export class InstallationSettingsService {
     }
     const settings = InstallationSettingsSchema.parse({ ...base, ...request.settings });
     pruneUnspecified(settings, request.settings);
+    if (request.settings.primaryConnection) assertPrimaryConnectionChoice(settings);
     this.validateResources(settings);
     if (previous.settings !== null && isDeepStrictEqual(settings, previous.settings)) {
       this.skillRemovalConfirmations = request.confirmedSkillRemovals ?? {};
@@ -1078,12 +1085,36 @@ function pruneUnspecified(
   if (sent.primaryConnection === undefined) prunePrimaryConnection(settings);
 }
 
-/** A removed connection stops being primary, and the owner chooses again. */
+/** A connection that can run system threads: present, not removed and not turned off. */
+function liveDefinition(settings: InstallationSettings, providerId: string) {
+  const definition = settings.providerDefinitions?.find((entry) => entry.id === providerId);
+  return definition && !definition.removed && definition.policy.enabled !== false
+    ? definition
+    : null;
+}
+
+/** A removed or turned off connection stops being primary, and the owner chooses again. */
 function prunePrimaryConnection(settings: InstallationSettings) {
   const primary = settings.primaryConnection;
+  if (primary && !liveDefinition(settings, primary.providerId)) settings.primaryConnection = null;
+}
+
+/**
+ * An explicit choice must name a live connection, and its profile must be a shared profile of
+ * that connection's provider type: other profile ids name one environment's local profile.
+ * Refused with a typed reason, so a choice read from an older snapshot never saves a primary
+ * that daemons would then reject.
+ */
+function assertPrimaryConnectionChoice(settings: InstallationSettings) {
+  const primary = settings.primaryConnection;
   if (!primary) return;
-  const definition = settings.providerDefinitions?.find((entry) => entry.id === primary.providerId);
-  if (!definition || definition.removed) settings.primaryConnection = null;
+  const definition = liveDefinition(settings, primary.providerId);
+  const profileMatches =
+    primary.profileId === undefined ||
+    (primary.profileId.startsWith("shared-profile/") &&
+      decodeURIComponent(primary.profileId.split("/")[1] ?? "") === definition?.providerType);
+  if (!definition || !profileMatches)
+    throw new InstallationSettingsInvalidUpdate("primary-connection-unavailable");
 }
 
 /**
