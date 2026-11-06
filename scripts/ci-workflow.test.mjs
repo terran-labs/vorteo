@@ -396,6 +396,23 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
   assert.match(trigger, /push:\n\s+branches: \[main\]\n\s+tags: \["release-\*"\]/);
   const secretScan = readFileSync(new URL(".github/workflows/secret-scan.yml", repoRoot), "utf8");
   assert.match(secretScan.split("jobs:", 1)[0], /^  merge_group:/m, "scan is required");
+  // Pull requests, merge groups and main pushes scan the commits they add; the nightly
+  // and manual runs scan all reachable history. Branch pushes rely on their pull request.
+  const scanTrigger = secretScan.split("jobs:", 1)[0];
+  assert.match(scanTrigger, /push:\n\s+branches: \[main\]/);
+  assert.match(scanTrigger, /^  schedule:/m);
+  assert.match(scanTrigger, /^  workflow_dispatch:/m);
+  assert.match(secretScan, /pull_request\) range="\$PR_BASE\.\.\$PR_HEAD"/);
+  assert.match(secretScan, /merge_group\) range="\$QUEUE_BASE\.\.\$QUEUE_HEAD"/);
+  assert.match(secretScan, /\*\) range="--all --full-history"/);
+  assert.match(
+    secretScan,
+    /SECRET_SCAN_LOG_OPTS: \$\{\{ steps\.range\.outputs\.log_opts \}\}\n\s+run: npm run security:secrets/,
+  );
+  const secretsScript = JSON.parse(readFileSync(new URL("package.json", repoRoot), "utf8")).scripts[
+    "security:secrets"
+  ];
+  assert.match(secretsScript, /--log-opts="\$\{SECRET_SCAN_LOG_OPTS:---all --full-history\}"/);
 
   const jobs = jobBlocks(source);
   const heavy = /^      heavy: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
