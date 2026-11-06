@@ -20,8 +20,7 @@ import { useVortonTouch } from "@/vorton-touch";
 import { useSidebarActionSize } from "./use-sidebar-action-size";
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { Text, View, type ViewStyle } from "react-native";
-import { StyleSheet, withUnistyles, type UnistylesValues } from "react-native-unistyles";
-import { isWeb } from "@/constants/platform";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert, Folder, FolderGit2, Monitor, Pin } from "lucide-react-native";
 import { sidebarIndent } from "@/components/sidebar/indent";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
@@ -55,7 +54,7 @@ import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sideba
 import { WorkspaceLabelChip } from "@/workspace-labels/chip";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
 import { SIDEBAR_TRAILING_ICON_SLOT } from "./trailing-icon-slot";
-import { CAN_HOVER, groupHoverStyle, revealOnGroupHover } from "@/styles/hover";
+import { revealOnGroupHover } from "@/styles/hover";
 import {
   SIDEBAR_LIT_OPACITY,
   SidebarRowToneContext,
@@ -210,21 +209,15 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   });
 
   const installedEnvironment = useHasExecutionEnvironment(workspace.serverId);
-  const touch = useVortonTouch();
-  // The resting tone. A hovered calm row takes the lit look through CSS (`hoverLift`), not here.
+  // Bright text and icons mean something to review, so hover never brightens a row.
   const calm = isSidebarRowCalm({ selected, hovered: false, bucket: workspace.statusBucket });
-  // Touch layouts never showed hover.
-  const hoverLift = calm && !touch;
   const workspaceBranchTextStyle = useMemo(
     () => [
       styles.workspaceBranchText,
-      // CSS hover outranks the creating opacity, so leave it out while the row is creating.
-      !touch && !isCreating && styles.workspaceBranchTextHoverable,
       isCreating && styles.workspaceBranchTextCreating,
       calm && styles.managedText,
-      hoverLift && (isCreating ? styles.managedTextCreatingLift : styles.managedTextLift),
     ],
-    [touch, isCreating, calm, hoverLift],
+    [isCreating, calm],
   );
 
   return (
@@ -251,7 +244,6 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
               reserveIdleSpace={reserveIdleStatusIndicatorSpace}
               muted={calm}
               lit={!calm}
-              hoverLift={hoverLift}
             />
           )}
           <View style={styles.workspaceContentColumn}>
@@ -264,7 +256,6 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
                   sidebarWorkspaceRowStyles.rowRight,
                   styles.alignedActions,
                   !calm && styles.litTrailing,
-                  hoverLift && styles.liftToLit,
                 ]}
               >
                 {children}
@@ -307,7 +298,6 @@ function WorkspaceStatusIndicator({
   reserveIdleSpace = true,
   muted = false,
   lit = false,
-  hoverLift = false,
 }: {
   serverId: string;
   workspaceId: string;
@@ -318,8 +308,6 @@ function WorkspaceStatusIndicator({
   muted?: boolean;
   /** A row that wants attention: neutral icons take the title's color and strength. */
   lit?: boolean;
-  /** A calm row takes the lit look while CSS reports it hovered. */
-  hoverLift?: boolean;
 }) {
   const litStyle = lit ? styles.litIcon : undefined;
   const reviewTasks = useWorkspaceReviewTasks(serverId, workspaceId);
@@ -330,13 +318,7 @@ function WorkspaceStatusIndicator({
   // foreground ring, not the colored agent ring: a list full of working agents should hum, not
   // blink blue at you.
   if (loading) {
-    return (
-      <WorkspaceStatusRing
-        testID="workspace-status-indicator-loading"
-        muted={muted}
-        hoverLift={hoverLift}
-      />
-    );
+    return <WorkspaceStatusRing testID="workspace-status-indicator-loading" muted={muted} />;
   }
 
   if (shouldRenderSyncedStatusLoader({ bucket })) {
@@ -344,7 +326,6 @@ function WorkspaceStatusIndicator({
       <WorkspaceStatusRing
         testID="workspace-status-indicator-running"
         muted={muted}
-        hoverLift={hoverLift}
         lit={lit}
         takesLitStrength
       />
@@ -366,7 +347,7 @@ function WorkspaceStatusIndicator({
   if (showsReviewWait(bucket, reviewTasks.length)) {
     // On web the calm hourglass paints `currentColor`, which this wrapper sets (see row-tone).
     return (
-      <View style={[litStyle, muted && styles.calmIconColor, hoverLift && styles.liftIcon]}>
+      <View style={[litStyle, muted && styles.calmIconColor]}>
         <ReviewWaitIndicator
           tasks={reviewTasks}
           muted={muted}
@@ -400,33 +381,25 @@ function WorkspaceStatusIndicator({
 }
 
 /**
- * The busy ring. A running ring takes the lit strength on a lit row (`takesLitStrength`); a
- * starting row's ring never did, so a hovered calm one lifts to full strength instead.
+ * The busy ring, in the row's own tone: the calm color on a calm row, the title's color and
+ * strength on a lit one, turning at the sidebar's slower tempo so a list of working rows stays
+ * quiet.
  */
 function WorkspaceStatusRing({
   testID,
   muted,
-  hoverLift,
   lit = false,
   takesLitStrength = false,
 }: {
   testID: string;
   muted: boolean;
-  hoverLift: boolean;
   lit?: boolean;
   takesLitStrength?: boolean;
 }) {
   return (
     <View style={styles.workspaceStatusDot} testID={testID}>
-      <View
-        style={[
-          styles.workspaceStatusRing,
-          muted && styles.calmTrailing,
-          hoverLift && (takesLitStrength ? styles.liftToLit : styles.liftToFull),
-          takesLitStrength && lit && styles.litIcon,
-        ]}
-      >
-        <StatusRing variant="task" />
+      <View style={[styles.workspaceStatusRing, takesLitStrength && lit && styles.litIcon]}>
+        <StatusRing variant="task" tone={muted ? "calm" : undefined} tempo="calm" />
       </View>
     </View>
   );
@@ -586,16 +559,9 @@ export function SidebarWorkspaceTrailingDetails({
   const width = useSidebarWidth();
   const service = selectWorkspaceServiceSummary(workspace.scripts);
   const labels = useWorkspaceLabelDefinitions(workspace.serverId, workspace.labels);
-  const touch = useVortonTouch();
   const calm = useSidebarRowTone() === "calm";
-  const hoverLift = calm && !touch;
-  // Multi-color marks cannot take the row's one color, so calm rows dim them instead, and CSS
-  // lifts the dim while the row is hovered.
-  const groupStyle = [
-    styles.trailingGroup,
-    calm && styles.calmTrailing,
-    hoverLift && styles.liftToFull,
-  ];
+  // Multi-color marks cannot take the row's one color, so calm rows dim them instead.
+  const groupStyle = [styles.trailingGroup, calm && styles.calmTrailing];
   return (
     <View style={styles.trailingDetails}>
       <View style={groupStyle}>
@@ -617,7 +583,7 @@ export function SidebarWorkspaceTrailingDetails({
           </View>
         ) : null}
       </View>
-      <CalmMarkLift lift={hoverLift}>
+      <>
         {/* Takes the row's tone, matching the lock and schedule marks beside it. */}
         <ExecutionEnvironmentIcon
           serverId={workspace.serverId}
@@ -630,7 +596,7 @@ export function SidebarWorkspaceTrailingDetails({
             workspace.factoryMembership?.installationId.startsWith("project-factory:"),
           )}
         />
-      </CalmMarkLift>
+      </>
       <View style={groupStyle}>
         <FactoryReviewBadge workspace={workspace} />
         {service ? <ServiceItem summary={service} iconOnly /> : null}
@@ -643,28 +609,6 @@ export function SidebarWorkspaceTrailingDetails({
       </View>
     </View>
   );
-}
-
-/**
- * The host and lifecycle marks pick their calm color from the row tone inside their own
- * components, so they cannot take `currentColor`. On web this boxless wrapper (`display:
- * contents`) repaints their strokes in the lit color while CSS reports a calm row hovered.
- */
-function CalmMarkLift({ lift, children }: { lift: boolean; children: ReactNode }) {
-  if (!isWeb) return children;
-  return <View style={[styles.markLiftBox, lift && styles.markLift]}>{children}</View>;
-}
-
-type WebStyle = NonNullable<UnistylesValues["_web"]>;
-
-/**
- * Like `groupHoverStyle`, but for the svg elements inside the styled element: lucide sets each
- * shape's `stroke` attribute from its `color` prop, and a CSS `stroke` outranks the attribute.
- */
-function groupHoverSvgStroke(name: string, stroke: string): { _web?: WebStyle } {
-  if (!CAN_HOVER) return {};
-  const selector = `_is(.vorteo-hover-${name}:hover *) :is(svg, svg *)`;
-  return { _web: { [selector]: { stroke } } as WebStyle };
 }
 
 export function SidebarWorkspaceTrailingActionBase({
@@ -878,24 +822,8 @@ const styles = StyleSheet.create((theme) => ({
   litIcon: { opacity: SIDEBAR_LIT_OPACITY },
   // A hovered calm row takes the lit look through CSS group hover, matching what the lit styles
   // above paint at rest: the title's color and strength, and the lit icon opacity.
-  managedTextLift: groupHoverStyle(SIDEBAR_WORKSPACE_HOVER_GROUP, {
-    color: theme.colors.foreground,
-    opacity: 1,
-  }),
-  managedTextCreatingLift: groupHoverStyle(SIDEBAR_WORKSPACE_HOVER_GROUP, {
-    color: theme.colors.foreground,
-    opacity: 0.92,
-  }),
-  liftToLit: groupHoverStyle(SIDEBAR_WORKSPACE_HOVER_GROUP, { opacity: SIDEBAR_LIT_OPACITY }),
-  liftToFull: groupHoverStyle(SIDEBAR_WORKSPACE_HOVER_GROUP, { opacity: 1 }),
   /** The CSS color a calm `currentColor` icon paints with on web; native colors come from props. */
   calmIconColor: { _web: { color: theme.colors.foregroundExtraMuted } },
-  liftIcon: groupHoverStyle(SIDEBAR_WORKSPACE_HOVER_GROUP, {
-    color: theme.colors.foreground,
-    opacity: SIDEBAR_LIT_OPACITY,
-  }),
-  markLiftBox: { _web: { display: "contents" } },
-  markLift: groupHoverSvgStroke(SIDEBAR_WORKSPACE_HOVER_GROUP, theme.colors.foreground),
   // Keeps the trailing cluster's spacing when its multi-color marks are grouped for dimming.
   trailingGroup: { flexDirection: "row", alignItems: "center", gap: theme.spacing[1] },
 
@@ -905,7 +833,6 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.foregroundExtraMuted,
   },
-  workspaceBranchTextHoverable: groupHoverStyle(SIDEBAR_WORKSPACE_HOVER_GROUP, { opacity: 1 }),
   statusDotNeedsInput: {
     backgroundColor: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
     borderColor: theme.colors.surface0,

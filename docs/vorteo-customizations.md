@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Calm spinner: Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
+
 Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
 
 Maintenance review (2026-11-05): live tweak by Breadcrumb plus: When drilled into a project, its new workspace plus is always visible in the breadcrumb; the menu still appears on hover.
