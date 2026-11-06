@@ -195,7 +195,13 @@ export function SystemPane({
   serverId,
   restartRecovery,
   restartRequestId,
-}: { serverId?: string; restartRecovery?: ReactNode; restartRequestId?: string | null } = {}) {
+  focusedSettingId,
+}: {
+  serverId?: string;
+  restartRecovery?: ReactNode;
+  restartRequestId?: string | null;
+  focusedSettingId?: string | null;
+} = {}) {
   const adapter = useSystemAdapter(serverId);
   const linkedJob = adapter.state?.unlocked
     ? adapter.state.jobs.find((job) => job.id === restartRequestId)
@@ -219,6 +225,14 @@ export function SystemPane({
     [adapter],
   );
   const [advanced, setAdvanced] = useState(false);
+  useEffect(() => {
+    // Search must reveal the indexed row, while polls must respect manual collapse.
+    if (
+      focusedSettingId === "system.overview.customDomain" ||
+      focusedSettingId === "system.overview.domain"
+    )
+      setAdvanced(true);
+  }, [focusedSettingId]);
   const toggleAdvanced = useCallback(() => setAdvanced((value) => !value), []);
   const advancedState = useMemo(() => ({ expanded: advanced }), [advanced]);
   const environments = useMemo(

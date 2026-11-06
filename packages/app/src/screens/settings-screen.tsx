@@ -870,6 +870,7 @@ interface PaneContext {
   isDesktopApp: boolean;
   settings: AppSettings;
   restartRequestId: string | null;
+  focusedSettingId: string | null;
   voiceAudioEngine: ReturnType<typeof useVoiceAudioEngineOptional>;
   isPlaybackTestRunning: boolean;
   playbackTestResult: string | null;
@@ -963,7 +964,12 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
     </>
   ),
   // One view of Host and Dev status, restarts, updates and their technical details.
-  "system.overview": (context) => <SystemPane restartRequestId={context.restartRequestId} />,
+  "system.overview": (context) => (
+    <SystemPane
+      restartRequestId={context.restartRequestId}
+      focusedSettingId={context.focusedSettingId}
+    />
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -1184,6 +1190,7 @@ export default function SettingsScreen({
       isDesktopApp,
       settings,
       restartRequestId,
+      focusedSettingId: request.entry?.id ?? null,
       voiceAudioEngine,
       isPlaybackTestRunning,
       playbackTestResult,
@@ -1209,6 +1216,7 @@ export default function SettingsScreen({
       openShortcuts,
       playbackTestResult,
       restartRequestId,
+      request.entry,
       settings,
       voiceAudioEngine,
     ],
