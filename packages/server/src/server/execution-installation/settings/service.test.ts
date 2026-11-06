@@ -1066,6 +1066,71 @@ test("durable account setup resumes after coordinator recovery and lost replies 
   expect(restored.snapshot().revision).toBe(saved.revision);
 });
 
+test("background polls back off failed account setup per environment and resume after recovery", async () => {
+  const host = new SettingsEnvironmentFake("host");
+  const container = new SettingsEnvironmentFake("container");
+  let now = 0;
+  const service = new InstallationSettingsService(
+    new SettingsJournalFake(),
+    [host, container],
+    () => now,
+  );
+  await service.reconcile();
+  const creationId = "0c3e1b52-6f0f-4a55-9f53-3c1fb7f2f9d4";
+  const providerId = `codex-account-${creationId}`;
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: {
+      providerDefinitions: [
+        {
+          id: `managed/${creationId}`,
+          providerType: "codex",
+          accountSetup: { provider: "codex", creationId },
+          bindings: { host: providerId, container: providerId },
+          policy: { label: "Shared account", enabled: true },
+        },
+      ],
+    },
+  });
+  // Mirrors the 5 second poll in startSettingsReconciliation.
+  async function poll(seconds: number) {
+    const before = { host: host.accountSetupAttempts, container: container.accountSetupAttempts };
+    for (let tick = 0; tick < seconds / 5; tick += 1) {
+      now += 5000;
+      await service.reconcile({ background: true });
+    }
+    return {
+      host: host.accountSetupAttempts - before.host,
+      container: container.accountSetupAttempts - before.container,
+    };
+  }
+  container.rejectAccountSetup = true;
+  // Failures retry after 10, 20 and 40 seconds instead of on all twelve ticks.
+  expect(await poll(60)).toEqual({ host: 12, container: 3 });
+  expect(service.snapshot().sources.container.error).toBe("account_binding_unavailable");
+  container.rejectAccountSetup = false;
+  expect(await poll(15)).toEqual({ host: 3, container: 1 });
+  expect(service.snapshot().sources.container.error).toBeNull();
+  expect(await poll(15)).toEqual({ host: 3, container: 3 });
+  // A failure that spans an owner update cannot delay preparation for the new revision.
+  container.rejectAccountSetup = true;
+  const gate = Promise.withResolvers<void>();
+  container.accountSetupGate = gate.promise;
+  const attempts = container.accountSetupAttempts;
+  const pending = service.reconcile({ background: true });
+  while (container.accountSetupAttempts === attempts) await new Promise(setImmediate);
+  await service.update({
+    expectedRevision: service.snapshot().revision,
+    settings: { appendSystemPrompt: "Edited during account setup" },
+  });
+  gate.resolve();
+  container.accountSetupGate = null;
+  await pending;
+  container.rejectAccountSetup = false;
+  expect(await poll(5)).toEqual({ host: 1, container: 1 });
+  expect(service.snapshot().sources.container.error).toBeNull();
+});
+
 test("excluded account bindings are not recreated after local removal or coordinator recovery", async () => {
   const { service, host, container, journal } = fixture();
   await service.reconcile();

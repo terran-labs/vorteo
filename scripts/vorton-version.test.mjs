@@ -105,6 +105,18 @@ test("commits keep the prepared version, stage synchronized manifests and need a
     assert.throws(() => hook(), /changes\/YYYY-MM-DD-<slug>\.md/);
     git("rm", "--cached", "--quiet", "changes/Fixture.md");
     hook();
+    // Merging main can bring a release entry to the changelog top; the fragment still carries
+    // this commit's notes, so the hook does not read that top entry as this commit's.
+    writeFileSync(
+      path.join(cwd, "VORTEO_CHANGELOG.md"),
+      readFileSync(path.join(cwd, "VORTEO_CHANGELOG.md"), "utf8").replace(
+        /^## /m,
+        "## 26.10.3001 - 2026-10-31\n\n- Merged release\n\n## ",
+      ),
+    );
+    git("add", "VORTEO_CHANGELOG.md");
+    hook();
+    git("checkout", "HEAD", "--", "VORTEO_CHANGELOG.md");
     assert.equal(read("package.json").version, "26.10.3000");
     assert.ok(!git("diff", "--cached", "--name-only").includes("unrelated.txt"));
     const pkg = read("packages/a/package.json");

@@ -70,7 +70,9 @@ if (mode === "--hook" || mode === "--check") {
       `A release preparation folds change fragments into ${changelog}; do not add one (${fragments.join(", ")}).`,
     );
   }
-  if (changed) {
+  // A fragment carries an ordinary commit's notes, so a changelog changed by merging main
+  // (whose top may be a release entry) is not checked as this commit's entry.
+  if (changed && !(label === UNRELEASED && fragments.length)) {
     const staged = git("show", `:${changelog}`);
     const [, latest = ""] = staged.split(/^## /m);
     const [heading, ...body] = latest.split(/\r?\n/);

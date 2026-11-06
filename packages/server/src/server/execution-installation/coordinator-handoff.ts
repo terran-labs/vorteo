@@ -20,6 +20,7 @@ import { ManagedServicesSchema, type ServiceControl } from "./service-control.js
 import {
   executeRestore,
   planRestore,
+  RestoreRollbackError,
   type InstallationSnapshots,
   type RestorePorts,
 } from "./snapshots.js";
@@ -63,8 +64,26 @@ export const RestorePlanSchema = z.strictObject({
 });
 export type RestorePlan = z.infer<typeof RestorePlanSchema>;
 
+/**
+ * Restarts the coordinator after its configuration file was replaced in place. The
+ * coordinator wrote `configFile` and kept the previous bytes at `backupFile` before
+ * starting the helper; on failure the helper puts the backup back and restarts again.
+ */
+export const CoordinatorConfigPlanSchema = z.strictObject({
+  kind: z.literal("coordinator-config"),
+  id: z.string().uuid(),
+  configFile: z.string().startsWith("/"),
+  backupFile: z.string().startsWith("/"),
+  services: ManagedServicesSchema,
+  health: HealthSchema,
+  outcomeFile: z.string().startsWith("/"),
+  timeoutMs: z.number().int().positive(),
+});
+export type CoordinatorConfigPlan = z.infer<typeof CoordinatorConfigPlanSchema>;
+
 export const HandoffPlanSchema = z.discriminatedUnion("kind", [
   CoordinatorSwapPlanSchema,
+  CoordinatorConfigPlanSchema,
   RestorePlanSchema,
 ]);
 export type HandoffPlan = z.infer<typeof HandoffPlanSchema>;
@@ -177,9 +196,58 @@ export async function runCoordinatorSwap(
   }
 }
 
+export interface ConfigHandoffPorts extends HandoffPorts {
+  /** Atomically replaces `file` with the bytes of `backup`. */
+  restoreFile(backup: string, file: string): void;
+}
+
+/**
+ * Restarts the coordinator on its new configuration. If it does not answer in time,
+ * restores the previous configuration and restarts once more.
+ */
+export async function runCoordinatorConfigChange(
+  plan: CoordinatorConfigPlan,
+  ports: ConfigHandoffPorts,
+): Promise<HandoffOutcome> {
+  const finish = (status: HandoffOutcome["status"], detail: string): HandoffOutcome => ({
+    id: plan.id,
+    status,
+    detail,
+    finishedAt: ports.now().toISOString(),
+  });
+  try {
+    await ports.services.restart("coordinator");
+    await waitForCoordinator(plan.health, plan.timeoutMs, ports);
+    return finish("succeeded", "The coordinator restarted with the new configuration.");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    try {
+      ports.restoreFile(plan.backupFile, plan.configFile);
+      await ports.services.restart("coordinator");
+      await waitForCoordinator(plan.health, plan.timeoutMs, ports, null);
+      return finish(
+        "rolled-back",
+        `The coordinator failed on the new configuration (${reason}). The previous configuration is running again.`,
+      );
+    } catch (rollbackError) {
+      const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+      return finish(
+        "failed",
+        `The coordinator failed on the new configuration (${reason}), and restoring the previous one did not bring it back (${detail}). Start it with the vorteo repair command.`,
+      );
+    }
+  }
+}
+
+/** Copies `backup` over `file` through a private temporary file and rename. */
+export function restoreFileAtomically(backup: string, file: string): void {
+  writePrivateFileAtomicSync(file, readFileSync(backup, "utf8"));
+}
+
 export interface RestoreHandoffPorts extends HandoffPorts {
   snapshots: Pick<InstallationSnapshots, "read" | "storedParts">;
   importDocker: RestorePorts["snapshot"]["importDocker"];
+  mountedHome?: RestorePorts["snapshot"]["mounted"];
   writeStatus(status: SnapshotRestoreStatus): void;
 }
 
@@ -210,7 +278,7 @@ export async function runRestore(
       steps: planRestore(parts, plan.services.dev !== undefined),
       ports: {
         services: ports.services,
-        snapshot: { importDocker: ports.importDocker },
+        snapshot: { importDocker: ports.importDocker, mounted: ports.mountedHome },
         verifyCoordinator: () => waitForCoordinator(plan.health, plan.timeoutMs, ports, null),
         progress: (step) => update({ step }),
       },
@@ -220,7 +288,10 @@ export async function runRestore(
     const detail = error instanceof Error ? error.message : String(error);
     update({
       status: "failed",
-      detail: `Restore failed and the replaced files were put back: ${detail}`,
+      detail:
+        error instanceof RestoreRollbackError
+          ? detail
+          : `Restore failed and the replaced files were put back: ${detail}`,
     });
   }
   return status;

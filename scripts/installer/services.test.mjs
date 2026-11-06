@@ -78,6 +78,7 @@ describe("systemd user units", () => {
       `systemctl --user show --property=LoadState --value ${service.label}.service`,
       `systemctl --user disable --now ${service.label}.service`,
       "systemctl --user daemon-reload",
+      `systemctl --user reset-failed ${service.label}.service`,
     ]);
   });
 
