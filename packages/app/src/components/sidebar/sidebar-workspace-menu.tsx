@@ -4,6 +4,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVortonTouch } from "@/vorton-touch";
 import { useWorkspaceArchiveBlockReason } from "@/workspace/lifecycle/archive";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
+import { hoverStyle } from "@/styles/hover";
 import { useWorkspaceSessionMenu } from "@/workspace/use-workspace-session-menu";
 import {
   useCallback,
@@ -14,7 +15,6 @@ import {
 } from "react";
 import { useSidebarActionSize } from "./use-sidebar-action-size";
 import { useTranslation } from "react-i18next";
-import { type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Archive,
@@ -81,9 +81,6 @@ import {
   type WorkspaceLabelTarget,
 } from "@/workspace-labels/picker";
 
-const foregroundColorMapping = (theme: Theme) => ({
-  color: theme.colors.foreground,
-});
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
@@ -118,12 +115,12 @@ const archiveLeadingIcon = <ThemedArchive size={14} uniProps={foregroundMutedCol
 const pinLeadingIcon = <ThemedPin size={14} uniProps={foregroundMutedColorMapping} />;
 const unpinLeadingIcon = <ThemedPinOff size={14} uniProps={foregroundMutedColorMapping} />;
 
-const triggerIconProps = densityIconProps("sm", foregroundMutedColorMapping);
-const triggerIconHoveredProps = densityIconProps("sm", foregroundColorMapping);
-
-function renderTriggerIcon({ hovered }: { hovered?: boolean }) {
-  return <ThemedMoreVertical uniProps={hovered ? triggerIconHoveredProps : triggerIconProps} />;
-}
+// On web the kebab strokes with the trigger's CSS color, so CSS hover recolors it.
+const triggerIconProps = densityIconProps(
+  "sm",
+  isWeb ? () => ({ color: "currentColor" }) : foregroundMutedColorMapping,
+);
+const triggerIcon = <ThemedMoreVertical uniProps={triggerIconProps} />;
 
 export interface SidebarWorkspaceMenuProps {
   workspaceKey: string;
@@ -593,11 +590,11 @@ export function SidebarWorkspaceMenu({
   onOpenChange,
 }: SidebarWorkspaceMenuProps) {
   const actionSize = useSidebarActionSize();
-  const actionStyle = useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) => [
+  const actionStyle = useMemo(
+    () => [
       styles.trigger,
       styles.backdrop(backdrop),
-      state.hovered && styles.triggerHovered,
+      styles.triggerHoverable,
       actionSize && styles.alignedTrigger,
       actionSize,
     ],
@@ -621,7 +618,7 @@ export function SidebarWorkspaceMenu({
             accessibilityLabel={t("sidebar.workspace.actions.menu")}
             testID={`sidebar-workspace-kebab-${workspaceKey}`}
           >
-            {renderTriggerIcon}
+            {triggerIcon}
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent>
@@ -818,8 +815,12 @@ const styles = StyleSheet.create((theme) => ({
     // pull the painted dots through that unused view-box space onto the trailing-content rail.
     marginRight: { xs: -14, md: -7 },
   },
-  triggerHovered: {
-    borderRadius: theme.borderRadius.base,
-    backgroundColor: theme.colors.surface2,
-  },
+  triggerHoverable: hoverStyle(
+    {
+      borderRadius: theme.borderRadius.base,
+      backgroundColor: theme.colors.surface2,
+      color: theme.colors.foreground,
+    },
+    { color: theme.colors.foregroundMuted },
+  ),
 }));

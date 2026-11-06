@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useRouter } from "expo-router";
 import { VorteoLogo } from "@/components/icons/paseo-logo";

@@ -1,10 +1,12 @@
 import { Inbox } from "lucide-react-native";
 import { useImportSession } from "@/hooks/use-import-session";
 import { useHosts, useHostRuntimeLastError } from "@/runtime/host-runtime";
-import { useCallback, useEffect, useState, type ComponentType } from "react";
+import { useCallback, useEffect, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
-import { View, Text, Pressable, ScrollView } from "react-native";
+import { View, Text, Pressable } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { useRouter } from "expo-router";
 import { FolderOpen, Plug } from "lucide-react-native";
 import { VorteoLogo } from "@/components/icons/paseo-logo";
@@ -132,29 +134,20 @@ interface HomeTileProps {
 function HomeTile({ icon: Icon, title, description, onPress, testID, accent }: HomeTileProps) {
   // useUnistyles is acceptable here: leaf component, off the hot path (home screen renders once).
   const { theme } = useUnistyles();
-  const [hovered, setHovered] = useState(false);
-  const handleHoverIn = useCallback(() => setHovered(true), []);
-  const handleHoverOut = useCallback(() => setHovered(false), []);
 
   const iconColor = accent ? theme.colors.accent : theme.colors.foregroundMuted;
 
   const pressableStyle = useCallback(
     ({ pressed }: { pressed: boolean }) => [
       styles.tile,
-      hovered && styles.tileHovered,
+      styles.tileHovered,
       pressed && styles.tilePressed,
     ],
-    [hovered],
+    [],
   );
 
   return (
-    <Pressable
-      onPress={onPress}
-      onHoverIn={handleHoverIn}
-      onHoverOut={handleHoverOut}
-      testID={testID}
-      style={pressableStyle}
-    >
+    <Pressable onPress={onPress} testID={testID} style={pressableStyle}>
       <Icon size={20} color={iconColor} />
       <View style={styles.tileText}>
         <Text style={styles.tileTitle}>{title}</Text>
@@ -214,10 +207,10 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.xl,
     gap: theme.spacing[3],
   },
-  tileHovered: {
+  tileHovered: hoverStyle({
     backgroundColor: theme.colors.surface2,
     borderColor: theme.colors.borderAccent,
-  },
+  }),
   tilePressed: {
     opacity: 0.85,
   },

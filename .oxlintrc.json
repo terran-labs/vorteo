@@ -1242,7 +1242,8 @@
     {
       "files": ["packages/app/src/**/*.{ts,tsx}"],
       "rules": {
-        "paseo/no-raw-pressable": "error"
+        "paseo/no-raw-pressable": "error",
+        "paseo/no-raw-scroller": "error"
       }
     },
     // Press feedback is owned by the primitives in components/ui. Raw pressable burn-down:
@@ -1399,6 +1400,30 @@
       ],
       "rules": {
         "paseo/no-raw-pressable": "off"
+      }
+    },
+    // Scroll edges are owned by the shared scrollers in components/ui/scroll-view. Each entry names
+    // why it keeps a raw scroller. Every other app scroller imports from @/components/ui/scroll-view.
+    {
+      "files": [
+        // the primitive: the shared scrollers wrap the raw ones.
+        "packages/app/src/components/ui/scroll-view.tsx",
+        "packages/app/src/components/ui/scroll-view.web.tsx",
+        // own fade: the conversation masks its column with a 64px fade on web; native renders a virtualized list.
+        "packages/app/src/agent-stream/strategy-native.tsx",
+        // own fade: the tab rail draws HorizontalScrollBoundaryShades, which also work on native.
+        "packages/app/src/screens/workspace/workspace-desktop-tabs-row.tsx",
+        // code surface: faded lines hurt reading and selection.
+        "packages/app/src/components/diff-viewer.tsx",
+        "packages/app/src/git/diff-document/surface.native.tsx",
+        "packages/app/src/git/diff-document/horizontal-scroll.native.tsx",
+        "packages/app/src/file-panels/source/readonly/view.native.tsx",
+        "packages/app/src/components/markdown/fence/mermaid/host.native.tsx",
+        // native nesting: gesture-handler scrollers on native; web uses the shared scroller, code lines opt out sideways.
+        "packages/app/src/components/tool-call-details.tsx"
+      ],
+      "rules": {
+        "paseo/no-raw-scroller": "off"
       }
     },
     {

@@ -1,15 +1,26 @@
 import { sidebarIndentStyle } from "./indent";
 import { useSidebarRowDensity } from "@/components/sidebar/use-sidebar-row-density";
-import { useCallback, useState, type ComponentProps } from "react";
+import { useCallback, type ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View } from "react-native";
-import { PressHighlight } from "@/components/ui/press-highlight";
+import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 import { sidebarWorkspaceRowStyles } from "@/components/sidebar/sidebar-workspace-row-content";
 import { DensityIcon } from "@/components/ui/density-icon";
-import { density as densityTokens, densityIconBox } from "@/styles/density";
+import { density as densityTokens, densityIconBox, densityIconProps } from "@/styles/density";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
+
+const ROW_HOVER_GROUP = "list-action-row";
+
+type ActionIcon = ComponentProps<typeof DensityIcon>["icon"];
+
+/** Strokes with the CSS color of its slot, so web hover can recolor it without JS state. */
+function CurrentColorGlyph({ icon: Icon, size }: { icon: ActionIcon; size: number }) {
+  return <Icon size={size} color="currentColor" />;
+}
+const ThemedCurrentColorGlyph = withUnistyles(CurrentColorGlyph);
+const currentColorGlyphProps = densityIconProps("sm", () => ({}));
 
 /**
  * A list row that acts rather than opens a workspace, such as "Show more" or Factory's
@@ -31,7 +42,7 @@ export function SidebarListActionRow({
   level = 1,
   testID,
 }: {
-  icon: ComponentProps<typeof DensityIcon>["icon"];
+  icon: ActionIcon;
   label: string;
   accessibilityLabel?: string;
   onPress: () => void;
@@ -41,46 +52,46 @@ export function SidebarListActionRow({
   testID: string;
 }) {
   const density = useSidebarRowDensity();
-  const [hovered, setHovered] = useState(false);
-  const [pressed, setPressed] = useState(false);
-  const hoverIn = useCallback(() => setHovered(true), []);
-  const hoverOut = useCallback(() => setHovered(false), []);
-  const pressIn = useCallback(() => setPressed(true), []);
-  const pressOut = useCallback(() => setPressed(false), []);
+  const rowStyle = useCallback(
+    // Hover is CSS on the row's hover group; it steps aside while pressed, since :hover outranks
+    // the base class.
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.row,
+      density,
+      !indented && sidebarIndentStyle(level),
+      indented && sidebarWorkspaceRowStyles.rowIndented,
+      pressed ? styles.rowPressed : styles.rowHoverable,
+    ],
+    [indented, level, density],
+  );
 
   return (
-    <PressHighlight
+    <Pressable
       accessibilityRole={isWeb ? undefined : "button"}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={onPress}
-      onHoverIn={hoverIn}
-      onHoverOut={hoverOut}
-      onPressIn={pressIn}
-      onPressOut={pressOut}
-      style={[
-        styles.row,
-        density,
-        !indented && sidebarIndentStyle(level),
-        indented && sidebarWorkspaceRowStyles.rowIndented,
-        hovered && !pressed && styles.rowHovered,
-        pressed && styles.rowPressed,
-      ]}
-      highlightStyle={styles.rowPressed}
+      style={rowStyle}
       testID={testID}
     >
-      <>
-        <View style={styles.iconSlot}>
-          <DensityIcon
-            icon={icon}
-            size="sm"
-            color={hovered || pressed ? "foreground" : "foregroundMuted"}
-          />
-        </View>
-        <Text style={hovered || pressed ? styles.textHovered : styles.text} numberOfLines={1}>
-          {label}
-        </Text>
-      </>
-    </PressHighlight>
+      {({ pressed }) => (
+        <>
+          <View style={[styles.iconSlot, pressed && styles.iconSlotPressed]}>
+            {isWeb ? (
+              <ThemedCurrentColorGlyph icon={icon} uniProps={currentColorGlyphProps} />
+            ) : (
+              <DensityIcon
+                icon={icon}
+                size="sm"
+                color={pressed ? "foreground" : "foregroundMuted"}
+              />
+            )}
+          </View>
+          <Text style={pressed ? styles.textHovered : styles.text} numberOfLines={1}>
+            {label}
+          </Text>
+        </>
+      )}
+    </Pressable>
   );
 }
 
@@ -127,10 +138,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
     userSelect: "none",
+    ...hoverGroup(ROW_HOVER_GROUP),
   },
-  rowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  rowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   rowPressed: {
     backgroundColor: theme.colors.surface2,
   },
@@ -142,12 +152,19 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    ...groupHoverStyle(
+      ROW_HOVER_GROUP,
+      { color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
   },
+  iconSlotPressed: { _web: { color: theme.colors.foreground } },
   text: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     minWidth: 0,
     flexShrink: 1,
+    ...groupHoverStyle(ROW_HOVER_GROUP, { color: theme.colors.foreground }),
   },
   textHovered: {
     color: theme.colors.foreground,

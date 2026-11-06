@@ -229,8 +229,13 @@ export function createLiveDev(options: LiveDevServiceOptions) {
     return server.state === "ready" ? server.port : null;
   }
 
-  function middleware(installation: () => ExecutionInstallation): RequestHandler {
+  /**
+   * `alias` serves the live interface on a second origin the coordinator answers, the custom
+   * domain, while the dev server keeps admitting only the canonical one.
+   */
+  function middleware(installation: () => ExecutionInstallation, alias?: string): RequestHandler {
     return createLiveDevMiddleware({
+      ...(alias && typeof target !== "string" ? { upstreamHost: new URL(target.origin).host } : {}),
       port: servingPort,
       ownerSession: (req) => options.ownerSession(req.headers.cookie),
       label: "Vorteo",
@@ -242,22 +247,33 @@ export function createLiveDev(options: LiveDevServiceOptions) {
     });
   }
 
-  /** Forwards `/hot` for the owner on the public origin only. True when handled. */
+  /** Forwards `/hot` for the owner on the public origin or the custom domain. True when handled. */
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean {
     if (typeof target === "string") return false;
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (!isLiveDevSocketPath(pathname)) return false;
     const port = servingPort();
+    const canonical = new URL(target.origin).host;
+    const alias = config.recoveryOrigin;
+    const viaAlias =
+      alias !== undefined &&
+      req.headers.host === new URL(alias).host &&
+      req.headers.origin === alias;
     if (
       port === null ||
-      req.headers.host !== new URL(target.origin).host ||
-      req.headers.origin !== target.origin ||
+      (!viaAlias && (req.headers.host !== canonical || req.headers.origin !== target.origin)) ||
       !options.ownerSession(req.headers.cookie)
     ) {
       socket.destroy();
       return true;
     }
-    forwardLiveDevUpgrade(req, socket, head, port);
+    forwardLiveDevUpgrade(
+      req,
+      socket,
+      head,
+      port,
+      viaAlias ? { host: canonical, origin: target.origin } : undefined,
+    );
     return true;
   }
 

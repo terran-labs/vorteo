@@ -123,9 +123,10 @@ export function ResizeHandle({
     () => [
       styles.handle,
       direction === "horizontal" ? styles.handleHorizontal : styles.handleVertical,
-      { backgroundColor: showDivider ? theme.colors.border : "transparent" },
+      // Pane separators are internal rules, so they match the toolbar rule under each pane's tabs.
+      { backgroundColor: showDivider ? theme.colors.divider : "transparent" },
     ],
-    [direction, showDivider, theme.colors.border],
+    [direction, showDivider, theme.colors.divider],
   );
   const highlightStyle = useMemo(
     () => [

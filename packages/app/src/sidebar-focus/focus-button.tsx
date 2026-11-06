@@ -8,17 +8,21 @@ import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ChevronsRight } from "lucide-react-native";
 import { useSidebarActionSize } from "@/components/sidebar/use-sidebar-action-size";
+import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 
 const ThemedChevronsRight = withUnistyles(ChevronsRight);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 
-function renderIcon({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) {
+function renderIcon({ pressed }: PressableStateCallbackType) {
+  // On web the glyph strokes with the button's CSS color, so CSS hover and press recolor it.
+  if (isWeb) return <ChevronsRight size={14} color="currentColor" />;
   return (
     <ThemedChevronsRight
       size={14}
-      uniProps={hovered || pressed ? foregroundColorMapping : mutedColorMapping}
+      uniProps={pressed ? foregroundColorMapping : mutedColorMapping}
     />
   );
 }
@@ -36,10 +40,11 @@ export function SidebarFocusButton({
   const { t } = useTranslation();
   const actionSize = useSidebarActionSize();
   const style = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.button,
+      styles.buttonHoverable,
       actionSize,
-      (Boolean(hovered) || pressed) && styles.buttonHovered,
+      pressed && styles.buttonHovered,
     ],
     [actionSize],
   );
@@ -72,6 +77,14 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    _web: { color: theme.colors.foregroundMuted },
   },
-  buttonHovered: { backgroundColor: theme.colors.surface2 },
+  buttonHoverable: hoverStyle({
+    backgroundColor: theme.colors.surface2,
+    color: theme.colors.foreground,
+  }),
+  buttonHovered: {
+    backgroundColor: theme.colors.surface2,
+    _web: { color: theme.colors.foreground },
+  },
 }));

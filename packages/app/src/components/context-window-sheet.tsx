@@ -3,7 +3,7 @@ import { View } from "react-native";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
+import { BottomSheetScrollView } from "@/components/ui/scroll-view";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SheetHeaderView, SHEET_HORIZONTAL_PADDING_SCALE } from "@/components/adaptive-modal-sheet";
 import {

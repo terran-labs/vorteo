@@ -3,6 +3,11 @@ import {
   type CustomDomainStatus,
 } from "@getpaseo/protocol/custom-domain";
 import {
+  InstallationTypeStatusSchema,
+  type InstallationType,
+  type InstallationTypeStatus,
+} from "@getpaseo/protocol/installation-type";
+import {
   LiveDevStatusSchema,
   type LiveDevMode,
   type LiveDevStatus,
@@ -651,6 +656,34 @@ export class InstallationClient {
         return null;
       throw error;
     }
+  }
+
+  private installationTypeSupported = false;
+
+  /** Null on coordinators without installation types. */
+  async installationType(): Promise<InstallationTypeStatus | null> {
+    try {
+      const status = InstallationTypeStatusSchema.parse(
+        await this.request("installation-type/query", {}),
+      );
+      this.installationTypeSupported = true;
+      return status;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable && !this.installationTypeSupported)
+        return null;
+      throw error;
+    }
+  }
+
+  async changeInstallationType(
+    status: InstallationTypeStatus,
+    type: InstallationType,
+  ): Promise<InstallationTypeStatus> {
+    if (!this.installationTypeSupported)
+      throw new InstallationRouteUnavailable("Installation types are unavailable");
+    return InstallationTypeStatusSchema.parse(
+      await this.request("installation-type/change", { expectedRevision: status.revision, type }),
+    );
   }
 
   private liveDevSupported = false;

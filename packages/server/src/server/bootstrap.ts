@@ -1256,7 +1256,9 @@ export async function createPaseoDaemon(
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,
+    historyFile: path.join(config.paseoHome, "provider-usage-history.json"),
   });
+  providerUsageService.startHistorySampling();
   agentManager.setUsageLimitObserver((provider, stop) => {
     providerUsageService.recordUsageLimitStop(provider, stop);
   });
@@ -2507,6 +2509,7 @@ export async function createPaseoDaemon(
       }
       await governorObservations.stop();
       await quotaReservePolling.stop();
+      await providerUsageService.stopHistorySampling();
       unsubscribePluginSessionChanges();
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
       await serviceProxy.stopStandalone().catch(() => undefined);
@@ -2575,6 +2578,7 @@ export async function createPaseoDaemon(
     scriptHealthMonitor.stop();
     step("quota reserve polling");
     await quotaReservePolling.stop();
+    await providerUsageService.stopHistorySampling();
     hostedIdleRelease.stop();
     idleSessionRelease.stop();
     step("detach hosted sessions");

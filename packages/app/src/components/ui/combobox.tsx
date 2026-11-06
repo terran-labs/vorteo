@@ -20,7 +20,6 @@ import {
   View,
   Text,
   Pressable,
-  ScrollView,
   Platform,
   StatusBar,
   type LayoutChangeEvent,
@@ -29,6 +28,7 @@ import {
   type ViewStyle,
   type TextStyle,
 } from "react-native";
+import { BottomSheetScrollView, ScrollView } from "@/components/ui/scroll-view";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -36,7 +36,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { BottomSheetScrollView, BottomSheetBackgroundProps } from "@gorhom/bottom-sheet";
+import { BottomSheetBackgroundProps } from "@gorhom/bottom-sheet";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -57,6 +57,7 @@ import {
 } from "./combobox-options";
 import type { ComboboxOptionModel } from "./combobox-options";
 import { isWeb } from "@/constants/platform";
+import { hoverStyle } from "@/styles/hover";
 import {
   IsolatedBottomSheetModal,
   SheetVisibleFrame,
@@ -248,8 +249,13 @@ export interface ComboboxItemProps {
   labelStyle?: StyleProp<TextStyle>;
   labelNumberOfLines?: number;
   style?: StyleProp<ViewStyle>;
-  /** Hover/press styling applied after the custom resting style, except when disabled. */
+  /** Press styling applied after the custom resting style, except when disabled. */
   interactionStyle?: StyleProp<ViewStyle>;
+  /**
+   * A `hoverStyle` entry that replaces the default hover fill, except when disabled. CSS :hover
+   * outranks the resting style, so it wins over `style` (for example a selected fill).
+   */
+  hoverInteractionStyle?: StyleProp<ViewStyle>;
   descriptionSlot?: ReactNode;
   description?: string;
   descriptionPlacement?: "inline" | "below";
@@ -275,6 +281,7 @@ export function ComboboxItem({
   labelNumberOfLines,
   style,
   interactionStyle,
+  hoverInteractionStyle,
   descriptionSlot,
   description,
   descriptionPlacement = "inline",
@@ -311,16 +318,22 @@ export function ComboboxItem({
   }
 
   const itemPressableStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    // The fill is CSS hover. CSS :hover outranks every other style on the item, so the default
+    // fill is left out where another style should win: the active row, and an item whose caller
+    // supplies its own `hoverInteractionStyle`.
+    ({ pressed }: PressableStateCallbackType) => [
       styles.comboboxItem,
-      hovered && (elevated ? styles.comboboxItemHoveredElevated : styles.comboboxItemHovered),
+      !active &&
+        !hoverInteractionStyle &&
+        (elevated ? styles.comboboxItemHoverableElevated : styles.comboboxItemHoverable),
       pressed && (elevated ? styles.comboboxItemPressedElevated : styles.comboboxItemPressed),
       active && styles.comboboxItemActive,
       disabled && styles.comboboxItemDisabled,
       style,
-      !disabled && (hovered || pressed) && interactionStyle,
+      !disabled && hoverInteractionStyle,
+      !disabled && pressed && interactionStyle,
     ],
-    [elevated, active, disabled, style, interactionStyle],
+    [elevated, active, disabled, style, interactionStyle, hoverInteractionStyle],
   );
 
   const itemContentStyle = useMemo(
@@ -1793,12 +1806,8 @@ const styles = StyleSheet.create((theme) => ({
           marginBottom: theme.spacing[1],
         }),
   },
-  comboboxItemHovered: {
-    backgroundColor: theme.colors.surface1,
-  },
-  comboboxItemHoveredElevated: {
-    backgroundColor: theme.colors.surface2,
-  },
+  comboboxItemHoverable: hoverStyle({ backgroundColor: theme.colors.surface1 }),
+  comboboxItemHoverableElevated: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   comboboxItemPressed: {
     backgroundColor: theme.colors.surface1,
   },

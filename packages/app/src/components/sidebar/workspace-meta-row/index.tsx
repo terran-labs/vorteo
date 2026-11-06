@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useState, type ReactNode } from "react";
+import { Fragment, useCallback, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type GestureResponderEvent } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -15,6 +15,7 @@ import { getForgePresentation, normalizeForge } from "@/git/forge";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useSidebarMetaPreferences } from "@/components/sidebar/display-preferences/model";
 import type { Theme } from "@/styles/theme";
+import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 import { PullRequestStateIcon } from "@/git/pull-request-state-icon";
 import { CheckIndicator } from "./check-indicator";
 import type { CheckSummary, CheckSummaryState } from "./check-summary";
@@ -179,14 +180,12 @@ function LabelsItem({
  * pointer: it brightens to full foreground and its icon becomes an external-link arrow,
  * saying where the click goes before you spend it.
  *
- * `onHoverIn`/`onHoverOut` with local state is safe here despite the usual rule in
- * docs/hover.md — the state never leaves this Pressable, and nothing pressable is nested
- * inside it, so there is no second hover state machine to fight. Both icons are the same
- * size, so the swap can't move the target out from under the cursor.
+ * Hover is browser-owned CSS on the item's hover group: both icons stay mounted in the same
+ * slot and CSS shows one, so the swap clears as soon as the row moves away from a resting
+ * cursor. Both icons are the same size, so the swap can't move the target out from under it.
  */
 function PullRequestItem({ hint }: { hint: PrHint }) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
   const presentation = getForgePresentation(normalizeForge(hint.forge));
   const labelState = hint.state === "open" ? hint.activity : hint.state;
   const statusLabel = labelState ? t(PR_STATE_LABEL_KEYS[labelState]) : "";
@@ -199,8 +198,6 @@ function PullRequestItem({ hint }: { hint: PrHint }) {
     [hint.url],
   );
   const handlePressIn = useCallback((event: GestureResponderEvent) => event.stopPropagation(), []);
-  const handleHoverIn = useCallback(() => setIsHovered(true), []);
-  const handleHoverOut = useCallback(() => setIsHovered(false), []);
 
   return (
     <Pressable
@@ -217,16 +214,15 @@ function PullRequestItem({ hint }: { hint: PrHint }) {
       hitSlop={4}
       onPressIn={handlePressIn}
       onPress={handlePress}
-      onHoverIn={handleHoverIn}
-      onHoverOut={handleHoverOut}
-      style={pressableItemStyle}
+      style={pullRequestItemStyle}
     >
-      {isHovered ? (
-        <ThemedExternalLink size={META_ICON_SIZE} uniProps={foregroundMapping} />
-      ) : (
+      <View style={styles.prRestIcon}>
         <PullRequestStateIcon state={hint.state} size={META_ICON_SIZE} />
-      )}
-      <Text style={isHovered ? styles.prTextHovered : styles.prText} numberOfLines={1}>
+      </View>
+      <View style={styles.prHoverIcon}>
+        <ThemedExternalLink size={META_ICON_SIZE} uniProps={foregroundMapping} />
+      </View>
+      <Text style={styles.prText} numberOfLines={1}>
         {hint.number}
         {statusLabel ? ` ${statusLabel}` : ""}
       </Text>
@@ -312,6 +308,8 @@ export function ServiceItem({
   );
 }
 
+const PR_HOVER_GROUP = "pr-item";
+
 const PR_STATE_LABEL_KEYS = {
   awaiting_merge: "workspace.git.pr.states.awaitingMerge",
   merging: "workspace.git.pr.states.merging",
@@ -319,8 +317,8 @@ const PR_STATE_LABEL_KEYS = {
   closed: "workspace.git.pr.states.closed",
 } as const;
 
-function pressableItemStyle({ pressed }: { pressed: boolean }) {
-  return [styles.item, pressed && styles.itemPressed];
+function pullRequestItemStyle({ pressed }: { pressed: boolean }) {
+  return [styles.item, styles.prItem, pressed && styles.itemPressed];
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -406,12 +404,14 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 0,
+    ...groupHoverStyle(PR_HOVER_GROUP, { color: theme.colors.foreground }),
   },
-  prTextHovered: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    lineHeight: 16,
-    flexShrink: 0,
+  prItem: hoverGroup(PR_HOVER_GROUP),
+  prRestIcon: groupHoverStyle(PR_HOVER_GROUP, { display: "none" }),
+  // Hidden wherever the item cannot be hovered, which includes native.
+  prHoverIcon: {
+    display: "none",
+    ...groupHoverStyle(PR_HOVER_GROUP, { display: "flex" }),
   },
   // Matches the indicator — see COLOR_MAPPINGS in check-indicator.tsx.
   checksTextPassed: {

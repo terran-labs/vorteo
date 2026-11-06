@@ -37,6 +37,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
 import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
 import type { Theme } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 import { createPluginClientStateSource } from "../client-state/source";
 import { pluginIconComponent } from "../icons";
 import {
@@ -66,12 +67,14 @@ const errorIconMapping = (theme: Theme) => ({ color: theme.colors.statusDanger }
 const ThemedMoreIcon = withUnistyles(MoreVertical);
 const ThemedErrorIcon = withUnistyles(AlertCircle);
 
+/** Compact buttons use the shared icon chrome, whose hover is CSS `:hover`; pass press and open only. */
 function headerButtonStyle(compact: boolean, state: IconButtonChromeState, disabled = false) {
   if (compact) return iconButtonChromeStyle({ size: "large", state, disabled });
   return [
     styles.headerButton,
     styles.button,
-    (state.hovered || state.pressed || state.open) && styles.active,
+    !disabled && styles.hoverable,
+    (state.pressed || state.open) && styles.active,
     disabled && styles.disabled,
   ];
 }
@@ -259,15 +262,16 @@ function ButtonControl({ view }: { view: ButtonView }) {
     [entry.key],
   );
   const buttonStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) =>
+    ({ pressed }: { pressed: boolean }) =>
       composer
         ? [
             composerPillStyles.body,
             styles.button,
-            (hovered || pressed || entry.open) && styles.active,
+            !disabled && styles.hoverable,
+            (pressed || entry.open) && styles.active,
             disabled && styles.disabled,
           ]
-        : headerButtonStyle(props.layout.compact, { hovered, pressed, open: entry.open }, disabled),
+        : headerButtonStyle(props.layout.compact, { pressed, open: entry.open }, disabled),
     [composer, disabled, entry.open, props.layout.compact],
   );
   const contents = (
@@ -620,7 +624,7 @@ export function PluginHeaderButtons({
   const visible = entries.slice(0, limit);
   const overflow = entries.slice(limit);
   const overflowStyle = useCallback(
-    (state: IconButtonChromeState) => headerButtonStyle(compact, state),
+    ({ pressed, open }: IconButtonChromeState) => headerButtonStyle(compact, { pressed, open }),
     [compact],
   );
   if (entries.length === 0) return null;
@@ -675,6 +679,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   button: { flexShrink: 1, minWidth: 0, maxWidth: 160 },
   active: { backgroundColor: theme.colors.surface2 },
+  // CSS hover, left out while disabled because `:hover` outranks the base class.
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   disabled: { opacity: theme.opacity[50] },
   tooltipLabel: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
   composerLabel: {

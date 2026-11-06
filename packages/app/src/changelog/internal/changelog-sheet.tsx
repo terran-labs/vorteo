@@ -49,8 +49,9 @@ const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const sheetLeadingIcon = <ThemedGift size={ICON_SIZE.md} uniProps={mutedColorMapping} />;
-const websiteButtonStyle = (state: PressableStateCallbackType & { hovered?: boolean }) =>
-  iconButtonChromeStyle({ size: "large", state });
+// The chrome's hover is CSS `:hover`, so only the press state feeds it.
+const websiteButtonStyle = ({ pressed }: PressableStateCallbackType) =>
+  iconButtonChromeStyle({ size: "large", state: { pressed } });
 
 interface ChangelogSheetProps {
   visible: boolean;

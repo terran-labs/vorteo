@@ -158,27 +158,22 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDefinition[] = [
 ];
 
 export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
-  { id: "general.attention", section: "general", label: "Needs attention" },
+  // About was its own section; its routes now open these panes. It leads General with the
+  // installation's name, type and delivery mode.
   {
-    id: "general.installation",
+    id: "general.about",
     section: "general",
-    label: "Installation name",
-    requiresInstallation: true,
-    keywords: ["name", "title", "rename", "lab"],
+    label: "About",
+    legacySlugs: ["about"],
+    keywords: ["installation", "name", "lab", "stable", "delivery mode", "live dev"],
   },
+  { id: "general.attention", section: "general", label: "Needs attention" },
   {
     id: "general.notifications",
     section: "general",
     label: "Notifications",
     legacySlugs: ["notifications"],
     desktopOnly: true,
-  },
-  // About was its own section; its routes now open these panes.
-  {
-    id: "general.about",
-    section: "general",
-    label: "About",
-    legacySlugs: ["about"],
   },
   {
     id: "general.hosts",
@@ -377,10 +372,27 @@ const environment = "environment" as const;
 export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "general.installation.name",
-    pane: "general.installation",
+    pane: "general.about",
     label: "Installation name",
     hint: "Shown in the browser tab, the welcome page and the sidebar.",
     keywords: ["name", "title", "rename"],
+    scope: installation,
+    requiresInstallation: true,
+  },
+  {
+    id: "general.installation.type",
+    pane: "general.about",
+    label: "Installation type",
+    hint: "Stable installs tagged releases; Lab evolves itself from its live checkout.",
+    keywords: ["lab", "stable", "self-update", "release channel"],
+    scope: installation,
+    requiresInstallation: true,
+  },
+  {
+    id: "maintenance.installation.deliveryMode",
+    pane: "general.about",
+    label: "Delivery mode",
+    keywords: ["live dev", "fast refresh", "reliable", "live checkout"],
     scope: installation,
     requiresInstallation: true,
   },
@@ -961,13 +973,6 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     pane: "maintenance.installation",
     label: "Agent instruction changes",
     keywords: ["system prompt", "instruction request", "approve instructions"],
-    scope: installation,
-  },
-  {
-    id: "maintenance.installation.deliveryMode",
-    pane: "maintenance.installation",
-    label: "Delivery mode",
-    keywords: ["live dev", "fast refresh", "reliable", "live checkout"],
     scope: installation,
   },
   {

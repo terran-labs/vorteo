@@ -18,7 +18,7 @@ import { WorkspaceSubagentCount } from "@/subagents/workspace-count";
 import { useVortonTouch } from "@/vorton-touch";
 
 import { useSidebarActionSize } from "./use-sidebar-action-size";
-import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import { Text, View, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert, Folder, FolderGit2, Monitor, Pin } from "lucide-react-native";
@@ -53,7 +53,48 @@ import { StatusRing } from "@/components/status-ring";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
 import { WorkspaceLabelChip } from "@/workspace-labels/chip";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
+import { SIDEBAR_TRAILING_ICON_SLOT } from "./trailing-icon-slot";
+import { revealOnGroupHover } from "@/styles/hover";
+import {
+  SIDEBAR_LIT_OPACITY,
+  SidebarRowToneContext,
+  litToneColor,
+  useSidebarRowTone,
+} from "./row-tone";
 
+/**
+ * CSS hover group for a workspace row. Mark the row's outer hover target with
+ * `hoverGroup(SIDEBAR_WORKSPACE_HOVER_GROUP)`; the title and the kebab follow it in CSS, so they
+ * settle when the list reflows under a resting cursor. See docs/hover.md.
+ */
+export const SIDEBAR_WORKSPACE_HOVER_GROUP = "sidebar-workspace";
+
+/** Rows stay at full strength only when they want the owner's eye. */
+const ATTENTION_BUCKETS = new Set<SidebarWorkspaceEntry["statusBucket"]>([
+  "needs_input",
+  "attention",
+  "failed",
+]);
+
+/**
+ * The sidebar's calm look: a row that is not open, not hovered and not asking for anything
+ * takes the Standing workspaces' muted text and icons, so the rows that need attention stand out.
+ * Workspace rows pass `hovered: false` and lift the calm look with CSS group hover instead, so it
+ * settles when the list moves under a resting cursor.
+ */
+export function isSidebarRowCalm(input: {
+  selected?: boolean;
+  hovered: boolean;
+  bucket?: SidebarWorkspaceEntry["statusBucket"] | null;
+}): boolean {
+  if (input.selected || input.hovered) return false;
+  return !(input.bucket && ATTENTION_BUCKETS.has(input.bucket));
+}
+
+/** How far calm rows dim icons that have no muted color of their own. */
+export const SIDEBAR_CALM_OPACITY = 0.55;
+
+// The pin marker beside a pinned workspace in its home location.
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
@@ -73,6 +114,11 @@ const needsInputColorMapping = (theme: Theme) => ({
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedPin = withUnistyles(Pin);
 
+/**
+ * Wraps a workspace row in its hover card and owns its context-menu state. The row's fill, title
+ * strength, calm-tone lift, knockout backdrops and kebab reveal all follow CSS hover, so nothing
+ * here tracks the pointer.
+ */
 export function SidebarWorkspaceRowFrame({
   workspace,
   isDragging = false,
@@ -81,30 +127,11 @@ export function SidebarWorkspaceRowFrame({
   workspace: SidebarWorkspaceEntry;
   isDragging?: boolean;
   children: (input: {
-    isHovered: boolean;
     contextMenuOpen: boolean;
     onContextMenuOpenChange: (open: boolean) => void;
-    hoverHandlers: { onPointerEnter: () => void; onPointerLeave: () => void };
   }) => ReactNode;
 }) {
-  const touch = useVortonTouch();
-  const [isHovered, setIsHovered] = useState(false);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
-  const handlePointerEnter = useCallback(() => {
-    if (!contextMenuOpen && !touch) setIsHovered(true);
-  }, [contextMenuOpen, touch]);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const handleContextMenuOpenChange = useCallback((open: boolean) => {
-    setContextMenuOpen(open);
-    if (open) setIsHovered(false);
-  }, []);
-  const hoverHandlers = useMemo(
-    () => ({
-      onPointerEnter: handlePointerEnter,
-      onPointerLeave: handlePointerLeave,
-    }),
-    [handlePointerEnter, handlePointerLeave],
-  );
 
   return (
     <WorkspaceHoverCard
@@ -113,12 +140,7 @@ export function SidebarWorkspaceRowFrame({
       isDragging={isDragging}
       disabled={contextMenuOpen}
     >
-      {children({
-        isHovered: isHovered && !contextMenuOpen && !isDragging && !touch,
-        contextMenuOpen,
-        onContextMenuOpenChange: handleContextMenuOpenChange,
-        hoverHandlers,
-      })}
+      {children({ contextMenuOpen, onContextMenuOpenChange: setContextMenuOpen })}
     </WorkspaceHoverCard>
   );
 }
@@ -152,23 +174,24 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   leadingProjectName = null,
   leadingProjectIconDataUri = null,
   backdrop,
-  isHovered,
   isLoading,
   isCreating = false,
   shortcutNumber = null,
   showShortcutBadge = false,
   reserveIdleStatusIndicatorSpace = true,
+  selected = false,
   children,
 }: {
+  /** The open workspace keeps full strength. */
+  selected?: boolean;
   workspace: SidebarWorkspaceEntry;
   hostBadge?: HostBadgeModel | null;
   /** Hoisted rows use their project icon as the leading visual because no project row contains them. */
   leadingProjectName?: string | null;
   leadingProjectIconDataUri?: string | null;
   serviceSummary?: WorkspaceServiceSummary | null;
-  /** The row's current background, so the project status badge can knock out of it. */
+  /** The row's resting background, so the project status badge can knock out of it. */
   backdrop: SidebarSurfaceBackdrop;
-  isHovered: boolean;
   isLoading: boolean;
   isCreating?: boolean;
   shortcutNumber?: number | null;
@@ -186,73 +209,83 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   });
 
   const installedEnvironment = useHasExecutionEnvironment(workspace.serverId);
+  // Bright text and icons mean something to review, so hover never brightens a row.
+  const calm = isSidebarRowCalm({ selected, hovered: false, bucket: workspace.statusBucket });
   const workspaceBranchTextStyle = useMemo(
     () => [
       styles.workspaceBranchText,
-      isHovered && styles.workspaceBranchTextHovered,
       isCreating && styles.workspaceBranchTextCreating,
-      (workspace.standing || workspace.factoryMembership) && styles.managedText,
+      calm && styles.managedText,
     ],
-    [isHovered, isCreating, workspace.standing, workspace.factoryMembership],
+    [isCreating, calm],
   );
 
   return (
-    <View style={styles.workspaceRowContent}>
-      <View style={[styles.workspaceRowMain, styles.alignedRow]}>
-        {leadingProjectName ? (
-          <ProjectStatusIndicator
-            iconDataUri={leadingProjectIconDataUri}
-            displayName={leadingProjectName}
-            projectViewKey={workspace.projectViewKey}
-            statusBucket={workspace.statusBucket}
-            backdrop={backdrop}
-            loading={isLoading}
-            testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
-          />
-        ) : (
-          <WorkspaceStatusIndicator
-            serverId={workspace.serverId}
-            workspaceId={workspace.workspaceId}
-            bucket={workspace.statusBucket}
-            workspaceKind={workspace.workspaceKind}
-            loading={isLoading}
-            reserveIdleSpace={reserveIdleStatusIndicatorSpace}
-            muted={Boolean(workspace.standing || workspace.factoryMembership)}
-          />
-        )}
-        <View style={styles.workspaceContentColumn}>
-          <View style={[styles.workspaceTitleRow, styles.alignedRow]}>
-            <Text style={workspaceBranchTextStyle} numberOfLines={1}>
-              {workspaceLabel}
-            </Text>
-            <View style={[sidebarWorkspaceRowStyles.rowRight, styles.alignedActions]}>
-              {children}
+    <SidebarRowToneContext.Provider value={calm ? "calm" : "lit"}>
+      <View style={styles.workspaceRowContent}>
+        <View style={[styles.workspaceRowMain, styles.alignedRow]}>
+          {leadingProjectName ? (
+            <ProjectStatusIndicator
+              iconDataUri={leadingProjectIconDataUri}
+              displayName={leadingProjectName}
+              projectViewKey={workspace.projectViewKey}
+              statusBucket={workspace.statusBucket}
+              backdrop={backdrop}
+              loading={isLoading}
+              testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
+            />
+          ) : (
+            <WorkspaceStatusIndicator
+              serverId={workspace.serverId}
+              workspaceId={workspace.workspaceId}
+              bucket={workspace.statusBucket}
+              workspaceKind={workspace.workspaceKind}
+              loading={isLoading}
+              reserveIdleSpace={reserveIdleStatusIndicatorSpace}
+              muted={calm}
+              lit={!calm}
+            />
+          )}
+          <View style={styles.workspaceContentColumn}>
+            <View style={[styles.workspaceTitleRow, styles.alignedRow]}>
+              <Text style={workspaceBranchTextStyle} numberOfLines={1}>
+                {workspaceLabel}
+              </Text>
+              <View
+                style={[
+                  sidebarWorkspaceRowStyles.rowRight,
+                  styles.alignedActions,
+                  !calm && styles.litTrailing,
+                ]}
+              >
+                {children}
+              </View>
             </View>
+            <FactoryRoleStatus
+              serverId={workspace.serverId}
+              projectId={workspace.projectId ?? ""}
+              workspaceId={workspace.workspaceId}
+              enabled={Boolean(
+                workspace.factoryMembership ||
+                workspace.systemMembership?.role === "optimization-runner",
+              )}
+            />
+            <WorkspaceMetaRow
+              currentBranch={workspace.currentBranch}
+              projectName={leadingProjectName}
+              hostBadge={visibleHostBadge(installedEnvironment, hostBadge)}
+              prHint={workspace.prHint}
+              serviceSummary={null}
+            />
           </View>
-          <FactoryRoleStatus
-            serverId={workspace.serverId}
-            projectId={workspace.projectId ?? ""}
-            workspaceId={workspace.workspaceId}
-            enabled={Boolean(
-              workspace.factoryMembership ||
-              workspace.systemMembership?.role === "optimization-runner",
-            )}
-          />
-          <WorkspaceMetaRow
-            currentBranch={workspace.currentBranch}
-            projectName={leadingProjectName}
-            hostBadge={visibleHostBadge(installedEnvironment, hostBadge)}
-            prHint={workspace.prHint}
-            serviceSummary={null}
-          />
         </View>
+        {showShortcutBadge && shortcutNumber !== null ? (
+          <View style={styles.shortcutBadgeOverlay} pointerEvents="none">
+            <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
+          </View>
+        ) : null}
       </View>
-      {showShortcutBadge && shortcutNumber !== null ? (
-        <View style={styles.shortcutBadgeOverlay} pointerEvents="none">
-          <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
-        </View>
-      ) : null}
-    </View>
+    </SidebarRowToneContext.Provider>
   );
 });
 
@@ -264,6 +297,7 @@ function WorkspaceStatusIndicator({
   loading = false,
   reserveIdleSpace = true,
   muted = false,
+  lit = false,
 }: {
   serverId: string;
   workspaceId: string;
@@ -272,7 +306,10 @@ function WorkspaceStatusIndicator({
   loading?: boolean;
   reserveIdleSpace?: boolean;
   muted?: boolean;
+  /** A row that wants attention: neutral icons take the title's color and strength. */
+  lit?: boolean;
 }) {
+  const litStyle = lit ? styles.litIcon : undefined;
   const reviewTasks = useWorkspaceReviewTasks(serverId, workspaceId);
   // Busy is the only status that moves, and it is the ring rather than a dot for the same
   // reason it is a dot elsewhere: every status in the sidebar sits in this one slot, so busy
@@ -281,22 +318,17 @@ function WorkspaceStatusIndicator({
   // foreground ring, not the colored agent ring: a list full of working agents should hum, not
   // blink blue at you.
   if (loading) {
-    return (
-      <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-loading">
-        <View style={styles.workspaceStatusRing}>
-          <StatusRing variant="task" />
-        </View>
-      </View>
-    );
+    return <WorkspaceStatusRing testID="workspace-status-indicator-loading" muted={muted} />;
   }
 
   if (shouldRenderSyncedStatusLoader({ bucket })) {
     return (
-      <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-running">
-        <View style={styles.workspaceStatusRing}>
-          <StatusRing variant="task" />
-        </View>
-      </View>
+      <WorkspaceStatusRing
+        testID="workspace-status-indicator-running"
+        muted={muted}
+        lit={lit}
+        takesLitStrength
+      />
     );
   }
 
@@ -313,12 +345,15 @@ function WorkspaceStatusIndicator({
 
   // An idle thread waiting on a Review item, such as a Builds delivery, is not ready yet.
   if (showsReviewWait(bucket, reviewTasks.length)) {
+    // On web the calm hourglass paints `currentColor`, which this wrapper sets (see row-tone).
     return (
-      <ReviewWaitIndicator
-        tasks={reviewTasks}
-        muted={muted}
-        slotStyle={styles.workspaceStatusDot}
-      />
+      <View style={[litStyle, muted && styles.calmIconColor]}>
+        <ReviewWaitIndicator
+          tasks={reviewTasks}
+          muted={muted}
+          slotStyle={styles.workspaceStatusDot}
+        />
+      </View>
     );
   }
 
@@ -342,15 +377,55 @@ function WorkspaceStatusIndicator({
     ) : null;
   }
 
-  let KindIcon = ThemedMonitor;
+  return <KindStatusIcon bucket={bucket} workspaceKind={workspaceKind} muted={muted} lit={lit} />;
+}
+
+/**
+ * The busy ring, in the row's own tone: the calm color on a calm row, the title's color and
+ * strength on a lit one, turning at the sidebar's slower tempo so a list of working rows stays
+ * quiet.
+ */
+function WorkspaceStatusRing({
+  testID,
+  muted,
+  lit = false,
+  takesLitStrength = false,
+}: {
+  testID: string;
+  muted: boolean;
+  lit?: boolean;
+  takesLitStrength?: boolean;
+}) {
+  return (
+    <View style={styles.workspaceStatusDot} testID={testID}>
+      <View style={[styles.workspaceStatusRing, takesLitStrength && lit && styles.litIcon]}>
+        <StatusRing variant="task" tone={muted ? "calm" : undefined} tempo="calm" />
+      </View>
+    </View>
+  );
+}
+
+/** A workspace's kind glyph with its status dot, for buckets without a glyph of their own. */
+function KindStatusIcon({
+  bucket,
+  workspaceKind,
+  muted,
+  lit,
+}: {
+  bucket: SidebarWorkspaceEntry["statusBucket"];
+  workspaceKind: SidebarWorkspaceEntry["workspaceKind"];
+  muted: boolean;
+  lit: boolean;
+}) {
+  let KindIcon = ThemedFolder;
   if (workspaceKind === "local_checkout") KindIcon = ThemedMonitor;
   else if (workspaceKind === "worktree") KindIcon = ThemedFolderGit2;
-  else KindIcon = ThemedFolder;
-
   const dotColorStyle = getStatusDotColorStyle(bucket);
   return (
     <View style={styles.workspaceStatusDot} testID={`workspace-status-indicator-${bucket}`}>
-      <KindIcon size={14} uniProps={muted ? managedColorMapping : foregroundMutedColorMapping} />
+      <View style={lit ? styles.litIcon : undefined}>
+        <KindIcon size={14} uniProps={muted ? managedColorMapping : litToneColor} />
+      </View>
       {dotColorStyle ? (
         <StatusDotOverlay dotColorStyle={muted ? styles.managedStatusDot : dotColorStyle} />
       ) : null}
@@ -430,19 +505,20 @@ export function SidebarWorkspaceShortcutBadge({ number }: { number: number }) {
 
 export type SidebarWorkspaceTrailingPresentation = "visible" | "hidden" | "absent";
 
-/** Shared visibility for project and status grouping. The menu reserves space only when shown. */
+/**
+ * Shared visibility for project and status grouping. `showKebab` means the row offers the kebab;
+ * `SidebarWorkspaceMenuReveal` keeps it mounted and CSS reveals it while the row is hovered.
+ */
 export function resolveTrailingActionVisibility({
   workspace,
   trailing,
   hasArchiveAction,
-  isHovered,
   isTouchPlatform,
   showShortcut,
 }: {
   workspace: SidebarWorkspaceEntry;
   trailing: SidebarWorkspaceTrailing;
   hasArchiveAction: boolean;
-  isHovered: boolean;
   isTouchPlatform: boolean;
   showShortcut: boolean;
 }): {
@@ -451,7 +527,7 @@ export function resolveTrailingActionVisibility({
   renderSlot: boolean;
 } {
   const hasTrailing = hasSidebarWorkspaceTrailing({ workspace, trailing });
-  const showKebab = hasArchiveAction && isHovered && !isTouchPlatform && !showShortcut;
+  const showKebab = hasArchiveAction && !isTouchPlatform && !showShortcut;
   let trailingPresentation: SidebarWorkspaceTrailingPresentation = "absent";
   if (hasTrailing) trailingPresentation = showShortcut ? "hidden" : "visible";
   return {
@@ -483,44 +559,54 @@ export function SidebarWorkspaceTrailingDetails({
   const width = useSidebarWidth();
   const service = selectWorkspaceServiceSummary(workspace.scripts);
   const labels = useWorkspaceLabelDefinitions(workspace.serverId, workspace.labels);
+  const calm = useSidebarRowTone() === "calm";
+  // Multi-color marks cannot take the row's one color, so calm rows dim them instead.
+  const groupStyle = [styles.trailingGroup, calm && styles.calmTrailing];
   return (
     <View style={styles.trailingDetails}>
-      {showPinMarker ? (
-        <View testID={`sidebar-workspace-pin-marker-${workspace.workspaceKey}`}>
-          <ThemedPin size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
-        </View>
-      ) : null}
-      <WorkspaceActivityBadges
-        serverId={workspace.serverId}
-        workspaceId={workspace.workspaceId}
-        visible={sidebarRowItems.activityBadges && width >= 280}
-      />
-      {sidebarRowItems.labels && labels.length > 0 ? (
-        <View style={styles.customLabels}>
-          {labels.map((label) => (
-            <WorkspaceLabelChip key={label.name} label={label} />
-          ))}
-        </View>
-      ) : null}
-      <ExecutionEnvironmentIcon
-        serverId={workspace.serverId}
-        hostOnly
-        muted={Boolean(workspace.standing || workspace.factoryMembership)}
-      />
-      <WorkspaceLifecycleIndicators
-        workspace={workspace}
-        hideFactory={Boolean(
-          workspace.factoryMembership?.installationId.startsWith("project-factory:"),
-        )}
-      />
-      <FactoryReviewBadge workspace={workspace} />
-      {service ? <ServiceItem summary={service} iconOnly /> : null}
-      {sidebarRowItems.activityBadges ? (
-        <WorkspaceChecklistProgress
+      <View style={groupStyle}>
+        {showPinMarker ? (
+          <View testID={`sidebar-workspace-pin-marker-${workspace.workspaceKey}`}>
+            <ThemedPin size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+          </View>
+        ) : null}
+        <WorkspaceActivityBadges
           serverId={workspace.serverId}
           workspaceId={workspace.workspaceId}
+          visible={sidebarRowItems.activityBadges && width >= 280}
         />
-      ) : null}
+        {sidebarRowItems.labels && labels.length > 0 ? (
+          <View style={styles.customLabels}>
+            {labels.map((label) => (
+              <WorkspaceLabelChip key={label.name} label={label} />
+            ))}
+          </View>
+        ) : null}
+      </View>
+      <>
+        {/* Takes the row's tone, matching the lock and schedule marks beside it. */}
+        <ExecutionEnvironmentIcon
+          serverId={workspace.serverId}
+          hostOnly
+          columnWidth={SIDEBAR_TRAILING_ICON_SLOT}
+        />
+        <WorkspaceLifecycleIndicators
+          workspace={workspace}
+          hideFactory={Boolean(
+            workspace.factoryMembership?.installationId.startsWith("project-factory:"),
+          )}
+        />
+      </>
+      <View style={groupStyle}>
+        <FactoryReviewBadge workspace={workspace} />
+        {service ? <ServiceItem summary={service} iconOnly /> : null}
+        {sidebarRowItems.activityBadges ? (
+          <WorkspaceChecklistProgress
+            serverId={workspace.serverId}
+            workspaceId={workspace.workspaceId}
+          />
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -540,12 +626,29 @@ export function SidebarWorkspaceTrailingActionBase({
   );
 }
 
+/**
+ * The surface behind a revealed kebab. It shows while the row is hovered, so it paints the row's
+ * hover fill over a resting backdrop, which is all the row reports; while its menu is open the
+ * pointer is elsewhere, so it paints the row's resting backdrop.
+ */
+export function sidebarMenuBackdrop(
+  backdrop: SidebarSurfaceBackdrop,
+  menuOpen: boolean,
+): SidebarSurfaceBackdrop {
+  if (menuOpen || backdrop !== "surfaceSidebar") return backdrop;
+  return "surfaceSidebarHover";
+}
+
 export function SidebarWorkspaceMenuReveal({
   visible,
+  pinned = false,
   backdrop,
   children,
 }: {
+  /** The row offers the kebab. On hover-capable layouts CSS shows it while the row is hovered. */
   visible: boolean;
+  /** The kebab's menu is open, so the kebab stays shown after the pointer leaves the row. */
+  pinned?: boolean;
   backdrop: SidebarSurfaceBackdrop;
   children: ReactNode;
 }) {
@@ -560,7 +663,12 @@ export function SidebarWorkspaceMenuReveal({
       {visible ? (
         <View
           testID="sidebar-menu-backdrop"
-          style={[styles.menuEdge, styles.menuBackdrop(backdrop), actionSize]}
+          style={[
+            styles.menuEdge,
+            styles.menuBackdrop(backdrop),
+            !touch && !pinned && styles.menuReveal,
+            actionSize,
+          ]}
         >
           {!touch ? <TrailingActionScrim backdrop={backdrop} testID="sidebar-menu-fade" /> : null}
           {children}
@@ -618,6 +726,8 @@ const styles = StyleSheet.create((theme) => ({
   menuBackdrop: (backdrop: SidebarSurfaceBackdrop) => ({
     backgroundColor: theme.colors[backdrop],
   }),
+  // Stays mounted so CSS can reveal it on row hover and hide it again when the list moves.
+  menuReveal: revealOnGroupHover(SIDEBAR_WORKSPACE_HOVER_GROUP),
   touchMenuSpace: { flexShrink: 0, marginLeft: 4 },
   menuEdge: {
     position: "absolute",
@@ -706,14 +816,22 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.92,
   },
   managedText: { color: theme.colors.foregroundExtraMuted, opacity: 1 },
+  calmTrailing: { opacity: SIDEBAR_CALM_OPACITY },
+  /** A lit row's icons sit at the title's strength; calm icons are already muted by color. */
+  litTrailing: { opacity: SIDEBAR_LIT_OPACITY },
+  litIcon: { opacity: SIDEBAR_LIT_OPACITY },
+  // A hovered calm row takes the lit look through CSS group hover, matching what the lit styles
+  // above paint at rest: the title's color and strength, and the lit icon opacity.
+  /** The CSS color a calm `currentColor` icon paints with on web; native colors come from props. */
+  calmIconColor: { _web: { color: theme.colors.foregroundExtraMuted } },
+  // Keeps the trailing cluster's spacing when its multi-color marks are grouped for dimming.
+  trailingGroup: { flexDirection: "row", alignItems: "center", gap: theme.spacing[1] },
+
   managedStatusDot: {
     width: STATUS_INDICATOR_FILLED_DOT_SIZE,
     height: STATUS_INDICATOR_FILLED_DOT_SIZE,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.foregroundExtraMuted,
-  },
-  workspaceBranchTextHovered: {
-    opacity: 1,
   },
   statusDotNeedsInput: {
     backgroundColor: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,

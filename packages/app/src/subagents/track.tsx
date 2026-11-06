@@ -24,7 +24,11 @@ import { useTranslation } from "react-i18next";
 import { BrushCleaning, Archive, Unlink, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useProviderIcon } from "@/components/provider-icons";
-import { ComposerTrackPill, ComposerTrackRow } from "@/composer/tracks";
+import {
+  COMPOSER_TRACK_ROW_HOVER_GROUP,
+  ComposerTrackPill,
+  ComposerTrackRow,
+} from "@/composer/tracks";
 import {
   Tooltip,
   TooltipContent,
@@ -40,6 +44,7 @@ import {
   WorkspaceTabIcon,
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
+import { groupHoverStyle, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 
 import { getPanelManifest } from "@/panels/panel-manifest";
@@ -65,6 +70,10 @@ const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foregrou
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
+// On web an icon inherits its wrapper's CSS color, so browser-owned hover can brighten it.
+const inheritedIconColorMapping = isWeb
+  ? () => ({ color: "currentColor" })
+  : foregroundMutedColorMapping;
 
 export interface SubagentsTrackProps {
   inline?: boolean;
@@ -298,20 +307,16 @@ export function ArchiveFinishedRow({
   const { t } = useTranslation();
 
   const renderRow = useCallback(
-    ({ active }: { active: boolean }) => (
+    () => (
       <>
         {inline ? (
-          <TaskCardRowIcon>
-            <ThemedArchive
-              size={ROW_ICON_SIZE}
-              uniProps={active ? foregroundColorMapping : foregroundMutedColorMapping}
-            />
+          <TaskCardRowIcon style={styles.rowIconColor}>
+            <ThemedArchive size={ROW_ICON_SIZE} uniProps={inheritedIconColorMapping} />
           </TaskCardRowIcon>
         ) : (
-          <ThemedArchive
-            size={ROW_ICON_SIZE}
-            uniProps={active ? foregroundColorMapping : foregroundMutedColorMapping}
-          />
+          <View style={styles.rowIconColor}>
+            <ThemedArchive size={ROW_ICON_SIZE} uniProps={inheritedIconColorMapping} />
+          </View>
         )}
         <TruncatedText
           style={[styles.rowLabel, inline && taskCardStyles.rowText]}
@@ -455,11 +460,14 @@ export function SubagentsTrackRow({
   const detailsText = details.join("\n");
 
   const renderRow = useCallback(
-    ({ active }: { active: boolean }) => {
+    // On web the status knockout follows the row's CSS hover fill through ROW_SURFACE_VAR, so
+    // the token is the rest surface; `pressed` keeps native's pressed fill matched. The actions
+    // reveal with CSS group hover.
+    ({ pressed }: { pressed: boolean }) => {
       const icon = (
         <WorkspaceTabIcon
           presentation={presentation}
-          backdrop={active && !inline ? "surface2" : "surface1"}
+          backdrop={pressed && !inline ? "surface2" : "surface1"}
         />
       );
       return (
@@ -503,7 +511,7 @@ export function SubagentsTrackRow({
               inline={inline}
               rowId={row.id}
               displayLabel={displayLabel}
-              visible={actionsAlwaysVisible || active}
+              revealOnHover={!actionsAlwaysVisible}
               onDetachPress={canDetach ? handleDetachPress : undefined}
               onArchivePress={handleArchivePress}
               providerNative={row.kind === "provider"}
@@ -553,7 +561,7 @@ function SubagentRowActions({
   rowId,
   displayLabel,
   compact,
-  visible,
+  revealOnHover,
   onDetachPress,
   onArchivePress,
   providerNative,
@@ -562,7 +570,8 @@ function SubagentRowActions({
   rowId: string;
   displayLabel: string;
   compact: boolean;
-  visible: boolean;
+  /** Keep the actions invisible until the row is hovered or focused. */
+  revealOnHover: boolean;
   onDetachPress?: () => void;
   onArchivePress: () => void;
   providerNative: boolean;
@@ -570,17 +579,13 @@ function SubagentRowActions({
   const { t } = useTranslation();
   const iconSize = paneContentToolbarIconSize(compact);
   return (
-    <View
-      style={visible ? styles.actionClusterVisible : styles.actionClusterHidden}
-      pointerEvents={visible ? "auto" : "none"}
-    >
+    <View style={revealOnHover ? ACTION_CLUSTER_REVEAL_STYLE : styles.actionCluster}>
       {onDetachPress ? (
         <SubagentActionButton
           accessibilityLabel={t("subagents.detachAction", { label: displayLabel })}
           tooltipLabel={t("subagents.detachTooltip")}
           inline={inline}
           icon="detach"
-          visible={visible}
           onPress={onDetachPress}
           testID={`subagents-track-detach-${rowId}`}
         >
@@ -598,7 +603,6 @@ function SubagentRowActions({
         }
         inline={inline}
         icon={providerNative ? "dismiss" : "archive"}
-        visible={visible}
         onPress={onArchivePress}
         testID={`subagents-track-archive-${rowId}`}
       >
@@ -612,10 +616,11 @@ type SubagentActionIcon = "archive" | "detach" | "dismiss";
 
 function renderSubagentActionIcon(
   icon: SubagentActionIcon,
-  isActive: boolean,
+  pressed: boolean,
   size: number,
 ): ReactElement {
-  const uniProps = isActive ? foregroundColorMapping : foregroundMutedColorMapping;
+  // Hover brightens through the button's CSS color (`actionButton`); press stays in JS.
+  const uniProps = pressed ? foregroundColorMapping : inheritedIconColorMapping;
   if (icon === "dismiss") return <ThemedX size={size} uniProps={uniProps} />;
   if (icon === "detach") {
     return <ThemedUnlink size={size} uniProps={uniProps} />;
@@ -629,14 +634,12 @@ function SubagentActionButton({
   testID,
   tooltipLabel,
   icon,
-  visible,
   onPress,
 }: {
   accessibilityLabel: string;
   tooltipLabel: string;
   inline?: boolean;
   icon: SubagentActionIcon;
-  visible: boolean;
   onPress: () => void;
   testID: string;
   children: ReactNode;
@@ -645,7 +648,7 @@ function SubagentActionButton({
   const rowActionStyle = useTaskCardRowActionStyle();
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-      <TooltipTrigger asChild disabled={!visible}>
+      <TooltipTrigger asChild>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={accessibilityLabel}
@@ -654,9 +657,7 @@ function SubagentActionButton({
           style={[styles.actionButton, inline ? rowActionStyle : touch && styles.touchAction]}
           hitSlop={inline ? undefined : 8}
         >
-          {({ hovered, pressed }) =>
-            renderSubagentActionIcon(icon, hovered || pressed, ROW_ICON_SIZE)
-          }
+          {({ pressed }) => renderSubagentActionIcon(icon, pressed, ROW_ICON_SIZE)}
         </Pressable>
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
@@ -714,25 +715,24 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
-  actionClusterVisible: {
+  actionCluster: {
     flexShrink: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
-    opacity: 1,
   },
-  actionClusterHidden: {
-    flexShrink: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-    opacity: 0,
-  },
+  actionClusterReveal: revealOnGroupHover(COMPOSER_TRACK_ROW_HOVER_GROUP),
+  rowIconColor: groupHoverStyle(
+    COMPOSER_TRACK_ROW_HOVER_GROUP,
+    { color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
   touchAction: { minWidth: 44, minHeight: 44 },
   actionButton: {
     padding: theme.spacing[1],
     alignItems: "center",
     justifyContent: "center",
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
   tooltipText: {
     fontSize: theme.fontSize.sm,
@@ -750,3 +750,5 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const HEADING_ICON = <TaskCardIcon kind="subagents" />;
+
+const ACTION_CLUSTER_REVEAL_STYLE = [styles.actionCluster, styles.actionClusterReveal];

@@ -3,11 +3,12 @@
 //
 //   node scripts/live-dev.mjs status
 //   node scripts/live-dev.mjs claim --by <thread> <file>...
-//   node scripts/live-dev.mjs release --by <thread>
+//   node scripts/live-dev.mjs release --by <thread> [<file>...]
 //   node scripts/live-dev.mjs commit --by <thread> -m <message> [--note <change fragment line>]
 //   node scripts/live-dev.mjs promote <local branch> --by <thread>
 //   node scripts/live-dev.mjs sync --by <thread>
 //   node scripts/live-dev.mjs prepare [--by <thread>]
+//   node scripts/live-dev.mjs revision
 //
 // Every Git change takes the live lock and refuses rather than guessing. Tweaks are ordinary
 // edits in the live checkout: Fast Refresh shows them at once, and `commit` records them.
@@ -174,7 +175,7 @@ export function status(paths) {
   const dirty = dirtyFiles(paths.checkout);
   return {
     checkout: paths.checkout,
-    branch: git(paths.checkout, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    branch: currentBranch(paths) ?? "(detached)",
     head: git(paths.checkout, ["rev-parse", "--short", "HEAD"]),
     aheadOfMain: Number(git(paths.checkout, ["rev-list", "--count", "origin/main..HEAD"])),
     claims,
@@ -196,7 +197,11 @@ export function claim(paths, by, files) {
       const owner = claimOwner(claims, file);
       if (owner && owner !== by) throw new LiveDevRefusal(`${file} is being edited by ${owner}.`);
     }
-    const mine = claims.find((item) => item.by === by) ?? { by, files: [], at: null };
+    const mine = claims.find((item) => item.by === by) ?? {
+      by,
+      files: [],
+      at: null,
+    };
     mine.files = [...new Set([...mine.files, ...wanted])];
     mine.at = new Date().toISOString();
     writeClaims(paths, [...claims.filter((item) => item.by !== by), mine]);
@@ -204,11 +209,25 @@ export function claim(paths, by, files) {
   });
 }
 
-export function release(paths, by) {
+/** Drops this thread's claim, or only the named files when any are given. */
+export function release(paths, by, files = []) {
   return withLock(paths, by, () => {
+    const claims = readClaims(paths);
+    if (files.length === 0) {
+      writeClaims(
+        paths,
+        claims.filter((item) => item.by !== by),
+      );
+      return;
+    }
+    const dropped = new Set(files.map((file) => normalize(paths.checkout, file)));
     writeClaims(
       paths,
-      readClaims(paths).filter((item) => item.by !== by),
+      claims.flatMap((item) => {
+        if (item.by !== by) return [item];
+        const kept = item.files.filter((file) => !dropped.has(file));
+        return kept.length ? [{ ...item, files: kept }] : [];
+      }),
     );
   });
 }
@@ -226,6 +245,41 @@ function refreshDependencies(paths, log) {
   log("Dependency inputs changed; reinstalling and restarting the live dev server.");
   installAndBuild(paths, log);
   writeFileSync(paths.restartRequest, `${new Date().toISOString()}\n`);
+}
+
+const APP_PACKAGE = "packages/app/package.json";
+const REVISION_RECORD = "packages/app/src/utils/live-revision.local.json";
+
+/**
+ * Records how many commits the live branch carries past the commit that set the app's current
+ * version, so the sidebar shows `v<version>+<count>` through Fast Refresh. The file is
+ * gitignored, so writing it never dirties the checkout. See packages/app/src/utils/live-revision.ts.
+ */
+export function writeRevision(paths) {
+  const version = JSON.parse(readFileSync(path.join(paths.checkout, APP_PACKAGE), "utf8")).version;
+  const base = git(paths.checkout, [
+    "log",
+    "-1",
+    "--format=%H",
+    "-G",
+    '"version"',
+    "--",
+    APP_PACKAGE,
+  ]);
+  const ahead = base ? Number(git(paths.checkout, ["rev-list", "--count", `${base}..HEAD`])) : 0;
+  const record = {
+    version,
+    ahead,
+    base,
+    head: git(paths.checkout, ["rev-parse", "HEAD"]),
+  };
+  const file = path.join(paths.checkout, REVISION_RECORD);
+  const next = `${JSON.stringify(record, null, 2)}\n`;
+  // An unchanged record is left alone so Metro does not reload the owner's tab for nothing.
+  if (existsSync(file) && readFileSync(file, "utf8") === next) return record;
+  writeFileSync(`${file}.tmp`, next);
+  renameSync(`${file}.tmp`, file);
+  return record;
 }
 
 /** The owner's local date, as the repository's changelog headings use. */
@@ -278,15 +332,33 @@ export function commit(paths, by, message, note, log = console.log) {
       paths,
       claims.filter((item) => item.by !== by),
     );
+    writeRevision(paths);
     refreshDependencies(paths, log);
     return git(paths.checkout, ["rev-parse", "HEAD"]);
   });
 }
 
+/**
+ * The checked-out branch, or null when HEAD is detached. Reads the symbolic ref itself: a
+ * short name from `rev-parse --abbrev-ref` turns ambiguous (`heads/live/main`) as soon as any
+ * other ref, such as `refs/remotes/live/main`, shares it.
+ */
+function currentBranch(paths) {
+  let ref;
+  try {
+    ref = git(paths.checkout, ["symbolic-ref", "HEAD"]);
+  } catch {
+    return null;
+  }
+  return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+}
+
 function requireLiveBranch(paths) {
-  const branch = git(paths.checkout, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = currentBranch(paths);
   if (branch !== LIVE_BRANCH)
-    throw new LiveDevRefusal(`The live checkout is on ${branch}, not ${LIVE_BRANCH}.`);
+    throw new LiveDevRefusal(
+      `The live checkout is on ${branch ?? "a detached HEAD"}, not ${LIVE_BRANCH}.`,
+    );
 }
 
 function requireClean(paths) {
@@ -295,7 +367,9 @@ function requireClean(paths) {
   if (dirty.length === 0) return;
   const owners = [...new Set(dirty.map((file) => claimOwner(claims, file) ?? "an unclaimed edit"))];
   throw new LiveDevRefusal(
-    `The live checkout has uncommitted edits (${dirty.length} files, from ${owners.join(", ")}). Commit or release them first.`,
+    `The live checkout has uncommitted edits (${
+      dirty.length
+    } files, from ${owners.join(", ")}). Commit or release them first.`,
   );
 }
 
@@ -320,7 +394,9 @@ function merge(paths, by, commitish, label, log) {
       const end = lines.indexOf("");
       const conflicted = (end === -1 ? lines : lines.slice(0, end)).filter(Boolean);
       throw new LiveDevRefusal(
-        `${label} conflicts with the live checkout${conflicted.length ? ` in ${conflicted.join(", ")}` : ""}; nothing changed.`,
+        `${label} conflicts with the live checkout${
+          conflicted.length ? ` in ${conflicted.join(", ")}` : ""
+        }; nothing changed.`,
       );
     }
     try {
@@ -336,9 +412,12 @@ function merge(paths, by, commitish, label, log) {
     } catch (error) {
       git(paths.checkout, ["merge", "--abort"]);
       throw new LiveDevRefusal(
-        `Merging ${label} was refused; the live checkout is unchanged. ${error.stderr ?? error.message}`.trim(),
+        `Merging ${label} was refused; the live checkout is unchanged. ${
+          error.stderr ?? error.message
+        }`.trim(),
       );
     }
+    writeRevision(paths);
     refreshDependencies(paths, log);
     return git(paths.checkout, ["rev-parse", "HEAD"]);
   });
@@ -389,7 +468,10 @@ function installAndBuild(paths, log) {
 }
 
 export function prepare(paths, by, log = console.log) {
-  return withLock(paths, by, () => installAndBuild(paths, log));
+  return withLock(paths, by, () => {
+    installAndBuild(paths, log);
+    writeRevision(paths);
+  });
 }
 
 function parse(argv) {
@@ -423,7 +505,7 @@ function main() {
       console.log(JSON.stringify(claim(paths, requireBy(), args.positional), null, 2));
       return;
     case "release":
-      release(paths, requireBy());
+      release(paths, requireBy(), args.positional);
       return;
     case "commit":
       console.log(commit(paths, requireBy(), args.message, args.note));
@@ -436,6 +518,9 @@ function main() {
       return;
     case "prepare":
       prepare(paths, args.by ?? "the installation coordinator");
+      return;
+    case "revision":
+      console.log(JSON.stringify(writeRevision(paths), null, 2));
       return;
     default:
       throw new LiveDevRefusal(
