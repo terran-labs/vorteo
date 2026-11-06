@@ -528,14 +528,13 @@ test("owner maintenance queue shows cancellation failures and cancels the exact 
   await queue.getByRole("button", { name: "Refresh requests" }).click();
   await expect(queue.getByRole("alert")).toHaveCount(0);
   await expect(row.getByRole("button", { name: "Cancel maintenance" })).toBeEnabled();
-  // Keep the unrelated historical restart fixture out of this control screenshot.
-  await page
-    .getByTestId("installation-update-toasts")
-    .getByRole("alert")
-    .filter({ hasText: "Restart Host to enable protected workspaces" })
-    .getByRole("button", { name: "Dismiss", exact: true })
-    .last()
-    .click();
+  // Restart requests use one sidebar notice; no per-request alert floats over the queue.
+  await expect(
+    page
+      .getByTestId("installation-update-toasts")
+      .getByRole("alert")
+      .filter({ hasText: "Restart Host to enable protected workspaces" }),
+  ).toHaveCount(0);
   await queue.screenshot({ path: testInfo.outputPath("maintenance-request-queue.png") });
   await row.getByRole("button", { name: "Cancel maintenance" }).click();
   await expect(row).toContainText("Maintenance cancelled before dispatch.");
