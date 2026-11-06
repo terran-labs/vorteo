@@ -2,11 +2,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { openSettings } from "../support/helpers/app";
 import { addConnectedHostAndReload } from "../support/helpers/hosts";
-import {
-  selectSettingsHost,
-  revealSettingsLocation,
-  clickSettingsBackToWorkspace,
-} from "../support/helpers/settings";
+import { selectSettingsHost, revealSettingsLocation } from "../support/helpers/settings";
 import { getServerId } from "../support/helpers/server-id";
 import {
   startRestartableHostDaemon,
@@ -43,9 +39,10 @@ test("System details show the restarted Host version without reloading", async (
         label: HOST_LABEL,
         port: host.port,
       });
+      await openSettings(page);
       const versions = await readConnectedHostVersions(page, [getServerId(), host.serverId]);
       expect(versions[host.serverId]).toContain(`v${PREVIOUS_VERSION}`);
-      await openHostPage(page, host);
+      await showSystemHostDetails(page, host);
       await expect(page.getByTestId("system-pane").filter({ visible: true })).toBeVisible();
       await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toBeVisible();
       await markPageForNoReloadCheck(page, NO_RELOAD_MARKER);
@@ -70,7 +67,6 @@ test("System details show the restarted Host version without reloading", async (
   await test.step("System details follow the new version", async () => {
     await expect(hostVersionBadge(page, UPDATED_VERSION)).toBeVisible({ timeout: 30_000 });
     await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toHaveCount(0);
-    await clickSettingsBackToWorkspace(page);
     const versions = await readConnectedHostVersions(page, [host.serverId, getServerId()]);
     expect(versions[host.serverId]).toContain(`v${UPDATED_VERSION}`);
     expect(versions[getServerId()]).toBe(otherHostVersion);
@@ -78,12 +74,11 @@ test("System details show the restarted Host version without reloading", async (
   });
 });
 
-/** Both versions share one Settings pane; read them in one visit instead of reopening the old Help flow per row. */
+/** Read both rows in the open Settings page; closing a former Help menu is no longer needed. */
 async function readConnectedHostVersions(
   page: Page,
   serverIds: readonly string[],
 ): Promise<Record<string, string>> {
-  await openSettings(page);
   await revealSettingsLocation(page, "general.hosts");
   const versions: Record<string, string> = {};
   for (const serverId of serverIds) {
@@ -91,12 +86,10 @@ async function readConnectedHostVersions(
     await expect(row).toBeVisible();
     versions[serverId] = await row.innerText();
   }
-  await clickSettingsBackToWorkspace(page);
   return versions;
 }
 
-async function openHostPage(page: Page, host: RestartableHostDaemon): Promise<void> {
-  await openSettings(page);
+async function showSystemHostDetails(page: Page, host: RestartableHostDaemon): Promise<void> {
   await selectSettingsHost(page, host.serverId);
   await revealSettingsLocation(page, "system.overview");
   await page.getByRole("button", { name: "Host Details", exact: true }).click();
