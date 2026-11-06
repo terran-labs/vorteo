@@ -23,12 +23,18 @@ function repository(prefix) {
     );
     git("add", "VORTEO_CHANGELOG.md");
   };
+  const stageFragment = (name, text) => {
+    mkdirSync(path.join(cwd, "changes"), { recursive: true });
+    writeFileSync(path.join(cwd, "changes", name), text);
+    git("add", `changes/${name}`);
+  };
   const hook = (mode = "--hook") => run(process.execPath, [script, mode]);
-  return { cwd, run, git, write, read, stageChangelog, hook };
+  return { cwd, run, git, write, read, stageChangelog, stageFragment, hook };
 }
 
 test("commits keep the prepared version, stage synchronized manifests and need an entry", () => {
-  const { cwd, git, write, read, stageChangelog, hook } = repository("vorteo-version-");
+  const { cwd, git, write, read, stageChangelog, stageFragment, hook } =
+    repository("vorteo-version-");
   try {
     mkdirSync(path.join(cwd, "packages/a"), { recursive: true });
     git("init");
@@ -84,13 +90,33 @@ test("commits keep the prepared version, stage synchronized manifests and need a
     assert.equal(read("package-lock.json").packages["packages/a"].version, "26.10.3000");
     git("commit", "-m", "calendar versions");
 
-    // Later commits keep the version and add Unreleased entries.
+    // Later commits keep the version and add a change fragment.
     writeFileSync(path.join(cwd, "unrelated.txt"), "leave me unstaged");
-    assert.throws(() => hook(), /entry for every commit \(## Unreleased\)/);
-    stageChangelog("26.10.3000");
-    assert.throws(() => hook(), /headed "## Unreleased/);
-    stageChangelog("Unreleased");
+    assert.throws(() => hook(), /adds a change fragment/);
+    stageFragment("2026-10-31-fixture.md", "### Fixes\n\n- Fix the fixture\n");
+    assert.throws(() => hook(), /Maintenance review/);
+    stageFragment("2026-10-31-fixture.md", "Prose only.\n\n## Maintenance review\n\nReview.\n");
+    assert.throws(() => hook(), /changelog bullet/);
+    stageFragment(
+      "2026-10-31-fixture.md",
+      "### Fixes\n\n- Fix the fixture\n\n## Maintenance review\n\nFixture review.\n",
+    );
+    stageFragment("Fixture.md", "- Fix\n\n## Maintenance review\n\nReview.\n");
+    assert.throws(() => hook(), /changes\/YYYY-MM-DD-<slug>\.md/);
+    git("rm", "--cached", "--quiet", "changes/Fixture.md");
     hook();
+    // Merging main can bring a release entry to the changelog top; the fragment still carries
+    // this commit's notes, so the hook does not read that top entry as this commit's.
+    writeFileSync(
+      path.join(cwd, "VORTEO_CHANGELOG.md"),
+      readFileSync(path.join(cwd, "VORTEO_CHANGELOG.md"), "utf8").replace(
+        /^## /m,
+        "## 26.10.3001 - 2026-10-31\n\n- Merged release\n\n## ",
+      ),
+    );
+    git("add", "VORTEO_CHANGELOG.md");
+    hook();
+    git("checkout", "HEAD", "--", "VORTEO_CHANGELOG.md");
     assert.equal(read("package.json").version, "26.10.3000");
     assert.ok(!git("diff", "--cached", "--name-only").includes("unrelated.txt"));
     const pkg = read("packages/a/package.json");
@@ -101,6 +127,21 @@ test("commits keep the prepared version, stage synchronized manifests and need a
     assert.equal(git("diff", "--cached"), index);
     git("add", "packages/a/package.json");
     git("commit", "-m", "second");
+
+    // Older-style Unreleased changelog entries still pass; a preparation needs its entry
+    // and adds no fragment.
+    stageChangelog("26.10.3000");
+    assert.throws(() => hook(), /headed "## Unreleased/);
+    stageChangelog("Unreleased");
+    hook();
+    git("commit", "-m", "third");
+    root.version = "26.10.3001";
+    write("package.json", root);
+    git("add", "package.json");
+    stageFragment("2026-10-31-prepared.md", "- Prepared\n\n## Maintenance review\n\nPrepared.\n");
+    assert.throws(() => hook(), /folds change fragments/);
+    git("rm", "--cached", "--quiet", "changes/2026-10-31-prepared.md");
+    assert.throws(() => hook(), /preparation stages its VORTEO_CHANGELOG\.md entry/);
 
     // A version can never go backwards, even to a legacy one.
     for (const older of ["26.10.2900", legacy]) {
@@ -195,7 +236,7 @@ for (const incoming of ["0.15.0-beta.1", "0.15.0"]) {
     try {
       // The shared release/installed comparator must still refuse plain upstream versions.
       assert.throws(() => compareVersions("26.11.105", incoming), VersionError);
-      assert.throws(() => hook(), /entry for every commit \(## Unreleased\)/);
+      assert.throws(() => hook(), /adds a change fragment/);
       stageChangelog("Unreleased", "Merge upstream without changing the fork version");
       hook();
       hook("--check");
