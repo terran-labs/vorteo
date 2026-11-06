@@ -2112,14 +2112,22 @@ function useProjectRemoval(project: SidebarProjectEntry, displayName: string) {
  * The focused project's own actions, which its hidden row would otherwise carry: new
  * workspace and the project menu. They sit on the breadcrumb's last segment.
  */
+/**
+ * Which of the focused item's actions to render. The breadcrumb keeps "create" (the new
+ * workspace plus) always visible and reveals "menu" on hover where a pointer can hover.
+ */
+type FocusActionPart = "create" | "menu";
+
 function ProjectFocusActions({
   project,
   supportsMultiplicityByServerId,
   onWorkspacePress,
+  part,
 }: {
   project: SidebarProjectEntry;
   supportsMultiplicityByServerId: ReadonlyMap<string, boolean>;
   onWorkspacePress?: () => void;
+  part: FocusActionPart;
 }) {
   const { t } = useTranslation();
   const displayName = project.projectName;
@@ -2145,15 +2153,19 @@ function ProjectFocusActions({
     project,
     displayName,
   );
-  return (
-    <View style={[styles.projectTrailingActions, styles.projectTrailingActionsVorton]}>
-      {worktreeTarget ? (
+  if (part === "create") {
+    return worktreeTarget ? (
+      <View style={[styles.projectTrailingActions, styles.projectTrailingActionsVorton]}>
         <NewWorktreeButton
           displayName={displayName}
           onPress={handleBeginWorkspaceSetup}
           testID={`sidebar-focus-new-worktree-${project.viewKey}`}
         />
-      ) : null}
+      </View>
+    ) : null;
+  }
+  return (
+    <View style={[styles.projectTrailingActions, styles.projectTrailingActionsVorton]}>
       <ProjectKebabMenu
         projectViewKey={project.viewKey}
         projectName={displayName}
@@ -2176,13 +2188,17 @@ function SidebarFocusActions({
   projects,
   supportsMultiplicityByServerId,
   onWorkspacePress,
+  part,
 }: {
   focus: SidebarFocusTarget;
   world: SidebarFocusWorld;
   projects: readonly SidebarProjectEntry[];
   supportsMultiplicityByServerId: ReadonlyMap<string, boolean>;
   onWorkspacePress?: () => void;
+  part: FocusActionPart;
 }) {
+  // Folders and sections have no create action; their menu stays hover-revealed.
+  if (part === "create" && focus.kind !== "project") return null;
   if (focus.kind === "folder") {
     const folder = world.folders[focus.folderId];
     return folder ? <SidebarFolderMenuButton folder={folder} /> : null;
@@ -2194,6 +2210,7 @@ function SidebarFocusActions({
       project={project}
       supportsMultiplicityByServerId={supportsMultiplicityByServerId}
       onWorkspacePress={onWorkspacePress}
+      part={part}
     />
   ) : null;
 }
@@ -3621,6 +3638,21 @@ function ProjectModeListContent({
           projects={projects}
           supportsMultiplicityByServerId={supportsMultiplicityByServerId}
           onWorkspacePress={onWorkspacePress}
+          part="menu"
+        />
+      ) : null,
+    [focus, focusWorld, projects, supportsMultiplicityByServerId, onWorkspacePress],
+  );
+  const focusCreateAction = useMemo(
+    () =>
+      focus ? (
+        <SidebarFocusActions
+          focus={focus}
+          world={focusWorld}
+          projects={projects}
+          supportsMultiplicityByServerId={supportsMultiplicityByServerId}
+          onWorkspacePress={onWorkspacePress}
+          part="create"
         />
       ) : null,
     [focus, focusWorld, projects, supportsMultiplicityByServerId, onWorkspacePress],
@@ -3704,7 +3736,13 @@ function ProjectModeListContent({
         Every filter that can empty this branch needs a term here; without its term the header
         would go with it, taking the only route back to the filter page. */}
       {showListHeader ? listHeaderComponent : null}
-      {focusTrail ? <SidebarFocusBreadcrumb trail={focusTrail} actions={focusActions} /> : null}
+      {focusTrail ? (
+        <SidebarFocusBreadcrumb
+          trail={focusTrail}
+          actions={focusActions}
+          persistentActions={focusCreateAction}
+        />
+      ) : null}
       {pinnedFocused ? pinnedRows : listBody}
       {listFooterComponent}
     </>

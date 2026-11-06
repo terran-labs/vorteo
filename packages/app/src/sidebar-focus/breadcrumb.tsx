@@ -76,9 +76,13 @@ function Crumb({
 export function SidebarFocusBreadcrumb({
   trail,
   actions,
+  persistentActions,
 }: {
   trail: readonly SidebarFocusCrumb[];
+  /** Revealed on hover or keyboard focus with a pointer; always shown where hover is unavailable. */
   actions?: ReactNode;
+  /** Always shown after the revealed actions, like the new workspace plus. */
+  persistentActions?: ReactNode;
 }) {
   const { t } = useTranslation();
   const controller = useSidebarFocus();
@@ -121,6 +125,11 @@ export function SidebarFocusBreadcrumb({
           testID="sidebar-focus-actions"
         >
           {actions}
+        </View>
+      ) : null}
+      {persistentActions ? (
+        <View style={styles.actions} testID="sidebar-focus-persistent-actions">
+          {persistentActions}
         </View>
       ) : null}
     </View>

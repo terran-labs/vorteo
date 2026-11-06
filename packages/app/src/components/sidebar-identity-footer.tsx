@@ -9,6 +9,7 @@ import { useFooterLeadingRule } from "@/components/sidebar/footer-rules";
 import { SidebarSectionRule } from "@/components/sidebar/sidebar-separator";
 import { useInstallationName } from "@/execution-installation/installation-name";
 import { resolveAppVersion } from "@/utils/app-version";
+import { formatLiveVersionSuffix } from "@/utils/live-revision";
 import { buildSettingsSectionRoute } from "@/utils/host-routes";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { SidebarFooterQuota } from "@/provider-usage/footer-quota";
@@ -30,7 +31,11 @@ export function SidebarIdentityFooter({
   const name = useInstallationName();
   const rule = useFooterLeadingRule("identity");
   const { checkNow } = useVortonUpdate();
-  const versionText = formatVersionWithPrefix(resolveAppVersion());
+  const appVersion = resolveAppVersion();
+  // In Live dev, committed work since the running version's release shows as `+N`.
+  const versionText = `${formatVersionWithPrefix(
+    appVersion,
+  )}${formatLiveVersionSuffix(appVersion)}`;
   const [rowWidth, setRowWidth] = useState(0);
   const [identityWidth, setIdentityWidth] = useState(0);
   const measureRow = useCallback((event: LayoutChangeEvent) => {
@@ -100,7 +105,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
   },
   identityHovered: { backgroundColor: theme.colors.surfaceSidebarHover },
-  identityHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  identityHoverable: hoverStyle({
+    backgroundColor: theme.colors.surfaceSidebarHover,
+  }),
   name: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
-  version: { fontSize: theme.fontSize.sm - 1, color: theme.colors.foregroundExtraMuted },
+  version: {
+    fontSize: theme.fontSize.sm - 1,
+    color: theme.colors.foregroundExtraMuted,
+  },
 }));
