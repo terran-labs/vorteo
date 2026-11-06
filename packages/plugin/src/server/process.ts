@@ -76,25 +76,39 @@ export function spawnProcess(
 export async function execCommand(
   command: string,
   args: string[],
-  options?: ExecCommandOptions,
+  options: ExecCommandOptions = {},
 ): Promise<ExecCommandResult> {
   const isWindows = process.platform === "win32";
-  const shell = shouldUseWindowsShell(command, options?.shell);
+  const shell = shouldUseWindowsShell(command, options.shell);
   const shouldQuoteForShell = isWindows && shell !== false;
   const resolvedCommand = shouldQuoteForShell ? quoteWindowsCommand(command) : command;
   const resolvedArgs = shouldQuoteForShell ? args.map(quoteWindowsArgument) : args;
 
-  return execFileAsync(resolvedCommand, resolvedArgs, {
-    cwd: options?.cwd,
-    env: options?.env,
-    encoding: options?.encoding ?? "utf8",
-    signal: options?.signal,
-    killSignal: options?.killSignal,
-    timeout: options?.timeout,
-    maxBuffer: options?.maxBuffer,
+  const pending = execFileAsync(resolvedCommand, resolvedArgs, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: options.encoding ?? "utf8",
+    signal: options.signal,
+    killSignal: options.killSignal,
+    timeout: options.timeout,
+    maxBuffer: options.maxBuffer,
     shell,
     windowsHide: true,
-  }) as Promise<ExecCommandResult>;
+  });
+  // Abort rejects execFile before the child exits. Callers may remove its working files
+  // once this promise settles, so install the close listener before awaiting anything.
+  const closed = new Promise<void>((resolve) => pending.child.once("close", () => resolve()));
+  try {
+    return (await pending) as ExecCommandResult;
+  } catch (error) {
+    // Node's execFile forwards killSignal for timeouts but uses SIGTERM on abort.
+    const aborted = error instanceof Error && "code" in error && error.code === "ABORT_ERR";
+    if (aborted && options.signal?.aborted && options.killSignal)
+      pending.child.kill(options.killSignal);
+    throw error;
+  } finally {
+    await closed;
+  }
 }
 
 /** Force-stop a CLI, including descendants behind Windows command-script launchers. */
