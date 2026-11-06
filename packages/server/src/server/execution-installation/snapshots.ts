@@ -8,7 +8,17 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { createReadStream, createWriteStream } from "node:fs";
+import { constants, createReadStream, createWriteStream } from "node:fs";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  readdir,
+  readlink,
+  symlink,
+  utimes,
+} from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
@@ -221,6 +231,71 @@ function copyTree(
   return counted;
 }
 
+function vanished(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * Captures a live tree for a snapshot. Unlike copyTree it yields to the event loop, so the
+ * coordinator keeps serving the interface while gigabytes copy, and it skips entries that
+ * vanish mid-copy, such as a daemon log rotated away, instead of failing the whole snapshot.
+ * Files are cloned where the file system supports it (APFS), so unchanged data costs no space.
+ */
+async function captureTree(
+  source: string,
+  destination: string,
+  excludeTopLevel: readonly string[] = [],
+  skip: readonly string[] = [],
+): Promise<Counted> {
+  const counted: Counted = { files: 0, bytes: 0 };
+  async function visit(entry: string, target: string, relative: string): Promise<void> {
+    if (skip.some((root) => entry === root || entry.startsWith(root + path.sep))) return;
+    if (relative && !relative.includes(path.sep) && excludeTopLevel.includes(relative)) return;
+    if (relative && relative.split(path.sep).some(excluded)) return;
+    let stat;
+    try {
+      stat = await lstat(entry);
+    } catch (error) {
+      if (vanished(error)) return;
+      throw error;
+    }
+    try {
+      if (stat.isDirectory()) {
+        // Writable while its entries copy; the source's mode is applied afterward.
+        await mkdir(target, { mode: 0o700 });
+        for (const name of await readdir(entry))
+          await visit(path.join(entry, name), path.join(target, name), path.join(relative, name));
+        await chmod(target, stat.mode & 0o7777);
+        await utimes(target, stat.atime, stat.mtime);
+      } else if (stat.isFile()) {
+        await copyFile(entry, target, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
+        await chmod(target, stat.mode & 0o7777);
+        await utimes(target, stat.atime, stat.mtime);
+        counted.files += 1;
+        counted.bytes += stat.size;
+      } else if (stat.isSymbolicLink()) {
+        await symlink(await readlink(entry), target);
+      }
+      // Sockets and FIFOs are skipped, as copyTree does.
+    } catch (error) {
+      // Skip only an entry that is really gone from the source. A missing destination, such as
+      // a partial snapshot removed underneath this copy, is a failure, never a vanished file.
+      if (
+        vanished(error) &&
+        !(await lstat(entry).then(
+          () => true,
+          () => false,
+        ))
+      )
+        return;
+      throw error;
+    }
+  }
+  await visit(source, destination, "");
+  return counted;
+}
+
 function partDirectory(index: number, kind: SnapshotPartKind): string {
   return `${String(index).padStart(2, "0")}-${kind}`;
 }
@@ -296,17 +371,37 @@ export function createInstallationSnapshots(input: {
     }
     if (source.type === "file") {
       ensurePrivateDirectory(destination);
-      return copyTree(source.path, path.join(destination, path.basename(source.path)));
+      return captureTree(source.path, path.join(destination, path.basename(source.path)));
     }
     // A snapshot root inside a captured directory would copy earlier snapshots.
-    return copyTree(source.path, destination, source.excludeTopLevel, [root]);
+    return captureTree(source.path, destination, source.excludeTopLevel, [root]);
   }
 
-  return {
+  let taking: Promise<InstallationSnapshot> | null = null;
+  const takeOnce = (request: Parameters<InstallationSnapshots["take"]>[0]) =>
+    snapshots.__takeOnce(request);
+  const snapshots: InstallationSnapshots & {
+    /** The capture itself; take() runs it one at a time. */
+    __takeOnce(
+      request: Parameters<InstallationSnapshots["take"]>[0],
+    ): Promise<InstallationSnapshot>;
+  } = {
     root,
     list,
     read,
-    async take({ reason, upgradeId, release }) {
+    take(request) {
+      // One snapshot at a time: a second take would remove the first one's partial directory
+      // while it copies. Capture no longer blocks the event loop, so two can now overlap.
+      if (taking)
+        return Promise.reject(
+          new Error("A snapshot is already being taken. Try again when it finishes."),
+        );
+      taking = takeOnce(request).finally(() => {
+        taking = null;
+      });
+      return taking;
+    },
+    async __takeOnce({ reason, upgradeId, release }) {
       ensurePrivateDirectory(root);
       for (const name of readdirSync(root))
         if (name.startsWith(".") && name.endsWith(".partial"))
@@ -371,6 +466,7 @@ export function createInstallationSnapshots(input: {
       });
     },
   };
+  return snapshots;
 }
 
 /** Kinds a restore replaces, sorted and without repeats, for exact confirmation. */

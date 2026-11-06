@@ -25,11 +25,29 @@ Native metadata maps a calendar version to Android `versionCode` and iOS `buildN
 
 ## Vorteo release notes
 
-[Vorteo customizations](vorteo-customizations.md) owns the cumulative feature inventory. Update it in every commit using the [inventory maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory), including a review result when functionality is unchanged. Every upstream merge must also compare incoming Paseo behavior with the inventory, record overlap and remaining differences, and revise the roadmap before delivery.
+[Vorteo customizations](vorteo-customizations.md) owns the cumulative feature inventory. Maintain it in every commit using the [inventory maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory); the commit's [change fragment](#change-fragments) carries its maintenance review, including a review result when functionality is unchanged. Every upstream merge must also compare incoming Paseo behavior with the inventory, record overlap and remaining differences, and revise the roadmap before delivery.
 
-[VORTEO_CHANGELOG.md](../VORTEO_CHANGELOG.md) owns custom release history. Every commit, including documentation, tests, tooling and upstream merges, adds a new entry at the top headed `## Unreleased - YYYY-MM-DD`, with Added, Changed, Fixed or Maintenance sections. A release preparation instead heads its entry with the new version, `## 26.10.3001 - YYYY-MM-DD`. Describe every substantive change in short bullets, including maintenance and known limitations. Stage the entry with the implementation. Never edit an existing entry: the coordinator refuses edited notes when it combines contributions, and release preparation does not rename Unreleased entries.
+[VORTEO_CHANGELOG.md](../VORTEO_CHANGELOG.md) owns custom release history. Every commit, including documentation, tests, tooling and upstream merges, adds a change fragment instead of editing the changelog. A release preparation folds every fragment into one entry headed with the new version, `## 26.10.3001 - YYYY-MM-DD`. Describe every substantive change in short bullets, including maintenance and known limitations. Never edit an existing entry: the coordinator refuses edited notes when it combines contributions. The `## Unreleased - YYYY-MM-DD` entries that commits added before fragments stay as written, and release preparation does not rename them.
 
-An Unreleased entry belongs to the nearest versioned entry above it. Entries above every versioned entry are not in any release yet. What's new shows each Unreleased entry under the release that picked it up, while public GitHub Releases use separately curated executive summaries. The hook and `version:vorton:check` reject a commit unless the staged changelog differs from HEAD and its first entry has the right label, a date and a nonempty bullet. The label is the version for the commit that introduces it and `Unreleased` otherwise; a merge that takes a newer version from its other parent is not a preparation.
+An Unreleased entry belongs to the nearest versioned entry above it. Entries above every versioned entry are not in any release yet. What's new shows each Unreleased entry under the release that picked it up, while public GitHub Releases use separately curated executive summaries.
+
+<a id="change-fragments"></a>
+
+### Change fragments
+
+Every commit adds a new file, `changes/YYYY-MM-DD-<slug>.md`, named with the date and a unique lowercase slug of letters, digits and hyphens. Two branches never edit the same lines, so concurrent pull requests do not conflict over release notes. A fragment holds changelog bullets under optional `###` category headings such as Features, Fixes or Maintenance, then one `## Maintenance review` section with the inventory review paragraph:
+
+```md
+### Fixes
+
+- What changed, in a short bullet.
+
+## Maintenance review
+
+The scope and result of the change for the inventory, such as "README overview and onboarding are unchanged."
+```
+
+Correct a fragment that has not been released by editing it in a later commit. The commit hook and `version:vorton:check` validate every new or changed fragment and refuse a commit that adds none, unless it stages an older-style `Unreleased` changelog entry, which branches from before fragments may still carry. What's new reads only the changelog, so it shows a fragment's notes once a release preparation folds them in. A release preparation is the exception: it stages its `VORTEO_CHANGELOG.md` entry, whose first entry must carry the new version, a date and a nonempty bullet, and adds no fragment. The label is the version for the commit that introduces it; a merge that takes a newer version from its other parent is not a preparation. A merge commit satisfies the hook with the fragments it brings in, or with its own. `node scripts/live-dev.mjs commit` writes its fragment itself.
 
 ### Public release summaries
 
@@ -76,7 +94,7 @@ node scripts/vorteo-release.mjs latest --channel beta|stable --installed <versio
 node scripts/vorteo-release.mjs list [--channel beta|stable]
 ```
 
-`prepare` sets the next version in every manifest and the lockfile: build 0 on today's local date, or one past the highest build that day among the current version and the remote's tags of either channel. It refuses when a version is from a later day, which means the clock is wrong, and when a day reaches 100 releases. It does not commit. Add the entry `## <version> - YYYY-MM-DD`, commit both, deliver the commit to the channel's release branch, install it, then tag it.
+`prepare` sets the next version in every manifest and the lockfile: build 0 on today's local date, or one past the highest build that day among the current version and the remote's tags of either channel. It refuses when a version is from a later day, which means the clock is wrong, and when a day reaches 100 releases. It then adds the entry `## <version> - YYYY-MM-DD` above the changelog's first entry, holding every committed [change fragment](#change-fragments) grouped by category, adds each fragment's maintenance review below the inventory's title, newest first, and deletes the fragments. It reads every fragment before writing anything, so an invalid one changes nothing. It does not commit. Add the release's own notes and review line, stage the manifests, both files and the deleted fragments, commit, deliver the commit to the channel's release branch, install it, then tag it. The preparation does not go stale when `main` moves: the merge queue merges it as is, and its commit keeps the version and changelog entry that `tag` checks.
 
 `tag` runs only in Builds. It fetches the channel's release branch, refuses a commit that is not on it, a commit whose version is not a calendar version, a commit with Unreleased entries above its version's entry, an existing tag, an older version and a stable tag without its beta, then pushes an annotated tag and reads it back from the remote. Commits after a preparation keep its version, so the changelog check is what keeps a tag on the prepared state. `--commit` is required: name the commit the installation actually installed. A GitHub merge commit carries the same version as its head, so tagging `main` would mark a commit nobody installed. Under [pull request delivery](task-delivery.md#deliver-to-main-through-a-pull-request) the installed commit is an ancestor of `main`. A failed push removes the local tag so a retry can run. `--release --notes-file <summary.md>` publishes a GitHub Release with the supplied editorial summary. The publisher validates the notes before creating a tag and refuses missing notes or internal version, date and Unreleased headings. Beta releases are prereleases and never marked latest.
 
@@ -86,7 +104,7 @@ node scripts/vorteo-release.mjs list [--channel beta|stable]
 
 ### GitHub rulesets
 
-[`.github/rulesets`](../.github/rulesets) holds the repository rules. `main.json` requires a pull request with merge commits only, zero approving reviews, resolved conversations, no force-push or deletion, and up-to-date `changes`, `format`, `lint`, `typecheck` and `scan` checks from GitHub Actions. `changes` runs the delivery and release script tests. `release-tags.json` makes `release-*` tags immutable. Neither has bypass actors, so they bind the owner too. Zero approvals let Builds merge its own pull requests; `scripts/publish-main.mjs` holds every other pull request for the owner's approval. The required checks are the CI jobs that pass reliably; add a job once it is consistently green on `main`, never to make a red check required.
+[`.github/rulesets`](../.github/rulesets) holds the repository rules. `main.json` requires a pull request with merge commits only, zero approving reviews, resolved conversations, no force-push or deletion, passing `changes`, `format`, `lint`, `typecheck` and `scan` checks from GitHub Actions, and a merge queue. The queue merges with merge commits, tests each pull request merged with the entries ahead of it, and merges groups only when every entry passed (`ALLGREEN`), so branches need not be up to date with `main`. `changes` runs the delivery and release script tests. The required checks also run on merge groups, and the heavy suites run there too without gating the merge. `release-tags.json` makes `release-*` tags immutable. Neither has bypass actors, so they bind the owner too. Zero approvals let Builds merge its own pull requests; `scripts/publish-main.mjs` holds every other pull request for the owner's approval. The required checks are the CI jobs that pass reliably; add a job once it is consistently green on `main`, never to make a red check required.
 
 ```sh
 node scripts/sync-github-rulesets.mjs [--apply]
