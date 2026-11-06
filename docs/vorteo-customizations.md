@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Quota usage history: Quota charts in the sidebar footer can draw how each account's usage climbed this week: the daemon now records usage readings over time and keeps them across restarts.
+
 Maintenance review (2026-11-05): live tweak by Live dev indicator tooltip: The Live dev panel now looks like the app's tooltips, with a tail, closes when you click elsewhere or press Escape, and keeps Vorteo's colors on the static interface.
 
 Maintenance review (2026-11-05): live tweak by Fix stale hover states: Folder and section rows swap their icon for the disclosure arrow and lift their calm tone with CSS hover, so neither sticks after the sidebar reflows

@@ -297,6 +297,60 @@ describe("ProviderUsageService", () => {
     expect(refreshed.providers[0]?.windows[0]?.usedPct).toBe(2);
   });
 
+  // Usage history is persisted state: it must survive a restart and stay bounded.
+  it("records each window's usage over time and keeps it across restarts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "usage-history-"));
+    const historyFile = join(dir, "provider-usage-history.json");
+    let now = Date.parse("2026-06-19T00:00:00.000Z");
+    let used = 10;
+    const fetchers: ProviderUsageFetcher[] = [
+      {
+        providerId: "claude",
+        displayName: "Claude",
+        fetchUsage: async () => ({
+          providerId: "claude",
+          displayName: "Claude",
+          status: "available",
+          windows: [{ id: "weekly", label: "Weekly", usedPct: used }],
+        }),
+      },
+    ];
+    try {
+      const first = new ProviderUsageService({
+        logger: createLogger(),
+        now: () => now,
+        fetchers,
+        historyFile,
+      });
+      await first.listUsage({ forceRefresh: true });
+      now += 60_000; // within five minutes: replaces the latest sample
+      used = 12;
+      await first.listUsage({ forceRefresh: true });
+      now += 10 * 60_000;
+      used = 20;
+      const latest = await first.listUsage({ forceRefresh: true });
+      expect(latest.providers[0]?.windows[0]?.history?.map((point) => point.usedPct)).toEqual([
+        12, 20,
+      ]);
+      await first.stopHistorySampling();
+
+      const restarted = new ProviderUsageService({
+        logger: createLogger(),
+        now: () => now,
+        fetchers,
+        historyFile,
+      });
+      now += 10 * 60_000;
+      used = 25;
+      const resumed = await restarted.listUsage({ forceRefresh: true });
+      expect(resumed.providers[0]?.windows[0]?.history?.map((point) => point.usedPct)).toEqual([
+        12, 20, 25,
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("serves cached usage for two minutes by default", async () => {
     let now = Date.parse("2026-06-19T00:00:00.000Z");
     let calls = 0;
