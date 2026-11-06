@@ -253,7 +253,12 @@ export function hostLaunchdService(config: InstallationConfig): string {
 }
 
 export function readInstallationConfig(file: string): InstallationConfig {
-  const config = InstallationConfigSchema.parse(JSON.parse(readFileSync(file, "utf8")));
+  return parseInstallationConfig(readFileSync(file, "utf8"));
+}
+
+/** Validates configuration text exactly as startup does. */
+export function parseInstallationConfig(text: string): InstallationConfig {
+  const config = InstallationConfigSchema.parse(JSON.parse(text));
   validateExecutionInstallation(config.public);
   if (process.platform === "darwin" && !("launchdService" in config.host))
     throw new Error("A macOS Host requires its launchd service");

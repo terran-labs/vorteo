@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -18,6 +18,7 @@ import {
   type InstallationConfig,
 } from "./config.js";
 import {
+  handoffLaunchBlocker,
   launchHandoff,
   readHandoffOutcome,
   restoreFileAtomically,
@@ -28,16 +29,21 @@ import { RestartRequestError } from "./restarts.js";
 import { managedServices } from "./service-control.js";
 
 /**
- * Keys of the coordinator configuration that agents may propose changing. Values of keys not
- * marked display-safe never reach the owner interface; the owner sees only that they changed.
- * Every other key is refused.
+ * Keys of the coordinator configuration that agents may propose changing. Every other key is
+ * refused. Values of keys not marked display-safe never reach the owner interface; the owner
+ * sees only that they changed. Registered values are scalars, so the owner reviews the exact
+ * value rather than an opaque object.
+ *
+ * Never register a key that names something the coordinator executes or connects to, such as
+ * `previewBroker` or `previewBrokerDeployment` (Docker, socket, Python, worker and module
+ * paths with their digests). An approved patch would let an agent choose what runs with Host
+ * privileges behind a JSON blob the owner cannot meaningfully review. Those keys change only
+ * through their own reviewed deployment workflows, which inspect and bind each executable.
  */
 export const COORDINATOR_SETTINGS: readonly {
   key: keyof InstallationConfig;
   displaySafe: boolean;
 }[] = [
-  { key: "previewBrokerDeployment", displaySafe: true },
-  { key: "previewBroker", displaySafe: true },
   { key: "claudeHostRefresh", displaySafe: true },
   { key: "codexHostRefresh", displaySafe: true },
 ];
@@ -63,8 +69,11 @@ const JournalSchema = z.strictObject({
 });
 
 export interface CoordinatorSettingsJournal {
+  /** Throws when the journal is corrupt or written by a newer coordinator. */
   read(): SettingsRecord[];
   write(jobs: SettingsRecord[]): void;
+  /** Moves an unreadable journal aside and returns where it went. */
+  quarantine(): string;
 }
 
 export function createCoordinatorSettingsJournal(directory: string): CoordinatorSettingsJournal {
@@ -72,6 +81,11 @@ export function createCoordinatorSettingsJournal(directory: string): Coordinator
   return {
     read: () =>
       existsSync(file) ? JournalSchema.parse(JSON.parse(readFileSync(file, "utf8"))).jobs : [],
+    quarantine: () => {
+      const moved = `${file}.unreadable-${Date.now()}`;
+      renameSync(file, moved);
+      return moved;
+    },
     write: (jobs) =>
       writePrivateFileAtomicSync(
         file,
@@ -90,17 +104,26 @@ export interface CoordinatorSettingsPorts {
   validate(text: string): void;
   /** SHA-256 of the configuration this process started with, when known. */
   runningSha256: string | null;
-  /** Why a release upgrade or coordinator update keeps a change from starting now, or null. */
+  /**
+   * Why another coordinator restart or lifecycle job keeps a change from starting now, or
+   * null. Checked at request, approval and dispatch.
+   */
   conflict(): string | null;
   followJob(id: string): CoordinatorFollowJob | null;
   /** Keeps `previous` as the job's backup, then replaces the configuration with `next`. */
   writeConfig(jobId: string, previous: string, next: string): void;
   /** Puts the job's backup back in place. */
   restoreConfig(jobId: string): void;
-  /** Starts the detached coordinator-config handoff; it restarts this process. */
-  launch(jobId: string): void;
+  /** Why the handoff cannot start on this machine, such as a missing helper, or null. */
+  launchBlocker(): string | null;
+  /**
+   * Starts the detached coordinator-config handoff; it restarts this process. A spawn that
+   * fails after returning reports through `onError`.
+   */
+  launch(jobId: string, onError: (error: Error) => void): void;
   outcome(jobId: string): HandoffOutcome | null;
   deadlineMs: number;
+  warn(message: string): void;
 }
 
 export function sha256(text: string): string {
@@ -138,18 +161,37 @@ function project(record: SettingsRecord): CoordinatorSettingsJob {
  * so the coordinator that starts next resumes the job from the handoff's outcome.
  */
 export class CoordinatorSettings {
-  private jobs: SettingsRecord[];
+  private jobs: SettingsRecord[] = [];
+  /** Set when the journal could not be read; changes stay off until the next start. */
+  private journalProblem: string | null = null;
 
   constructor(
     private readonly journal: CoordinatorSettingsJournal,
     private readonly ports: CoordinatorSettingsPorts,
   ) {
-    this.jobs = journal.read();
+    try {
+      this.jobs = journal.read();
+    } catch (error) {
+      // A corrupt or newer journal must not keep the coordinator from starting.
+      let moved = "it could not be moved aside";
+      try {
+        moved = `it was moved to ${path.basename(journal.quarantine())}`;
+      } catch (moveError) {
+        moved = `${moved} (${message(moveError)})`;
+      }
+      this.journalProblem = `The coordinator settings journal could not be read (${message(error)}); ${moved}. Check coordinator.json, then restart the coordinator to accept changes again.`;
+      ports.warn(this.journalProblem);
+    }
+  }
+
+  private blocker(): string | null {
+    return this.journalProblem ?? this.ports.blocker;
   }
 
   /** The current configuration's hash, which a request must name as its base. */
   base(): { sha256: string } {
-    if (this.ports.blocker) throw new RestartRequestError(this.ports.blocker);
+    const blocker = this.blocker();
+    if (blocker) throw new RestartRequestError(blocker);
     return { sha256: sha256(this.ports.readConfig()) };
   }
 
@@ -165,7 +207,7 @@ export class CoordinatorSettings {
   }
 
   status(): CoordinatorSettingsStatus {
-    const { blocker } = this.ports;
+    const blocker = this.blocker();
     return {
       available: blocker === null,
       detail: blocker ?? "Registered coordinator settings can change after owner approval.",
@@ -174,7 +216,8 @@ export class CoordinatorSettings {
   }
 
   request(input: CoordinatorSettingsRequest): CoordinatorSettingsJob {
-    if (this.ports.blocker) throw new RestartRequestError(this.ports.blocker);
+    const blocker = this.blocker() ?? this.ports.conflict();
+    if (blocker) throw new RestartRequestError(blocker);
     if (this.jobs.some(isActive))
       throw new RestartRequestError("A coordinator settings change is already waiting or running");
     const keys = Object.keys(input.patch);
@@ -293,7 +336,7 @@ export class CoordinatorSettings {
   }
 
   private dispatch(job: SettingsRecord): void {
-    const refusal = this.ports.blocker ?? this.ports.conflict();
+    const refusal = this.blocker() ?? this.ports.conflict();
     if (refusal) {
       this.finish(job, "failed", refusal);
       return;
@@ -316,6 +359,11 @@ export class CoordinatorSettings {
       this.finish(job, "failed", `The changed configuration is invalid: ${message(error)}`);
       return;
     }
+    const launchBlocker = this.ports.launchBlocker();
+    if (launchBlocker) {
+      this.finish(job, "failed", `${launchBlocker} Nothing was applied.`);
+      return;
+    }
     // Recorded before any effect: the handoff restarts this process.
     const running = this.save(job, {
       status: "running",
@@ -330,24 +378,43 @@ export class CoordinatorSettings {
       return;
     }
     try {
-      this.ports.launch(job.id);
+      this.ports.launch(job.id, (error) => this.launchFailed(job.id, error));
     } catch (error) {
-      // Nothing restarted: put the running configuration back on disk.
-      let restored = "nothing changed";
-      try {
-        this.ports.restoreConfig(job.id);
-      } catch (restoreError) {
-        restored = `restoring the previous configuration also failed: ${message(restoreError)}`;
-      }
+      this.launchFailed(job.id, error);
+    }
+  }
+
+  /** Nothing restarted: put the running configuration back on disk and fail the job. */
+  private launchFailed(jobId: string, error: unknown): void {
+    const job = this.jobs.find((item) => item.id === jobId);
+    if (job?.status !== "running") return;
+    let restored = "nothing changed";
+    try {
+      this.ports.restoreConfig(jobId);
+    } catch (restoreError) {
+      restored = `restoring the previous configuration also failed: ${message(restoreError)}`;
+    }
+    this.finish(
+      job,
+      "failed",
+      `The coordinator restart could not start; ${restored} (${message(error)}).`,
+    );
+  }
+
+  private track(job: SettingsRecord): void {
+    try {
+      this.trackEffects(job);
+    } catch (error) {
+      // An unreadable outcome or configuration must not throw on every drain forever.
       this.finish(
-        running,
+        job,
         "failed",
-        `The coordinator restart could not start; ${restored} (${message(error)}).`,
+        `The coordinator restart could not be followed: ${message(error)}. Check coordinator.json before another change.`,
       );
     }
   }
 
-  private track(job: SettingsRecord): void {
+  private trackEffects(job: SettingsRecord): void {
     const outcome = this.ports.outcome(job.id);
     if (outcome) {
       this.finish(job, outcome.status, outcome.detail);
@@ -374,6 +441,9 @@ export class CoordinatorSettings {
     if (!entry)
       throw new RestartRequestError(`"${key}" is not a coordinator setting that can change here`);
     if (value === null) return;
+    // Registered keys hold scalars; an object would hide its contents from the owner.
+    if (typeof value === "object")
+      throw new RestartRequestError(`"${key}" has an invalid value: expected a single value`);
     const parsed = InstallationConfigSchema.shape[entry.key].safeParse(value);
     if (value === undefined || !parsed.success)
       throw new RestartRequestError(
@@ -402,7 +472,8 @@ export class CoordinatorSettings {
 
   /** Cancels and refuses a change whose base configuration no longer applies. */
   private refuseStale(job: SettingsRecord): void {
-    if (this.ports.blocker) throw new RestartRequestError(this.ports.blocker);
+    const blocker = this.blocker();
+    if (blocker) throw new RestartRequestError(blocker);
     if (sha256(this.ports.readConfig()) === job.baseSha256) return;
     const detail =
       "The coordinator configuration changed after this change was prepared. Ask for it again.";
@@ -447,8 +518,11 @@ function settingsBlocker(config: InstallationConfig, configFile: string | undefi
 export function createCoordinatorSettings(input: {
   config: InstallationConfig;
   configFile: string | undefined;
+  /** SHA-256 of the exact bytes the coordinator parsed at startup. */
+  startupSha256: string | undefined;
   conflict(): string | null;
   followJob(id: string): CoordinatorFollowJob | null;
+  warn(message: string): void;
   entrypoint?: string;
 }): CoordinatorSettings {
   const { config, configFile } = input;
@@ -457,12 +531,11 @@ export function createCoordinatorSettings(input: {
   const backup = (jobId: string) => path.join(work(jobId), "coordinator.json.before");
   const blocker = settingsBlocker(config, configFile);
   const readConfig = () => readFileSync(configFile!, "utf8");
-  let runningSha256: string | null = null;
-  try {
-    runningSha256 = configFile ? sha256(readConfig()) : null;
-  } catch {
-    // Unknown: a handoff that never reports is then judged failed.
-  }
+  const helper = () =>
+    path.join(
+      path.dirname(realpathSync(input.entrypoint ?? process.argv[1]!)),
+      "coordinator-handoff-main.js",
+    );
   return new CoordinatorSettings(createCoordinatorSettingsJournal(directory), {
     now: () => new Date(),
     blocker,
@@ -480,7 +553,8 @@ export function createCoordinatorSettings(input: {
         rmSync(candidate, { force: true });
       }
     },
-    runningSha256,
+    // Unknown without the startup bytes: a handoff that never reports is then judged failed.
+    runningSha256: input.startupSha256 ?? null,
     conflict: input.conflict,
     followJob: input.followJob,
     writeConfig(jobId, previous, next) {
@@ -489,7 +563,16 @@ export function createCoordinatorSettings(input: {
       writePrivateFileAtomicSync(configFile!, next);
     },
     restoreConfig: (jobId) => restoreFileAtomically(backup(jobId), configFile!),
-    launch(jobId) {
+    launchBlocker() {
+      const services = managedServices(config);
+      if (typeof services === "string") return services;
+      try {
+        return handoffLaunchBlocker({ node: process.execPath, helper: helper(), services });
+      } catch (error) {
+        return `The coordinator handoff helper cannot be found: ${message(error)}.`;
+      }
+    },
+    launch(jobId, onError) {
       const services = managedServices(config);
       if (typeof services === "string") throw new Error(services);
       const plan: CoordinatorConfigPlan = {
@@ -508,16 +591,15 @@ export function createCoordinatorSettings(input: {
       };
       launchHandoff({
         node: process.execPath,
-        helper: path.join(
-          path.dirname(realpathSync(input.entrypoint ?? process.argv[1]!)),
-          "coordinator-handoff-main.js",
-        ),
+        helper: helper(),
         planFile: path.join(work(jobId), "plan.json"),
         logFile: path.join(work(jobId), "handoff.log"),
         plan,
+        onError,
       });
     },
     outcome: (jobId) => readHandoffOutcome(path.join(work(jobId), "outcome.json")),
     deadlineMs: CHANGE_DEADLINE_MS,
+    warn: input.warn,
   });
 }

@@ -260,7 +260,10 @@ export function createReleaseUpgradeRuntime(input: {
   listReleases?: ReleaseUpdatePorts["listReleases"];
   /** Another coordinator restart, such as a settings change, that blocks upgrades and follows. */
   conflict?: () => string | null;
-  /** Other lifecycle work a coordinator update must not interrupt, such as coordinator requests. */
+  /**
+   * The shared coordinator restart check for a coordinator update: other coordinator
+   * restarts, approved Host jobs and open coordinator requests.
+   */
   coordinatorFollowConflict?: () => string | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
@@ -735,11 +738,7 @@ export function createReleaseUpgradeRuntime(input: {
     // lifecycle work it coordinates.
     conflict: () => {
       if (upgrades?.active()) return "Wait for the release upgrade to finish.";
-      const busy = restarts
-        .list()
-        .find((job) => job.target === "host" && ["approved", "running"].includes(job.status));
-      if (busy) return "Wait for the approved Host restart or update to finish.";
-      return input.coordinatorFollowConflict?.() ?? input.conflict?.() ?? null;
+      return input.coordinatorFollowConflict?.() ?? null;
     },
     hostRelease: () => ports.hostRelease(),
     runningRelease: () => ports.runningRelease(),

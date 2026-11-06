@@ -1,9 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { CoordinatorFollowJob } from "@getpaseo/protocol/installation-upgrades";
 import type { HandoffOutcome } from "./coordinator-handoff.js";
+import {
+  coordinatorRestartBlocker,
+  type CoordinatorRestartState,
+} from "./coordinator-restart-guard.js";
 import {
   CoordinatorSettings,
   createCoordinatorSettingsJournal,
@@ -19,11 +23,28 @@ beforeEach(() => {
 
 afterEach(() => rmSync(directory, { recursive: true, force: true }));
 
-/** A coordinator configuration on disk, shared by every process the test starts. */
+/** A coordinator configuration on disk and a clock, shared by every process the test starts. */
 function installation() {
   const disk = { config: `${JSON.stringify({ listenPort: 6000, claudeHostRefresh: false })}\n` };
   const follow: { job: CoordinatorFollowJob | null } = { job: null };
-  return { disk, follow };
+  const clock = { now: Date.parse("2026-11-05T12:00:00Z") };
+  return { disk, follow, clock };
+}
+
+/** The shared restart check with nothing else in progress, apart from `busy`. */
+function restartCheck(busy: Partial<Record<keyof CoordinatorRestartState, boolean>>) {
+  const state = Object.fromEntries(
+    [
+      "upgradeActive",
+      "followDispatching",
+      "settingsDispatching",
+      "customDomainRunning",
+      "hostJobBusy",
+      "coordinatorRequestOpen",
+      "labUpdateActive",
+    ].map((key) => [key, () => busy[key as keyof CoordinatorRestartState] === true]),
+  ) as unknown as CoordinatorRestartState;
+  return () => coordinatorRestartBlocker(state, "settings");
 }
 
 /** Records every effect with the journaled status at that moment. */
@@ -35,7 +56,7 @@ function settingsPorts(
   let outcome: HandoffOutcome | null = null;
   const recorded = () => createCoordinatorSettingsJournal(directory).read().at(-1)?.status;
   const ports: CoordinatorSettingsPorts = {
-    now: () => new Date("2026-11-05T12:00:00Z"),
+    now: () => new Date(state.clock.now),
     blocker: null,
     readConfig: () => state.disk.config,
     validate: () => {},
@@ -47,9 +68,11 @@ function settingsPorts(
       state.disk.config = next;
     },
     restoreConfig: () => calls.push("restore"),
+    launchBlocker: () => null,
     launch: () => calls.push(`launch ${recorded()}`),
     outcome: () => outcome,
     deadlineMs: 60_000,
+    warn: (message) => calls.push(`warn ${message}`),
     ...changes,
   };
   const settings = new CoordinatorSettings(createCoordinatorSettingsJournal(directory), ports);
@@ -72,6 +95,14 @@ function requestRefresh(state: ReturnType<typeof installation>, settings: Coordi
     patch: { claudeHostRefresh: true },
     baseSha256: sha256(state.disk.config),
   });
+}
+
+/** Requests, approves and starts the change, which leaves it running. */
+function started(state: ReturnType<typeof installation>, settings: CoordinatorSettings) {
+  const job = requestRefresh(state, settings);
+  settings.decide(job.id, job.revision, "approve");
+  settings.drain();
+  return job;
 }
 
 function followJob(status: CoordinatorFollowJob["status"]): CoordinatorFollowJob {
@@ -196,6 +227,147 @@ test.each([
       expect(settings.status().job).toMatchObject({ status: "pending" });
       expect(settings.status().job?.approvedWith).toBeUndefined();
       expect(calls).toEqual([]);
+    },
+  },
+  {
+    name: "refuses preview broker keys, which name what the coordinator executes",
+    run: () => {
+      const state = installation();
+      const { settings } = settingsPorts(state);
+      expect(() =>
+        settings.request({
+          patch: { previewBroker: { python: "/tmp/agent-python" } },
+          baseSha256: sha256(state.disk.config),
+        }),
+      ).toThrow("not a coordinator setting");
+    },
+  },
+  {
+    name: "refuses a decision on a revision the owner did not review",
+    run: () => {
+      const state = installation();
+      const { settings, calls } = settingsPorts(state);
+      const job = requestRefresh(state, settings);
+      expect(() =>
+        settings.decide(job.id, "33333333-3333-4333-8333-333333333333", "approve"),
+      ).toThrow("Review it again");
+      settings.drain();
+      expect(settings.status().job?.status).toBe("pending");
+      expect(calls).toEqual([]);
+    },
+  },
+  {
+    name: "refuses a request while a custom domain change restarts the coordinator",
+    run: () => {
+      const state = installation();
+      const { settings } = settingsPorts(state, {
+        conflict: restartCheck({ customDomainRunning: true }),
+      });
+      expect(() => requestRefresh(state, settings)).toThrow("custom domain");
+    },
+  },
+  {
+    name: "refuses approval while a Host job is approved",
+    run: () => {
+      const state = installation();
+      let busy = false;
+      const conflict = restartCheck({ hostJobBusy: true });
+      const { settings, calls } = settingsPorts(state, {
+        conflict: () => (busy ? conflict() : null),
+      });
+      const job = requestRefresh(state, settings);
+      busy = true;
+      expect(() => settings.decide(job.id, job.revision, "approve")).toThrow("Host restart");
+      expect(settings.status().job?.status).toBe("pending");
+      expect(calls).toEqual([]);
+    },
+  },
+  {
+    name: "fails at dispatch when another restart started after approval",
+    run: () => {
+      const state = installation();
+      let busy = false;
+      const conflict = restartCheck({ followDispatching: true });
+      const { settings, calls } = settingsPorts(state, {
+        conflict: () => (busy ? conflict() : null),
+      });
+      const job = requestRefresh(state, settings);
+      settings.decide(job.id, job.revision, "approve");
+      busy = true;
+      settings.drain();
+      expect(settings.status().job).toMatchObject({
+        status: "failed",
+        detail: "Wait for the coordinator update to finish.",
+      });
+      expect(calls).toEqual([]);
+    },
+  },
+  {
+    name: "restores the previous configuration when the handoff fails to spawn",
+    run: () => {
+      const state = installation();
+      const { settings, calls } = settingsPorts(state, {
+        launch: (_id, onError) => onError(new Error("spawn ENOENT")),
+      });
+      started(state, settings);
+      expect(calls).toEqual(["write running", "restore"]);
+      expect(settings.status().job).toMatchObject({ status: "failed" });
+      expect(settings.status().job?.detail).toContain("spawn ENOENT");
+    },
+  },
+  {
+    name: "a handoff that never reports succeeds when the new configuration runs",
+    run: () => {
+      const state = installation();
+      started(state, settingsPorts(state).settings);
+      // The restarted coordinator parsed the new file at startup.
+      const restarted = settingsPorts(state, { runningSha256: sha256(state.disk.config) });
+      state.clock.now += 60_001;
+      restarted.settings.drain();
+      expect(restarted.settings.status().job?.status).toBe("succeeded");
+      expect(restarted.calls).toEqual([]);
+    },
+  },
+  {
+    name: "a handoff that never reports fails and restores the file under the old coordinator",
+    run: () => {
+      const state = installation();
+      const { settings, calls } = settingsPorts(state);
+      started(state, settings);
+      state.clock.now += 60_001;
+      settings.drain();
+      expect(settings.status().job?.status).toBe("failed");
+      expect(calls).toEqual(["write running", "launch running", "restore"]);
+    },
+  },
+  {
+    name: "an unreadable handoff outcome fails the job instead of throwing on every drain",
+    run: () => {
+      const state = installation();
+      const { settings } = settingsPorts(state, {
+        outcome: () => {
+          throw new Error("Unexpected token in JSON");
+        },
+      });
+      started(state, settings);
+      expect(() => settings.drain()).not.toThrow();
+      expect(settings.status().job).toMatchObject({ status: "failed" });
+      expect(settings.status().job?.detail).toContain("could not be followed");
+    },
+  },
+  {
+    name: "an unreadable journal is moved aside and changes stay unavailable",
+    run: () => {
+      const state = installation();
+      writeFileSync(path.join(directory, "journal.json"), '{"version":2,"jobs":[]}');
+      const { settings, calls } = settingsPorts(state);
+      expect(settings.status().available).toBe(false);
+      expect(() => requestRefresh(state, settings)).toThrow("journal could not be read");
+      expect(existsSync(path.join(directory, "journal.json"))).toBe(false);
+      expect(
+        readdirSync(directory).some((name) => name.startsWith("journal.json.unreadable-")),
+      ).toBe(true);
+      expect(calls[0]).toContain("warn");
     },
   },
 ])("coordinator settings $name", ({ run }) => run());

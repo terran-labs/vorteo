@@ -15,6 +15,11 @@ import {
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
 import { createCoordinatorSettings } from "./coordinator-settings.js";
 import {
+  coordinatorRestartBlocker,
+  type CoordinatorRestart,
+  type CoordinatorRestartState,
+} from "./coordinator-restart-guard.js";
+import {
   lookupWorkerLaunch,
   parseWorkerLaunchLookupQuery,
   WorkerLaunchLookupError,
@@ -397,32 +402,32 @@ function installationShape(config: InstallationConfig) {
 }
 
 function optionalReleaseRuntime(
-  files: { configFile: string } | undefined,
+  files: InstallationFiles | undefined,
   input: Omit<Parameters<typeof createReleaseUpgradeRuntime>[0], "configFile">,
 ) {
   return files ? createReleaseUpgradeRuntime({ ...input, configFile: files.configFile }) : null;
 }
 
+/** The private configuration file and the hash of the bytes the coordinator started with. */
+interface InstallationFiles {
+  configFile: string;
+  startupSha256?: string;
+}
+
 /** Registered coordinator.json changes restart the coordinator; one restart runs at a time. */
 function serverCoordinatorSettings(
   config: InstallationConfig,
-  files: { configFile: string } | undefined,
+  files: InstallationFiles | undefined,
   releaseRuntime: ReturnType<typeof optionalReleaseRuntime>,
+  input: { restartBlocker: () => string | null; logger: Logger },
 ) {
   return createCoordinatorSettings({
     config,
     configFile: files?.configFile,
-    conflict: () => {
-      if (releaseRuntime?.upgrades?.active()) return "Wait for the release upgrade to finish.";
-      if (releaseRuntime?.coordinatorFollow.dispatching())
-        return "Wait for the coordinator update to finish.";
-      return null;
-    },
-    // Only one coordinator update is active at a time, so a linked one is the one shown.
-    followJob: (id) => {
-      const job = releaseRuntime?.coordinatorFollow.status().job;
-      return job?.id === id ? job : null;
-    },
+    startupSha256: files?.startupSha256,
+    conflict: input.restartBlocker,
+    followJob: (id) => releaseRuntime?.coordinatorFollow.job(id) ?? null,
+    warn: (message) => input.logger.warn(message),
   });
 }
 
@@ -440,7 +445,7 @@ export function createInstallationServer(
   claudeOAuth?: ClaudeOAuthRuntime,
   providerSecrets?: ProviderSecretsRuntime,
   // The private configuration file, captured by safety snapshots. Omitted in tests.
-  files?: { configFile: string },
+  files?: InstallationFiles,
   codexSignIn?: CodexSignInRuntime,
   overviewDependencies?: OverviewDependencies,
 ) {
@@ -607,22 +612,35 @@ export function createInstallationServer(
     restarts,
     hostUpdates: updates.host,
     logger,
-    // `coordinatorSettings` is created below; it exists before any upgrade runs.
-    conflict: () =>
-      coordinatorSettings.dispatching()
-        ? "Wait for the coordinator settings change to finish."
-        : null,
-    // A coordinator update restarts the coordinator; never under an open coordinator request.
-    coordinatorFollowConflict: () =>
-      coordinatorRequests && openBootstrapRequests(coordinatorRequests.list()).length
-        ? "Wait for the open coordinator request to finish."
-        : null,
+    // The jobs these checks read are created below; they exist before any upgrade runs.
+    conflict: () => restartBlocker("upgrade"),
+    coordinatorFollowConflict: () => restartBlocker("follow"),
   });
   const requireReleaseRuntime = () => {
     if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
     return releaseRuntime;
   };
-  const coordinatorSettings = serverCoordinatorSettings(config, files, releaseRuntime);
+  const coordinatorSettings = serverCoordinatorSettings(config, files, releaseRuntime, {
+    restartBlocker: () => restartBlocker("settings"),
+    logger,
+  });
+  // One check for every coordinator restart, at request, approval and dispatch.
+  const restartState: CoordinatorRestartState = {
+    upgradeActive: () => Boolean(releaseRuntime?.upgrades?.active()),
+    followDispatching: () => Boolean(releaseRuntime?.coordinatorFollow.dispatching()),
+    settingsDispatching: () => coordinatorSettings.dispatching() !== null,
+    customDomainRunning: () => customDomain.running(),
+    hostJobBusy: () =>
+      restarts
+        .list()
+        .some((job) => job.target === "host" && ["approved", "running"].includes(job.status)),
+    coordinatorRequestOpen: () =>
+      coordinatorRequests !== undefined &&
+      openBootstrapRequests(coordinatorRequests.list()).length > 0,
+    labUpdateActive: () => labRuntime.updates.activeLoaded() !== null,
+  };
+  const restartBlocker = (self: CoordinatorRestart) =>
+    coordinatorRestartBlocker(restartState, self);
   // Lab self-updates and release upgrades both replace the Host and coordinator releases.
   const labRuntime = createLabSelfUpdateRuntime({
     config,
@@ -635,6 +653,8 @@ export function createInstallationServer(
         return "Wait for the coordinator update to finish before a lab self-update.";
       if (coordinatorSettings.dispatching())
         return "Wait for the coordinator settings change to finish before a lab self-update.";
+      if (customDomain.running())
+        return "Wait for the custom domain change to finish before a lab self-update.";
       return null;
     },
   });
@@ -784,6 +804,7 @@ export function createInstallationServer(
       launch: launchHandoff,
       now: () => new Date(),
     },
+    restartBlocker: () => restartBlocker("custom-domain"),
   });
   const liveDev = createLiveDev({
     config,

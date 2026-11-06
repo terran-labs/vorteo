@@ -1,6 +1,6 @@
 ### Added
 
-- Installation controls show a **Coordinator settings** card when Builds requests a change to the coordinator's registered settings (preview broker, preview broker deployment, Host-owned Claude and Codex refresh). The owner sees each value before and after, and approves or rejects it. When a coordinator update also waits, one decision approves both and applies the settings after the update succeeds. The coordinator restarts on the new settings and restores the previous ones if it does not answer within two minutes. Agents see the change read-only in `update-status`.
+- Installation controls show a **Coordinator settings** card when Builds requests a change to the coordinator's registered settings (Host-owned Claude and Codex refresh). The owner sees each value before and after, and approves or rejects it. When a coordinator update also waits, one decision approves both and applies the settings after the update succeeds. The coordinator restarts on the new settings and restores the previous ones if it does not answer within two minutes. Agents see the change read-only in `update-status`.
 
 ## Maintenance review
 
