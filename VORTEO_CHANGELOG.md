@@ -179,12 +179,6 @@ Beta for VortLab: custom domains for installer-made installations, and lab self-
 - Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
 - The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
-## Unreleased - 2026-11-05
-
-### Tooling
-
-- Merged current main into the Factory Overview branch again before delivery.
-
 ## 26.11.500 - 2026-11-05
 
 Beta for VortLab, delivered by Upgrade from Installation controls.
@@ -212,8 +206,6 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 ## Unreleased - 2026-11-05
 
 ### Tooling
-
-- Merged current main into the Factory Overview branch.
 
 - Merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged.
 
@@ -490,8 +482,6 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 ## Unreleased - 2026-11-04
 
 ### Features
-
-- Factory Overview names the project in its heading and shows per-project status, issue stage profiles, work in progress and role controls. Standing workspaces join the Factory folder after its roles, and adopted roles follow daemon workspace assignments. Older daemons retain the controls they support. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed.
 
 - A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
 - Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.

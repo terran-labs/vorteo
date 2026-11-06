@@ -1,9 +1,5 @@
 # Vorteo customizations beyond Paseo
 
-Maintenance review (2026-11-05): Factory Overview names its project using the same display-name resolver as the sidebar. Factory shortcut coverage follows the consolidated folder, and the owner-controls browser test keeps the open plugin surface when changing viewport size.
-
-Maintenance review (2026-11-04): Factory Overview opens a native per-project page with pause and resume, issue stage profiles, queue links and role instructions. Standing workspaces share the Factory folder after daemon-assigned roles. Older daemons omit unsupported planning and queue controls. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed. Source only; README overview and onboarding are unchanged.
-
 Maintenance review (2026-11-06): snapshots run one at a time and fail when their own files go missing; only a source file that is really gone is skipped. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-06): snapshot capture is asynchronous, skips entries that vanish mid-copy and clones files where supported; restore is unchanged. README overview and onboarding are unchanged.
