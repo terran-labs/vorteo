@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   isProviderSecretName,
+  isInstallationSecretName,
+  isSpeechSecretField,
   type ProviderSecretEnvironmentStatus,
   type ProviderSecretsStatus,
 } from "@getpaseo/protocol/provider-secrets";
@@ -11,7 +13,7 @@ import {
   type ProviderSecretsReceipt,
 } from "./provider-secrets-delivery.js";
 
-const NameSchema = z.string().refine(isProviderSecretName);
+const NameSchema = z.string().refine(isInstallationSecretName);
 const RevisionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const SecretSchema = z.strictObject({
   value: z.string().min(1),
@@ -31,6 +33,7 @@ const RecordSchema = z.strictObject({
   policyRevision: RevisionSchema,
   /** One-time adoption of values already present in environment configuration. */
   scanned: z.boolean(),
+  cleared: z.array(NameSchema).optional(),
   secrets: z.record(NameSchema, SecretSchema),
   conflicts: z.array(z.strictObject({ name: NameSchema, serverIds: z.array(z.string()) })),
   targets: z.array(TargetSchema),
@@ -55,6 +58,7 @@ export class ProviderSecretsUnsupportedError extends Error {
 }
 
 interface AuthorityPorts {
+  kind?: "speech";
   installationId: string;
   read(): unknown;
   persist(state: ProviderSecretsState): void;
@@ -88,6 +92,12 @@ export class ProviderSecretsAuthority {
     const parsed = ProviderSecretsStateSchema.safeParse(ports.read());
     if (!parsed.success) throw new ProviderSecretsDeliveryError();
     this.records = parsed.data;
+    if (
+      this.records.some((record) =>
+        Object.keys(record.secrets).some((name) => !this.validName(name)),
+      )
+    )
+      throw new ProviderSecretsDeliveryError();
     if (new Set(this.records.map((record) => record.definitionId)).size !== this.records.length)
       throw new ProviderSecretsDeliveryError();
   }
@@ -96,7 +106,7 @@ export class ProviderSecretsAuthority {
     if (this.persistenceFailed) throw new ProviderSecretsDeliveryError();
     const policy = this.ports.policy(definitionId);
     const record = this.records.find((item) => item.definitionId === definitionId);
-    const current = record?.policyRevision === policy.revision;
+    const current = this.currentPolicy(record, policy);
     const environments: ProviderSecretEnvironmentStatus[] = [];
     for (const target of policy.targets) {
       const environment = this.ports.environment(target.serverId);
@@ -125,21 +135,40 @@ export class ProviderSecretsAuthority {
       } else entry.message = `Reaching ${environment.label}`;
       environments.push(entry);
     }
+    return this.withSpeechStatus(
+      {
+        definitionId,
+        secrets: Object.entries(record?.secrets ?? {})
+          .map(([name, secret]) => ({
+            name,
+            last4: last4(secret.value),
+            updatedAt: secret.updatedAt,
+            source: secret.source,
+          }))
+          .sort((left, right) => left.name.localeCompare(right.name)),
+        environments,
+        conflicts: structuredClone(record?.conflicts ?? []),
+        ready:
+          record !== undefined &&
+          environments.every((item) => item.status === "delivered" || item.status === "excluded"),
+      },
+      record,
+    );
+  }
+
+  private currentPolicy(record: SecretsRecord | undefined, policy: ProviderSecretsPolicy) {
+    return this.ports.kind === "speech" || record?.policyRevision === policy.revision;
+  }
+
+  private withSpeechStatus(
+    status: ProviderSecretsStatus,
+    record: SecretsRecord | undefined,
+  ): ProviderSecretsStatus {
+    if (this.ports.kind !== "speech") return status;
     return {
-      definitionId,
-      secrets: Object.entries(record?.secrets ?? {})
-        .map(([name, secret]) => ({
-          name,
-          last4: last4(secret.value),
-          updatedAt: secret.updatedAt,
-          source: secret.source,
-        }))
-        .sort((left, right) => left.name.localeCompare(right.name)),
-      environments,
-      conflicts: structuredClone(record?.conflicts ?? []),
-      ready:
-        record !== undefined &&
-        environments.every((item) => item.status === "delivered" || item.status === "excluded"),
+      ...status,
+      revision: record?.revision ?? 0,
+      ready: status.ready && status.conflicts.length === 0,
     };
   }
 
@@ -148,31 +177,64 @@ export class ProviderSecretsAuthority {
   }
 
   set(definitionId: string, name: string, value: string): Promise<void> {
-    if (!isProviderSecretName(name) || value.length === 0)
-      return Promise.reject(new ProviderSecretsDeliveryError());
-    return this.enqueue(async () => {
-      const policy = this.ports.policy(definitionId);
-      if (policy.removed) throw new ProviderSecretsDeliveryError();
-      const record = this.records.find((item) => item.definitionId === definitionId);
-      const secrets = structuredClone(record?.secrets ?? {});
-      secrets[name] = { value, updatedAt: this.ports.now().toISOString(), source: "owner" };
-      this.replace(definitionId, policy, {
-        secrets,
-        conflicts: (record?.conflicts ?? []).filter((item) => item.name !== name),
-      });
-    });
+    return this.update(definitionId, { [name]: value });
   }
 
   clear(definitionId: string, name: string): Promise<void> {
+    return this.update(definitionId, { [name]: null });
+  }
+
+  /** A key and its endpoint become one generation, never two intermediate deliveries. */
+  update(definitionId: string, changes: Record<string, string | null>): Promise<void> {
+    return this.updateMany([{ definitionId, changes }]);
+  }
+
+  revision(definitionId: string): number {
+    return this.records.find((record) => record.definitionId === definitionId)?.revision ?? 0;
+  }
+
+  /** Validate all expected revisions before one durable commit of all changed sites. */
+  updateMany(
+    updates: Array<{
+      definitionId: string;
+      changes: Record<string, string | null>;
+      expectedRevision?: number;
+    }>,
+  ): Promise<void> {
     return this.enqueue(async () => {
-      const policy = this.ports.policy(definitionId);
-      const record = this.records.find((item) => item.definitionId === definitionId);
-      const secrets = structuredClone(record?.secrets ?? {});
-      delete secrets[name];
-      this.replace(definitionId, policy, {
-        secrets,
-        conflicts: (record?.conflicts ?? []).filter((item) => item.name !== name),
+      if (new Set(updates.map((update) => update.definitionId)).size !== updates.length)
+        throw new ProviderSecretsDeliveryError();
+      const replacements = updates.map(({ definitionId, changes, expectedRevision }) => {
+        if (expectedRevision !== undefined && this.revision(definitionId) !== expectedRevision)
+          throw new ProviderSecretsConflictError();
+        if (Object.entries(changes).some(([name, value]) => !this.validName(name) || value === ""))
+          throw new ProviderSecretsDeliveryError();
+        const policy = this.ports.policy(definitionId);
+        if (policy.removed && Object.values(changes).some((value) => value !== null))
+          throw new ProviderSecretsDeliveryError();
+        const record = this.records.find((item) => item.definitionId === definitionId);
+        const secrets = structuredClone(record?.secrets ?? {});
+        const cleared = new Set(record?.cleared ?? []);
+        for (const [name, value] of Object.entries(changes)) {
+          if (value === null) {
+            delete secrets[name];
+            if (this.ports.kind === "speech") cleared.add(name);
+          } else {
+            secrets[name] = { value, updatedAt: this.ports.now().toISOString(), source: "owner" };
+            cleared.delete(name);
+          }
+        }
+        return this.nextRecord(definitionId, policy, {
+          secrets,
+          conflicts: (record?.conflicts ?? []).filter((item) => !Object.hasOwn(changes, item.name)),
+          ...(this.ports.kind === "speech" ? { cleared: [...cleared] } : {}),
+        });
       });
+      const ids = new Set(replacements.map((record) => record.definitionId));
+      this.commit([
+        ...this.records.filter((record) => !ids.has(record.definitionId)),
+        ...replacements,
+      ]);
     });
   }
 
@@ -186,8 +248,19 @@ export class ProviderSecretsAuthority {
         for (const original of this.records) {
           const policy = this.ports.policy(original.definitionId);
           if (
-            policy.revision !== original.policyRevision ||
-            (policy.removed && Object.keys(original.secrets).length > 0)
+            (this.ports.kind !== "speech" && policy.revision !== original.policyRevision) ||
+            (policy.removed && Object.keys(original.secrets).length > 0) ||
+            (this.ports.kind === "speech" &&
+              JSON.stringify(policy.targets) !==
+                JSON.stringify(
+                  original.targets
+                    .filter((target) => !target.excluded)
+                    .map(({ serverId, providerId, excluded }) => ({
+                      serverId,
+                      providerId,
+                      excluded,
+                    })),
+                ))
           )
             this.replace(original.definitionId, policy, {
               secrets: policy.removed ? {} : original.secrets,
@@ -205,7 +278,13 @@ export class ProviderSecretsAuthority {
     return this.reconciliation;
   }
 
+  private validName(name: string): boolean {
+    return this.ports.kind === "speech" ? isSpeechSecretField(name) : isProviderSecretName(name);
+  }
+
   private async deliverTarget(record: SecretsRecord, target: SecretsRecord["targets"][number]) {
+    // A key must never be paired with an unresolved endpoint in another environment.
+    if (this.ports.kind === "speech" && record.conflicts.length > 0 && !target.excluded) return;
     const key = `${record.definitionId}\0${target.serverId}`;
     const label = this.ports.environment(target.serverId)?.label ?? "the environment";
     const values = target.excluded
@@ -218,8 +297,10 @@ export class ProviderSecretsAuthority {
       : Object.entries(record.secrets)
           .filter(([, item]) => item.source === "owner")
           .map(([name]) => name)
+          .concat(record.cleared ?? [])
           .sort();
     const delivery: ProviderSecretsDelivery = {
+      ...(this.ports.kind ? { kind: this.ports.kind } : {}),
       installationId: this.ports.installationId,
       serverId: target.serverId,
       definitionId: record.definitionId,
@@ -232,6 +313,7 @@ export class ProviderSecretsAuthority {
     try {
       const receipt = await this.ports.deliver(delivery);
       const matching =
+        receipt.kind === delivery.kind &&
         receipt.installationId === delivery.installationId &&
         receipt.serverId === delivery.serverId &&
         receipt.definitionId === delivery.definitionId &&
@@ -241,7 +323,11 @@ export class ProviderSecretsAuthority {
         receipt.digest === providerSecretsDeliveryDigest(delivery);
       if (!matching) throw new ProviderSecretsDeliveryError();
       await this.enqueue(async () => {
-        if (this.ports.policy(record.definitionId).revision !== record.policyRevision) return;
+        if (
+          this.ports.kind !== "speech" &&
+          this.ports.policy(record.definitionId).revision !== record.policyRevision
+        )
+          return;
         const next = structuredClone(this.records);
         const updated = next.find((item) => item.definitionId === record.definitionId);
         const saved = updated?.targets.find(
@@ -291,11 +377,19 @@ export class ProviderSecretsAuthority {
     const updatedAt = this.ports.now().toISOString();
     for (const [name, values] of observed) {
       // Owner-set values always win over local copies.
-      if (Object.hasOwn(secrets, name) || conflicts.some((item) => item.name === name)) continue;
+      if (
+        Object.hasOwn(secrets, name) ||
+        record?.cleared?.includes(name) ||
+        conflicts.some((item) => item.name === name)
+      )
+        continue;
       if (values.size === 1)
         secrets[name] = { value: [...values.keys()][0]!, updatedAt, source: "imported" };
       else conflicts.push({ name, serverIds: [...new Set([...values.values()].flat())].sort() });
     }
+    // An endpoint has no authority until the matching key can also be adopted.
+    if (this.ports.kind === "speech" && !secrets.apiKey && secrets.baseUrl?.source === "imported")
+      delete secrets.baseUrl;
     this.replace(definitionId, policy, { secrets, conflicts, scanned: true });
   }
 
@@ -314,7 +408,13 @@ export class ProviderSecretsAuthority {
         cache.set(target.serverId, providers);
       }
       for (const [name, value] of Object.entries(providers[target.providerId] ?? {})) {
-        if (!isProviderSecretName(name) || value.length === 0) continue;
+        if (!this.validName(name) || value.length === 0) continue;
+        if (
+          this.ports.kind === "speech" &&
+          name === "baseUrl" &&
+          !providers[target.providerId]?.apiKey
+        )
+          continue;
         const values = observed.get(name) ?? new Map<string, string[]>();
         values.set(value, [...(values.get(value) ?? []), target.serverId]);
         observed.set(name, values);
@@ -323,15 +423,19 @@ export class ProviderSecretsAuthority {
     return observed;
   }
 
-  private replace(
+  private nextRecord(
     definitionId: string,
     policy: ProviderSecretsPolicy,
-    change: Pick<SecretsRecord, "secrets" | "conflicts"> & { scanned?: boolean },
+    change: Pick<SecretsRecord, "secrets" | "conflicts"> & {
+      scanned?: boolean;
+      cleared?: string[];
+    },
   ) {
     const previous = this.records.find((item) => item.definitionId === definitionId);
     const revision = (previous?.revision ?? 0) + 1;
     if (!Number.isSafeInteger(revision)) throw new ProviderSecretsDeliveryError();
-    const empty = Object.keys(change.secrets).length === 0;
+    const cleared = change.cleared ?? previous?.cleared ?? [];
+    const empty = Object.keys(change.secrets).length === 0 && cleared.length === 0;
     const targets = policy.targets.map((target) => {
       const saved = previous?.targets.find(
         (item) => item.serverId === target.serverId && item.providerId === target.providerId,
@@ -352,17 +456,30 @@ export class ProviderSecretsAuthority {
         (Object.keys(previous!.secrets).length > 0 || !saved.applied)
       )
         targets.push({ ...saved, excluded: true, applied: false, conflicts: [] });
-    const next = this.records.filter((item) => item.definitionId !== definitionId);
-    next.push({
+    return {
       definitionId,
       revision,
-      policyRevision: policy.revision,
+      ...this.recordScope(policy.revision, revision, cleared),
       scanned: change.scanned ?? previous?.scanned ?? false,
       secrets: change.secrets,
       conflicts: change.conflicts,
       targets,
-    });
-    this.commit(next);
+    };
+  }
+
+  private recordScope(policyRevision: number, revision: number, cleared: string[]) {
+    return this.ports.kind === "speech"
+      ? { policyRevision: revision, cleared }
+      : { policyRevision };
+  }
+
+  private replace(
+    definitionId: string,
+    policy: ProviderSecretsPolicy,
+    change: Parameters<ProviderSecretsAuthority["nextRecord"]>[2],
+  ) {
+    const record = this.nextRecord(definitionId, policy, change);
+    this.commit([...this.records.filter((item) => item.definitionId !== definitionId), record]);
   }
 
   private commit(next: ProviderSecretsState) {
@@ -386,5 +503,11 @@ export class ProviderSecretsAuthority {
       () => undefined,
     );
     return task;
+  }
+}
+
+export class ProviderSecretsConflictError extends Error {
+  constructor() {
+    super("Settings changed on another client. Reload before saving again.");
   }
 }
