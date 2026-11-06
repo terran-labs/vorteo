@@ -591,6 +591,24 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
       assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
     }
   }
+  // Windows server suites run only on manual runs while a Windows Host is out of scope.
+  const windowsHost = /^      windows_host: \$\{\{ (.+) \}\}$/m.exec(
+    jobs.get("changes").join("\n"),
+  )[1];
+  for (const [event, ref, expected] of [
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+    ["schedule", "refs/heads/main", false],
+    ["workflow_dispatch", "refs/heads/main", true],
+  ]) {
+    const outputs = {
+      ...all,
+      heavy: "true",
+      windows_host: String(runInNewContext(windowsHost, contextFor(event, ref))),
+    };
+    for (const jobId of ["server-tests-windows", "server-integration-windows"]) {
+      assert.equal(selected(jobs.get(jobId).join("\n"), outputs), expected, `${jobId} ${event}`);
+    }
+  }
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
   assert.match(
