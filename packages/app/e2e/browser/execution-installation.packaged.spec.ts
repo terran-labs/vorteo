@@ -1241,15 +1241,26 @@ test("force restart requires an approved queue and operator escalation", async (
     source: { kind: "directory", path: directory },
   });
   if (!workspace) throw new Error("Missing restart workspace");
-  const blocker = await client.createAgent({
-    config: {
-      provider: "mock",
-      cwd: directory,
-      title: "Private task title",
-      model: "thirty-minute-stream",
-    },
-    workspaceId: workspace.id,
-    initialPrompt: "Wait for restart test",
+  const createBlocker = () =>
+    client.createAgent({
+      config: {
+        provider: "mock",
+        cwd: directory,
+        title: "Private task title",
+        model: "thirty-minute-stream",
+      },
+      workspaceId: workspace.id,
+      initialPrompt: "Wait for restart test",
+    });
+  // Settings sync can reject admission before creating an agent, so one exact retry is safe.
+  const blocker = await createBlocker().catch((error: unknown) => {
+    if (
+      !(error instanceof Error) ||
+      error.message !==
+        "Local account or settings bindings changed during launch. Retry with the current configuration."
+    )
+      throw error;
+    return createBlocker();
   });
   try {
     await expect
