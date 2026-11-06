@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   runAction: vi.fn(),
   status: "healthy",
   services: null as string | null,
+  jobs: [] as { id: string; target: string; status: string; createdAt: string }[],
 }));
 vi.mock("../service-access-section", () => ({ ServiceAccessSection: () => null }));
 vi.mock("./use-system-adapter", () => ({
@@ -16,7 +17,13 @@ vi.mock("./use-system-adapter", () => ({
     hostStatus: { status: mocks.status, action: { kind: "reconnect", label: "Reconnect" } },
     devStatus: { status: "healthy", action: null },
     runAction: mocks.runAction,
-    state: null,
+    state: {
+      unlocked: true,
+      lastUpdatedAt: "2026-11-06",
+      jobs: mocks.jobs,
+      pendingJobs: mocks.jobs.filter((job) => job.status === "pending"),
+    },
+    model: {},
     services: mocks.services,
   }),
 }));
@@ -76,8 +83,14 @@ vi.mock("@/desktop/components/desktop-updates-section", () => ({
 }));
 vi.mock("@/execution-installation/panel", () => ({
   InstallationSystemAdvanced: () => <span>Automatic updates and restarts</span>,
-  InstallationSystemDetails: () => <span>Service queue and requests</span>,
-  RestartActions: () => null,
+  InstallationSystemDetails: ({
+    requestId,
+    target,
+  }: {
+    requestId?: string | null;
+    target: string;
+  }) => <span>Service queue and requests{requestId ? `: ${target} ${requestId}` : ""}</span>,
+  RestartRequest: ({ job }: { job: { id: string } }) => <span>Review {job.id}</span>,
 }));
 vi.mock("@/execution-installation/connection-check-wrapper", () => ({
   InstallationConnectionCheck: () => <span>Connection check</span>,
@@ -97,6 +110,7 @@ afterEach(() => {
   cleanup();
   mocks.status = "healthy";
   mocks.services = null;
+  mocks.jobs = [];
   vi.clearAllMocks();
 });
 it("renders both environments, one primary action and closed disclosures", () => {
@@ -125,4 +139,33 @@ it("only mounts details on disclosure and keeps them open through status polls",
   fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
   expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
   expect(screen.getByText("Upstream updates")).toBeTruthy();
+});
+
+it.each(["rejected", "missing"])(
+  "reveals a linked %s request in Host Details without opening Restart",
+  (status) => {
+    mocks.jobs =
+      status === "missing"
+        ? []
+        : [{ id: "linked", target: "host", status, createdAt: "2026-11-06" }];
+    const { rerender } = render(<SystemPane restartRequestId="linked" />);
+    expect(screen.getByText("Service queue and requests: host linked")).toBeTruthy();
+    expect(screen.queryByText("Review linked")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Host Details" }));
+    mocks.status = "attention";
+    rerender(<SystemPane restartRequestId="linked" />);
+    expect(screen.queryByText("Service queue and requests: host linked")).toBeNull();
+  },
+);
+it("opens the linked Dev restart review and moves its completed receipt to Dev Details", () => {
+  mocks.jobs = [
+    { id: "linked-dev", target: "container-daemon", status: "pending", createdAt: "2026-11-06" },
+  ];
+  const { rerender } = render(<SystemPane restartRequestId="linked-dev" />);
+  expect(screen.getByText("Review linked-dev")).toBeTruthy();
+  expect(screen.queryByText("Service queue and requests: container-daemon linked-dev")).toBeNull();
+  mocks.jobs = [{ ...mocks.jobs[0]!, status: "rejected" }];
+  rerender(<SystemPane restartRequestId="linked-dev" />);
+  expect(screen.queryByText("Review linked-dev")).toBeNull();
+  expect(screen.getByText("Service queue and requests: container-daemon linked-dev")).toBeTruthy();
 });

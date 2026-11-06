@@ -963,7 +963,7 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
     </>
   ),
   // One view of Host and Dev status, restarts, updates and their technical details.
-  "system.overview": () => <SystemPane />,
+  "system.overview": (context) => <SystemPane restartRequestId={context.restartRequestId} />,
 };
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1060,7 @@ export default function SettingsScreen({
   const navigation = useSettingsNavigation({
     view,
     installationRequested,
+    restartRequestId,
     settingId,
     isCompactLayout,
     hasInstallation: availability.hasInstallation,

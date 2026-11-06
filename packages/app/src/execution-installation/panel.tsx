@@ -465,10 +465,16 @@ function InstallationPanel(_props: { model: InstallationPanelModel; requestId: s
 export function useInstallationSystemModel(): InstallationPanelModel | null {
   return getInstallationPanel(useHostRegistryLoaded());
 }
-export function InstallationSystemDetails({ target }: { target: "host" | "container-daemon" }) {
+export function InstallationSystemDetails({
+  target,
+  requestId = null,
+}: {
+  target: "host" | "container-daemon";
+  requestId?: string | null;
+}) {
   const model = useInstallationSystemModel();
   return model ? (
-    <InstallationSystemDetailsBody model={model} target={target} requestId={null} />
+    <InstallationSystemDetailsBody model={model} target={target} requestId={requestId} />
   ) : null;
 }
 export function InstallationSystemAdvanced() {
@@ -1044,7 +1050,7 @@ function ProfileSharingEnvironment({
   );
 }
 
-function RestartRequest({
+export function RestartRequest({
   job,
   model,
   busy,

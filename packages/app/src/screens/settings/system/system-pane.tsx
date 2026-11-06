@@ -20,7 +20,7 @@ import { LocalDaemonSection } from "@/desktop/components/desktop-updates-section
 import {
   InstallationSystemAdvanced,
   InstallationSystemDetails,
-  RestartActions,
+  RestartRequest,
 } from "@/execution-installation/panel";
 import { InstallationConnectionCheck } from "@/execution-installation/connection-check-wrapper";
 import { UpstreamUpdatesSection } from "@/vorton-updates/upstream-section";
@@ -41,7 +41,9 @@ function RestartMenu({
   target,
   serverId,
   label,
+  requestId,
 }: {
+  requestId?: string | null;
   adapter: Adapter;
   target: SystemTarget;
   serverId: string;
@@ -58,6 +60,15 @@ function RestartMenu({
         (job) => job.target === target && job.status !== "failed",
       )
     : [];
+  const linkedJob = adapter.state?.jobs.find(
+    (job) => job.id === requestId && job.target === target,
+  );
+  const linkedActiveId = jobs.find((job) => job.id === requestId)?.id;
+  const linkedFinishedId = linkedJob && !linkedActiveId ? linkedJob.id : null;
+  useEffect(() => {
+    if (linkedActiveId) setVisible(true);
+    else if (linkedFinishedId) setVisible(false);
+  }, [linkedActiveId, linkedFinishedId]);
   return (
     <>
       <DropdownMenu>
@@ -83,15 +94,7 @@ function RestartMenu({
         )}
         {adapter.model && adapter.state?.unlocked
           ? jobs.map((job) => (
-              <View key={job.id} style={styles.job}>
-                <Text style={settingsStyles.rowHint}>{job.reason}</Text>
-                <RestartActions
-                  job={job}
-                  model={adapter.model!}
-                  busy={adapter.busy}
-                  historical={false}
-                />
-              </View>
+              <RestartRequest key={job.id} job={job} model={adapter.model!} busy={adapter.busy} />
             ))
           : null}
         <SettingsStatusLine message={adapter.state?.notice} />
@@ -104,11 +107,13 @@ function EnvironmentDetails({
   target,
   label,
   sourceCommit,
+  requestId,
 }: {
   serverId: string;
   target: SystemTarget;
   label: "Host" | "Dev";
   sourceCommit?: string | null;
+  requestId?: string | null;
 }) {
   const [fullStatus, setFullStatus] = useState(false);
   const openStatus = useCallback(() => setFullStatus(true), []);
@@ -179,7 +184,7 @@ function EnvironmentDetails({
           </AdaptiveModalSheet>
         </>
       )}
-      <InstallationSystemDetails target={target} />
+      <InstallationSystemDetails target={target} requestId={requestId} />
       <ServiceAccessSection serverId={serverId} />
       <InstallationConnectionCheck embedded />
     </View>
@@ -189,8 +194,18 @@ function EnvironmentDetails({
 export function SystemPane({
   serverId,
   restartRecovery,
-}: { serverId?: string; restartRecovery?: ReactNode } = {}) {
+  restartRequestId,
+}: { serverId?: string; restartRecovery?: ReactNode; restartRequestId?: string | null } = {}) {
   const adapter = useSystemAdapter(serverId);
+  const linkedJob = adapter.state?.unlocked
+    ? adapter.state.jobs.find((job) => job.id === restartRequestId)
+    : undefined;
+  const linkedTarget = linkedJob?.target ?? "host";
+  const activeLink = linkedJob && ["pending", "approved", "running"].includes(linkedJob.status);
+  const detailsRequestId =
+    adapter.state?.unlocked && (linkedJob || adapter.state.lastUpdatedAt) && !activeLink
+      ? restartRequestId
+      : null;
   const hostAction = useCallback(
     (action: SystemAction) => {
       void adapter.runAction("host", action);
@@ -212,6 +227,7 @@ export function SystemPane({
         ? [
             {
               name: "Host" as const,
+              detailsRequestId: linkedTarget === "host" ? detailsRequestId : null,
               ...adapter.hostStatus,
               pendingAction:
                 adapter.pendingUpdate?.serverId === adapter.hostId
@@ -222,6 +238,7 @@ export function SystemPane({
               restartMenu: (
                 <RestartMenu
                   adapter={adapter}
+                  requestId={linkedTarget === "host" ? restartRequestId : null}
                   target="host"
                   serverId={adapter.hostId}
                   label="Host"
@@ -230,6 +247,7 @@ export function SystemPane({
               details: (
                 <EnvironmentDetails
                   serverId={adapter.hostId}
+                  requestId={linkedTarget === "host" ? restartRequestId : null}
                   target="host"
                   label="Host"
                   sourceCommit={
@@ -246,6 +264,7 @@ export function SystemPane({
         ? [
             {
               name: "Dev" as const,
+              detailsRequestId: linkedTarget === "container-daemon" ? detailsRequestId : null,
               ...adapter.devStatus,
               pendingAction:
                 adapter.pendingUpdate?.serverId === adapter.devId
@@ -256,6 +275,7 @@ export function SystemPane({
               restartMenu: (
                 <RestartMenu
                   adapter={adapter}
+                  requestId={linkedTarget === "container-daemon" ? restartRequestId : null}
                   target="container-daemon"
                   serverId={adapter.devId}
                   label="Dev"
@@ -264,6 +284,7 @@ export function SystemPane({
               details: (
                 <EnvironmentDetails
                   serverId={adapter.devId}
+                  requestId={linkedTarget === "container-daemon" ? restartRequestId : null}
                   target="container-daemon"
                   label="Dev"
                   sourceCommit={
@@ -277,7 +298,7 @@ export function SystemPane({
           ]
         : []),
     ],
-    [adapter, hostAction, devAction],
+    [adapter, hostAction, devAction, linkedTarget, restartRequestId, detailsRequestId],
   );
   return (
     <SettingsSection title="System" testID="system-pane">
@@ -317,5 +338,4 @@ export function SystemPane({
 const styles = StyleSheet.create((theme) => ({
   detailsBody: { padding: theme.spacing[4], gap: theme.spacing[3] },
   advanced: { height: 600 },
-  job: { padding: theme.spacing[4], gap: theme.spacing[2] },
 }));

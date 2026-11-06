@@ -98,10 +98,17 @@ async function openOwnerUnlock(page: Page) {
     page
       .getByTestId("installation-password")
       .or(page.getByTestId("installation-owner-unlock"))
+      .or(page.getByTestId("owner-access-owner-unlock"))
+      .filter({ visible: true })
       .first(),
   ).toBeVisible();
   if (await page.getByTestId("installation-password").isVisible()) return;
-  await page.getByTestId("installation-owner-unlock").click();
+  await page
+    .getByTestId("installation-owner-unlock")
+    .or(page.getByTestId("owner-access-owner-unlock"))
+    .filter({ visible: true })
+    .first()
+    .click();
 }
 
 async function connectReadyInstallationDaemon(kind: "host" | "container") {
@@ -761,7 +768,7 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await expect
     .poll(() => page.evaluate(() => Reflect.get(globalThis, "__installationPluginKinds")))
     .toEqual(["host"]);
-  await page.goto(`${origin}/settings/general`);
+  await page.goto(`${origin}/settings/system?installation=1`);
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await expect
     .poll(async () =>
@@ -789,10 +796,11 @@ test("owner connects two environments, prepares host drafts, and approves a veri
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
     ).toBe(true);
   }
+  await openSystemRestart(page, "Host");
   const oldCard = page
     .locator('[data-testid^="restart-request-"]')
     .filter({ hasText: "Restart Host to enable protected workspaces" });
-  const installationCard = page.getByTestId("installation-card");
+  let installationCard = page.getByTestId("system-restart-host");
   await expect(installationCard).toHaveCount(1);
   await expect(installationCard.locator('[data-testid^="restart-request-"]')).toHaveCount(1);
   await expect(page.getByTestId("installation-status-host")).toHaveCount(0);
@@ -805,17 +813,27 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await expect(oldCard).not.toContainText("Maintenance requested six days ago");
   await oldCard.getByRole("button", { name: "Details", exact: true }).click();
   await expect(oldCard).toContainText("Maintenance requested six days ago");
-  await oldCard.getByRole("button", { name: "Hide details", exact: true }).click();
-  await oldCard.getByRole("button", { name: "Reject", exact: true }).click();
-  await expect(page.getByText("No pending restart requests", { exact: true })).toBeVisible();
-  await page.getByTestId("restart-history-toggle").click();
+  await oldCard.getByRole("button", { name: "Details", exact: true }).click();
+  await oldCard.getByRole("button", { name: "Cancel", exact: true }).click();
+  const hostDetails = await openSystemDetails(page, "Host");
+  installationCard = hostDetails.getByTestId("installation-card");
+  await hostDetails.getByTestId("restart-history-toggle").click();
   await expect(oldCard).toContainText("Rejected");
   await expect(installationCard.getByTestId("restart-history")).toContainText("Rejected");
   await installationCard.screenshot({ path: testInfo.outputPath("installation-history.png") });
   await page.getByTestId("restart-history-toggle").click();
-  await page.getByTestId("installation-lock").click();
+  await page
+    .getByTestId("installation-lock")
+    .or(page.getByTestId("owner-access-lock"))
+    .filter({ visible: true })
+    .first()
+    .click();
   await expect(
-    page.getByTestId("installation-panel").getByText("Locked", { exact: true }),
+    page
+      .getByTestId("owner-lock-badge")
+      .filter({ visible: true })
+      .first()
+      .getByText("Locked", { exact: true }),
   ).toBeVisible();
   await expect(page.getByTestId("installation-status-host")).toHaveCount(0);
   await openOwnerUnlock(page);
@@ -825,6 +843,11 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
+  await page.goto(`${origin}/settings/system`);
+  await page
+    .getByTestId("system-updates-row")
+    .getByRole("button", { name: "Details", exact: true })
+    .click();
   await page.getByTestId("vorton-help-update").click();
   await expect(page).toHaveURL(new RegExp(`serverId=${daemons[1]!.serverId}`));
   const composer = page.getByRole("textbox", { name: "Message agent..." });
@@ -838,6 +861,7 @@ test("owner connects two environments, prepares host drafts, and approves a veri
     ),
   ).toBe("Keep my existing draft");
   await page.goBack();
+  await page.getByTestId("system-advanced-toggle").click();
   await page.getByTestId("prepare-upstream-task").click();
   await expect(page).toHaveURL(new RegExp(`serverId=${daemons[1]!.serverId}`));
   await expect(composer).toHaveValue(/weekly upstream synchronization/);
@@ -894,8 +918,13 @@ test("owner connects two environments, prepares host drafts, and approves a veri
     ).status,
   ).toBe(401);
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.goto(`${origin}/settings/general`);
-  await page.getByTestId("installation-lock").click();
+  await page.goto(`${origin}/settings/system?installation=1`);
+  await page
+    .getByTestId("installation-lock")
+    .or(page.getByTestId("owner-access-lock"))
+    .filter({ visible: true })
+    .first()
+    .click();
   await page.goto(`${origin}/settings/general?installation=1&restart=${job.id}`);
   await openOwnerUnlock(page);
   await expect(page.getByTestId("installation-password")).toBeVisible();
@@ -939,10 +968,15 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   expect(await banner.count()).toBeLessThanOrEqual(1);
   await page.screenshot({ path: testInfo.outputPath("restart-queued-system.png"), fullPage: true });
   await page.reload();
+  await page.getByRole("button", { name: "Dev Details", exact: true }).click();
   await expect(page.getByTestId(`restart-request-${job.id}`)).toContainText("Queued until idle");
   await activity.cancelAgent(blocker.id);
   await activity.close();
-  await expect(card).toContainText("Restarted", { timeout: 150_000 });
+  await expect(queuedDetails.getByTestId(`restart-request-${job.id}`)).toHaveCount(0, {
+    timeout: 150_000,
+  });
+  await queuedDetails.getByTestId("restart-history-toggle").click();
+  await expect(card).toContainText("Restarted");
   const completedRestart = await fetch(`${origin}/api/installation/restart-requests/${job.id}`, {
     headers: { Authorization: `Bearer ${guestToken}` },
   }).then((response) => response.json());
@@ -951,7 +985,6 @@ test("owner connects two environments, prepares host drafts, and approves a veri
   await expect(page.getByRole("button", { name: "All restart requests", exact: true })).toHaveCount(
     0,
   );
-  await page.getByTestId("restart-history-toggle").click();
   await expect(card).not.toContainText("environment identity verified");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("installation-controls.png"), fullPage: true });
@@ -960,10 +993,6 @@ test("owner connects two environments, prepares host drafts, and approves a veri
 test("one System notice links pending requests to reviews and queued work stays in System", async ({
   page,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name === "phone",
-    "Sidebar placement uses the desktop sidebar; compact actions have separate coverage.",
-  );
   test.setTimeout(180_000);
   const width = testInfo.project.name === "phone" ? 390 : 1440;
   await page.setViewportSize({ width, height: 600 });
@@ -1031,6 +1060,8 @@ test("one System notice links pending requests to reviews and queued work stays 
       );
       jobs.push(job.id);
       if (jobs.length === 1) {
+        if (testInfo.project.name === "phone")
+          await page.getByRole("button", { name: "Back", exact: true }).first().click();
         const notice = page
           .getByTestId("settings-sidebar")
           .filter({ visible: true })
@@ -1055,6 +1086,8 @@ test("one System notice links pending requests to reviews and queued work stays 
       });
       expect(response.status).toBe(200);
     }
+    if (testInfo.project.name === "phone")
+      await page.getByRole("button", { name: "Back", exact: true }).first().click();
     const sidebar = page.getByTestId("settings-sidebar").filter({ visible: true });
     const notice = sidebar.getByTestId("installation-restart-banner");
     expect(await notice.count()).toBeLessThanOrEqual(1);
@@ -1176,6 +1209,7 @@ test("force restart requires an approved queue and operator escalation", async (
   page,
 }, testInfo) => {
   test.setTimeout(180_000);
+  await page.clock.install();
   const client = await connectInstallationDaemon(config, "container");
   const directory = path.join(root, "simple-restart-controls");
   await mkdir(directory);
@@ -1219,7 +1253,6 @@ test("force restart requires an approved queue and operator escalation", async (
     await page.getByTestId("installation-unlock").click();
     const card = page.getByTestId(`restart-request-${dev.id}`);
     const hostCard = page.getByTestId(`restart-request-${host.id}`);
-    await expect(hostCard).toBeVisible();
     await expect(card).toBeVisible();
     await expect(card.getByRole("button")).toHaveText([
       "Details",
@@ -1227,12 +1260,14 @@ test("force restart requires an approved queue and operator escalation", async (
       "Finish turns and restart",
       "Cancel",
     ]);
+    await openSystemRestart(page, "Host");
     await expect(hostCard.getByRole("button")).toHaveText([
       "Details",
       "Restart when idle",
       "Finish turns and restart",
       "Cancel",
     ]);
+    await page.goto(`${origin}/settings/system?restart=${dev.id}`);
     await expect(card).not.toContainText(blocker.id);
     await expect(card).not.toContainText("Private task title");
     await expect(
@@ -1246,14 +1281,9 @@ test("force restart requires an approved queue and operator escalation", async (
     ).toHaveCount(0);
     await card.screenshot({ path: testInfo.outputPath("restart-pending.png") });
     await card.getByRole("button", { name: "Restart when idle", exact: true }).click();
-    await expect(card.getByRole("button")).toHaveText([
-      "Details",
-      "Cancel",
-      "Restart appears stuck",
-    ]);
-    await expect(page.getByRole("button", { name: "Force restart now", exact: true })).toHaveCount(
-      0,
-    );
+    await expect(card.getByTestId(`restart-force-${dev.id}`)).toHaveCount(0);
+    await page.clock.fastForward(60_001);
+    await expect(card.getByRole("button")).toHaveText(["Details", "Cancel", "Force restart now"]);
     const banner = page.getByTestId("installation-restart-banner").filter({ visible: true });
     // Compact navigation hides the sidebar until opened.
     if (await banner.count()) {
@@ -1262,7 +1292,6 @@ test("force restart requires an approved queue and operator escalation", async (
         banner.getByRole("button", { name: "Force restart now", exact: true }),
       ).toHaveCount(0);
     }
-    await card.getByRole("button", { name: "Restart appears stuck", exact: true }).click();
     await expect(card.getByTestId(`restart-force-${dev.id}`)).toBeVisible();
     page.once("dialog", (dialog) => dialog.dismiss());
     await card.getByTestId(`restart-force-${dev.id}`).click();
@@ -1270,6 +1299,7 @@ test("force restart requires an approved queue and operator escalation", async (
     await card.screenshot({ path: testInfo.outputPath("restart-queued.png") });
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(card).toContainText("Rejected");
+    await openSystemRestart(page, "Host");
     await hostCard.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(hostCard).toHaveCount(0);
     expect((await client.fetchAgent({ agentId: blocker.id }))?.agent.status).toBe("running");
@@ -1283,15 +1313,13 @@ test("force restart requires an approved queue and operator escalation", async (
     );
     await page.goto(`${origin}/settings/general?installation=1&restart=${retry.id}`);
     const retryCard = page.getByTestId(`restart-request-${retry.id}`);
+    await page.clock.setSystemTime(new Date());
+    page.once("dialog", (dialog) => dialog.accept());
     await retryCard.getByRole("button", { name: "Finish turns and restart", exact: true }).click();
     await expect(retryCard).toContainText("Finishing current turns");
-    await expect(retryCard.getByRole("button")).toHaveText([
-      "Details",
-      "Cancel",
-      "Restart appears stuck",
-    ]);
+    await expect(retryCard.getByRole("button")).toHaveText(["Details", "Cancel"]);
     await expect(retryCard.getByTestId(`restart-force-${retry.id}`)).toHaveCount(0);
-    await retryCard.getByRole("button", { name: "Restart appears stuck", exact: true }).click();
+    await page.clock.fastForward(60_001);
     page.once("dialog", (dialog) => dialog.accept());
     await retryCard.getByRole("button", { name: "Force restart now", exact: true }).click();
     await expect(retryCard).toContainText("Restarted", { timeout: 150_000 });
@@ -1331,6 +1359,7 @@ test("restart links keep rejected and missing requests separate from a pending a
     ).json(),
   );
   await page.goto(`${origin}/settings/general?installation=1&restart=${historicalRestartId}`);
+  await expect(page.getByTestId("system-pane").filter({ visible: true })).toBeVisible();
   await expect(page.getByTestId("settings-vorton-mode")).toHaveCount(0);
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
@@ -1423,10 +1452,12 @@ for (const kind of ["host", "container"] as const) {
           })
         ).status,
       ).toBe(401);
+      page.once("dialog", (dialog) => dialog.accept());
       await page.getByTestId(`restart-finish-${job.id}`).click();
       await expect(card).toContainText("Finishing current turns");
       await expect(card).not.toContainText("Saving current work");
-      await expect(card.getByRole("button")).toHaveText(["Details", "Cancel", "Force restart now"]);
+      await expect(card.getByRole("button")).toHaveText(["Details", "Cancel"]);
+      await expect(card.getByTestId(`restart-force-${job.id}`)).toHaveCount(0);
       await expect(client.sendMessage(blocker.id, "Do not start this new task.")).rejects.toThrow();
       expect((await client.getDaemonStatus()).pid).toBe(pid);
       await card.screenshot({ path: testInfo.outputPath("finish-current-turns.png") });
@@ -1456,6 +1487,8 @@ for (const kind of ["host", "container"] as const) {
         .find((item) => item.target === restartTarget && item.status === "pending");
       if (!retry) throw new Error("Missing fresh pending request");
       expect(retry.id).not.toBe(job.id);
+      await page.goto(`${origin}/settings/system?restart=${retry.id}`);
+      page.once("dialog", (dialog) => dialog.accept());
       await page.getByTestId(`restart-finish-${retry.id}`).click();
 
       const retryCard = page.getByTestId(`restart-request-${retry.id}`);
@@ -4646,6 +4679,8 @@ test("automatic maintenance shows readiness and preserves owner opt-in across re
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/general?installation=1`);
+  await page.goto(`${origin}/settings/system`);
+  await page.getByTestId("system-advanced-toggle").click();
   const control = page.getByTestId("maintenance-permission-host");
   for (const service of ["host", "container-daemon", "coordinator", "supervisor"]) {
     await expect(page.getByTestId(`maintenance-permission-${service}`)).toBeVisible();
@@ -4674,6 +4709,7 @@ test("automatic maintenance shows readiness and preserves owner opt-in across re
       "false",
     );
   await page.reload();
+  await page.getByTestId("system-advanced-toggle").click();
   await expect(control).toHaveAttribute("aria-checked", "true");
   await page.getByTestId("maintenance-readiness-toggle").click();
   await expect(page.getByTestId("maintenance-readiness")).toContainText("automatic");

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Text, View, Pressable, StyleSheet, ScrollView, useWindowDimensions } from "react-native";
 import { Button } from "@/components/ui/button";
 import type { SystemAction, SystemStatus } from "./system-status-model";
@@ -20,6 +20,8 @@ export interface SystemEnvironmentRow {
   /** Caller supplies the overflow menu containing Restart…. */
   restartMenu?: ReactNode;
   details?: ReactNode;
+  /** Reveal a linked review once; subsequent polls must respect manual collapse. */
+  detailsRequestId?: string | null;
 }
 function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
   const { width } = useWindowDimensions();
@@ -30,6 +32,9 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
     [compact],
   );
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (row.detailsRequestId) setExpanded(true);
+  }, [row.detailsRequestId]);
   const toggle = useCallback(() => setExpanded((current) => !current), []);
   const act = useCallback(() => {
     if (row.action) row.onAction(row.action);

@@ -40,6 +40,7 @@ function focusAnchorId(view: SettingsView): string | null {
 interface SettingsNavigationInput {
   view: SettingsView;
   installationRequested: boolean;
+  restartRequestId?: string | null;
   settingId: string | null;
   isCompactLayout: boolean;
   hasInstallation: boolean;
@@ -55,6 +56,7 @@ interface SettingsNavigationInput {
 export function useSettingsNavigation({
   view,
   installationRequested,
+  restartRequestId = null,
   settingId,
   isCompactLayout,
   hasInstallation,
@@ -70,12 +72,15 @@ export function useSettingsNavigation({
   const routeSection = view.kind === "section" ? view.section : null;
   const routeTarget = useMemo(() => {
     if (!routeSection) return null;
-    // Restart approval links open the installation controls.
+    // Existing restart links reveal their review in System; installation links keep owner controls.
     if (installationRequested && hasInstallation) {
-      return { section: "system" as const, pane: "maintenance.installation" };
+      return {
+        section: "system" as const,
+        pane: restartRequestId ? "system.overview" : "maintenance.installation",
+      };
     }
     return resolveSettingsTarget(routeSection);
-  }, [hasInstallation, installationRequested, routeSection]);
+  }, [hasInstallation, installationRequested, restartRequestId, routeSection]);
   const routeEntry = useMemo(
     () => (settingId ? (entries.find((entry) => entry.id === settingId) ?? null) : null),
     [entries, settingId],
