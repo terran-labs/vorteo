@@ -4645,7 +4645,7 @@ test("project.remove.request removes an already-empty project", async () => {
   ]);
 });
 
-test("create paseo worktree response preserves an explicit non-Git project", async () => {
+test("create paseo worktree response uses its repository project and preserves the unrelated project", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const createdAt = "2026-05-12T12:00:00.000Z";
   vi.setSystemTime(new Date(createdAt));
@@ -4665,7 +4665,17 @@ test("create paseo worktree response preserves an explicit non-Git project", asy
     cwd: repoDir,
     stdio: "pipe",
   });
-  const workspaceGitService = createNoopWorkspaceGitService();
+  const workspaceGitService = createNoopWorkspaceGitService({
+    getCheckout: async (cwd) => ({
+      cwd,
+      isGit: cwd === repoDir,
+      currentBranch: cwd === repoDir ? "main" : null,
+      remoteUrl: null,
+      worktreeRoot: cwd === repoDir ? repoDir : null,
+      isPaseoOwnedWorktree: false,
+      mainRepoRoot: null,
+    }),
+  });
   workspaceGitService.getSnapshot = vi.fn(async (cwd: string) => {
     if (cwd === repoDir) {
       return createWorkspaceRuntimeSnapshot(cwd, {
@@ -4769,10 +4779,10 @@ test("create paseo worktree response preserves an explicit non-Git project", asy
 
   expect(response?.payload.error).toBeNull();
   expect(response?.payload.workspace).toMatchObject({
-    projectId: explicitProject.projectId,
-    projectDisplayName: explicitProject.displayName,
-    projectRootPath: explicitProject.rootPath,
-    projectKind: "non_git",
+    projectId: "prj_0000000000000001",
+    projectDisplayName: "repo",
+    projectRootPath: repoDir,
+    projectKind: "git",
     workspaceKind: "worktree",
     name: "worktree-123",
     status: "done",
@@ -4781,15 +4791,7 @@ test("create paseo worktree response preserves an explicit non-Git project", asy
   expect(response?.payload.workspace?.id).toMatch(/^wks_[0-9a-f]{16}$/);
   expect(response?.payload.workspace?.workspaceDirectory).toContain(path.join("worktree-123"));
   expect(workspaces.has(response?.payload.workspace?.id ?? "")).toBe(true);
-  expect(projects.get(explicitProject.projectId)).toEqual({
-    ...explicitProject,
-    projectKey: deriveProjectKey({
-      rootPath: explicitProject.rootPath,
-      remoteUrl: null,
-      worktreeRoot: null,
-      mainRepoRoot: null,
-    }),
-  });
+  expect(projects.get(explicitProject.projectId)).toEqual(explicitProject);
 });
 
 test("workspace updates stay scoped to the matching cwd", async () => {
