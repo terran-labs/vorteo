@@ -132,3 +132,62 @@ test("a timed-out admission read names the unreachable origin and keeps the caus
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test.each([
+  [
+    "the gate route for Dev in gate mode",
+    "http://host.docker.internal:6770",
+    "container-agent",
+    "gate",
+    true,
+  ],
+  [
+    "HTTPS outside gate mode",
+    "https://host.docker.internal:6770",
+    "container-agent",
+    undefined,
+    true,
+  ],
+  ["Host loopback", "http://127.0.0.1:6770", "host-agent", undefined, true],
+  [
+    "the gate route outside gate mode",
+    "http://host.docker.internal:6770",
+    "container-agent",
+    undefined,
+    false,
+  ],
+  [
+    "the gate route with a Host token",
+    "http://host.docker.internal:6770",
+    "host-agent",
+    "gate",
+    false,
+  ],
+  ["another plain-HTTP host in gate mode", "http://gate:6770", "container-agent", "gate", false],
+  [
+    "the gate host without its listen port",
+    "http://host.docker.internal",
+    "container-agent",
+    "gate",
+    false,
+  ],
+  [
+    "the gate route with a path",
+    "http://host.docker.internal:6770/x",
+    "container-agent",
+    "gate",
+    false,
+  ],
+])("admission origins: %s", (_case, origin, kind, mode, accepted) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "settings-admission-"));
+  const configFile = path.join(dir, "client.json");
+  writeFileSync(configFile, JSON.stringify({ origin, token: "fixture-only-token", kind }));
+  const env = mode ? { PASEO_NETWORK_MODE: mode } : {};
+  try {
+    const create = () => createInstallationSettingsReader(configFile, fetch, env);
+    if (accepted) expect(create).not.toThrow();
+    else expect(create).toThrow(InstallationSettingsAdmissionError);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -32,7 +32,6 @@ import { open, rm, stat } from "fs/promises";
 import { randomUUID } from "node:crypto";
 import { getHostName } from "./host-name.js";
 import path from "node:path";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
@@ -164,7 +163,7 @@ import { reconcileQuotaReserveStartup } from "./agent/quota-reserve/reconcile-st
 import { QuotaReservePolling } from "./agent/quota-reserve/polling.js";
 import { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
-import { createAgentMcpServer } from "./agent/mcp-server.js";
+import { createAgentMcpServer, serveStatelessAgentMcpRequest } from "./agent/mcp-server.js";
 import {
   createPaseoToolCatalog,
   createPaseoAgentToolManifest,
@@ -2105,8 +2104,13 @@ export async function createPaseoDaemon(
   {
     const agentMcpRoute = "/mcp/agents";
 
-    const createAgentMcpSession = async (callerAgentId?: string) => {
-      const agentMcpServer = await createAgentMcpServer(
+    // Stateless mode: each HTTP request builds a fresh server + transport that is
+    // torn down when the response closes, so no per-session state is retained between
+    // requests. The agent control plane only lists and calls tools, neither of which
+    // needs cross-request state, so sessions would only pin memory for the life of the
+    // daemon (agents that exit without a clean DELETE never get reaped).
+    const createAgentMcpSessionServer = (callerAgentId?: string) =>
+      createAgentMcpServer(
         createAgentToolHostDependencies({
           callerAgentId,
           paseoToolPolicy: callerAgentId
@@ -2114,27 +2118,6 @@ export async function createPaseoDaemon(
             : undefined,
         }),
       );
-
-      // Stateless mode: each HTTP request builds a fresh server + transport that is
-      // torn down when the response closes, so no per-session state is retained between
-      // requests. The agent control plane only lists and calls tools, neither of which
-      // needs cross-request state, so sessions would only pin memory for the life of the
-      // daemon (agents that exit without a clean DELETE never get reaped).
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        // NOTE: We enforce a Vite-like host allowlist at the app/websocket layer.
-        // StreamableHTTPServerTransport's built-in check requires exact Host header matches.
-        enableDnsRebindingProtection: false,
-      });
-      Object.assign(transport, {
-        onerror: (err: Error) => {
-          logger.error({ err }, "Agent MCP transport error");
-        },
-      });
-
-      await agentMcpServer.connect(transport);
-      return { server: agentMcpServer, transport };
-    };
 
     const runAgentMcpRequest = async (
       req: express.Request,
@@ -2193,17 +2176,13 @@ export async function createPaseoDaemon(
         } else if (Array.isArray(callerAgentIdRaw) && typeof callerAgentIdRaw[0] === "string") {
           callerAgentId = callerAgentIdRaw[0];
         }
-        const { server, transport } = await createAgentMcpSession(callerAgentId);
-        res.on("close", () => {
-          void transport.close();
-          void server.close();
+        await serveStatelessAgentMcpRequest({
+          server: await createAgentMcpSessionServer(callerAgentId),
+          req: req as unknown as IncomingMessage,
+          res: res as unknown as ServerResponse,
+          body: req.body,
+          logger,
         });
-
-        await transport.handleRequest(
-          req as unknown as IncomingMessage,
-          res as unknown as ServerResponse,
-          req.body,
-        );
       } catch (err) {
         logger.error({ err }, "Failed to handle Agent MCP request");
         if (!res.headersSent) {

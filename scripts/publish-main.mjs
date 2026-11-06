@@ -478,6 +478,8 @@ export async function waitForMerged(
   }
 }
 
+const AUTO_MERGE_REFUSAL = /auto merge is not allowed|enablePullRequestAutoMerge/i;
+
 const ENQUEUE_MUTATION = `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
   enqueuePullRequest(input: {pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid}) {
     mergeQueueEntry { id }
@@ -497,7 +499,7 @@ export async function mergePullRequest(
   await assertMergeable(plan, pr, { gh, log, ...wait });
   // A rerun after a timeout finds the entry still queued; enqueueing it again would fail.
   const current = mergeState(gh, plan.repository, pr.number);
-  if (!current.isInMergeQueue && ruleset.rules.some((rule) => rule.type === "merge_queue")) {
+  const enqueue = () =>
     gh([
       "api",
       "graphql",
@@ -508,17 +510,26 @@ export async function mergePullRequest(
       "-f",
       `expectedHeadOid=${plan.head}`,
     ]);
+  if (!current.isInMergeQueue && ruleset.rules.some((rule) => rule.type === "merge_queue")) {
+    enqueue();
   } else if (!current.isInMergeQueue) {
-    gh([
-      "pr",
-      "merge",
-      String(pr.number),
-      "-R",
-      plan.repository,
-      "--merge",
-      "--match-head-commit",
-      plan.head,
-    ]);
+    try {
+      gh([
+        "pr",
+        "merge",
+        String(pr.number),
+        "-R",
+        plan.repository,
+        "--merge",
+        "--match-head-commit",
+        plan.head,
+      ]);
+    } catch (error) {
+      // When GitHub does not enqueue at once, gh falls back to auto-merge, which this
+      // repository disallows. Enqueue directly, pinned to the tested head.
+      if (!AUTO_MERGE_REFUSAL.test(String(error?.message ?? error))) throw error;
+      enqueue();
+    }
   }
   const merged = await waitForMerged(plan, pr, { gh, log, ...wait });
   const mainHead = fetchBase(plan.root, plan.remote, plan.branch);

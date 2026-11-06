@@ -51,6 +51,9 @@ services:
     volumes:
       - ${PASEO_DATA_ROOT:-./data}/home:/home/paseo
       - ${PASEO_WORKSPACE_ROOT:-./workspace}:/workspace
+      # Host-built Dev releases, read-only: Dev runs the selected one without an image
+      # rebuild and can never change it. update.sh --release selects one.
+      - ./dev-releases:/opt/vorteo/dev-releases:ro
       # The Projects folder at its own path, so the Host and Dev name every
       # project the same way. See docs/execution-installation.md#projects-folder.
       - type: bind
