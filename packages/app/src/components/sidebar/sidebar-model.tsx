@@ -65,6 +65,7 @@ export function SidebarModelProvider({
   const list = useSidebarWorkspacesList({ enabled: modelActive });
   const showBackground = useSidebarViewStore((state) => state.showBackground);
   const groupMode = useSidebarViewStore((state) => state.groupMode);
+  const manualSort = useSidebarViewStore((state) => state.workspaceSort === "manual");
   const labelFilter = useSidebarViewStore((state) => state.labelFilter);
   const projectFilters = useSidebarViewStore((state) => state.projectFilters);
   const { collapsedProjectKeys, toggleProjectCollapsed } = useProjectExpansion();
@@ -175,10 +176,12 @@ export function SidebarModelProvider({
       collapsedWorkspaceGroupKeys,
       factorySupportedHosts,
       folderState,
+      workspaceItemOrder: manualSort ? ("saved" as const) : ("given" as const),
       t,
     }),
     [
       folderState,
+      manualSort,
       collapsedProjectKeys,
       collapsedWorkspaceGroupKeys,
       groupMode,

@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Circle,
   Clock,
+  ExternalLink,
   Minus,
   Undo2,
   X,
@@ -14,17 +15,29 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   UPGRADE_STEP_LABELS,
   type InstallationUpgrade,
+  type UpgradeDecision,
+  type UpgradeStatus,
   type UpgradeStep,
 } from "@getpaseo/protocol/installation-upgrades";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { StatusBadge } from "@/components/ui/status-badge";
 import type { Theme } from "@/styles/theme";
 import { formatDuration } from "@/utils/duration";
 import { settingsStyles } from "@/styles/settings";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
+import { openExternalUrl } from "@/utils/open-external-url";
 import { useVortonTouch } from "@/vorton-touch";
 import type { InstallationClient } from "./client";
-import { activeUpgrade, upgradeApprovalText } from "./installation-upgrades-model";
+import {
+  activeUpgrade,
+  releaseVersionLabel,
+  supportsUpdatePolicy,
+  upgradeApprovalText,
+  upgradeDecisions,
+  upgradeNotes,
+} from "./installation-upgrades-model";
 import {
   useInstallationUpgradeActions,
   useInstallationUpgradeStatus,
@@ -37,12 +50,7 @@ export function InstallationUpgradeCard({ client }: { client: InstallationClient
   if (!client || !status.data || !upgrade) return null;
   return (
     <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="installation-upgrade-card">
-      <InstallationUpgradeDetails
-        client={client}
-        upgrade={upgrade}
-        hasDev={status.data.container}
-        upgrades={status.data.upgrades}
-      />
+      <InstallationUpgradeDetails client={client} upgrade={upgrade} status={status.data} />
     </View>
   );
 }
@@ -125,19 +133,16 @@ function useNow(live: boolean): number {
 /**
  * One upgrade, from first principles: a headline with a status icon and a running timer, then
  * the single step that matters now, highlighted. The full step list stays behind a disclosure.
- * Approve and Reject appear while it waits for the owner.
+ * A pending upgrade shows its release notes, and the owner's decisions appear while it waits.
  */
 export function InstallationUpgradeDetails({
   client,
   upgrade,
-  hasDev,
-  upgrades,
+  status,
 }: {
   client: InstallationClient;
   upgrade: InstallationUpgrade;
-  hasDev: boolean;
-  /** Every upgrade on record, so the approval text can quote how long the last one took. */
-  upgrades?: readonly InstallationUpgrade[];
+  status: UpgradeStatus;
 }) {
   const live = upgrade.status === "approved" || upgrade.status === "running";
   const now = useNow(live);
@@ -147,10 +152,10 @@ export function InstallationUpgradeDetails({
   return (
     <View style={styles.item} testID={`installation-upgrade-${upgrade.id}`}>
       <UpgradeHeadline upgrade={upgrade} live={live} elapsed={elapsed} />
-      {pending ? <Text style={styles.text}>{upgradeApprovalText(hasDev, upgrades)}</Text> : null}
+      {pending ? <UpgradeReleaseNotes upgrade={upgrade} status={status} /> : null}
       <FocusStep upgrade={upgrade} now={now} live={live} />
       <StepList upgrade={upgrade} now={now} />
-      {pending ? <ApprovalActions client={client} upgrade={upgrade} /> : null}
+      <UpgradeDecisionButtons client={client} upgrade={upgrade} status={status} />
     </View>
   );
 }
@@ -254,7 +259,162 @@ function StepList({ upgrade, now }: { upgrade: InstallationUpgrade; now: number 
   );
 }
 
-function ApprovalActions({
+/**
+ * What installing a release changes and how to undo it: the security marker, release summary,
+ * restart scope, charter changes, rollback and a link to the full notes.
+ */
+export function UpgradeReleaseNotes({
+  upgrade,
+  status,
+}: {
+  upgrade: InstallationUpgrade;
+  status: UpgradeStatus;
+}) {
+  const notes = upgradeNotes(status, upgrade);
+  const openNotes = useCallback(() => {
+    if (notes) void openExternalUrl(notes.url);
+  }, [notes]);
+  const policy = supportsUpdatePolicy(status);
+  const restart = status.container
+    ? "Restarts the Host daemon, replaces the coordinator and recreates the Dev container."
+    : "Restarts the Host daemon and replaces the coordinator.";
+  return (
+    <View style={styles.notes}>
+      {notes?.security ? (
+        <View style={styles.security}>
+          <StatusBadge label="Security fix" variant="error" />
+        </View>
+      ) : null}
+      {notes?.summary ? <Text style={styles.summary}>{notes.summary}</Text> : null}
+      <Text style={styles.text}>
+        {policy
+          ? `${restart} Install after current work holds new work and waits for running turns and Dev agents to finish.`
+          : `${restart} Running agents are interrupted.`}
+      </Text>
+      {notes && notes.charterChanges.length > 0 ? (
+        <Text style={styles.text}>
+          {`Factory charters that change: ${notes.charterChanges.join("; ")}`}
+        </Text>
+      ) : null}
+      <Text style={styles.text}>
+        A safety snapshot is taken first; restore it from Installation controls if anything breaks.
+      </Text>
+      {notes ? (
+        <View style={styles.link}>
+          <Button
+            variant="ghost"
+            size="sm"
+            leftIcon={ExternalLink}
+            onPress={openNotes}
+            testID={`installation-upgrade-notes-${upgrade.id}`}
+          >
+            Release notes
+          </Button>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+const DECISION_LABELS: Partial<Record<UpgradeDecision["decision"], string>> = {
+  "approve-after-work": "Install after current work",
+  reject: "Skip this release",
+};
+
+/**
+ * Install after current work, Install now and Skip this release for a pending upgrade, and
+ * Install now for one waiting on current work. Coordinators without an update policy accept
+ * only an immediate approval of a pending upgrade, offered as Install.
+ */
+export function UpgradeDecisionButtons({
+  client,
+  upgrade,
+  status,
+}: {
+  client: InstallationClient;
+  upgrade: InstallationUpgrade;
+  status: UpgradeStatus;
+}) {
+  const controlSize = useVortonTouch() ? "md" : "sm";
+  const { decide } = useInstallationUpgradeActions(client);
+  const decisions = upgradeDecisions(status, upgrade);
+  // With an update policy, Install now always means "do not wait", which interrupts agents.
+  const canWait = supportsUpdatePolicy(status);
+  const choose = useCallback(
+    async (decision: UpgradeDecision["decision"]) => {
+      if (decision === "approve" && canWait) {
+        const confirmed = await confirmDialog({
+          title: `Install Vorteo ${releaseVersionLabel(upgrade.release)} now?`,
+          message: upgradeApprovalText(status.container),
+          confirmLabel: "Install now",
+          destructive: true,
+        });
+        if (!confirmed) return;
+      }
+      decide.mutate({ upgrade, decision });
+    },
+    [canWait, decide, status.container, upgrade],
+  );
+  if (decisions.length === 0) return null;
+  return (
+    <View style={styles.decisions}>
+      <View style={styles.actions}>
+        {decisions.map((decision, index) => (
+          <DecisionButton
+            key={decision}
+            decision={decision}
+            primary={index === 0}
+            size={controlSize}
+            label={DECISION_LABELS[decision] ?? (canWait ? "Install now" : "Install")}
+            pending={decide.isPending}
+            loading={decide.isPending && decide.variables?.decision === decision}
+            onChoose={choose}
+          />
+        ))}
+      </View>
+      {decide.error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {toErrorMessage(decide.error)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function DecisionButton({
+  decision,
+  primary,
+  size,
+  label,
+  pending,
+  loading,
+  onChoose,
+}: {
+  decision: UpgradeDecision["decision"];
+  primary: boolean;
+  size: "sm" | "md";
+  label: string;
+  pending: boolean;
+  loading: boolean;
+  onChoose: (decision: UpgradeDecision["decision"]) => Promise<void>;
+}) {
+  const press = useCallback(() => void onChoose(decision), [decision, onChoose]);
+  return (
+    <Button
+      variant={primary ? "default" : "outline"}
+      size={size}
+      onPress={press}
+      disabled={pending}
+      loading={loading}
+      testID={`installation-upgrade-${decision}`}
+    >
+      {label}
+    </Button>
+  );
+}
+
+/** Dismisses the notice of an automatic upgrade that finished. */
+export function UpgradeAcknowledgeButton({
   client,
   upgrade,
 }: {
@@ -263,33 +423,22 @@ function ApprovalActions({
 }) {
   const controlSize = useVortonTouch() ? "md" : "sm";
   const { decide } = useInstallationUpgradeActions(client);
-  const approve = useCallback(
-    () => decide.mutate({ upgrade, decision: "approve" }),
-    [decide, upgrade],
-  );
-  const reject = useCallback(
-    () => decide.mutate({ upgrade, decision: "reject" }),
+  const dismiss = useCallback(
+    () => decide.mutate({ upgrade, decision: "acknowledge" }),
     [decide, upgrade],
   );
   return (
-    <>
+    <View style={styles.decisions}>
       <View style={styles.actions}>
-        <Button
-          size={controlSize}
-          onPress={approve}
-          disabled={decide.isPending}
-          testID="installation-upgrade-approve"
-        >
-          Approve upgrade
-        </Button>
         <Button
           variant="outline"
           size={controlSize}
-          onPress={reject}
+          onPress={dismiss}
+          loading={decide.isPending}
           disabled={decide.isPending}
-          testID="installation-upgrade-reject"
+          testID="installation-upgrade-acknowledge"
         >
-          Reject
+          Dismiss
         </Button>
       </View>
       {decide.error ? (
@@ -297,7 +446,7 @@ function ApprovalActions({
           {toErrorMessage(decide.error)}
         </Text>
       ) : null}
-    </>
+    </View>
   );
 }
 
@@ -403,6 +552,11 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm - 1,
   },
   muted: { color: theme.colors.foregroundMuted },
+  notes: { gap: theme.spacing[1.5] },
+  security: { flexDirection: "row" },
+  link: { flexDirection: "row" },
+  decisions: { gap: theme.spacing[1.5] },
+  summary: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   error: { color: theme.colors.destructive, fontSize: theme.fontSize.base },

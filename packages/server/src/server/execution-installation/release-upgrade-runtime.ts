@@ -38,11 +38,20 @@ import {
   type UpgradePorts,
 } from "./release-upgrades.js";
 import { VORTEO_RELEASE_GIT_URL, VORTEO_RELEASE_REPOSITORY } from "./release-source.js";
+import {
+  ReleaseUpdates,
+  createUpdatePolicyStore,
+  fetchGitHubReleases,
+  type ReleaseUpdatePorts,
+} from "./release-updates.js";
 import { RestartRequestError, type InstallationRestarts } from "./restarts.js";
 import { managedServices, runCommand, type CommandRunner } from "./service-control.js";
 import {
   createInstallationSnapshots,
+  devContainerName,
+  devHomeThroughContainer,
   dockerSnapshotPorts,
+  findDocker,
   snapshotPartKinds,
   snapshotRoot,
   snapshotSources,
@@ -60,6 +69,8 @@ const COMMIT = /^[a-f0-9]{40}$/;
 
 export interface ReleaseUpgradeRuntime {
   upgrades: InstallationUpgrades | null;
+  /** The update policy and release check. Null when upgrades are unavailable. */
+  updates: ReleaseUpdates | null;
   /**
    * After a Host source update this process saw succeed, moves an installation from before
    * the installer to its layout, once. Upgrades from the interface do the same first.
@@ -93,8 +104,41 @@ function readEnvImage(directory: string): string {
  * has no `deployment` and sits beside the old installer's installation.json. Upgrades
  * move it to the installer layout first, through the engine's `adopt` command.
  */
+/**
+ * The folder holding installation.json at or above the config's folder. A coordinator updated
+ * through a reviewed plan runs a config inside `<root>/coordinator-plans/<plan>/`, so the
+ * config's own folder is not always the installation root (scripts/installer/detect.mjs).
+ */
+export function installationRootOf(
+  configFile: string,
+  installationId: string,
+  levels = 3,
+): string | null {
+  let folder = path.dirname(path.resolve(configFile));
+  for (let level = 0; level <= levels; level += 1) {
+    // Only the record of this installation counts, never another installation's folder.
+    if (recordInstallationId(path.join(folder, "installation.json")) === installationId)
+      return folder;
+    const parent = path.dirname(folder);
+    if (parent === folder) break;
+    folder = parent;
+  }
+  return null;
+}
+
+function recordInstallationId(file: string): string | null {
+  try {
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    return typeof record?.installationId === "string" ? record.installationId : null;
+  } catch {
+    return null;
+  }
+}
+
 export function adoptionRequired(config: InstallationConfig, configFile: string): boolean {
-  return !config.deployment && existsSync(path.join(path.dirname(configFile), "installation.json"));
+  return (
+    !config.deployment && installationRootOf(configFile, config.public.installationId) !== null
+  );
 }
 
 /** Why upgrades cannot run on this installation, or null. */
@@ -108,6 +152,16 @@ export function upgradeBlocker(config: InstallationConfig, adoptable = false): s
   const services = managedServices(config);
   if (typeof services === "string") return services;
   return null;
+}
+
+/**
+ * True when upgrades rebuild Dev: an installation with Dev whose deployment the installer
+ * manages. Adoption records `containerDirectory` only for such a Dev; an installation not yet
+ * adopted keeps the old behavior until adoption decides.
+ */
+function managedDev(config: InstallationConfig): boolean {
+  if (config.container === undefined) return false;
+  return !config.deployment || config.deployment.containerDirectory !== undefined;
 }
 
 /** True when the installer engine, not Host source updates, builds Host releases. */
@@ -181,6 +235,8 @@ export function createReleaseUpgradeRuntime(input: {
   logger: Logger;
   run?: CommandRunner;
   entrypoint?: string;
+  /** Replaces the GitHub Releases API in tests. */
+  listReleases?: ReleaseUpdatePorts["listReleases"];
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
@@ -189,7 +245,12 @@ export function createReleaseUpgradeRuntime(input: {
   const snapshots = root
     ? createInstallationSnapshots({
         root,
-        sources: () => snapshotSources(config, configFile),
+        sources: () =>
+          devHomeThroughContainer(snapshotSources(config, configFile), {
+            platform: process.platform,
+            docker: findDocker(),
+            container: devContainerName(config.deployment?.containerDirectory),
+          }),
         ports: { now: () => new Date(), ...dockerSnapshotPorts },
       })
     : null;
@@ -284,7 +345,7 @@ export function createReleaseUpgradeRuntime(input: {
         adoptionEngine(),
         "adopt",
         "--root",
-        path.dirname(configFile),
+        installationRootOf(configFile, config.public.installationId) ?? path.dirname(configFile),
         "--outcome",
         path.join(directory, "adoption.json"),
       ],
@@ -406,11 +467,28 @@ export function createReleaseUpgradeRuntime(input: {
     adoptionOutcome: (upgradeId) =>
       readAdoptionOutcome(path.join(upgradeDirectory, upgradeId, "adoption.json")),
     adoptionDeadlineMs: ADOPTION_DEADLINE_MS,
-    hasContainer: config.container !== undefined,
+    hasContainer: managedDev(config),
+    devUnmanaged: config.container !== undefined && !managedDev(config),
     coordinatorReplacement: config.deployment?.coordinator
       ? null
       : "The installer did not record the coordinator release link. Restart the coordinator with the vorteo update command.",
     currentCommit,
+    // `updates` is created below from these ports; it exists before any upgrade runs.
+    automaticAllowed: () => updates?.policy().mode === "automatic",
+    directHost: directHostUpgrades(config),
+    async busy(target) {
+      try {
+        const impact = (await restarts.impacts()).find((item) => item.target === target);
+        if (!impact) return "agent activity is unknown.";
+        if (impact.error) return impact.error;
+        const working = impact.agents.length + impact.pendingStarts;
+        return working === 0
+          ? null
+          : `${working} ${working === 1 ? "agent" : "agents"} still working.`;
+      } catch (error) {
+        return error instanceof Error ? error.message : "agent activity is unknown.";
+      }
+    },
     async resolveRelease(release) {
       const output = await run(
         "git",
@@ -472,13 +550,17 @@ export function createReleaseUpgradeRuntime(input: {
         {
           target: "host",
           reason: `${UPGRADE_REASON_PREFIX} to ${upgrade.release} (${upgrade.id})`,
-          requester: "Release upgrade",
+          requester: upgrade.automatic ? "Automatic release update policy" : "Release upgrade",
         },
         "owner",
         update,
       );
-      // The owner approved this exact release; the bundle is derived from its reviewed commit.
-      restarts.decide(job.id, job.revision, "approve", update.sha256);
+      // The owner, or the owner's automatic update policy, approved this exact release; the
+      // bundle is derived from its reviewed commit. An upgrade approved to install after current
+      // work takes the automatic updates' path: hold new work, build, then restart when idle.
+      if (upgrade.restart === "after-work")
+        restarts.decide(job.id, job.revision, "finish-current-turns", update.sha256);
+      else restarts.decide(job.id, job.revision, "approve", update.sha256);
       return job.id;
     },
     hostUpdate(jobId) {
@@ -614,14 +696,43 @@ export function createReleaseUpgradeRuntime(input: {
     ? null
     : new InstallationUpgrades(createUpgradeJournal(upgradeDirectory), ports);
 
+  /** The version in the selected Host release's manifest, such as 26.10.3001. */
+  function installedVersion(): string | null {
+    try {
+      const manifest = JSON.parse(
+        readFileSync(path.join(ports.hostRelease(), "package.json"), "utf8"),
+      );
+      return typeof manifest.version === "string" ? manifest.version : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const updates = upgrades
+    ? new ReleaseUpdates(
+        createUpdatePolicyStore(config.stateDir),
+        upgrades,
+        {
+          now: () => new Date(),
+          listReleases: input.listReleases ?? (() => fetchGitHubReleases()),
+          installedVersion,
+        },
+        logger,
+      )
+    : null;
+  void updates?.load();
+
   function upgradeDetail(): string {
     if (blocker) return blocker;
-    const steps = config.container
+    // Before adoption the coordinator cannot tell whether Dev is installer-managed; the
+    // adoption plan decides, and leaves an unmanaged Dev untouched.
+    const dev = managedDev(config);
+    const steps = dev
       ? "takes a snapshot, then restarts the Host daemon, replaces the coordinator and recreates the Dev container."
       : "takes a snapshot, then restarts the Host daemon and replaces the coordinator.";
     return adoptable
-      ? `This installation predates the one-command installer. An upgrade first moves it to the installer layout in place${config.container ? ", with Dev in gate mode" : ""}, then ${steps}`
-      : `An upgrade ${steps}`;
+      ? "This installation predates the one-command installer. An upgrade first moves it to the installer layout in place, then takes a snapshot, restarts the Host daemon and replaces the coordinator. A Dev the installer made also moves to gate mode and is recreated; any other Dev is left exactly as it is."
+      : `An upgrade ${steps}${config.container && !dev ? " Dev is not managed by the installer and is left as it is." : ""}`;
   }
 
   function readRestoreStatus(): SnapshotRestoreStatus | null {
@@ -637,6 +748,7 @@ export function createReleaseUpgradeRuntime(input: {
 
   return {
     upgrades,
+    updates,
     adoptAfterSourceUpdate,
     snapshots,
     snapshotList() {
@@ -671,6 +783,12 @@ export function createReleaseUpgradeRuntime(input: {
       ].sort();
       if (JSON.stringify(confirmed) !== JSON.stringify(snapshotPartKinds(snapshot)))
         throw new RestartRequestError("The snapshot's contents changed. Review the restore again.");
+      // An older snapshot can hold Dev's home; never write it into a Dev this installation
+      // does not manage.
+      if (!services.dev && snapshot.parts.some((part) => part.kind === "dev-home"))
+        throw new RestartRequestError(
+          "This snapshot holds Dev's home, but Dev is not managed by the installer here. Restore it by hand if needed.",
+        );
       // Check every stored part before stopping anything.
       snapshots.storedParts(snapshot);
       // The current state stays restorable: take one more snapshot before replacing it.
@@ -725,8 +843,9 @@ export function createReleaseUpgradeRuntime(input: {
                   ?.release ?? null,
             }
           : null,
-        container: config.container !== undefined,
+        container: managedDev(config),
         upgrades: upgrades?.list() ?? [],
+        ...(updates ? { policy: updates.policy(), check: updates.lastCheck() } : {}),
       };
     },
   };

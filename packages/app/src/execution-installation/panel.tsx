@@ -1,3 +1,4 @@
+import type { CustomDomainStatus } from "@getpaseo/protocol/custom-domain";
 import type { LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
@@ -102,6 +103,7 @@ import {
   restartBlockingReason,
   restartRepairGuidance,
   restartActionDisabledReason,
+  supervisorRepairNeedsImmediateApproval,
   passwordCopyCommand,
 } from "./panel-model";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
@@ -522,6 +524,7 @@ function InstallationPanel({
               onCancel={model.cancelMaintenanceService}
             />
             <DaemonAutomationControl model={model} state={state} />
+            <CustomDomainCard model={model} state={state} />
             {state.brokerJobs.map((job) => (
               <BrokerRequest
                 key={`${job.id}:${job.revision}`}
@@ -1680,6 +1683,94 @@ function DeliveryModeCard({
   );
 }
 
+const CUSTOM_DOMAIN_CHANGE_TEXT = {
+  running: "The coordinator is restarting with this domain. Agents keep running.",
+  succeeded: "The coordinator restarted with this domain.",
+  "rolled-back": "The coordinator failed on this domain and its previous settings were restored.",
+  failed: "This change failed.",
+} as const;
+
+/** Trims the owner's entry and drops trailing slashes; the coordinator requires an exact origin. */
+function normalizeCustomDomain(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function customDomainChangeText(last: NonNullable<CustomDomainStatus["lastChange"]>): string {
+  const text = CUSTOM_DOMAIN_CHANGE_TEXT[last.status];
+  return last.status === "running" || last.status === "succeeded" ? text : `${text} ${last.detail}`;
+}
+
+/**
+ * The installation's extra HTTPS address beside its main one. Saving admits the domain to the
+ * Host and Dev daemons and restarts only the coordinator, which restores its previous settings
+ * if it does not come back. DNS, TLS and routing for the domain stay the operator's job.
+ */
+function CustomDomainCard({
+  model,
+  state,
+}: {
+  model: InstallationPanelModel;
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  const status = state.customDomain;
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = normalizeCustomDomain(draft ?? status?.origin ?? "");
+  const save = useCallback(() => {
+    void model.changeCustomDomain(value === "" ? null : value).then(() => setDraft(null));
+  }, [model, value]);
+  if (!status) return null;
+  const last = status.lastChange;
+  const running = last?.status === "running";
+  const unchanged = value === (status.origin ?? "");
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="custom-domain-card">
+      <Text style={settingsStyles.rowTitle}>Custom domain</Text>
+      <Text style={styles.text}>
+        {status.origin
+          ? `This installation also answers at ${status.origin}.`
+          : "This installation answers only at its main address."}
+      </Text>
+      {!status.available && status.reason ? <Text style={styles.text}>{status.reason}</Text> : null}
+      {status.available ? (
+        <>
+          <Field label="Domain">
+            <FormTextInput
+              size="md"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              placeholder="https://vorteo.example.com"
+              initialValue={status.origin ?? ""}
+              onChangeText={setDraft}
+              editable={!state.busy && !running}
+              accessibilityLabel="Custom domain"
+              testID="custom-domain-input"
+            />
+          </Field>
+          <Text style={styles.text}>
+            Point the domain&apos;s DNS and HTTPS proxy at this Host first. Saving restarts only the
+            coordinator; this page reconnects in a few seconds.
+          </Text>
+          <Button
+            size="md"
+            disabled={state.busy || running || unchanged}
+            onPress={save}
+            testID="custom-domain-save"
+          >
+            {value === "" && status.origin ? "Remove domain" : "Save domain"}
+          </Button>
+        </>
+      ) : null}
+      {last ? (
+        <Text style={styles.text} testID="custom-domain-last-change">
+          {customDomainChangeText(last)}
+        </Text>
+      ) : null}
+      {state.customDomainError ? <Text style={styles.text}>{state.customDomainError}</Text> : null}
+    </View>
+  );
+}
+
 function SessionHostCard({
   model,
   state,
@@ -1959,6 +2050,60 @@ function finishLabel(job: RestartJob): string {
   return restartOperationView(job)?.finishLabel ?? "Finish turns and restart";
 }
 
+/** The approval a pending request without source offers: an immediate exact-plan
+ * approval when there is no work to finish, otherwise Finish turns. */
+function PendingApprovalAction({
+  job,
+  busy,
+  gracefulRestarts,
+  approve,
+  finish,
+}: {
+  job: RestartJob;
+  busy: boolean;
+  gracefulRestarts: boolean;
+  approve: () => void;
+  finish: () => void;
+}) {
+  if (job.engineRecoveryPlanSha256)
+    return (
+      <RestartActionButton
+        variant="destructive"
+        disabledReason={busy ? "Request in progress" : null}
+        onPress={approve}
+        testID={`restart-recover-${job.id}`}
+      >
+        Recover Docker now, interrupt unknown work
+      </RestartActionButton>
+    );
+  if (supervisorRepairNeedsImmediateApproval(job))
+    return (
+      <RestartActionButton
+        variant="destructive"
+        disabledReason={busy ? "Request in progress" : null}
+        onPress={approve}
+        testID={`restart-supervisor-now-${job.id}`}
+      >
+        Repair Dev supervisor now, Dev is not answering
+      </RestartActionButton>
+    );
+  return (
+    <RestartActionButton
+      variant="outline"
+      disabledReason={restartActionDisabledReason(
+        job,
+        "finish",
+        busy,
+        Boolean(gracefulRestarts && job.impact?.gracefulRestartSupported),
+      )}
+      onPress={finish}
+      testID={`restart-finish-${job.id}`}
+    >
+      {finishLabel(job)}
+    </RestartActionButton>
+  );
+}
+
 export function RestartActions({
   job,
   model,
@@ -2023,30 +2168,13 @@ export function RestartActions({
               Restart when idle
             </RestartActionButton>
           ) : null}
-          {job.engineRecoveryPlanSha256 ? (
-            <RestartActionButton
-              variant="destructive"
-              disabledReason={busy ? "Request in progress" : null}
-              onPress={install}
-              testID={`restart-recover-${job.id}`}
-            >
-              Recover Docker now, interrupt unknown work
-            </RestartActionButton>
-          ) : (
-            <RestartActionButton
-              variant="outline"
-              disabledReason={restartActionDisabledReason(
-                job,
-                "finish",
-                busy,
-                Boolean(installation?.gracefulRestarts && job.impact?.gracefulRestartSupported),
-              )}
-              onPress={finish}
-              testID={`restart-finish-${job.id}`}
-            >
-              {finishLabel(job)}
-            </RestartActionButton>
-          )}
+          <PendingApprovalAction
+            job={job}
+            busy={busy}
+            gracefulRestarts={Boolean(installation?.gracefulRestarts)}
+            approve={install}
+            finish={finish}
+          />
           {plainHostRestart ? <ForceRestartButton job={job} model={model} busy={busy} /> : null}
           <Button variant="ghost" disabled={busy} onPress={cancel}>
             Cancel

@@ -1,4 +1,8 @@
 import {
+  CustomDomainStatusSchema,
+  type CustomDomainStatus,
+} from "@getpaseo/protocol/custom-domain";
+import {
   InstallationTypeStatusSchema,
   type InstallationType,
   type InstallationTypeStatus,
@@ -64,6 +68,7 @@ import {
   type SnapshotList,
   type SnapshotPartKind,
   type SnapshotRestoreStatus,
+  type UpdatePolicyChange,
   type UpgradeDecision,
   type UpgradeStatus,
 } from "@getpaseo/protocol/installation-upgrades";
@@ -703,6 +708,31 @@ export class InstallationClient {
     );
   }
 
+  private customDomainSupported = false;
+
+  /** Null on coordinators without the custom domain route. */
+  async customDomain(): Promise<CustomDomainStatus | null> {
+    try {
+      const status = CustomDomainStatusSchema.parse(await this.request("custom-domain/query", {}));
+      this.customDomainSupported = true;
+      return status;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable && !this.customDomainSupported) return null;
+      throw error;
+    }
+  }
+
+  async changeCustomDomain(
+    status: CustomDomainStatus,
+    origin: string | null,
+  ): Promise<CustomDomainStatus> {
+    if (!this.customDomainSupported)
+      throw new InstallationRouteUnavailable("Custom domain is unavailable");
+    return CustomDomainStatusSchema.parse(
+      await this.request("custom-domain/change", { expectedRevision: status.revision, origin }),
+    );
+  }
+
   async changeMaintenanceDelegation(
     status: MaintenanceDelegationStatus,
     enabled: boolean,
@@ -831,6 +861,16 @@ export class InstallationClient {
     if (result.id !== upgrade.id)
       throw new Error("Upgrade receipt changed. Refresh before another action.");
     return result;
+  }
+
+  /** Saves the update policy and re-checks. Call only when the status reports `policy`. */
+  async changeUpdatePolicy(change: UpdatePolicyChange): Promise<UpgradeStatus> {
+    return UPGRADE_STATUS_READER.parse(await this.request("update-policy", change));
+  }
+
+  /** Checks the installation's channel now. Call only when the status reports `policy`. */
+  async checkForUpdates(): Promise<UpgradeStatus> {
+    return UPGRADE_STATUS_READER.parse(await this.request("update-check", {}));
   }
 
   private request(path: string, body: unknown): Promise<unknown> {

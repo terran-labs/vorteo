@@ -9,6 +9,7 @@ import type {
   AgentFeatureToggle,
   AgentProviderNotice,
   AgentTaskItem,
+  AgentToolAccessSetting,
   JsonValue,
   ProfileSwitchTimelineItem,
   ProviderOptions,
@@ -691,6 +692,12 @@ export interface AgentSessionConfig {
   toolPolicy?: ToolPolicy;
   mcpServers?: Record<string, McpServerConfig>;
   /**
+   * "none" makes a Claude-family agent unable to call any tool: the daemon injects no Vorteo
+   * tools or MCP servers and the provider disables its built-in tools. Owner-only, set at
+   * creation, and preserved by every later launch and reconfiguration.
+   */
+  toolAccess?: AgentToolAccessSetting;
+  /**
    * Internal agents are hidden from listings and don't trigger notifications.
    * They are used for ephemeral system tasks like commit/PR generation.
    */
@@ -833,6 +840,11 @@ export interface AgentUsageSession {
 export interface AgentSession {
   /** Opt in only when startTurn checks automaticRecoveryPermit and cannot implicitly resume native work. */
   readonly supportsAutomaticRecoveryDispatch?: boolean;
+  /**
+   * Set when a steer can reach the provider yet report unavailable or fail, so its
+   * acknowledgement cannot prove delivery. Owner answers then wait for the turn to end.
+   */
+  readonly ambiguousSteerAcknowledgement?: boolean;
   usageSession?(): AgentUsageSession | null;
   readonly provider: AgentProvider;
   readonly id: string | null;

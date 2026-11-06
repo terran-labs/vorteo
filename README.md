@@ -41,6 +41,8 @@ To add a device, open your installation's address on it and enter the owner pass
 
 <img width="400" alt="Queued daemon upgrades" src="https://github.com/user-attachments/assets/3a1c344d-42ac-4da7-8fb0-b5059b3c280f" />
 
+- **Stay current on your channel.** Choose stable or beta releases and whether to install them yourself or automatically, per installation. Each new release arrives once in Open questions with its summary, security fixes marked, and installs after current work finishes. A safety snapshot comes first, so you can roll back from Installation controls. [Release updates](docs/execution-installation.md#release-updates).
+
 - **Pick up after usage limits.** When a Claude or Codex account hits its limit, stopped threads wait for the reset and then continue one at a time, checking what they already finished first. Each thread shows when it will resume, with Resume now and Don't resume, and each account has a switch to turn it off. See [quota behavior](docs/agent-presets.md#quota-stops-and-explicit-successors).
 - **Put local workers to work.** Choose a worker account and profile on each supervisor, including accounts from another provider or Pi models on local or private endpoints. Set a finite concurrency limit or choose Uncapped on an updated installation, and follow each worker beneath its originating task, even when it uses a separate worktree. Provider and quota limits still apply.
 
@@ -97,7 +99,7 @@ It creates:
 
 On Windows, the installer probably won't work yet, even inside WSL. Full WSL support is planned in [#35](https://github.com/terran-labs/vorteo/issues/35).
 
-Every later change happens in the interface, from connecting accounts to updating Vorteo. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. Custom Compose overrides require review before conversion to the network gate; the installer stops before changing such a deployment. See [host and container execution](docs/execution-installation.md) for what it installs.
+Every later change happens in the interface, from connecting accounts to updating Vorteo. Rerunning the command on an existing installation shows its version and the latest one and offers to upgrade it in place, keeping its identity, agents and data. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. Custom Compose overrides require review before conversion to the network gate; the installer stops before changing such a deployment. See [host and container execution](docs/execution-installation.md) for what it installs.
 
 On Linux, Host and Dev share the selected Projects folder through explicit file permissions while preserving ownership. The installer checks access in both directions and retains permission backups. See [Projects folder](docs/execution-installation.md#projects-folder) for filesystem requirements and recovery.
 

@@ -22,7 +22,19 @@ export const useSidebarSyncStatus = create<{
   error?: string;
   /** Whether the sidebar authority stores folders. Folder controls appear only when it does. */
   foldersSupported: boolean;
-}>(() => ({ status: "local", foldersSupported: false }));
+  /**
+   * Whether the sidebar authority applies `placeFirst`, so new rows can be placed race-free;
+   * `unknown` until its server info arrives.
+   */
+  placementSupport: "unknown" | "supported" | "unsupported";
+  /** True once this synchronizer has applied a Host snapshot, so local order is reconciled. */
+  hostSnapshotApplied: boolean;
+}>(() => ({
+  status: "local",
+  foldersSupported: false,
+  placementSupport: "unknown",
+  hostSnapshotApplied: false,
+}));
 
 interface PersistHydration {
   hasHydrated(): boolean;
@@ -64,16 +76,24 @@ export function useSidebarSync(): void {
       serverId !== undefined &&
       state.sessions[serverId]?.serverInfo?.features?.sidebarFolders === true,
   );
+  const placementSupport = useSessionStore((state) => {
+    if (demo || serverId === undefined) return "unsupported" as const;
+    const serverInfo = state.sessions[serverId]?.serverInfo;
+    if (!serverInfo) return "unknown" as const;
+    return serverInfo.features?.sidebarPlacement === true
+      ? ("supported" as const)
+      : ("unsupported" as const);
+  });
   useEffect(() => {
-    useSidebarSyncStatus.setState({ foldersSupported });
-  }, [foldersSupported]);
+    useSidebarSyncStatus.setState({ foldersSupported, placementSupport });
+  }, [foldersSupported, placementSupport]);
   const [sync, setSync] = useState<SidebarSync | null>(null);
   useEffect(() => {
     if (demo || !loaded || !serverId) return;
     let cancelled = false;
     let current: SidebarSync | null = null;
     let unsubscribe = () => {};
-    useSidebarSyncStatus.setState({ status: "loading" });
+    useSidebarSyncStatus.setState({ status: "loading", hostSnapshotApplied: false });
     const storageKey = `sidebar-sync-outbox:${serverId}`;
     function client() {
       const snapshot = getHostRuntimeStore().getSnapshot(serverId!);
@@ -93,7 +113,10 @@ export function useSidebarSync(): void {
         read: async () => (await client().readSidebarState()).snapshot,
         change: async (change) => (await client().changeSidebarState(change)).snapshot,
         readLocal: readLocalSidebar,
-        applyLocal: applyLocalSidebar,
+        applyLocal: (state) => {
+          applyLocalSidebar(state);
+          if (!cancelled) useSidebarSyncStatus.setState({ hostSnapshotApplied: true });
+        },
         loadPending: async () => {
           const value = await AsyncStorage.getItem(storageKey);
           return value === null ? [] : z.array(SidebarStatePatchSchema).parse(JSON.parse(value));

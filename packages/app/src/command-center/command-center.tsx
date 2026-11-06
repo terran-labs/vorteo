@@ -3,7 +3,6 @@ import { Modal } from "@/components/ui/modal";
 import equal from "fast-deep-equal";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import {
-  FlatList,
   Pressable,
   Text,
   View,
@@ -13,6 +12,7 @@ import {
   type NativeSyntheticEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { BottomSheetFlatList, FlatList } from "@/components/ui/scroll-view";
 import {
   memo,
   useCallback,
@@ -26,7 +26,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { Check, ChevronRight, Folder, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { BottomSheetFlatList, type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
+import { type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
 import { useAgentDescriptor, resolveAgentLabel } from "@/agent-presentation";
 import { StatusIcon } from "@/components/status-icon";
 import { useWorkspaceStatus } from "@/workspace-status";

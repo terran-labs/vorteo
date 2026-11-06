@@ -122,6 +122,7 @@ if (
     allowPositionals: true,
     options: {
       config: { type: "string" },
+      label: { type: "string" },
       target: { type: "string" },
       update: { type: "boolean" },
       "require-owner-approval": { type: "boolean" },
@@ -586,6 +587,10 @@ if (
       // Batch details include each contribution's merge result, such as a conflict.
       resource = `/api/installation/restart-requests/${positionals[1]}?sourceBatches=1`;
       break;
+    case "update-status":
+      // Read-only: update policy, the last release check and the upgrade waiting or running.
+      resource = "/api/installation/update-status";
+      break;
     case "request-lab-update":
       // Approved by the Lab installation type; a Stable installation refuses it.
       if (config.kind !== "host-agent")
@@ -639,9 +644,28 @@ if (
       resource = "/api/installation/container-agents";
       body = JSON.parse(readFileSync(values["request-file"], "utf8"));
       break;
+    case "overview":
+      resource = "/api/installation/overview";
+      break;
+    case "overview-observers": {
+      // Observer tokens authorize only the read-only overview route.
+      if (config.kind !== "host-agent")
+        throw new Error("Overview observers require the Host client");
+      const action = positionals[1] ?? "list";
+      if (action === "list") resource = "/api/installation/overview/observers";
+      else if (action === "create") {
+        if (!values.label?.trim()) throw new Error("Use --label to name the observer");
+        resource = "/api/installation/overview/observers";
+        body = { label: values.label.trim() };
+      } else if (action === "revoke" && /^[0-9a-f]{16}$/.test(positionals[2] ?? "")) {
+        resource = `/api/installation/overview/observers/${positionals[2]}/revoke`;
+        body = {};
+      } else throw new Error("Use overview-observers list, create --label NAME, or revoke ID");
+      break;
+    }
     default:
       throw new Error(
-        "Commands: request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, container-agents (Host only)",
+        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, container-agents (Host only)",
       );
   }
   let upload;

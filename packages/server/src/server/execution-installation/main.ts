@@ -27,6 +27,7 @@ import { loadCoordinatorStartupFence } from "./coordinator-bootstrap-startup.js"
 import { createClaudeSetupRuntime } from "./accounts/claude-setup-runtime.js";
 import { createClaudeOAuthRuntime } from "./accounts/claude-oauth-runtime.js";
 import { createProviderSecretsRuntime } from "./accounts/provider-secrets-runtime.js";
+import { createProjectSyncRuntime } from "./project-sync.js";
 import { createCodexSignInRuntime } from "./accounts/codex-signin-runtime.js";
 import { createInstallationProfiles, startProfileSynchronization } from "./profiles/runtime.js";
 import pino from "pino";
@@ -36,7 +37,11 @@ import {
   readInstallationConfig,
 } from "./config.js";
 import { createInstallationServer } from "./server.js";
-import { connectInstallationDaemon, createInstallationRestartExecutor } from "./daemon.js";
+import {
+  connectInstallationDaemon,
+  createInstallationRegistrationAdmission,
+  createInstallationRestartExecutor,
+} from "./daemon.js";
 import { createInstallationDaemonConnections } from "./daemon-connections.js";
 import { createInstallationSettings, startSettingsReconciliation } from "./settings/runtime.js";
 
@@ -250,6 +255,27 @@ const providerSecretsTimer = setInterval(() => {
     .catch(() => logger.warn("Provider key synchronization is pending"));
 }, 5000);
 providerSecretsTimer.unref();
+// Projects registered on any environment exist on every environment that shares the folder.
+const assertProjectSyncReady = createInstallationRegistrationAdmission(
+  config,
+  assertRegistrationReadiness,
+);
+const projectSync = createProjectSyncRuntime({
+  environments: config.public.environments.map((environment) => environment.kind),
+  connect: daemonConnections.connect,
+  assertReady: (kind) => assertProjectSyncReady(kind === "host" ? "host" : "container-daemon"),
+  logger,
+});
+let projectSyncRunning = false;
+const projectSyncTimer = setInterval(() => {
+  if (!synchronizing || projectSyncRunning) return;
+  projectSyncRunning = true;
+  void projectSync
+    .reconcile()
+    .catch(() => logger.warn("Project synchronization is pending"))
+    .finally(() => (projectSyncRunning = false));
+}, 15_000);
+projectSyncTimer.unref();
 // Opt-in: Host-owned refresh for full sign-in Claude accounts (`claudeHostRefresh: true`).
 const claudeOAuth = claudeHostRefreshEnabled(config)
   ? createClaudeOAuthRuntime(config, settings, assertRegistrationReadiness, { setup: claudeSetup })
@@ -328,6 +354,13 @@ const restartTimer = setInterval(() => {
   void app.drainRestarts();
 }, 2000);
 restartTimer.unref();
+// The release update check: shortly after start, then hourly. GitHub's unauthenticated limit
+// is 60 requests an hour, so one request an hour leaves room for the interface's own check.
+const RELEASE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const releaseCheck = () =>
+  void app.checkReleases().catch((error) => logger.warn({ err: error }, "Update check failed"));
+setTimeout(releaseCheck, 60_000).unref();
+setInterval(releaseCheck, RELEASE_CHECK_INTERVAL_MS).unref();
 const server = app.listen(config.listenPort, "127.0.0.1", () =>
   logger.info("Installation coordinator ready"),
 );

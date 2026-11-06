@@ -30,6 +30,7 @@ import {
   LAB_DIRECTORY,
   findLegacyDeployments,
   inspectHostRoot,
+  runningCoordinatorConfig,
   serviceArguments,
   tailscaleStatus,
 } from "./detect.mjs";
@@ -146,6 +147,65 @@ function endpointPort(endpoint) {
 }
 
 /** Dev's deployment: the one whose loopback port (or gate relay) is the coordinator's endpoint. */
+/**
+ * The installer-made Dev deployment publishing this installation's Dev endpoint, or null when
+ * none does: a Dev the installer does not manage, such as a hand-built Compose project.
+ */
+async function managedDevDeployment(context, config, root) {
+  const port = endpointPort(config.container.endpoint);
+  const deployments = await findLegacyDeployments(context, {
+    exclude: [root],
+    extra: [path.join(context.home, LAB_DIRECTORY, "container")],
+  });
+  return (
+    deployments.find(
+      (deployment) =>
+        (deployment.gateMode ? deployment.relayPort : deployment.loopbackPort) === port,
+    ) ?? null
+  );
+}
+
+/**
+ * Positive evidence that Dev is a deployment the installer did not make: Docker answers and a
+ * running container publishes the Dev endpoint from a folder without the installer's marker.
+ * Anything less fails closed, so a managed Dev that detection missed is never skipped.
+ */
+async function assertUnmanagedDev(context, config, docker) {
+  const port = endpointPort(config.container.endpoint);
+  let output;
+  try {
+    output = await context.run(docker, [
+      "ps",
+      "--format",
+      '{{.Ports}}|{{.Label "com.docker.compose.project.working_dir"}}',
+    ]);
+  } catch (error) {
+    throw new InstallerError(
+      "Docker did not answer, so the installer cannot tell how Dev is deployed.",
+      "Start Docker and Dev, then run the upgrade again.",
+      { cause: error },
+    );
+  }
+  const publisher = output
+    .split("\n")
+    .map((line) => line.split("|"))
+    .find(([ports]) =>
+      ports?.split(",").some((entry) => entry.trim().startsWith(`127.0.0.1:${port}->`)),
+    );
+  if (!publisher)
+    throw new InstallerError(
+      `No running container publishes 127.0.0.1:${port}, the endpoint this installation uses for Dev.`,
+      "Start the Dev container, then run the upgrade again.",
+    );
+  const folder = publisher[1]?.trim();
+  if (folder && existsSync(path.join(folder, ".container-installation")))
+    throw new InstallerError(
+      `Dev in ${folder} is an installer-made deployment the installer could not read.`,
+      "Check its .env and Compose files, then run the upgrade again.",
+    );
+  return true;
+}
+
 async function legacyDevDeployment(context, config, root) {
   const port = endpointPort(config.container.endpoint);
   const deployments = await findLegacyDeployments(context, {
@@ -231,8 +291,25 @@ export function adoptionSteps({ devContainer, tailscale, build }) {
   ];
 }
 
+/**
+ * A resumed adoption continues only while the coordinator service still runs the config it
+ * planned from, or the one adoption already switched it to. A coordinator update in between
+ * selected a newer config, which this plan would miss.
+ */
+function assertResumable(context, plan) {
+  const running = runningCoordinatorConfig(context.home, context.root);
+  const planned = [plan.paths.coordinatorConfigSource, plan.paths.coordinatorConfig];
+  if (running && !planned.includes(running))
+    throw new InstallerError(
+      `The coordinator now runs ${running}, not the configuration this upgrade planned from.`,
+      "Remove the stopped upgrade's journal after checking it, then plan the upgrade again.",
+    );
+}
+
 function assertAdoptable(context) {
-  const host = inspectHostRoot(context.root);
+  const host = inspectHostRoot(context.root, {
+    configFile: runningCoordinatorConfig(context.home, context.root),
+  });
   if (host?.kind === "legacy-host") return host;
   if (host?.kind === "current")
     throw new InstallerError(
@@ -260,6 +337,11 @@ function adoptionDetails({ config, services, paths, links, current, build }) {
       file: services.coordinatorFile,
       from: path.join(current.coordinator.release, COORDINATOR_ENTRYPOINT),
       to: path.join(links.coordinator, COORDINATOR_ENTRYPOINT),
+    },
+    {
+      file: services.coordinatorFile,
+      from: paths.coordinatorConfigSource,
+      to: paths.coordinatorConfig,
     },
     ...(host
       ? [
@@ -326,7 +408,11 @@ function adoptionPaths({ context, found, config, hostHome, release, links, dev }
     journal: path.join(root, JOURNAL),
     ownerPassword: config.ownerPasswordFile ?? path.join(root, "owner-password"),
     record: path.join(root, "installation.json"),
-    coordinatorConfig: found.configFile,
+    // Adoption writes the installation's own config file and points the coordinator service at
+    // it. A config the service runs from a reviewed plan folder is read, never rewritten: its
+    // plan pinned that file by hash.
+    coordinatorConfig: path.join(root, "coordinator.json"),
+    coordinatorConfigSource: found.configFile,
     coordinatorState: config.stateDir,
     hostHome,
     release,
@@ -413,9 +499,16 @@ export async function createHostAdoptionPlan(context, { source, revision: reques
   const hostHome = config.host.startupValidation?.home ?? record.hostHome;
   const tools = await legacyTools(context, config, record);
   const { tailscale, docker, hostname, servePorts } = tools;
-  const dev = config.container
-    ? await devPlan(context, config, found.root, hostHome, docker)
-    : null;
+  // A Dev the installer does not manage stays exactly as it is: adoption moves only the Host
+  // and never runs a Dev step on it (no image build, gate switch or container recreation).
+  const devUnmanaged =
+    Boolean(config.container) &&
+    !(await managedDevDeployment(context, config, found.root)) &&
+    (await assertUnmanagedDev(context, config, docker));
+  const dev =
+    config.container && !devUnmanaged
+      ? await devPlan(context, config, found.root, hostHome, docker)
+      : null;
   const ports = await adoptionPorts(context, { config, record, dev, servePorts, tailscale });
   const release = build ? path.join(found.root, "releases", revision) : current.coordinator.release;
   const paths = adoptionPaths({ context, found, config, hostHome, release, links, dev });
@@ -429,6 +522,7 @@ export async function createHostAdoptionPlan(context, { source, revision: reques
     revision,
     origin: config.public.origin,
     devContainer: Boolean(dev),
+    ...(devUnmanaged ? { devUnmanaged: true } : {}),
     remote: { mode: tailscale ? "tailscale" : "local", ...(hostname ? { hostname } : {}) },
     ports,
     paths,
@@ -467,6 +561,10 @@ export function summarizeAdoption(plan) {
       ? `The coordinator runs through ${paths.coordinatorReleaseLink}; the Host keeps ${paths.hostReleaseLink} from Host source updates.`
       : `The Host daemon and coordinator run through ${paths.hostReleaseLink} and ${paths.coordinatorReleaseLink}, so upgrades from the interface replace them.`,
   );
+  if (plan.devUnmanaged)
+    lines.push(
+      "Dev is not an installer-made deployment, so it stays exactly as it is: its container, network, boot entry and Factory settings are untouched, and it keeps updating through Dev source updates.",
+    );
   if (plan.devContainer) {
     lines.push(
       `Dev in ${paths.container} moves to gate mode with automatic rollback, on ${plan.dev.subnet}. Its identity, home and workspace are kept.`,
@@ -478,7 +576,7 @@ export function summarizeAdoption(plan) {
   }
   lines.push("Claude and Codex accounts connect once for the whole installation.");
   lines.push(
-    `The coordinator${adoption.restartHost ? " and the Host daemon" : ""} restart through ${plan.services.manager === "launchd" ? "their launchd agents" : "their systemd user services"}; running agents are interrupted.`,
+    `The coordinator${adoption.restartHost ? " and the Host daemon restart" : " restarts"} through ${plan.services.manager === "launchd" ? "launchd" : "systemd user services"}; running agents are interrupted.`,
   );
   lines.push(
     `The previous configuration is kept as *.before-adoption, the service files in ${paths.state}/adoption.`,
@@ -643,8 +741,9 @@ function throughLink(file, releases, link) {
 export function adoptedCoordinatorConfig(config, { plan, manager, hostname, containerIds }) {
   const tailscale = plan.remote.mode === "tailscale";
   const { adoption, paths } = plan;
+  // An unmanaged Dev keeps its own endpoint; only a Dev moved to gate mode gets a new one.
   const environments = config.public.environments.map((environment) =>
-    environment.kind === "container"
+    environment.kind === "container" && plan.devContainer
       ? {
           ...environment,
           endpoint: tailscale
@@ -712,8 +811,10 @@ function serverIdOf(config, kind) {
 async function adoptConfig(s) {
   const { plan, outputs, manager } = s;
   const file = plan.paths.coordinatorConfig;
-  const config = JSON.parse(readFileSync(file, "utf8"));
-  if (config.deployment) return { skip: "The configuration already has its deployment." };
+  const written = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+  if (written?.deployment) return { skip: "The configuration already has its deployment." };
+  // Plans from before coordinatorConfigSource read and write the same file.
+  const config = JSON.parse(readFileSync(plan.paths.coordinatorConfigSource ?? file, "utf8"));
   if (plan.devContainer && outputs.containerServerId !== serverIdOf(config, "container"))
     throw new InstallerError(
       `Dev answers as ${outputs.containerServerId}, not ${serverIdOf(config, "container")} as this installation pins.`,
@@ -744,6 +845,8 @@ async function adoptConfig(s) {
   const record = JSON.parse(readFileSync(plan.adoption.record, "utf8"));
   writeJson(plan.adoption.record, {
     ...record,
+    // The coordinator service now runs this file; later tools read it from here.
+    configFile: file,
     installRoot: plan.paths.root,
     release: plan.paths.release,
     adoptedAt: s.context.now().toISOString(),
@@ -857,6 +960,7 @@ export async function adoptHost(context, { source, revision, outcome }, emit) {
       journal?.plan?.kind === "adopt-host"
         ? journal.plan
         : (await createHostAdoptionPlan(context, { source, revision })).plan;
+    if (journal?.plan?.kind === "adopt-host") assertResumable(context, plan);
     let failure = null;
     const ok = await applyPlan(plan, context, (line) => {
       if (line.status === "fail") failure = line;

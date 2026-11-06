@@ -22,7 +22,7 @@ import { memo, useMemo, useState, type ReactNode } from "react";
 import { Text, View, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles, type UnistylesValues } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
-import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import { CircleAlert, Folder, FolderGit2, Monitor, Pin } from "lucide-react-native";
 import { sidebarIndent } from "@/components/sidebar/indent";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
@@ -41,7 +41,7 @@ import {
 } from "@/components/sidebar/workspace-trailing";
 import { useAppSettings } from "@/hooks/use-settings";
 import { densityIconBox } from "@/styles/density";
-import type { Theme } from "@/styles/theme";
+import { ICON_SIZE, type Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import {
@@ -95,6 +95,10 @@ export function isSidebarRowCalm(input: {
 /** How far calm rows dim icons that have no muted color of their own. */
 export const SIDEBAR_CALM_OPACITY = 0.55;
 
+// The pin marker beside a pinned workspace in its home location.
+const foregroundMutedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundMuted,
+});
 const managedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundExtraMuted,
 });
@@ -109,6 +113,7 @@ const needsInputColorMapping = (theme: Theme) => ({
 });
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
+const ThemedPin = withUnistyles(Pin);
 
 /**
  * Wraps a workspace row in its hover card and owns its context-menu state. The row's fill, title
@@ -481,7 +486,7 @@ export const sidebarWorkspaceRowStyles = StyleSheet.create((theme) => ({
   // How far a workspace row sits inside the group header above it — a project row or a
   // status group header. Both groupings share this one indent, so every grouped workspace row
   // in the sidebar sits on the same rail regardless of how the list is grouped. Pinned rows
-  // are not grouped and stay flush.
+  // indent from the Pinned header the same way.
   //
   // It is row padding rather than a margin on the list, because the row's hover and selected
   // backgrounds have to keep spanning the group's full width. Indenting the container instead
@@ -569,8 +574,11 @@ export function SidebarWorkspaceTrailingActionSlot({ children }: { children: Rea
 
 export function SidebarWorkspaceTrailingDetails({
   workspace,
+  showPinMarker = false,
 }: {
   workspace: SidebarWorkspaceEntry;
+  /** Marks a pinned workspace in its home location; its copy under Pinned needs no marker. */
+  showPinMarker?: boolean;
 }) {
   const {
     settings: { sidebarRowItems },
@@ -591,6 +599,11 @@ export function SidebarWorkspaceTrailingDetails({
   return (
     <View style={styles.trailingDetails}>
       <View style={groupStyle}>
+        {showPinMarker ? (
+          <View testID={`sidebar-workspace-pin-marker-${workspace.workspaceKey}`}>
+            <ThemedPin size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+          </View>
+        ) : null}
         <WorkspaceActivityBadges
           serverId={workspace.serverId}
           workspaceId={workspace.workspaceId}

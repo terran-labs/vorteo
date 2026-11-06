@@ -6,6 +6,7 @@ import {
   SnapshotRestoreRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
+  UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
 import {
@@ -58,6 +59,12 @@ import {
 } from "@getpaseo/protocol/plugin-installation";
 import { OwnerSessions, OWNER_SESSION_MAX_AGE } from "./owner-sessions.js";
 import { createLiveDev, LiveDevUnavailable } from "./live-dev/service.js";
+import {
+  createCustomDomain,
+  CustomDomainConflict,
+  CustomDomainUnavailable,
+} from "./custom-domain.js";
+import { launchHandoff } from "./coordinator-handoff.js";
 import { LiveDevStateError } from "./live-dev/state.js";
 import { createInstallationProfiles } from "./profiles/runtime.js";
 import { createInstallationNameStore } from "./installation-name.js";
@@ -128,6 +135,13 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import {
+  InstallationOverviewReader,
+  productionOverviewDependencies,
+  type InstallationOverview,
+  type OverviewDependencies,
+} from "./overview.js";
+import { ServicePrincipalStore } from "../authorization/service-principals.js";
 import { FactoryGate, factoryRestartClass } from "./factory-gate.js";
 import {
   delegatedHandler,
@@ -400,6 +414,7 @@ export function createInstallationServer(
   // The private configuration file, captured by safety snapshots. Omitted in tests.
   files?: { configFile: string },
   codexSignIn?: CodexSignInRuntime,
+  overviewDependencies?: OverviewDependencies,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -706,6 +721,16 @@ export function createInstallationServer(
       ?.slice(cookieName(req).length + 1);
   const configuredPasswordFile =
     config.ownerPasswordFile ?? path.resolve(config.stateDir, "../..", "owner-password");
+  const customDomain = createCustomDomain({
+    config,
+    configFile: files?.configFile,
+    logger,
+    ports: {
+      connect: (kind) => connectInstallationDaemon(config, kind),
+      launch: launchHandoff,
+      now: () => new Date(),
+    },
+  });
   const liveDev = createLiveDev({
     config,
     logger,
@@ -1961,6 +1986,88 @@ export function createInstallationServer(
     })();
   });
 
+  // Read-only overview of every environment. Observer tokens are coordinator-issued
+  // service principals; they authorize this route and nothing else.
+  const observers = new ServicePrincipalStore(config.stateDir, "overview-observers.json");
+  const overview = new InstallationOverviewReader(
+    config,
+    overviewDependencies ?? productionOverviewDependencies(config),
+  );
+  let overviewCache: {
+    at: number;
+    settled: boolean;
+    value: Promise<InstallationOverview>;
+  } | null = null;
+  const OVERVIEW_CACHE_MS = 5_000;
+  app.get("/api/installation/overview", (req, res, next) => {
+    void (async () => {
+      try {
+        const token = extractHttpBearerToken(req.header("authorization"));
+        const observer = token ? await observers.authenticate(token) : null;
+        if (!matchesToken(token, config.hostAgentTokenHash) && !observer) {
+          res.sendStatus(401);
+          return;
+        }
+        // Coalesce polling clients so each daemon sees at most one read per interval.
+        // A read still in flight is always reused: overlapping reads would share one
+        // daemon client ID and displace each other's session.
+        if (
+          !overviewCache ||
+          (overviewCache.settled && Date.now() - overviewCache.at > OVERVIEW_CACHE_MS)
+        ) {
+          const entry = { at: Date.now(), settled: false, value: overview.read() };
+          overviewCache = entry;
+          entry.value.then(
+            () => {
+              entry.settled = true;
+              entry.at = Date.now();
+              return undefined;
+            },
+            () => {
+              if (overviewCache === entry) overviewCache = null;
+            },
+          );
+        }
+        res.json(await overviewCache.value);
+      } catch (error) {
+        next(error);
+      }
+    })();
+  });
+  function requireHostAgent(req: Request, res: Response, next: NextFunction) {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(403);
+      return;
+    }
+    next();
+  }
+  app.get("/api/installation/overview/observers", requireHostAgent, (_req, res, next) => {
+    observers.list().then((list) => res.json({ observers: list }), next);
+  });
+  app.post("/api/installation/overview/observers", requireHostAgent, (req, res) => {
+    const label = typeof req.body?.label === "string" ? req.body.label : "";
+    observers
+      .create({ label, permissions: ["workspace.read"], issuerPrincipalId: "host-agent" })
+      .then(
+        (created) => res.json(created),
+        (error: unknown) =>
+          res
+            .status(400)
+            .json({ error: error instanceof Error ? error.message : "Invalid observer" }),
+      );
+  });
+  app.post("/api/installation/overview/observers/:id/revoke", requireHostAgent, (req, res) => {
+    observers.revoke(String(req.params.id), "host-agent").then(
+      (observer) => res.json({ observer }),
+      (error: unknown) =>
+        res
+          .status(404)
+          .json({ error: error instanceof Error ? error.message : "Unknown observer" }),
+    );
+  });
+
   // Public setup metadata contains a recovery path, never credentials or connection secrets.
   app.get("/api/installation/owner-access", (_req, res) =>
     res.json({
@@ -2294,6 +2401,12 @@ export function createInstallationServer(
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
     void drainRestarts();
   });
+  app.post("/api/installation/owner/custom-domain/query", (_req, res, next) => {
+    void customDomain.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/custom-domain/change", (req, res, next) => {
+    void customDomain.change(req.body).then((status) => res.json(status), next);
+  });
   app.post("/api/installation/owner/live-dev/query", (_req, res, next) => {
     void liveDev.status().then((status) => res.json(status), next);
   });
@@ -2560,6 +2673,34 @@ export function createInstallationServer(
     res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
     void drainRestarts();
   });
+  const requireUpdates = () => {
+    const releaseUpdates = requireReleaseRuntime().updates;
+    if (!releaseUpdates)
+      throw new RestartRequestError(requireReleaseRuntime().upgradeStatus().detail);
+    return releaseUpdates;
+  };
+  // The status after a check; an upgrade the check approved advances at once.
+  const statusAfterCheck = async () => {
+    await requireUpdates().checkAgain();
+    void drainRestarts();
+    return requireReleaseRuntime().upgradeStatus();
+  };
+  // The owner's update policy. A changed policy runs a check at once, so switching channel
+  // or mode offers or approves the matching release without waiting for the hourly check.
+  app.post("/api/installation/owner/update-policy", (req, res, next) => {
+    const change = UpdatePolicyChangeSchema.parse(req.body);
+    void requireUpdates()
+      .changePolicy(change)
+      .then(statusAfterCheck)
+      .then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/update-check", (_req, res, next) => {
+    void statusAfterCheck().then((status) => res.json(status), next);
+  });
+  // Read-only for agents: the Mechanic reports stale offers and Builds plans drains from it.
+  app.get("/api/installation/update-status", authenticateUpdate, (_req, res) => {
+    res.json(requireUpdates().agentStatus());
+  });
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
       enabled: true,
@@ -2577,32 +2718,26 @@ export function createInstallationServer(
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
-  const liveDevWebUi = liveDev.middleware(() => ({
+  /** The interface config Live dev presents on `origin`. */
+  const liveDevConfigFor = (origin: string) => () => ({
     ...config.public,
     name: installationName.read(),
-    origin: config.public.origin,
+    origin,
     environments: config.public.environments,
     profileSharing: true,
     idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
     gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
-  }));
+  });
+  const liveDevWebUi = liveDev.middleware(liveDevConfigFor(config.public.origin));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
   // The custom domain follows Live dev too, presenting its own origin to the interface.
-  // `?interface=safe` on either address still serves the published interface.
-  const recoveryLiveWebUi = config.recoveryOrigin
-    ? liveDev.middleware(
-        () => ({
-          ...config.public,
-          name: installationName.read(),
-          origin: config.recoveryOrigin!,
-          environments: config.public.environments,
-          profileSharing: true,
-          idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
-          gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
-        }),
-        config.recoveryOrigin,
-      )
-    : null;
+  // `?interface=safe` on either address still serves the published interface. A nested
+  // function keeps this branch out of createInstallationServer's complexity budget.
+  const recoveryLiveDevWebUi = () => {
+    const origin = config.recoveryOrigin;
+    return origin ? liveDev.middleware(liveDevConfigFor(origin), origin) : null;
+  };
+  const recoveryLiveWebUi = recoveryLiveDevWebUi();
   const localWebUi = new Map<string, ReturnType<typeof webUi>>();
   app.use((req, res, next) => {
     const origin = localOrigin(req);
@@ -2635,6 +2770,10 @@ export function createInstallationServer(
     }
     if (error instanceof InstructionRequestError) {
       res.status(error.status).json({ error: error.message });
+      return;
+    }
+    if (error instanceof CustomDomainConflict || error instanceof CustomDomainUnavailable) {
+      res.status(409).json({ error: error.message });
       return;
     }
     if (
@@ -2670,6 +2809,12 @@ export function createInstallationServer(
   });
   return Object.assign(app, {
     drainRestarts,
+    /** Runs the release update check, then advances an upgrade it approved automatically. */
+    checkReleases: async () => {
+      if (!releaseRuntime?.updates) return;
+      await releaseRuntime.updates.check();
+      void drainRestarts();
+    },
     /** Fast Refresh socket for live dev mode; true when handled. */
     handleLiveDevUpgrade: liveDev.upgrade,
     stopLiveDev: liveDev.stop,
