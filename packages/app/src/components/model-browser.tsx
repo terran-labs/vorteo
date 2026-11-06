@@ -2,10 +2,8 @@ import { createContext, useCallback, useContext, useMemo, useReducer, useState }
 import { useTranslation } from "react-i18next";
 import { ProviderResetControl } from "@/provider-usage/reset-control";
 import {
-  FlatList,
   Platform,
   Pressable,
-  ScrollView,
   Text,
   View,
   type AccessibilityActionEvent,
@@ -15,7 +13,9 @@ import {
   type ViewStyle,
 } from "react-native";
 import {
+  FlatList,
   FlatList as SheetFlatList,
+  ScrollView,
   ScrollView as SheetScrollView,
 } from "@/components/ui/scroll-view";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";

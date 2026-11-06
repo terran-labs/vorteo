@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Markdown preview edges: Scroll areas across the app now fade their content at an edge with more to scroll, through the shared scrollers; a lint rule keeps new scrollers on the pattern. Pane separators match the toolbar rule.
+
 Maintenance review (2026-11-05): live tweak by Live dev on custom domain: The custom domain follows Live dev: the signed-in owner gets the live interface there, with hot reload, while ?interface=safe still serves the published build on either address.
 
 Maintenance review (2026-11-05): live tweak by Lab self-update Host restart: Lab self-updates now really move the Host daemon onto the new build; before, they could report success while the Host still ran the previous release.

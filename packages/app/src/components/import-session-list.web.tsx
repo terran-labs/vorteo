@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import { View, type LayoutChangeEvent } from "react-native";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import { useElementEdgeFade } from "@/components/ui/scroll-edge-fade";
 import type { ImportSessionListProps } from "./import-session-list.types";
 
 const SCROLLER_STYLE: CSSProperties = {
@@ -28,6 +29,15 @@ export function ImportSessionList<Item>({
   footer,
 }: ImportSessionListProps<Item>) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // A plain DOM scroller, so it takes the shared edge fade directly.
+  const fadeEdges = useElementEdgeFade();
+  const setScrollRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollRef.current = node;
+      fadeEdges(node);
+    },
+    [fadeEdges],
+  );
   const [headerHeight, setHeaderHeight] = useState(0);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const indexByKey = useMemo(
@@ -114,7 +124,7 @@ export function ImportSessionList<Item>({
 
   return (
     <div
-      ref={scrollRef}
+      ref={setScrollRef}
       style={SCROLLER_STYLE}
       data-testid="import-session-list"
       onFocusCapture={handleFocus}

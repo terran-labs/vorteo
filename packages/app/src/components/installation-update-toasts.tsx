@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet } from "react-native-unistyles";

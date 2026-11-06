@@ -4,10 +4,10 @@ import {
   Text,
   Pressable,
   RefreshControl,
-  FlatList,
   type ListRenderItem,
   type PressableStateCallbackType,
 } from "react-native";
+import { FlatList } from "@/components/ui/scroll-view";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";

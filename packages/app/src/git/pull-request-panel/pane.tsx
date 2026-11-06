@@ -1,6 +1,7 @@
 import { ActionFooter } from "@/components/ui/action-footer";
 import { useCallback, useMemo, useState } from "react";
-import { Image, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
+import { Image, Pressable, Text, View, type ViewStyle } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   CircleCheck,

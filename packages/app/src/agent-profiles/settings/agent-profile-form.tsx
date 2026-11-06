@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Text, View, ScrollView, StyleSheet } from "react-native";
+import { Text, View, StyleSheet } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import type { AgentFeature } from "@getpaseo/protocol/agent-types";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SelectField } from "@/components/ui/select-field";

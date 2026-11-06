@@ -20,7 +20,6 @@ import {
   View,
   Text,
   Pressable,
-  ScrollView,
   Platform,
   StatusBar,
   type LayoutChangeEvent,
@@ -29,6 +28,7 @@ import {
   type ViewStyle,
   type TextStyle,
 } from "react-native";
+import { BottomSheetScrollView, ScrollView } from "@/components/ui/scroll-view";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -36,7 +36,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { BottomSheetScrollView, BottomSheetBackgroundProps } from "@gorhom/bottom-sheet";
+import { BottomSheetBackgroundProps } from "@gorhom/bottom-sheet";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { GestureHandlerRootView } from "react-native-gesture-handler";

@@ -1,12 +1,7 @@
 import { useMemo, type ReactNode } from "react";
-import {
-  View,
-  Text,
-  ScrollView as RNScrollView,
-  type StyleProp,
-  type ViewStyle,
-} from "react-native";
+import { View, Text, type StyleProp, type ViewStyle } from "react-native";
 import { ScrollView as GHScrollView } from "react-native-gesture-handler";
+import { ScrollView as SharedScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
@@ -26,7 +21,9 @@ import { DiffViewer } from "./diff-viewer";
 import { getCodeInsets } from "./code-insets";
 import { isWeb } from "@/constants/platform";
 
-const ScrollView = isWeb ? RNScrollView : GHScrollView;
+// Native nests gesture-handler scrollers inside the sheet; web uses the shared fading scroller.
+// Output fades vertically like any list, but code lines never fade sideways (edgeFade={false}).
+const ScrollView = (isWeb ? SharedScrollView : GHScrollView) as typeof SharedScrollView;
 
 // ---- Content Component ----
 
@@ -168,6 +165,7 @@ function ShellDetailSection({ command, output, ds }: ShellDetailProps) {
         >
           <ScrollView
             horizontal
+            edgeFade={false}
             nestedScrollEnabled
             showsHorizontalScrollIndicator
             contentContainerStyle={styles.codeHorizontalContent}
@@ -234,7 +232,12 @@ function ScrollableTextSection({
       nestedScrollEnabled
       showsVerticalScrollIndicator={true}
     >
-      <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator={true}>
+      <ScrollView
+        horizontal
+        edgeFade={false}
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={true}
+      >
         {keyedLines ? (
           <HighlightedLines lines={keyedLines} startLine={startLine} />
         ) : (
@@ -264,7 +267,7 @@ function FetchDetailSection({ url, result, ds }: FetchDetailProps) {
         nestedScrollEnabled
         showsVerticalScrollIndicator
       >
-        <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
+        <ScrollView horizontal edgeFade={false} nestedScrollEnabled showsHorizontalScrollIndicator>
           <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
             {result ? `${url}\n\n${result}` : url}
           </Text>
@@ -310,7 +313,12 @@ function buildSearchSections(detail: SearchDetail, ds: DetailStyles): ReactNode[
           nestedScrollEnabled
           showsVerticalScrollIndicator
         >
-          <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
+          <ScrollView
+            horizontal
+            edgeFade={false}
+            nestedScrollEnabled
+            showsHorizontalScrollIndicator
+          >
             <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
               {detail.content}
             </Text>
@@ -396,6 +404,7 @@ function buildUnknownSections(detail: UnknownDetail, ds: DetailStyles, t: TFunct
       <View key={`${section.title}-value`} style={styles.section}>
         <ScrollView
           horizontal
+          edgeFade={false}
           nestedScrollEnabled
           style={ds.jsonScrollCombined}
           contentContainerStyle={styles.jsonContent}
@@ -511,6 +520,7 @@ function ErrorSection({ errorText, ds }: { errorText: string; ds: DetailStyles }
       <Text style={[styles.sectionTitle, styles.errorText]}>{t("toolCallDetails.error")}</Text>
       <ScrollView
         horizontal
+        edgeFade={false}
         nestedScrollEnabled
         style={ds.jsonScrollErrorCombined}
         contentContainerStyle={styles.jsonContent}

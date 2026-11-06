@@ -34,7 +34,8 @@ import {
   type ComponentType,
   type RefObject,
 } from "react";
-import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
+import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import {
   EditingTextInput as TextInput,
   type EditingTextInputHandle,

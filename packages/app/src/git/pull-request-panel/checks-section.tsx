@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
-import { Pressable, ScrollView, Text, View, type GestureResponderEvent } from "react-native";
+import { Pressable, Text, View, type GestureResponderEvent } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { hoverStyle } from "@/styles/hover";
 import { useTranslation } from "react-i18next";

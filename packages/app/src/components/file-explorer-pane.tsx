@@ -15,7 +15,6 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  FlatList,
   ListRenderItemInfo,
   Pressable,
   Text,
@@ -26,6 +25,7 @@ import {
   type TextInputKeyPressEventData,
   type ViewStyle,
 } from "react-native";
+import { FlatList } from "@/components/ui/scroll-view";
 import { EditingTextInput as TextInput } from "@/components/ui/text-input";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
