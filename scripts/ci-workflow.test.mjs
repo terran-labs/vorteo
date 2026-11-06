@@ -40,6 +40,7 @@ const gatedCiJobs = new Map([
   ["playwright-6", { name: "playwright (shard 6/8)", contract: "browser" }],
   ["playwright-7", { name: "playwright (shard 7/8)", contract: "browser" }],
   ["playwright-8", { name: "playwright (shard 8/8)", contract: "browser" }],
+  ["playwright-smoke", { name: "playwright (smoke)", contract: "browser" }],
   ["cli-tests-1", { name: "cli-tests (shard 1/3)", contract: "cli" }],
   ["cli-tests-2", { name: "cli-tests (shard 2/3)", contract: "cli" }],
   ["cli-tests-3", { name: "cli-tests (shard 3/3)", contract: "cli" }],
@@ -55,6 +56,7 @@ const heavyCiJobs = new Set([
   "desktop-tests-ubuntu",
   "desktop-tests-windows",
   ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
+  "playwright-smoke",
   ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
 ]);
 
@@ -423,10 +425,28 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     const job = lines.join("\n");
     const isHeavy = heavyCiJobs.has(jobId);
     assert.match(job, /^    needs: changes$/m, jobId);
-    assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit", jobId);
+    // The smoke replaces the full Playwright suite only when routing says so.
+    const smoke = jobId === "playwright-smoke";
+    assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit" && !smoke, jobId);
     assert.equal(selected(job, { ...all, heavy: "false" }), !isHeavy, jobId);
     // Missing routing outputs fail open to the heavy suites.
-    assert.equal(selected(job, all), jobId !== "cli-unit", jobId);
+    assert.equal(selected(job, all), jobId !== "cli-unit" && !smoke, jobId);
+  }
+  // Merge groups run the Playwright smoke; nightly, manual and release runs the full shards.
+  const e2e = /^      e2e: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
+  for (const [event, ref, full] of [
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+    ["schedule", "refs/heads/main", true],
+    ["workflow_dispatch", "refs/heads/main", true],
+    ["push", "refs/tags/release-26.11.500-beta", true],
+  ]) {
+    const outputs = {
+      ...all,
+      heavy: "true",
+      e2e: String(runInNewContext(e2e, contextFor(event, ref))),
+    };
+    assert.equal(selected(jobs.get("playwright-1").join("\n"), outputs), full, event);
+    assert.equal(selected(jobs.get("playwright-smoke").join("\n"), outputs), !full, event);
   }
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
@@ -498,7 +518,7 @@ test("stable iOS releases upload once and distribute to external testers before 
 test("eight Playwright shards share two-worker coverage", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 25);
+  assert.equal(jobs.size, 26);
   assert.ok(jobs.has("installer-tests"));
   for (let shard = 1; shard <= 8; shard++) {
     const job = jobs.get(`playwright-${shard}`).join("\n");

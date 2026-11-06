@@ -290,6 +290,49 @@ export function createReleaseUpgradeRuntime(input: {
     path.join(upgradeDirectory, upgradeId, "host-release.json");
 
   /** Starts the engine's Host release build detached, so it survives this coordinator. */
+  /**
+   * Whether the source checkout's installer engine can build the Host release without
+   * restarting the Host. Its parser refuses unknown options before writing an outcome, so
+   * an older engine given the option would leave the upgrade waiting.
+   */
+  function engineBuildsOnly(): boolean {
+    const deployment = config.deployment;
+    if (!deployment || !directHostUpgrades(config)) return false;
+    try {
+      return readFileSync(path.join(deployment.sourceDirectory, INSTALLER_ENGINE), "utf8").includes(
+        '"build-only"',
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  const hostBuildOutcome = (upgradeId: string) =>
+    path.join(upgradeDirectory, upgradeId, "host-build.json");
+
+  function launchHostBuild(upgrade: InstallationUpgrade): void {
+    const deployment = config.deployment;
+    if (!deployment) throw new Error("The installation deployment is unknown");
+    const directory = path.join(upgradeDirectory, upgrade.id);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    if (existsSync(hostBuildOutcome(upgrade.id))) return;
+    spawnDetached(
+      hostNode,
+      [
+        path.join(deployment.sourceDirectory, INSTALLER_ENGINE),
+        "host-release",
+        "--build-only",
+        "--root",
+        deployment.installRoot,
+        "--revision",
+        upgrade.sourceCommit,
+        "--outcome",
+        hostBuildOutcome(upgrade.id),
+      ],
+      path.join(directory, "host-build.log"),
+    );
+  }
+
   function launchDirectHostRelease(upgrade: InstallationUpgrade): string {
     const deployment = config.deployment;
     if (!deployment) throw new Error("The installation deployment is unknown");
@@ -337,6 +380,65 @@ export function createReleaseUpgradeRuntime(input: {
   }
 
   /** Runs the engine's `adopt` on this installation's root, detached; it restarts this process. */
+  /** dev-release.mjs beside the installer engine this coordinator would run, if it has one. */
+  function devReleaseTool(): string | null {
+    try {
+      const tool = path.join(path.dirname(adoptionEngine()), "dev-release.mjs");
+      return existsSync(tool) ? tool : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function devReleaseCommand(
+    tool: string,
+    command: string,
+    commit?: string,
+    timeoutMs = 300_000,
+  ): Promise<string> {
+    const deployment = config.deployment;
+    if (!deployment?.containerDirectory || !deployment.sourceDirectory)
+      throw new Error("Dev's deployment or source directory is unknown");
+    return run(
+      hostNode,
+      [
+        tool,
+        command,
+        "--deployment",
+        deployment.containerDirectory,
+        "--source",
+        deployment.sourceDirectory,
+        ...(commit ? ["--commit", commit] : []),
+        ...(commit ? hostReleaseArguments(commit) : []),
+      ],
+      { timeoutMs },
+    );
+  }
+
+  /**
+   * The Host release built for `commit`, so Dev builds install its compiled packages.
+   * dev-release.mjs checks the release's marker and builds from source when it does not
+   * match, so a guess here never puts other code into Dev.
+   */
+  function hostReleaseArguments(commit: string): string[] {
+    const link = config.deployment?.hostReleaseLink ?? config.sourceUpdates?.currentReleaseLink;
+    if (!link) return [];
+    const candidates = [path.join(path.dirname(link), commit)];
+    try {
+      candidates.push(realpathSync(link));
+    } catch {
+      /* no Host release selected */
+    }
+    const release = candidates.find((item) =>
+      existsSync(path.join(item, ".installer-release.json")),
+    );
+    return [
+      ...(release ? ["--host-release", release] : []),
+      "--npm",
+      path.join(path.dirname(hostNode), "npm"),
+    ];
+  }
+
   function launchAdoptionEngine(directory: string): void {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     spawnDetached(
@@ -563,6 +665,20 @@ export function createReleaseUpgradeRuntime(input: {
       else restarts.decide(job.id, job.revision, "approve", update.sha256);
       return job.id;
     },
+    get directHostBuild() {
+      return engineBuildsOnly();
+    },
+    launchHostBuild,
+    // A cold Host build installs dependencies and compiles the server, app and web UI.
+    hostBuildDeadlineMs: 2 * 60 * 60_000,
+    hostBuild(upgradeId) {
+      const outcome = hostBuildOutcome(upgradeId);
+      if (!existsSync(outcome)) return { status: "running", detail: "Building the Host release." };
+      const result = JSON.parse(readFileSync(outcome, "utf8"));
+      return result.status === "succeeded"
+        ? { status: "succeeded", detail: String(result.detail) }
+        : { status: "failed", detail: String(result.detail ?? "The Host release failed.") };
+    },
     hostUpdate(jobId) {
       if (jobId.startsWith(DIRECT_JOB_PREFIX)) {
         const outcome = directOutcome(jobId.slice(DIRECT_JOB_PREFIX.length));
@@ -622,12 +738,68 @@ export function createReleaseUpgradeRuntime(input: {
       readHandoffOutcome(path.join(upgradeDirectory, upgradeId, "coordinator-handoff.json")),
     // Two readiness windows (new release, then rollback) plus restart slack.
     coordinatorDeadlineMs: COORDINATOR_READY_TIMEOUT_MS * 2 + 60_000,
+    async prepareDev(upgrade) {
+      const tool = devReleaseTool();
+      // A coordinator release without the tool upgrades Dev the way it always has.
+      if (!tool) return "image";
+      const result = JSON.parse(await devReleaseCommand(tool, "prepare", upgrade.sourceCommit));
+      logger.info({ upgradeId: upgrade.id, devMode: result.mode }, String(result.reason));
+      return result.mode === "release" ? "release" : "image";
+    },
+    async devUpgradeMode(upgrade) {
+      const tool = devReleaseTool();
+      if (!tool) return "image";
+      const result = JSON.parse(await devReleaseCommand(tool, "mode", upgrade.sourceCommit));
+      logger.info({ upgradeId: upgrade.id, devMode: result.mode }, String(result.reason));
+      return result.mode === "release" ? "release" : "image";
+    },
+    async refreshDevScripts(upgrade) {
+      const tool = devReleaseTool();
+      if (tool) await devReleaseCommand(tool, "refresh", upgrade.sourceCommit);
+    },
+    async hasDevImage(image) {
+      try {
+        await run("docker", ["image", "inspect", image]);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    async devRelease() {
+      const tool = devReleaseTool();
+      if (!tool) return "none";
+      return String(JSON.parse(await devReleaseCommand(tool, "current")).release);
+    },
+    async buildDevRelease(upgrade) {
+      const tool = devReleaseTool();
+      if (!tool) throw new Error("This coordinator release cannot build Dev releases");
+      await devReleaseCommand(tool, "build", upgrade.sourceCommit, 60 * 60_000);
+    },
+    async selectDevRelease(release) {
+      const directory = config.deployment?.containerDirectory;
+      if (!directory) throw new Error("Dev's deployment directory is unknown");
+      // update.sh restores the previous selection itself when Dev is unhealthy on this one.
+      await run("/bin/bash", [path.join(directory, "update.sh"), "--release", release], {
+        timeoutMs: 15 * 60_000,
+      });
+    },
+    async pruneDevReleases() {
+      const tool = devReleaseTool();
+      if (tool) await devReleaseCommand(tool, "prune");
+    },
     async devImage() {
       const directory = config.deployment?.containerDirectory;
       if (!directory) throw new Error("Dev's deployment directory is unknown");
       return readEnvImage(directory);
     },
     async buildDevImage(upgrade) {
+      const tool = devReleaseTool();
+      if (tool)
+        return String(
+          JSON.parse(await devReleaseCommand(tool, "image", upgrade.sourceCommit, 90 * 60_000))
+            .image,
+        );
+      // A coordinator release without the tool builds the image itself, from source.
       const source = config.deployment?.sourceDirectory;
       if (!source) throw new Error("The source directory is unknown");
       const work = path.join(upgradeDirectory, upgrade.id);

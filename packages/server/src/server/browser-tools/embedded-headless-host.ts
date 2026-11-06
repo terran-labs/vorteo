@@ -96,6 +96,9 @@ export function startEmbeddedHeadlessHost(input: EmbeddedHeadlessHostInput): Emb
 
   async function handle(request: BrowserAutomationExecuteRequest): Promise<void> {
     const payload = await supervisor.execute(request);
+    if (!payload.ok && payload.error.code === "browser_no_host") {
+      logger.warn({ error: payload.error }, "Headless browser request failed");
+    }
     broker.receiveResponse({ type: "browser.automation.execute.response", payload }, [
       EMBEDDED_HEADLESS_HOST_ID,
     ]);

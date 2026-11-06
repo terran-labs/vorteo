@@ -35,6 +35,9 @@ services:
       - ${PASEO_DATA_ROOT:-./data}/home:/home/paseo
       - ${PASEO_WORKSPACE_ROOT:-./workspace}:/workspace
       - tailscale-state:/var/lib/tailscale
+      # Host-built Dev releases, read-only: Dev runs the selected one without an image
+      # rebuild and can never change it. update.sh --release selects one.
+      - ./dev-releases:/opt/vorteo/dev-releases:ro
 
 volumes:
   tailscale-state:

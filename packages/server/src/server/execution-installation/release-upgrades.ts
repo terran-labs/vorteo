@@ -44,6 +44,13 @@ const UpgradePrivateSchema = z.strictObject({
   devPreviousImage: z.string().min(1).optional(),
   devImage: z.string().min(1).optional(),
   devReplacing: z.boolean().optional(),
+  /** "release" restarts only Dev's daemon on a Host-built release; "image" recreates Dev. */
+  devMode: z.enum(["release", "image"]).optional(),
+  /** The Dev release selected before the upgrade, or "none" for the image's own daemon. */
+  devPreviousRelease: z.string().min(1).optional(),
+  devReleaseBuilt: z.boolean().optional(),
+  /** When the Host release build that runs before any restart was launched. */
+  hostBuildLaunchedAt: z.string().datetime().optional(),
 });
 type UpgradePrivate = z.infer<typeof UpgradePrivateSchema>;
 
@@ -58,6 +65,17 @@ const UpgradeJournalSchema = z.strictObject({
 });
 
 const RETAINED_UPGRADES = 20;
+
+/**
+ * Release-mode Dev keys, dropped once a step that used them ends so a coordinator rolled
+ * back to a release that predates them can still read the journal.
+ */
+const FORGET_DEV_BUILD = {
+  devMode: undefined,
+  devPreviousRelease: undefined,
+  devReleaseBuilt: undefined,
+  hostBuildLaunchedAt: undefined,
+} satisfies Partial<UpgradePrivate>;
 
 export interface UpgradeJournal {
   read(): UpgradeRecord[];
@@ -111,6 +129,16 @@ export interface UpgradePorts {
   automaticAllowed(): boolean;
   /** True when the installer engine, not a restart-queue source update, restarts the Host. */
   directHost: boolean;
+  /**
+   * True when that engine can build the Host release without restarting it, so the Host
+   * and Dev builds finish before the first restart. Older engines build and restart at once.
+   */
+  directHostBuild: boolean;
+  /** Starts the build-only Host release for the upgrade, detached. */
+  launchHostBuild(upgrade: InstallationUpgrade): void;
+  /** How long the build-only Host release may run before the upgrade fails. */
+  hostBuildDeadlineMs: number;
+  hostBuild(upgradeId: string): { status: "running" | "succeeded" | "failed"; detail: string };
   /** Null when no agent on the target is working or starting; otherwise what still runs. */
   busy(target: "host" | "container-daemon"): Promise<string | null>;
   /** Stages the release as a Host source update and approves it in the restart queue. */
@@ -126,6 +154,25 @@ export interface UpgradePorts {
   coordinatorOutcome(upgradeId: string): HandoffOutcome | null;
   /** How long the swap helper may take before the step is judged from the link alone. */
   coordinatorDeadlineMs: number;
+  /**
+   * Refreshes Dev's deployment scripts from the release, then answers whether Dev can move
+   * by swapping only its daemon release ("release") or needs a new image ("image").
+   */
+  prepareDev(upgrade: InstallationUpgrade): Promise<"release" | "image">;
+  /** The same answer without touching Dev's deployment, for builds before any restart. */
+  devUpgradeMode(upgrade: InstallationUpgrade): Promise<"release" | "image">;
+  /** Copies the release's deployment scripts into Dev's deployment. */
+  refreshDevScripts(upgrade: InstallationUpgrade): Promise<void>;
+  /** False when Docker no longer has the image, such as after a prune. */
+  hasDevImage(image: string): Promise<boolean>;
+  /** The selected Dev release's commit, or "none" when Dev runs its image's own daemon. */
+  devRelease(): Promise<string>;
+  /** Builds the upgrade's Dev release on the Host; reuses one already built. */
+  buildDevRelease(upgrade: InstallationUpgrade): Promise<void>;
+  /** Restarts Dev's daemon on a release, or "none". Throws when Dev does not become healthy. */
+  selectDevRelease(release: string): Promise<void>;
+  /** Removes old Dev releases, keeping the selected, previous and newest ones. */
+  pruneDevReleases(): Promise<void>;
   devImage(): Promise<string>;
   buildDevImage(upgrade: InstallationUpgrade): Promise<string>;
   /** Recreates Dev on an image. Throws when Dev does not become healthy. */
@@ -305,7 +352,11 @@ export class InstallationUpgrades {
       record = this.save(record, { status: "running", detail: "Upgrade running." });
     const index = record.steps.findIndex((step) => !this.finished(step));
     if (index === -1) {
-      this.save(record, { status: "succeeded", detail: `Upgraded to ${record.release}.` });
+      this.save(record, {
+        status: "succeeded",
+        detail: `Upgraded to ${record.release}.`,
+        private: { ...record.private, ...FORGET_DEV_BUILD },
+      });
       return false;
     }
     const step = record.steps[index];
@@ -339,7 +390,8 @@ export class InstallationUpgrades {
     });
     const failed = result.status === "failed" || result.status === "rolled-back";
     this.save(latest, {
-      private: privateState,
+      // A failure skips the steps that would use and drop these keys.
+      private: failed ? { ...privateState, ...FORGET_DEV_BUILD } : privateState,
       steps: failed ? this.skipRemaining(steps, index) : steps,
       ...(result.snapshotId ? { snapshotId: result.snapshotId } : {}),
       ...(failed ? { status: "failed", detail: result.detail } : {}),
@@ -443,6 +495,48 @@ export class InstallationUpgrades {
           detail:
             "Automatic updates were turned off before the Host restart. Nothing was restarted.",
         };
+      // Build the Host release, then Dev's from it, before anything restarts, so agents are
+      // interrupted only once every build has passed.
+      // Once chosen, the build-first path is kept even if the engine on disk changes.
+      const launchedAt = record.private.hostBuildLaunchedAt;
+      if (launchedAt || this.ports.directHostBuild) {
+        if (!launchedAt) {
+          // Recorded before the launch: a coordinator that restarts in between waits for
+          // that build, and fails at the deadline, instead of starting a second one.
+          const launched = this.save(record, {
+            private: { ...record.private, hostBuildLaunchedAt: this.ports.now().toISOString() },
+          });
+          this.ports.launchHostBuild(project(launched));
+          return {
+            status: "waiting",
+            detail: "Building the Host release, then Dev's. Nothing restarts until both are built.",
+          };
+        }
+        const build = this.ports.hostBuild(record.id);
+        if (build.status === "running") {
+          if (this.ports.now().getTime() - Date.parse(launchedAt) < this.ports.hostBuildDeadlineMs)
+            return { status: "waiting" };
+          return {
+            status: "failed",
+            detail: "The Host release build never reported a result. Nothing was restarted.",
+          };
+        }
+        if (build.status === "failed")
+          return {
+            status: "failed",
+            detail: `The Host release did not build (${build.detail}). Nothing was restarted.`,
+            private: FORGET_DEV_BUILD,
+          };
+        try {
+          await this.buildDevAhead(record);
+        } catch (error) {
+          return {
+            status: "failed",
+            detail: `Dev's build failed (${message(error)}). Nothing was restarted.`,
+            private: FORGET_DEV_BUILD,
+          };
+        }
+      }
       // The restart queue holds new work and waits on its own; the installer engine does not.
       if (record.restart === "after-work" && this.ports.directHost) {
         const busy = await this.ports.busy("host");
@@ -451,8 +545,10 @@ export class InstallationUpgrades {
       const created = await this.ports.requestHostUpdate(project(record));
       return {
         status: "waiting",
-        detail: "Building the release. The Host daemon restarts when the build passes.",
-        private: { hostJobId: created },
+        detail: this.ports.directHostBuild
+          ? "Restarting the Host daemon on the built release."
+          : "Building the release. The Host daemon restarts when the build passes.",
+        private: { hostJobId: created, hostBuildLaunchedAt: undefined },
       };
     }
     const job = this.ports.hostUpdate(jobId);
@@ -497,7 +593,26 @@ export class InstallationUpgrades {
         };
   }
 
+  /**
+   * The Dev step. Its release-mode keys are dropped once it ends, so a coordinator rolled
+   * back to a release that predates them can still read the journal.
+   */
   private async runDev(record: UpgradeRecord): Promise<StepResult> {
+    const forget = FORGET_DEV_BUILD;
+    let result: StepResult;
+    try {
+      result = await this.runDevStep(record);
+    } catch (error) {
+      // Thrown before any swap (preparation or a build), so a retry can start over.
+      const latest = this.records.find((item) => item.id === record.id) ?? record;
+      this.save(latest, { private: { ...latest.private, ...forget } });
+      throw error;
+    }
+    if (result.status === "waiting") return result;
+    return { ...result, private: { ...result.private, ...forget } };
+  }
+
+  private async runDevStep(record: UpgradeRecord): Promise<StepResult> {
     if (this.ports.devUnmanaged)
       return {
         status: "skipped",
@@ -506,30 +621,36 @@ export class InstallationUpgrades {
       };
     if (!this.ports.hasContainer)
       return { status: "skipped", detail: "This installation has no Dev container." };
-    let state = record.private;
-    // Saves only real changes, so a Dev wait leaves the revision the owner decides on intact.
-    const persist = (changes: Partial<UpgradePrivate>) => {
-      const latest = this.records.find((item) => item.id === record.id) ?? record;
-      const next = { ...latest.private, ...changes };
-      state = next;
-      if (
-        Object.entries(changes).some(
-          ([key, value]) => latest.private[key as keyof UpgradePrivate] !== value,
-        )
-      )
-        this.save(latest, { private: next });
+    const { state: current, persist } = this.persister(record);
+    let state = current();
+    const save = (changes: Partial<UpgradePrivate>) => {
+      persist(changes);
+      state = current();
     };
+    // A mode chosen during the Host step still needs this release's deployment scripts.
+    if (state.devMode && state.devReplacing !== true)
+      await this.ports.refreshDevScripts(project(record));
+    const mode = state.devMode ?? (await this.ports.prepareDev(project(record)));
+    save({ devMode: mode });
+    if (mode === "release") return this.runDevRelease(record, current, persist);
     const previous = state.devPreviousImage ?? (await this.ports.devImage());
-    persist({ devPreviousImage: previous });
+    save({ devPreviousImage: previous });
+    // Built during the Host step; Docker may have pruned it since.
+    if (
+      state.devImage &&
+      state.devReplacing !== true &&
+      !(await this.ports.hasDevImage(state.devImage))
+    )
+      save({ devImage: undefined });
     const image = state.devImage ?? (await this.ports.buildDevImage(project(record)));
-    persist({ devImage: image });
+    save({ devImage: image });
     if (record.restart === "after-work" && state.devReplacing !== true) {
       const busy = await this.ports.busy("container-daemon");
       if (busy) return { status: "waiting", detail: `Waiting for current Dev work: ${busy}` };
     }
     // A coordinator that restarted while Dev was being recreated checks what runs now.
     const resumed = state.devReplacing === true && (await this.ports.devImage()) === image;
-    persist({ devReplacing: true });
+    save({ devReplacing: true });
     try {
       if (!resumed) await this.ports.replaceDevImage(image);
       await this.ports.verifyDev();
@@ -552,6 +673,99 @@ export class InstallationUpgrades {
     return {
       status: "succeeded",
       detail: `Dev runs ${image}.`,
+      private: { devReplacing: false },
+    };
+  }
+
+  /** The record's private state as saved now, and a saver of real changes only. */
+  private persister(record: UpgradeRecord) {
+    const latest = () => this.records.find((item) => item.id === record.id) ?? record;
+    return {
+      state: () => latest().private,
+      // Saves only real changes, so a Dev wait leaves the revision the owner decides on intact.
+      persist: (changes: Partial<UpgradePrivate>) => {
+        const now = latest();
+        if (
+          Object.entries(changes).some(
+            ([key, value]) => now.private[key as keyof UpgradePrivate] !== value,
+          )
+        )
+          this.save(now, { private: { ...now.private, ...changes } });
+      },
+    };
+  }
+
+  /**
+   * Builds Dev's release or image during the Host step, from the Host release just built,
+   * and records it so the Dev step only restarts Dev. Same keys as the Dev step's own build.
+   */
+  private async buildDevAhead(record: UpgradeRecord): Promise<void> {
+    if (this.ports.devUnmanaged || !this.ports.hasContainer) return;
+    const { state, persist } = this.persister(record);
+    // Dev's deployment is left alone until the Dev step: the Host step may still fail.
+    const mode = state().devMode ?? (await this.ports.devUpgradeMode(project(record)));
+    persist({ devMode: mode });
+    if (mode === "release") {
+      persist({
+        devPreviousRelease: state().devPreviousRelease ?? (await this.ports.devRelease()),
+      });
+      if (state().devReleaseBuilt !== true) {
+        await this.ports.buildDevRelease(project(record));
+        persist({ devReleaseBuilt: true });
+      }
+      return;
+    }
+    persist({ devPreviousImage: state().devPreviousImage ?? (await this.ports.devImage()) });
+    if (!state().devImage) persist({ devImage: await this.ports.buildDevImage(project(record)) });
+  }
+
+  /**
+   * Builds the Dev release on the Host and restarts only Dev's daemon on it. The image,
+   * the container and the gate are kept. A failure restores the previous selection.
+   */
+  private async runDevRelease(
+    record: UpgradeRecord,
+    state: () => UpgradePrivate,
+    persist: (changes: Partial<UpgradePrivate>) => void,
+  ): Promise<StepResult> {
+    const previous = state().devPreviousRelease ?? (await this.ports.devRelease());
+    persist({ devPreviousRelease: previous });
+    if (state().devReleaseBuilt !== true) {
+      await this.ports.buildDevRelease(project(record));
+      persist({ devReleaseBuilt: true });
+    }
+    if (record.restart === "after-work" && state().devReplacing !== true) {
+      const busy = await this.ports.busy("container-daemon");
+      if (busy) return { status: "waiting", detail: `Waiting for current Dev work: ${busy}` };
+    }
+    // A coordinator that restarted mid-swap swaps again: the link can be repointed before
+    // Dev's daemon restarted, and only the restart proves which release runs.
+    persist({ devReplacing: true });
+    const was = previous === "none" ? "its image's daemon" : `release ${previous}`;
+    try {
+      await this.ports.selectDevRelease(record.sourceCommit);
+      await this.ports.verifyDev();
+    } catch (error) {
+      try {
+        if ((await this.ports.devRelease()) !== previous)
+          await this.ports.selectDevRelease(previous);
+      } catch (rollbackError) {
+        return {
+          status: "failed",
+          detail: `Dev failed on the new release (${message(error)}) and ${was} did not come back (${message(rollbackError)}).`,
+          private: { devReplacing: false },
+        };
+      }
+      return {
+        status: "rolled-back",
+        detail: `Dev failed on the new release (${message(error)}). Dev runs ${was} again.`,
+        private: { devReplacing: false },
+      };
+    }
+    await this.ports.pruneDevReleases().catch(() => undefined);
+    return {
+      status: "succeeded",
+      detail: `Dev's daemon runs release ${record.sourceCommit.slice(0, 12)}; its image was kept.`,
       private: { devReplacing: false },
     };
   }
