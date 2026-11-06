@@ -3,7 +3,6 @@ import { expect, test } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
 import { addConnectedHostAndReload } from "../support/helpers/hosts";
 import { openHostSection } from "../support/helpers/settings";
-import { openSidebarHelpMenu } from "../support/helpers/sidebar";
 import { getServerId } from "../support/helpers/server-id";
 import {
   startRestartableHostDaemon,
@@ -68,12 +67,13 @@ test("host page shows the restarted daemon's version without reloading", async (
   });
 });
 
+/** Host versions are listed in Settings, under Connected hosts; the help menu that showed them is gone. */
 async function readHelpHostVersion(page: Page, serverId: string): Promise<string> {
-  await openSidebarHelpMenu(page);
-  const row = page.getByTestId(`sidebar-help-host-version-${serverId}`);
+  await openSettings(page);
+  const row = page.getByTestId(`settings-host-version-${serverId}`);
   await expect(row).toBeVisible();
   const text = await row.innerText();
-  await page.keyboard.press("Escape");
+  await page.getByTestId("settings-back-to-workspace").click();
   return text;
 }
 

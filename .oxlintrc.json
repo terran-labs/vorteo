@@ -1424,14 +1424,7 @@
         "packages/app/src/file-panels/source/readonly/view.native.tsx",
         "packages/app/src/components/markdown/fence/mermaid/host.native.tsx",
         // native nesting: gesture-handler scrollers on native; web uses the shared scroller, code lines opt out sideways.
-        "packages/app/src/components/tool-call-details.tsx",
-        // pending: the shared-scroller swap is uncommitted in the live checkout with the thread that
-        // holds the file. Delete each entry in the commit that lands the file.
-        "packages/app/src/components/sidebar-workspace-list.tsx",
-        "packages/app/src/components/sidebar/global-card-shell.tsx",
-        "packages/app/src/components/sidebar/compact-project-rail.tsx",
-        "packages/app/src/command-center/command-center.tsx",
-        "packages/app/src/components/sidebar/sidebar-status-list.tsx"
+        "packages/app/src/components/tool-call-details.tsx"
       ],
       "rules": {
         "paseo/no-raw-scroller": "off"

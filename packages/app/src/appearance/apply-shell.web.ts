@@ -32,6 +32,15 @@ export function applyShellAppearance(theme: Theme, persist = true): void {
   root.style.setProperty("--vorteo-shell-background", theme.colors.surface0);
   root.style.setProperty("--vorteo-welcome-ink", theme.colors.accent);
   root.style.setProperty("--vorteo-shell-texture", "none");
+  // Read by markup outside the bundle, such as the Live dev marker, to match floating panels.
+  root.style.setProperty("--vorteo-floating-background", theme.colors.surfaceSidebar);
+  root.style.setProperty("--vorteo-floating-border", theme.colors.border);
+  root.style.setProperty("--vorteo-floating-foreground", theme.colors.foreground);
+  root.style.setProperty("--vorteo-floating-accent", theme.colors.accent);
+  root.style.setProperty("--vorteo-floating-muted", theme.colors.foregroundMuted);
+  root.style.setProperty("--vorteo-status-success", theme.colors.statusSuccess);
+  root.style.setProperty("--vorteo-status-warning", theme.colors.statusWarning);
+  root.style.setProperty("--vorteo-status-danger", theme.colors.statusDanger);
   root.style.setProperty(
     "--vorteo-shell-texture-size",
     theme.appearance?.background?.textures.map((texture) => texture.size).join(", ") || "auto",
@@ -52,10 +61,12 @@ export function applyShellAppearance(theme: Theme, persist = true): void {
     document.head.appendChild(tint);
   }
   tint.content = theme.colors.surface0;
-  if (!document.getElementById(STYLE_ID)) {
-    const style = document.createElement("style");
+  // Rewrite the rules every time so a reloaded module replaces stale ones.
+  let style = document.getElementById(STYLE_ID);
+  if (!style) {
+    style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = CSS;
     document.head.appendChild(style);
   }
+  style.textContent = CSS;
 }

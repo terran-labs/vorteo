@@ -5,6 +5,7 @@ import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
 import { InstallationNameRow } from "@/screens/settings/general/installation-name-section";
 import { InstallationTypeRow } from "@/screens/settings/general/installation-type-section";
+import { HelpSection } from "@/screens/settings/general/help-section";
 import { DeliveryModeSetting } from "@/execution-installation/panel";
 import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
 import { InstallationConnectionCheck } from "@/execution-installation/connection-check-wrapper";
@@ -633,7 +634,9 @@ function HostVersionRow({
           <Text style={settingsStyles.rowHint}>{t("settings.about.versionDiffers")}</Text>
         ) : null}
       </View>
-      <Text style={valueStyle}>{valueText}</Text>
+      <Text style={valueStyle} testID={`settings-host-version-${host.serverId}`}>
+        {valueText}
+      </Text>
     </View>
   );
 }
@@ -1033,7 +1036,10 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "general.attention": (context) => <AttentionSection onOpenPane={context.onOpenPane} />,
   "general.notifications": () => <DesktopNotificationsSection />,
   "general.about": (context) => (
-    <AboutSection appVersionText={context.appVersionText} isDesktopApp={context.isDesktopApp} />
+    <>
+      <AboutSection appVersionText={context.appVersionText} isDesktopApp={context.isDesktopApp} />
+      <HelpSection />
+    </>
   ),
   "general.hosts": (context) => (
     <>
