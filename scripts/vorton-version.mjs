@@ -1,7 +1,9 @@
 // Commit-time version and changelog checks (docs/release.md, "Vorteo versions").
 // Commits no longer change the version: `node scripts/vorteo-release.mjs prepare` sets the
 // next calendar version for a release. This script keeps every manifest and the lockfile
-// on the root version and requires a staged changelog entry for every commit.
+// on the root version and requires release notes for every commit: a new or changed change
+// fragment (scripts/lib/change-fragments.mjs), or, for a release preparation, its
+// VORTEO_CHANGELOG.md entry.
 //
 //   (no flag)  Synchronize manifests to the root version.
 //   --hook     Pre-commit: validate, synchronize and stage the manifests.
@@ -16,6 +18,7 @@ import {
   synchronizedManifests,
   versionAt,
 } from "./vorteo-version.mjs";
+import { FRAGMENT_DIRECTORY, parseFragment } from "./lib/change-fragments.mjs";
 
 const git = (...args) =>
   execFileSync("git", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).trim();
@@ -48,13 +51,41 @@ const label = parents.every((parent) => parent !== version) ? version : UNRELEAS
 if (mode === "--hook" || mode === "--check") {
   const changelog = "VORTEO_CHANGELOG.md";
   const changed = git("diff", "--cached", "--name-only", "HEAD", "--", changelog);
-  if (!changed) throw new Error(`Stage a ${changelog} entry for every commit (## ${label}).`);
-  const staged = git("show", `:${changelog}`);
-  const [, latest = ""] = staged.split(/^## /m);
-  const [heading, ...body] = latest.split(/\r?\n/);
-  const match = /^(\S+) - (\d{4}-\d{2}-\d{2})$/.exec(heading);
-  if (!match || match[1] !== label || !/^- \S/m.test(body.join("\n"))) {
-    throw new Error(`Stage a nonempty top ${changelog} entry headed "## ${label} - YYYY-MM-DD".`);
+  // New or changed fragments; deletions are release preparation folding them in.
+  const fragments = git(
+    "diff",
+    "--cached",
+    "--name-only",
+    "--no-renames",
+    "--diff-filter=AM",
+    "HEAD",
+    "--",
+    FRAGMENT_DIRECTORY,
+  )
+    .split("\n")
+    .filter(Boolean);
+  for (const file of fragments) parseFragment(file, git("show", `:${file}`));
+  if (label !== UNRELEASED && fragments.length) {
+    throw new Error(
+      `A release preparation folds change fragments into ${changelog}; do not add one (${fragments.join(", ")}).`,
+    );
+  }
+  // A fragment carries an ordinary commit's notes, so a changelog changed by merging main
+  // (whose top may be a release entry) is not checked as this commit's entry.
+  if (changed && !(label === UNRELEASED && fragments.length)) {
+    const staged = git("show", `:${changelog}`);
+    const [, latest = ""] = staged.split(/^## /m);
+    const [heading, ...body] = latest.split(/\r?\n/);
+    const match = /^(\S+) - (\d{4}-\d{2}-\d{2})$/.exec(heading);
+    if (!match || match[1] !== label || !/^- \S/m.test(body.join("\n"))) {
+      throw new Error(`Stage a nonempty top ${changelog} entry headed "## ${label} - YYYY-MM-DD".`);
+    }
+  } else if (label !== UNRELEASED) {
+    throw new Error(`A release preparation stages its ${changelog} entry (## ${label}).`);
+  } else if (!fragments.length) {
+    throw new Error(
+      `Every commit adds a change fragment, ${FRAGMENT_DIRECTORY}/YYYY-MM-DD-<slug>.md (docs/release.md#change-fragments).`,
+    );
   }
 }
 const manifests = synchronizedManifests(".", version);

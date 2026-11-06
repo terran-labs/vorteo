@@ -28,8 +28,8 @@ export interface InstallationSettingsReader {
 }
 
 export class InstallationSettingsAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "InstallationSettingsAdmissionError";
   }
 }
@@ -101,6 +101,8 @@ export function assertInstallationSettingsProjection({
   }
 }
 
+const ADMISSION_TIMEOUT_MS = 5000;
+
 const ClientConfigSchema = z.object({
   origin: z.url(),
   token: z.string().min(1),
@@ -109,6 +111,7 @@ const ClientConfigSchema = z.object({
 
 export function createInstallationSettingsReader(
   configFile: string | undefined,
+  fetchAdmission: typeof fetch = fetch,
 ): InstallationSettingsReader {
   const config = configFile
     ? ClientConfigSchema.parse(JSON.parse(readFileSync(configFile, "utf8")))
@@ -139,11 +142,21 @@ export function createInstallationSettingsReader(
       // type against Node alone, reject the DOM-only option.
       // COMPAT(projectPolicies): older coordinators ignore the query and omit project policies.
       const url = new URL("/api/installation/settings/admission?projectPolicies=1", config.origin);
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${config.token}` },
-        redirect: "error",
-        signal: AbortSignal.timeout(5000),
-      });
+      let response: Response;
+      try {
+        response = await fetchAdmission(url, {
+          headers: { Authorization: `Bearer ${config.token}` },
+          redirect: "error",
+          signal: AbortSignal.timeout(ADMISSION_TIMEOUT_MS),
+        });
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
+        // The origin was validated as bare scheme, host and port above, so it carries no secret.
+        throw new InstallationSettingsAdmissionError(
+          `Installation settings authority at ${config.origin} did not respond within ${ADMISSION_TIMEOUT_MS / 1000} seconds.`,
+          { cause: error },
+        );
+      }
       if (!response.ok)
         throw new InstallationSettingsAdmissionError(
           `Installation settings authority is unavailable (${response.status}).`,

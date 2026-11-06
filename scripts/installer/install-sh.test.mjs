@@ -53,9 +53,43 @@ if (command === "detect") {
     : { deployment: "/srv/old-vorteo", projectsFolder: path.join(process.env.HOME, "work") };
   emit({
     platform: process.platform,
-    existing: { kind, paths: kind.startsWith("legacy") ? legacyPaths : {} },
+    existing: {
+      kind,
+      paths: kind.startsWith("legacy") ? legacyPaths : {},
+      ...(kind === "current" ? { state: "installed" } : {}),
+    },
     prerequisites: { node: { ok: true, version: "v24.18.0" }, git: { ok: true }, docker, tailscale },
   });
+} else if (command === "plan" && rest.includes("--upgrade")) {
+  const comparison = process.env.FAKE_COMPARISON || "newer";
+  const settingsFile = option("--settings");
+  const settings = settingsFile ? JSON.parse(readFileSync(settingsFile, "utf8")) : {};
+  if (settingsFile) writeFileSync(process.env.FAKE_SETTINGS, JSON.stringify(settings));
+  const changed = Object.keys(settings).filter((key) => settings[key] !== { name: "Vorteo", updateMode: "manual", updateChannel: "stable" }[key]);
+  const upgrade = !rest.includes("--settings-only") && ["newer", "different", "unfinished"].includes(comparison);
+  const result = {
+    comparison,
+    installed: { version: "26.11.103", revision: "a".repeat(40), release: "release-26.11.103" },
+    target: { version: "26.11.302", revision: option("--revision"), release: option("--release") },
+    settings: { name: "Vorteo", updateMode: "manual", updateChannel: "stable" },
+  };
+  if (upgrade || changed.length)
+    Object.assign(result, {
+      plan: { upgrade, settings },
+      summary: [
+        ...(upgrade ? ["Upgrade " + root + " from 26.11.103 to 26.11.302, in place"] : []),
+        ...(settings.name && settings.name !== "Vorteo" ? ['Rename the installation to "' + settings.name + '"'] : []),
+      ],
+    });
+  emit(result);
+} else if (command === "upgrade") {
+  emit({ step: "upgrade-host", status: "start", message: "Restarting the Host daemon on the new release" });
+  if (process.env.FAKE_UPGRADE === "fail") {
+    emit({ step: "upgrade-host", status: "fail", message: "The Host daemon did not become ready", fix: "Read the logs, then rerun." });
+    process.exit(1);
+  }
+  emit({ step: "upgrade-host", status: "done", message: "The Host daemon runs 26.11.302." });
+  emit({ result: { origin: "https://vorteo.example.ts.net", localOrigin: "http://localhost:6790", passwordFile: path.join(root, "host", "owner-password"), name: "Vorteo" } });
 } else if (command === "plan" && rest.includes("--adopt")) {
   emit({ plan: { adopt: true }, summary: ["Upgrade " + root + " in place", "Dev moves to gate mode"] });
 } else if (command === "plan") {
@@ -123,7 +157,11 @@ case "$1" in
   rev-parse) cat "$dir/.git/HEAD" ;;
   status) ;;
   fetch) ;;
-  checkout) echo "$FAKE_SHA" >"$dir/.git/HEAD" ;;
+  checkout)
+    # A 40-character commit is checked out as itself; a tag stands for the release commit.
+    target="\${@: -1}"
+    if [ "\${#target}" -eq 40 ]; then echo "$target" >"$dir/.git/HEAD"; else echo "$FAKE_SHA" >"$dir/.git/HEAD"; fi
+    ;;
   *) exit 1 ;;
 esac
 `,
@@ -171,6 +209,7 @@ function sandbox() {
     bin,
     log: path.join(dir, "log.jsonl"),
     answers: path.join(dir, "answers.json"),
+    settings: path.join(dir, "settings.json"),
     clipboard: path.join(dir, "clipboard"),
     tty: path.join(dir, "tty"),
   };
@@ -183,6 +222,7 @@ function sandbox() {
     FAKE_LOG: files.log,
     FAKE_ENGINE: path.join(dir, "engine.mjs"),
     FAKE_ANSWERS: files.answers,
+    FAKE_SETTINGS: files.settings,
     FAKE_CLIPBOARD: files.clipboard,
     FAKE_PASSWORD: password,
     FAKE_REPO: repoRoot,
@@ -483,25 +523,23 @@ describe("install.sh", () => {
     assert.match(readFileSync(path.join(box.home, ".local/bin/vorteo"), "utf8"), new RegExp(old));
   });
 
-  test("a current installation is reported without fetching, and --repair repairs it", () => {
+  test("a current installation checks the release and reports it, and --repair repairs it offline", () => {
     const box = sandbox();
     assert.equal(box.run(["--yes"]).status, 0);
-    const callsBefore = box.calls().length;
-    const result = box.run([], { FAKE_EXISTING: "current" });
+    const result = box.run([], { FAKE_EXISTING: "current", FAKE_COMPARISON: "same" });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /Vorteo is already installed in/);
+    assert.match(result.stdout, /Installed: 26\.11\.103 \(release-26\.11\.103\)/);
+    assert.match(result.stdout, /runs the latest release/);
     assert.match(result.stdout, /vorteo open/);
     assert.match(result.stdout, /install\.sh --repair$/m);
-    const later = box.calls().slice(callsBefore);
-    assert.equal(
-      later.some(
-        (call) =>
-          call.tool === "curl" ||
-          (call.tool === "git" && (call.argv.includes("clone") || call.argv.includes("fetch"))),
-      ),
-      false,
+    assert.match(result.stdout, /^VORTEO_STATUS up-to-date 26\.11\.103$/m);
+    assert.doesNotMatch(result.stdout, /VORTEO_QUESTION/);
+    assert.ok(
+      box.calls().some((call) => call.tool === "engine" && call.argv.includes("--upgrade")),
     );
 
+    const callsBefore = box.calls().length;
     const repaired = box.run(["--repair"], { FAKE_EXISTING: "current" });
     assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
     assert.match(repaired.stdout, /✓ Checked the services/);
@@ -511,6 +549,15 @@ describe("install.sh", () => {
       assert.ok(!output.includes(password));
     }
     assert.ok(box.calls().some((call) => call.tool === "engine" && call.argv[0] === "repair"));
+    assert.equal(
+      box
+        .calls()
+        .slice(callsBefore)
+        .some(
+          (call) => call.tool === "curl" || (call.tool === "git" && call.argv.includes("fetch")),
+        ),
+      false,
+    );
     writeFileSync(box.tty, "");
     const interactive = box.run(["--repair", "--no-open"], {
       FAKE_EXISTING: "current",
@@ -534,6 +581,81 @@ describe("install.sh", () => {
     const failed = box.run(["--repair"], { FAKE_EXISTING: "current", FAKE_REPAIR: "fail" });
     assert.equal(failed.status, 1);
     assert.doesNotMatch(failed.stdout, /Connect to Vorteo|Password file:/);
+  });
+
+  test("an older installation shows both versions and asks before upgrading", () => {
+    const box = sandbox();
+    const oldSha = "2".repeat(40);
+    assert.equal(box.run(["--yes"], { FAKE_SHA: oldSha }).status, 0);
+    const head = () => readFileSync(path.join(box.home, "vorteo/source/.git/HEAD"), "utf8").trim();
+    const env = { FAKE_EXISTING: "current" };
+
+    const asked = box.run([], env);
+    assert.equal(asked.status, 3, asked.stdout + asked.stderr);
+    assert.match(
+      asked.stdout,
+      /Installed: 26\.11\.103 \(release-26\.11\.103\)\n {2}Latest: {4}26\.11\.302 \(v9\.9\.9\)/,
+    );
+    assert.match(asked.stdout, /^VORTEO_STATUS installed-version 26\.11\.103$/m);
+    assert.match(
+      asked.stdout,
+      /^VORTEO_PLAN Upgrade .* from 26\.11\.103 to 26\.11\.302, in place$/m,
+    );
+    assert.deepEqual(questionIds(asked.stdout), [
+      ["upgrade", "yes"],
+      ["change-settings", "no"],
+    ]);
+    // Keeping the installed release leaves the source where it was.
+    assert.equal(head(), oldSha);
+
+    const declined = box.run(["--upgrade=no"], env);
+    assert.equal(declined.status, 4);
+    assert.match(declined.stdout, /Kept Vorteo 26\.11\.103/);
+    assert.equal(head(), oldSha);
+    assert.equal(
+      box.calls().some((call) => call.tool === "engine" && call.argv[0] === "upgrade"),
+      false,
+    );
+
+    const upgraded = box.run(["--yes"], env);
+    assert.equal(upgraded.status, 0, upgraded.stdout + upgraded.stderr);
+    assert.match(upgraded.stdout, /✓ The Host daemon runs 26\.11\.302\./);
+    assert.match(upgraded.stdout, /^VORTEO_STATUS upgraded 26\.11\.103 26\.11\.302$/m);
+    assert.match(upgraded.stdout, /Password file:.*owner-password/);
+    assert.deepEqual(JSON.parse(readFileSync(box.settings, "utf8")), {});
+    assert.equal(head(), releaseSha);
+    const plan = box.calls().findLast((call) => call.tool === "engine" && call.argv[0] === "plan");
+    assert.ok(plan.argv.includes("--revision") && plan.argv.includes(releaseSha));
+  });
+
+  test("settings change while upgrading, defaulting to their values now", () => {
+    const box = sandbox();
+    assert.equal(box.run(["--yes"]).status, 0);
+    writeFileSync(box.tty, "yes\nyes\nStudio\n\nbeta\n");
+    const result = box.run(["--no-open"], {
+      FAKE_EXISTING: "current",
+      VORTEO_TEST_TTY: box.tty,
+      COLUMNS: "100",
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Installation name\? \[Vorteo\]/);
+    assert.match(result.stdout, /In-app updates: .* \[manual\]/);
+    assert.match(result.stdout, /Rename the installation to "Studio"/);
+    assert.deepEqual(JSON.parse(readFileSync(box.settings, "utf8")), {
+      name: "Studio",
+      updateMode: "manual",
+      updateChannel: "beta",
+    });
+  });
+
+  test("a failed upgrade names the fix, the rollback and how to resume", () => {
+    const box = sandbox();
+    assert.equal(box.run(["--yes"]).status, 0);
+    const failed = box.run(["--yes"], { FAKE_EXISTING: "current", FAKE_UPGRADE: "fail" });
+    assert.equal(failed.status, 1);
+    assert.match(failed.stdout, /Read the logs, then rerun\./);
+    assert.match(failed.stdout, /runs its previous release again/);
+    assert.match(failed.stdout, /rerun the same command to resume/);
   });
 
   test("missing Node.js 24 is a question that --yes does not answer", () => {

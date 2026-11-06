@@ -11,6 +11,12 @@
 //   status --json                    The installation's services, readiness and steps.
 //   uninstall [--keep-data]          Stops and unregisters everything this installation added.
 //   repair                           Re-registers services and reruns the idempotent steps.
+//   plan --upgrade --source <dir> --revision <commit> [--release <tag>] [--settings <file>]
+//        [--settings-only] --json
+//                                    What an installation made by this installer runs, how it
+//                                    compares with <commit>, its settings, and {plan, summary}
+//                                    to upgrade it in place or change only its settings.
+//   upgrade --plan <file>            Applies that plan like apply, resuming an unfinished one.
 //   adopt [--source <dir>] [--outcome <file>]
 //                                    Plans and applies that in-place upgrade, resuming a
 //                                    started one; the coordinator runs it detached.
@@ -23,11 +29,12 @@ import { createContext } from "./context.mjs";
 import { detect } from "./detect.mjs";
 import { adoptHost, createHostAdoptionPlan } from "./host-adoption.mjs";
 import { createPlan } from "./plan.mjs";
+import { applyUpgrade, createUpgradePlan } from "./upgrade.mjs";
 import { isMainModule } from "../is-main-module.mjs";
 import { stopRunning } from "./primitives.mjs";
 
 const USAGE =
-  "Usage: main.mjs detect|plan --answers <file>|plan --adopt [--source <dir>]|apply --plan <file>|status|uninstall [--keep-data]|repair|adopt [--source <dir>] [--outcome <file>]|host-release --revision <commit> --outcome <file> [--json] [--root <folder>]";
+  "Usage: main.mjs detect|plan --answers <file>|plan --adopt [--source <dir>]|plan --upgrade --source <dir> --revision <commit> [--release <tag>] [--settings <file>] [--settings-only]|apply --plan <file>|upgrade --plan <file>|status|uninstall [--keep-data]|repair|adopt [--source <dir>] [--outcome <file>]|host-release --revision <commit> --outcome <file> [--json] [--root <folder>]";
 
 function readJsonFile(file, label) {
   if (!file) throw Object.assign(new Error(`Pass --${label} <file>.`), { usage: true });
@@ -43,15 +50,29 @@ const COMMANDS = {
     return 0;
   },
   async plan({ context, values, write, pretty }) {
-    const result = values.adopt
-      ? await createHostAdoptionPlan(context, { source: values.source, revision: values.revision })
-      : await createPlan(readJsonFile(values.answers, "answers"), context);
+    let result;
+    if (values.upgrade)
+      result = await createUpgradePlan(context, {
+        source: values.source,
+        revision: values.revision,
+        release: values.release,
+        settings: values.settings ? readJsonFile(values.settings, "settings") : undefined,
+        settingsOnly: values["settings-only"] === true,
+      });
+    else if (values.adopt)
+      result = await createHostAdoptionPlan(context, {
+        source: values.source,
+        revision: values.revision,
+      });
+    else result = await createPlan(readJsonFile(values.answers, "answers"), context);
     if (values.json) pretty(result);
-    else write(result.summary.join("\n") + "\n");
+    else write((result.summary ?? [`Nothing to change: ${result.comparison}.`]).join("\n") + "\n");
     return 0;
   },
   apply: async ({ context, values, line }) =>
     exit(await applyPlan(readJsonFile(values.plan, "plan"), context, line)),
+  upgrade: async ({ context, values, line }) =>
+    exit(await applyUpgrade(readJsonFile(values.plan, "plan"), context, line)),
   async status({ context, pretty }) {
     pretty(await installationStatus(context));
     return 0;
@@ -94,6 +115,10 @@ export async function main(
       revision: { type: "string" },
       outcome: { type: "string" },
       adopt: { type: "boolean" },
+      upgrade: { type: "boolean" },
+      release: { type: "string" },
+      settings: { type: "string" },
+      "settings-only": { type: "boolean" },
       source: { type: "string" },
     },
   });
@@ -114,7 +139,8 @@ export async function main(
     return await run({ context, values, write, line, pretty });
   } catch (error) {
     const failure = { error: { message: error.message, ...(error.fix ? { fix: error.fix } : {}) } };
-    if (values.json || ["apply", "uninstall", "repair", "adopt"].includes(command)) line(failure);
+    if (values.json || ["apply", "uninstall", "repair", "adopt", "upgrade"].includes(command))
+      line(failure);
     else write(`${error.message}${error.fix ? `\n${error.fix}` : ""}\n`);
     return error.usage ? 2 : 1;
   }
