@@ -145,17 +145,27 @@ for (const viewport of [
       .poll(() =>
         picker.evaluate((element) => {
           const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          const borderHeight =
+            parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
           return {
             left: rect.left >= 0,
             top: rect.top >= 0,
             right: rect.right <= window.innerWidth,
             bottom: rect.bottom <= window.innerHeight,
-            height: rect.height,
+            contentHeightFits: rect.height === Math.min(400, element.scrollHeight + borderHeight),
             width: rect.width,
           };
         }),
       )
-      .toEqual({ left: true, top: true, right: true, bottom: true, height: 400, width: 360 });
+      .toEqual({
+        left: true,
+        top: true,
+        right: true,
+        bottom: true,
+        contentHeightFits: true,
+        width: 360,
+      });
     await page.screenshot({ path: testInfo.outputPath("metadata-picker-viewport.png") });
     await page.keyboard.press("Escape");
     await expect(picker).toHaveCount(0);

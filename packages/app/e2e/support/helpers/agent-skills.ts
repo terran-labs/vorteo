@@ -135,7 +135,7 @@ export async function openAgentSkillsSettings(
   } else {
     await openSettings(page);
   }
-  await revealSettingsLocation(page, "agents");
+  await revealSettingsLocation(page, "agents.skills");
   await expect(page.getByTestId("host-agent-skills-card")).toBeVisible({ timeout: 30_000 });
 }
 

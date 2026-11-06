@@ -10,6 +10,25 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-05
+
+### Fixes
+
+- Preserve wrong-password errors after clearing the owner-password draft, and reject failed unlock attempts so the dialog keeps its reserved error message.
+- Check metadata picker height against its unclamped content and borders, capped at 400px, while retaining viewport containment and interaction checks.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Keep metadata picker viewport checks independent of the available model count while preserving bounds, width and interaction coverage. Update plugin Back coverage for its Projects & integrations parent.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Merge the current main-sync revision into the Settings fixes branch, preserving bundled skill management and custom domain support.
+
 ## 26.11.503 - 2026-11-05
 
 Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supersedes the untagged 26.11.501 and 26.11.502 after main moved.
@@ -34,7 +53,7 @@ Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supe
 ### Maintenance
 
 - Keep tracked Dev repair available when Dev cannot answer, and verify session-host upgrade holders in System Details.
-
+- Restore bundled skill selection and installation controls inside the single Skills library. Navigation coverage includes the Voice section.
 - Merge current main into Settings round 4. Preserve installation release policies and safe approval choices in System updates, live delivery mode in Advanced, recovery reviews in Restart, and service access in environment details.
 
 ## Unreleased - 2026-11-05
