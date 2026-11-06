@@ -173,12 +173,16 @@ it("opens the linked Dev restart review and moves its completed receipt to Dev D
 it.each(["system.overview.customDomain", "system.overview.domain"])(
   "reveals Advanced for %s search without reopening it on a poll",
   (focusedSettingId) => {
-    const { rerender } = render(<SystemPane focusedSettingId={focusedSettingId} />);
+    const { rerender } = render(
+      <SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />,
+    );
     expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
     expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
     mocks.status = "updating";
-    rerender(<SystemPane focusedSettingId={focusedSettingId} />);
+    rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />);
     expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
+    rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={2} />);
+    expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
   },
 );

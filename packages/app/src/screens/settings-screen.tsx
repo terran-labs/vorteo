@@ -871,6 +871,7 @@ interface PaneContext {
   settings: AppSettings;
   restartRequestId: string | null;
   focusedSettingId: string | null;
+  focusRequestNonce: number;
   voiceAudioEngine: ReturnType<typeof useVoiceAudioEngineOptional>;
   isPlaybackTestRunning: boolean;
   playbackTestResult: string | null;
@@ -968,6 +969,7 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
     <SystemPane
       restartRequestId={context.restartRequestId}
       focusedSettingId={context.focusedSettingId}
+      focusRequestNonce={context.focusRequestNonce}
     />
   ),
 };
@@ -1191,6 +1193,7 @@ export default function SettingsScreen({
       settings,
       restartRequestId,
       focusedSettingId: request.entry?.id ?? null,
+      focusRequestNonce: request.nonce,
       voiceAudioEngine,
       isPlaybackTestRunning,
       playbackTestResult,
@@ -1217,6 +1220,7 @@ export default function SettingsScreen({
       playbackTestResult,
       restartRequestId,
       request.entry,
+      request.nonce,
       settings,
       voiceAudioEngine,
     ],

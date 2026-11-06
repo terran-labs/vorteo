@@ -196,11 +196,13 @@ export function SystemPane({
   restartRecovery,
   restartRequestId,
   focusedSettingId,
+  focusRequestNonce,
 }: {
   serverId?: string;
   restartRecovery?: ReactNode;
   restartRequestId?: string | null;
   focusedSettingId?: string | null;
+  focusRequestNonce?: number;
 } = {}) {
   const adapter = useSystemAdapter(serverId);
   const linkedJob = adapter.state?.unlocked
@@ -232,7 +234,7 @@ export function SystemPane({
       focusedSettingId === "system.overview.domain"
     )
       setAdvanced(true);
-  }, [focusedSettingId]);
+  }, [focusedSettingId, focusRequestNonce]);
   const toggleAdvanced = useCallback(() => setAdvanced((value) => !value), []);
   const advancedState = useMemo(() => ({ expanded: advanced }), [advanced]);
   const environments = useMemo(
