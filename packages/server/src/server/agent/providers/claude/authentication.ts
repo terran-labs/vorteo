@@ -2,7 +2,7 @@ import { claudeConfigDir } from "./project-dir.js";
 import { readClaudeSetupToken } from "./setup-token-runtime.js";
 import { claudeSignInMode } from "./sign-in-mode.js";
 import { readClaudeOAuthGrant } from "../../../execution-installation/accounts/claude-oauth-storage.js";
-import { recoverClaudeOAuthGrant } from "../../../execution-installation/accounts/claude-oauth-recovery.js";
+import type { recoverClaudeOAuthGrant } from "../../../execution-installation/accounts/claude-oauth-recovery.js";
 import { z } from "zod";
 import { execCommand } from "../../../../utils/spawn.js";
 import {
@@ -77,7 +77,15 @@ async function requireFullSignIn(input: AuthenticationCheck, configDir: string):
   }
   if (!grant || grant.expiresAt === null || grant.expiresAt <= now()) {
     try {
-      await recoverGrant(configDir, input.recoverGrant ?? recoverClaudeOAuthGrant);
+      // History discovery imports this module but does not need installation recovery dependencies.
+      await recoverGrant(
+        configDir,
+        input.recoverGrant ??
+          (async (directory) =>
+            (
+              await import("../../../execution-installation/accounts/claude-oauth-recovery.js")
+            ).recoverClaudeOAuthGrant(directory)),
+      );
     } catch {
       // Recovery errors can contain transport details. Only the reread decides availability.
     }
