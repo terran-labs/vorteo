@@ -37,6 +37,17 @@ const RecordSchema = z.strictObject({
     .nullable(),
   /** Consecutive refreshes of the current Host token that did not produce a newer one. */
   refreshFailures: Counter.default(0),
+  failureReason: z
+    .enum([
+      "storage_unreadable",
+      "grant_missing",
+      "refresh_failed",
+      "refresh_unchanged",
+      "expiry_missed",
+      "policy_unavailable",
+    ])
+    .optional(),
+  missedExpiry: Counter.optional(),
   /** Consecutive reconciles that left a rotation undelivered, and when to try again. */
   deliveryFailures: Counter.default(0),
   deliveryRetryAt: Counter.nullable().default(null),
@@ -54,6 +65,7 @@ export interface HostRefreshIdentity {
 export interface HostRefreshPolicy {
   revision: number;
   removed: boolean;
+  hostEnabled?: boolean;
   /** Dev environments that receive access projections. */
   targets: Array<{ serverId: string; providerId: string; excluded: boolean }>;
 }
@@ -72,6 +84,7 @@ export interface HostGrantAdapter<G extends HostGrant, P> {
   needsRefresh(grant: G | null, now: number): boolean;
   /** How long before expiry the refresher starts reading the Host more often. */
   leadMs: number;
+  refreshForHost?: boolean;
   /** Thrown, without detail, for every refusal. */
   error(): Error;
 }
@@ -99,14 +112,15 @@ const DELIVERY_RETRY_MS = 30_000;
 
 /**
  * The coordinator's Host-owned refresh, shared by every provider whose Host CLI keeps a rotating
- * grant. It keeps the Host grant fresh only while a Dev environment can use it, delivers
+ * grant. Provider policy decides whether Host use or Dev delivery permits renewal. It delivers
  * access-only projections in generation and rotation order, and withdraws them on exclusion,
  * removal, sign-out or a missing Host grant. The Host CLI is the only refresh writer. The access
  * token lives in memory for one reconcile; a pending delivery re-reads it from the Host.
  */
 export class HostOwnedRefresher<G extends HostGrant, P> {
   private records: HostRefreshState;
-  private queue: Promise<void> = Promise.resolve();
+  private queues = new Map<string, Promise<void>>();
+  private recoveries = new Map<string, Promise<void>>();
   private reconciliation: Promise<void> | null = null;
   private persistenceFailed = false;
 
@@ -171,7 +185,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
 
   /** A completed Host sign-in starts a new generation. */
   connected(definitionId: string, identity: HostRefreshIdentity | null): Promise<void> {
-    return this.enqueue(async () => {
+    return this.enqueue(definitionId, async () => {
       const policy = this.ports.policy(definitionId);
       if (policy.removed) throw this.adapter.error();
       this.replace(definitionId, policy, { signedIn: true, identity, digest: null });
@@ -180,7 +194,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
 
   /** Sign-out starts a new generation whose only projection is a withdrawal. */
   signedOut(definitionId: string): Promise<void> {
-    return this.enqueue(async () => {
+    return this.enqueue(definitionId, async () => {
       const policy = this.ports.policy(definitionId);
       const previous = this.records.find((item) => item.definitionId === definitionId);
       this.replace(definitionId, policy, {
@@ -193,40 +207,110 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
 
   reconcile(): Promise<void> {
     if (this.reconciliation) return this.reconciliation;
-    const task = this.enqueue(async () => {
-      // Accounts are independent (each has its own CLI storage and locks), so one slow refresh
-      // cannot push another past its lead. Each reconcile replaces only its own record.
-      await Promise.all(
-        this.records.map((record) =>
-          this.reconcileRecord(record.definitionId).catch(() => {
-            // An unreachable Host or Dev leaves this record pending for the next reconcile.
-          }),
+    const task = Promise.all(
+      this.records.map((record) =>
+        this.enqueue(record.definitionId, () => this.reconcileRecord(record.definitionId)).catch(
+          () => {
+            // One unavailable account must not delay another account's renewal.
+          },
         ),
-      );
-    });
+      ),
+    ).then(() => undefined);
     this.reconciliation = task.finally(() => {
       this.reconciliation = null;
     });
     return this.reconciliation;
   }
 
-  private async reconcileRecord(definitionId: string): Promise<void> {
-    const policy = this.ports.policy(definitionId);
+  /** Recovery uses the same per-account writer and retry budget as scheduled work. */
+  recover(definitionId: string, expectedPolicyRevision?: number): Promise<void> {
+    const revision = expectedPolicyRevision ?? this.ports.policy(definitionId).revision;
+    if (this.ports.policy(definitionId).revision !== revision)
+      return Promise.reject(this.adapter.error());
+    const existing = this.recoveries.get(definitionId);
+    if (existing) return existing;
+    const generation = this.records.find(
+      (record) => record.definitionId === definitionId,
+    )?.generation;
+    const task = this.enqueue(definitionId, async () => {
+      const record = this.records.find((item) => item.definitionId === definitionId);
+      if (
+        !record?.signedIn ||
+        record.generation !== generation ||
+        this.ports.policy(definitionId).revision !== revision
+      )
+        throw this.adapter.error();
+      await this.reconcileRecord(definitionId, true);
+    }).finally(() => this.recoveries.delete(definitionId));
+    this.recoveries.set(definitionId, task);
+    return task;
+  }
+
+  private async reconcileRecord(definitionId: string, recovery = false): Promise<void> {
     const current = this.records.find((item) => item.definitionId === definitionId)!;
     const next = structuredClone(current);
+    let policy: HostRefreshPolicy;
+    try {
+      policy = this.ports.policy(definitionId);
+    } catch {
+      if (this.adapter.refreshForHost && next.signedIn && this.isDue(next, this.ports.now())) {
+        this.recordFailure(next, this.ports.now(), "policy_unavailable");
+        this.commit(this.withRecord(next));
+      }
+      return;
+    }
     applyPolicy(next, policy);
     const now = this.ports.now();
     // undefined: the Host was not read this reconcile, so there is nothing new to deliver.
     let desired: P | null | undefined = null;
-    if (next.signedIn && !policy.removed)
-      desired = this.isDue(next, now) ? await this.readHost(definitionId, next, now) : undefined;
-    if (desired !== undefined) this.rotate(next, desired);
+    if (next.signedIn && !policy.removed) {
+      desired = await this.readDueHost(next, now, recovery);
+    }
+
+    // Policy may change while storage or the official CLI is pending.
+    if (this.ports.policy(definitionId).revision !== policy.revision) return;
+    if (desired !== undefined) {
+      this.rotate(next, desired);
+      if (recovery) {
+        // Reapply an acknowledged projection if a local logout removed Dev's access file.
+        for (const target of next.targets) target.appliedRotation = null;
+      }
+    }
     // Rewrite state only when something changed; idle reconciles stay read-only.
     if (!isDeepStrictEqual(next, current)) this.commit(this.withRecord(next));
     if (desired !== undefined) await this.deliverPending(definitionId, next, desired, now);
   }
 
-  /** Reads the Host grant, refreshing it first when Dev can use it and it is about to expire. */
+  private async readDueHost(
+    next: HostRefreshRecord,
+    now: number,
+    recovery: boolean,
+  ): Promise<P | null | undefined> {
+    const due = this.isDue(next, now) || (recovery && next.refreshFailures === 0);
+    // Preserve the previous deadline even if this read immediately discovers a renewed grant.
+    let missedDeadline =
+      next.expiresAt !== null && now >= next.expiresAt && next.missedExpiry !== next.expiresAt;
+    if (missedDeadline && next.expiresAt !== null) next.missedExpiry = next.expiresAt;
+    let desired: P | null | undefined;
+    if (due) {
+      try {
+        desired = await this.readHost(next.definitionId, next, now);
+      } catch {
+        this.recordFailure(next, now, "storage_unreadable");
+        next.checkedAt = now;
+      }
+    }
+    const expired = next.expiresAt !== null && now >= next.expiresAt;
+    if (expired && next.expiresAt !== null && next.missedExpiry !== next.expiresAt) {
+      next.missedExpiry = next.expiresAt;
+      missedDeadline = true;
+    }
+    if (missedDeadline && expired && next.refresh?.at !== now)
+      this.recordFailure(next, now, "expiry_missed");
+    return desired;
+  }
+
+  /** Reads the Host grant and renews it when the provider's policy allows. */
   private async readHost(
     definitionId: string,
     next: HostRefreshRecord,
@@ -234,7 +318,11 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
   ): Promise<P | null> {
     let grant = await this.ports.grant(definitionId);
     // A newer Host token (a Host agent refreshed it, or the owner signed in) clears failures.
-    if (isNewerGrant(next, grant)) next.refreshFailures = 0;
+    if (isNewerGrant(next, grant)) {
+      next.refreshFailures = 0;
+      delete next.failureReason;
+    }
+    if (grant === null) this.recordFailure(next, now, "grant_missing");
     if (this.shouldRefresh(next, grant, now))
       grant = await this.refreshHost(definitionId, grant, next, now);
     next.checkedAt = now;
@@ -264,8 +352,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     try {
       after = await this.ports.grant(definitionId);
     } catch {
-      next.refresh = { at: now, outcome: "failed" };
-      next.refreshFailures += 1;
+      this.recordFailure(next, now, "storage_unreadable");
       return grant;
     }
     const advanced =
@@ -274,6 +361,8 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     if (advanced) outcome = "refreshed";
     next.refresh = { at: now, outcome };
     next.refreshFailures = advanced ? 0 : next.refreshFailures + 1;
+    if (advanced) delete next.failureReason;
+    else next.failureReason = failed ? "refresh_failed" : "refresh_unchanged";
     return after;
   }
 
@@ -360,19 +449,42 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     this.records = next;
   }
 
-  private enqueue(operation: () => Promise<void>): Promise<void> {
-    const task = this.queue.then(() => {
+  private recordFailure(
+    next: HostRefreshRecord,
+    now: number,
+    reason: NonNullable<HostRefreshRecord["failureReason"]>,
+  ): void {
+    next.refresh = { at: now, outcome: "failed" };
+    next.refreshFailures += 1;
+    next.failureReason = reason;
+  }
+
+  private enqueue(definitionId: string, operation: () => Promise<void>): Promise<void> {
+    const task = (this.queues.get(definitionId) ?? Promise.resolve()).then(() => {
       if (this.persistenceFailed) throw this.adapter.error();
       return operation();
     });
-    this.queue = task.then(
+    const settled = task.then(
       () => undefined,
       () => undefined,
     );
+    this.queues.set(definitionId, settled);
+    void settled.then(() => {
+      if (this.queues.get(definitionId) === settled) this.queues.delete(definitionId);
+      return undefined;
+    });
     return task;
   }
 
   private isDue(next: HostRefreshRecord, now: number): boolean {
+    if (this.adapter.refreshForHost && next.refreshFailures > 0 && next.refresh !== null)
+      return now - next.refresh.at >= backoff(REFRESH_RETRY_MS, next.refreshFailures);
+    if (
+      this.adapter.refreshForHost &&
+      next.expiresAt !== null &&
+      next.expiresAt - now <= this.adapter.leadMs
+    )
+      return true;
     // An undelivered rotation waits for its retry time, whatever the token's expiry.
     if (next.targets.some((target) => target.appliedRotation !== next.rotation))
       return next.deliveryRetryAt === null || now >= next.deliveryRetryAt;
@@ -385,12 +497,18 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
   }
 
   private shouldRefresh(next: HostRefreshRecord, grant: G | null, now: number) {
-    // Refresh only for a Dev that received the current rotation; an unreachable Dev could not
-    // use a new token, and launching the CLI for it would only spend the account's usage.
+    // Codex retains receipt-gated renewal. Claude also renews for enabled Host use or a
+    // pending Dev delivery, so delivery outages cannot suppress renewal.
     const reachable = next.targets.some(
       (target) => !target.excluded && target.appliedRotation === next.rotation,
     );
-    if (!reachable) return false;
+    const policy = this.ports.policy(next.definitionId);
+    if (policy.revision !== next.policyRevision || policy.removed) return false;
+    const hostEligible = this.adapter.refreshForHost && policy.hostEnabled === true;
+    const devEligible = this.adapter.refreshForHost
+      ? next.targets.some((target) => !target.excluded)
+      : reachable;
+    if (!hostEligible && !devEligible) return false;
     const wait = backoff(REFRESH_RETRY_MS, next.refreshFailures);
     if (next.refresh !== null && now - next.refresh.at < wait) return false;
     return this.adapter.needsRefresh(grant, now);

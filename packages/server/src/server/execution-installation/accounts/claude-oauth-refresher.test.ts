@@ -198,7 +198,9 @@ it("starts a new generation that withdraws Dev on sign-out, and another on recon
   const refresher = h.create();
   await refresher.connected("one", null);
   await refresher.reconcile();
-  await refresher.signedOut("one");
+  const signOut = refresher.signedOut("one");
+  await expect(refresher.recover("one")).rejects.toThrow();
+  await signOut;
   await refresher.reconcile();
   expect(h.deliveries.at(-1)).toMatchObject({ generation: 2, rotation: 0, access: null });
   expect(refresher.status("one")).toMatchObject({
@@ -320,22 +322,23 @@ it("preserves the last grant on an unreadable refresh result, but withdraws a co
   expect(refresher.status("one").needsSignIn).toBe(true);
 });
 
-it("does not refresh for an unreachable Dev and backs off Host reads until it returns", async () => {
+it("renews before expiry for an unreachable Dev while backing off delivery", async () => {
   const h = harness();
   const refresher = h.create();
   h.setOnline(false);
   await refresher.connected("one", null);
   await tick(refresher, h, 120);
-  expect(h.refresh).not.toHaveBeenCalled();
-  expect(h.reads()).toBeLessThanOrEqual(16);
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  expect(h.reads()).toBeLessThanOrEqual(20);
   h.setOnline(true);
   await tick(refresher, h, 12);
   expect(h.refresh).toHaveBeenCalledTimes(1);
   expect(h.deliveries.at(-1)).toMatchObject({ access: { accessToken: "synthetic-access-2" } });
 });
 
-it("reconciles accounts concurrently so a slow refresh cannot delay another account", async () => {
-  const now = 1_000_000_000_000;
+it("reconstructs both accounts and renews concurrently before expiry", async () => {
+  let now = 1_000_000_000_000;
+  const originalExpiry = now + 60 * MINUTE;
   let state: unknown = [];
   const grants = new Map<string, ClaudeOAuthGrant>(
     ["slow", "fast"].map((id) => [
@@ -343,7 +346,7 @@ it("reconciles accounts concurrently so a slow refresh cannot delay another acco
       {
         accessToken: `synthetic-${id}`,
         hasRefreshToken: true,
-        expiresAt: now + 3 * MINUTE,
+        expiresAt: originalExpiry,
         scopes: [],
       },
     ]),
@@ -356,39 +359,119 @@ it("reconciles accounts concurrently so a slow refresh cannot delay another acco
       });
     grants.set(definitionId, { ...grants.get(definitionId)!, expiresAt: now + 60 * MINUTE });
   });
-  const refresher = new ClaudeOAuthRefresher({
-    installationId: INSTALLATION,
-    read: () => state,
-    persist: (next) => {
-      state = structuredClone(next);
-    },
-    policy: (definitionId) => ({
-      revision: 1,
-      removed: false,
-      targets: [{ serverId: "dev", providerId: `claude-account-${definitionId}`, excluded: false }],
-    }),
-    grant: async (definitionId) => grants.get(definitionId) ?? null,
-    refresh,
-    deliver: async (delivery) => {
-      const { access, ...slot } = delivery;
-      return {
-        ...slot,
-        digest: accessProjectionDigest(access),
-        phase: "applied",
-        active: access !== null,
-      };
-    },
-    now: () => now,
-  });
+  const create = () =>
+    new ClaudeOAuthRefresher({
+      installationId: INSTALLATION,
+      read: () => state,
+      persist: (next) => {
+        state = structuredClone(next);
+      },
+      policy: (definitionId) => ({
+        revision: 1,
+        removed: false,
+        targets: [
+          { serverId: "dev", providerId: `claude-account-${definitionId}`, excluded: false },
+        ],
+      }),
+      grant: async (definitionId) => grants.get(definitionId) ?? null,
+      refresh,
+      deliver: async (delivery) => {
+        const { access, ...slot } = delivery;
+        return {
+          ...slot,
+          digest: accessProjectionDigest(access),
+          phase: "applied",
+          active: access !== null,
+        };
+      },
+      now: () => now,
+    });
+  let refresher = create();
   await refresher.connected("slow", null);
   await refresher.connected("fast", null);
   await refresher.reconcile();
+  expect(refresh).not.toHaveBeenCalled();
+  refresher = create();
+  now += 57 * MINUTE;
+  expect(now).toBeLessThan(originalExpiry);
   const running = refresher.reconcile();
+  const recovery = refresher.recover("fast");
   await vi.waitFor(() => {
     expect(releaseSlow).not.toBeNull();
     expect(grants.get("fast")!.expiresAt).toBe(now + 60 * MINUTE);
   });
   releaseSlow!();
-  await running;
+  await Promise.all([running, recovery]);
   expect(refresh).toHaveBeenCalledTimes(2);
+  expect(grants.get("slow")!.expiresAt).toBeGreaterThan(originalExpiry);
+  expect(grants.get("fast")!.expiresAt).toBeGreaterThan(originalExpiry);
+});
+
+it("renews a Host-only account and respects Host exclusion", async () => {
+  const h = harness();
+  h.setPolicy({ revision: 1, removed: false, hostEnabled: true, targets: [] });
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  h.advance(57 * MINUTE);
+  await Promise.all([refresher.reconcile(), refresher.recover("one"), refresher.recover("one")]);
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+  h.setPolicy({ revision: 2, removed: false, hostEnabled: false, targets: [] });
+  h.advance(57 * MINUTE);
+  await refresher.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(1);
+});
+
+it("preserves expiry on unreadable storage and records each missed expiry once", async () => {
+  const h = harness();
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  const expiresAt = h.grant()!.expiresAt;
+  h.setReadable(false);
+  h.advance(61 * MINUTE);
+  await refresher.reconcile();
+  const saved = JSON.parse(h.persisted.at(-1)!)[0];
+  expect(saved).toMatchObject({
+    expiresAt,
+    missedExpiry: expiresAt,
+    failureReason: "storage_unreadable",
+    refreshFailures: 1,
+  });
+  await refresher.reconcile();
+  expect(JSON.parse(h.persisted.at(-1)!)[0]).toEqual(saved);
+  expect(h.deliveries).toHaveLength(1);
+});
+
+it("records a missed expiry when renewal is ineligible without repeating every tick", async () => {
+  const h = harness();
+  h.setGrant({ ...h.grant()!, hasRefreshToken: false });
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  h.advance(61 * MINUTE);
+  await refresher.reconcile();
+  const saved = JSON.parse(h.persisted.at(-1)!)[0];
+  expect(saved).toMatchObject({ failureReason: "expiry_missed", refreshFailures: 1 });
+  h.advance(30_000);
+  await refresher.reconcile();
+  expect(JSON.parse(h.persisted.at(-1)!)[0]).toEqual(saved);
+});
+
+it("retains missed expiry evidence when the overdue grant immediately renews", async () => {
+  const h = harness();
+  const refresher = h.create();
+  await refresher.connected("one", null);
+  await refresher.reconcile();
+  const originalExpiry = h.grant()!.expiresAt;
+  h.advance(61 * MINUTE);
+  await refresher.reconcile();
+  expect(JSON.parse(h.persisted.at(-1)!)[0]).toMatchObject({
+    missedExpiry: originalExpiry,
+    refreshFailures: 0,
+    refresh: { outcome: "refreshed" },
+  });
+  expect(JSON.parse(h.persisted.at(-1)!)[0]).not.toHaveProperty("failureReason");
+  await refresher.reconcile();
+  expect(h.refresh).toHaveBeenCalledTimes(1);
 });

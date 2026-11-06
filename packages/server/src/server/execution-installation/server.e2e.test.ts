@@ -352,6 +352,20 @@ test("enrollment status is owner-only and reading it cannot approve or dispatch 
       expect(
         (await f.request(`/api/installation/owner/claude/oauth/${upgrade}`, credential, {})).status,
       ).toBe(401);
+  const recovery = "/api/installation/claude/oauth/recovery";
+  expect((await f.request(recovery, undefined, {})).status).toBe(401);
+  expect((await f.request(recovery, "owner-test-password", {})).status).toBe(401);
+  expect(await (await f.request(recovery, "host-agent-test-token")).json()).toEqual({
+    available: false,
+  });
+  expect(
+    (
+      await f.request(recovery, "guest-agent-test-token", {
+        providerId: "fake",
+        configDir: "/fake",
+      })
+    ).status,
+  ).toBe(503);
   const response = await f.request(route, "owner-test-password", {});
   expect(response.status).toBe(200);
   const status = InstallationEnrollmentStatusSchema.parse(await response.json());
