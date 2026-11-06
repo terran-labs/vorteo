@@ -35,7 +35,7 @@ export class HeadlessHostSupervisor {
 
   // Starts the process now, for callers that want startup errors up front.
   public async start(): Promise<void> {
-    await this.ensureProcess();
+    await (await this.ensureProcess()).ready();
   }
 
   public async execute(request: BrowserAutomationExecuteRequest): Promise<ExecutePayload> {
@@ -75,7 +75,12 @@ export class HeadlessHostSupervisor {
     const startedAt = this.now();
     const current = this.input.spawn(this.input.options).then(
       (process) => {
-        void process.exited.then(() => this.handleExit(current, this.now() - startedAt));
+        // A long startup that never became ready is still a failed launch,
+        // not healthy uptime that resets crash backoff.
+        void process.ready().then(
+          () => process.exited.then(() => this.handleExit(current, this.now() - startedAt)),
+          () => this.handleExit(current, 0),
+        );
         if (this.stopped) void process.close();
         return process;
       },

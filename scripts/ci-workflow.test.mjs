@@ -40,6 +40,7 @@ const gatedCiJobs = new Map([
   ["playwright-6", { name: "playwright (shard 6/8)", contract: "browser" }],
   ["playwright-7", { name: "playwright (shard 7/8)", contract: "browser" }],
   ["playwright-8", { name: "playwright (shard 8/8)", contract: "browser" }],
+  ["playwright-smoke", { name: "playwright (smoke)", contract: "browser" }],
   ["cli-tests-1", { name: "cli-tests (shard 1/3)", contract: "cli" }],
   ["cli-tests-2", { name: "cli-tests (shard 2/3)", contract: "cli" }],
   ["cli-tests-3", { name: "cli-tests (shard 3/3)", contract: "cli" }],
@@ -55,6 +56,7 @@ const heavyCiJobs = new Set([
   "desktop-tests-ubuntu",
   "desktop-tests-windows",
   ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
+  "playwright-smoke",
   ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
 ]);
 
@@ -422,11 +424,153 @@ test("heavy suites run only on merge groups, manual and nightly runs and release
     if (jobId === "changes") continue;
     const job = lines.join("\n");
     const isHeavy = heavyCiJobs.has(jobId);
-    assert.match(job, /^    needs: changes$/m, jobId);
-    assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit", jobId);
+    assert.match(
+      job,
+      isHeavy ? /^    needs: \[changes, format, lint, typecheck\]$/m : /^    needs: changes$/m,
+      jobId,
+    );
+    // The smoke replaces the full Playwright suite only when routing says so.
+    const smoke = jobId === "playwright-smoke";
+    assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit" && !smoke, jobId);
     assert.equal(selected(job, { ...all, heavy: "false" }), !isHeavy, jobId);
     // Missing routing outputs fail open to the heavy suites.
-    assert.equal(selected(job, all), jobId !== "cli-unit", jobId);
+    assert.equal(selected(job, all), jobId !== "cli-unit" && !smoke, jobId);
+  }
+  // Merge groups run the Playwright smoke; nightly, manual and release runs the full shards.
+  const e2e = /^      e2e: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
+  for (const [event, ref, full] of [
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", false],
+    ["schedule", "refs/heads/main", true],
+    ["workflow_dispatch", "refs/heads/main", true],
+    ["push", "refs/tags/release-26.11.500-beta", true],
+  ]) {
+    const outputs = {
+      ...all,
+      heavy: "true",
+      e2e: String(runInNewContext(e2e, contextFor(event, ref))),
+    };
+    assert.equal(selected(jobs.get("playwright-1").join("\n"), outputs), full, event);
+    assert.equal(selected(jobs.get("playwright-smoke").join("\n"), outputs), !full, event);
+  }
+  // Model Actions' implicit success() guard as well as its dependency barrier.
+  // A plain expression evaluator would miss the skipped-needs regression.
+  function eligible(job, outputs, results, cancelled) {
+    const dependencies = /^    needs: (.+)$/m.exec(job)[1].replace(/[[\]]/g, "").split(/, */);
+    if (dependencies.some((id) => results[id] === "in_progress")) return false;
+    const expression = condition(job);
+    const success = dependencies.every((id) => results[id] === "success");
+    const hasStatusCheck = /\b(?:success|failure|cancelled|always)\(/.test(expression);
+    if (!hasStatusCheck && !success) return false;
+    const needs = Object.fromEntries(dependencies.map((id) => [id, { result: results[id] }]));
+    needs.changes.outputs = outputs;
+    return runInNewContext(expression, {
+      needs,
+      cancelled: () => cancelled,
+      success: () => success,
+    });
+  }
+  // Compare against direct changes-only dependencies using the same routing.
+  // New routing outputs or heavy jobs must not change failure/skip scheduling.
+  const eventOutputExpressions = [
+    ...jobs
+      .get("changes")
+      .join("\n")
+      .matchAll(/^      (\w+): \$\{\{ (.+) \}\}$/gm),
+  ].filter(([, , expression]) => !expression.includes("steps."));
+  const disabled = Object.fromEntries(
+    [
+      "full",
+      "format",
+      "quality",
+      "hub",
+      "server",
+      "desktop",
+      "app",
+      "sdk",
+      "browser",
+      "relay",
+      "cli",
+    ].map((key) => [key, "false"]),
+  );
+  const completed = {
+    changes: "success",
+    format: "success",
+    lint: "success",
+    typecheck: "success",
+  };
+  for (const [event, ref] of [
+    ["pull_request", "refs/pull/1/merge"],
+    ["push", "refs/heads/main"],
+    ["push", "refs/tags/release-26.11.500-beta"],
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc"],
+    ["workflow_dispatch", "refs/heads/main"],
+    ["schedule", "refs/heads/main"],
+  ]) {
+    const eventOutputs = Object.fromEntries(
+      eventOutputExpressions.map(([, name, expression]) => [
+        name,
+        String(runInNewContext(expression, contextFor(event, ref))),
+      ]),
+    );
+    const routes = [{ full: "true", ...eventOutputs }, {}];
+    if (event === "pull_request") {
+      routes.push({ ...disabled, ...eventOutputs });
+      for (const contract of Object.keys(disabled)) {
+        routes.push({ ...disabled, [contract]: "true", ...eventOutputs });
+      }
+    }
+    for (const outputs of routes) {
+      const entries = [...jobs].filter(([id]) => id !== "changes");
+      const before = JSON.stringify(
+        entries
+          .filter(([, lines]) =>
+            eligible(
+              lines.join("\n").replace(/^    needs: .+$/m, "    needs: changes"),
+              outputs,
+              completed,
+              false,
+            ),
+          )
+          .map(([id]) => id),
+      );
+      for (const results of [
+        completed,
+        { ...completed, lint: "failure" },
+        { ...completed, typecheck: "skipped" },
+        { ...completed, lint: "failure", typecheck: "skipped" },
+      ]) {
+        const after = JSON.stringify(
+          entries
+            .filter(([, lines]) => eligible(lines.join("\n"), outputs, results, false))
+            .map(([id]) => id),
+        );
+        assert.equal(
+          after,
+          before,
+          `${event} ${ref}: identical selected job sets after failure or skip`,
+        );
+        assert.equal(
+          entries.some(([, lines]) => eligible(lines.join("\n"), outputs, results, true)),
+          false,
+        );
+      }
+    }
+  }
+  for (const id of heavyCiJobs) {
+    const job = jobs.get(id).join("\n");
+    const outputs = {
+      full: "true",
+      heavy: "true",
+      e2e: id === "playwright-smoke" ? "false" : "true",
+    };
+    assert.equal(eligible(job, outputs, completed, false), true, `${id} is selected`);
+    for (const required of ["format", "lint", "typecheck"]) {
+      assert.equal(
+        eligible(job, outputs, { ...completed, [required]: "in_progress" }, false),
+        false,
+        `${id} waits for ${required}`,
+      );
+    }
   }
   // Cheap runs replace the Ubuntu integration chain with server unit tests.
   const server = jobs.get("server-tests-ubuntu").join("\n");
@@ -498,7 +642,7 @@ test("stable iOS releases upload once and distribute to external testers before 
 test("eight Playwright shards share two-worker coverage", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 25);
+  assert.equal(jobs.size, 26);
   assert.ok(jobs.has("installer-tests"));
   for (let shard = 1; shard <= 8; shard++) {
     const job = jobs.get(`playwright-${shard}`).join("\n");
@@ -600,7 +744,11 @@ test("Windows units and integration run independently with complete routed cover
   assert.match(integration, /run: npm run test:integration --workspace=@getpaseo\/server/);
   assert.doesNotMatch(integration, /test:unit|server_plugin_tests|server_hub_contract/);
   for (const job of [windows, integration]) {
-    assert.match(job, /^    needs: changes$/m, "both phases become eligible independently");
+    assert.match(
+      job,
+      /^    needs: \[changes, format, lint, typecheck\]$/m,
+      "both phases become eligible independently after required checks finish",
+    );
     assert.match(job, /^    runs-on: windows-latest$/m);
     assert.doesNotMatch(job, /continue-on-error|maxWorkers|--exclude/);
     for (const step of [
