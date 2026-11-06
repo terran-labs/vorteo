@@ -2,6 +2,8 @@
 
 ## Unreleased - 2026-11-05
 
+- Keep System on the Host selected in Environment tabs, restore password re-add guidance, and expose the restart menu as an accessible button. Update upstream maintenance checks to open System disclosures.
+
 - Let browser bundle warm-up use its configured HTTP deadline instead of stopping at Node’s shorter default.
 
 - Merge the latest main into Settings round 4, keeping custom domain controls under System Advanced and retaining tracked Dev recovery.

@@ -61,7 +61,9 @@ function RestartMenu({
   return (
     <>
       <DropdownMenu>
-        <DropdownTrigger accessibilityLabel={`${label} actions`}>More</DropdownTrigger>
+        <DropdownTrigger accessibilityRole="button" accessibilityLabel={`${label} actions`}>
+          More
+        </DropdownTrigger>
         <DropdownMenuContent>
           <DropdownMenuItem onSelect={open}>Restart…</DropdownMenuItem>
         </DropdownMenuContent>
