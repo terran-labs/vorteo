@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -208,7 +209,7 @@ function machine({ revision = INSTALLED, gateFails = 0, devId = DEV_ID, ...optio
         cpSync(path.join(REPOSITORY, "docker"), path.join(target, "docker"), { recursive: true });
       },
     ],
-    ["docker ps", ""],
+    ["docker ps", (args) => (args.includes("-a") ? "" : (options.dockerPorts ?? ""))],
     ["docker image inspect", new Error("No such image")],
     ["docker build", (args) => writeFileSync(args[args.indexOf("--iidfile") + 1], "sha256:dev\n")],
     ["docker inspect", () => (state.gateMode ? NEW_CONTAINER : OLD_CONTAINER)],
@@ -539,7 +540,91 @@ describe("apply", () => {
     expect(existsSync(path.join(legacy.root, "releases", "host-current"))).toBe(false);
     expect(state.restarts).toEqual([path.basename(legacy.coordinatorPlist)]);
   });
+
+  test("a coordinator running a reviewed plan's config is adopted into the installation's own config", async () => {
+    const { context } = machine();
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      dev: false,
+      sourceUpdates: true,
+    });
+    // A later coordinator update runs a newer copy from a plan folder; coordinator.json is stale.
+    const running = path.join(
+      legacy.root,
+      "coordinator-plans",
+      "ordinary-prepared-1",
+      "candidate-config.json",
+    );
+    const planned = JSON.stringify({ ...legacy.config, claudeHostRefresh: true }, null, 2);
+    touch(running, planned);
+    const stale = readFileSync(path.join(legacy.root, "coordinator.json"), "utf8");
+    writeFileSync(
+      legacy.coordinatorPlist,
+      readFileSync(legacy.coordinatorPlist, "utf8").replace(
+        `${legacy.root}/coordinator.json`,
+        running,
+      ),
+    );
+    expect(await detectExisting(context)).toMatchObject({
+      kind: "legacy-host",
+      paths: { root: legacy.root, coordinatorConfig: running },
+    });
+    context.root = legacy.root;
+    const { ok } = await adopt(context);
+    expect(ok).toBe(true);
+    // The plan's pinned file is read, never rewritten; the installation's own file gets the
+    // running settings plus the deployment, and the service now runs it.
+    expect(readFileSync(running, "utf8")).toBe(planned);
+    const own = path.join(legacy.root, "coordinator.json");
+    expect(JSON.parse(readFileSync(own, "utf8"))).toMatchObject({
+      claudeHostRefresh: true,
+      deployment: { installRoot: legacy.root },
+    });
+    expect(readFileSync(`${own}.before-adoption`, "utf8")).toBe(stale);
+    expect(serviceArguments(readFileSync(legacy.coordinatorPlist, "utf8")).at(-1)).toBe(own);
+    const record = JSON.parse(readFileSync(path.join(legacy.root, "installation.json"), "utf8"));
+    expect(record.configFile).toBe(own);
+  });
+
+  test("a Dev the installer does not manage is left exactly as it is", async () => {
+    const { context, state } = machine({ dockerPorts: "127.0.0.1:6768->6767/tcp|/srv/hand-built" });
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      sourceUpdates: true,
+    });
+    // A hand-built Compose project: no installer marker, so nothing identifies it as managed.
+    rmSync(path.join(legacy.deployment, ".container-installation"));
+    context.root = legacy.root;
+    const { plan, summary } = await createHostAdoptionPlan(context);
+    expect(plan).toMatchObject({ devContainer: false, devUnmanaged: true });
+    expect(plan.steps.filter((step) => step.startsWith("dev-") || step === "remote")).toEqual([]);
+    expect(summary.join("\n")).toContain("stays exactly as it is");
+    const { ok } = await adopt(context);
+    expect(ok).toBe(true);
+    expect(state.gateMode).toBe(false);
+    expect(context.run.calls.filter(touchesDevImageOrGate)).toEqual([]);
+    const config = JSON.parse(readFileSync(path.join(legacy.root, "coordinator.json"), "utf8"));
+    expect(config.public.environments).toEqual(legacy.config.public.environments);
+    expect(config.container).toEqual(legacy.config.container);
+    expect(config.deployment.containerDirectory).toBeUndefined();
+  });
+
+  test("Dev counts as unmanaged only on positive evidence, never because detection missed it", async () => {
+    const { context } = machine();
+    const legacy = legacyInstallation(context.home, {
+      root: labRoot(context),
+      sourceUpdates: true,
+    });
+    rmSync(path.join(legacy.deployment, ".container-installation"));
+    context.root = legacy.root;
+    await expect(createHostAdoptionPlan(context)).rejects.toThrow("No running container publishes");
+  });
 });
+
+/** A recorded command that would build the Dev image or switch Dev to gate mode. */
+function touchesDevImageOrGate(call) {
+  return call.args.some((arg) => /gate\.sh|docker\/base\/Dockerfile/.test(String(arg)));
+}
 
 describe("coordinator configuration contract", () => {
   const reader = path.resolve(

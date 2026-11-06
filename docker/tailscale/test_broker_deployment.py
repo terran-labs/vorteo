@@ -157,6 +157,8 @@ class NativeDeploymentTests(unittest.TestCase):
         class Kernel:
             def boot(self): return boot
             def pids(self, uid): return []
+            def info(self, pid): return {'pid': pid, 'parent': 1, 'uids': [os.getuid()] * 3, 'birth': [1, 2]}
+            def argv(self, pid): return ['/bin/zsh']
         def invoke(argv):
             action = argv[1]
             domain = f'gui/{os.getuid()}'
@@ -267,10 +269,94 @@ class NativeDeploymentTests(unittest.TestCase):
     def test_unlisted_route_generation_refuses_before_mutation(self):
         worker, observer, states, effects = self.native()
         observer.kernel.pids = lambda uid: [42]
-        observer.process = lambda pid: {'pid': 42, 'birth': [1,2], 'uid': os.getuid(),
-                                       'argv': observer.bindings[0]['argv']}
+        observer.kernel.argv = lambda pid: observer.bindings[0]['argv']
         with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
         self.assertEqual(effects, [])
+
+    def test_mixed_uid_process_in_inventory_is_skipped(self):
+        # loginwindow: effective UID is the owner, real and saved UIDs are root.
+        worker, observer, states, effects = self.native()
+        uid = os.getuid()
+        observer.kernel.pids = lambda owner: [416, 42]
+        observer.kernel.info = lambda pid: {'pid': pid, 'parent': 1, 'birth': [1, 2],
+                                            'uids': [uid, 0, 0] if pid == 416 else [uid] * 3}
+        observer.kernel.argv = lambda pid: ['/System/Library/CoreServices/loginwindow'] if pid == 416 else ['/bin/zsh']
+        observer.assert_no_unlisted([])
+        observer.validate()
+        # An owned route caller beside it still refuses.
+        observer.kernel.argv = lambda pid: ['/System/Library/CoreServices/loginwindow'] if pid == 416 else observer.bindings[0]['argv']
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): observer.assert_no_unlisted([])
+        self.assertEqual(effects, [])
+
+    def test_mixed_uid_route_caller_refuses(self):
+        worker, observer, states, effects = self.native()
+        uid = os.getuid()
+        observer.kernel.pids = lambda owner: [42]
+        observer.kernel.info = lambda pid: {'pid': pid, 'parent': 1, 'birth': [1, 2], 'uids': [uid, 0, 0]}
+        observer.kernel.argv = lambda pid: ['/python', observer.bindings[1]['argv'][2]]
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): observer.assert_no_unlisted([])
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): worker.execute()
+        self.assertEqual(effects, [])
+
+    def test_mixed_uid_broker_module_or_root_refuses(self):
+        worker, observer, states, effects = self.native()
+        uid = os.getuid()
+        observer.kernel.pids = lambda owner: [42]
+        observer.kernel.info = lambda pid: {'pid': pid, 'parent': 1, 'birth': [1, 2], 'uids': [uid, 0, 0]}
+        for argv in (['/python', '-c', 'import channel_identity'],
+                     ['/bin/cat', observer.bindings[0]['root'] + '/host-config.json']):
+            observer.kernel.argv = lambda pid, argv=argv: argv
+            with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): observer.assert_no_unlisted([])
+
+    def test_mixed_to_owner_transition_across_sweeps_refuses(self):
+        worker, observer, states, effects = self.native()
+        uid = os.getuid()
+        current = {'uids': [uid, 0, 0], 'argv': ['/usr/libexec/helper']}
+        observer.kernel.pids = lambda owner: [42]
+        observer.kernel.info = lambda pid: {'pid': pid, 'parent': 1, 'birth': [1, 2], 'uids': current['uids']}
+        observer.kernel.argv = lambda pid: current['argv']
+        observer.assert_no_unlisted([])
+        current.update(uids=[uid] * 3, argv=observer.bindings[0]['argv'])
+        with self.assertRaisesRegex(ValueError, 'Unlisted broker caller'): observer.assert_no_unlisted([])
+
+    def test_unreadable_mixed_uid_argv_refuses(self):
+        worker, observer, states, effects = self.native()
+        uid = os.getuid()
+        observer.kernel.pids = lambda owner: [42]
+        observer.kernel.info = lambda pid: {'pid': pid, 'parent': 1, 'birth': [1, 2], 'uids': [uid, 0, 0]}
+        def denied(pid): raise PermissionError(1, 'Native arguments unavailable')
+        observer.kernel.argv = denied
+        with self.assertRaises(OSError): observer.assert_no_unlisted([])
+
+    def test_credential_transition_during_inventory_refuses(self):
+        worker, observer, states, effects = self.native()
+        uid = os.getuid()
+        reads = iter([[uid, 0, 0], [uid] * 3])
+        observer.kernel.pids = lambda owner: [42]
+        observer.kernel.info = lambda pid: {'pid': pid, 'parent': 1, 'birth': [1, 2], 'uids': next(reads)}
+        with self.assertRaisesRegex(ValueError, 'custody changed'): observer.assert_no_unlisted([])
+
+    def test_vanished_inventory_process_is_ignored(self):
+        from broker_deployment_kernel import ProcessGone
+        worker, observer, states, effects = self.native()
+        def gone(pid): raise ProcessGone(pid)
+        observer.kernel.pids = lambda owner: [42]
+        observer.kernel.info = gone
+        observer.assert_no_unlisted([])
+
+    def test_strict_custody_still_applies_to_participants(self):
+        worker, observer, states, effects = self.native()
+        uid = os.getuid()
+        observer.kernel.info = lambda pid: {'pid': pid, 'parent': 1, 'birth': [1, 2], 'uids': [uid, 0, 0]}
+        observer.kernel.argv = lambda pid: ['/python']
+        with self.assertRaisesRegex(ValueError, 'custody changed'): observer.process(416)
+
+    def test_boot_uuid_comparison_ignores_case(self):
+        worker, observer, states, effects = self.native()
+        self.plan['bootUUID'] = self.plan['bootUUID'].upper()
+        self.assertEqual(observer.state(observer.bindings[0])['disposition'], 'loaded')
+        self.plan['bootUUID'] = str(uuid.uuid4())
+        with self.assertRaisesRegex(ValueError, 'boot changed'): observer.state(observer.bindings[0])
 
     def test_revoked_parent_guard_retains_suppression_without_files(self):
         worker, observer, states, effects = self.native()

@@ -43,6 +43,19 @@ const gatedCiJobs = new Map([
   ["cli-tests-1", { name: "cli-tests (shard 1/3)", contract: "cli" }],
   ["cli-tests-2", { name: "cli-tests (shard 2/3)", contract: "cli" }],
   ["cli-tests-3", { name: "cli-tests (shard 3/3)", contract: "cli" }],
+  ["cli-unit", { name: "cli-unit", contract: "cli" }],
+]);
+
+// Vorteo: suites that run only on merge groups, manual and nightly runs and release tags.
+const heavyCiJobs = new Set([
+  "installer-tests",
+  "server-tests-windows",
+  "server-integration-windows",
+  "server-tests-macos",
+  "desktop-tests-ubuntu",
+  "desktop-tests-windows",
+  ...Array.from({ length: 8 }, (_, index) => `playwright-${index + 1}`),
+  ...Array.from({ length: 3 }, (_, index) => `cli-tests-${index + 1}`),
 ]);
 
 function jobBlocks(source) {
@@ -113,10 +126,7 @@ test("gated checks are statically named jobs with real job-level gating", () => 
 });
 
 test("pull-request checks run for every base branch, including stacked PRs", () => {
-  for (const workflowPath of [
-    ciWorkflowPath,
-    new URL(".github/workflows/desktop-packages.yml", repoRoot),
-  ]) {
+  for (const workflowPath of [ciWorkflowPath]) {
     const trigger = readFileSync(workflowPath, "utf8").split("jobs:", 1)[0];
     const pullRequest = trigger.match(/^  pull_request:\n((?:    .*\n)*)/m);
     assert.ok(pullRequest, `${workflowPath.pathname} runs on pull requests`);
@@ -375,6 +385,57 @@ test("browser and desktop tests have exclusive, directory-owned suites", () => {
   ]);
 });
 
+test("heavy suites run only on merge groups, manual and nightly runs and release tags", () => {
+  const source = readFileSync(ciWorkflowPath, "utf8");
+  const trigger = source.split("jobs:", 1)[0];
+  for (const event of ["merge_group", "workflow_dispatch", "schedule"]) {
+    assert.match(trigger, new RegExp(`^  ${event}:`, "m"));
+  }
+  assert.match(trigger, /push:\n\s+branches: \[main\]\n\s+tags: \["release-\*"\]/);
+  const secretScan = readFileSync(new URL(".github/workflows/secret-scan.yml", repoRoot), "utf8");
+  assert.match(secretScan.split("jobs:", 1)[0], /^  merge_group:/m, "scan is required");
+
+  const jobs = jobBlocks(source);
+  const heavy = /^      heavy: \$\{\{ (.+) \}\}$/m.exec(jobs.get("changes").join("\n"))[1];
+  const contextFor = (event_name, ref = "refs/heads/main") => ({
+    github: { event_name, ref },
+    contains: (list, item) => list.includes(item),
+    fromJSON: JSON.parse,
+    startsWith: (text, prefix) => text.startsWith(prefix),
+  });
+  for (const [event, ref, expected] of [
+    ["pull_request", "refs/pull/1/merge", false],
+    ["push", "refs/heads/main", false],
+    ["push", "refs/tags/release-26.11.500-beta", true],
+    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", true],
+    ["workflow_dispatch", "refs/heads/main", true],
+    ["schedule", "refs/heads/main", true],
+  ]) {
+    assert.equal(runInNewContext(heavy, contextFor(event, ref)), expected, `${event} ${ref}`);
+  }
+
+  const condition = (job) => /^    if: \$\{\{ (.+) \}\}$/m.exec(job)?.[1] ?? "";
+  const selected = (job, outputs) =>
+    runInNewContext(condition(job), { needs: { changes: { outputs } }, cancelled: () => false });
+  const all = { full: "true" };
+  for (const [jobId, lines] of jobs) {
+    if (jobId === "changes") continue;
+    const job = lines.join("\n");
+    const isHeavy = heavyCiJobs.has(jobId);
+    assert.match(job, /^    needs: changes$/m, jobId);
+    assert.equal(selected(job, { ...all, heavy: "true" }), jobId !== "cli-unit", jobId);
+    assert.equal(selected(job, { ...all, heavy: "false" }), !isHeavy, jobId);
+    // Missing routing outputs fail open to the heavy suites.
+    assert.equal(selected(job, all), jobId !== "cli-unit", jobId);
+  }
+  // Cheap runs replace the Ubuntu integration chain with server unit tests.
+  const server = jobs.get("server-tests-ubuntu").join("\n");
+  assert.match(
+    server,
+    /- name: Run server unit tests\n\s+if: .*heavy == 'false'.*\n\s+run: npm run test:unit --workspace=@getpaseo\/server/,
+  );
+});
+
 test("Nix packaging runs on main without allocating pull-request runners", () => {
   const source = readFileSync(nixWorkflowPath, "utf8");
   const trigger = source.split("jobs:", 1)[0];
@@ -383,22 +444,23 @@ test("Nix packaging runs on main without allocating pull-request runners", () =>
   assert.doesNotMatch(source, /dorny\/paths-filter/);
 });
 
-test("container installation smokes pull requests that change the shipped container", () => {
+test("container installation smokes run after merge and on demand, not on pull requests", () => {
   const source = readFileSync(dockerWorkflowPath, "utf8");
   const trigger = source.split("jobs:", 1)[0];
-  assert.match(trigger, /pull_request:\s*\n\s+branches: \[main\]\s*\n\s+paths:/);
-  assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
+  assert.doesNotMatch(trigger, /^  pull_request:/m);
+  assert.match(trigger, /push:\s*\n\s+branches: \[main\]\s*\n\s+paths:/);
+  assert.match(trigger, /^  workflow_dispatch:/m);
   assert.match(trigger, /- "docker\/\*\*"/);
   assert.match(source, /architecture: \[amd64, arm64\]/);
   assert.match(source, /bash docker\/multiplex\/smoke.sh paseo-container:check/);
 });
 
-test("desktop packaging smokes main pushes and only the pull requests that touch packaging", () => {
+test("desktop packaging smokes main pushes and manual runs, not pull requests", () => {
   const source = readFileSync(new URL(".github/workflows/desktop-packages.yml", repoRoot), "utf8");
   const trigger = source.split("jobs:", 1)[0];
   assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
-  assert.match(trigger, /pull_request:\s*\n\s+paths:/);
-  assert.match(trigger, /- "packages\/desktop\/\*\*"/);
+  assert.doesNotMatch(trigger, /^  pull_request:/m);
+  assert.match(trigger, /^  workflow_dispatch:/m);
   assert.doesNotMatch(source, /dorny\/paths-filter/);
   for (const action of ["actions/checkout", "actions/setup-node", "actions/upload-artifact"]) {
     assert.match(source, new RegExp(`${action}@[0-9a-f]{40} # v\\d+\\.\\d+\\.\\d+`));
@@ -436,7 +498,7 @@ test("stable iOS releases upload once and distribute to external testers before 
 test("eight Playwright shards share two-worker coverage", () => {
   const source = readFileSync(ciWorkflowPath, "utf8");
   const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 24);
+  assert.equal(jobs.size, 25);
   assert.ok(jobs.has("installer-tests"));
   for (let shard = 1; shard <= 8; shard++) {
     const job = jobs.get(`playwright-${shard}`).join("\n");

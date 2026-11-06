@@ -50,12 +50,25 @@ export function writeJson(file, data) {
 // Commands still running, so a stopped installer never leaves a build or Docker step behind.
 const running = new Set();
 
+/**
+ * The macOS Tailscale app's binary acts as its CLI only when it sees a terminal or
+ * TAILSCALE_BE_CLI=1. Under launchd, as when the coordinator starts adoption, it tries to
+ * open the GUI instead, prints "The Tailscale GUI failed to start" and exits 0, which reads
+ * as signed out. Every Tailscale call therefore asks for CLI mode; other CLIs ignore it.
+ */
+export function commandEnvironment(command, env) {
+  if (!/^tailscale$/i.test(path.basename(command))) return env;
+  return { ...(env ?? process.env), TAILSCALE_BE_CLI: "1" };
+}
+
 /** Runs a command without a shell and returns its trimmed standard output. */
 export async function run(command, args, options = {}) {
   const { input, onOutput, ...execOptions } = options;
+  const env = commandEnvironment(command, execOptions.env);
   const pending = execute(command, args, {
     maxBuffer: 32 * 1024 * 1024,
     ...execOptions,
+    ...(env ? { env } : {}),
   });
   let outputError = null;
   if (onOutput) {
