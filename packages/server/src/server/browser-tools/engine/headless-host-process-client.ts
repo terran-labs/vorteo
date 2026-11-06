@@ -15,6 +15,7 @@ type ExecutePayload = BrowserAutomationExecuteResponse["payload"];
 
 // Return diagnostics before the broker's 15-second request deadline.
 const READY_TIMEOUT_MS = 10_000;
+const STARTUP_TIMEOUT_MS = 60_000;
 const CLOSE_TIMEOUT_MS = 10_000;
 
 export interface HeadlessHostProcessExit {
@@ -23,6 +24,7 @@ export interface HeadlessHostProcessExit {
 }
 
 export interface HeadlessHostProcess {
+  ready(): Promise<void>;
   execute(request: BrowserAutomationExecuteRequest): Promise<ExecutePayload>;
   close(): Promise<void>;
   readonly exited: Promise<HeadlessHostProcessExit>;
@@ -32,6 +34,7 @@ export interface SpawnHeadlessHostProcessInput {
   options: HeadlessHostProcessOptions;
   launch?: () => ChildProcess;
   readyTimeoutMs?: number;
+  startupTimeoutMs?: number;
   onStderr?: (text: string) => void;
   onInvalidMessage?: () => void;
 }
@@ -127,7 +130,29 @@ export function spawnHeadlessHostProcess(
 
   const handle: HeadlessHostProcess = {
     exited,
-    execute(request) {
+    ready() {
+      return ready;
+    },
+    async execute(request) {
+      // A request deadline does not end the launch. The supervisor retains
+      // this handle so a later request can use a slow but healthy browser.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              failure(
+                `The headless browser host did not become ready within ${input.readyTimeoutMs ?? READY_TIMEOUT_MS}ms.`,
+              ),
+            ),
+          input.readyTimeoutMs ?? READY_TIMEOUT_MS,
+        );
+      });
+      try {
+        await Promise.race([ready, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
       if (exitState || !child.connected) {
         return Promise.reject(
           new HeadlessHostProcessError("The headless browser host is not running."),
@@ -160,20 +185,20 @@ export function spawnHeadlessHostProcess(
     },
   };
 
-  return new Promise<HeadlessHostProcess>((resolve, reject) => {
+  const ready = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       void handle.close();
       reject(
         failure(
-          `The headless browser host did not become ready within ${input.readyTimeoutMs ?? READY_TIMEOUT_MS}ms.`,
+          `The headless browser host did not become ready within ${input.startupTimeoutMs ?? STARTUP_TIMEOUT_MS}ms.`,
         ),
       );
-    }, input.readyTimeoutMs ?? READY_TIMEOUT_MS);
+    }, input.startupTimeoutMs ?? STARTUP_TIMEOUT_MS);
     child.once("error", (error) => {
       clearTimeout(timer);
       reject(failure(`The headless browser host failed to launch: ${error.message}`));
     });
-    // After ready, this rejection is a no-op; the exit reaches callers through `exited`.
+    // After readiness, the exit reaches callers through `exited`.
     void (async () => {
       const exit = await exited;
       clearTimeout(timer);
@@ -191,10 +216,21 @@ export function spawnHeadlessHostProcess(
       }
       if (message.type === "ready") {
         clearTimeout(timer);
-        resolve(handle);
+        resolve();
       } else if (message.type === "fatal") {
         clearTimeout(timer);
-        reject(failure(message.message));
+        // Playwright errors already carry browser logs, even when the runner
+        // trimmed off their heading. Other fatal errors still need stderr.
+        const includesBrowserLogs =
+          message.message.includes("Browser logs:") || message.message.includes("[err]");
+        let error: HeadlessHostProcessError;
+        if (includesBrowserLogs) {
+          error = new HeadlessHostProcessError(message.message);
+        } else {
+          error = failure(message.message);
+        }
+        error.message = error.message.slice(-4_000);
+        reject(error);
         void handle.close();
       } else if (message.type === "response") {
         const requestId = message.payload.requestId;
@@ -205,4 +241,8 @@ export function spawnHeadlessHostProcess(
       }
     });
   });
+  // The process can fail before the first request subscribes to readiness.
+  // Keep that rejection observed; ready() and execute() still receive it.
+  void ready.catch(() => {});
+  return Promise.resolve(handle);
 }
