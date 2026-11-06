@@ -480,7 +480,7 @@ test("a worktree uses its repository project and leaves an unrelated explicit pr
 
   expect(result.workspace.projectId).toBe("prj_0000000000000001");
   expect(deps.projects.get(result.workspace.projectId)).toMatchObject({
-    rootPath: result.repoRoot,
+    rootPath: path.resolve(result.repoRoot),
     kind: "git",
     displayName: "repo",
   });
