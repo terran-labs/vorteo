@@ -119,10 +119,66 @@ export function upgradeOffer(input: {
   return latestRelease;
 }
 
-export function upgradeApprovalText(hasDev: boolean): string {
+export interface UpgradeDurationEstimate {
+  totalMs: number;
+  /** When the Host daemon restarted, measured from the start; Host agents are interrupted then. */
+  hostRestartMs: number | null;
+}
+
+/** Measured from this installation's most recent successful upgrade; null without one. */
+export function upgradeDurationEstimate(
+  upgrades: readonly InstallationUpgrade[],
+): UpgradeDurationEstimate | null {
+  const at = (value: string | undefined) => (value ? Date.parse(value) : Number.NaN);
+  for (const upgrade of [...upgrades].sort((a, b) => at(b.createdAt) - at(a.createdAt))) {
+    if (upgrade.status !== "succeeded") continue;
+    const starts = upgrade.steps.map((step) => at(step.startedAt)).filter(Number.isFinite);
+    const ends = upgrade.steps.map((step) => at(step.finishedAt)).filter(Number.isFinite);
+    if (!starts.length || !ends.length) continue;
+    const start = Math.min(...starts);
+    const host = upgrade.steps.find((step) => step.name === "host" && step.status === "succeeded");
+    const hostEnd = at(host?.finishedAt);
+    return {
+      totalMs: Math.max(...ends) - start,
+      hostRestartMs: Number.isFinite(hostEnd) ? hostEnd - start : null,
+    };
+  }
+  return null;
+}
+
+function minutes(ms: number): number {
+  return Math.max(1, Math.round(ms / 60_000));
+}
+
+/**
+ * How long the owner should expect an upgrade to take. Without history, the ranges reflect
+ * measured upgrades: the Host build takes several minutes, and rebuilding the Dev image is
+ * usually the longest step.
+ */
+export function upgradeDurationText(
+  estimate: UpgradeDurationEstimate | null,
+  hasDev: boolean,
+): string {
+  if (estimate) {
+    const restart =
+      estimate.hostRestartMs === null
+        ? ""
+        : `, and Host agents were interrupted after ${minutes(estimate.hostRestartMs)}`;
+    return `The last upgrade here took about ${minutes(estimate.totalMs)} minutes${restart}.`;
+  }
   return hasDev
+    ? "Expect about 20 to 30 minutes, longer on slower computers. Host agents are interrupted after the Host build, roughly 5 to 10 minutes in; Dev agents near the end."
+    : "Expect about 5 to 15 minutes, longer on slower computers.";
+}
+
+export function upgradeApprovalText(
+  hasDev: boolean,
+  upgrades: readonly InstallationUpgrade[] = [],
+): string {
+  const steps = hasDev
     ? "Approval takes a safety snapshot, then restarts the Host daemon, replaces the installation coordinator and recreates the Dev container. Running agents are interrupted."
     : "Approval takes a safety snapshot, then restarts the Host daemon and replaces the installation coordinator. Running agents are interrupted.";
+  return `${steps} ${upgradeDurationText(upgradeDurationEstimate(upgrades), hasDev)}`;
 }
 
 const UPGRADE_STATUS_LABELS: Record<InstallationUpgrade["status"], string> = {

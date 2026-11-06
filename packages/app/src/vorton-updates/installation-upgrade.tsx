@@ -41,7 +41,7 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
       {offer ? (
         <>
           <Text style={styles.hint}>
-            {`The installation coordinator can upgrade to ${offer} after you review it. ${upgradeApprovalText(status.data.container)}`}
+            {`The installation coordinator can upgrade to ${offer} after you review it. ${upgradeApprovalText(status.data.container, status.data.upgrades)}`}
           </Text>
           <View style={styles.actions}>
             <Button
@@ -61,6 +61,7 @@ export function InstallationUpgradeSection({ update }: { update: VortonUpdate | 
           client={client}
           upgrade={shown}
           hasDev={status.data.container}
+          upgrades={status.data.upgrades}
         />
       ) : null}
       {create.error ? (
