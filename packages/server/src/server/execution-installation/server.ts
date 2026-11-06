@@ -612,6 +612,11 @@ export function createInstallationServer(
       coordinatorSettings.dispatching()
         ? "Wait for the coordinator settings change to finish."
         : null,
+    // A coordinator update restarts the coordinator; never under an open coordinator request.
+    coordinatorFollowConflict: () =>
+      coordinatorRequests && openBootstrapRequests(coordinatorRequests.list()).length
+        ? "Wait for the open coordinator request to finish."
+        : null,
   });
   const requireReleaseRuntime = () => {
     if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
@@ -2831,7 +2836,9 @@ export function createInstallationServer(
   app.get("/api/installation/update-status", authenticateUpdate, (_req, res) => {
     res.json({
       ...requireUpdates().agentStatus(),
-      coordinatorFollow: requireReleaseRuntime().coordinatorFollow.agentStatus(),
+      ...(releaseRuntime
+        ? { coordinatorFollow: releaseRuntime.coordinatorFollow.agentStatus() }
+        : {}),
       coordinatorSettings: coordinatorSettings.status(),
     });
   });

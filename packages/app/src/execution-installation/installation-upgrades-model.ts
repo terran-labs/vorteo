@@ -261,15 +261,38 @@ export function upgradeStepRows(upgrade: InstallationUpgrade): UpgradeStepRow[] 
  */
 export type CoordinatorFollowView =
   | { kind: "hidden" }
-  | { kind: "offer"; next: string }
+  | {
+      kind: "offer";
+      next: string;
+      current: string;
+      /** The last finished attempt, shown as context so a failed one can be retried. */
+      last: CoordinatorFollowJob | null;
+    }
   | { kind: "job"; job: CoordinatorFollowJob };
+
+const FINISHED_FOLLOW = new Set<CoordinatorFollowJob["status"]>([
+  "succeeded",
+  "failed",
+  "rolled-back",
+  "rejected",
+  "cancelled",
+]);
 
 export function coordinatorFollowView(
   status: CoordinatorFollowStatus | null | undefined,
 ): CoordinatorFollowView {
-  if (status?.job) return { kind: "job", job: status.job };
-  if (status?.available && status.current)
-    return { kind: "offer", next: status.current.hostRelease };
+  const job = status?.job ?? null;
+  const finished = job !== null && FINISHED_FOLLOW.has(job.status);
+  // A finished attempt never hides a new offer: after a failure, rollback or a later Host
+  // update the owner can start again at once.
+  if (status?.available && status.current && (!job || finished))
+    return {
+      kind: "offer",
+      next: status.current.hostRelease,
+      current: status.current.coordinatorRelease,
+      last: job,
+    };
+  if (job) return { kind: "job", job };
   return { kind: "hidden" };
 }
 

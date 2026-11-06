@@ -66,6 +66,26 @@ const FOLLOW_CONFIRMATION =
  * Moves the installation coordinator onto the Host release after Host source updates replaced
  * it. Hidden on older coordinators and when the coordinator already runs the Host release.
  */
+/** A release folder named by its source commit or job, the last folders of its path. */
+function releaseName(release: string): string {
+  return release.split("/").filter(Boolean).slice(-2).join("/");
+}
+
+/** Which release the coordinator runs and which one it moves to, so the owner sees the target. */
+function CoordinatorFollowReleases({ view }: { view: ReturnType<typeof coordinatorFollowView> }) {
+  if (view.kind === "job")
+    return <Text style={styles.text}>{`Release: ${releaseName(view.job.next)}`}</Text>;
+  if (view.kind !== "offer") return null;
+  const failed = view.last && view.last.status !== "succeeded";
+  return (
+    <>
+      <Text style={styles.text}>{`Now: ${releaseName(view.current)}`}</Text>
+      <Text style={styles.text}>{`Moves to the Host release: ${releaseName(view.next)}`}</Text>
+      {failed ? <Text style={styles.text}>{`Last attempt: ${view.last?.detail}`}</Text> : null}
+    </>
+  );
+}
+
 export function CoordinatorFollowCard({ client }: { client: InstallationClient | null }) {
   const controlSize = useVortonTouch() ? "md" : "sm";
   const status = useCoordinatorFollowStatus(client);
@@ -107,6 +127,7 @@ export function CoordinatorFollowCard({ client }: { client: InstallationClient |
       <Text style={styles.text}>
         {job ? job.detail : "The coordinator runs an older release than the Host."}
       </Text>
+      <CoordinatorFollowReleases view={view} />
       {canStart || canCancel ? (
         <View style={styles.actions}>
           {canStart ? (
