@@ -1,6 +1,6 @@
 // Host installation primitives shared by the installer engine and the original
 // macOS Host extension (scripts/install-execution-host.mjs `install`).
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build, privateWrite, run, shellQuote, writeJson } from "./primitives.mjs";
@@ -17,6 +17,8 @@ const SERVER_DIST = "packages/server/dist/server/server";
  * Extracts `revision` from the checkout into `release` and builds the server, the app
  * dependencies and the daemon web interface, each with a private log in `logDir`.
  */
+const DEPENDENCY_INSTALLER = "scripts/install-dependencies.mjs";
+
 export async function buildRelease({
   release,
   revision,
@@ -34,8 +36,28 @@ export async function buildRelease({
   // A reviewed Git archive has no .git directory. Follow the existing snapshot
   // build workflow: install dependencies without repository hooks, run their
   // install hooks, then apply the project's dependency patches explicitly.
+  // The shared dependency cache clones the install another release or checkout already
+  // made for the same lockfile (APFS copy-on-write on macOS); it runs this same npm ci
+  // itself when nothing matches or cloning is unsupported. Releases without it run npm ci.
+  if (existsSync(path.join(release, DEPENDENCY_INSTALLER)))
+    await build(
+      process.execPath,
+      [DEPENDENCY_INSTALLER, "--mode", "build"],
+      release,
+      path.join(logDir, "dependencies.log"),
+      {},
+      runCommand,
+    );
+  else
+    await build(
+      "npm",
+      ["ci", "--ignore-scripts", "--include=dev", "--no-audit", "--no-fund"],
+      release,
+      path.join(logDir, "dependencies.log"),
+      {},
+      runCommand,
+    );
   const steps = [
-    [["ci", "--ignore-scripts", "--include=dev", "--no-audit", "--no-fund"], "dependencies.log"],
     // Builds native addons and replaces the packaged Claude CLI's placeholder executable.
     [["rebuild", "--foreground-scripts"], "dependency-rebuild.log"],
     [["run", "postinstall"], "dependency-patches.log"],

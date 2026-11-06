@@ -37,6 +37,33 @@ RUN set -eux; \
     npm pack --workspace=@getpaseo/server --pack-destination /tmp/paseo-packs; \
     npm pack --workspace=@getpaseo/cli --pack-destination /tmp/paseo-packs
 
+# The package tarballs the release and the image install. A build can replace this stage
+# with `--build-context packs=<folder>` of tarballs packed from the Host release built for
+# the same commit, which skips the compile stages above (dev-release.mjs does that).
+FROM scratch AS packs
+COPY --from=source-pack /tmp/paseo-packs/ /
+
+# A Dev release: the packages below installed under one prefix with this image's Node, so
+# Dev can run a new daemon from a read-only Host mount without rebuilding the image.
+# Only `docker build --target dev-release --output type=local,dest=<folder>` builds it;
+# scripts/installer/dev-release.mjs owns that, and server-entry.cjs selects it at startup.
+FROM ${NODE_IMAGE} AS dev-release-install
+ENV ONNXRUNTIME_NODE_INSTALL=skip
+ARG PASEO_BUILD_COMMIT
+COPY --from=packs / /tmp/paseo-packs
+# BuildKit keeps npm's download cache between releases; it never enters the output.
+RUN --mount=type=cache,id=vorteo-dev-release-npm,target=/root/.npm \
+    set -eux; \
+    echo "${PASEO_BUILD_COMMIT:-}" | grep -Eqx '[a-f0-9]{40}'; \
+    npm install -g --prefix /opt/vorteo-release /tmp/paseo-packs/*.tgz; \
+    entry=/opt/vorteo-release/lib/node_modules/@getpaseo/server/dist/scripts/supervisor-entrypoint.js; \
+    node --check "$entry"; \
+    test -s "$(dirname "$entry")/../server/web-ui/index.html"; \
+    node -e 'const r={format:1,sourceCommit:process.argv[1],node:process.version,modules:process.versions.modules,arch:process.arch}; require("node:fs").writeFileSync("/opt/vorteo-release/.vorteo-dev-release.json", JSON.stringify(r)+"\n")' "$PASEO_BUILD_COMMIT"
+
+FROM scratch AS dev-release
+COPY --from=dev-release-install /opt/vorteo-release/ /
+
 
 FROM ${NODE_IMAGE}
 
@@ -148,7 +175,7 @@ RUN set -eux; \
     command -v setpriv
 
 # Paseo itself changes on every release, so it installs after every stable layer above.
-COPY --from=source-pack /tmp/paseo-packs /tmp/paseo-packs
+COPY --from=packs / /tmp/paseo-packs
 RUN set -eux; \
 	npm install -g /tmp/paseo-packs/*.tgz; \
     rm -rf /tmp/paseo-packs; \
@@ -170,5 +197,11 @@ RUN chmod 0755 /opt/personal-tailscale /opt/personal-tailscale/* /usr/local/bin/
 ENV PASEO_WEB_UI_DIST_DIR=/home/paseo/.paseo/web-ui \
     PASEO_RELAY_ENABLED=false
 LABEL sh.paseo.container-contract="tailscale-v1"
+# This image starts a mounted Dev release when one is selected (server-entry.cjs).
+LABEL sh.vorteo.dev-release="v1"
 ENTRYPOINT ["/usr/bin/tini", "--", "/bin/bash", "/opt/personal-tailscale/entrypoint"]
 HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=3 CMD ["/usr/bin/python3", "-I", "/opt/personal-tailscale/healthcheck"]
+# Last, so a new commit changes only metadata. Upgrades compare it with the target commit
+# to decide whether the image itself needs a rebuild or a Dev release is enough.
+ARG PASEO_BUILD_COMMIT
+LABEL sh.vorteo.dev-image-commit="${PASEO_BUILD_COMMIT}"
