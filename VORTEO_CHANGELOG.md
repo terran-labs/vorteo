@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- The Live dev panel now looks like the app's tooltips, with a tail, closes when you click elsewhere or press Escape, and keeps Vorteo's colors on the static interface.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Folder and section rows swap their icon for the disclosure arrow and lift their calm tone with CSS hover, so neither sticks after the sidebar reflows
 
 ## Unreleased - 2026-11-05
