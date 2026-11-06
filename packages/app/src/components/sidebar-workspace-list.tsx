@@ -1170,19 +1170,13 @@ function ProjectCollapsedTrailing({
   );
 }
 
-/** A calm project row returns to full strength while CSS reports it hovered. */
-function projectTitleStyle(calm: boolean, hoverable: boolean) {
-  if (!calm) return styles.projectTitle;
-  return [styles.projectTitle, styles.calmTitle, hoverable && styles.calmTitleHoverable];
+/** A calm project row stays calm on hover; brightness is kept for things to review. */
+function projectTitleStyle(calm: boolean) {
+  return calm ? [styles.projectTitle, styles.calmTitle] : styles.projectTitle;
 }
 
-function projectTrailingStyle(calm: boolean, hoverable: boolean) {
-  if (!calm) return styles.projectTrailingGroup;
-  return [
-    styles.projectTrailingGroup,
-    styles.calmTrailing,
-    hoverable && styles.calmTrailingHoverable,
-  ];
+function projectTrailingStyle(calm: boolean) {
+  return calm ? [styles.projectTrailingGroup, styles.calmTrailing] : styles.projectTrailingGroup;
 }
 
 function ProjectHeaderRow({
@@ -1303,7 +1297,7 @@ function ProjectHeaderRow({
       />
 
       <View style={styles.projectTitleGroup}>
-        <Text style={projectTitleStyle(calm, hoverable)} numberOfLines={1}>
+        <Text style={projectTitleStyle(calm)} numberOfLines={1}>
           {displayName}
         </Text>
       </View>
@@ -1313,7 +1307,7 @@ function ProjectHeaderRow({
   // Actions are siblings of the project button so each has its own accessible target.
   const trailingContent = (
     <>
-      <View style={projectTrailingStyle(calm, hoverable)}>
+      <View style={projectTrailingStyle(calm)}>
         {taskSummary ? (
           <ProjectCollapsedTrailing
             summary={taskSummary}
@@ -3921,11 +3915,7 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
   },
   calmTitle: { color: theme.colors.foregroundExtraMuted },
-  calmTitleHoverable: groupHoverStyle(PROJECT_ROW_HOVER_GROUP, {
-    color: theme.colors.foregroundMuted,
-  }),
   calmTrailing: { opacity: SIDEBAR_CALM_OPACITY },
-  calmTrailingHoverable: groupHoverStyle(PROJECT_ROW_HOVER_GROUP, { opacity: 1 }),
   projectTitle: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,

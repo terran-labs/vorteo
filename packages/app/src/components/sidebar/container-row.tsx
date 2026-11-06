@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useVortonTouch } from "@/vorton-touch";
-import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
+import { hoverGroup, hoverStyle } from "@/styles/hover";
 import { sidebarIndentStyle } from "./indent";
 import { SidebarCountBadge } from "./sidebar-count-badge";
 import {
@@ -53,9 +53,6 @@ const SECTION_ROW_HOVER_GROUP = "sidebar-section-row";
 const sectionRowStyles = StyleSheet.create((theme) => ({
   group: hoverGroup([SECTION_ROW_HOVER_GROUP, SIDEBAR_LEADING_HOVER_GROUP]),
   hoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
-  titleHoverable: groupHoverStyle(SECTION_ROW_HOVER_GROUP, {
-    color: theme.colors.foregroundMuted,
-  }),
 }));
 
 function collapsibleChevron(collapsible: boolean, collapsed: boolean): SidebarDisclosure {
@@ -140,11 +137,7 @@ export function SidebarSectionRow({
           {icon ?? <SidebarFolderIcon calm cssHover />}
         </SidebarLeadingSlot>
         <Text
-          style={[
-            sidebarContainerRowStyles.title,
-            sidebarContainerRowStyles.calmTitle,
-            !touch && sectionRowStyles.titleHoverable,
-          ]}
+          style={[sidebarContainerRowStyles.title, sidebarContainerRowStyles.calmTitle]}
           numberOfLines={1}
         >
           {title}

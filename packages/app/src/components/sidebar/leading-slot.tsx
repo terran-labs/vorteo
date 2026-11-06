@@ -72,8 +72,8 @@ function SidebarDisclosureChevron({ chevron }: { chevron: "expand" | "collapse" 
 
 /**
  * The folder glyph for folders, Standing and Factory: the workspace kind icon's size. With
- * `cssHover` on web, a calm glyph regains the muted color while its row's
- * {@link SIDEBAR_LEADING_HOVER_GROUP} is hovered, through CSS `color` and `currentColor`.
+ * `cssHover` on web it paints through CSS `color` and `currentColor`, so the row's
+ * {@link SIDEBAR_LEADING_HOVER_GROUP} can swap it for the arrow; hover never brightens it.
  */
 export function SidebarFolderIcon({
   calm = false,
@@ -125,11 +125,6 @@ const styles = StyleSheet.create((theme) => ({
     ...groupHoverStyle(SIDEBAR_LEADING_HOVER_GROUP, { display: "flex" }),
   },
   mutedGlyph: { _web: { color: theme.colors.foregroundMuted } },
-  calmGlyph: {
-    ...groupHoverStyle(
-      SIDEBAR_LEADING_HOVER_GROUP,
-      { color: theme.colors.foregroundMuted },
-      { color: theme.colors.foregroundExtraMuted },
-    ),
-  },
+  // Calm stays calm on hover: brighter glyphs are kept for things to review.
+  calmGlyph: { _web: { color: theme.colors.foregroundExtraMuted } },
 }));

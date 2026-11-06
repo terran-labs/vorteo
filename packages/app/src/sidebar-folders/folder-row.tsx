@@ -33,7 +33,7 @@ import {
   type SidebarDisclosure,
 } from "@/components/sidebar/leading-slot";
 import type { Theme } from "@/styles/theme";
-import { groupHoverStyle, hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
+import { hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import {
   toggleSidebarFolderCollapsed,
   useCreateSidebarFolderAction,
@@ -267,7 +267,6 @@ export function SidebarFolderRow({
             style={[
               sidebarContainerRowStyles.title,
               !contextMenuOpen && sidebarContainerRowStyles.calmTitle,
-              !contextMenuOpen && styles.titleHoverable,
             ]}
             numberOfLines={1}
           >
@@ -314,7 +313,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   rowGroup: hoverGroup([FOLDER_ROW_HOVER_GROUP, SIDEBAR_LEADING_HOVER_GROUP]),
   // A calm title regains full strength while the row is hovered.
-  titleHoverable: groupHoverStyle(FOLDER_ROW_HOVER_GROUP, { color: theme.colors.foregroundMuted }),
   rowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   kebabReveal: revealOnGroupHover(FOLDER_ROW_HOVER_GROUP),
   kebab: {
