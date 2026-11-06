@@ -1,5 +1,61 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-06): Added a direct merge-queue enqueue, pinned to the tested head, to the publisher, plus one regression test that fails without it. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Updated the delivery guide and existing fake GitHub tests for queue submission, removal and head mismatch. The Builds guard and repository protections are unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Generalized the retained-registration alias check in the preview broker and added focused security regression coverage. Inventory updated; README overview and onboarding are unchanged. Request expiry and inventory timeouts remain unchanged. No deployment performed.
+
+Maintenance review (2026-11-06): Updated the headless browser inventory to distinguish the request deadline from the process startup budget. README overview and onboarding, sandbox flags, container settings and wire error shapes are unchanged.
+
+Maintenance review (2026-11-06): Owner-approved CI routing change: added the `e2e` routing output and the `playwright (smoke)` job, gated the eight shards on `e2e`, and extended the CI workflow test and testing docs. Required checks are unchanged. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Merged current `main` into `live/main` for delivery, keeping both sides. The sidebar keeps live's CSS hover and calm rows and gains main's Pinned folder row and pin marker. The installation upgrade card keeps live's step layout and gains main's release notes and install decisions. Custom domain settings stay in Installation controls. The merge also adds the trailing icon slot constant, removes stale hover props from the status list and switches raw scrollers to the shared fading scrollers, all of which `live/main` needed in order to typecheck and lint. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Merged main (Voice key sync and the Factory Overview) into the Live dev publication. The one conflict, in the sidebar list action row, kept the Live dev CSS hover version; main's change there was a hover-state rewrite for the Factory Overview row, whose props and caller are unchanged. No behavior change beyond the two merged features.
+
+Maintenance review (2026-11-06): Reviewed synchronized projects and project organization. Repository matching now recognizes filesystem aliases without changing the repository ownership policy. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Reviewed installation account connection checks against the documented local metadata contract. Runtime behavior, README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Reviewed service principal reconnect coverage. Production authorization and transport behavior, README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Reviewed shared Voice credentials and published editor configuration. The generated schema now describes existing daemon behavior. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Added the missing changelog bullet to a change fragment that arrived through a merge made on GitHub, which skips the commit hook. No behavior change. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Merged current `main` into the Dev release mount and shared-server branch, and moved its changelog entries into this change fragment. The Dev image caching entry already has its own fragment. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Merged main into the Dev image layer caching branch and moved its changelog entry into a change fragment, then formatted the manifest script, which failed the format check. No behavior change.
+
+Maintenance review (2026-11-06): Delegated Dev agent creation relays Dev's settings admission refusal as a 502 with that cause. The Host never had a 5 second creation deadline: its client waits for Dev's reply and the installation client allows 60 seconds, so the 500 came from the coordinator masking Dev's reported error. Admission errors carry the optional `installation_settings_admission` creation error code, the client keeps a creation failure's code on the thrown error, and only that code's messages are relayed. A test asserts the installation client deadline stays at least twice Dev's 5 second admission timeout. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Resolved the workflow and test conflicts by keeping main’s smoke-versus-full-suite selection and the scheduling prerequisites for every heavy job. Required check definitions, suite commands, README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): CI suite selection and required check definitions are unchanged. The scheduling dependencies also apply to manual, nightly and release-tag runs. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Merged current `main` into the CI merge-queue and change-fragment branch; both sides kept and no behavior changed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Updated the headless browser inventory for bounded startup failures. Chromium sandbox flags, the Dev image, container settings and wire error shapes are unchanged. The zygote crash remains unresolved. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-06): Agent MCP requests are still served statelessly; the transport setup moved from bootstrap into `serveStatelessAgentMcpRequest` so the test exercises the same configuration. Protocol support is unchanged at the SDK's 2025 revisions. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): The installation owns shared Voice key and endpoint pairs. Existing security fixes remain in place while current main is integrated. The customizations inventory records the remaining delivery limitation; README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): Live tweak by Setup-token reset test: Tests confirm setup-token Claude accounts still never read native credentials when resets are checked.
+
+Maintenance review (2026-11-05): Live tweak by No hover lift: Hovering sidebar headings no longer brightens them; brightness now only marks something to review.
+
+Maintenance review (2026-11-05): Settings and profile admission accept a gate-mode Dev's coordinator origin, which the managed Dev client already accepted, so a gate-mode Dev no longer fails its first settings read. One shared rule in `client-origin.ts` decides for all three: HTTPS, Host loopback, or `host.docker.internal` with a four- or five-digit port from a container client while `PASEO_NETWORK_MODE` is `gate`. The network gate entry is updated. Source only; not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): Factory Overview names its project using the same display-name resolver as the sidebar. Factory shortcut coverage follows the consolidated folder, and the owner-controls browser test keeps the open plugin surface when changing viewport size. Factory Overview opens a native per-project page with pause and resume, issue stage profiles, queue links and role instructions. Standing workspaces share the Factory folder after daemon-assigned roles. Older daemons omit unsupported planning and queue controls. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed. Source only; README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): Factory issues gain an optional Plan stage with one lead supervising the worker. Planner profile and planning settings are configurable through the project RPC and CLI; old state files read without a rewrite. The queue RPC caches GitHub evidence for 30 seconds, reports failures and shows issue stages, PR checks and labeled agents in role workspaces. Foreman records independent review results for display, accepted only from the authenticated GitHub viewer; merge approval requires the independent reviewer's own exact-head reply. Paused leads and workers are exempt from stall handling, and drain counts include mid-turn leads. CLI errors preserve the underlying diagnostic and older daemons omit unsupported planning settings. Source only, not installed. README overview and onboarding are unchanged. Merged current `main` via the Factory drain branch; no source conflicts.
+
+Maintenance review (2026-11-05): Factory drains for updates. `paseo factory project list`, `pause-all` and `resume-all` pause every active project's Factory before a restart or upgrade and resume only what they paused; each drain has an id that the Foreman's drain notice and its "Drained <id>" acknowledgment carry, and a damaged state file refuses instead of reporting success. The Mechanic charter reads update status and the Builds charter drains before restarts; every role gains the operating rules Builds learned running delivery. This source is not installed. README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-05): CI routing, merge queue ruleset, conflict-only publisher refusal and change fragments. Task delivery scripts updated in the inventory. Source only; the ruleset is not applied and nothing is installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-05): live tweak by Calm spinner: Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
 
 Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
@@ -2031,6 +2087,8 @@ Reviewed on October 7, 2026 against integrated Paseo commit `c062280429c2aa894d9
 No complete replacement of these custom workflows was established in this review. Future upstream merges must reassess behavior and tests, narrow the inventory to remaining differences, and update the roadmap under the [maintenance rules](writing.md#maintain-the-vorteo-customizations-inventory).
 
 ## Maintenance review
+
+November 6, 2026: Prepared beta 26.11.600 and folded 28 change fragments into its changelog entry and these reviews. README overview and onboarding are unchanged.
 
 November 5, 2026: review fixes for building before restarting: the Host build is recorded before it starts and fails after two hours without a result, new journal keys are dropped whenever an upgrade ends, Dev's scripts change only in the Dev step, and early Dev images are tagged and rechecked. README overview and onboarding are unchanged.
 
