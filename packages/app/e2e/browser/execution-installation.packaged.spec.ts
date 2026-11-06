@@ -1,3 +1,5 @@
+import { openSettings } from "../support/helpers/app";
+import { revealSettingsLocation } from "../support/helpers/settings";
 import { helperReviewFixture } from "../../src/execution-installation/helper-review.fixture";
 import { NativeHelperJobSchema } from "@getpaseo/protocol/native-helper-maintenance";
 import { MaintenanceServiceJobSchema } from "@getpaseo/protocol/maintenance-service";
@@ -56,19 +58,32 @@ import type { InstallationConfig } from "../../../server/src/server/execution-in
 import { pluginRequirements } from "../support/helpers/plugin-fixture";
 import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
 
-async function openSystemRestart(page: Page, environment: "Host" | "Dev") {
-  await page.goto(`${origin}/settings/system`);
+async function openSystemPane(page: Page) {
+  const restart = page
+    .getByTestId("system-restart-host")
+    .or(page.getByTestId("system-restart-container-daemon"))
+    .filter({ visible: true });
+  if (await restart.count()) {
+    await page.keyboard.press("Escape");
+    await expect(restart).toHaveCount(0);
+  }
+  // Use Settings' real section jump instead of rebooting the application for each review.
+  if (!new URL(page.url()).pathname.startsWith("/settings")) await openSettings(page);
+  await revealSettingsLocation(page, "system.overview");
   const pane = page.getByTestId("system-pane").filter({ visible: true });
   await expect(pane).toBeVisible();
+  return pane;
+}
+async function openSystemRestart(page: Page, environment: "Host" | "Dev") {
+  const pane = await openSystemPane(page);
   await pane.getByRole("button", { name: `${environment} actions`, exact: true }).click();
   await page.getByRole("menuitem", { name: "Restart…", exact: true }).click();
   return page.getByTestId(`system-restart-${environment === "Host" ? "host" : "container-daemon"}`);
 }
-
 async function openSystemDetails(page: Page, environment: "Host" | "Dev") {
-  await page.goto(`${origin}/settings/system`);
-  const pane = page.getByTestId("system-pane").filter({ visible: true });
-  await pane.getByRole("button", { name: `${environment} Details`, exact: true }).click();
+  const pane = await openSystemPane(page);
+  if (!(await pane.getByText(`${environment} details`, { exact: true }).isVisible()))
+    await pane.getByRole("button", { name: `${environment} Details`, exact: true }).click();
   return pane.getByTestId(
     `system-installation-details-${environment === "Host" ? "host" : "container-daemon"}`,
   );
@@ -609,7 +624,9 @@ test("welcome signs in with the owner password and restores both environments", 
   await password.fill(ownerPassword);
   await password.press("Enter");
   await expect(page).not.toHaveURL(/welcome/);
-  await expect(page.getByTestId("installation-update-toasts")).toBeVisible();
+  await expect(
+    page.getByTestId("installation-update-toasts").getByTestId("installation-restart-banner"),
+  ).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(
@@ -628,8 +645,16 @@ test("welcome signs in with the owner password and restores both environments", 
     )
     .toBe(2);
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
-  await page.goto(`${origin}/settings/general?installation=1`);
+  await openSettings(page);
+  await revealSettingsLocation(page, "maintenance.installation");
   await expect(page.getByTestId("installation-lock")).toBeVisible();
+  if (testInfo.project.name === "phone")
+    await page.getByRole("button", { name: "Back", exact: true }).first().click();
+  const notice = page
+    .getByTestId("settings-sidebar")
+    .filter({ visible: true })
+    .getByTestId("installation-restart-banner");
+  await expect(notice).toHaveText(/^System needs attention \(\d+\)$/);
 });
 
 test("unavailable coordinator maintenance shows its diagnosis without approval controls", async ({
