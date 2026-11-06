@@ -86,8 +86,8 @@ export function SidebarSectionRow({
   level: number;
   testID: string;
   /**
-   * Rendered after the title, such as the focus button; receives the JS hover state, which also
-   * drives the leading arrow and folder icon. The row's fill and title use CSS hover.
+   * Rendered after the title, such as the focus button; receives the JS hover state so it can
+   * mount the focus button. The row's fill, title, leading arrow and folder icon use CSS hover.
    */
   trailing?: (isHovered: boolean) => ReactNode;
 }) {

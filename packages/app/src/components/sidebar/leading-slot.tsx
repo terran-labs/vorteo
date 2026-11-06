@@ -30,17 +30,15 @@ export const SIDEBAR_LEADING_HOVER_GROUP = "sidebar-leading";
  *
  * With `cssHover`, both stay mounted and the browser's `:hover` on the row's
  * {@link SIDEBAR_LEADING_HOVER_GROUP} swaps them, so the arrow cannot stick after layout moves the
- * row from under a resting cursor. Without it, the caller's JS `revealChevron` decides.
+ * row from under a resting cursor. Without it, or without a hover-capable pointer, the icon stays.
  */
 export function SidebarLeadingSlot({
   chevron,
-  revealChevron = false,
   cssHover = false,
   children,
   testID,
 }: {
   chevron: SidebarDisclosure;
-  revealChevron?: boolean;
   cssHover?: boolean;
   children: ReactNode;
   testID?: string;
@@ -56,7 +54,7 @@ export function SidebarLeadingSlot({
       </View>
     );
   }
-  const showChevron = chevron !== null && (revealChevron || !hasIcon);
+  const showChevron = chevron !== null && !hasIcon;
   return (
     <View style={styles.slot} testID={testID}>
       {showChevron ? <SidebarDisclosureChevron chevron={chevron} /> : children}

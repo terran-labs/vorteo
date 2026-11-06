@@ -23,17 +23,16 @@ import { DiffStat } from "@/components/diff-stat";
 import { aggregateProjectTasks, type ProjectTaskSummary } from "./sidebar/project-task-summary";
 import { useVortonTouch, VORTON_ACTION_SLOT } from "@/vorton-touch";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useScrollEdgeFade } from "@/components/ui/scroll-edge-fade";
 import {
   View,
   Text,
   Pressable,
-  ScrollView,
   type GestureResponderEvent,
   type PressableStateCallbackType,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import {
   memo,
   useCallback,
@@ -57,7 +56,14 @@ import {
 } from "@/stores/navigation-active-workspace-store";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { density as densityTokens, densityIconBox, densityIconProps } from "@/styles/density";
-import { groupHoverStyle, hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
+import {
+  groupHoverStyle,
+  hoverGroup,
+  hoverStyle,
+  hoverSurface,
+  revealOnGroupHover,
+  rowSurface,
+} from "@/styles/hover";
 import type { Theme } from "@/styles/theme";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 import { getSidebarRowBackdrop } from "@/components/sidebar/sidebar-row-backdrop";
@@ -116,6 +122,7 @@ import {
   DropdownMenuContent,
 } from "@/components/ui/dropdown-menu";
 import { ProjectLeadingVisual } from "@/components/sidebar/project-leading-visual";
+import { SIDEBAR_LEADING_HOVER_GROUP } from "@/components/sidebar/leading-slot";
 import { useToast } from "@/contexts/toast-context";
 import { getForgePresentation, normalizeForge } from "@/git/forge";
 import { hasVisibleOrderChanged, mergeWithRemainder } from "@/utils/sidebar-reorder";
@@ -1257,19 +1264,21 @@ function ProjectHeaderRow({
     interaction.handlePressOut();
   }, [interaction]);
 
-  // The row's fill and calm look follow CSS hover, so they settle when the list moves under a
-  // resting cursor. JS hover still drives the leading arrow, the focus button and the badge
-  // backdrop. Touch layouts and an open context menu never showed hover.
+  // The row's fill, calm look, leading arrow and badge cutout follow CSS hover, so they settle
+  // when the list moves under a resting cursor. JS hover only mounts the focus button. Touch
+  // layouts and an open context menu never showed hover.
   const hoverable = !touch && !contextMenuOpen;
   const projectRowStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.projectRow,
       styles.projectRowGroup,
       density,
+      // CSS hover wins over the selected and dragging fills whatever the order, so the hover
+      // entry goes first: the dragging and selected entries then override the resting surface it
+      // publishes. The pressed fill wins over hover by leaving it out.
+      hoverable && !pressed && styles.projectRowHoverable,
       isDragging && styles.projectRowDragging,
       selected && styles.sidebarRowSelected,
-      // Hover won over the selected and dragging fills; the pressed fill wins over hover.
-      hoverable && !pressed && styles.projectRowHoverable,
       pressed && styles.projectRowPressed,
     ],
     [isDragging, selected, hoverable, density],
@@ -1283,14 +1292,9 @@ function ProjectHeaderRow({
         iconDataUri={iconDataUri}
         statusBucket={statusBucket}
         projectViewKey={project.viewKey}
-        backdrop={getSidebarRowBackdrop({
-          isDragging,
-          isPressed,
-          selected,
-          isHovered,
-        })}
+        backdrop={getSidebarRowBackdrop({ isDragging, isPressed, selected })}
         chevron={chevron}
-        showChevron={isHovered && chevron !== null}
+        cssHover={!touch}
         isArchiving={isArchiving}
       />
 
@@ -1483,7 +1487,7 @@ function WorkspaceRowInner({
 
   return (
     <SidebarWorkspaceRowFrame workspace={workspace} isDragging={isDragging}>
-      {({ isHovered, contextMenuOpen, onContextMenuOpenChange, hoverHandlers }) => {
+      {({ contextMenuOpen, onContextMenuOpenChange }) => {
         const isDesktop = !isTouchPlatform;
         const serviceSummary = isDesktop ? selectWorkspaceServiceSummary(workspace.scripts) : null;
         const workspaceRowStyle = getProjectWorkspaceRowStyle({
@@ -1492,19 +1496,13 @@ function WorkspaceRowInner({
           selected,
           hoverable: !isTouchPlatform && !contextMenuOpen,
         });
-        const backdrop = getSidebarRowBackdrop({
-          isDragging,
-          isPressed,
-          selected,
-          isHovered,
-        });
+        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected });
         return (
           <View
             {...dragAttributes}
             {...dragHandleProps?.listeners}
             ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
             style={styles.workspaceRowContainer}
-            {...hoverHandlers}
           >
             <SidebarWorkspaceContextMenu
               contextMenuOpen={contextMenuOpen}
@@ -1549,7 +1547,6 @@ function WorkspaceRowInner({
                 leadingProjectIconDataUri={leadingProjectIconDataUri}
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
-                isHovered={isHovered}
                 selected={selected}
                 isLoading={isArchiving || isCreating}
                 isCreating={isCreating}
@@ -3623,7 +3620,6 @@ function ProjectModeListContent({
     );
 
   // Rows dissolve under the dividers above and below the list while more lies past them.
-  const edgeFadeRef = useScrollEdgeFade();
   const listReach = useSidebarListReachReporter(onContentSizeChange);
   const content = (
     <>
@@ -3700,7 +3696,6 @@ function ProjectModeListContent({
           </NestableScrollContainer>
         ) : (
           <ScrollView
-            ref={edgeFadeRef}
             style={styles.list}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
@@ -3813,10 +3808,13 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: "stretch",
     justifyContent: "center",
   },
-  projectRowGroup: hoverGroup(PROJECT_ROW_HOVER_GROUP),
-  projectRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  // The leading group swaps the project icon for the disclosure arrow on CSS hover.
+  projectRowGroup: hoverGroup([PROJECT_ROW_HOVER_GROUP, SIDEBAR_LEADING_HOVER_GROUP]),
+  // Publishes the row's surface so the project badge cutout follows its CSS hover fill.
+  projectRowHoverable: hoverSurface(theme.colors.surfaceSidebar, theme.colors.surfaceSidebarHover),
   projectRowPressed: {
     backgroundColor: theme.colors.surface2,
+    ...rowSurface(theme.colors.surface2),
   },
   projectRowDragging: {
     backgroundColor: theme.colors.surface2,
@@ -3825,6 +3823,7 @@ const styles = StyleSheet.create((theme) => ({
     transform: [{ scale: 1.02 }],
     zIndex: 3,
     ...theme.shadow.md,
+    ...rowSurface(theme.colors.surface2),
   },
   projectRowLeft: {
     flexDirection: "row",
@@ -3988,9 +3987,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
     flexShrink: 0,
   },
-  workspaceRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  // Publishes the row's surface so status rings and badge cutouts follow its CSS hover fill.
+  workspaceRowHoverable: hoverSurface(
+    theme.colors.surfaceSidebar,
+    theme.colors.surfaceSidebarHover,
+  ),
   workspaceRowPressed: {
     backgroundColor: theme.colors.surface2,
+    ...rowSurface(theme.colors.surface2),
   },
   workspaceRowDragging: {
     backgroundColor: theme.colors.surface2,
@@ -3999,9 +4003,12 @@ const styles = StyleSheet.create((theme) => ({
     transform: [{ scale: 1.02 }],
     zIndex: 3,
     ...theme.shadow.md,
+    ...rowSurface(theme.colors.surface2),
   },
+  // Shared by project and workspace rows; publishes the surface their knockout marks follow.
   sidebarRowSelected: {
     backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
   },
   workspaceRowContainer: {
     position: "relative",

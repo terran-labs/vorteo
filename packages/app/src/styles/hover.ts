@@ -76,3 +76,48 @@ export function revealOnGroupHover(name: string): {
   web["_has(:focus-visible)"] = shown;
   return { opacity: 0, _web: web };
 }
+
+/**
+ * CSS custom property a row sets to the surface it currently shows. Knockout marks inside it, such
+ * as status-ring halos and badge cutouts, paint this color so they match the row's hover fill
+ * without a JS hover flag. Custom properties inherit, so the nearest row that sets it wins.
+ */
+export const ROW_SURFACE_VAR = "--vorteo-row-surface";
+
+/**
+ * A row's hover fill that also publishes {@link ROW_SURFACE_VAR}: `rest` at rest (the surface the
+ * row sits on), `hover` while hovered. Use instead of `hoverStyle({ backgroundColor })` on rows
+ * that contain knockout marks.
+ */
+export function hoverSurface(rest: string, hover: string, web?: WebStyle): { _web: WebStyle } {
+  // Custom properties are outside the typed CSS keys, so build loosely and cast once.
+  const style: Record<string, unknown> = { ...web, [ROW_SURFACE_VAR]: rest };
+  if (CAN_HOVER) style._hover = { backgroundColor: hover, [ROW_SURFACE_VAR]: hover };
+  return { _web: style as WebStyle };
+}
+
+/** Publishes a fixed {@link ROW_SURFACE_VAR}, for selected or pressed rows whose fill wins over hover. */
+export function rowSurface(color: string): { _web: WebStyle } {
+  return { _web: { [ROW_SURFACE_VAR]: color } as WebStyle };
+}
+
+/** Background for a knockout mark: the nearest row's published surface, else `fallback`. */
+export function followRowSurface(fallback: string): { backgroundColor: string; _web: WebStyle } {
+  return {
+    backgroundColor: fallback,
+    _web: { backgroundColor: `var(${ROW_SURFACE_VAR}, ${fallback})` },
+  };
+}
+
+/**
+ * Group-hover fill that also publishes {@link ROW_SURFACE_VAR}, for chips whose hover belongs to
+ * a wider frame (such as a tab and its sibling close button). `surface` is the token color the
+ * knockout marks inside should paint, which can differ from the visible `fill`.
+ */
+export function groupHoverSurface(name: string, fill: string, surface = fill): { _web?: WebStyle } {
+  if (!CAN_HOVER) return {};
+  const selector: `_is(${string})` = `_is(.vorteo-hover-${name}:hover *)`;
+  return {
+    _web: { [selector]: { backgroundColor: fill, [ROW_SURFACE_VAR]: surface } } as WebStyle,
+  };
+}

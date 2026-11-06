@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Sidebar calm rows, project arrows, status-ring halos, menu triggers and desktop tab chips follow CSS hover, so no visual hover sticks after layout moves under a resting cursor
+
 Maintenance review (2026-11-05): live tweak by Markdown preview edges: Scroll areas across the app now fade their content at an edge with more to scroll, through the shared scrollers; a lint rule keeps new scrollers on the pattern. Pane separators match the toolbar rule.
 
 Maintenance review (2026-11-05): live tweak by Live dev on custom domain: The custom domain follows Live dev: the signed-in owner gets the live interface there, with hot reload, while ?interface=safe still serves the published build on either address.

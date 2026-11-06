@@ -434,13 +434,14 @@ export function SubagentsTrackRow({
   const detailsText = details.join("\n");
 
   const renderRow = useCallback(
-    // `active` is the row's JS hover or press flag. It only picks the status knockout's backdrop,
-    // which takes a token rather than a style; the actions reveal with CSS group hover.
-    ({ active }: { active: boolean }) => {
+    // On web the status knockout follows the row's CSS hover fill through ROW_SURFACE_VAR, so
+    // the token is the rest surface; `pressed` keeps native's pressed fill matched. The actions
+    // reveal with CSS group hover.
+    ({ pressed }: { pressed: boolean }) => {
       const icon = (
         <WorkspaceTabIcon
           presentation={presentation}
-          backdrop={active && !inline ? "surface2" : "surface1"}
+          backdrop={pressed && !inline ? "surface2" : "surface1"}
         />
       );
       return (

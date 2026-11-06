@@ -3,6 +3,7 @@ import { StyleSheet as RNStyleSheet, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { RadarRing } from "@/components/ui/radar-ring";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
+import { followRowSurface } from "@/styles/hover";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import {
   STATUS_RING_FRAME_SIZE,
@@ -100,12 +101,14 @@ export const styles = StyleSheet.create((theme) => {
       alignItems: "center",
       justifyContent: "center",
     },
-    backdropSurface0: { backgroundColor: theme.colors.surface0 },
-    backdropSurface1: { backgroundColor: theme.colors.surface1 },
-    backdropSurfaceSidebar: { backgroundColor: theme.colors.surfaceSidebar },
-    backdropSurfaceSidebarHover: { backgroundColor: theme.colors.surfaceSidebarHover },
-    backdropSurfaceSidebarSelected: { backgroundColor: theme.colors.surfaceSidebarSelected },
-    backdropSurface2: { backgroundColor: theme.colors.surface2 },
+    // On web the halo follows the containing row's published surface (ROW_SURFACE_VAR), so it
+    // matches a CSS hover fill; the named backdrop is the fallback outside such rows.
+    backdropSurface0: followRowSurface(theme.colors.surface0),
+    backdropSurface1: followRowSurface(theme.colors.surface1),
+    backdropSurfaceSidebar: followRowSurface(theme.colors.surfaceSidebar),
+    backdropSurfaceSidebarHover: followRowSurface(theme.colors.surfaceSidebarHover),
+    backdropSurfaceSidebarSelected: followRowSurface(theme.colors.surfaceSidebarSelected),
+    backdropSurface2: followRowSurface(theme.colors.surface2),
 
     centerDot: {
       width: STATUS_INDICATOR_FILLED_DOT_SIZE,

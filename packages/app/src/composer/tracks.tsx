@@ -1,5 +1,5 @@
 import { TaskCardRow } from "@/agent-stream/task-card-row";
-import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactElement, type ReactNode } from "react";
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import {
@@ -16,7 +16,7 @@ import {
 import { StatusRing } from "@/components/status-ring";
 import { STATUS_RING_HALO_INSET } from "@/components/status-ring/geometry";
 import { isWeb } from "@/constants/platform";
-import { hoverGroup, hoverStyle } from "@/styles/hover";
+import { hoverGroup, hoverStyle, hoverSurface, rowSurface } from "@/styles/hover";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
@@ -199,12 +199,12 @@ export function ComposerTrackActions({
 
 export interface ComposerTrackRowProps {
   /**
-   * A function child receives the row's JS hover/press state. Prefer CSS for hover visuals:
-   * style descendants with `groupHoverStyle(COMPOSER_TRACK_ROW_HOVER_GROUP, ...)` or
-   * `revealOnGroupHover(COMPOSER_TRACK_ROW_HOVER_GROUP)`, since the JS flag goes stale when a
-   * row moves under a resting cursor. Use `active` only where a style cannot follow hover.
+   * A function child receives the row's press state. Hover is CSS only: style descendants with
+   * `groupHoverStyle(COMPOSER_TRACK_ROW_HOVER_GROUP, ...)` or
+   * `revealOnGroupHover(COMPOSER_TRACK_ROW_HOVER_GROUP)`. Knockout marks follow the row's fill
+   * through `ROW_SURFACE_VAR` on web, so pass them the rest backdrop and use `pressed` for native.
    */
-  children: ReactNode | ((state: { active: boolean }) => ReactNode);
+  children: ReactNode | ((state: { pressed: boolean }) => ReactNode);
   /** Inline cards use ordinary navigation; popover rows select and dismiss their menu. */
   inline?: boolean;
   /** Rows that open something are pressable and fill on press or hover. A read-only row is not. */
@@ -234,7 +234,8 @@ export interface ComposerTrackRowProps {
  *
  * Hover lives on the outer plain View and press on the inner Pressable, per docs/hover.md: rows
  * carry action buttons, and a Pressable tracking its own hover fights every Pressable inside it.
- * The row fill is browser-owned CSS hover on that View's group; the JS flag only feeds `active`.
+ * The row fill is browser-owned CSS hover (`hoverSurface`), which also publishes the row's surface
+ * for status-ring halos, so nothing tracks hover in JS.
  *
  * A press is a menu selection, not a bare callback: the panel is a menu surface, so dismissal —
  * and on iOS the wait for UIKit to finish tearing the sheet down before the action runs — belongs
@@ -272,24 +273,20 @@ function TrackRowContent({
   accessibilityHint,
   testID,
 }: ComposerTrackRowProps): ReactElement {
-  const [hovered, setHovered] = useState(false);
-  const handlePointerEnter = useCallback(() => setHovered(true), []);
-  const handlePointerLeave = useCallback(() => setHovered(false), []);
-
   const renderRow = useCallback(
-    (active: boolean, pressed: boolean, hoverable: boolean) => {
-      const content = typeof children === "function" ? children({ active }) : children;
+    (pressed: boolean, hoverable: boolean) => {
+      const content = typeof children === "function" ? children({ pressed }) : children;
       if (inline) return <TaskCardRow>{content}</TaskCardRow>;
       let rowStyle: StyleProp<ViewStyle> = styles.row;
-      if (pressed) rowStyle = styles.rowActive;
+      if (pressed) rowStyle = ROW_PRESSED_STYLE;
       else if (hoverable) rowStyle = ROW_HOVERABLE_STYLE;
       return <View style={rowStyle}>{content}</View>;
     },
     [children, inline],
   );
   const renderPressed = useCallback(
-    ({ pressed }: { pressed: boolean }) => renderRow(hovered || pressed, pressed, true),
-    [hovered, renderRow],
+    ({ pressed }: { pressed: boolean }) => renderRow(pressed, true),
+    [renderRow],
   );
 
   const menuDataSet = useMemo(
@@ -297,15 +294,11 @@ function TrackRowContent({
     [inline, disabled],
   );
   if (!onPress && !opensPage) {
-    return <View accessibilityLabel={accessibilityLabel}>{renderRow(false, false, false)}</View>;
+    return <View accessibilityLabel={accessibilityLabel}>{renderRow(false, false)}</View>;
   }
 
   return (
-    <View
-      style={styles.rowHoverGroup}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-    >
+    <View style={styles.rowHoverGroup}>
       <Pressable
         accessibilityRole={inline ? "button" : "menuitem"}
         dataSet={menuDataSet}
@@ -411,7 +404,9 @@ const styles = StyleSheet.create((theme) => {
     },
     row: trackRow,
     rowActive: { ...trackRow, backgroundColor: theme.colors.surface2 },
-    rowHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
+    // Rows sit on the menu surface (surface1). Publishing it lets status-ring halos follow hover.
+    rowHoverable: hoverSurface(theme.colors.surface1, theme.colors.surface2),
+    rowPressedSurface: rowSurface(theme.colors.surface2),
     rowHoverGroup: hoverGroup(COMPOSER_TRACK_ROW_HOVER_GROUP),
     // Matches `composerPillStyles.bodyActive`; browser-owned so it clears when the pill moves.
     pillHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
@@ -443,3 +438,4 @@ const styles = StyleSheet.create((theme) => {
 });
 
 const ROW_HOVERABLE_STYLE = [styles.row, styles.rowHoverable];
+const ROW_PRESSED_STYLE = [styles.rowActive, styles.rowPressedSurface];

@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Sidebar calm rows, project arrows, status-ring halos, menu triggers and desktop tab chips follow CSS hover, so no visual hover sticks after layout moves under a resting cursor
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Scroll areas across the app now fade their content at an edge with more to scroll, through the shared scrollers; a lint rule keeps new scrollers on the pattern. Pane separators match the toolbar rule.
 
 ## Unreleased - 2026-11-05

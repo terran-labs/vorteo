@@ -37,7 +37,7 @@ Use JS hover state only when hover does something CSS cannot: opening a tooltip 
 
 ### The pattern
 
-The canonical implementation is `SidebarWorkspaceRowFrame` in `packages/app/src/components/sidebar/sidebar-workspace-row-content.tsx`. Its JS hover remains only for the calm row tone, which reaches child icons through context; the fill, title and kebab reveal use the CSS helpers. When in doubt, open that file and copy the shape.
+The sidebar rows show the split: their fill, title, calm tone, arrow and actions use the CSS helpers, and only `useSidebarRowFocus` (see `packages/app/src/sidebar-folders/folder-row.tsx`) still tracks hover in JS, because hover mounts the focus button. Copy that shape when hover must drive behavior.
 
 ```tsx
 //
