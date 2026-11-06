@@ -1,11 +1,14 @@
+import { ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
 import { describe, expect, test } from "vitest";
 import pino from "pino";
 import type { BrowserAutomationExecuteRequest } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { BrowserToolsBroker } from "./broker.js";
 import { startEmbeddedHeadlessHost } from "./embedded-headless-host.js";
-import type {
-  HeadlessHostProcess,
-  HeadlessHostProcessExit,
+import {
+  spawnHeadlessHostProcess,
+  type HeadlessHostProcess,
+  type HeadlessHostProcessExit,
 } from "./engine/headless-host-process-client.js";
 import type { HeadlessHostProcessOptions } from "./engine/headless-host-process-protocol.js";
 
@@ -240,3 +243,71 @@ describe("startEmbeddedHeadlessHost", () => {
     expect(spawner.processes[0]?.closed).toBe(true);
   });
 });
+
+// A launcher adapter with real event/stream semantics and no OS process.
+class FailedBrowserLaunch extends ChildProcess {
+  public override stderr = new PassThrough();
+  public readonly signals: Array<NodeJS.Signals | number> = [];
+
+  public override kill(signal: NodeJS.Signals | number = "SIGTERM"): boolean {
+    this.signals.push(signal);
+    queueMicrotask(() => this.emit("close", null, signal));
+    return true;
+  }
+}
+
+test.each(["exits immediately", "never becomes ready"])(
+  "new_tab reports launch diagnostics when the browser %s",
+  async (scenario) => {
+    const child = new FailedBrowserLaunch();
+    const logs: string[] = [];
+    const broker = new BrowserToolsBroker({ defaultTimeoutMs: 1_000 });
+    const host = startEmbeddedHeadlessHost({
+      broker,
+      persisted: ENABLED,
+      logger: pino({ level: "info" }, { write: (line) => logs.push(line) }),
+      spawn: (options) =>
+        spawnHeadlessHostProcess({
+          options,
+          readyTimeoutMs: 25,
+          launch: () => {
+            queueMicrotask(() => {
+              child.stderr.write("old output\n".repeat(1_000));
+              child.stderr.write("[err] ZygoteMain: initializing 0 fork delegates\n");
+              child.stderr.write("[err] FATAL: zygote startup failed\n");
+              if (scenario === "exits immediately") child.emit("close", null, "SIGABRT");
+            });
+            return child;
+          },
+        }),
+    });
+    try {
+      const result = await broker.execute({
+        workspaceId: "wks_a",
+        command: { command: "new_tab", args: { url: "https://example.com" } },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "browser_no_host", retryable: true },
+      });
+      if (result.ok) throw new Error("Expected browser launch failure");
+      expect(result.error.message).toContain("FATAL: zygote startup failed");
+      expect(result.error.message.length).toBeLessThan(4_500);
+      if (scenario === "exits immediately") {
+        expect(result.error.message).toContain("code: null, signal: SIGABRT");
+      } else {
+        expect(result.error.message).toContain("did not become ready within 25ms");
+        expect(child.signals).toContain("SIGTERM");
+      }
+      expect(
+        logs.some(
+          (line) =>
+            line.includes("Headless browser request failed") &&
+            line.includes("FATAL: zygote startup failed"),
+        ),
+      ).toBe(true);
+    } finally {
+      await host.stop();
+    }
+  },
+);

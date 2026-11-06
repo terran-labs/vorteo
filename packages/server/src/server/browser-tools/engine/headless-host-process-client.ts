@@ -1,4 +1,4 @@
-import { fork } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type {
   BrowserAutomationExecuteRequest,
@@ -13,7 +13,8 @@ import {
 
 type ExecutePayload = BrowserAutomationExecuteResponse["payload"];
 
-const READY_TIMEOUT_MS = 60_000;
+// Return diagnostics before the broker's 15-second request deadline.
+const READY_TIMEOUT_MS = 10_000;
 const CLOSE_TIMEOUT_MS = 10_000;
 
 export interface HeadlessHostProcessExit {
@@ -29,6 +30,8 @@ export interface HeadlessHostProcess {
 
 export interface SpawnHeadlessHostProcessInput {
   options: HeadlessHostProcessOptions;
+  launch?: () => ChildProcess;
+  readyTimeoutMs?: number;
   onStderr?: (text: string) => void;
   onInvalidMessage?: () => void;
 }
@@ -75,29 +78,46 @@ export function spawnHeadlessHostProcess(
   input: SpawnHeadlessHostProcessInput,
 ): Promise<HeadlessHostProcess> {
   const entry = headlessHostProcessEntry();
-  const child = fork(entry, [encodeHeadlessHostProcessOptions(input.options)], {
-    stdio: ["ignore", "ignore", "pipe", "ipc"],
-    serialization: "json",
-    // Daemon flags such as inspector ports must not leak into the browser
-    // host. TypeScript development still needs the parent's loader.
-    execArgv: entry.endsWith(".ts") ? process.execArgv : [],
-    env: headlessHostChildEnvironment(),
-  });
+  const child =
+    input.launch?.() ??
+    fork(entry, [encodeHeadlessHostProcessOptions(input.options)], {
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+      serialization: "json",
+      // Daemon flags such as inspector ports must not leak into the browser
+      // host. TypeScript development still needs the parent's loader.
+      execArgv: entry.endsWith(".ts") ? process.execArgv : [],
+      // Playwright forwards Chromium stderr and exit status through this logger,
+      // including while launch is still waiting for readiness.
+      env: { ...headlessHostChildEnvironment(), DEBUG: "pw:browser" },
+    });
   // An unhandled error event would crash the parent, so always observe it.
   child.on("error", () => {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   });
   child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (text: string) => input.onStderr?.(text));
+  let stderrTail = "";
+  child.stderr?.on("data", (text: string) => {
+    stderrTail = (stderrTail + text).slice(-4_000);
+    input.onStderr?.(text);
+  });
+  function failure(message: string): HeadlessHostProcessError {
+    const tail = stderrTail.trim().split("\n").slice(-20).join("\n");
+    return new HeadlessHostProcessError(
+      tail ? `${message}\nBrowser stderr (last lines):\n${tail}` : message,
+    );
+  }
 
   const pending = new Map<string, (payload: ExecutePayload) => void>();
   const pendingFailures = new Map<string, (error: Error) => void>();
   let exitState: HeadlessHostProcessExit | null = null;
   const exited = new Promise<HeadlessHostProcessExit>((resolve) => {
-    child.once("exit", (code, signal) => {
+    // Wait for stderr to drain so the final crash lines reach the caller.
+    child.once("close", (code, signal) => {
       exitState = { code, signal };
       for (const reject of pendingFailures.values()) {
-        reject(new HeadlessHostProcessError("The headless browser host process exited."));
+        reject(
+          failure(`The headless browser host process exited (code: ${code}, signal: ${signal}).`),
+        );
       }
       pending.clear();
       pendingFailures.clear();
@@ -143,15 +163,23 @@ export function spawnHeadlessHostProcess(
   return new Promise<HeadlessHostProcess>((resolve, reject) => {
     const timer = setTimeout(() => {
       void handle.close();
-      reject(new HeadlessHostProcessError("The headless browser host did not start in time."));
-    }, READY_TIMEOUT_MS);
+      reject(
+        failure(
+          `The headless browser host did not become ready within ${input.readyTimeoutMs ?? READY_TIMEOUT_MS}ms.`,
+        ),
+      );
+    }, input.readyTimeoutMs ?? READY_TIMEOUT_MS);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(failure(`The headless browser host failed to launch: ${error.message}`));
+    });
     // After ready, this rejection is a no-op; the exit reaches callers through `exited`.
     void (async () => {
       const exit = await exited;
       clearTimeout(timer);
       reject(
-        new HeadlessHostProcessError(
-          `The headless browser host exited during startup (${exit.code ?? exit.signal}).`,
+        failure(
+          `The headless browser host exited during startup (code: ${exit.code}, signal: ${exit.signal}).`,
         ),
       );
     })();
@@ -166,7 +194,8 @@ export function spawnHeadlessHostProcess(
         resolve(handle);
       } else if (message.type === "fatal") {
         clearTimeout(timer);
-        reject(new HeadlessHostProcessError(message.message));
+        reject(failure(message.message));
+        void handle.close();
       } else if (message.type === "response") {
         const requestId = message.payload.requestId;
         const settle = pending.get(requestId);
