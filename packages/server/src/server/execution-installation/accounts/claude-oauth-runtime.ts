@@ -72,6 +72,7 @@ export function createClaudeOAuthRuntime(
   const assertReady = createInstallationRegistrationAdmission(config, assertRegistrationReadiness);
   const configuration = structuredClone(config);
   const file = join(config.stateDir, "claude-oauth", "state.json");
+  const diagnosticsFile = join(config.stateDir, "claude-oauth", "diagnostics.json");
   const cli = overrides.cli ?? createClaudeHostCli();
   const readGrant = overrides.readGrant ?? readClaudeOAuthGrant;
   const request = overrides.fetch ?? fetch;
@@ -190,6 +191,10 @@ export function createClaudeOAuthRuntime(
     installationId: config.public.installationId,
     read: () => readClaudeSetupFile(file) ?? [],
     persist: (state) => writeClaudeSetupFile(file, state),
+    diagnostics: {
+      read: () => readClaudeSetupFile(diagnosticsFile) ?? [],
+      persist: (diagnostics) => writeClaudeSetupFile(diagnosticsFile, diagnostics),
+    },
     policy,
     grant: async (definitionId) => readGrant(await hostConfigDir(definitionId)),
     refresh: async (definitionId) => {

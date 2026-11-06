@@ -37,17 +37,6 @@ const RecordSchema = z.strictObject({
     .nullable(),
   /** Consecutive refreshes of the current Host token that did not produce a newer one. */
   refreshFailures: Counter.default(0),
-  failureReason: z
-    .enum([
-      "storage_unreadable",
-      "grant_missing",
-      "refresh_failed",
-      "refresh_unchanged",
-      "expiry_missed",
-      "policy_unavailable",
-    ])
-    .optional(),
-  missedExpiry: Counter.optional(),
   /** Consecutive reconciles that left a rotation undelivered, and when to try again. */
   deliveryFailures: Counter.default(0),
   deliveryRetryAt: Counter.nullable().default(null),
@@ -55,7 +44,37 @@ const RecordSchema = z.strictObject({
 });
 export const HostRefreshStateSchema = z.array(RecordSchema);
 export type HostRefreshState = z.infer<typeof HostRefreshStateSchema>;
-type HostRefreshRecord = HostRefreshState[number];
+// Diagnostic fields never enter state.json: older coordinators parse it strictly.
+const DiagnosticFields = z.object({
+  failureReason: z
+    .enum([
+      "storage_unreadable",
+      "grant_missing",
+      "refresh_failed",
+      "refresh_unchanged",
+      "policy_unavailable",
+    ])
+    .optional(),
+  missedExpiry: Counter.optional(),
+  refreshRetry: z
+    .object({
+      at: Counter,
+      failures: Counter,
+      expiresAt: Counter.nullable(),
+      reason: z.enum(["refresh_failed", "refresh_unchanged"]),
+    })
+    .optional(),
+});
+const DiagnosticSchema = DiagnosticFields.extend({
+  definitionId: z.string().min(1),
+  generation: Positive,
+  refreshAt: Counter.nullable(),
+  refreshFailures: Counter,
+});
+export const HostRefreshDiagnosticsSchema = z.array(DiagnosticSchema);
+export type HostRefreshDiagnostics = z.infer<typeof HostRefreshDiagnosticsSchema>;
+const InternalRecordSchema = RecordSchema.extend(DiagnosticFields.shape);
+type HostRefreshRecord = z.infer<typeof InternalRecordSchema>;
 
 export interface HostRefreshIdentity {
   email: string | null;
@@ -93,6 +112,10 @@ export interface HostRefresherPorts<G extends HostGrant, P> {
   installationId: string;
   read(): unknown;
   persist(state: HostRefreshState): void;
+  diagnostics?: {
+    read(): unknown;
+    persist(diagnostics: HostRefreshDiagnostics): void;
+  };
   /** Throws when the definition no longer exists or is not a Host-owned account. */
   policy(definitionId: string): HostRefreshPolicy;
   /** The Host account's grant, read from its own CLI storage. Throws when the Host is unreachable. */
@@ -118,7 +141,7 @@ const DELIVERY_RETRY_MS = 30_000;
  * token lives in memory for one reconcile; a pending delivery re-reads it from the Host.
  */
 export class HostOwnedRefresher<G extends HostGrant, P> {
-  private records: HostRefreshState;
+  private records: HostRefreshRecord[];
   private queues = new Map<string, Promise<void>>();
   private recoveries = new Map<string, Promise<void>>();
   private reconciliation: Promise<void> | null = null;
@@ -130,7 +153,26 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
   ) {
     const parsed = HostRefreshStateSchema.safeParse(ports.read());
     if (!parsed.success) throw adapter.error();
+    let diagnostics: HostRefreshDiagnostics = [];
+    try {
+      const saved = HostRefreshDiagnosticsSchema.safeParse(ports.diagnostics?.read() ?? []);
+      if (saved.success) diagnostics = saved.data;
+    } catch {
+      // Optional evidence must not prevent startup when its file is missing or unreadable.
+    }
     this.records = parsed.data;
+    for (const record of this.records) {
+      const saved = diagnostics.find(
+        (item) =>
+          item.definitionId === record.definitionId && item.generation === record.generation,
+      );
+      const matchingFailure =
+        saved?.refreshAt === record.refresh?.at &&
+        saved?.refreshFailures === record.refreshFailures;
+      record.missedExpiry = saved?.missedExpiry;
+      record.failureReason = matchingFailure ? saved?.failureReason : undefined;
+      record.refreshRetry = matchingFailure ? saved?.refreshRetry : undefined;
+    }
     if (new Set(this.records.map((record) => record.definitionId)).size !== this.records.length)
       throw adapter.error();
   }
@@ -288,9 +330,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
   ): Promise<P | null | undefined> {
     const due = this.isDue(next, now) || (recovery && next.refreshFailures === 0);
     // Preserve the previous deadline even if this read immediately discovers a renewed grant.
-    let missedDeadline =
-      next.expiresAt !== null && now >= next.expiresAt && next.missedExpiry !== next.expiresAt;
-    if (missedDeadline && next.expiresAt !== null) next.missedExpiry = next.expiresAt;
+    if (next.expiresAt !== null && now >= next.expiresAt) next.missedExpiry = next.expiresAt;
     let desired: P | null | undefined;
     if (due) {
       try {
@@ -303,10 +343,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     const expired = next.expiresAt !== null && now >= next.expiresAt;
     if (expired && next.expiresAt !== null && next.missedExpiry !== next.expiresAt) {
       next.missedExpiry = next.expiresAt;
-      missedDeadline = true;
     }
-    if (missedDeadline && expired && next.refresh?.at !== now)
-      this.recordFailure(next, now, "expiry_missed");
     return desired;
   }
 
@@ -318,9 +355,24 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
   ): Promise<P | null> {
     let grant = await this.ports.grant(definitionId);
     // A newer Host token (a Host agent refreshed it, or the owner signed in) clears failures.
+    const recoveredRead =
+      grant !== null &&
+      (next.failureReason === "storage_unreadable" || next.failureReason === "grant_missing");
     if (isNewerGrant(next, grant)) {
       next.refreshFailures = 0;
       delete next.failureReason;
+      delete next.refreshRetry;
+    } else if (recoveredRead) {
+      next.refreshFailures = next.refreshRetry?.failures ?? 0;
+      if (next.refreshRetry) {
+        const retry = next.refreshRetry;
+        next.refresh = {
+          at: retry.at,
+          outcome: retry.reason === "refresh_failed" ? "failed" : "unchanged",
+        };
+        next.failureReason = retry.reason;
+      } else delete next.failureReason;
+      delete next.refreshRetry;
     }
     if (grant === null) this.recordFailure(next, now, "grant_missing");
     if (this.shouldRefresh(next, grant, now))
@@ -352,7 +404,7 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     try {
       after = await this.ports.grant(definitionId);
     } catch {
-      this.recordFailure(next, now, "storage_unreadable");
+      this.recordFailure(next, now, failed ? "refresh_failed" : "storage_unreadable");
       return grant;
     }
     const advanced =
@@ -435,13 +487,36 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     );
   }
 
-  private withRecord(record: HostRefreshRecord): HostRefreshState {
+  private withRecord(record: HostRefreshRecord): HostRefreshRecord[] {
     return [...this.records.filter((item) => item.definitionId !== record.definitionId), record];
   }
 
-  private commit(next: HostRefreshState): void {
+  private commit(next: HostRefreshRecord[]): void {
     try {
-      this.ports.persist(next);
+      const state: HostRefreshState = [];
+      const diagnostics: HostRefreshDiagnostics = [];
+      for (const record of next) {
+        const { failureReason, missedExpiry, refreshRetry, ...legacy } = record;
+        state.push(legacy);
+        diagnostics.push({
+          definitionId: record.definitionId,
+          generation: record.generation,
+          refreshAt: record.refresh?.at ?? null,
+          refreshFailures: record.refreshFailures,
+          failureReason,
+          missedExpiry,
+          refreshRetry,
+        });
+      }
+      // Save evidence first. On a partial write, restore failure reasons only when their
+      // generation and refresh outcome match state.json; evidence never changes authority.
+      try {
+        this.ports.diagnostics?.persist(diagnostics);
+      } catch {
+        // A sidecar outage can lose diagnostic detail, but must not stop renewal or the
+        // legacy state write. Refresh counters remain durable in the authoritative state.
+      }
+      this.ports.persist(state);
     } catch {
       this.persistenceFailed = true;
       throw this.adapter.error();
@@ -454,6 +529,20 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     now: number,
     reason: NonNullable<HostRefreshRecord["failureReason"]>,
   ): void {
+    const transient = reason === "storage_unreadable" || reason === "grant_missing";
+    // A later read error must not erase the CLI failure's retry budget when storage recovers.
+    if (
+      transient &&
+      next.refresh &&
+      (next.failureReason === "refresh_failed" || next.failureReason === "refresh_unchanged")
+    ) {
+      next.refreshRetry = {
+        at: next.refresh.at,
+        failures: next.refreshFailures,
+        expiresAt: next.expiresAt,
+        reason: next.failureReason,
+      };
+    }
     next.refresh = { at: now, outcome: "failed" };
     next.refreshFailures += 1;
     next.failureReason = reason;
@@ -535,9 +624,10 @@ function backoff(base: number, failures: number): number {
 }
 
 function isNewerGrant(next: HostRefreshRecord, grant: HostGrant | null): boolean {
+  const expiresAt = next.refreshRetry?.expiresAt ?? next.expiresAt;
   return (
     grant !== null &&
     grant.expiresAt !== null &&
-    (next.expiresAt === null || grant.expiresAt > next.expiresAt)
+    (expiresAt === null || grant.expiresAt > expiresAt)
   );
 }

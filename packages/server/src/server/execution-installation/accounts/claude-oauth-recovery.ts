@@ -11,9 +11,21 @@ export type ClaudeOAuthRecoveryRequest = z.infer<typeof ClaudeOAuthRecoveryReque
 const Support = z.object({ available: z.boolean() });
 const Reply = z.object({ completed: z.boolean() });
 
+interface RecoveryOptions {
+  config?: ReturnType<typeof readInstallationClientConfig>;
+  request?: typeof fetch;
+}
+
 /** Ask the existing Host writer; neither this transport nor Dev can rotate credentials. */
-export async function recoverClaudeOAuthGrant(configDir: string): Promise<void> {
-  const config = readInstallationClientConfig(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG);
+export async function recoverClaudeOAuthGrant(
+  configDir: string,
+  overrides: RecoveryOptions = {},
+): Promise<void> {
+  const config =
+    overrides.config === undefined
+      ? readInstallationClientConfig(process.env.VORTEO_INSTALLATION_CLIENT_CONFIG)
+      : overrides.config;
+  const request = overrides.request ?? fetch;
   if (!config) return;
   const url = new URL("/api/installation/claude/oauth/recovery", config.origin);
   const options = {
@@ -22,9 +34,9 @@ export async function recoverClaudeOAuthGrant(configDir: string): Promise<void> 
     signal: AbortSignal.timeout(75_000),
   };
   // Older coordinators have no route. Detect support before requesting recovery.
-  const support = await fetch(url, options);
+  const support = await request(url, options);
   if (!support.ok || !Support.parse(await support.json()).available) return;
-  const response = await fetch(url, {
+  const response = await request(url, {
     ...options,
     method: "POST",
     body: JSON.stringify({ providerId: basename(configDir), configDir }),
