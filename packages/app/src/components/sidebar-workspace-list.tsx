@@ -1,3 +1,4 @@
+import { factoryOverviewRoute } from "./sidebar/project-factory-model";
 import { ProjectMenuItem, type ProjectMenuSurface } from "./sidebar/project-menu-item";
 import { FactoryProjectActions } from "./sidebar/factory-project-actions";
 import { FactoryFolderStatus } from "./sidebar/factory-status";
@@ -525,31 +526,34 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
 
 function FactoryOverviewRow({
   target,
-  multiple,
   level,
+  disambiguate,
 }: {
-  target: { serverId: string; projectId: string };
-  multiple: boolean;
-  /** The Factory section's workspace level, so Overview lines up with them. */
+  target: { serverId: string; projectId: string; installationId: string };
   level: number;
+  disambiguate: boolean;
 }) {
-  const openOverview = useCallback(
-    () =>
-      router.navigate(
-        buildPluginSurfaceRoute(
-          target.serverId,
-          "factory",
-          { kind: "surface", id: "overview" },
-          { projectId: target.projectId },
-        ),
-      ),
-    [target.serverId, target.projectId],
+  const { t } = useTranslation();
+  const hosts = useHosts();
+  const plugin = useInstalledPlugins().find(
+    (entry) => entry.id === "factory" && entry.serverId === target.serverId,
   );
+  const route = factoryOverviewRoute(target, plugin);
+  const openOverview = useCallback(() => {
+    if (route) router.navigate(route);
+  }, [route]);
+  if (!route) return null;
+  const hostName =
+    hosts.find((host) => host.serverId === target.serverId)?.label.trim() ||
+    t("projectFactory.unknownHost");
   return (
     <SidebarListActionRow
       icon={Factory}
-      label={multiple ? `Overview (${target.serverId.slice(-8)})` : "Overview"}
-      accessibilityLabel={`Factory overview for host ${target.serverId} project ${target.projectId}`}
+      label={
+        disambiguate
+          ? t("projectFactory.overviewHost", { host: hostName })
+          : t("projectFactory.overview")
+      }
       level={level}
       testID={`sidebar-factory-overview-${target.serverId}-${target.projectId}`}
       onPress={openOverview}
@@ -1984,7 +1988,7 @@ function ProjectSection({
       ) : null,
     [focusAction, hoverUnavailable, title, testID],
   );
-  if (items.length === 0 || !isSidebarSectionShown(focus, section)) return null;
+  if ((items.length === 0 && !beforeList) || !isSidebarSectionShown(focus, section)) return null;
   // A focused section is the top level: its heading gives way to the breadcrumb and its
   // workspaces stay open.
   const collapsed = level !== null && storedCollapsed;
@@ -2254,7 +2258,7 @@ function ProjectBlock({
     () => projectFactoryTargets(project.hosts, project.workspaces, workspaceEntriesByKey),
     [project.hosts, project.workspaces, workspaceEntriesByKey],
   );
-  const factoryStates = useProjectFactories(factoryTargets, supportsFactory);
+  const factoryStates = useProjectFactories(project.hosts, supportsFactory, factoryTargets);
   const groups = useMemo(
     () =>
       splitFactoryWorkspaces(
@@ -2292,15 +2296,20 @@ function ProjectBlock({
         workspaceEntriesByKey,
         new Set(
           installedPlugins
-            .filter(
-              (plugin) =>
-                plugin.id === "factory" &&
-                plugin.surfaces.some((surface) => surface.id === "overview"),
-            )
+            .filter((plugin) => plugin.id === "factory")
             .map((plugin) => plugin.serverId),
         ),
+        factoryStates,
+      ).filter(
+        (target) =>
+          factoryOverviewRoute(
+            target,
+            installedPlugins.find(
+              (plugin) => plugin.id === "factory" && plugin.serverId === target.serverId,
+            ),
+          ) !== null,
       ),
-    [groups.factory, workspaceEntriesByKey, installedPlugins],
+    [groups.factory, workspaceEntriesByKey, installedPlugins, factoryStates],
   );
 
   const {
@@ -2600,14 +2609,18 @@ function ProjectBlock({
             focus={focus}
             level={sectionLevel}
             itemLevel={sectionItemLevel}
-            beforeList={overviewTargets.map((target) => (
-              <FactoryOverviewRow
-                key={`${target.serverId}:${target.projectId}`}
-                target={target}
-                multiple={overviewTargets.length > 1}
-                level={sectionItemLevel}
-              />
-            ))}
+            beforeList={
+              overviewTargets.length > 0
+                ? overviewTargets.map((target) => (
+                    <FactoryOverviewRow
+                      key={`${target.serverId}:${target.projectId}`}
+                      target={target}
+                      disambiguate={overviewTargets.length > 1}
+                      level={sectionItemLevel}
+                    />
+                  ))
+                : null
+            }
             renderList={renderFactoryList}
           />
           <ProjectSection
@@ -3018,15 +3031,34 @@ function useProjectModeView(input: {
     [projects],
   );
   const supportsFactoryByServerId = useHostFeatureMap(focusHostIds, "factoryWorkspaceMembership");
+  const factoryHosts = useMemo(() => projects.flatMap((project) => project.hosts), [projects]);
+  const factoryPollingTargets = useMemo(
+    () =>
+      projects.flatMap((project) =>
+        projectFactoryTargets(project.hosts, project.workspaces, workspaceEntriesByKey),
+      ),
+    [projects, workspaceEntriesByKey],
+  );
+  const factoryStates = useProjectFactories(
+    factoryHosts,
+    supportsFactoryByServerId,
+    factoryPollingTargets,
+  );
   const focusWorld = useMemo(
     () =>
       buildSidebarFocusWorld({
         folderState: folderState ?? EMPTY_SIDEBAR_FOLDER_STATE,
         projects: projects.map((project) => {
+          const hostProjects = new Set(
+            project.hosts.map((host) => JSON.stringify([host.serverId, host.projectId])),
+          );
           const groups = splitFactoryWorkspaces(
             project.workspaces,
             workspaceEntriesByKey,
             supportsFactoryByServerId,
+            factoryStates.filter((state) =>
+              hostProjects.has(JSON.stringify([state.serverId, state.projectId])),
+            ),
           );
           const sections: SidebarFocusSection[] = [];
           if (groups.standing.length > 0) sections.push("standing");
@@ -3046,6 +3078,7 @@ function useProjectModeView(input: {
       projects,
       workspaceEntriesByKey,
       supportsFactoryByServerId,
+      factoryStates,
       hideEmptyFolders,
       hasPinned,
     ],
