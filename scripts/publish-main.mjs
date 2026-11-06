@@ -397,6 +397,7 @@ export async function assertMergeable(
 const MERGE_STATE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      id
       state
       headRefOid
       mergeCommit { oid }
@@ -477,15 +478,37 @@ export async function waitForMerged(
   }
 }
 
+const ENQUEUE_MUTATION = `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid}) {
+    mergeQueueEntry { id }
+  }
+}`;
+
 /**
  * Merges with a merge commit pinned to the tested head. With a merge queue, GitHub enqueues
  * it instead, using the queue's merge method. Waits until it is merged, then proves main
  * contains both the merge commit and the head.
  */
-export async function mergePullRequest(plan, pr, { gh = runGh, wait = {}, log = () => {} } = {}) {
+export async function mergePullRequest(
+  plan,
+  pr,
+  { gh = runGh, wait = {}, log = () => {}, ruleset = readMainRuleset(plan.root) } = {},
+) {
   await assertMergeable(plan, pr, { gh, log, ...wait });
   // A rerun after a timeout finds the entry still queued; enqueueing it again would fail.
-  if (!mergeState(gh, plan.repository, pr.number).isInMergeQueue) {
+  const current = mergeState(gh, plan.repository, pr.number);
+  if (!current.isInMergeQueue && ruleset.rules.some((rule) => rule.type === "merge_queue")) {
+    gh([
+      "api",
+      "graphql",
+      "-f",
+      `query=${ENQUEUE_MUTATION}`,
+      "-f",
+      `pullRequestId=${current.id}`,
+      "-f",
+      `expectedHeadOid=${plan.head}`,
+    ]);
+  } else if (!current.isInMergeQueue) {
     gh([
       "pr",
       "merge",
