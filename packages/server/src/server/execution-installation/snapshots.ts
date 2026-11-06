@@ -279,7 +279,16 @@ async function captureTree(
       }
       // Sockets and FIFOs are skipped, as copyTree does.
     } catch (error) {
-      if (vanished(error)) return;
+      // Skip only an entry that is really gone from the source. A missing destination, such as
+      // a partial snapshot removed underneath this copy, is a failure, never a vanished file.
+      if (
+        vanished(error) &&
+        !(await lstat(entry).then(
+          () => true,
+          () => false,
+        ))
+      )
+        return;
       throw error;
     }
   }
@@ -368,11 +377,31 @@ export function createInstallationSnapshots(input: {
     return captureTree(source.path, destination, source.excludeTopLevel, [root]);
   }
 
-  return {
+  let taking: Promise<InstallationSnapshot> | null = null;
+  const takeOnce = (request: Parameters<InstallationSnapshots["take"]>[0]) =>
+    snapshots.__takeOnce(request);
+  const snapshots: InstallationSnapshots & {
+    /** The capture itself; take() runs it one at a time. */
+    __takeOnce(
+      request: Parameters<InstallationSnapshots["take"]>[0],
+    ): Promise<InstallationSnapshot>;
+  } = {
     root,
     list,
     read,
-    async take({ reason, upgradeId, release }) {
+    take(request) {
+      // One snapshot at a time: a second take would remove the first one's partial directory
+      // while it copies. Capture no longer blocks the event loop, so two can now overlap.
+      if (taking)
+        return Promise.reject(
+          new Error("A snapshot is already being taken. Try again when it finishes."),
+        );
+      taking = takeOnce(request).finally(() => {
+        taking = null;
+      });
+      return taking;
+    },
+    async __takeOnce({ reason, upgradeId, release }) {
       ensurePrivateDirectory(root);
       for (const name of readdirSync(root))
         if (name.startsWith(".") && name.endsWith(".partial"))
@@ -437,6 +466,7 @@ export function createInstallationSnapshots(input: {
       });
     },
   };
+  return snapshots;
 }
 
 /** Kinds a restore replaces, sorted and without repeats, for exact confirmation. */
