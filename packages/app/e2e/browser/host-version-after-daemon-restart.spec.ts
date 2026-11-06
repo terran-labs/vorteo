@@ -43,13 +43,13 @@ test("System details show the restarted Host version without reloading", async (
         label: HOST_LABEL,
         port: host.port,
       });
-      const version = await readHelpHostVersion(page, getServerId());
-      await expectHelpHostVersion(page, host.serverId, PREVIOUS_VERSION);
+      const versions = await readConnectedHostVersions(page, [getServerId(), host.serverId]);
+      expect(versions[host.serverId]).toContain(`v${PREVIOUS_VERSION}`);
       await openHostPage(page, host);
       await expect(page.getByTestId("system-pane").filter({ visible: true })).toBeVisible();
       await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toBeVisible();
       await markPageForNoReloadCheck(page, NO_RELOAD_MARKER);
-      return version;
+      return versions[getServerId()];
     });
 
   await test.step("the last known version remains in System details when the Host stops", async () => {
@@ -71,26 +71,28 @@ test("System details show the restarted Host version without reloading", async (
     await expect(hostVersionBadge(page, UPDATED_VERSION)).toBeVisible({ timeout: 30_000 });
     await expect(hostVersionBadge(page, PREVIOUS_VERSION)).toHaveCount(0);
     await clickSettingsBackToWorkspace(page);
-    await expectHelpHostVersion(page, host.serverId, UPDATED_VERSION);
-    expect(await readHelpHostVersion(page, getServerId())).toBe(otherHostVersion);
+    const versions = await readConnectedHostVersions(page, [host.serverId, getServerId()]);
+    expect(versions[host.serverId]).toContain(`v${UPDATED_VERSION}`);
+    expect(versions[getServerId()]).toBe(otherHostVersion);
     await expectNoReloadSinceMarker(page);
   });
 });
 
-/** Host versions are listed in Settings, under Connected hosts; the help menu that showed them is gone. */
-async function readHelpHostVersion(page: Page, serverId: string): Promise<string> {
+/** Both versions share one Settings pane; read them in one visit instead of reopening the old Help flow per row. */
+async function readConnectedHostVersions(
+  page: Page,
+  serverIds: readonly string[],
+): Promise<Record<string, string>> {
   await openSettings(page);
   await revealSettingsLocation(page, "general.hosts");
-  const row = page.getByTestId(`settings-host-version-${serverId}`);
-  await expect(row).toBeVisible();
-  const text = await row.innerText();
+  const versions: Record<string, string> = {};
+  for (const serverId of serverIds) {
+    const row = page.getByTestId(`settings-host-version-${serverId}`);
+    await expect(row).toBeVisible();
+    versions[serverId] = await row.innerText();
+  }
   await clickSettingsBackToWorkspace(page);
-  return text;
-}
-
-async function expectHelpHostVersion(page: Page, serverId: string, version: string): Promise<void> {
-  const text = await readHelpHostVersion(page, serverId);
-  expect(text).toContain(`v${version}`);
+  return versions;
 }
 
 async function openHostPage(page: Page, host: RestartableHostDaemon): Promise<void> {
