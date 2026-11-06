@@ -33,7 +33,7 @@ import type { HostBadgeModel } from "@/hosts/appearance";
 import { isWeb as platformIsWeb, isNative as platformIsNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { StyleSheet } from "react-native-unistyles";
-import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
+import { groupHoverStyle, hoverGroup, hoverStyle, hoverSurface, rowSurface } from "@/styles/hover";
 import { useVortonTouch } from "@/vorton-touch";
 
 import { density, densityIconBox, densityIconProps } from "@/styles/density";
@@ -1197,9 +1197,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     userSelect: "none",
   },
-  workspaceRowHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
+  // Publishes the row's surface so status rings and badge cutouts follow its CSS hover fill.
+  workspaceRowHoverable: hoverSurface(
+    theme.colors.surfaceSidebar,
+    theme.colors.surfaceSidebarHover,
+  ),
   workspaceRowPressed: {
     backgroundColor: theme.colors.surface2,
+    ...rowSurface(theme.colors.surface2),
   },
   workspaceRowDragging: {
     backgroundColor: theme.colors.surface2,
@@ -1208,8 +1213,10 @@ const styles = StyleSheet.create((theme) => ({
     transform: [{ scale: 1.02 }],
     zIndex: 3,
     ...theme.shadow.md,
+    ...rowSurface(theme.colors.surface2),
   },
   sidebarRowSelected: {
     backgroundColor: theme.colors.surfaceSidebarSelected,
+    ...rowSurface(theme.colors.surfaceSidebarSelected),
   },
 }));

@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Command center and sidebar status-list rows publish their CSS hover surface, so their status rings follow hover; includes the shared-scroller import swap for both files
+
 Maintenance review (2026-11-05): live tweak by Upgrade time estimate: Upgrade approval text states the expected duration, measured from this installation's last successful upgrade or a typical range without one, and when Host agents are interrupted.
 
 Maintenance review (2026-11-05): live tweak by Static interface fallback button: A Live dev page that cannot start offers Load static interface beside the other fallback buttons. Live dev's declaration watchers now stamp their output, so commit hooks in the live checkout no longer rebuild declarations under the running dev server.

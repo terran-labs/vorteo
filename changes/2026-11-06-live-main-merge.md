@@ -2,6 +2,7 @@
 
 - Merged current `main` into `live/main` for delivery, so the live edits reach `main` through the usual pull request.
 - Merged the latest `live/main` again, including the upgrade time estimate, which now joins main's release notes and install decisions in the upgrade approval text and card.
+- Merged `live/main` once more for the command center and status list hover surfaces.
 
 ## Maintenance review
 
