@@ -23,7 +23,6 @@ for (const width of [1280, 390]) {
   }, testInfo) => {
     await page.setViewportSize({ width, height: 1000 });
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.clock.setFixedTime(new Date(mergedAt + week + 1));
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.addInitScript(() => {
       const key = "@paseo:create-agent-preferences";
@@ -33,6 +32,9 @@ for (const width of [1280, 390]) {
       );
     });
     await page.goto("/settings/system");
+    // Let startup finish on the real clock before mounting the dated Advanced section.
+    await expect(page.locator("#boot-overlay")).toHaveCount(0);
+    await page.clock.setFixedTime(new Date(mergedAt + week + 1));
     // Begin at the owning pane; General's version check follows the upstream controls.
     await expect(page).toHaveURL(/\/settings\/(system|about)$/);
     await openAdvanced(page);
@@ -62,7 +64,6 @@ test("the weekly highlight expires while System is open without an alternate pro
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.clock.install({ time: new Date(mergedAt + week - 60_000) });
   await page.addInitScript(() => {
     const key = "@paseo:create-agent-preferences";
     localStorage.setItem(
@@ -72,6 +73,9 @@ test("the weekly highlight expires while System is open without an alternate pro
   });
   // Open the owning section so virtual time does not gate its progressive mount.
   await page.goto("/settings/system");
+  await expect(page.locator("#boot-overlay")).toHaveCount(0);
+  // Virtual time belongs to the weekly boundary, after the real startup handoff.
+  await page.clock.install({ time: new Date(mergedAt + week - 60_000) });
   await openAdvanced(page);
   await expect(page.getByTestId("upstream-updates-section")).toHaveCount(1);
   await expect(page.getByTestId("upstream-update-overdue")).toHaveCount(0);
