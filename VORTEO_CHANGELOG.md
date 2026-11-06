@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Lab self-updates now really move the Host daemon onto the new build; before, they could report success while the Host still ran the previous release.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Quota charts in the sidebar footer can draw how each account's usage climbed this week: the daemon now records usage readings over time and keeps them across restarts.
 
 ## Unreleased - 2026-11-05
