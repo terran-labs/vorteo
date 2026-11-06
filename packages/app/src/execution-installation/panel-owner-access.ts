@@ -34,8 +34,11 @@ export function usePanelOwnerAccess({
       model.setPassword(password);
       try {
         await model.unlock();
+        const result = model.getState();
+        if (!result.unlocked) throw new Error(result.error || "Wrong password");
       } finally {
-        model.clearPasswordDraft();
+        // Clear the secret without erasing the error shown by the unlock dialog.
+        model.setPassword("");
       }
     },
     [model],

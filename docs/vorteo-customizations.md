@@ -1931,6 +1931,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 5, 2026: Owner unlock feedback preserves model errors while clearing only the password draft; failed attempts reject and keep the owner group locked. Metadata picker coverage compares height with its content and borders instead of an arbitrary minimum. README overview and onboarding are unchanged.
+
 November 5, 2026: Metadata picker viewport coverage now accepts the existing model-count-dependent height and still checks containment, width, focus restoration and selection. Plugin Back coverage follows its Projects & integrations parent. README overview and onboarding are unchanged.
 
 November 5, 2026: Merged the main-sync revision into the Settings fixes branch, preserving the Skills restoration and custom domain work. Browser validation is pending. README overview and onboarding are unchanged.

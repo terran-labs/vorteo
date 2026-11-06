@@ -4,6 +4,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-05
 
+### Fixes
+
+- Preserve wrong-password errors after clearing the owner-password draft, and reject failed unlock attempts so the dialog keeps its reserved error message.
+- Check metadata picker height against its unclamped content and borders, capped at 400px, while retaining viewport containment and interaction checks.
+
+## Unreleased - 2026-11-05
+
 ### Maintenance
 
 - Keep metadata picker viewport checks independent of the available model count while preserving bounds, width and interaction coverage. Update plugin Back coverage for its Projects & integrations parent.
