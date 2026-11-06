@@ -1146,6 +1146,21 @@ export function restartActionDisabledReason(
   return null;
 }
 
+/** The same delayed Force escape hatch applies to ordinary Host and Dev restarts. */
+export function restartForceDeadline(job: RestartJob): number | null {
+  if (
+    (job.target !== "host" && job.target !== "container-daemon") ||
+    job.update ||
+    job.sourceBatch ||
+    restartOperationView(job) ||
+    !job.approvedAt ||
+    !["approved", "running"].includes(job.status)
+  )
+    return null;
+  const deadline = Date.parse(job.approvedAt) + 60_000;
+  return Number.isFinite(deadline) ? deadline : null;
+}
+
 export function restartRequestSummary(job: RestartJob): string {
   const dev = job.sourceBatch?.contributions.find(
     (item) => item.status !== "superseded" && item.requestedBy === "container-agent",

@@ -95,6 +95,7 @@ import { SafetySnapshotsCard } from "./safety-snapshots";
 import {
   InstallationPanelModel,
   restartRequestSummary,
+  restartForceDeadline,
   restartBlockingReason,
   restartRepairGuidance,
   restartActionDisabledReason,
@@ -1964,10 +1965,6 @@ function isPlanBound(job: RestartJob): boolean {
   return restartOperationView(job) !== undefined;
 }
 
-function isPlainHostRestart(job: RestartJob): boolean {
-  return job.target === "host" && !job.update && !job.sourceBatch && !isPlanBound(job);
-}
-
 function finishLabel(job: RestartJob): string {
   return restartOperationView(job)?.finishLabel ?? "Finish turns and restart";
 }
@@ -2262,14 +2259,8 @@ function RestartEscalation({
   const [timedOut, setTimedOut] = useState(false);
   useEffect(() => {
     setTimedOut(false);
-    if (
-      !isPlainHostRestart(job) ||
-      !job.approvedAt ||
-      !["approved", "running"].includes(job.status)
-    )
-      return;
-    const deadline = Date.parse(job.approvedAt) + 60_000;
-    if (!Number.isFinite(deadline)) return;
+    const deadline = restartForceDeadline(job);
+    if (deadline === null) return;
     const delay = Math.max(0, deadline - Date.now());
     const timer = setTimeout(() => setTimedOut(true), delay);
     return () => clearTimeout(timer);

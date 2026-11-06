@@ -7,6 +7,7 @@ import {
   InstallationPanelModel,
   restartExplanation,
   restartRequestSummary,
+  restartForceDeadline,
   restartBannerTitle,
   restartCancellable,
   delegationOverdueNote,
@@ -1220,4 +1221,25 @@ test("the password copy command quotes the coordinator's path", () => {
   expect(passwordCopyCommand("/Users/o'neil/my host/owner-password")).toBe(
     "pbcopy < '/Users/o'\\''neil/my host/owner-password'",
   );
+});
+
+test("Dev Force uses the same delayed approval guard as Host", () => {
+  const approvedAt = "2026-11-06T00:00:00.000Z";
+  const job: RestartJob = {
+    id: "dev-force",
+    revision: "reviewed",
+    target: "container-daemon",
+    requestedBy: "container-agent",
+    reason: "Activate Dev changes",
+    createdAt: approvedAt,
+    expiresAt: "9999-12-31T00:00:00.000Z",
+    status: "approved",
+    approvedAt,
+    detail: "Waiting for current work",
+  };
+  const deadline = Date.parse(approvedAt) + 60_000;
+  expect(restartForceDeadline(job)).toBe(deadline);
+  expect(restartForceDeadline({ ...job, target: "host" })).toBe(deadline);
+  expect(restartForceDeadline({ ...job, status: "pending" })).toBeNull();
+  expect(restartForceDeadline({ ...job, engineRestartPlanSha256: "a".repeat(64) })).toBeNull();
 });
