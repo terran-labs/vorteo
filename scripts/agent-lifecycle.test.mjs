@@ -147,19 +147,61 @@ const REQUIRED = ["format", "scan"];
 const ACTIONS = 15368;
 
 // A fake gh backed by the fixture's bare origin. Merging creates a real merge commit on main.
-function fakeGh({ root, origin, checks = [], reviews = [], viewer = "owner", author = "owner" }) {
+// With `queue`, merging enqueues instead, and the merge lands after that many state polls.
+function fakeGh({
+  root,
+  origin,
+  checks = [],
+  reviews = [],
+  viewer = "owner",
+  author = "owner",
+  queue = 0,
+}) {
   const calls = [];
   const prs = [];
-  const gh = (args, { input } = {}) => {
-    calls.push({ args, input });
-    const [group, verb] = args;
-    if (group === "api" && verb === "user") return viewer;
-    if (group === "api" && verb.endsWith("/permission")) return "admin";
-    if (group === "api" && verb === `repos/${REPO}`) return "owner";
-    if (group === "pr" && verb === "list") {
-      return JSON.stringify(prs.filter((pr) => pr.state === "OPEN"));
-    }
-    if (group === "pr" && verb === "create") {
+  const land = (pr) => {
+    const merger = path.join(root, `merger-${pr.number}`);
+    run(root, "clone", "--quiet", origin, merger);
+    run(merger, "config", "user.name", "GitHub");
+    run(merger, "config", "user.email", "noreply@example.invalid");
+    run(
+      merger,
+      "merge",
+      "--quiet",
+      "--no-ff",
+      "-m",
+      `Merge pull request #${pr.number}`,
+      pr.headRefOid,
+    );
+    run(merger, "push", "--quiet", "origin", "HEAD:main");
+    pr.state = "MERGED";
+    pr.inQueue = false;
+    pr.mergeCommit = { oid: run(merger, "rev-parse", "HEAD").trim() };
+  };
+  const find = (number) => prs.find((entry) => String(entry.number) === String(number));
+  const merge = (args) => {
+    const pr = find(args[2]);
+    assert.equal(args[args.indexOf("--match-head-commit") + 1], pr.headRefOid);
+    assert.ok(args.includes("--merge"));
+    if (!queue) return land(pr);
+    pr.inQueue = true;
+    pr.queuePolls = queue;
+  };
+  // The publisher's GraphQL merge-state query; a queued entry lands after its polls.
+  const mergeState = (args) => {
+    const pr = find(args.find((arg) => arg.startsWith("number=")).slice("number=".length));
+    if (pr.inQueue && (pr.queuePolls -= 1) < 0) land(pr);
+    return JSON.stringify({
+      state: pr.state,
+      headRefOid: pr.headRefOid,
+      mergeCommit: pr.mergeCommit ?? null,
+      isInMergeQueue: Boolean(pr.inQueue),
+      mergeQueueEntry: pr.inQueue ? { state: "AWAITING_CHECKS", position: 1 } : null,
+    });
+  };
+  const prCommands = {
+    list: () => JSON.stringify(prs.filter((pr) => pr.state === "OPEN")),
+    create: (args) => {
       const branch = args[args.indexOf("--head") + 1];
       const head = run(root, "--git-dir", origin, "rev-parse", `refs/heads/${branch}`).trim();
       prs.push({
@@ -169,36 +211,27 @@ function fakeGh({ root, origin, checks = [], reviews = [], viewer = "owner", aut
         headRefName: branch,
         headRefOid: head,
         isCrossRepository: false,
+        mergeable: "MERGEABLE",
+        mergeStateStatus: "CLEAN",
         author: { login: author },
         url: `https://github.com/${REPO}/pull/${prs.length + 1}`,
       });
       return prs.at(-1).url;
-    }
-    if (group === "pr" && verb === "view") {
-      return JSON.stringify(prs.find((entry) => String(entry.number) === args[2]));
-    }
-    if (group === "pr" && verb === "merge") {
-      const pr = prs.find((entry) => String(entry.number) === args[2]);
-      assert.equal(args[args.indexOf("--match-head-commit") + 1], pr.headRefOid);
-      assert.ok(args.includes("--merge"));
-      const merger = path.join(root, `merger-${pr.number}`);
-      run(root, "clone", "--quiet", origin, merger);
-      run(merger, "config", "user.name", "GitHub");
-      run(merger, "config", "user.email", "noreply@example.invalid");
-      run(
-        merger,
-        "merge",
-        "--quiet",
-        "--no-ff",
-        "-m",
-        `Merge pull request #${pr.number}`,
-        pr.headRefOid,
-      );
-      run(merger, "push", "--quiet", "origin", "HEAD:main");
-      pr.state = "MERGED";
-      pr.mergeCommit = { oid: run(merger, "rev-parse", "HEAD").trim() };
+    },
+    view: (args) => JSON.stringify(find(args[2])),
+    merge: (args) => {
+      merge(args);
       return "";
-    }
+    },
+  };
+  const gh = (args, { input } = {}) => {
+    calls.push({ args, input });
+    const [group, verb] = args;
+    if (group === "api" && verb === "user") return viewer;
+    if (group === "api" && verb.endsWith("/permission")) return "admin";
+    if (group === "api" && verb === `repos/${REPO}`) return "owner";
+    if (group === "pr" && verb in prCommands) return prCommands[verb](args);
+    if (group === "api" && verb === "graphql") return mergeState(args);
     if (group === "api" && args.at(-3).includes("/check-runs")) {
       return checks.map((check) => JSON.stringify({ app: ACTIONS, ...check })).join("\n");
     }
@@ -233,7 +266,7 @@ const passing = REQUIRED.map((name, index) => ({
   conclusion: "success",
 }));
 
-test("publishing refuses a dirty tree, main, a stale base and a missing secret scanner", () => {
+test("publishing refuses a dirty tree, main and a missing secret scanner, but not a branch behind main", () => {
   const { clone, root, origin } = fixture();
   const env = fakeGitleaks(root);
   const { gh } = fakeGh({ root, origin });
@@ -249,14 +282,57 @@ test("publishing refuses a dirty tree, main, a stale base and a missing secret s
     () => prepare({ env: { ...env, PASEO_GITLEAKS_BIN: path.join(root, "none") } }),
     /Gitleaks/,
   );
-  // Someone else merges first: the branch must take main and a fresh version.
-  const other = path.join(root, "other");
+  // Someone else merges first: the branch goes ahead as is; GitHub judges conflicts.
+  const main = advanceMain(root, origin);
+  const plan = prepare();
+  assert.equal(plan.remoteHead, main);
+  assert.deepEqual(
+    plan.outgoing.map((line) => line.split(" ").slice(1).join(" ")),
+    ["Add a"],
+  );
+});
+
+// Another checkout merges to main, leaving branches behind it.
+function advanceMain(root, origin) {
+  const other = path.join(root, `other-${Math.random().toString(36).slice(2)}`);
   run(root, "clone", "--quiet", origin, other);
   run(other, "config", "user.name", "Test");
   run(other, "config", "user.email", "test@example.invalid");
-  commit(other, "b.txt", "b\n", "Add b");
+  run(other, "config", "core.hooksPath", "/dev/null");
+  const head = commit(other, "b.txt", "b\n", "Add b");
   run(other, "push", "--quiet", "origin", "HEAD:main");
-  assert.throws(() => prepare(), /version:vorton/);
+  return head;
+}
+
+test("a conflicting pull request is refused; one behind main waits in the merge queue until merged", async () => {
+  const { clone, root, origin } = branchFixture();
+  const env = fakeGitleaks(root);
+  const head = commit(clone, "a.txt", "a\n", "Add a");
+  const { gh, calls, prs } = fakeGh({ root, origin, checks: passing, queue: 2 });
+  const plan = planFor(clone, env, gh);
+  const pr = await openPullRequest(plan, { env, gh, pollMs: 0 });
+  const behind = advanceMain(root, origin);
+  prs[0].mergeable = "CONFLICTING";
+  prs[0].mergeStateStatus = "DIRTY";
+  await assert.rejects(
+    mergePullRequest(plan, pr, { gh, wait: { pollMs: 0 } }),
+    /conflicts with main\. Merge origin\/main into the branch, resolve the conflicts/,
+  );
+  assert.ok(!calls.some((call) => call.args[0] === "pr" && call.args[1] === "merge"));
+  prs[0].mergeable = "MERGEABLE";
+  prs[0].mergeStateStatus = "BEHIND";
+  const progress = [];
+  const result = await mergePullRequest(plan, pr, {
+    gh,
+    wait: { pollMs: 0 },
+    log: (line) => progress.push(line),
+  });
+  assert.deepEqual(progress, ["In the merge queue at position 1: awaiting checks."]);
+  assert.equal(prs[0].state, "MERGED");
+  assert.equal(run(clone, "ls-remote", "origin", "refs/heads/main").split(/\s+/)[0], result.main);
+  for (const commitId of [head, behind, result.mergeCommit]) {
+    assert.equal(run(clone, "merge-base", "--is-ancestor", commitId, result.main), "");
+  }
 });
 
 test("publishing opens a pull request, waits for required checks and merges with a merge commit", async () => {
@@ -283,7 +359,7 @@ test("publishing opens a pull request, waits for required checks and merges with
     },
   });
   assert.equal(polls, 1);
-  const result = mergePullRequest(plan, pr, { gh });
+  const result = await mergePullRequest(plan, pr, { gh, wait: { pollMs: 0 } });
   const parents = run(clone, "rev-list", "--parents", "-n", "1", result.mergeCommit)
     .trim()
     .split(" ");

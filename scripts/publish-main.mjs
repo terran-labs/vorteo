@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Delivers the current branch to main through a pull request: pushes the branch, opens or
 // reuses its pull request, waits for the required checks named in .github/rulesets/main.json,
-// merges with a merge commit pinned to the tested head, then proves main contains that head.
-// A merge commit keeps the exact commit an installation already runs in main's history.
+// merges with a merge commit pinned to the tested head (through the merge queue when the
+// ruleset has one), waits until GitHub reports it merged, then proves main contains that head.
+// A merge commit keeps the exact commit an installation already runs in main's history. A
+// branch behind main is not refused; only one GitHub reports as conflicting is.
 // Usage: node scripts/publish-main.mjs [--no-merge] [--pr <number>] [--title <text>]
 //   [--body-file <path>] [--remote origin] [--branch main] [--repo owner/name] [--dry-run]
 // Exit status 0 means merged (or opened, or ready for a dry run); 1 means refused.
@@ -39,16 +41,6 @@ const WRITE_PERMISSIONS = new Set(["admin", "write"]);
 function fetchBase(root, remote, branch) {
   git(root, ["fetch", "--quiet", remote, branch]);
   return git(root, ["rev-parse", "FETCH_HEAD"]);
-}
-
-function requireUpToDate(root, base, head, remote, branch) {
-  if (!isAncestor(root, base, head)) {
-    throw new PublishRefusal(
-      `${remote}/${branch} moved to ${base.slice(0, 9)}, which ${head.slice(0, 9)} does not contain. ` +
-        `Merge ${remote}/${branch} into the branch, prepare a fresh version with npm run version:vorton, ` +
-        "commit, and publish again. Never force-push.",
-    );
-  }
 }
 
 /**
@@ -93,7 +85,6 @@ export function preparePublication({
     if (head !== view.headRefOid) {
       throw new PublishRefusal(`Pull request #${pr} moved while it was being read; run again.`);
     }
-    requireUpToDate(root, remoteHead, head, remote, branch);
     return {
       root,
       remote,
@@ -122,7 +113,8 @@ export function preparePublication({
   if (head === remoteHead) {
     throw new PublishRefusal(`${remote}/${branch} already points at ${head.slice(0, 9)}`);
   }
-  requireUpToDate(root, remoteHead, head, remote, branch);
+  // A branch behind the base is fine: GitHub merges (or the merge queue tests) the combined
+  // result, and only a pull request GitHub reports as conflicting is refused.
   // The pre-push hook runs the secret scan and fails when Gitleaks is missing.
   const gitleaks = findGitleaks(env);
   if (!gitleaks) {
@@ -368,37 +360,144 @@ export async function waitForChecks(
   }
 }
 
-/** Merges with a merge commit pinned to the tested head, then proves main contains it. */
-export function mergePullRequest(plan, pr, { gh = runGh } = {}) {
-  requireUpToDate(
-    plan.root,
-    fetchBase(plan.root, plan.remote, plan.branch),
-    plan.head,
-    plan.remote,
-    plan.branch,
-  );
-  gh([
-    "pr",
-    "merge",
-    String(pr.number),
-    "-R",
-    plan.repository,
-    "--merge",
-    "--match-head-commit",
-    plan.head,
-  ]);
-  const merged = ghJson(gh, [
-    "pr",
-    "view",
-    String(pr.number),
-    "-R",
-    plan.repository,
-    "--json",
-    "state,mergeCommit",
-  ]);
-  if (merged.state !== "MERGED" || !merged.mergeCommit?.oid) {
-    throw new PublishRefusal(`Pull request #${pr.number} is ${merged.state}, not merged.`);
+/**
+ * Refuses a pull request that GitHub reports as conflicting with its base. A branch that is
+ * merely behind the base merges as is. GitHub computes mergeability lazily, so UNKNOWN is
+ * polled briefly; if it stays unknown, the merge itself is left to decide.
+ */
+export async function assertMergeable(
+  plan,
+  pr,
+  { gh = runGh, pollMs = 3_000, attempts = 10, log = () => {} } = {},
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    const view = ghJson(gh, [
+      "pr",
+      "view",
+      String(pr.number),
+      "-R",
+      plan.repository,
+      "--json",
+      "mergeable,mergeStateStatus",
+    ]);
+    if (view.mergeable === "CONFLICTING" || view.mergeStateStatus === "DIRTY") {
+      throw new PublishRefusal(
+        `Pull request #${pr.number} conflicts with ${plan.branch}. Merge ${plan.remote}/${plan.branch} into the branch, resolve the conflicts, commit with a change fragment, and publish again. Never force-push.`,
+      );
+    }
+    if (view.mergeable !== "UNKNOWN") return view;
+    if (attempt + 1 >= attempts) {
+      log(`GitHub has not computed whether #${pr.number} conflicts; the merge will decide.`);
+      return view;
+    }
+    await sleep(pollMs);
   }
+}
+
+const MERGE_STATE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      state
+      headRefOid
+      mergeCommit { oid }
+      isInMergeQueue
+      mergeQueueEntry { state position }
+    }
+  }
+}`;
+
+function mergeState(gh, repository, number) {
+  const [owner, name] = repository.split("/");
+  return ghJson(gh, [
+    "api",
+    "graphql",
+    "-f",
+    `query=${MERGE_STATE_QUERY}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `number=${number}`,
+    "--jq",
+    ".data.repository.pullRequest",
+  ]);
+}
+
+/**
+ * Waits until GitHub reports the pull request merged. Without a merge queue that is
+ * immediate; with one, the entry waits for its merge group's required checks. Refuses when
+ * the pull request closes, its head moves, or it leaves the queue unmerged, which GitHub
+ * does when the merge group fails its checks or conflicts.
+ */
+export async function waitForMerged(
+  plan,
+  pr,
+  {
+    gh = runGh,
+    pollMs = 30_000,
+    timeoutMs = 6 * 60 * 60_000,
+    absentPolls = 3,
+    log = () => {},
+  } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let absent = 0;
+  let last = "";
+  for (;;) {
+    const current = mergeState(gh, plan.repository, pr.number);
+    if (current.state === "MERGED" && current.mergeCommit?.oid) return current;
+    if (current.state === "CLOSED") {
+      throw new PublishRefusal(`Pull request #${pr.number} was closed without merging.`);
+    }
+    if (current.headRefOid !== plan.head) {
+      throw new PublishRefusal(
+        `Pull request #${pr.number} head moved to ${current.headRefOid?.slice(0, 9)} after ${plan.head.slice(0, 9)} was queued; publish again.`,
+      );
+    }
+    // A fresh enqueue can take a moment to appear; then leaving the queue is final.
+    absent = current.isInMergeQueue ? 0 : absent + 1;
+    if (absent > absentPolls) {
+      throw new PublishRefusal(
+        `Pull request #${pr.number} left the merge queue without merging. GitHub removes an entry whose merge group fails its required checks or conflicts; inspect the merge group's checks, fix forward, and publish again.`,
+      );
+    }
+    if (Date.now() >= deadline) {
+      throw new PublishRefusal(
+        `Timed out waiting for #${pr.number} to merge; it is still ${current.isInMergeQueue ? "in the merge queue" : "open"}. Run publish-main.mjs --pr ${pr.number} again to keep waiting.`,
+      );
+    }
+    const entry = current.mergeQueueEntry;
+    const status = entry
+      ? `In the merge queue at position ${entry.position}: ${entry.state.toLowerCase().replaceAll("_", " ")}.`
+      : `Waiting for #${pr.number} to enter the merge queue.`;
+    if (status !== last) log(status);
+    last = status;
+    await sleep(pollMs);
+  }
+}
+
+/**
+ * Merges with a merge commit pinned to the tested head. With a merge queue, GitHub enqueues
+ * it instead, using the queue's merge method. Waits until it is merged, then proves main
+ * contains both the merge commit and the head.
+ */
+export async function mergePullRequest(plan, pr, { gh = runGh, wait = {}, log = () => {} } = {}) {
+  await assertMergeable(plan, pr, { gh, log, ...wait });
+  // A rerun after a timeout finds the entry still queued; enqueueing it again would fail.
+  if (!mergeState(gh, plan.repository, pr.number).isInMergeQueue) {
+    gh([
+      "pr",
+      "merge",
+      String(pr.number),
+      "-R",
+      plan.repository,
+      "--merge",
+      "--match-head-commit",
+      plan.head,
+    ]);
+  }
+  const merged = await waitForMerged(plan, pr, { gh, log, ...wait });
   const mainHead = fetchBase(plan.root, plan.remote, plan.branch);
   if (
     !isAncestor(plan.root, merged.mergeCommit.oid, mainHead) ||
@@ -451,8 +550,8 @@ async function main() {
   if (args["dry-run"]) {
     console.log(
       plan.pr
-        ? "Dry run: pull request is open, targets the base, its head matches and contains the base, and the ruleset names its required checks. The local tree and secret scanner were not checked; nothing is pushed for an existing pull request."
-        : "Dry run: up to date with the base, clean tree and secret scanner verified.",
+        ? "Dry run: pull request is open, targets the base, its head matches, and the ruleset names its required checks. The local tree and secret scanner were not checked; nothing is pushed for an existing pull request."
+        : "Dry run: clean tree and secret scanner verified. Conflicts with the base are checked on GitHub after the push.",
     );
     return;
   }
@@ -462,15 +561,19 @@ async function main() {
   });
   console.log(`Pull request: ${pr.url}`);
   if (args["no-merge"]) return;
+  const log = (line) => console.log(line);
+  // Refuse a conflict before waiting an hour for checks.
+  await assertMergeable(plan, pr, { log });
   console.log(`Review: ${assertReviewed(plan, pr)}.`);
-  const checks = await waitForChecks(plan, { log: (line) => console.log(line) });
+  const checks = await waitForChecks(plan, { log });
   console.log(`Passed: ${checks.passed.join(", ") || "none"}.`);
   if (checks.skipped.length) {
     console.log(`Skipped by CI's path filter, not validated: ${checks.skipped.join(", ")}.`);
   }
   // Revalidate right before merging: a review can change while checks run.
   assertReviewed(plan, viewPullRequest(runGh, plan.repository, pr.number));
-  const result = mergePullRequest(plan, pr);
+  console.log(`Merging #${pr.number}; with a merge queue this waits for its merge group.`);
+  const result = await mergePullRequest(plan, pr, { log });
   console.log(
     `Verified: merge ${result.mergeCommit} is on ${plan.remote}/${plan.branch} (${result.main}) and contains ${plan.head}.`,
   );

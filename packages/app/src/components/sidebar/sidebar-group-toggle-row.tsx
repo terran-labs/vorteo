@@ -1,8 +1,9 @@
 import { sidebarIndentStyle } from "./indent";
 import { useSidebarRowDensity } from "@/components/sidebar/use-sidebar-row-density";
-import { useCallback, type ComponentProps } from "react";
+import { useCallback, useState, type ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View } from "react-native";
+import { PressHighlight } from "@/components/ui/press-highlight";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
@@ -40,41 +41,46 @@ export function SidebarListActionRow({
   testID: string;
 }) {
   const density = useSidebarRowDensity();
-  const rowStyle = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.row,
-      density,
-      !indented && sidebarIndentStyle(level),
-      indented && sidebarWorkspaceRowStyles.rowIndented,
-      hovered && !pressed && styles.rowHovered,
-      pressed && styles.rowPressed,
-    ],
-    [indented, level, density],
-  );
+  const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  const hoverIn = useCallback(() => setHovered(true), []);
+  const hoverOut = useCallback(() => setHovered(false), []);
+  const pressIn = useCallback(() => setPressed(true), []);
+  const pressOut = useCallback(() => setPressed(false), []);
 
   return (
-    <Pressable
+    <PressHighlight
       accessibilityRole={isWeb ? undefined : "button"}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={onPress}
-      style={rowStyle}
+      onHoverIn={hoverIn}
+      onHoverOut={hoverOut}
+      onPressIn={pressIn}
+      onPressOut={pressOut}
+      style={[
+        styles.row,
+        density,
+        !indented && sidebarIndentStyle(level),
+        indented && sidebarWorkspaceRowStyles.rowIndented,
+        hovered && !pressed && styles.rowHovered,
+        pressed && styles.rowPressed,
+      ]}
+      highlightStyle={styles.rowPressed}
       testID={testID}
     >
-      {({ hovered, pressed }) => (
-        <>
-          <View style={styles.iconSlot}>
-            <DensityIcon
-              icon={icon}
-              size="sm"
-              color={hovered || pressed ? "foreground" : "foregroundMuted"}
-            />
-          </View>
-          <Text style={hovered || pressed ? styles.textHovered : styles.text} numberOfLines={1}>
-            {label}
-          </Text>
-        </>
-      )}
-    </Pressable>
+      <>
+        <View style={styles.iconSlot}>
+          <DensityIcon
+            icon={icon}
+            size="sm"
+            color={hovered || pressed ? "foreground" : "foregroundMuted"}
+          />
+        </View>
+        <Text style={hovered || pressed ? styles.textHovered : styles.text} numberOfLines={1}>
+          {label}
+        </Text>
+      </>
+    </PressHighlight>
   );
 }
 

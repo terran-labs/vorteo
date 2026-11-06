@@ -4,7 +4,7 @@
 //   node scripts/live-dev.mjs status
 //   node scripts/live-dev.mjs claim --by <thread> <file>...
 //   node scripts/live-dev.mjs release --by <thread>
-//   node scripts/live-dev.mjs commit --by <thread> -m <message> [--note <changelog line>]
+//   node scripts/live-dev.mjs commit --by <thread> -m <message> [--note <change fragment line>]
 //   node scripts/live-dev.mjs promote <local branch> --by <thread>
 //   node scripts/live-dev.mjs sync --by <thread>
 //   node scripts/live-dev.mjs prepare [--by <thread>]
@@ -25,12 +25,16 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { FRAGMENT_DIRECTORY } from "./lib/change-fragments.mjs";
 import { dependencyKey } from "./lib/dependency-cache.mjs";
 
 const LIVE_BRANCH = "live/main";
 /** A lock directory with no owner record is still being created, unless it is this old. */
 const ORPHAN_LOCK_MS = 10 * 60_000;
-/** Both sides add entries at the top of these files, so merges keep both. */
+/**
+ * Release preparation and older commits add entries at the top of these files, so merges
+ * keep both sides. Tweaks record their notes in change fragments instead.
+ */
 const UNION_FILES = ["VORTEO_CHANGELOG.md", "docs/vorteo-customizations.md"];
 
 export class LiveDevRefusal extends Error {}
@@ -186,7 +190,9 @@ export function claim(paths, by, files) {
     const wanted = files.map((file) => normalize(paths.checkout, file));
     for (const file of wanted) {
       if (UNION_FILES.includes(file))
-        throw new LiveDevRefusal(`${file} is written by commit itself; do not claim it.`);
+        throw new LiveDevRefusal(
+          `${file} changes only in release preparation; commit records a change fragment.`,
+        );
       const owner = claimOwner(claims, file);
       if (owner && owner !== by) throw new LiveDevRefusal(`${file} is being edited by ${owner}.`);
     }
@@ -229,18 +235,20 @@ function today() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-/** The commit hook requires a new changelog entry; the inventory gets a review line. */
+/**
+ * The commit hook requires a change fragment: the changelog line and inventory review for
+ * this tweak, in a new file of its own so it never conflicts with other commits.
+ * @returns {string} the fragment's path relative to the checkout
+ */
 function recordTweak(paths, by, note) {
-  const changelog = path.join(paths.checkout, "VORTEO_CHANGELOG.md");
-  const text = readFileSync(changelog, "utf8");
-  const first = text.indexOf("\n## ");
-  if (first === -1) throw new LiveDevRefusal("VORTEO_CHANGELOG.md has no entries to follow.");
-  const entry = `\n## Unreleased - ${today()}\n\n### Live tweaks\n\n- ${note}\n`;
-  writeFileSync(changelog, `${text.slice(0, first)}${entry}${text.slice(first)}`);
-  const inventory = path.join(paths.checkout, "docs", "vorteo-customizations.md");
-  const lines = readFileSync(inventory, "utf8").split("\n");
-  lines.splice(2, 0, `Maintenance review (${today()}): live tweak by ${by}: ${note}`, "");
-  writeFileSync(inventory, lines.join("\n"));
+  const file = `${FRAGMENT_DIRECTORY}/${today()}-live-${randomUUID().slice(0, 8)}.md`;
+  mkdirSync(path.join(paths.checkout, FRAGMENT_DIRECTORY), { recursive: true });
+  const line = note.replace(/\s*\n\s*/g, " ");
+  writeFileSync(
+    path.join(paths.checkout, file),
+    `### Live tweaks\n\n- ${line}\n\n## Maintenance review\n\nLive tweak by ${by}: ${line}\n`,
+  );
+  return file;
 }
 
 /** Commits this thread's claimed edits on the live branch and releases its claim. */
@@ -251,20 +259,18 @@ export function commit(paths, by, message, note, log = console.log) {
     const claims = readClaims(paths);
     const mine = claims.find((item) => item.by === by);
     const dirty = new Set(dirtyFiles(paths.checkout));
-    for (const file of UNION_FILES)
-      if (dirty.has(file))
-        throw new LiveDevRefusal(`${file} has uncommitted edits; commit writes it itself.`);
     const files = (mine?.files ?? []).filter((file) => dirty.has(file));
     if (files.length === 0) throw new LiveDevRefusal("You have no claimed edits to commit.");
-    recordTweak(paths, by, (note ?? message).trim());
-    const all = [...files, ...UNION_FILES];
+    const fragment = recordTweak(paths, by, (note ?? message).trim());
+    const all = [...files, fragment];
     try {
       git(paths.checkout, ["add", "--", ...all]);
       // Repository hooks run as for any commit.
       git(paths.checkout, ["commit", "-m", message, "-m", `Live tweak by ${by}.`, "--", ...all]);
     } catch (error) {
-      // A failing hook leaves the tweak in place; only the generated records are undone.
-      git(paths.checkout, ["restore", "--staged", "--worktree", "--", ...UNION_FILES]);
+      // A failing hook leaves the tweak in place; only the generated fragment is undone.
+      git(paths.checkout, ["rm", "--cached", "--quiet", "--ignore-unmatch", "--", fragment]);
+      rmSync(path.join(paths.checkout, fragment), { force: true });
       git(paths.checkout, ["restore", "--staged", "--", ...files]);
       throw new LiveDevRefusal(`The commit was refused. ${error.stderr ?? error.message}`.trim());
     }
