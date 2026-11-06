@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { DEFAULT_THEME_PREFERENCE, useAppSettings, type AppSettings } from "@/hooks/use-settings";
@@ -12,6 +12,7 @@ import {
   lightTheme,
   type Theme,
 } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 import { useContributedThemes } from "./provider";
 
 type BuiltInThemePreference = Exclude<AppSettings["theme"], typeof PLUGIN_THEME_PREFERENCE>;
@@ -124,12 +125,9 @@ function ThemeTile({
   previewTheme: Theme | "system";
 }) {
   const accessibilityState = useMemo(() => ({ checked: selected }), [selected]);
-  const tileStyle = useCallback(
-    ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.tile,
-      hovered && !selected && styles.tileHovered,
-      selected && styles.tileSelected,
-    ],
+  // The selected tile shows its border instead of the hover fill.
+  const tileStyle = useMemo(
+    () => [styles.tile, selected ? styles.tileSelected : styles.tileHoverable],
     [selected],
   );
   return (
@@ -220,9 +218,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: theme.borderWidth[2],
     borderColor: "transparent",
   },
-  tileHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  tileHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   tileSelected: {
     borderColor: theme.colors.accent,
   },

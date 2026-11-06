@@ -8,16 +8,47 @@ import {
   type Ref,
 } from "react";
 import { Pressable, Text, View } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { HEADER_INNER_HEIGHT, HEADER_INNER_HEIGHT_MOBILE } from "@/constants/layout";
 import { DensityIcon } from "@/components/ui/density-icon";
 import { Shortcut } from "@/components/ui/shortcut";
-import { density, densityIconBox } from "@/styles/density";
+import { isWeb } from "@/constants/platform";
+import { density, densityIconBox, densityIconProps } from "@/styles/density";
+import {
+  CAN_HOVER,
+  groupHoverStyle,
+  hoverGroup,
+  hoverStyle,
+  revealOnGroupHover,
+} from "@/styles/hover";
 import type { ShortcutKey } from "@/utils/format-shortcut";
+
+const ROW_HOVER_GROUP = "sidebar-header-row";
 
 type SidebarHeaderRowVariant = "header" | "compact" | "inline";
 
 export type SidebarRowIcon = ComponentType<{ size: number; color: string }>;
+
+/** Strokes with the CSS color of the row, so web hover can recolor it without JS state. */
+function CurrentColorGlyph({ icon: Icon, size }: { icon: SidebarRowIcon; size: number }) {
+  return <Icon size={size} color="currentColor" />;
+}
+const ThemedCurrentColorGlyph = withUnistyles(CurrentColorGlyph);
+const currentColorGlyphProps = {
+  md: densityIconProps("md", () => ({})),
+  sm: densityIconProps("sm", () => ({})),
+};
+
+/** A caller's trailing slot wins; otherwise the shortcut hint, mounted only where it can be revealed. */
+function resolveTrailing(trailing: ReactNode, shortcutKeys: ShortcutKey[][] | null | undefined) {
+  if (trailing != null) return trailing;
+  if (!shortcutKeys || !CAN_HOVER) return null;
+  return (
+    <View style={styles.shortcutReveal}>
+      <Shortcut chord={shortcutKeys} />
+    </View>
+  );
+}
 
 interface SidebarHeaderRowProps {
   icon: SidebarRowIcon | null;
@@ -62,24 +93,23 @@ export function SidebarHeaderRow({
   rowRef,
 }: SidebarHeaderRowProps) {
   const rowDensity = useSidebarRowDensity();
-  const [isHovered, setIsHovered] = useState(false);
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   // The button and its trailing slot are siblings, so the row owns the pressed fill for both.
   const [, setIsPressed] = useState(false);
   const handlePressIn = useCallback(() => setIsPressed(true), []);
   const handlePressOut = useCallback(() => setIsPressed(false), []);
-  const isHighlighted = isHovered || isActive;
   const iconSize = variant === "header" ? "md" : "sm";
 
-  let right = trailing ?? null;
-  if (right === null && shortcutKeys && isHovered) {
-    right = <Shortcut chord={shortcutKeys} />;
-  }
+  // Hover is browser-owned CSS on the row's hover group. The shortcut stays mounted and CSS reveals
+  // it, only where the pointer can hover, which is the only place it ever showed.
+  const right = resolveTrailing(trailing, shortcutKeys);
 
   const rowStyle = useMemo(
-    () => [styles.row, variant !== "header" && rowDensity, isHighlighted && styles.rowHighlighted],
-    [variant, rowDensity, isHighlighted],
+    () => [
+      styles.row,
+      variant !== "header" && rowDensity,
+      isActive ? styles.rowHighlighted : styles.rowHoverable,
+    ],
+    [variant, rowDensity, isActive],
   );
   return (
     <View
@@ -87,11 +117,7 @@ export function SidebarHeaderRow({
       collapsable={false}
       style={[getContainerStyle(variant), borderless && styles.borderless]}
     >
-      <View
-        style={rowStyle}
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
-      >
+      <View style={rowStyle}>
         <Pressable
           onPress={onPress}
           onPressIn={handlePressIn}
@@ -105,16 +131,20 @@ export function SidebarHeaderRow({
           aria-selected={isActive}
           style={styles.button}
         >
-          {icon ? (
+          {icon && isWeb ? (
+            <ThemedCurrentColorGlyph icon={icon} uniProps={currentColorGlyphProps[iconSize]} />
+          ) : null}
+          {icon && !isWeb ? (
             <DensityIcon
               icon={icon}
               size={iconSize}
-              color={isHighlighted ? "foreground" : "foregroundMuted"}
+              color={isActive ? "foreground" : "foregroundMuted"}
             />
-          ) : (
+          ) : null}
+          {icon ? null : (
             <View style={variant === "header" ? styles.iconSpacer : styles.iconSpacerCompact} />
           )}
-          <Text style={[styles.label, isHighlighted && styles.labelHighlighted]}>{label}</Text>
+          <Text style={[styles.label, isActive && styles.labelHighlighted]}>{label}</Text>
         </Pressable>
         {right === null ? null : (
           <Pressable
@@ -165,10 +195,17 @@ const styles = StyleSheet.create((theme) => ({
     // strip so the hover highlight clears the strip's bottom separator.
     minHeight: density.tightRowHeight,
     borderRadius: theme.borderRadius.lg,
+    ...hoverGroup(ROW_HOVER_GROUP),
   },
   rowHighlighted: {
     backgroundColor: theme.colors.surfaceSidebarHover,
+    _web: { color: theme.colors.foreground },
   },
+  rowHoverable: hoverStyle(
+    { backgroundColor: theme.colors.surfaceSidebarHover, color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
+  shortcutReveal: revealOnGroupHover(ROW_HOVER_GROUP),
   // The workspace rows' pressed fill.
   rowPressed: {
     backgroundColor: theme.colors.surface2,
@@ -192,6 +229,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
+    ...groupHoverStyle(ROW_HOVER_GROUP, { color: theme.colors.foreground }),
   },
   labelHighlighted: {
     color: theme.colors.foreground,

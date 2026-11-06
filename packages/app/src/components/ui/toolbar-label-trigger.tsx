@@ -12,20 +12,27 @@ import {
 import { ChevronDown } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { extraMutedIconColorMapping } from "@/components/ui/icon-button-chrome";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
+
+/** Hover is browser-owned CSS on this group, so a trigger never keeps a stale highlight. */
+const TRIGGER_HOVER_GROUP = "toolbar-label-trigger";
 
 export type ToolbarLabelTriggerState = PressableStateCallbackType & {
+  /** Accepted from Pressable state but ignored: hover is CSS. */
   hovered?: boolean;
   open?: boolean;
 };
 
+/** Pressed or open. Hover is drawn by CSS from {@link toolbarLabelTriggerStyle}. */
 export function isToolbarLabelTriggerHighlighted(state: ToolbarLabelTriggerState): boolean {
-  return Boolean(state.hovered) || state.pressed || Boolean(state.open);
+  return state.pressed || Boolean(state.open);
 }
 
 export function toolbarLabelTriggerStyle(state: ToolbarLabelTriggerState): StyleProp<ViewStyle> {
   return [
     toolbarLabelTriggerFrameStyle(),
-    isToolbarLabelTriggerHighlighted(state) ? styles.highlighted : null,
+    styles.group,
+    isToolbarLabelTriggerHighlighted(state) ? styles.highlighted : styles.hoverable,
   ];
 }
 
@@ -88,15 +95,18 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.md,
     flexShrink: 1,
   },
+  group: hoverGroup(TRIGGER_HOVER_GROUP),
   highlighted: {
     backgroundColor: theme.colors.interactionHighlight,
   },
+  hoverable: hoverStyle({ backgroundColor: theme.colors.interactionHighlight }),
   label: {
     minWidth: 0,
     flexShrink: 1,
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
     fontWeight: theme.fontWeight.normal,
+    ...groupHoverStyle(TRIGGER_HOVER_GROUP, { color: theme.colors.foreground }),
   },
   labelHighlighted: {
     color: theme.colors.foreground,

@@ -91,6 +91,9 @@ function fakePorts(changes: Partial<LabUpdatePorts> = {}) {
       return id;
     },
     hostRestart: (id) => state.restarts.find((item) => item.id === id)!.state,
+    restartHostService: async () => {
+      calls.push("host-service-restart");
+    },
     cancelHostRestart: () => true,
     launchCoordinatorSwap: (_update, next, previous) => {
       calls.push(`swap ${previous} -> ${next}`);
@@ -131,7 +134,12 @@ test("Stable refuses; Lab approves, builds, restarts Host, then swaps the coordi
   expect(state.host).toBe("/releases/lab-new");
   state.restarts[0].state = { status: "succeeded", detail: "Restarted" };
   await updates.drain();
-  expect(calls).toContain("swap /releases/old -> /releases/lab-new");
+  // The worker restart alone leaves the supervisor on the old release; the service restarts once,
+  // before the coordinator swap.
+  expect(calls.filter((call) => call === "host-service-restart")).toHaveLength(1);
+  expect(calls.indexOf("host-service-restart")).toBeLessThan(
+    calls.indexOf("swap /releases/old -> /releases/lab-new"),
+  );
   state.outcome = {
     id: requested.id,
     status: "succeeded",

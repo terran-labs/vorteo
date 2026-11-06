@@ -7,7 +7,8 @@ import {
   type ComponentType,
   type ReactElement,
 } from "react";
-import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
+import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { useTranslation } from "react-i18next";
 import { Pencil, Plus } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -20,6 +21,7 @@ import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispat
 import { usePaneContext, usePaneFocus } from "@/panels/pane-context";
 import { definePanel, type PanelIconProps } from "@/panels/panel-registry";
 import { ICON_SIZE, SPACING, type Theme } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 import {
   useWorkspaceTabLaunchCatalog,
   type WorkspaceTabLaunchItem,
@@ -56,19 +58,18 @@ function LauncherShortcut({ actionId }: { actionId: string }): ReactElement | nu
 
 function rowStyle({
   pressed,
-  hovered = false,
   focused = false,
-}: PressableStateCallbackType & { hovered?: boolean; focused?: boolean }) {
+}: PressableStateCallbackType & { focused?: boolean }) {
   return [
     styles.row,
-    (hovered || focused) && styles.rowHovered,
+    focused && styles.rowHovered,
     focused && styles.rowFocused,
     pressed && styles.rowPressed,
   ];
 }
 
-function editProfilesStyle({ pressed, hovered }: PressableStateCallbackType) {
-  return [styles.editProfiles, (hovered || pressed) && styles.editProfilesHovered];
+function editProfilesStyle({ pressed }: PressableStateCallbackType) {
+  return [styles.editProfiles, pressed && styles.editProfilesHovered];
 }
 
 function EditProfilesButton({ label, onPress }: { label: string; onPress: () => void }) {
@@ -305,6 +306,7 @@ const styles = StyleSheet.create((theme) => ({
     outlineWidth: 0,
     outlineColor: "transparent",
     backgroundColor: theme.colors.surface1,
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   rowHovered: { backgroundColor: theme.colors.surface2 },
   rowFocused: { borderColor: theme.colors.borderAccent },
@@ -337,6 +339,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     outlineWidth: 0,
     outlineColor: "transparent",
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   // Opacity sits on the whole glyph, not per path — the pencil's two strokes
   // overlap and would render unevenly if each faded on its own.

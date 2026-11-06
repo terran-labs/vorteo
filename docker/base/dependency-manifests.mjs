@@ -16,23 +16,32 @@ const write = (file, value) => {
 
 const root = read("package.json");
 const version = root.version;
-const workspaceDirs = root.workspaces.filter((dir) => existsSync(path.join(source, dir, "package.json")));
+const workspaceDirs = root.workspaces.filter((dir) =>
+  existsSync(path.join(source, dir, "package.json")),
+);
 const workspaceNames = new Set(workspaceDirs.map((dir) => read(`${dir}/package.json`).name));
-const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+const DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+];
 
 /** Replaces this repository's version on the package and on its references to sibling workspaces. */
 function normalize(manifest) {
   if (manifest.version === version) manifest.version = NORMAL;
   for (const field of DEPENDENCY_FIELDS)
     for (const name of Object.keys(manifest[field] ?? {}))
-      if (workspaceNames.has(name) && manifest[field][name] === version) manifest[field][name] = NORMAL;
+      if (workspaceNames.has(name) && manifest[field][name] === version)
+        manifest[field][name] = NORMAL;
   return manifest;
 }
 
 // The root lifecycle `prepare` installs Git hooks, which an image build has no use for.
 delete root.scripts?.prepare;
 write("package.json", normalize(root));
-for (const dir of workspaceDirs) write(`${dir}/package.json`, normalize(read(`${dir}/package.json`)));
+for (const dir of workspaceDirs)
+  write(`${dir}/package.json`, normalize(read(`${dir}/package.json`)));
 
 const lock = read("package-lock.json");
 if (lock.version === version) lock.version = NORMAL;

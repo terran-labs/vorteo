@@ -1,6 +1,7 @@
 import { Buffer } from "buffer";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import type { QueueAttachment, QueuePresentation } from "@getpaseo/protocol/message-queue";
 import { AttachmentLightbox } from "@/components/attachment-lightbox";

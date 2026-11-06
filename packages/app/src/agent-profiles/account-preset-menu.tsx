@@ -4,13 +4,14 @@ import { CliUpdateWarning } from "@/provider-selection/cli-update-warning";
 import { useVortonTouch } from "@/vorton-touch";
 import { ProfileAction } from "./profile-action";
 import { ProfileSelectorTile, ProfileLoading } from "./profile-selector-tile";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { profileCatalogState, sharedChoiceState, type LaunchChoices } from "./shared-choices";
 import { useCallback, useMemo, useReducer, useState, type ReactNode } from "react";
-import { Keyboard, ScrollView, Text, View, type LayoutChangeEvent } from "react-native";
+import { Keyboard, Text, View, type LayoutChangeEvent } from "react-native";
+import { BottomSheetScrollView, ScrollView } from "@/components/ui/scroll-view";
 import { useRouter } from "expo-router";
 import { buildSettingsSectionRoute } from "@/utils/host-routes";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
-import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { AgentProfile } from "@getpaseo/protocol/messages";
@@ -72,6 +73,8 @@ interface AccountPresetMenuProps {
   renderRail: (row: AgentProfilePickerRow) => ReactNode;
   renderBadge: (row: AgentProfilePickerRow) => ReactNode;
   renderAccountDetails: (row: AgentProfilePickerRow) => ReactNode;
+  /** True while the account's usage or reset credits are refreshing; rings its icon. */
+  isAccountLoading?: (row: AgentProfilePickerRow) => boolean;
 }
 
 export function AccountPresetMenu(props: AccountPresetMenuProps) {
@@ -124,6 +127,7 @@ export function AccountPresetMenu(props: AccountPresetMenuProps) {
         onInspect={inspectAccount}
         renderBadge={props.renderBadge}
         renderAccountDetails={props.renderAccountDetails}
+        isAccountLoading={props.isAccountLoading}
       />
     ),
     [accounts, account, props, inspectAccount],
@@ -255,6 +259,7 @@ function AccountList({
   onInspect,
   renderBadge,
   renderAccountDetails,
+  isAccountLoading,
 }: {
   singleLine?: boolean;
   accounts: AccountPresets[];
@@ -265,6 +270,7 @@ function AccountList({
   onInspect: (id: string) => void;
   renderBadge: AccountPresetMenuProps["renderBadge"];
   renderAccountDetails: AccountPresetMenuProps["renderAccountDetails"];
+  isAccountLoading: AccountPresetMenuProps["isAccountLoading"];
 }) {
   const empty = !loading && !error && !accounts.length;
   return (
@@ -283,6 +289,7 @@ function AccountList({
             onInspect={onInspect}
             renderBadge={renderBadge}
             renderAccountDetails={renderAccountDetails}
+            loading={group.rows[0] ? (isAccountLoading?.(group.rows[0]) ?? false) : false}
           />
         </ChooserReveal>
       ))}
@@ -514,6 +521,37 @@ const ThemedProviderGlyph = withUnistyles(ProviderGlyph, (theme) => ({
   size: theme.iconSize.sm,
 }));
 
+const AccountIconRing = withUnistyles(LoadingSpinner, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+const ACCOUNT_RING_SIZE = 24;
+
+/** The provider glyph, ringed by a spinner while its usage refreshes. The ring never shifts layout. */
+function AccountIcon({
+  Icon,
+  loading,
+  providerId,
+}: {
+  Icon: ProviderIconComponent;
+  loading: boolean;
+  providerId: string;
+}) {
+  return (
+    <View style={styles.accountIcon}>
+      <ThemedProviderGlyph Icon={Icon} />
+      {loading ? (
+        <View
+          style={styles.accountIconRing}
+          pointerEvents="none"
+          testID={`preset-usage-loading-${providerId}`}
+        >
+          <AccountIconRing size={ACCOUNT_RING_SIZE} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function AccountButton({
   singleLine,
   serverId,
@@ -522,6 +560,7 @@ function AccountButton({
   onInspect,
   renderBadge,
   renderAccountDetails,
+  loading,
 }: {
   singleLine?: boolean;
   serverId: string | null;
@@ -530,10 +569,14 @@ function AccountButton({
   onInspect: (id: string) => void;
   renderBadge: AccountPresetMenuProps["renderBadge"];
   renderAccountDetails: AccountPresetMenuProps["renderAccountDetails"];
+  loading: boolean;
 }) {
   const select = useCallback(() => onInspect(group.provider), [group.provider, onInspect]);
   const ProviderIcon = useProviderIcon(group.provider, serverId);
-  const icon = useMemo(() => <ThemedProviderGlyph Icon={ProviderIcon} />, [ProviderIcon]);
+  const icon = useMemo(
+    () => <AccountIcon Icon={ProviderIcon} loading={loading} providerId={group.provider} />,
+    [ProviderIcon, loading, group.provider],
+  );
 
   return (
     <ProfileSelectorTile
@@ -816,6 +859,18 @@ function ProfileChoice({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  accountIcon: {
+    width: theme.iconSize.sm,
+    height: theme.iconSize.sm,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "visible",
+  },
+  accountIconRing: {
+    position: "absolute",
+    top: (theme.iconSize.sm - ACCOUNT_RING_SIZE) / 2,
+    left: (theme.iconSize.sm - ACCOUNT_RING_SIZE) / 2,
+  },
   root: { flex: 1, minHeight: 0 },
   header: {
     flexDirection: "row",

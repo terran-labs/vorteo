@@ -200,7 +200,8 @@ it("keeps Factory shortcuts in rendered order and respects its collapsed section
   const input = twoProjectInput("project");
   const factory = makeWorkspace("factory");
   factory.entry.standing = true;
-  // Only per-project Factory members join the Factory folder.
+  factory.entry.title = "Project :: Foreman";
+  // Per-project Factory roles and standing work share the Factory folder.
   factory.entry.factoryMembership = {
     installationId: "project-factory:project",
     serverId: "srv",
@@ -209,7 +210,7 @@ it("keeps Factory shortcuts in rendered order and respects its collapsed section
   };
   const standing = makeWorkspace("standing");
   standing.entry.standing = true;
-  for (const item of [standing, factory]) {
+  for (const item of [factory, standing]) {
     input.workspaceEntriesByKey.set(item.entry.workspaceKey, item.entry);
     input.projects[0].workspaces.unshift(item.placement);
   }
@@ -225,7 +226,7 @@ it("keeps Factory shortcuts in rendered order and respects its collapsed section
       ...input,
       factorySupportedHosts: new Map([["srv", true]]),
     }).shortcutModel.shortcutTargets.map((w) => w.workspaceId),
-  ).toEqual(["first", "standing", "second"]);
+  ).toEqual(["first", "second"]);
 });
 
 function groupedRowIds(projection: ReturnType<typeof buildSidebarProjection>) {

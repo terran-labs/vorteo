@@ -1,13 +1,16 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
-import { Pressable, Text } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVortonTouch } from "@/vorton-touch";
 import { isNative } from "@/constants/platform";
 import { SidebarCountBadge } from "./sidebar-count-badge";
 import type { Theme } from "@/styles/theme";
+import { hoverGroup, revealOnGroupHover } from "@/styles/hover";
+
+const HEADER_HOVER_GROUP = "pinned-header";
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedChevronRight = withUnistyles(ChevronRight);
@@ -36,6 +39,7 @@ export function PinnedSectionHeader({
   const Chevron = collapsed ? ThemedChevronRight : ThemedChevronDown;
 
   const rowStyle = useMemo(() => [styles.header, touch && styles.touchHeader], [touch]);
+  const revealChevron = !isNative && !showTouchControls;
 
   return (
     <Pressable
@@ -45,21 +49,20 @@ export function PinnedSectionHeader({
       style={rowStyle}
       testID={testID}
     >
-      {({ hovered }) => (
-        <>
-          <Text style={styles.title}>{title ?? t("sidebar.pinned.title")}</Text>
-          {collapsed && count !== undefined ? (
-            <SidebarCountBadge
-              label={String(count)}
-              accessibilityLabel={`${title ?? t("sidebar.pinned.title")}: ${count}`}
-              testID={`count-${testID}`}
-            />
-          ) : null}
-          {hovered || isNative || showTouchControls ? (
-            <Chevron size={12} uniProps={foregroundMutedColorMapping} />
-          ) : null}
-        </>
-      )}
+      <>
+        <Text style={styles.title}>{title ?? t("sidebar.pinned.title")}</Text>
+        {collapsed && count !== undefined ? (
+          <SidebarCountBadge
+            label={String(count)}
+            accessibilityLabel={`${title ?? t("sidebar.pinned.title")}: ${count}`}
+            testID={`count-${testID}`}
+          />
+        ) : null}
+        {/* Stays mounted at the trailing edge; CSS reveals it while the header is hovered. */}
+        <View style={revealChevron ? styles.chevronReveal : null}>
+          <Chevron size={12} uniProps={foregroundMutedColorMapping} />
+        </View>
+      </>
     </Pressable>
   );
 }
@@ -75,7 +78,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
     userSelect: "none",
     borderRadius: theme.borderRadius.lg,
+    ...hoverGroup(HEADER_HOVER_GROUP),
   },
+  chevronReveal: revealOnGroupHover(HEADER_HOVER_GROUP),
   touchHeader: { minHeight: 44 },
   title: {
     color: theme.colors.foregroundExtraMuted,

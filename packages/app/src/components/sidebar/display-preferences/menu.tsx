@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { View, type PressableStateCallbackType } from "react-native";
+import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Captions,
@@ -23,21 +23,16 @@ import {
   GitPullRequest,
   Globe,
   Server,
-  Settings2,
   Tag,
   Type,
 } from "lucide-react-native";
 import {
   MenuItem,
-  MenuRoot,
   MenuSeparator,
   MenuSubTrigger,
-  MenuSurface,
-  MenuTrigger,
   type MenuPageDefinition,
 } from "@/components/ui/menu";
 import { HostStatusDot } from "@/components/host-status-dot";
-import { isWeb } from "@/constants/platform";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import { ProjectIconView } from "@/components/project-icon-view";
@@ -62,14 +57,12 @@ import { WorkspaceLabelManagerModal } from "@/workspace-labels/manager-modal";
 
 const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-const ThemedSettings2 = withUnistyles(Settings2);
 /** CI's mark: the subject of the checks row, and the shape the icon-only option leaves behind. */
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCircle = withUnistyles(Circle);
 
 /** Fits the item's 16pt leading slot with a hair of room, matching the trailing check. */
 const OPTION_ICON_SIZE = 14;
-const MENU_WIDTH = 232;
 
 /**
  * Unlabelled's stand-in for a color dot: the same circle at the same size, hollow.
@@ -158,26 +151,24 @@ const TRAILING_LABEL_KEYS: Record<SidebarTrailingChoice, string> = {
 };
 
 /**
- * What the sidebar shows and how it is arranged.
+ * What the sidebar shows and how it is arranged, as a group inside the sidebar's main menu.
+ * Choices keep the menu open, so several preferences change in one visit.
  *
  * The root is one row per decision with its current value; the options live a level down. The
  * shape is deliberate — every option of every decision on one surface is what this menu used to
  * be, and it grew a row for each host on top of that.
  */
-export function SidebarDisplayPreferencesMenu({
-  hiddenTrigger = false,
-  controlledOpen,
-  onOpenChange,
-}: {
-  hiddenTrigger?: boolean;
-  controlledOpen?: boolean;
-  onOpenChange?: (open: boolean) => void;
-} = {}): ReactElement {
+export function useSidebarDisplayPreferenceSection(): {
+  /** Drill-down pages for the host menu's `pages`. */
+  pages: MenuPageDefinition[];
+  /** Root rows, one per decision with its current value. */
+  rows: ReactElement;
+  /** The label manager the Labels page opens; render it beside the menu. */
+  modal: ReactElement;
+} {
   const { t } = useTranslation();
   const preferences = useSidebarDisplayPreferences();
 
-  const triggerLabel = t("sidebar.display.viewPreferences");
-  const heading = t("sidebar.display.viewPreferences");
   const hosts = useHosts();
   // `allProjects`, never `projects`: the model's `projects` is already filtered, so a picker fed
   // from it would lose the row that undoes the filter as soon as the filter narrowed to one.
@@ -186,14 +177,6 @@ export function SidebarDisplayPreferencesMenu({
   const [managerOpen, setManagerOpen] = useState(false);
   const openManager = useCallback(() => setManagerOpen(true), []);
   const closeManager = useCallback(() => setManagerOpen(false), []);
-
-  const triggerStyle = useCallback(
-    ({ hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.trigger,
-      hovered && styles.triggerHovered,
-    ],
-    [],
-  );
 
   const showHostFilter = hosts.length > 1;
   // One project is the whole sidebar, so filtering to it is a no-op with a menu row attached.
@@ -308,108 +291,93 @@ export function SidebarDisplayPreferencesMenu({
     openManager,
   ]);
 
-  return (
+  const rows = (
     <>
-      <MenuRoot compactMode="sheet" open={controlledOpen} onOpenChange={onOpenChange}>
-        <MenuTrigger
-          style={hiddenTrigger ? styles.hiddenTrigger : triggerStyle}
-          disabled={hiddenTrigger}
-          accessibilityRole={isWeb ? undefined : "button"}
-          accessibilityLabel={triggerLabel}
-          testID="sidebar-display-preferences-menu"
+      <MenuSubTrigger
+        id="grouping"
+        value={t(GROUPING_LABEL_KEYS[preferences.grouping])}
+        testID="sidebar-display-grouping"
+      >
+        {t("sidebar.display.grouping.label")}
+      </MenuSubTrigger>
+      {preferences.grouping === "project" ? (
+        <MenuSubTrigger
+          id="sort"
+          value={
+            workspaceSortSupported || preferences.workspaceSort === "manual"
+              ? t(`sidebar.display.sort.${preferences.workspaceSort}`)
+              : undefined
+          }
         >
-          <ThemedSettings2 size={14} uniProps={mutedIconMapping} />
-        </MenuTrigger>
-        <MenuSurface
-          align="end"
-          width={MENU_WIDTH}
-          pages={pages}
-          sheetTitle={heading}
-          testID="sidebar-display-preferences-content"
-        >
-          <MenuSubTrigger
-            id="grouping"
-            value={t(GROUPING_LABEL_KEYS[preferences.grouping])}
-            testID="sidebar-display-grouping"
-          >
-            {t("sidebar.display.grouping.label")}
-          </MenuSubTrigger>
-          {preferences.grouping === "project" ? (
-            <MenuSubTrigger
-              id="sort"
-              value={
-                workspaceSortSupported || preferences.workspaceSort === "manual"
-                  ? t(`sidebar.display.sort.${preferences.workspaceSort}`)
-                  : undefined
-              }
-            >
-              {t("sidebar.display.sort.label")}
-            </MenuSubTrigger>
-          ) : null}
-          <MenuSubTrigger
-            id="titleSource"
-            value={t(TITLE_SOURCE_LABEL_KEYS[preferences.titleSource])}
-            testID="sidebar-display-title-source"
-          >
-            {t("sidebar.display.titleSource.label")}
-          </MenuSubTrigger>
-          <MenuSubTrigger id="show" testID="sidebar-display-show">
-            {t("sidebar.display.show.label")}
-          </MenuSubTrigger>
-          {showHostFilter ? (
-            <>
-              <MenuSeparator />
-              {/* A filtered sidebar looks like workspaces went missing, so the branch says so
-                from the root rather than making you open it to find out. */}
-              <MenuSubTrigger
-                id="hostFilter"
-                indicator={preferences.hostFilters.length > 0}
-                testID="sidebar-display-host-filter"
-              >
-                {t("sidebar.display.hostFilter.label")}
-              </MenuSubTrigger>
-            </>
-          ) : null}
-          {showProjectFilter ? (
-            <>
-              {/* Host and Project narrow the same list, so they read as one block. The separator
-                belongs above whichever of the two is showing first — with a single host there is
-                no Host row and Project is what has to carry it. */}
-              {showHostFilter ? null : <MenuSeparator />}
-              <MenuSubTrigger
-                id="projectFilter"
-                indicator={resolvedProjectFilters.length > 0}
-                testID="sidebar-display-project-filter"
-              >
-                {t("sidebar.display.projectFilter.label")}
-              </MenuSubTrigger>
-            </>
-          ) : null}
-          {showLabelFilter ? (
-            <>
-              <MenuSeparator />
-              <MenuSubTrigger
-                id="labelFilter"
-                indicator={hasActiveSidebarLabelFilter(preferences.labelFilter)}
-                testID="sidebar-display-label-filter"
-              >
-                {t("workspaceLabels.title")}
-              </MenuSubTrigger>
-            </>
-          ) : null}
+          {t("sidebar.display.sort.label")}
+        </MenuSubTrigger>
+      ) : null}
+      <MenuSubTrigger
+        id="titleSource"
+        value={t(TITLE_SOURCE_LABEL_KEYS[preferences.titleSource])}
+        testID="sidebar-display-title-source"
+      >
+        {t("sidebar.display.titleSource.label")}
+      </MenuSubTrigger>
+      <MenuSubTrigger id="show" testID="sidebar-display-show">
+        {t("sidebar.display.show.label")}
+      </MenuSubTrigger>
+      {showHostFilter ? (
+        <>
           <MenuSeparator />
-          <MenuItem
-            selected={preferences.showBackground}
-            closeOnSelect={false}
-            onSelect={preferences.toggleBackground}
+          {/* A filtered sidebar looks like workspaces went missing, so the branch says so
+          from the root rather than making you open it to find out. */}
+          <MenuSubTrigger
+            id="hostFilter"
+            indicator={preferences.hostFilters.length > 0}
+            testID="sidebar-display-host-filter"
           >
-            {t("sidebar.display.showBackground")}
-          </MenuItem>
-        </MenuSurface>
-      </MenuRoot>
-      <WorkspaceLabelManagerModal visible={managerOpen} onClose={closeManager} />
+            {t("sidebar.display.hostFilter.label")}
+          </MenuSubTrigger>
+        </>
+      ) : null}
+      {showProjectFilter ? (
+        <>
+          {/* Host and Project narrow the same list, so they read as one block. The separator
+          belongs above whichever of the two is showing first — with a single host there is
+          no Host row and Project is what has to carry it. */}
+          {showHostFilter ? null : <MenuSeparator />}
+          <MenuSubTrigger
+            id="projectFilter"
+            indicator={resolvedProjectFilters.length > 0}
+            testID="sidebar-display-project-filter"
+          >
+            {t("sidebar.display.projectFilter.label")}
+          </MenuSubTrigger>
+        </>
+      ) : null}
+      {showLabelFilter ? (
+        <>
+          <MenuSeparator />
+          <MenuSubTrigger
+            id="labelFilter"
+            indicator={hasActiveSidebarLabelFilter(preferences.labelFilter)}
+            testID="sidebar-display-label-filter"
+          >
+            {t("workspaceLabels.title")}
+          </MenuSubTrigger>
+        </>
+      ) : null}
+      <MenuSeparator />
+      <MenuItem
+        selected={preferences.showBackground}
+        closeOnSelect={false}
+        onSelect={preferences.toggleBackground}
+      >
+        {t("sidebar.display.showBackground")}
+      </MenuItem>
     </>
   );
+  return {
+    pages,
+    rows,
+    modal: <WorkspaceLabelManagerModal visible={managerOpen} onClose={closeManager} />,
+  };
 }
 
 function SortPage({
@@ -426,12 +394,20 @@ function SortPage({
   const selectLastPrompt = useCallback(() => setWorkspaceSort("lastPrompt"), [setWorkspaceSort]);
   return (
     <>
-      <MenuItem selected={preferences.workspaceSort === "manual"} onSelect={selectManual}>
+      <MenuItem
+        closeOnSelect={false}
+        selected={preferences.workspaceSort === "manual"}
+        onSelect={selectManual}
+      >
         {t("sidebar.display.sort.manual")}
       </MenuItem>
       {automaticSortSupported ? (
         <>
-          <MenuItem selected={preferences.workspaceSort === "created"} onSelect={selectCreated}>
+          <MenuItem
+            closeOnSelect={false}
+            selected={preferences.workspaceSort === "created"}
+            onSelect={selectCreated}
+          >
             {t("sidebar.display.sort.created")}
           </MenuItem>
           <MenuItem
@@ -561,7 +537,7 @@ function OptionItem<Value extends string>({
   icon: Icon,
   label,
   selected,
-  closeOnSelect = true,
+  closeOnSelect = false,
   onSelect,
   testID,
 }: {
@@ -837,21 +813,10 @@ function HostFilterItem({
   );
 }
 
-const styles = StyleSheet.create((theme) => ({
-  hiddenTrigger: { position: "absolute", width: 28, height: 28, opacity: 0, pointerEvents: "none" },
-  trigger: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: theme.borderRadius.md,
-  },
-  triggerHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+const styles = StyleSheet.create({
   // The icon sits in a 14pt menu slot, so the fallback initial is sized down to match rather
   // than reusing the sidebar row's 16pt figure.
   projectIconText: {
     fontSize: 8,
   },
-}));
+});

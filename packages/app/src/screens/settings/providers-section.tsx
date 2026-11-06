@@ -13,6 +13,8 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Alert, Pressable, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { CAN_HOVER, hoverGroup, hoverStyle } from "@/styles/hover";
+import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-api-context";
 import { settingsStyles } from "@/styles/settings";
@@ -174,18 +176,15 @@ function ProviderRow({
     },
     [def.id, onToggleEnabled],
   );
-  const [hovered, setHovered] = useState(false);
-  const handleHoverIn = useCallback(() => setHovered(true), []);
-  const handleHoverOut = useCallback(() => setHovered(false), []);
   const rowStyle = useMemo(
     () => [
       settingsStyles.row,
       styles.row,
       styles.stackedRow,
       isCompact && styles.compactRow,
-      hovered && styles.rowHovered,
+      styles.rowHovered,
     ],
-    [hovered, isCompact],
+    [isCompact],
   );
 
   return (
@@ -213,16 +212,15 @@ function ProviderRow({
       <View style={styles.rowStack}>
         <View style={rowStyle}>
           <Pressable
-            style={styles.rowContent}
+            style={[styles.rowContent, styles.rowContentGroup]}
             onPress={handlePress}
-            onHoverIn={handleHoverIn}
-            onHoverOut={handleHoverOut}
             accessibilityRole="button"
             accessibilityLabel={t("settings.providers.providerDetails", { name: def.label })}
           >
+            {/* On web the chevron inherits the details button's CSS hover color. */}
             <ChevronRight
               size={theme.iconSize.sm}
-              color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
+              color={isWeb ? "currentColor" : theme.colors.foregroundMuted}
             />
             <ProviderIcon size={theme.iconSize.md} color={theme.colors.foreground} />
             <View style={styles.textColumn}>
@@ -788,9 +786,17 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[3],
     minHeight: 56,
   },
-  rowHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  // Only the details button lights the row, not the controls beside it, so the row matches a
+  // hovered descendant with :has() rather than its own :hover.
+  rowHovered: CAN_HOVER
+    ? {
+        _web: {
+          "_has(.vorteo-hover-provider-details:hover)": {
+            backgroundColor: theme.colors.surface2,
+          },
+        },
+      }
+    : {},
   compactRow: {
     flexDirection: "column",
     alignItems: "stretch",
@@ -822,7 +828,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
+  rowContentGroup: hoverGroup("provider-details"),
   textColumn: {
     flex: 1,
     minWidth: 0,

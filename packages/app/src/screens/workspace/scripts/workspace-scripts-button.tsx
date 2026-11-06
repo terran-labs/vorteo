@@ -29,6 +29,8 @@ import type {
   WorkspaceScriptLinkTarget,
 } from "@/utils/workspace-script-links";
 import type { Theme } from "@/styles/theme";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
+import { isWeb } from "@/constants/platform";
 
 import { extraMutedIconColorMapping } from "@/components/ui/icon-color";
 import { ExitCodeBadge, routeLabelKey, ScriptIcon } from "./script-marks";
@@ -60,9 +62,6 @@ const ThemedCopy = withUnistyles(Copy);
 const ThemedRotateCw = withUnistyles(RotateCw);
 const ThemedSquare = withUnistyles(Square);
 
-const foregroundColorMapping = (theme: Theme) => ({
-  color: theme.colors.foreground,
-});
 const mutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
@@ -77,27 +76,26 @@ interface ScriptRowActionButtonProps {
   tooltipLabel: string;
 }
 
-function RowActionIconElement({
-  hovered,
-  icon,
-}: {
-  hovered?: boolean;
-  icon: RowActionIcon;
-}): ReactElement {
-  const colorMapping = hovered ? foregroundColorMapping : mutedColorMapping;
+/**
+ * Web icons inherit the button's CSS `color`, which follows `:hover`, so the tint clears when the
+ * row moves out from under a resting cursor. Native has no hover and keeps the muted tint.
+ */
+const rowActionIconColor = isWeb ? { color: "currentColor" } : { uniProps: mutedColorMapping };
+
+function RowActionIconElement({ icon }: { icon: RowActionIcon }): ReactElement {
   switch (icon) {
     case "copy":
-      return <ThemedCopy size={11} uniProps={colorMapping} />;
+      return <ThemedCopy size={11} {...rowActionIconColor} />;
     case "open":
-      return <ThemedEye size={12} uniProps={colorMapping} />;
+      return <ThemedEye size={12} {...rowActionIconColor} />;
     case "restart":
-      return <ThemedRotateCw size={11} uniProps={colorMapping} />;
+      return <ThemedRotateCw size={11} {...rowActionIconColor} />;
     case "start":
-      return <ThemedPlay size={11} uniProps={colorMapping} {...playFillTransparent} />;
+      return <ThemedPlay size={11} {...rowActionIconColor} {...playFillTransparent} />;
     case "stop":
-      return <ThemedSquare size={11} uniProps={colorMapping} />;
+      return <ThemedSquare size={11} {...rowActionIconColor} />;
     case "terminal":
-      return <ThemedSquareTerminal size={12} uniProps={colorMapping} />;
+      return <ThemedSquareTerminal size={12} {...rowActionIconColor} />;
   }
 }
 
@@ -117,11 +115,6 @@ function ScriptRowActionButton({
     [onPress],
   );
 
-  const renderChildren = useCallback(
-    ({ hovered }: { hovered?: boolean }) => <RowActionIconElement hovered={hovered} icon={icon} />,
-    [icon],
-  );
-
   return (
     <Tooltip delayDuration={250} enabledOnDesktop enabledOnMobile={false}>
       <TooltipTrigger asChild triggerRefProp="ref">
@@ -132,9 +125,12 @@ function ScriptRowActionButton({
           hitSlop={6}
           disabled={disabled}
           onPress={handlePress}
-          style={styles.iconActionButton}
+          style={[
+            styles.iconActionButton,
+            disabled ? styles.iconActionButtonDisabled : styles.iconActionButtonHover,
+          ]}
         >
-          {renderChildren}
+          <RowActionIconElement icon={icon} />
         </Pressable>
       </TooltipTrigger>
       <TooltipContent testID={`${testID}-tooltip`} side="top" align="center" offset={8}>
@@ -178,25 +174,14 @@ function ServiceRouteOption({
   );
 }
 
-function ServiceRouteTriggerContent({
-  hovered,
-  label,
-}: {
-  hovered: boolean;
-  label: string;
-}): ReactElement {
+/** The trigger is a CSS hover group; the chevron and label brighten while it is hovered. */
+function ServiceRouteTriggerContent({ label }: { label: string }): ReactElement {
   return (
     <>
-      <View style={styles.routeSelectorButton}>
-        <ThemedChevronDown
-          size={14}
-          uniProps={hovered ? foregroundColorMapping : mutedColorMapping}
-        />
+      <View style={[styles.routeSelectorButton, styles.routeSelectorChevronHover]}>
+        <ThemedChevronDown size={14} {...rowActionIconColor} />
       </View>
-      <Text
-        style={hovered ? [styles.hostLabel, styles.hostLabelActive] : styles.hostLabel}
-        numberOfLines={1}
-      >
+      <Text style={[styles.hostLabel, styles.hostLabelHover]} numberOfLines={1}>
         {label}
       </Text>
     </>
@@ -229,9 +214,7 @@ function ServiceRouteSelector({
               hitSlop={6}
               style={styles.routeSelectorTrigger}
             >
-              {({ hovered }) => (
-                <ServiceRouteTriggerContent hovered={hovered} label={selectedTarget.label} />
-              )}
+              <ServiceRouteTriggerContent label={selectedTarget.label} />
             </DropdownMenuTrigger>
           </View>
         </TooltipTrigger>
@@ -533,9 +516,9 @@ export function WorkspaceScriptsButton({
   const liveTerminalIdSet = useMemo(() => new Set(liveTerminalIds), [liveTerminalIds]);
 
   const triggerStyle = useCallback(
-    ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
+    ({ pressed, open }: { pressed: boolean; open: boolean }) => [
       styles.splitButtonPrimary,
-      (hovered || pressed || open) && styles.splitButtonPrimaryHovered,
+      (pressed || open) && styles.splitButtonPrimaryHovered,
     ],
     [],
   );
@@ -635,6 +618,7 @@ const styles = StyleSheet.create((theme) => ({
       md: theme.spacing[2],
     },
     justifyContent: "center",
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   splitButtonPrimaryHovered: {
     backgroundColor: theme.colors.surface2,
@@ -708,6 +692,18 @@ const styles = StyleSheet.create((theme) => ({
   iconActionButton: {
     padding: 2,
   },
+  // Disabled buttons never reported hover, so they keep the muted tint.
+  iconActionButtonHover: hoverStyle(
+    { color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
+  iconActionButtonDisabled: { _web: { color: theme.colors.foregroundMuted } },
+  routeSelectorChevronHover: groupHoverStyle(
+    "script-route",
+    { color: theme.colors.foreground },
+    { color: theme.colors.foregroundMuted },
+  ),
+  hostLabelHover: groupHoverStyle("script-route", { color: theme.colors.foreground }),
   routeSelectorButton: {
     width: 14,
     height: 14,
@@ -724,6 +720,8 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
     minWidth: 0,
+
+    ...hoverGroup("script-route"),
   },
   tooltipText: {
     fontSize: theme.fontSize.base,

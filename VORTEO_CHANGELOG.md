@@ -2,17 +2,6 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## Unreleased - 2026-11-05
-
-### Performance
-
-- Host release builds during installs and upgrades reuse cached dependencies on macOS instead of downloading and installing them from scratch.
-- Upgrades build both the Host and Dev before restarting anything, so running agents are interrupted only at the end. A failed build, or one that never reports, leaves everything running as it was.
-- Dev upgrades reuse the server the Host release already compiled for the same commit, so building Dev's release or image no longer compiles every package a second time.
-- Most Dev upgrades restart only Dev's daemon on a release the Host builds, instead of rebuilding and recreating Dev's image. The image is rebuilt only when its own files change, and Dev returns to the previous release if the new one is unhealthy. The first upgrade after this change still rebuilds the image once.
-- A Dev release that fails and is rolled back is swapped in again when the installer reruns, instead of being reported as installed, and returning Dev to an earlier image also returns it to the release that image ran.
-- Dev image rebuilds reuse Docker's cache for the dependency install, the agent command-line tools and Tailscale, so upgrades rebuild only the packages that changed. A version bump or new build commit alone no longer reinstalls every dependency. First installs are unchanged.
-
 ## Unreleased - 2026-11-06
 
 ### Fixes
@@ -431,6 +420,168 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 ### Fixes
 
 - The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
+
+### Live tweaks
+
+- Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- When drilled into a project, its new workspace plus is always visible in the breadcrumb; the menu still appears on hover.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Live dev shows the sidebar version as v<version>+N, the commits on the live branch since that version's release commit, and the live checkout's branch check no longer fails when another ref shares the live branch name.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Command center and sidebar status-list rows publish their CSS hover surface, so their status rings follow hover; includes the shared-scroller import swap for both files
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Upgrade approval text states the expected duration, measured from this installation's last successful upgrade or a typical range without one, and when Host agents are interrupted.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- A Live dev page that cannot start offers Load static interface beside the other fallback buttons. Live dev's declaration watchers now stamp their output, so commit hooks in the live checkout no longer rebuild declarations under the running dev server.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Quota charts now build real history while the app is open; frequent polling had kept each account at a single sample.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Idle sidebar rows are quieter, and drilling into a project no longer shifts the rows below.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The sidebar footer now pairs the installation name with small per-account quota charts that show each account's week and flag accounts that will run out before their reset; View preferences live in the main menu, and Help moved to Settings.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Sidebar calm rows, project arrows, status-ring halos, menu triggers and desktop tab chips follow CSS hover, so no visual hover sticks after layout moves under a resting cursor
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Scroll areas across the app now fade their content at an edge with more to scroll, through the shared scrollers; a lint rule keeps new scrollers on the pattern. Pane separators match the toolbar rule.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The custom domain follows Live dev: the signed-in owner gets the live interface there, with hot reload, while ?interface=safe still serves the published build on either address.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Lab self-updates now really move the Host daemon onto the new build; before, they could report success while the Host still ran the previous release.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Quota charts in the sidebar footer can draw how each account's usage climbed this week: the daemon now records usage readings over time and keeps them across restarts.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The Live dev panel now looks like the app's tooltips, with a tail, closes when you click elsewhere or press Escape, and keeps Vorteo's colors on the static interface.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Folder and section rows swap their icon for the disclosure arrow and lift their calm tone with CSS hover, so neither sticks after the sidebar reflows
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Hover highlights and hover-revealed actions use CSS hover, so they clear when a click moves layout out from under a resting cursor; live-dev release can now hand back individual files
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Secret scanning no longer flags the Claude reset test, which used a random UUID as a request ID; pushes from this repository pass the pre-push scan again.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Claude accounts with full web sign-in show their limit resets in the account picker and can spend one from the existing reset dialog. Vorteo reads the grants with the usage check it already makes, the same request Claude Code sends; setup-token accounts still have no resets.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Profile picker accounts show a single refresh ring around the account icon instead of two spinners, and the compact reset button is shorter.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
+- The sidebar workspace list now fades under its top and bottom dividers while more workspaces lie past them, through a shared scroll edge fade hook.
+
+## Unreleased - 2026-11-05
 
 ### Live tweaks
 

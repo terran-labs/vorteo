@@ -36,6 +36,16 @@ export const PROJECT_FACTORY_INSTRUCTION_CONFLICTS = {
 /** Longest role status line, after trimming. */
 export const PROJECT_FACTORY_STATUS_LINE_MAX = 120;
 
+/**
+ * A pause_all drain. Each drain gets a new id; the Foreman's "Drained <id>" status line
+ * acknowledges exactly that drain, so a stale acknowledgment never satisfies a new one.
+ */
+export const ProjectFactoryDrainSchema = z.object({
+  id: z.string().min(1),
+  reason: z.string(),
+  pausedAt: z.string(),
+});
+
 export const ProjectFactoryStateSchema = z.object({
   schemaVersion: z.literal(1),
   serverId: z.string().min(1),
@@ -44,7 +54,14 @@ export const ProjectFactoryStateSchema = z.object({
   repository: ProjectFactoryRepositorySchema.nullable(),
   /** Human-readable; set for "unavailable". */
   reason: z.string().nullable(),
-  workers: z.object({ workerProfileId: nullableId, reviewerProfileId: nullableId }),
+  workers: z.object({
+    plannerProfileId: nullableId.optional(),
+    planning: z.boolean().optional(),
+    workerProfileId: nullableId,
+    reviewerProfileId: nullableId,
+  }),
+  /** The current pause_all drain, if any. Optional so older daemons still parse. */
+  drain: ProjectFactoryDrainSchema.nullable().optional(),
   roles: z.array(
     z.object({
       role: ProjectFactoryRoleIdSchema,
@@ -69,6 +86,42 @@ export const factoryProjectGet = defineRpc({
   name: "factory.project.get",
   input: projectInput,
   output: ProjectFactoryStateSchema,
+});
+
+export const ProjectFactoryQueueSchema = z.object({
+  fetchedAt: z.string(),
+  error: z.string().nullable(),
+  issues: z.array(
+    z.object({
+      number: z.number().int(),
+      title: z.string(),
+      url: z.string(),
+      label: z.enum(["ready", "running", "blocked", "human-review"]),
+      stage: z.enum(["queued", "planning", "building", "review", "repair", "merging", "blocked"]),
+      pr: z
+        .object({
+          number: z.number().int(),
+          url: z.string(),
+          headSha: z.string(),
+          checks: z.enum(["pending", "passing", "failing"]).nullable(),
+          reviewDecision: z.string().nullable(),
+        })
+        .nullable(),
+      agents: z.array(
+        z.object({
+          role: z.enum(["lead", "worker", "reviewer"]),
+          agentId: z.string(),
+          status: z.string(),
+        }),
+      ),
+    }),
+  ),
+});
+export type ProjectFactoryQueue = z.infer<typeof ProjectFactoryQueueSchema>;
+export const factoryProjectQueue = defineRpc({
+  name: "factory.project.queue",
+  input: projectInput,
+  output: ProjectFactoryQueueSchema,
 });
 
 export const factoryProjectEnable = defineRpc({
@@ -108,6 +161,8 @@ export const factoryProjectConfigure = defineRpc({
     role: ProjectFactoryRoleIdSchema.optional(),
     provider: nullableId.optional(),
     profileId: nullableId.optional(),
+    plannerProfileId: nullableId.optional(),
+    planning: z.boolean().optional(),
     workerProfileId: nullableId.optional(),
     reviewerProfileId: nullableId.optional(),
   }),
@@ -126,6 +181,41 @@ export const factoryProjectStatusSet = defineRpc({
       .pipe(z.string().max(PROJECT_FACTORY_STATUS_LINE_MAX)),
   }),
   output: ProjectFactoryStateSchema,
+});
+
+export const ProjectFactoryListSchema = z.object({
+  projects: z.array(
+    z.object({
+      projectId,
+      state: z.enum(["off", "on", "paused", "unavailable"]),
+      repository: ProjectFactoryRepositorySchema.nullable(),
+      paused: z.boolean(),
+      /** Set while pause_all holds this project; resume_all releases exactly these. */
+      drain: ProjectFactoryDrainSchema.nullable(),
+    }),
+  ),
+});
+export type ProjectFactoryList = z.infer<typeof ProjectFactoryListSchema>;
+
+/** Default pause_all reason, used by the CLI when none is given. */
+export const PROJECT_FACTORY_DRAIN_REASON = "drain before restart";
+
+export const factoryProjectList = defineRpc({
+  name: "factory.project.list",
+  input: z.strictObject({}),
+  output: ProjectFactoryListSchema,
+});
+
+export const factoryProjectPauseAll = defineRpc({
+  name: "factory.project.pause_all",
+  input: z.strictObject({ reason: z.string().trim().min(1).max(500) }),
+  output: ProjectFactoryListSchema,
+});
+
+export const factoryProjectResumeAll = defineRpc({
+  name: "factory.project.resume_all",
+  input: z.strictObject({}),
+  output: ProjectFactoryListSchema,
 });
 
 export const factoryProjectSendThread = defineRpc({
@@ -217,6 +307,7 @@ export const factoryProjectInstructionsResolve = defineRpc({
 /** Every per-project Factory method the daemon serves natively. */
 export const PROJECT_FACTORY_RPCS = [
   factoryProjectGet,
+  factoryProjectQueue,
   factoryProjectEnable,
   factoryProjectPause,
   factoryProjectResume,
@@ -224,6 +315,9 @@ export const PROJECT_FACTORY_RPCS = [
   factoryProjectConfigure,
   factoryProjectStatusSet,
   factoryProjectSendThread,
+  factoryProjectList,
+  factoryProjectPauseAll,
+  factoryProjectResumeAll,
   factoryProjectInstructionsGet,
   factoryProjectInstructionsSet,
   factoryProjectInstructionsPropose,

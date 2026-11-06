@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { ChevronRight } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { ProjectIconView } from "@/components/project-icon-view";
@@ -138,11 +139,11 @@ function ProjectRow({ project, host, isFirst, iconDataUri }: ProjectRowProps) {
   }, [host.projectId, host.serverId]);
 
   const rowStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       settingsStyles.row,
       !isFirst && settingsStyles.rowBorder,
       styles.row,
-      hovered && styles.rowHovered,
+      !pressed && styles.rowHovered,
       pressed && styles.rowPressed,
     ],
     [isFirst],
@@ -229,9 +230,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
   },
-  rowHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  rowHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   rowPressed: {
     backgroundColor: theme.colors.surface3,
   },

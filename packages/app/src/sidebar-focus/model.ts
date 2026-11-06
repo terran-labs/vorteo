@@ -276,6 +276,15 @@ export function sidebarFocusRootRows<T>(
   return row ? [{ ...row, depth: 0 }] : [];
 }
 
+/** A focused root folder's contents sit one level under the breadcrumb, where they were. */
+export function sidebarFocusRootLevelOffset(
+  target: SidebarFocusTarget | null,
+  world: SidebarFocusWorld,
+): number {
+  if (target?.kind !== "folder" || sidebarFocusProjectKey(target, world) !== null) return 0;
+  return SIDEBAR_FOCUS_CONTENT_LEVEL;
+}
+
 /** The container that receives top-level drops in the focused root list. */
 export function sidebarFocusRootDropTop(
   target: SidebarFocusTarget,
@@ -313,7 +322,12 @@ export interface SidebarProjectBlockLevels {
 /** Hierarchy level of a project's direct children when the project row is shown. */
 export const PROJECT_CHILD_LEVEL = 1;
 
-/** Focused contents are the top level, so they start at level 0 under the breadcrumb. */
+/**
+ * The breadcrumb takes the hidden row's level-0 place, so focused contents stay one level in,
+ * at level 1. Drilling into a project therefore leaves its rows exactly where they were.
+ */
+export const SIDEBAR_FOCUS_CONTENT_LEVEL = 1;
+
 export function sidebarProjectBlockLevels(
   focus: SidebarProjectBlockFocus | null,
 ): SidebarProjectBlockLevels {
@@ -325,10 +339,11 @@ export function sidebarProjectBlockLevels(
       sectionItemLevel: PROJECT_CHILD_LEVEL + 1,
     };
   }
+  const level = SIDEBAR_FOCUS_CONTENT_LEVEL;
   if (focus.kind === "section") {
-    return { showHeader: false, childLevel: 0, sectionLevel: null, sectionItemLevel: 0 };
+    return { showHeader: false, childLevel: level, sectionLevel: null, sectionItemLevel: level };
   }
-  return { showHeader: false, childLevel: 0, sectionLevel: 0, sectionItemLevel: 1 };
+  return { showHeader: false, childLevel: level, sectionLevel: level, sectionItemLevel: level + 1 };
 }
 
 export function isSidebarSectionShown(
@@ -381,16 +396,4 @@ export function sidebarRowFocusVisibility(input: {
     button: input.isHovered || input.hoverUnavailable,
     hoverOnly: input.isHovered && !input.hoverUnavailable,
   };
-}
-
-/**
- * Whether the breadcrumb's trailing actions show. Hidden actions stay mounted and focusable,
- * so keyboard focus inside them reveals them exactly as hover does.
- */
-export function sidebarBreadcrumbActionsVisible(input: {
-  isHovered: boolean;
-  hasFocusWithin: boolean;
-  hoverUnavailable: boolean;
-}): boolean {
-  return input.isHovered || input.hasFocusWithin || input.hoverUnavailable;
 }

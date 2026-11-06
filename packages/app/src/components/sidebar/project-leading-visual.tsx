@@ -24,6 +24,7 @@ import {
 import { StatusRing } from "@/components/status-ring";
 import { getStatusRingOffset } from "@/components/status-ring/geometry";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
+import { followRowSurface } from "@/styles/hover";
 
 // Every surfaced status shares one badge shell, so the badge never changes size or position
 // between states. Only the thing inside it changes.
@@ -56,7 +57,8 @@ const needsInputColorMapping = (theme: Theme) => ({
 
 /**
  * Leading slot of a sidebar project row: the project icon carrying the project's aggregate
- * workspace status, or an archive spinner while removing, with the shared hover arrow.
+ * workspace status, or an archive spinner while removing, with the shared hover arrow. With
+ * `cssHover` the row's `SIDEBAR_LEADING_HOVER_GROUP` swaps in the arrow through CSS hover.
  */
 export function ProjectLeadingVisual({
   displayName,
@@ -65,7 +67,7 @@ export function ProjectLeadingVisual({
   projectViewKey,
   backdrop,
   chevron = null,
-  showChevron = false,
+  cssHover = false,
   isArchiving = false,
 }: {
   displayName: string;
@@ -73,14 +75,14 @@ export function ProjectLeadingVisual({
   /** Aggregate status of the project's workspaces; null when it shouldn't be surfaced. */
   statusBucket: SidebarStateBucket | null;
   projectViewKey: string;
-  /** The row's current background, so the status badge can knock out of it. */
+  /** The row's resting background, so the status badge can knock out of it. */
   backdrop: SidebarSurfaceBackdrop;
   chevron?: SidebarDisclosure;
-  showChevron?: boolean;
+  cssHover?: boolean;
   isArchiving?: boolean;
 }) {
   return (
-    <SidebarLeadingSlot chevron={chevron} revealChevron={showChevron}>
+    <SidebarLeadingSlot chevron={chevron} cssHover={cssHover}>
       {isArchiving ? (
         <View style={styles.projectLeadingVisualSlot} testID="project-status-indicator-archiving">
           <ThemedActivityIndicator size={8} uniProps={foregroundMutedColorMapping} />
@@ -116,7 +118,7 @@ export function ProjectStatusIndicator({
   displayName: string;
   projectViewKey: string;
   statusBucket: SidebarStateBucket | null;
-  /** The row's current background, so the status badge can knock out of it. */
+  /** The row's resting background, so the status badge can knock out of it. */
   backdrop: SidebarSurfaceBackdrop;
   loading?: boolean;
   testID?: string;
@@ -199,7 +201,7 @@ function ProjectStatusBadge({
   );
 }
 
-function getStatusBadgeBackdropStyle(backdrop: SidebarSurfaceBackdrop): ViewStyle {
+function getStatusBadgeBackdropStyle(backdrop: SidebarSurfaceBackdrop) {
   switch (backdrop) {
     case "surfaceSidebar":
       return styles.statusBadgeOnSidebar;
@@ -301,10 +303,12 @@ const styles = StyleSheet.create((theme) => {
       right: getStatusRingOffset(STATUS_BADGE_OFFSET, STATUS_BADGE_SIZE),
       bottom: getStatusRingOffset(STATUS_BADGE_OFFSET, STATUS_BADGE_SIZE),
     },
-    statusBadgeOnSidebar: { backgroundColor: theme.colors.surfaceSidebar },
-    statusBadgeOnSidebarHover: { backgroundColor: theme.colors.surfaceSidebarHover },
-    statusBadgeOnSidebarSelected: { backgroundColor: theme.colors.surfaceSidebarSelected },
-    statusBadgeOnSurface2: { backgroundColor: theme.colors.surface2 },
+    // On web the cutout follows the row's published surface (ROW_SURFACE_VAR), so it matches the
+    // row's CSS hover fill; the named backdrop is the fallback outside such rows and on native.
+    statusBadgeOnSidebar: followRowSurface(theme.colors.surfaceSidebar),
+    statusBadgeOnSidebarHover: followRowSurface(theme.colors.surfaceSidebarHover),
+    statusBadgeOnSidebarSelected: followRowSurface(theme.colors.surfaceSidebarSelected),
+    statusBadgeOnSurface2: followRowSurface(theme.colors.surface2),
     statusDotRunning: statusDot("running"),
     statusDotFailed: statusDot("failed"),
     statusDotAttention: statusDot("attention"),

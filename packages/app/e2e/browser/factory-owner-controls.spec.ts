@@ -5,7 +5,6 @@ import { expect, test } from "../support/fixtures";
 import { gotoAppShell } from "../support/helpers/app";
 import { connectNewWorkspaceDaemonClient } from "../support/helpers/new-workspace";
 import { pluginRequirements } from "../support/helpers/plugin-fixture";
-import { openMobileAgentSidebar } from "../support/helpers/sidebar";
 import { getServerId } from "../support/helpers/server-id";
 
 // Real plugin loaders, transport and SDK controls. The isolated handler exercises
@@ -84,8 +83,7 @@ export default function contribute(server) {
       page.getByText("Factory control applied. Current state is shown below.", { exact: true }),
     ).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
-    await openMobileAgentSidebar(page);
-    await page.getByRole("button", { name: "Factory controls test", exact: true }).click();
+    // The plugin surface remains open after resizing and uses a compact back header.
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     await expect(page.getByText("Factory paused", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Resume", exact: true }).click();
@@ -100,5 +98,32 @@ export default function contribute(server) {
     await client.patchDaemonConfig({ pluginsEnabled: previous.config.pluginsEnabled });
     await client.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("per-project Factory Overview opens on desktop and compact", async ({ page }, testInfo) => {
+  const { seedWorkspace } = await import("../support/helpers/seed-client");
+  const workspace = await seedWorkspace({ repoPrefix: "factory-overview-" });
+  const client = await connectNewWorkspaceDaemonClient({ ownProjects: false });
+  const previous = await client.getDaemonConfig();
+  try {
+    await client.patchDaemonConfig({ pluginsEnabled: true });
+    for (const width of [1100, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(`/h/${getServerId()}/factory/${workspace.projectId}`);
+      const overview = page.getByTestId("factory-overview");
+      await expect(overview).toBeVisible();
+      await expect(overview.getByTestId("factory-overview-off")).toBeVisible();
+      await expect(overview.getByTestId("preset-controls")).toHaveCount(0);
+      await expect(overview.getByRole("switch")).toHaveCount(0);
+      await page.screenshot({
+        path: testInfo.outputPath(`factory-overview-${width}.png`),
+        fullPage: true,
+      });
+    }
+  } finally {
+    await client.patchDaemonConfig({ pluginsEnabled: previous.config.pluginsEnabled });
+    await client.close();
+    await workspace.cleanup();
   }
 });

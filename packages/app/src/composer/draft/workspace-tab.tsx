@@ -7,7 +7,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardTranslateView } from "@/keyboard/shift";
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 
-import { Keyboard, ScrollView, StyleSheet as RNStyleSheet, Text, View } from "react-native";
+import { Keyboard, StyleSheet as RNStyleSheet, Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 

@@ -76,13 +76,27 @@ afterEach(() => {
 });
 
 describe("paseo factory project", () => {
-  it("shows the worker and reviewer profiles the Foreman reads", async () => {
-    invoke.mockResolvedValue(state);
+  it("shows the stage profiles and planning setting the Foreman reads", async () => {
+    invoke.mockResolvedValue({
+      ...state,
+      workers: { ...state.workers, plannerProfileId: "planner-p", planning: false },
+    });
     await run("show", "prj_app");
     expect(invoke).toHaveBeenCalledWith("factory", "factory.project.get", { projectId: "prj_app" });
+    expect(stdout.join("")).toContain("Planner profile: planner-p");
+    expect(stdout.join("")).toContain("Planning: off");
     expect(stdout.join("")).toContain("Worker profile: worker-p");
     expect(stdout.join("")).toContain("Reviewer profile: default");
+    expect(stdout.join("")).toContain("Drain: none");
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("omits unsupported planning settings from an older daemon", async () => {
+    invoke.mockResolvedValue(state);
+    await run("show", "prj_app");
+    expect(stdout.join("")).not.toContain("Planner profile:");
+    expect(stdout.join("")).not.toContain("Planning:");
+    expect(stdout.join("")).toContain("Worker profile: worker-p");
   });
 
   it("enables with a repository and repeatable adoptions", async () => {
@@ -113,6 +127,10 @@ describe("paseo factory project", () => {
       "factory-intake",
       "--provider",
       "codex",
+      "--planner-profile",
+      "none",
+      "--planning",
+      "off",
       "--reviewer-profile",
       "none",
     );
@@ -120,6 +138,8 @@ describe("paseo factory project", () => {
       projectId: "prj_app",
       role: "factory-intake",
       provider: "codex",
+      plannerProfileId: null,
+      planning: false,
       reviewerProfileId: null,
     });
   });
@@ -172,5 +192,57 @@ describe("paseo factory project", () => {
   it("refuses an unknown role before calling the daemon", async () => {
     await expect(run("status", "set", "prj_app", "factory-nope", "x")).rejects.toThrow("exit 1");
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("paseo factory project drain", () => {
+  const listed = {
+    projects: [
+      {
+        projectId: "prj_app",
+        state: "paused",
+        repository: "acme/app",
+        paused: true,
+        drain: {
+          id: "drain-7f3a",
+          reason: "drain before restart",
+          pausedAt: "2026-11-03T12:00:00.000Z",
+        },
+      },
+    ],
+  };
+
+  it("lists every project", async () => {
+    invoke.mockResolvedValue(listed);
+    await run("list");
+    expect(invoke).toHaveBeenCalledWith("factory", "factory.project.list", {});
+    expect(stdout.join("")).toContain("drain-7f3a: drain before restart");
+  });
+
+  it("show prints the current drain id", async () => {
+    invoke.mockResolvedValue({
+      ...state,
+      drain: { id: "drain-7f3a", reason: "drain before restart", pausedAt: "now" },
+    });
+    await run("show", "prj_app");
+    expect(stdout.join("")).toContain("Drain: drain-7f3a (drain before restart, now)");
+  });
+
+  it("pause-all defaults its reason and accepts one", async () => {
+    invoke.mockResolvedValue(listed);
+    await run("pause-all");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.pause_all", {
+      reason: "drain before restart",
+    });
+    await run("pause-all", "--reason", "upgrade to 26.11.300");
+    expect(invoke).toHaveBeenLastCalledWith("factory", "factory.project.pause_all", {
+      reason: "upgrade to 26.11.300",
+    });
+  });
+
+  it("resume-all takes no arguments", async () => {
+    invoke.mockResolvedValue(listed);
+    await run("resume-all");
+    expect(invoke).toHaveBeenCalledWith("factory", "factory.project.resume_all", {});
   });
 });

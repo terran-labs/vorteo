@@ -52,9 +52,10 @@ interface ChecklistCardProps {
 }
 type EditorState = { open: false } | { open: true; task: AgentTaskItem | null };
 const EMPTY_TASKS: AgentTaskItem[] = [];
-// Task status glyphs run smaller than the default control icon so the checklist matches the
+// Task status glyphs run smaller than the Button's default icon so the checklist matches the
 // sidebar's compact status column: a 12px Lucide circle draws a 10px ring, the same footprint
 // as the status ring scaled to 80%.
+const TASK_STATUS_ICON_SIZE = 12;
 const compactRingStyles = RNStyleSheet.create({ ring: { transform: [{ scale: 0.8 }] } });
 const TASK_RUNNING_ICON = (
   <View style={compactRingStyles.ring}>
@@ -62,16 +63,24 @@ const TASK_RUNNING_ICON = (
   </View>
 );
 const COMPACT_COLUMN_DATA = { vortonRowHandle: "true" };
+type StatusGlyph = typeof Circle;
+// Button calls a one-argument function with its themed icon color, which lets us pick the size.
+const sizedGlyph = (Glyph: StatusGlyph) => (color: string) => (
+  <Glyph color={color} size={TASK_STATUS_ICON_SIZE} />
+);
+const CHECK_ICON = sizedGlyph(Check);
+const BLOCKED_ICON = sizedGlyph(CircleAlert);
+const REVIEW_ICON = sizedGlyph(Eye);
+const PENDING_ICON = sizedGlyph(Circle);
 const ThemedCheck = withUnistyles(Check);
 const ThemedCircle = withUnistyles(Circle);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedEye = withUnistyles(Eye);
-const STATUS_ICON_SIZE = 12;
 const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 function inactiveTaskIcon(status: AgentTaskItem["status"]) {
-  if (status === "blocked") return CircleAlert;
-  if (status === "review") return Eye;
-  return Circle;
+  if (status === "blocked") return BLOCKED_ICON;
+  if (status === "review") return REVIEW_ICON;
+  return PENDING_ICON;
 }
 const taskKey = (task: AgentTaskItem, index: number) =>
   `${task.source ?? "provider"}:${task.id ?? index}`;
@@ -470,12 +479,12 @@ function ChecklistStatusIcon({
   running: boolean;
 }) {
   if (running) return TASK_RUNNING_ICON;
-  if (completed) return <ThemedCheck size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
+  if (completed) return <ThemedCheck size={TASK_STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
   if (task.status === "blocked")
-    return <ThemedCircleAlert size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
+    return <ThemedCircleAlert size={TASK_STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
   if (task.status === "review")
-    return <ThemedEye size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
-  return <ThemedCircle size={STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
+    return <ThemedEye size={TASK_STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
+  return <ThemedCircle size={TASK_STATUS_ICON_SIZE} uniProps={mutedIconMapping} />;
 }
 
 /** The check mark fills the leading icon column, beside its text like a sidebar status circle. */
@@ -520,7 +529,7 @@ function ChecklistCheckbox({
       onLongPress={onLongPress}
       // Touch keeps the 44px height but the narrower leading column, like a row handle.
       dataSet={COMPACT_COLUMN_DATA}
-      leftIcon={completed ? Check : incompleteIcon}
+      leftIcon={completed ? CHECK_ICON : incompleteIcon}
     />
   );
 }

@@ -4,6 +4,7 @@ import { Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ComboboxItem } from "@/components/ui/combobox";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { hoverStyle } from "@/styles/hover";
 
 export const ProfileLoadingSpinner = withUnistyles(LoadingSpinner, (theme) => ({
   color: theme.colors.foregroundMuted,
@@ -99,6 +100,9 @@ export function ProfileSelectorTile({
       interactionStyle={
         selected ? profileTileStyles.selectedInteraction : profileTileStyles.interaction
       }
+      hoverInteractionStyle={
+        selected ? profileTileStyles.selectedHoverable : profileTileStyles.hoverable
+      }
       labelSlot={labelContent}
     />
   );
@@ -120,6 +124,9 @@ export const profileTileStyles = StyleSheet.create((theme) => ({
   selected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSubtle },
   interaction: { backgroundColor: theme.colors.surface3 },
   selectedInteraction: { backgroundColor: theme.colors.accentSubtleHovered },
+  // Browser-owned hover with the same fills as press, so the highlight never sticks.
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surface3 }),
+  selectedHoverable: hoverStyle({ backgroundColor: theme.colors.accentSubtleHovered }),
   lines: { gap: theme.spacing[1], minWidth: 0 },
   line: {
     height: Math.ceil(theme.fontSize.base * 1.25),

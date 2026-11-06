@@ -1,4 +1,4 @@
-import { memo, type ReactElement, useCallback, useMemo, useState } from "react";
+import { memo, type ReactElement, useCallback, useMemo } from "react";
 import {
   Text,
   View,
@@ -30,6 +30,7 @@ import {
 } from "@/git/file-header-presentation";
 import type { ParsedDiffFile } from "@/git/use-diff-query";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 
 export interface FileHeaderProps {
   file: ParsedDiffFile;
@@ -78,31 +79,43 @@ function fileHeaderAccessibilityLabel(canvasRendered: boolean, file: ParsedDiffF
   return `${file.path}, +${formatDiffCount(file.additions)}, -${formatDiffCount(file.deletions)}`;
 }
 
-function useFileHeaderHover(enabled: boolean, onActiveChange?: (active: boolean) => void) {
-  const [isHovered, setIsHovered] = useState(false);
+/**
+ * Pointer hover only reports to `onActiveChange` (the native document surface raises the hovered
+ * header). The highlight itself is CSS hover, see {@link fileHeaderHoverStyle}.
+ */
+function useFileHeaderHoverNotifier(enabled: boolean, onActiveChange?: (active: boolean) => void) {
   const handlePointerEnter = useCallback(() => {
     if (!enabled) return;
-    setIsHovered(true);
     onActiveChange?.(true);
   }, [enabled, onActiveChange]);
   const handlePointerLeave = useCallback(() => {
-    setIsHovered(false);
     onActiveChange?.(false);
   }, [onActiveChange]);
-  return { isHovered, handlePointerEnter, handlePointerLeave };
+  return { handlePointerEnter, handlePointerLeave };
 }
 
 function fileHeaderIsActive(input: {
-  isHovered: boolean;
   pressed: boolean;
   showsBodyState: boolean;
   isSelected: boolean;
 }): boolean {
-  return input.isHovered || input.pressed || (!input.showsBodyState && input.isSelected);
+  return input.pressed || (!input.showsBodyState && input.isSelected);
+}
+
+/**
+ * CSS hover highlight, so it clears when a header moves out from under a resting cursor. Left out
+ * for non-interactive headers and canvas headers, whose transparent style must win over `:hover`.
+ */
+function fileHeaderHoverStyle(input: {
+  interactive: boolean;
+  canvasRendered: boolean;
+  showsBodyState: boolean;
+}) {
+  if (!input.interactive || input.canvasRendered) return null;
+  return input.showsBodyState ? styles.documentHover : styles.treeHover;
 }
 
 function fileHeaderInteractionStyle(input: {
-  isHovered: boolean;
   pressed: boolean;
   showsBodyState: boolean;
   isSelected: boolean;
@@ -121,13 +134,9 @@ function fileHeaderContainerStyle(showsBodyState: boolean) {
   return styles.documentContainer;
 }
 
-function fileHeaderNameStyle(showsBodyState: boolean, isHovered: boolean) {
+function fileHeaderNameStyle(showsBodyState: boolean) {
   if (showsBodyState) return styles.name;
-  return [
-    styles.name,
-    workspaceTreeRowStyles.name,
-    isHovered ? workspaceTreeRowStyles.nameHovered : null,
-  ];
+  return [styles.name, workspaceTreeRowStyles.name, styles.treeNameHover];
 }
 
 function fileChange(file: ParsedDiffFile): "added" | "deleted" | "modified" {
@@ -199,7 +208,7 @@ export const FileHeader = memo(function FileHeader({
   onActiveChange,
   ...actions
 }: FileHeaderProps) {
-  const hover = useFileHeaderHover(interactive, onActiveChange);
+  const hover = useFileHeaderHoverNotifier(interactive, onActiveChange);
   const dragSourceRef = useWorkspaceFileDragSource({
     enabled: interactive,
     disabled: file.isDeleted,
@@ -227,14 +236,10 @@ export const FileHeader = memo(function FileHeader({
             paddingLeft: treeRowPaddingLeft(depth),
           })
         : null,
-      fileHeaderInteractionStyle({
-        isHovered: hover.isHovered,
-        pressed,
-        showsBodyState,
-        isSelected,
-      }),
+      fileHeaderHoverStyle({ interactive, canvasRendered, showsBodyState }),
+      fileHeaderInteractionStyle({ pressed, showsBodyState, isSelected }),
     ],
-    [depth, hover.isHovered, isSelected, showsBodyState],
+    [canvasRendered, depth, interactive, isSelected, showsBodyState],
   );
   const canvasPressableStyle = useCallback(
     (state: PressableStateCallbackType) => [
@@ -248,7 +253,7 @@ export const FileHeader = memo(function FileHeader({
     [bodyVisible, isSelected, showsBodyState],
   );
   const fileName = fileNameForPath(file.path);
-  const nameStyle = fileHeaderNameStyle(showsBodyState, hover.isHovered);
+  const nameStyle = fileHeaderNameStyle(showsBodyState);
   const changeIcon = <FileChangeIcon change={fileChange(file)} />;
   const content = (
     <View
@@ -399,6 +404,13 @@ const styles = StyleSheet.create((theme) => ({
     paddingRight: WORKSPACE_PANE_TRAILING_GLYPH_RAIL,
   },
   documentActive: { backgroundColor: theme.colors.surface1 },
+  documentHover: hoverStyle({ backgroundColor: theme.colors.surface1 }),
+  treeHover: hoverGroup(
+    "file-header",
+    hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover })._web,
+  ),
+  // Only takes effect under `treeHover`, which interactive tree headers alone carry.
+  treeNameHover: groupHoverStyle("file-header", { opacity: 1 }),
   documentPressFeedback: { backgroundColor: theme.colors.surface1 },
   canvasInteraction: {
     backgroundColor: "transparent",

@@ -19,6 +19,7 @@ import { AdaptiveTextInput } from "@/components/adaptive-modal-sheet";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Theme } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 import { MenuDepthProvider, useMenuContext } from "./menu-context";
 import { MENU_ITEM_HEIGHT } from "./menu-geometry";
 
@@ -304,16 +305,13 @@ export function MenuItem({
   );
 
   const itemPressableStyle = useCallback(
-    ({
-      pressed,
-      hovered = false,
-      focused = false,
-    }: PressableStateCallbackType & { hovered?: boolean; focused?: boolean }) => [
+    // Hover is CSS (`itemHoverable`), so the fill clears when the row moves from a resting cursor.
+    ({ pressed, focused = false }: PressableStateCallbackType & { focused?: boolean }) => [
       styles.item,
       active ? styles.itemActive : null,
       isDisabled ? styles.itemDisabled : null,
       muted && !isDisabled ? styles.itemMuted : null,
-      hovered && !pressed && !isDisabled ? styles.itemHovered : null,
+      isDisabled ? null : styles.itemHoverable,
       focused && !isDisabled ? styles.itemHovered : null,
       pressed && !isDisabled ? styles.itemPressed : null,
     ],
@@ -476,6 +474,7 @@ const styles = StyleSheet.create((theme) => ({
   itemHovered: {
     backgroundColor: theme.colors.surface2,
   },
+  itemHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   itemPressed: {
     backgroundColor: theme.colors.surface2,
   },

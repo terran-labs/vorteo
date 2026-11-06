@@ -1,5 +1,59 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Calm spinner: Sidebar spinners are quieter: they match the row's muted text and hourglass and spin at a third of the old speed, and hovering a row no longer brightens it.
+
+Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
+
+Maintenance review (2026-11-05): live tweak by Breadcrumb plus: When drilled into a project, its new workspace plus is always visible in the breadcrumb; the menu still appears on hover.
+
+Maintenance review (2026-11-05): live tweak by Live version suffix: Live dev shows the sidebar version as v<version>+N, the commits on the live branch since that version's release commit, and the live checkout's branch check no longer fails when another ref shares the live branch name.
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Command center and sidebar status-list rows publish their CSS hover surface, so their status rings follow hover; includes the shared-scroller import swap for both files
+
+Maintenance review (2026-11-05): live tweak by Upgrade time estimate: Upgrade approval text states the expected duration, measured from this installation's last successful upgrade or a typical range without one, and when Host agents are interrupted.
+
+Maintenance review (2026-11-05): live tweak by Static interface fallback button: A Live dev page that cannot start offers Load static interface beside the other fallback buttons. Live dev's declaration watchers now stamp their output, so commit hooks in the live checkout no longer rebuild declarations under the running dev server.
+
+Maintenance review (2026-11-05): live tweak by Quota usage history: Quota charts now build real history while the app is open; frequent polling had kept each account at a single sample.
+
+Maintenance review (2026-11-05): live tweak by Calm sidebar rows: Idle sidebar rows are quieter, and drilling into a project no longer shifts the rows below.
+
+Maintenance review (2026-11-05): live tweak by Lower left sidebar: The sidebar footer now pairs the installation name with small per-account quota charts that show each account's week and flag accounts that will run out before their reset; View preferences live in the main menu, and Help moved to Settings.
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Sidebar calm rows, project arrows, status-ring halos, menu triggers and desktop tab chips follow CSS hover, so no visual hover sticks after layout moves under a resting cursor
+
+Maintenance review (2026-11-05): live tweak by Markdown preview edges: Scroll areas across the app now fade their content at an edge with more to scroll, through the shared scrollers; a lint rule keeps new scrollers on the pattern. Pane separators match the toolbar rule.
+
+Maintenance review (2026-11-05): live tweak by Live dev on custom domain: The custom domain follows Live dev: the signed-in owner gets the live interface there, with hot reload, while ?interface=safe still serves the published build on either address.
+
+Maintenance review (2026-11-05): live tweak by Lab self-update Host restart: Lab self-updates now really move the Host daemon onto the new build; before, they could report success while the Host still ran the previous release.
+
+Maintenance review (2026-11-05): live tweak by Quota usage history: Quota charts in the sidebar footer can draw how each account's usage climbed this week: the daemon now records usage readings over time and keeps them across restarts.
+
+Maintenance review (2026-11-05): live tweak by Live dev indicator tooltip: The Live dev panel now looks like the app's tooltips, with a tail, closes when you click elsewhere or press Escape, and keeps Vorteo's colors on the static interface.
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Folder and section rows swap their icon for the disclosure arrow and lift their calm tone with CSS hover, so neither sticks after the sidebar reflows
+
+Maintenance review (2026-11-05): live tweak by Fix stale hover states: Hover highlights and hover-revealed actions use CSS hover, so they clear when a click moves layout out from under a resting cursor; live-dev release can now hand back individual files
+
+Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: The review hourglass now fills each bulb to the glass, drops its sand stream with gravity, and turns over without a jump in sand height.
+
+Maintenance review (2026-11-05): live tweak by Claude reset credits: Secret scanning no longer flags the Claude reset test, which used a random UUID as a request ID; pushes from this repository pass the pre-push scan again.
+
+Maintenance review (2026-11-05): live tweak by Claude reset credits: Claude accounts with full web sign-in show their limit resets in the account picker and can spend one from the existing reset dialog. Vorteo reads the grants with the usage check it already makes, the same request Claude Code sends; setup-token accounts still have no resets.
+
+Maintenance review (2026-11-05): live tweak by Hourglass calm and flip: The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
+
+Maintenance review (2026-11-05): live tweak by Fix duplicate account spinners: Profile picker accounts show a single refresh ring around the account icon instead of two spinners, and the compact reset button is shorter.
+
+Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
+
+Maintenance review (2026-11-05): live tweak by Questions card drafts: Typed answers, notes, Other answers and selections now stay in sync between the left sidebar's question card and the thread's own card.
+
+Maintenance review (2026-11-05): live tweak by Lab self-update: Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
+
+Maintenance review (2026-11-05): live tweak by Scroll edge fades: The sidebar workspace list now fades under its top and bottom dividers while more workspaces lie past them, through a shared scroll edge fade hook.
+
 Maintenance review (2026-11-06): snapshots run one at a time and fail when their own files go missing; only a source file that is really gone is skipped. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-06): snapshot capture is asynchronous, skips entries that vanish mid-copy and clones files where supported; restore is unchanged. README overview and onboarding are unchanged.
@@ -17,8 +71,6 @@ Maintenance review (2026-11-05): the gitleaks config allows UUID values in the C
 Maintenance review (2026-11-05): merged current `main`, including the Unite touch icon fix, into the VortLab lab beta branch; both sides kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.501 for VortLab with custom domains and lab self-update; live design tweaks were held out by the owner. Version and changelog only. README overview and onboarding are unchanged.
-
-Maintenance review (2026-11-05): live tweak by Lab self-update: Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
 
 Maintenance review (2026-11-05): the Factory Mechanic and the Vorteo System Optimizer charters gain a standing CI, test and build efficiency duty with alert thresholds, after a day where every PR push ran about 30 jobs and cheap required checks waited an hour for runners. README overview and onboarding are unchanged.
 
@@ -55,6 +107,7 @@ Maintenance review (2026-11-04): review fixes for installer upgrades: rollback c
 Maintenance review (2026-11-04): the install tests' upgrade jobs install old releases from a checkout of their tag, because the old installers' GitHub API lookup was refused on shared macOS runners. Test only; installer behavior unchanged. README unchanged.
 
 Maintenance review (2026-11-04): the installer upgrades installations it made. Rerunning `install.sh` fetches the target release first, shows the installed and latest versions, and offers an in-place upgrade with an optional name and update policy change, built beside the running release with a snapshot, per-service rollback and a resumable journal. It supports every installer release since 26.11.103. Not yet released. README onboarding updated.
+
 Maintenance review (2026-11-05): OAuth upgrade verification now requires a readable, unexpired grant with a refresh token before retiring setup-token access. Missing or unreadable credentials preserve the setup definition and do not trigger logout. Independent re-review and installation remain pending.
 
 Maintenance review (2026-11-05): Claude connection reliability repair pins CLI 2.1.318, makes managed health checks passive, and preserves refresh recovery through temporary failures. Credential read errors no longer imply sign-out; completed refreshes are adopted even after request failure. Queued dependent messages stop on failed turns, and Claude (CLI) is distinct from installation accounts with one creation flow. Focused regression checks pass; installation and sustained live refresh acceptance remain pending. README overview and onboarding are unchanged.
@@ -72,10 +125,6 @@ Maintenance review (2026-11-05): a timed-out settings admission read raises the 
 Maintenance review (2026-11-05): added a narrow gitleaks allowlist entry for a random test request UUID in one live commit's Claude reset test, matching the entry on `live/main`, so the all-refs pre-push secret scan passes. Tooling only; product functionality, README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): simplified the review hourglass. Each bulb's sand is the bulb's whole interior and the bottom bulb mirrors the top, so the loop turns over without a jump; drain and pile share one linear timing on web and native, and the stream's first grain falls under gravity. README overview and onboarding are unchanged.
-
-Maintenance review (2026-11-05): live tweak by Calm sidebar spinners: Sidebar workspace rows now show a quieter, smaller running ring instead of the blue agent spinner, and checklist task icons shrink to match.
-
-Maintenance review (2026-11-05): live tweak by Hourglass calm and flip: The review hourglass now matches the idle dots' quiet shade and slowly turns itself over after the sand falls.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.500 for VortLab with the Live dev status indicator, last-page reuse in the live dev proxy and the live dev preparation fix. Version and changelog only. README overview and onboarding are unchanged.
 
@@ -102,6 +151,7 @@ Maintenance review (2026-11-04): `agent.provider_subagents.list` answers from th
 Maintenance review (2026-11-04): merged current `main`, including the Dev boot-entry switch, the single sidebar footer block and later trackpad dictation, into the open question answer delivery fix; both sides' entries are kept and no behavior changed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): owner answers to open questions steer into a busy thread's active turn instead of waiting behind it, falling back to the message queue when the provider cannot steer. Delivery, the thread message and the journal entry are recorded when the agent receives the answer, and the card shows queued answers as queued. After review, a steer that throws is settled as uncertain and reconciled from provider history rather than requeued, and a paused queue no longer blocks answer steering. Review rounds then found repeated ordering hazards in text-based steer correlation for Pi and OMP, so that correlation was reverted: those adapters match upstream again and mark their steer acknowledgements as ambiguous, and their answers wait in the queue until the turn ends. Source only; not installed. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-04): the heavy-job queue uses an atomic populated-directory rename for exclusive slot ownership and recovers dead owners without deleting successor claims. Ticket rewrites are atomic. The CLI and environment variables are unchanged. Not yet installed. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-04): trackpad dictation. A triple click anywhere in the window toggles dictation into the active message field and stops without sending, so a lone Magic Trackpad can drive dictation. Not yet installed. README overview and onboarding are unchanged.
@@ -1843,6 +1893,8 @@ Sidebar rows omit the goal badge. Their sub-agent badge counts managed workers w
 - **Recoverable local queue edits.** Unsaved text and attachment edits survive reloads on the device where they were made. Save synchronizes the edit; Cancel retains the shared message. Messages awaiting synchronization use ordinary queue rows with a waiting indicator and a “Queued on this device” tooltip. Stale edits and interrupted submissions require reconciliation. See [draft recovery tests](../packages/app/src/message-queue/edit-draft-session.test.ts).
 
 ## Execution environments and installation
+
+- **Shared Voice credentials, awaiting delivery.** One installation authority adopts existing OpenAI speech keys once and delivers key and endpoint pairs to every environment. Conflicts require an owner choice; saves use the revisions captured when the editor opens. Credential delivery never persists unrelated process fallbacks, and standalone use retains local saves. See [Voice credential sync](voice-credential-sync.md) for endpoint validation, adoption and marker lifecycle rules.
 
 - **Owner-set custom domain on installer-made installations.** Installation controls offer a Custom domain card that sets the coordinator's `recoveryOrigin` in place. It admits the origin to the Host and Dev daemons, backs up `coordinator.json`, restarts only the coordinator through the handoff helper and restores the backup if the coordinator does not come back. Source-update installations keep the reviewed coordinator change. See [custom domain on installer-made installations](execution-installation.md#custom-domain-on-installer-made-installations).
 - **Live dev mode.** Installation settings offer a Delivery mode. Reliable, the default and the only mode before this feature, serves the published static interface. Live dev, available on installer-made Hosts with a private `.ts.net` HTTPS origin, makes the coordinator supervise one Expo web dev server from a live checkout (`host/live/source`, a worktree of the source repository on `live/main`) and proxy it to browsers holding an owner session. Only the page, `.bundle` and `.map` files, `/assets/` and the `/hot` Fast Refresh socket pass; Metro's editor, debugger and message endpoints never do. Other browsers, the recovery and local origins, `/?interface=safe` and any dev server failure get the static interface. An injected Live dev marker links to the safe interface even when live code fails to compile. Agents change the live checkout with `scripts/live-dev.mjs` (claim, commit, promote, sync), which locks Git changes, refuses other threads' uncommitted edits, aborts conflicting merges and restarts the dev server after dependency changes. Daemon changes still install through the tracked workflow; fast-track daemon builds from the live checkout are not implemented yet. See [live dev mode](live-dev-mode.md).

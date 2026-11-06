@@ -2,6 +2,12 @@ import { verifySkillSnapshot } from "../../../orchestration-skills/internal/poli
 import { ClaudeSetupTokenLoginSession } from "./setup-token-login.js";
 import { ClaudeLoginSession } from "./login.js";
 import { CLAUDE_SIGN_IN_ENV, claudeSignInMode } from "./sign-in-mode.js";
+import { ClaudeResetCreditSession } from "./reset-credits.js";
+import {
+  claudeKeychainAccount,
+  claudeKeychainServiceForConfigDir,
+  readClaudeAccountKeychainCredentials,
+} from "../../../../services/quota-fetcher/providers/claude.js";
 import {
   claudeAccountUpgradedToFullSignIn,
   claudeSetupTokenStore,
@@ -1962,6 +1968,21 @@ export class ClaudeAgentClient implements AgentClient {
     });
   }
 
+  /**
+   * Claude limit resets for a full sign-in account. They use the account's own claude.ai grant,
+   * read the same way its usage is; the CLI keeps refreshing that grant on each turn.
+   */
+  async openResetCreditSession(): Promise<ClaudeResetCreditSession> {
+    const env = this.runtimeSettings?.env;
+    // Untrimmed: the usage fetcher keys its shared reset reading on the exact configured value.
+    const configDir = env?.CLAUDE_CONFIG_DIR;
+    const full = claudeSignInMode(env) === "full" && Boolean(configDir?.trim());
+    return new ClaudeResetCreditSession({
+      configDir: full && configDir ? configDir : null,
+      readAccessToken: () => readClaudeAccessToken(configDir ?? ""),
+    });
+  }
+
   async openAccountLoginSession() {
     if (process.env.VORTEO_INSTALLATION_CLIENT_CONFIG)
       throw new Error("Connect Claude through the installation subscription controls.");
@@ -2054,6 +2075,29 @@ export class ClaudeAgentClient implements AgentClient {
       model: model || undefined,
       providerOptions,
     };
+  }
+}
+
+/** Same store order as the CLI: the account's own Keychain item on macOS, then its file. */
+async function readClaudeAccessToken(configDir: string): Promise<string | null> {
+  if (!configDir) return null;
+  const token = (value: unknown): string | null => {
+    const oauth = (value as { claudeAiOauth?: { accessToken?: unknown } } | null)?.claudeAiOauth;
+    return typeof oauth?.accessToken === "string" && oauth.accessToken ? oauth.accessToken : null;
+  };
+  if (process.platform === "darwin") {
+    const item = await readClaudeAccountKeychainCredentials(
+      claudeKeychainServiceForConfigDir(configDir),
+      claudeKeychainAccount(),
+    );
+    if (item !== null && item !== undefined) return token(item);
+  }
+  try {
+    return token(
+      JSON.parse(await promises.readFile(path.join(configDir, ".credentials.json"), "utf8")),
+    );
+  } catch {
+    return null;
   }
 }
 

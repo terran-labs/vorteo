@@ -2,17 +2,16 @@ import { ChevronRight } from "lucide-react-native";
 import { useCallback, useMemo, type ReactNode } from "react";
 import { Text, View, type AccessibilityState, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ExternalLinkLabel } from "@/components/ui/external-link";
+import { EXTERNAL_LINK_HOVER_GROUP, ExternalLinkLabel } from "@/components/ui/external-link";
 import { mutedIconColorMapping } from "@/components/ui/icon-color";
 import { PressHighlight } from "@/components/ui/press-highlight";
+import { isWeb } from "@/constants/platform";
+import { groupHoverStyle, hoverGroup, hoverStyle } from "@/styles/hover";
 import { settingsStyles } from "@/styles/settings";
-import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { ICON_SIZE } from "@/styles/theme";
 import { useSettingsRowLayout } from "./row-density";
 
 const ThemedChevron = withUnistyles(ChevronRight);
-const hoveredIconColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-
-type HoverState = PressableStateCallbackType & { hovered?: boolean };
 
 export interface SettingsRowHeaderProps {
   label: string;
@@ -54,10 +53,11 @@ export function SettingsRowHeader({
 }: SettingsRowHeaderProps) {
   const layout = useSettingsRowLayout();
   const rowStyle = useCallback(
-    ({ hovered, pressed }: HoverState) => [
+    // CSS :hover outranks the base class, so the hover rule steps aside while pressed.
+    ({ pressed }: PressableStateCallbackType) => [
       layout.row,
-      !disabled && hovered && styles.hovered,
-      !disabled && pressed && styles.pressed,
+      styles.group,
+      !disabled && (pressed ? styles.pressed : styles.hoverable),
     ],
     [disabled, layout],
   );
@@ -77,41 +77,41 @@ export function SettingsRowHeader({
       highlightStyle={styles.pressed}
       testID={testID}
     >
-      {({ hovered }: HoverState) => (
-        <>
-          <View style={settingsStyles.rowContent}>
-            {labelAccessory ? (
-              <View style={styles.labelRow}>
-                <Text style={layout.title}>{label}</Text>
-                {labelAccessory}
-              </View>
-            ) : (
+      <>
+        <View style={settingsStyles.rowContent}>
+          {labelAccessory ? (
+            <View style={styles.labelRow}>
               <Text style={layout.title}>{label}</Text>
-            )}
-            {hint ? <Text style={layout.hint}>{hint}</Text> : null}
-          </View>
-          {external ? (
-            // Drawn the same as a section header's docs link, so the two read as one thing.
-            <ExternalLinkLabel hovered={hovered}>{summary}</ExternalLinkLabel>
+              {labelAccessory}
+            </View>
           ) : (
-            <>
-              {summary ? (
-                <Text style={styles.summary} numberOfLines={1}>
-                  {summary}
-                </Text>
-              ) : null}
-              {disabled ? null : (
-                <View style={chevronStyle}>
-                  <ThemedChevron
-                    size={ICON_SIZE.sm}
-                    uniProps={hovered ? hoveredIconColorMapping : mutedIconColorMapping}
-                  />
-                </View>
-              )}
-            </>
+            <Text style={layout.title}>{label}</Text>
           )}
-        </>
-      )}
+          {hint ? <Text style={layout.hint}>{hint}</Text> : null}
+        </View>
+        {external ? (
+          // Drawn the same as a section header's docs link, so the two read as one thing.
+          <ExternalLinkLabel>{summary}</ExternalLinkLabel>
+        ) : (
+          <>
+            {summary ? (
+              <Text style={styles.summary} numberOfLines={1}>
+                {summary}
+              </Text>
+            ) : null}
+            {disabled ? null : (
+              <View style={chevronStyle}>
+                {/* On web the chevron strokes with its box's CSS color, so group hover recolors it. */}
+                {isWeb ? (
+                  <ChevronRight size={ICON_SIZE.sm} color="currentColor" />
+                ) : (
+                  <ThemedChevron size={ICON_SIZE.sm} uniProps={mutedIconColorMapping} />
+                )}
+              </View>
+            )}
+          </>
+        )}
+      </>
     </PressHighlight>
   );
 }
@@ -124,15 +124,22 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     marginRight: theme.spacing[2],
   },
-  hovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  // The row is the external link label's hover group, so its summary and arrow follow the row.
+  group: hoverGroup(EXTERNAL_LINK_HOVER_GROUP),
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   pressed: {
     backgroundColor: theme.colors.surface3,
   },
   // Optical: the chevron's ink sits about 4px inside its box whether it points right or down; this
   // puts the ink on the card's trailing rail, where the switch and the reports' refresh buttons end.
-  chevron: { marginRight: -theme.spacing[1] },
+  chevron: {
+    marginRight: -theme.spacing[1],
+    ...groupHoverStyle(
+      EXTERNAL_LINK_HOVER_GROUP,
+      { color: theme.colors.foreground },
+      { color: theme.colors.foregroundMuted },
+    ),
+  },
   chevronExpanded: {
     transform: [{ rotate: "90deg" }],
   },

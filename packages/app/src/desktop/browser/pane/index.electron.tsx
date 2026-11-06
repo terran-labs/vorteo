@@ -31,6 +31,7 @@ import {
   type LucideIcon,
 } from "lucide-react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Button } from "@/components/ui/button";
@@ -1327,41 +1328,41 @@ export function BrowserPane({
   }, []);
 
   const baseIconButtonStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
+    ({ pressed }: { pressed?: boolean }) => [
       styles.iconButton,
-      (hovered || pressed) && styles.iconButtonHovered,
+      pressed && styles.iconButtonHovered,
     ],
     [],
   );
   const backIconButtonStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
+    ({ pressed }: { pressed?: boolean }) => [
       styles.iconButton,
-      (hovered || pressed) && styles.iconButtonHovered,
+      pressed && styles.iconButtonHovered,
       !browser?.canGoBack && styles.iconButtonDisabled,
     ],
     [browser?.canGoBack],
   );
   const forwardIconButtonStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
+    ({ pressed }: { pressed?: boolean }) => [
       styles.iconButton,
-      (hovered || pressed) && styles.iconButtonHovered,
+      pressed && styles.iconButtonHovered,
       !browser?.canGoForward && styles.iconButtonDisabled,
     ],
     [browser?.canGoForward],
   );
   const annotateIconButtonStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
+    ({ pressed }: { pressed?: boolean }) => [
       styles.iconButton,
       selectorMode === "annotate" && styles.selectorActiveButton,
-      (hovered || pressed) && styles.iconButtonHovered,
+      pressed && styles.iconButtonHovered,
     ],
     [selectorMode],
   );
   const screenshotIconButtonStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
+    ({ pressed }: { pressed?: boolean }) => [
       styles.iconButton,
       selectorMode === "screenshot" && styles.selectorActiveButton,
-      (hovered || pressed) && styles.iconButtonHovered,
+      pressed && styles.iconButtonHovered,
     ],
     [selectorMode],
   );
@@ -1716,6 +1717,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.md,
     alignItems: "center",
     justifyContent: "center",
+    ...hoverStyle({ backgroundColor: theme.colors.surface2 }),
   },
   selectorActiveButton: {
     backgroundColor: `${String(theme.colors.accent)}20`,
