@@ -1,3 +1,4 @@
+import { hoverStyle } from "@/styles/hover";
 import { tabShape } from "@/styles/tab-shape";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import { ActionFooter } from "@/components/ui/action-footer";
@@ -101,14 +102,13 @@ function QuestionOptionRow({
   );
 
   const pressableStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.optionItem,
-      (Boolean(hovered) || isSelected) && {
-        backgroundColor: theme.colors.surface2,
-      },
+      !isResponding && styles.optionItemHoverable,
+      isSelected && styles.optionItemSelected,
       pressed && styles.optionItemPressed,
     ],
-    [isSelected, theme.colors.surface2],
+    [isResponding, isSelected],
   );
 
   const accessibilityState = useMemo(() => ({ checked: isSelected }), [isSelected]);
@@ -200,24 +200,13 @@ function QuestionNavButton({
     onSelect(index);
   }, [index, onSelect]);
   const pressableStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
-      return [
-        styles.questionNavButton,
-        {
-          backgroundColor:
-            isActive || Boolean(hovered) ? theme.colors.surface2 : theme.colors.surface1,
-          borderColor: isActive ? theme.colors.foregroundMuted : theme.colors.border,
-        },
-        pressed && styles.optionItemPressed,
-      ];
-    },
-    [
-      isActive,
-      theme.colors.border,
-      theme.colors.foregroundMuted,
-      theme.colors.surface1,
-      theme.colors.surface2,
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.questionNavButton,
+      !isResponding && styles.surfaceHoverable,
+      isActive && styles.questionNavButtonActive,
+      pressed && styles.optionItemPressed,
     ],
+    [isActive, isResponding],
   );
   const textStyle = useMemo(
     () => [
@@ -506,15 +495,13 @@ export function QuestionFormCard({
   }, [activeQuestionAnswered, handleSubmit, isLastQuestion, isResponding, questions?.length]);
 
   const dismissButtonStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.actionButton,
-      {
-        backgroundColor: hovered ? theme.colors.surface2 : theme.colors.surface1,
-        borderColor: theme.colors.borderAccent,
-      },
+      styles.dismissButton,
+      !isResponding && styles.surfaceHoverable,
       pressed && styles.optionItemPressed,
     ],
-    [theme.colors.surface2, theme.colors.surface1, theme.colors.borderAccent],
+    [isResponding],
   );
 
   const pendingAction = isResponding ? respondingAction : null;
@@ -698,7 +685,15 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
     ...tabShape(theme),
     borderWidth: theme.borderWidth[1],
+    backgroundColor: theme.colors.surface1,
+    borderColor: theme.colors.border,
   },
+  questionNavButtonActive: {
+    backgroundColor: theme.colors.surface2,
+    borderColor: theme.colors.foregroundMuted,
+  },
+  // Hover fills are browser-owned CSS; a disabled (responding) control keeps its rest look.
+  surfaceHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   questionNavText: {
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
@@ -709,6 +704,10 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     paddingVertical: theme.spacing[2],
     borderRadius: theme.borderRadius.md,
+  },
+  optionItemHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
+  optionItemSelected: {
+    backgroundColor: theme.colors.surface2,
   },
   optionItemPressed: {
     opacity: 0.9,
@@ -769,6 +768,10 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     alignItems: "center",
     borderWidth: theme.borderWidth[1],
+  },
+  dismissButton: {
+    backgroundColor: theme.colors.surface1,
+    borderColor: theme.colors.borderAccent,
   },
   actionContent: {
     flexDirection: "row",

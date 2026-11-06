@@ -6,7 +6,6 @@ import {
   expandSidebarFocusPath,
   focusTreeRows,
   resolveSidebarFocus,
-  sidebarBreadcrumbActionsVisible,
   sidebarFocusAncestors,
   sidebarFocusRootDropTop,
   sidebarFocusRootRows,
@@ -244,28 +243,27 @@ describe("project block levels while focused", () => {
     });
   });
 
-  test("a focused project hides its row and lists its children at the top level", () => {
+  // The breadcrumb stands where the hidden row was, so drilling in must not move the rows.
+  test("a focused project hides its row and keeps its children where they were", () => {
     expect(sidebarProjectBlockLevels({ kind: "project" })).toEqual({
+      ...sidebarProjectBlockLevels(null),
       showHeader: false,
-      childLevel: 0,
-      sectionLevel: 0,
-      sectionItemLevel: 1,
     });
   });
 
-  test("a focused project folder lists its contents at the top level", () => {
+  test("a focused project folder lists its contents one level under the breadcrumb", () => {
     expect(sidebarProjectBlockLevels({ kind: "folder", folderId: "bugs" })).toMatchObject({
       showHeader: false,
-      childLevel: 0,
+      childLevel: 1,
     });
   });
 
-  test("a focused section hides its heading and lists its workspaces at the top level", () => {
+  test("a focused section hides its heading and lists its workspaces under the breadcrumb", () => {
     expect(sidebarProjectBlockLevels({ kind: "section", section: "standing" })).toEqual({
       showHeader: false,
-      childLevel: 0,
+      childLevel: 1,
       sectionLevel: null,
-      sectionItemLevel: 0,
+      sectionItemLevel: 1,
     });
   });
 });
@@ -292,22 +290,5 @@ describe("the row Focus button", () => {
       button: true,
       hoverOnly: false,
     });
-  });
-});
-
-describe("the breadcrumb's trailing actions", () => {
-  const hidden = { isHovered: false, hasFocusWithin: false, hoverUnavailable: false };
-
-  test("stay hidden with a pointer until hovered", () => {
-    expect(sidebarBreadcrumbActionsVisible(hidden)).toBe(false);
-    expect(sidebarBreadcrumbActionsVisible({ ...hidden, isHovered: true })).toBe(true);
-  });
-
-  test("show while keyboard focus is inside them, without hover", () => {
-    expect(sidebarBreadcrumbActionsVisible({ ...hidden, hasFocusWithin: true })).toBe(true);
-  });
-
-  test("always show where rows cannot be hovered", () => {
-    expect(sidebarBreadcrumbActionsVisible({ ...hidden, hoverUnavailable: true })).toBe(true);
   });
 });

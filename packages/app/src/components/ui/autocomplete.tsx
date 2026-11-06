@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
-  ScrollView,
   Text,
   View,
   Pressable,
@@ -9,10 +8,12 @@ import {
   type NativeSyntheticEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { File, Folder } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 import { getScrollOffsetToRevealItem } from "./scroll-reveal";
 
 export interface AutocompleteOption {
@@ -71,9 +72,10 @@ function AutocompleteRow({
   );
   const handlePress = useCallback(() => onSelect(option), [onSelect, option]);
   const pressableStyle = useCallback(
-    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.item,
-      (hovered || pressed || isSelected) && styles.itemActive,
+      styles.itemHoverable,
+      (pressed || isSelected) && styles.itemActive,
     ],
     [isSelected],
   );
@@ -355,6 +357,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
   itemActive: {
     backgroundColor: theme.colors.surface2,
   },
+  itemHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   itemMain: {
     flex: 1,
     minWidth: 0,

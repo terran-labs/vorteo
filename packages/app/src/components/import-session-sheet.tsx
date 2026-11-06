@@ -10,6 +10,7 @@ import type {
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { ChevronDown, Inbox, Layers, RotateCw } from "lucide-react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { ImportSessionList } from "@/components/import-session-list";
@@ -320,9 +321,10 @@ function ImportSessionSheetRow({
     onImportSession(entry);
   }, [entry, onImportSession]);
   const pressableStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
-      Boolean(hovered) && styles.rowHovered,
+      // CSS :hover outranks the pressed class, so drop it while pressed.
+      !pressed && styles.rowHovered,
       pressed && styles.rowPressed,
     ],
     [],
@@ -628,9 +630,9 @@ export function ImportSessionSheet({
   const handleFilterOpen = useCallback(() => setIsFilterOpen(true), []);
 
   const filterTriggerStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.filterTrigger,
-      Boolean(hovered) && styles.filterTriggerHovered,
+      !pressed && styles.filterTriggerHovered,
       pressed && styles.filterTriggerPressed,
     ],
     [],
@@ -961,9 +963,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
   },
-  filterTriggerHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  filterTriggerHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   filterTriggerPressed: {
     backgroundColor: theme.colors.surface3,
   },
@@ -1012,9 +1012,7 @@ const styles = StyleSheet.create((theme) => ({
     marginHorizontal: -theme.spacing[2],
     borderRadius: theme.borderRadius.lg,
   },
-  rowHovered: {
-    backgroundColor: theme.colors.surface1,
-  },
+  rowHovered: hoverStyle({ backgroundColor: theme.colors.surface1 }),
   rowPressed: {
     backgroundColor: theme.colors.surface2,
   },

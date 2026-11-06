@@ -24,7 +24,7 @@ The app runs on iOS, Android, browser web and Electron. Default to cross-platfor
 
 - Guard DOM access with `isWeb`; never redefine platform gates locally. Use `Platform.OS` only for a specific OS requirement, not as a layout proxy.
 - Prefer `.web.*` and `.native.*` modules for substantially different implementations. Use `.electron.*` for Electron-only behavior; Electron resolves those before `.web.*`. Keep inline gates small.
-- Pointer and hover events do not provide native touch access. Essential controls must remain visible on native and compact layouts, such as `isHovered || isNative || isCompact`. The hover guide's pointer pattern is for web; do not rely on it on native.
+- Visual hover highlights and hover reveals use browser-owned CSS through `styles/hover.ts`, never React hover state, which stays stuck when layout moves an element from under a resting cursor. Keep JS hover for behavior CSS cannot express. Essential controls must remain visible on native and compact layouts, such as `isHovered || isNative || isCompact`. The hover guide's pointer pattern is for web; do not rely on it on native.
 
 ## Vorteo behavior and delivery
 

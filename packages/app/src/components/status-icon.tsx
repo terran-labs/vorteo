@@ -4,6 +4,7 @@ import { CircleAlert } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
+import { ROW_SURFACE_VAR } from "@/styles/hover";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { StatusRing } from "@/components/status-ring";
 import { getStatusRingOffset } from "@/components/status-ring/geometry";
@@ -48,10 +49,10 @@ export function StatusIcon({
   const statusDotStyle = useMemo(
     () => [
       styles.statusDot,
-      {
-        backgroundColor: statusDotColor,
-        borderColor: statusDotBorderColor ?? styles[backdrop].borderColor,
-      },
+      // An explicit border colour wins; otherwise the border knocks out of the backdrop, which on
+      // web follows the containing row's published surface like the running ring's halo.
+      statusDotBorderColor ? { borderColor: statusDotBorderColor } : styles[backdrop],
+      { backgroundColor: statusDotColor },
     ],
     [statusDotColor, statusDotBorderColor, backdrop],
   );
@@ -78,6 +79,11 @@ export function StatusIcon({
   );
 }
 
+/** Dot border that knocks out of the nearest row's published surface on web, else `fallback`. */
+function followRowSurfaceBorder(fallback: string) {
+  return { borderColor: fallback, _web: { borderColor: `var(${ROW_SURFACE_VAR}, ${fallback})` } };
+}
+
 const styles = StyleSheet.create((theme) => ({
   agentIconWrapper: {
     position: "relative",
@@ -99,12 +105,12 @@ const styles = StyleSheet.create((theme) => ({
     right: getStatusRingOffset(DEFAULT_STATUS_DOT_OFFSET, STATUS_INDICATOR_DOT_SIZE),
     bottom: getStatusRingOffset(DEFAULT_STATUS_DOT_OFFSET, STATUS_INDICATOR_DOT_SIZE),
   },
-  surface0: { borderColor: theme.colors.surface0 },
-  surface1: { borderColor: theme.colors.surface1 },
-  surface2: { borderColor: theme.colors.surface2 },
-  surfaceSidebar: { borderColor: theme.colors.surfaceSidebar },
-  surfaceSidebarHover: { borderColor: theme.colors.surfaceSidebarHover },
-  surfaceSidebarSelected: { borderColor: theme.colors.surfaceSidebarSelected },
+  surface0: followRowSurfaceBorder(theme.colors.surface0),
+  surface1: followRowSurfaceBorder(theme.colors.surface1),
+  surface2: followRowSurfaceBorder(theme.colors.surface2),
+  surfaceSidebar: followRowSurfaceBorder(theme.colors.surfaceSidebar),
+  surfaceSidebarHover: followRowSurfaceBorder(theme.colors.surfaceSidebarHover),
+  surfaceSidebarSelected: followRowSurfaceBorder(theme.colors.surfaceSidebarSelected),
   statusAlertOverlay: {
     position: "absolute",
     right: STATUS_ALERT_OFFSET,

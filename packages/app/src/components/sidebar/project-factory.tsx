@@ -10,8 +10,8 @@ import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { ActionFooter } from "@/components/ui/action-footer";
 import { Button } from "@/components/ui/button";
 
-export type { ProjectFactoryState } from "../../../../../plugins/factory/shared/project";
-import type { ProjectFactoryState } from "../../../../../plugins/factory/shared/project";
+export type { ProjectFactoryState } from "./factory-state";
+import type { ProjectFactoryState } from "./factory-state";
 export {
   validFactoryRepository,
   factoryActions,

@@ -7268,6 +7268,11 @@ export const ProviderUsageWindowSchema = z.object({
   runsOutAt: z.string().nullable().optional(),
   shortfallPct: z.number().nullable().optional(),
   tone: ProviderUsageToneSchema.optional(),
+  /**
+   * Used percent over roughly the last eight days, oldest first, thinned to a few dozen points.
+   * Sent by daemons that record usage history; absent from older daemons.
+   */
+  history: z.array(z.object({ at: z.string(), usedPct: z.number() })).optional(),
 });
 
 export const ProviderUsageBalanceSchema = z.object({

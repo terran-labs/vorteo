@@ -37,7 +37,7 @@ import { isMainModule } from "../is-main-module.mjs";
 import { stopRunning } from "./primitives.mjs";
 
 const USAGE =
-  "Usage: main.mjs detect|plan --answers <file>|plan --adopt [--source <dir>]|plan --upgrade --source <dir> --revision <commit> [--release <tag>] [--settings <file>] [--settings-only]|apply --plan <file>|upgrade --plan <file>|status|uninstall [--keep-data]|repair|adopt [--source <dir>] [--outcome <file>]|host-release --revision <commit> --outcome <file> [--json] [--root <folder>]|coordinator-follow [--check] [--root <folder>]";
+  "Usage: main.mjs detect|plan --answers <file>|plan --adopt [--source <dir>]|plan --upgrade --source <dir> --revision <commit> [--release <tag>] [--settings <file>] [--settings-only]|apply --plan <file>|upgrade --plan <file>|status|uninstall [--keep-data]|repair|adopt [--source <dir>] [--outcome <file>]|host-release --revision <commit> --outcome <file> [--build-only] [--json] [--root <folder>]|coordinator-follow [--check] [--root <folder>]";
 
 function readJsonFile(file, label) {
   if (!file) throw Object.assign(new Error(`Pass --${label} <file>.`), { usage: true });
@@ -94,7 +94,13 @@ const COMMANDS = {
   "coordinator-follow": async ({ context, values, line }) =>
     exit(await followHostRelease(context, line, { checkOnly: values.check === true })),
   "host-release": async ({ context, values }) =>
-    exit(await hostRelease(context, { revision: values.revision, outcome: values.outcome })),
+    exit(
+      await hostRelease(context, {
+        revision: values.revision,
+        outcome: values.outcome,
+        buildOnly: values["build-only"],
+      }),
+    ),
 };
 
 /**
@@ -119,6 +125,7 @@ export async function main(
       "no-docker": { type: "boolean" },
       revision: { type: "string" },
       outcome: { type: "string" },
+      "build-only": { type: "boolean" },
       adopt: { type: "boolean" },
       check: { type: "boolean" },
       upgrade: { type: "boolean" },

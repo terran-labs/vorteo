@@ -255,10 +255,26 @@ it("takes role labels and order from daemon state", async () => {
   fixture.invoke.mockImplementation(async (method: string) =>
     method === "factory.project.get"
       ? {
+          schemaVersion: 1,
+          serverId: "host",
+          projectId: "project",
+          state: "on",
+          repository: "owner/repo",
+          reason: null,
+          workers: { workerProfileId: null, reviewerProfileId: null },
           roles: [
             { role: "factory-builds", title: "Builder supplied by daemon" },
             { role: "factory-triage", title: "Intake supplied by daemon" },
-          ],
+          ].map((role) => ({
+            role: role.role,
+            title: role.title,
+            workspaceId: null,
+            agentId: null,
+            heartbeat: null,
+            launch: { provider: null, profileId: null },
+            status: null,
+            instructions: { revision: 0, review: "none" },
+          })),
         }
       : { ...base, review: { status: "none" } },
   );
@@ -287,7 +303,16 @@ it("recognizes exactly the daemon's instruction conflict messages", () => {
 });
 
 it("reads Factory state only for projects with project-factory members, with a stable result", async () => {
-  const state = { projectId: "member-project", roles: [] };
+  const state = {
+    schemaVersion: 1,
+    serverId: "host",
+    projectId: "member-project",
+    state: "on",
+    repository: "owner/repo",
+    reason: null,
+    roles: [],
+    workers: { workerProfileId: null, reviewerProfileId: null },
+  };
   fixture.invoke.mockResolvedValue(state);
   const supported = new Map([["host", true]]);
   const entries = new Map([

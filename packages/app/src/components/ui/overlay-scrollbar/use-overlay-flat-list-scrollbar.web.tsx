@@ -1,6 +1,6 @@
 import { useCallback, useState, type RefObject } from "react";
 import {
-  FlatList,
+  type FlatList,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,

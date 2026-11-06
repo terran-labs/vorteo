@@ -30,6 +30,8 @@ export interface QuotaWindowRow {
   limiting: boolean;
   /** The provider's own tone for the window, when it sends one. */
   tone: ProviderUsageTone | null;
+  /** Recorded used percent over time, oldest first; empty from daemons without history. */
+  history: { at: number; used: number }[];
 }
 
 export interface QuotaBalanceRow {
@@ -173,6 +175,10 @@ function windowRows(usage: ProviderUsage, now: number): QuotaWindowRow[] {
       separate: window.id === "code_review",
       limiting: false,
       tone: window.tone ?? null,
+      history: (window.history ?? []).flatMap((point) => {
+        const at = Date.parse(point.at);
+        return Number.isFinite(at) ? [{ at, used: point.usedPct }] : [];
+      }),
     };
   });
   const enforced = rows.filter((row) => !row.separate && row.remaining !== null);

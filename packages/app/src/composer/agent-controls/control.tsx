@@ -5,6 +5,7 @@ import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import type { AgentControlIcon } from "@/agent-controls/icons";
+import { hoverStyle } from "@/styles/hover";
 
 type AgentControlTriggerProps = Omit<
   ComponentProps<typeof ComboboxTrigger>,
@@ -47,10 +48,11 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     const resolvedIconColor = iconColor ?? styles.iconColor.color;
     const showValue = isSheet || showToolbarLabel;
     const triggerStyle = useCallback(
-      ({ pressed, hovered }: PressableStateCallbackType) => [
+      ({ pressed }: PressableStateCallbackType) => [
         isSheet ? styles.sheetRow : styles.toolbarControl,
         !isSheet && !showToolbarLabel && styles.toolbarIconOnly,
-        hovered && (isSheet ? styles.sheetRowInteractive : styles.hovered),
+        // CSS hover outranks the pressed and open fills, so leave it out while either shows.
+        !pressed && !open && !disabled && (isSheet ? styles.sheetRowHoverable : styles.hoverable),
         (pressed || open) && (isSheet ? styles.sheetRowInteractive : styles.pressed),
         disabled && styles.disabled,
       ],
@@ -133,6 +135,7 @@ const styles = StyleSheet.create((theme) => ({
   sheetRowInteractive: {
     backgroundColor: theme.colors.surface2,
   },
+  sheetRowHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   sheetGlyph: {
     width: 20,
     height: 20,
@@ -155,9 +158,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
   },
-  hovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  hoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   pressed: {
     backgroundColor: theme.colors.surface0,
   },

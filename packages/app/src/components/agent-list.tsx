@@ -4,13 +4,14 @@ import {
   Text,
   Pressable,
   RefreshControl,
-  FlatList,
   type ListRenderItem,
   type PressableStateCallbackType,
 } from "react-native";
+import { FlatList } from "@/components/ui/scroll-view";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { hoverStyle } from "@/styles/hover";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -203,10 +204,11 @@ function SessionRow({
   );
 
   const pressableStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
       isSelected && styles.rowSelected,
-      Boolean(hovered) && styles.rowHovered,
+      // CSS :hover outranks the pressed class, so drop it while pressed to keep press feedback.
+      !pressed && styles.rowHovered,
       pressed && styles.rowPressed,
     ],
     [isSelected],
@@ -636,9 +638,7 @@ const styles = StyleSheet.create((theme) => ({
   rowSelected: {
     backgroundColor: theme.colors.surface2,
   },
-  rowHovered: {
-    backgroundColor: theme.colors.surface1,
-  },
+  rowHovered: hoverStyle({ backgroundColor: theme.colors.surface1 }),
   rowPressed: {
     backgroundColor: theme.colors.surface2,
   },
