@@ -39,8 +39,14 @@ export class SettingsEnvironmentFake implements SettingsEnvironment {
 
   accountCreations: string[] = [];
   loseAccountReply = false;
+  rejectAccountSetup = false;
+  accountSetupAttempts = 0;
+  accountSetupGate: Promise<void> | null = null;
   async prepareProviderAccounts(definitions: readonly InstallationProvider[]) {
+    this.accountSetupAttempts += 1;
+    if (this.accountSetupGate) await this.accountSetupGate;
     if (this.offline) throw new Error("environment offline");
+    if (this.rejectAccountSetup) throw new Error("account binding unavailable");
     for (const definition of definitions) {
       const id = definition.bindings[this.serverId];
       if (!id || !definition.accountSetup || this.config.providers[id]) continue;

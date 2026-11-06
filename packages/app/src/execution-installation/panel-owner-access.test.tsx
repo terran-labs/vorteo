@@ -26,7 +26,7 @@ function fakePanel() {
       };
     },
     setPassword: vi.fn(),
-    clearPasswordDraft: vi.fn(),
+    clearPasswordDraft: vi.fn(() => publish({ error: null })),
     unlock: vi.fn(async () => {
       publish({ unlocked: true, error: null });
     }),
@@ -45,7 +45,8 @@ it("uses the same model for session restoration, unlock, lock and expiry", async
   expect(first.result.current.status).toBe("locked");
   await act(() => first.result.current.unlock("owner password"));
   expect(model.setPassword).toHaveBeenCalledWith("owner password");
-  expect(model.clearPasswordDraft).toHaveBeenCalledTimes(1);
+  expect(model.setPassword).toHaveBeenLastCalledWith("");
+  expect(model.clearPasswordDraft).not.toHaveBeenCalled();
   expect(second.result.current.status).toBe("unlocked");
   expect(first.result.current.passwordFile).toBe("/host/owner-password");
   await act(() => second.result.current.lock());
@@ -70,10 +71,25 @@ it("publishes failed password attempts and clears the model draft", async () => 
     publish({ error: "Incorrect password" });
   });
   const hook = renderHook(() => usePanelOwnerAccess({ model, installationPresent: true }));
-  await act(() => hook.result.current.unlock("wrong"));
+  await act(async () => {
+    await expect(hook.result.current.unlock("wrong")).rejects.toThrow("Incorrect password");
+  });
   expect(hook.result.current.status).toBe("locked");
   expect(hook.result.current.error).toBe("Incorrect password");
-  expect(model.clearPasswordDraft).toHaveBeenCalledTimes(1);
+  expect(model.setPassword).toHaveBeenLastCalledWith("");
+  expect(model.clearPasswordDraft).not.toHaveBeenCalled();
+});
+
+it("rejects a failed unlock even when the model has no error message", async () => {
+  const { model, publish } = fakePanel();
+  publish({ initialized: true });
+  model.unlock = vi.fn(async () => {});
+  const hook = renderHook(() => usePanelOwnerAccess({ model, installationPresent: true }));
+  await act(async () => {
+    await expect(hook.result.current.unlock("wrong")).rejects.toThrow("Wrong password");
+  });
+  expect(hook.result.current.status).toBe("locked");
+  expect(model.setPassword).toHaveBeenLastCalledWith("");
 });
 
 it("reports a refused Lock to its initiating control without broadcasting password errors to badges", async () => {

@@ -387,7 +387,14 @@ test("a pending upgrade names the Host agents holding the session host", async (
   });
   overview = { jobs: [], status: { supported: true, installed: true, detail } };
   try {
-    act(() => root.render(<InstallationControls key="holders" />));
+    act(() =>
+      root.render(
+        <>
+          <InstallationControls key="holders" />
+          <InstallationSystemDetails target="host" />
+        </>,
+      ),
+    );
     const model = await vi.waitFor(() => {
       expect(capture.model).toBeDefined();
       return capture.model!;

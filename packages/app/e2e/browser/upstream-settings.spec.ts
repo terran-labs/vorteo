@@ -1,4 +1,5 @@
 import { expect, test } from "../support/fixtures";
+import { revealSettingsLocation } from "../support/helpers/settings";
 import record from "../../src/vorton-updates/upstream-sync.json";
 import { UPSTREAM_UPDATE_PROMPT } from "../../src/vorton-updates/upstream";
 
@@ -21,9 +22,11 @@ for (const width of [1280, 390]) {
       );
     });
     await page.goto("/settings/about");
-    // About and upstream maintenance share System on the continuous page.
+    // About stays in General; upstream maintenance is under System Advanced.
     await expect(page).toHaveURL(/\/settings\/(system|about)$/);
     await expect(page.getByText("App version", { exact: true })).toBeVisible();
+    await revealSettingsLocation(page, "system.overview");
+    await page.getByTestId("system-advanced-toggle").click();
     const section = page.getByTestId("upstream-updates-section");
     await section.scrollIntoViewIfNeeded();
     await expect(page.getByTestId("upstream-merge-date")).toHaveText(
@@ -57,6 +60,11 @@ test("the weekly highlight expires while System is open without an alternate pro
   });
   // Open the owning section so virtual time does not gate its progressive mount.
   await page.goto("/settings/system");
+  await page.getByTestId("system-advanced-toggle").click();
+  await page
+    .getByTestId("system-updates-row")
+    .getByRole("button", { name: "Details", exact: true })
+    .click();
   await expect(page.getByTestId("upstream-updates-section")).toHaveCount(1);
   await expect(page.getByTestId("upstream-update-overdue")).toHaveCount(0);
   await page.clock.fastForward(120_000);

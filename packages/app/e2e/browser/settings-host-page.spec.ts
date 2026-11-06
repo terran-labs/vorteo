@@ -112,9 +112,10 @@ test.describe("Settings host page", () => {
     await openSettingsHost(page, outdatedDaemon.serverId);
     await openHostSection(page, outdatedDaemon.serverId, "host");
     // Host details keep removal and appearance, while System owns lifecycle actions.
-    await expect(page.getByTestId("host-page-update-button")).toHaveCount(0);
-    await expect(page.getByTestId("host-page-update-error")).toHaveCount(0);
-    await expect(page.getByTestId("host-page-restart-card")).toHaveCount(0);
+    const hostDetails = page.getByTestId(`settings-environment-${outdatedDaemon.serverId}`).first();
+    await expect(hostDetails.getByTestId("host-page-update-button")).toHaveCount(0);
+    await expect(hostDetails.getByTestId("host-page-update-error")).toHaveCount(0);
+    await expect(hostDetails.getByTestId("host-page-restart-card")).toHaveCount(0);
     await selectSettingsHost(page, outdatedDaemon.serverId);
     await revealSettingsLocation(page, "system.overview");
     const pane = page.getByTestId("system-pane").filter({ visible: true });

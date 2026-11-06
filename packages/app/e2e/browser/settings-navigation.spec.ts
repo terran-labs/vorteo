@@ -246,6 +246,7 @@ test.describe("Settings sidebar navigation", () => {
       "settings-section-general",
       "settings-section-providers",
       "settings-section-agents",
+      "settings-section-voice",
       "settings-section-environments",
       "settings-section-projects",
       "settings-section-system",

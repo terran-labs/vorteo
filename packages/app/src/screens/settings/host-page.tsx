@@ -151,6 +151,7 @@ function HostStatusBadges({ serverId }: { serverId: string }) {
 }
 
 function HostConnectionError({ serverId }: { serverId: string }) {
+  const { t } = useTranslation();
   const snapshot = useHostRuntimeSnapshot(serverId);
   const toast = useToast();
   useEffect(() => {
@@ -158,7 +159,13 @@ function HostConnectionError({ serverId }: { serverId: string }) {
       toast.error(toErrorMessage(snapshot?.lastError)),
     );
   }, [serverId, snapshot?.lastError, toast]);
-  return <SettingsStatusLine message={snapshot?.lastError} testID="host-connection-error" />;
+  const message = [
+    snapshot?.lastError,
+    snapshot?.authFailureReason ? t("settings.host.password.guidance") : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return <SettingsStatusLine message={message} testID="host-connection-error" />;
 }
 
 export function HostConnectionsPage({ serverId }: { serverId: string }) {
