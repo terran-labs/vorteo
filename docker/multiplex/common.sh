@@ -11,6 +11,10 @@ paseo_gate_mode() {
 
 paseo_compose() {
   local files
+  # Compose would create a missing bind source as root; the Host must own this folder, and
+  # Dev's daemon user must read it despite the callers' umask 077.
+  mkdir -p "$deployment/dev-releases"
+  chmod 0755 "$deployment/dev-releases"
   if paseo_gate_mode; then
     files=(-f "$deployment/compose.gate.yaml")
   else

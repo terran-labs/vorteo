@@ -5,7 +5,6 @@ import { expect, test, type Page } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
 import { openSettingsSection } from "../support/helpers/settings";
 import { release, serveChangelog } from "../support/helpers/changelog";
-import { openSidebarHelpMenu } from "../support/helpers/sidebar";
 
 const customReleases = parseChangelog(
   readFileSync(path.resolve(__dirname, "../../../../VORTEO_CHANGELOG.md"), "utf8"),
@@ -18,9 +17,6 @@ const GITHUB_ISSUE_DESTINATION =
   /^https:\/\/github\.com\/(?:getpaseo\/paseo\/issues\/new(?:\/choose)?(?:[/?#]|$)|login\?return_to=https%3A%2F%2Fgithub\.com%2Fgetpaseo%2Fpaseo%2Fissues%2Fnew$)/;
 const CHANGELOG_DESTINATION =
   /^https:\/\/github\.com\/terran-labs\/vorteo\/blob\/main\/VORTEO_CHANGELOG\.md(?:[?#]|$)/;
-// The name and the version are separate cells of a key/value row, so they meet with no space
-// between them in the row's text content.
-const APP_VERSION = /^Vorteo\s*v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 async function expectDiagnosticReport(page: Page): Promise<void> {
   const sheet = page.getByTestId("app-diagnostic-sheet");
@@ -47,33 +43,24 @@ async function expectExternalPage(
   await popup.close();
 }
 
-test("opens troubleshooting and support destinations", async ({ page }) => {
+// Help and support left the sidebar menu; its actions live in Settings, under About.
+test("opens troubleshooting and support destinations from Settings", async ({ page }) => {
   await gotoAppShell(page);
-  await expect(page.getByTestId("sidebar-footer-overflow").first()).toBeVisible();
+  await openSettings(page);
 
   await test.step("opens diagnostics and keyboard shortcuts", async () => {
-    await openSidebarHelpMenu(page);
-    await expect(page.getByText("Help", { exact: true })).toBeVisible();
-    await expect(page.getByText("Report an issue", { exact: true })).toBeVisible();
-    await expect(page.getByText("What's new", { exact: true })).toBeVisible();
-    await expect(page.getByTestId("sidebar-help-version")).toHaveText(APP_VERSION);
-
-    await page.getByTestId("sidebar-help-diagnostics").click();
+    await page.getByTestId("settings-help-diagnostics").click();
     await expectDiagnosticReport(page);
     await closeSheet(page, "app-diagnostic-sheet");
 
-    await openSidebarHelpMenu(page);
-    await page.getByTestId("sidebar-help-shortcuts").click();
+    await page.getByTestId("settings-help-shortcuts").click();
     await expect(page.getByTestId("keyboard-shortcuts-dialog")).toBeVisible();
     await closeSheet(page, "keyboard-shortcuts-dialog");
   });
 
   await test.step("opens support pages", async () => {
-    await openSidebarHelpMenu(page);
-    await expectExternalPage(page, "sidebar-help-discord", DISCORD_DESTINATION);
-
-    await openSidebarHelpMenu(page);
-    await expectExternalPage(page, "sidebar-help-github", GITHUB_ISSUE_DESTINATION);
+    await expectExternalPage(page, "settings-help-discord", DISCORD_DESTINATION);
+    await expectExternalPage(page, "settings-help-github", GITHUB_ISSUE_DESTINATION);
   });
 });
 
@@ -126,13 +113,13 @@ test("renders the changelog from Settings and links the Vorteo repository", asyn
   await closeSheet(page, "changelog-sheet");
 });
 
-test("searches keyboard shortcuts from the sidebar help menu", async ({ page }) => {
+test("searches keyboard shortcuts from Settings help", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
   });
   await gotoAppShell(page);
-  await openSidebarHelpMenu(page);
-  await page.getByTestId("sidebar-help-shortcuts").click();
+  await openSettings(page);
+  await page.getByTestId("settings-help-shortcuts").click();
 
   const dialog = page.getByTestId("keyboard-shortcuts-dialog");
   const search = page.getByPlaceholder("Search shortcuts");
@@ -171,19 +158,16 @@ test.describe("compact sidebar help", () => {
     await openCompactSidebar(page);
     await expectFingerSizedToolbarTargets(page);
     await tapMoreNearTargetEdge(page);
-    await page.getByTestId("sidebar-help-action").click();
-    await expect(page.getByTestId("sidebar-help-menu")).toBeVisible();
-    await page.getByTestId("sidebar-help-diagnostics").click();
-    await expectDiagnosticReport(page);
+    await expect(
+      page.locator('[data-testid="sidebar-display-grouping"]:visible').first(),
+    ).toBeVisible();
   });
 
   test("offers diagnostics without advertising disabled keyboard shortcuts", async ({ page }) => {
     await gotoAppShell(page);
-    await page.getByRole("button", { name: "Open menu", exact: true }).click();
-
-    await openSidebarHelpMenu(page);
-    await expect(page.getByTestId("sidebar-help-shortcuts")).toHaveCount(0);
-    await page.getByTestId("sidebar-help-diagnostics").click();
+    await openSettings(page);
+    await expect(page.getByTestId("settings-help-shortcuts")).toHaveCount(0);
+    await page.getByTestId("settings-help-diagnostics").click();
     await expectDiagnosticReport(page);
   });
 });

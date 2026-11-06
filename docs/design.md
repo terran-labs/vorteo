@@ -343,6 +343,7 @@ New status pills use `<StatusBadge>`. Identity, shortcut, and interactive link b
 - `fontWeight.medium` on row titles, body text, badge text, or `<SidebarCallout>` titles. Medium is reserved for the structural-label tier described in §3 — section labels, modal/sheet titles, dense metadata emphasis, and tight action labels. Anything else is `normal`. `<ScreenTitle>` is responsive `400/300` and is never overridden.
 - `<Pressable>` wrapping `<Text>` to make a button. `<Button>` exists.
 - Importing `Pressable` or a `Touchable*` outside `components/ui/`. A raw pressable has no standard press or hover feedback, so every one drifts. `paseo/no-raw-pressable` reports it; the files on its burn-down list in `.oxlintrc.json` may only leave it.
+- Importing a raw `ScrollView`, `FlatList`, `SectionList`, gorhom bottom-sheet scroller, or `Animated.ScrollView`. A raw scroller skips the scroll edge fade (§16). `paseo/no-raw-scroller` reports it; the files on its exemption list in `.oxlintrc.json` name their reason.
 - Bare `<Text>` for a section header inside settings. `<SettingsSection>` exists.
 - A muted paragraph between a section header and its card. Section-level explanation is the header's `info` tooltip (§7).
 - A "Settings" CTA on a detail page. Detail pages are settings; settings is reached from the sidebar, the host entry, or a row's kebab menu.
@@ -382,6 +383,14 @@ New status pills use `<StatusBadge>`. Identity, shortcut, and interactive link b
 | Trigger-anchored menu                               | `packages/app/src/components/ui/dropdown-menu.tsx` (used in `sidebar-workspace-list.tsx`, theme picker)                                                                                                                                                                                                  |
 | Right-click / long-press menu                       | `packages/app/src/components/ui/context-menu.tsx` (used in `sidebar-workspace-list.tsx`)                                                                                                                                                                                                                 |
 | Headers (back, screen, menu)                        | `packages/app/src/components/headers/back-header.tsx`, `screen-header.tsx`, `menu-header.tsx`                                                                                                                                                                                                            |
+
+## 16. Scroll edges
+
+Every scroll area fades its content at an edge that has more content past it, and only there. The fade grows with the distance scrolled, up to 24px, so a list at rest has a crisp top and a scroller that fits paints no fade at all. Content dissolves just inside the bounding rule; the rule itself and the scroller's background are never faded. The conversation uses the same mask at 64px. Horizontal strips (settings tabs, attachment strips, the compact project rail) fade sideways the same way.
+
+The fade is part of the shared scrollers: `ScrollView`, `FlatList`, `BottomSheetScrollView` and `BottomSheetFlatList` from `@/components/ui/scroll-view` apply it by default, so a new scroll area inherits it by using them. A plain DOM scroller uses `useElementEdgeFade` from `@/components/ui/scroll-edge-fade`. A sticky header inside a scroller carries `dataSet={SCROLL_EDGE_STICKY_DATASET}`, and the fade starts below it. `edgeFade={false}` is for code, diff and terminal surfaces, where a faded line hurts reading and selection; tool call output fades vertically but never sideways. The workspace tab rail draws its own `HorizontalScrollBoundaryShades`, which also work on native.
+
+The fade is a CSS mask, so it is web only. Native scrollers render unfaded.
 
 ## Brand icon
 

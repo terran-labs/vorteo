@@ -16,6 +16,7 @@ import { isNative, isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { syntaxTokenStyleFor } from "@/styles/syntax-token-styles";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
+import { hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import { highlightToKeyedLines, type KeyedLine } from "@/utils/highlight-cache";
 import {
   markdownCopyCodeBlockDataSet,
@@ -85,22 +86,16 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
   );
 
   const isCompact = useIsCompactFormFactor();
-  const [isHovered, setIsHovered] = useState(false);
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const controlsVisible = isHovered || isNative || isCompact;
+  // Desktop reveals the copy button with CSS hover on the block; touch and compact always show it.
+  const revealOnHover = !isNative && !isCompact;
+  const wrapperStyle = useMemo(() => [containerStyle, copyButtonStyles.group], [containerStyle]);
   // Copy the code without its trailing blank lines. A fence body ends in a newline,
   // and ends in more than one when the author left a blank line before the closing
   // fence; pasting any of them into a terminal runs the last line.
   const getCode = useCallback(() => code.replace(TRAILING_CODE_LINE_BREAKS, ""), [code]);
 
   return (
-    <View
-      style={containerStyle}
-      dataSet={copyDataSet}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-    >
+    <View style={wrapperStyle} dataSet={copyDataSet}>
       {keyedLines ? (
         <Text style={innerTextStyle} dataSet={markdownCopyDataSet.code}>
           {renderCodeSegments(keyedLines)}
@@ -110,7 +105,7 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
           {renderedCode}
         </Text>
       )}
-      <CopyButton getCode={getCode} visible={controlsVisible} />
+      <CopyButton getCode={getCode} revealOnHover={revealOnHover} />
     </View>
   );
 });
@@ -170,12 +165,13 @@ function splitFenceStyle(inheritedStyles: TextStyle, textStyle: TextStyle): Spli
 
 interface CopyButtonProps {
   getCode: () => string;
-  visible: boolean;
+  /** Keep the button invisible until the code block is hovered or focused. */
+  revealOnHover: boolean;
 }
 
 const COPIED_RESET_MS = 1500;
 
-const CopyButton = React.memo(function CopyButton({ getCode, visible }: CopyButtonProps) {
+const CopyButton = React.memo(function CopyButton({ getCode, revealOnHover }: CopyButtonProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -199,34 +195,23 @@ const CopyButton = React.memo(function CopyButton({ getCode, visible }: CopyButt
     }, COPIED_RESET_MS);
   }, [getCode]);
 
-  const visibilityStyle = visible
-    ? copyButtonStyles.containerVisible
-    : copyButtonStyles.containerHidden;
   const wrapperStyle = useMemo(
-    () => [copyButtonStyles.container, visibilityStyle],
-    [visibilityStyle],
+    () => [copyButtonStyles.container, revealOnHover && copyButtonStyles.containerReveal],
+    [revealOnHover],
   );
+  // On web the icon strokes with the button's CSS color, which brightens on browser :hover.
+  const iconColor = isWeb ? "currentColor" : copyButtonStyles.iconColor.color;
 
   return (
     <Pressable
       onPress={handlePress}
       style={wrapperStyle}
-      pointerEvents={visible ? "auto" : "none"}
       accessibilityRole="button"
       accessibilityLabel={copied ? t("message.actions.copied") : t("message.actions.copyCode")}
       hitSlop={8}
       dataSet={markdownCopyDataSet.ignore}
     >
-      {({ hovered }) => {
-        const iconColor = hovered
-          ? copyButtonStyles.iconHoveredColor.color
-          : copyButtonStyles.iconColor.color;
-        return copied ? (
-          <Check size={14} color={iconColor} />
-        ) : (
-          <Copy size={14} color={iconColor} />
-        );
-      }}
+      {copied ? <Check size={14} color={iconColor} /> : <Copy size={14} color={iconColor} />}
     </Pressable>
   );
 });
@@ -237,17 +222,11 @@ const copyButtonStyles = StyleSheet.create((theme) => ({
     top: theme.spacing[2],
     right: theme.spacing[2],
     padding: theme.spacing[1],
+    ...hoverStyle({ color: theme.colors.foreground }, { color: theme.colors.foregroundMuted }),
   },
-  containerVisible: {
-    opacity: 1,
-  },
-  containerHidden: {
-    opacity: 0,
-  },
+  containerReveal: revealOnGroupHover("code-block"),
+  group: hoverGroup("code-block"),
   iconColor: {
     color: theme.colors.foregroundMuted,
-  },
-  iconHoveredColor: {
-    color: theme.colors.foreground,
   },
 }));

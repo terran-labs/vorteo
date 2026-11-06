@@ -84,7 +84,11 @@ async function approveUpgrade(
   if (
     await ports.confirm({
       title: "Approve update?",
-      message: upgradeApprovalText(context.upgradeStatus?.container ?? true, afterWork),
+      message: upgradeApprovalText(
+        context.upgradeStatus?.container ?? true,
+        afterWork,
+        context.upgradeStatus?.upgrades,
+      ),
       confirmLabel: "Approve update",
       destructive: true,
     })

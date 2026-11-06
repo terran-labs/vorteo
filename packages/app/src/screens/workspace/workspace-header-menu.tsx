@@ -253,19 +253,9 @@ function WorkspaceHeaderActionsMenuLoaded({
 
 const workspaceMenuTarget = { minWidth: 40, minHeight: 40 };
 
-function workspaceHeaderMenuButtonStyle({
-  hovered,
-  pressed,
-  open,
-}: {
-  hovered: boolean;
-  pressed: boolean;
-  open: boolean;
-}) {
-  return [
-    iconButtonChromeStyle({ size: "large", state: { hovered, pressed, open } }),
-    workspaceMenuTarget,
-  ];
+/** The chrome's hover is CSS `:hover`, so only press and open state feed it. */
+function workspaceHeaderMenuButtonStyle({ pressed, open }: { pressed: boolean; open: boolean }) {
+  return [iconButtonChromeStyle({ size: "large", state: { pressed, open } }), workspaceMenuTarget];
 }
 
 /**

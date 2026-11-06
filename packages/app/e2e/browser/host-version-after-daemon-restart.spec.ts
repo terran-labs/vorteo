@@ -7,7 +7,6 @@ import {
   revealSettingsLocation,
   clickSettingsBackToWorkspace,
 } from "../support/helpers/settings";
-import { openSidebarHelpMenu } from "../support/helpers/sidebar";
 import { getServerId } from "../support/helpers/server-id";
 import {
   startRestartableHostDaemon,
@@ -78,12 +77,14 @@ test("System details show the restarted Host version without reloading", async (
   });
 });
 
+/** Host versions are listed in Settings, under Connected hosts; the help menu that showed them is gone. */
 async function readHelpHostVersion(page: Page, serverId: string): Promise<string> {
-  await openSidebarHelpMenu(page);
-  const row = page.getByTestId(`sidebar-help-host-version-${serverId}`);
+  await openSettings(page);
+  await revealSettingsLocation(page, "general.hosts");
+  const row = page.getByTestId(`settings-host-version-${serverId}`);
   await expect(row).toBeVisible();
   const text = await row.innerText();
-  await page.keyboard.press("Escape");
+  await clickSettingsBackToWorkspace(page);
   return text;
 }
 

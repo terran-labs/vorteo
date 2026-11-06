@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { ExecutionInstallation, RestartJob } from "@getpaseo/protocol/execution-installation";
 import type { InstallationClient } from "@/execution-installation/client";
+import type { InstallationUpgrade } from "@getpaseo/protocol/installation-upgrades";
 import { InstallationPanelModel } from "@/execution-installation/panel-model";
 import {
   executeSystemAction,
@@ -108,13 +109,27 @@ it("keeps release approvals after current work when the installation has an upda
     steps: [],
   };
   context.upgrades = [upgrade];
+  const previous: InstallationUpgrade = {
+    ...upgrade,
+    id: "previous",
+    status: "succeeded",
+    steps: [
+      {
+        name: "host",
+        status: "succeeded",
+        startedAt: "2026-11-04T00:00:00Z",
+        finishedAt: "2026-11-04T00:08:00Z",
+        detail: "Host ready",
+      },
+    ],
+  };
   context.upgradeStatus = {
     available: true,
     container: true,
     detail: "",
     repository: "owner/repo",
     current: null,
-    upgrades: [upgrade],
+    upgrades: [upgrade, previous],
     policy: { mode: "manual", channel: "beta" },
   };
   await executeSystemAction(
@@ -123,6 +138,11 @@ it("keeps release approvals after current work when the installation has an upda
     ports,
   );
   expect(ports.upgrade).toHaveBeenCalledWith(upgrade, "approve-after-work");
+  expect(ports.confirm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: expect.stringContaining("The last upgrade here took about 8 minutes"),
+    }),
+  );
 });
 it("approves the exact recovery plan when Dev cannot finish turns", async () => {
   const { context, ports } = fixture();

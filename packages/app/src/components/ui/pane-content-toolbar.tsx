@@ -204,7 +204,8 @@ export function paneContentToolbarTrailingPadding(
 
 /** @deprecated Use `ToolbarButton`; retained while remaining pane toolbars migrate. */
 export function paneContentToolbarIconButtonStyle(
-  { hovered, pressed }: { hovered?: boolean; pressed: boolean },
+  // `hovered` is accepted for existing callers and ignored: the chrome hover is CSS `:hover`.
+  { pressed }: { hovered?: boolean; pressed: boolean },
   selected = false,
   isCompact = false,
 ) {
@@ -212,7 +213,7 @@ export function paneContentToolbarIconButtonStyle(
     iconButtonChromeStyle({
       size: "small",
       compact: isCompact,
-      state: { hovered, pressed, active: selected },
+      state: { pressed, active: selected },
     }),
   ];
 }

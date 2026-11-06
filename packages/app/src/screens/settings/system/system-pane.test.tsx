@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   jobs: [] as { id: string; target: string; status: string; createdAt: string }[],
 }));
 vi.mock("../service-access-section", () => ({ ServiceAccessSection: () => null }));
+vi.mock("@/components/ui/scroll-view", () => ({
+  ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
 vi.mock("./use-system-adapter", () => ({
   useSystemAdapter: () => ({
     hostId: "host",
@@ -170,19 +173,20 @@ it("opens the linked Dev restart review and moves its completed receipt to Dev D
   expect(screen.getByText("Service queue and requests: container-daemon linked-dev")).toBeTruthy();
 });
 
-it.each(["system.overview.customDomain", "system.overview.domain"])(
-  "reveals Advanced for %s search without reopening it on a poll",
-  (focusedSettingId) => {
-    const { rerender } = render(
-      <SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />,
-    );
-    expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
-    expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
-    mocks.status = "updating";
-    rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />);
-    expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
-    rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={2} />);
-    expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
-  },
-);
+it.each([
+  "system.overview.customDomain",
+  "system.overview.domain",
+  "maintenance.installation.deliveryMode",
+])("reveals Advanced for %s search without reopening it on a poll", (focusedSettingId) => {
+  const { rerender } = render(
+    <SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />,
+  );
+  expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+  expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
+  mocks.status = "updating";
+  rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={1} />);
+  expect(screen.queryByText("Automatic updates and restarts")).toBeNull();
+  rerender(<SystemPane focusedSettingId={focusedSettingId} focusRequestNonce={2} />);
+  expect(screen.getByText("Automatic updates and restarts")).toBeTruthy();
+});

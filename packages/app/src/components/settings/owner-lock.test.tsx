@@ -45,6 +45,13 @@ vi.mock("@/execution-installation/panel", () => ({
   PasswordFileHint: ({ passwordFile }: { passwordFile: string }) => <span>{passwordFile}</span>,
 }));
 const installationMode = vi.hoisted(() => ({ active: false }));
+const installationTypeRow = vi.hoisted(() => vi.fn());
+vi.mock("@/screens/settings/general/installation-type-section", () => ({
+  InstallationTypeRow: () => {
+    installationTypeRow();
+    return <span>Installation type</span>;
+  },
+}));
 vi.mock("@/execution-installation/policy", () => ({
   readExecutionInstallation: () => (installationMode.active ? {} : null),
 }));
@@ -96,6 +103,7 @@ afterEach(() => {
   cleanup();
   windowDimensions.fontScale = 1;
   installationMode.active = false;
+  installationTypeRow.mockClear();
 });
 function access(status: OwnerAccess["status"]): OwnerAccess {
   return {
@@ -255,8 +263,12 @@ describe("owner access controls", () => {
     const result = render(wrap(access("locked"), <InstallationNameSection />));
     expect(screen.getByText("Installation name: Lab · Locked")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByText("Installation type")).toBeNull();
+    expect(installationTypeRow).not.toHaveBeenCalled();
     result.rerender(wrap(access("unlocked"), <InstallationNameSection />));
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(screen.getByText("Installation type")).toBeTruthy();
+    expect(installationTypeRow).toHaveBeenCalledTimes(1);
   });
   it("keeps unrelated host controls available without installation owner access", () => {
     render(

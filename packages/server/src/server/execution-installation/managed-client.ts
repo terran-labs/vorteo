@@ -1,6 +1,7 @@
 import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { installationClientOriginAllowed } from "./client-origin.js";
 
 const PairedClientSchema = z.object({
   kind: z.literal("container-agent"),
@@ -17,6 +18,8 @@ interface ManagedClientInput {
   platform: NodeJS.Platform;
   homeDir: string;
   uid: number | undefined;
+  /** The worker's environment; `PASEO_NETWORK_MODE` decides whether the gate route applies. */
+  env: NodeJS.ProcessEnv;
 }
 
 /** Older managed supervisors did not inherit the client installed by pairing. */
@@ -39,14 +42,7 @@ export function resolveManagedInstallationClient(input: ManagedClientInput): str
     if (!stat.isFile() || stat.uid !== input.uid || (stat.mode & 0o077) !== 0 || stat.size > 65536)
       throw new Error("Invalid paired client file");
     const config = PairedClientSchema.parse(JSON.parse(readFileSync(descriptor, "utf8")));
-    const origin = new URL(config.origin);
-    const loopback = origin.hostname === "localhost" || origin.hostname === "127.0.0.1";
-    // A gate-mode Dev reaches a local-only coordinator through the gate's named route.
-    const gateRoute =
-      origin.hostname === "host.docker.internal" && process.env.PASEO_NETWORK_MODE === "gate";
-    const secureTransport =
-      origin.protocol === "https:" || (origin.protocol === "http:" && (loopback || gateRoute));
-    if (origin.origin !== config.origin || !secureTransport)
+    if (!installationClientOriginAllowed(config.origin, config.kind, input.env))
       throw new Error("Invalid paired client origin");
     return file;
   } catch {

@@ -2,10 +2,8 @@ import { createContext, useCallback, useContext, useMemo, useReducer, useState }
 import { useTranslation } from "react-i18next";
 import { ProviderResetControl } from "@/provider-usage/reset-control";
 import {
-  FlatList,
   Platform,
   Pressable,
-  ScrollView,
   Text,
   View,
   type AccessibilityActionEvent,
@@ -15,11 +13,14 @@ import {
   type ViewStyle,
 } from "react-native";
 import {
+  FlatList,
   FlatList as SheetFlatList,
+  ScrollView,
   ScrollView as SheetScrollView,
 } from "@/components/ui/scroll-view";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { hoverGroup, hoverStyle, revealOnGroupHover } from "@/styles/hover";
 import {
   AlertTriangle,
   Check,
@@ -242,10 +243,11 @@ function HeaderSettingsIcon({ disabled }: { disabled: boolean }) {
   return <ThemedSettings size={ICON_SIZE.sm} uniProps={uniProps} />;
 }
 
-function iconButtonStyle({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) {
+function iconButtonStyle({ pressed }: PressableStateCallbackType) {
   return [
     styles.rowIconButton,
-    Boolean(hovered) && styles.rowIconButtonHovered,
+    // CSS :hover outranks the pressed class, so drop it while pressed.
+    !pressed && styles.rowIconButtonHovered,
     pressed && styles.rowIconButtonPressed,
   ];
 }
@@ -567,10 +569,10 @@ function ModelBrowserRow({
   testID?: string;
 }) {
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.browserRow,
       spacing === "model" && styles.browserModelRow,
-      Boolean(hovered) &&
+      !pressed &&
         (tone === "elevated" ? styles.browserRowHoveredElevated : styles.browserRowHovered),
       pressed && (tone === "default" ? styles.browserRowPressed : styles.browserRowPressedElevated),
     ],
@@ -632,29 +634,28 @@ function ModelBrowserRow({
   );
 }
 
+/** Revealed while its model row's hover group is hovered or focused; always shown on touch layouts. */
 function ModelRowProfileAction({
-  hovered,
   onPress,
   label,
   testID,
   children,
 }: {
-  hovered: boolean;
   onPress: () => void;
   label: string;
   testID: string;
   children: React.ReactNode;
 }) {
   const isCompact = useIsCompactFormFactor();
-  const visible = hovered || isNative || isCompact;
+  const reveal = !isNative && !isCompact;
   const pressableStyle = useCallback(
-    ({ hovered: buttonHovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.rowIconButton,
-      Boolean(buttonHovered) && styles.rowIconButtonHovered,
+      !pressed && styles.rowIconButtonHovered,
       pressed && styles.rowIconButtonPressed,
-      !visible && styles.profileActionHidden,
+      reveal && styles.profileActionReveal,
     ],
-    [visible],
+    [reveal],
   );
   return (
     <Tooltip delayDuration={250} enabledOnDesktop enabledOnMobile={false}>
@@ -663,7 +664,6 @@ function ModelRowProfileAction({
           onPress={onPress}
           hitSlop={8}
           style={pressableStyle}
-          pointerEvents={visible ? "auto" : "none"}
           accessibilityRole="button"
           accessibilityLabel={label}
           testID={testID}
@@ -700,7 +700,6 @@ function ModelRow({
   onEditProfiles?: () => void;
 }) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
   const leadingSlot = useMemo(
     () => <ModelProviderGlyph provider={row.provider} serverId={serverId} size={ICON_SIZE.sm} />,
     [row.provider, serverId],
@@ -725,9 +724,6 @@ function ModelRow({
     onEditProfiles?.();
   }, [onEditProfiles]);
 
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-
   const profileAction = useMemo(() => {
     if (row.modelId.length === 0) {
       return null;
@@ -738,7 +734,6 @@ function ModelRow({
       }
       return (
         <ModelRowProfileAction
-          hovered={isHovered}
           onPress={handleCreateProfile}
           label={t("modelSelector.createProfileFromModel")}
           testID={`model-create-profile-${row.provider}-${row.modelId}`}
@@ -753,7 +748,6 @@ function ModelRow({
       }
       return (
         <ModelRowProfileAction
-          hovered={isHovered}
           onPress={handleEditProfile}
           label={t("modelSelector.editProfileLabel", { name: primary.name })}
           testID={`model-edit-profile-${row.provider}-${row.modelId}`}
@@ -767,7 +761,6 @@ function ModelRow({
     }
     return (
       <ModelRowProfileAction
-        hovered={isHovered}
         onPress={handleEditProfiles}
         label={t("modelSelector.editProfilesCount", {
           count: profiledRows.length,
@@ -781,7 +774,6 @@ function ModelRow({
     handleCreateProfile,
     handleEditProfile,
     handleEditProfiles,
-    isHovered,
     onCreateProfile,
     onEditProfile,
     onEditProfiles,
@@ -793,20 +785,16 @@ function ModelRow({
   ]);
 
   const pressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.browserRow,
-      Boolean(hovered) && styles.browserRowHovered,
+      !pressed && styles.browserRowHovered,
       pressed && styles.browserRowPressed,
     ],
     [],
   );
 
   return (
-    <View
-      style={[styles.modelRowHoverBoundary, styles.browserModelRow]}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-    >
+    <View style={[styles.modelRowHoverBoundary, styles.browserModelRow]}>
       <ModelBrowserPressable
         onPress={onPress}
         style={pressableStyle}
@@ -1468,7 +1456,9 @@ function ModelBrowserContent({
   const { t } = useTranslation();
   const normalizedQuery = useMemo(() => normalizeSearchQuery(searchQuery), [searchQuery]);
 
-  const { view: providerUsageView } = useProviderUsage(serverId, { enabled: true });
+  const { view: providerUsageView } = useProviderUsage(serverId, {
+    enabled: true,
+  });
   const usageByProviderId = useMemo<ReadonlyMap<string, ProviderUsage>>(
     () =>
       new Map(
@@ -1694,6 +1684,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   modelRowHoverBoundary: {
     position: "relative",
+    ...hoverGroup("model-row"),
   },
   modelRowProfileActionSlot: {
     position: "absolute",
@@ -1703,12 +1694,10 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
   browserModelRow: isWeb ? {} : { marginBottom: theme.spacing[1] },
-  browserRowHovered: {
-    backgroundColor: theme.colors.surface1,
-  },
-  browserRowHoveredElevated: {
+  browserRowHovered: hoverStyle({ backgroundColor: theme.colors.surface1 }),
+  browserRowHoveredElevated: hoverStyle({
     backgroundColor: theme.colors.surface2,
-  },
+  }),
   browserRowPressed: {
     backgroundColor: theme.colors.surface1,
   },
@@ -1796,15 +1785,11 @@ const styles = StyleSheet.create((theme) => ({
   rowSpinner: {
     transform: [{ scale: 0.7 }],
   },
-  rowIconButtonHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  rowIconButtonHovered: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   rowIconButtonPressed: {
     backgroundColor: theme.colors.surface1,
   },
-  profileActionHidden: {
-    opacity: 0,
-  },
+  profileActionReveal: revealOnGroupHover("model-row"),
   emptyState: {
     padding: theme.spacing[4],
     alignItems: "center",

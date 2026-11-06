@@ -19,6 +19,11 @@ const SRC = path.resolve(__dirname, "..");
  * these files, so a new row without a catalog entry fails here.
  */
 const PANE_SOURCES: Record<string, readonly string[]> = {
+  "general.installation": [
+    "screens/settings/general/installation-name-section.tsx",
+    "screens/settings/general/installation-type-section.tsx",
+  ],
+  "general.about": ["screens/settings/general/help-section.tsx"],
   "workspaces.newWorkspace": ["screens/settings/general/workspace-defaults-section.tsx"],
   "chat.sending": ["screens/settings/general/sending-section.tsx"],
   "general.notifications": ["desktop/components/desktop-notifications-section.tsx"],
@@ -78,6 +83,16 @@ function rowLabels(source: string): string[] {
 }
 
 describe("settings catalog", () => {
+  it("indexes installation identity, Help and delivery mode in their rendered panes", () => {
+    const pane = (id: string) => SETTINGS_ENTRIES.find((entry) => entry.id === id)?.pane;
+    expect(pane("general.installation.name")).toBe("general.installation");
+    expect(pane("general.installation.type")).toBe("general.installation");
+    expect(pane("general.help.diagnostics")).toBe("general.about");
+    expect(pane("general.help.shortcuts")).toBe("general.about");
+    expect(pane("general.help.discord")).toBe("general.about");
+    expect(pane("general.help.github")).toBe("general.about");
+    expect(pane("maintenance.installation.deliveryMode")).toBe("system.overview");
+  });
   it("lists every section once, in order", () => {
     expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual([...SETTINGS_SECTION_IDS]);
   });

@@ -1,6 +1,7 @@
 import { ServiceAccessSection } from "../service-access-section";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import { useHosts, useHostRuntimeSnapshot } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
@@ -231,7 +232,8 @@ export function SystemPane({
     // Search must reveal the indexed row, while polls must respect manual collapse.
     if (
       focusedSettingId === "system.overview.customDomain" ||
-      focusedSettingId === "system.overview.domain"
+      focusedSettingId === "system.overview.domain" ||
+      focusedSettingId === "maintenance.installation.deliveryMode"
     )
       setAdvanced(true);
   }, [focusedSettingId, focusRequestNonce]);

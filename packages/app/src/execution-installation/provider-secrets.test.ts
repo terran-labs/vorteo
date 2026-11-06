@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProviderSecretsStatus } from "@getpaseo/protocol/provider-secrets";
-import { describeSecretDelivery } from "./provider-secrets";
+import { describeSecretDelivery, requestProviderSecrets } from "./provider-secrets";
 
 const saved = {
   name: "ZAI_API_KEY",
@@ -52,4 +52,28 @@ describe("describeSecretDelivery", () => {
       ),
     ).toBe("Different ZAI_API_KEY values found. Set the key once to use it everywhere.");
   });
+});
+
+it("reports unresolved adoption conflicts even when no key could be adopted", () => {
+  expect(
+    describeSecretDelivery(
+      status({ secrets: [], conflicts: [{ name: "apiKey", serverIds: ["host", "dev"] }] }),
+    ),
+  ).toContain("Different apiKey values found");
+});
+
+it("asks for a coordinator update when an older API rejects a speech request", async () => {
+  vi.stubGlobal("fetch", async () =>
+    Response.json(
+      { error: "Enter a key name ending in _KEY, _TOKEN, _SECRET or _PASSWORD" },
+      { status: 400 },
+    ),
+  );
+  try {
+    await expect(requestProviderSecrets("set", { kind: "speech", sites: [] })).rejects.toThrow(
+      "Update the coordinator to share Voice keys",
+    );
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

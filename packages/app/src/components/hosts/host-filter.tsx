@@ -3,6 +3,7 @@ import { Pressable, Text, View, type PressableStateCallbackType } from "react-na
 import { ChevronDown, Server } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
+import { hoverStyle } from "@/styles/hover";
 import {
   ALL_HOSTS_OPTION_ID,
   getHostPickerLabel,
@@ -52,10 +53,10 @@ export function HostFilter({
   const handleFilterOpen = useCallback(() => setIsFilterOpen(true), []);
 
   const filterTriggerStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    // CSS :hover outranks the base class, so the hover rule steps aside while pressed.
+    ({ pressed }: PressableStateCallbackType) => [
       styles.filterTrigger,
-      Boolean(hovered) && styles.filterTriggerHovered,
-      pressed && styles.filterTriggerPressed,
+      pressed ? styles.filterTriggerPressed : styles.filterTriggerHoverable,
     ],
     [],
   );
@@ -113,9 +114,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
   },
-  filterTriggerHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
+  filterTriggerHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
   filterTriggerPressed: {
     backgroundColor: theme.colors.surface3,
   },

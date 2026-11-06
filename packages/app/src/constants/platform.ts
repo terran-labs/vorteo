@@ -14,9 +14,9 @@ import { isElectronRuntime, isElectronRuntimeMac } from "@/desktop/host";
 //   isElectron → Desktop wrapper features (file dialogs, titlebar, updates)
 //
 // For layout decisions, use useIsCompactFormFactor() from constants/layout.ts.
-// For hover-tracking, see docs/hover.md — the short answer is `onPointerEnter`/
-// `onPointerLeave` on a plain `View`, with any press behavior on a separate
-// inner `Pressable`. No platform gate needed.
+// For hover, see docs/hover.md. Visual hover uses the CSS helpers in
+// styles/hover.ts. Behavioral hover uses `onPointerEnter`/`onPointerLeave` on a
+// plain `View`, with press on a separate inner `Pressable`. No platform gate needed.
 // ---------------------------------------------------------------------------
 
 /** Browser or Electron — the JS runtime has access to the DOM. */

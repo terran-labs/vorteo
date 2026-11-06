@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, View, type PressableStateCallbackType, type ViewStyle } from "react-native";
+import { Pressable, View, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { WEB_SCROLLBAR_RESTING_OPACITY, WEB_SCROLLBAR_SIZE_PX } from "@/styles/web-scrollbar";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { groupHoverStyle, hoverGroup } from "@/styles/hover";
 import { computeOverlayScrollbarGeometry, scrollOffsetFromThumbDrag } from "./geometry";
 
 const THUMB_WIDTH = WEB_SCROLLBAR_SIZE_PX - 4;
 const GRAB_WIDTH = 12;
+const GRAB_HOVER_GROUP = "scrollbar-grab";
 
 export interface OverlayScrollbarMetrics {
   offset: number;
@@ -111,13 +113,12 @@ export function OverlayScrollbar({
         {...({ onPointerDown: startDrag } as object)}
         testID="workspace-overlay-scrollbar-grab"
       >
-        {({ hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => (
-          <View
-            style={[styles.thumb, hovered || isDragging ? styles.thumbHovered : null]}
-            pointerEvents="none"
-            testID="workspace-overlay-scrollbar-thumb"
-          />
-        )}
+        {/* The grab region's CSS hover brightens the thumb; dragging keeps it bright in JS. */}
+        <View
+          style={[styles.thumb, isDragging ? styles.thumbHovered : styles.thumbHoverable]}
+          pointerEvents="none"
+          testID="workspace-overlay-scrollbar-thumb"
+        />
       </Pressable>
     </View>
   );
@@ -141,6 +142,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     touchAction: "none",
     userSelect: "none",
+    ...hoverGroup(GRAB_HOVER_GROUP),
   },
   thumb: {
     width: THUMB_WIDTH,
@@ -153,4 +155,8 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.foregroundMuted,
     opacity: 1,
   },
+  thumbHoverable: groupHoverStyle(GRAB_HOVER_GROUP, {
+    backgroundColor: theme.colors.foregroundMuted,
+    opacity: 1,
+  }),
 }));
