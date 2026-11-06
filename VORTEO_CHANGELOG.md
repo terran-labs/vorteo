@@ -2,10 +2,6 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## Unreleased - 2026-11-05
-
-- A gate-mode Dev can read shared settings and launch installation profiles through its gate route. Settings and profile admission now accept `http://host.docker.internal:<listenPort>` only from a container client in gate mode, using the same rule as the managed Dev client; every other plain-HTTP origin outside Host loopback is still refused.
-
 ## Unreleased - 2026-11-06
 
 ### Fixes
