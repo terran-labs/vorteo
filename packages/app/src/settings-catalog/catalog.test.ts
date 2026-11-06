@@ -33,6 +33,7 @@ const PANE_SOURCES: Record<string, readonly string[]> = {
   "agents.metadata": ["screens/settings/metadata-generation-page.tsx"],
   "agents.browserData": ["desktop/browser/settings/browser-data-section.tsx"],
   "maintenance.installation": ["execution-installation/panel.tsx"],
+  "system.overview": ["execution-installation/panel.tsx"],
 };
 
 /** Labels in pane sources that are not settings rows: dialogs, form fields and states. */
@@ -130,18 +131,22 @@ describe("settings catalog", () => {
   it("has an entry for every row label a pane renders", () => {
     const missing: string[] = [];
     let scanned = 0;
+    // A shared module can export bodies for several panes. Every row must still be indexed
+    // by a pane that actually renders that module, including System's Advanced controls.
+    const sourcePanes = new Map<string, string[]>();
     for (const [paneId, files] of Object.entries(PANE_SOURCES)) {
-      const entries = SETTINGS_ENTRIES.filter((entry) => entry.pane === paneId);
+      for (const file of files) sourcePanes.set(file, [...(sourcePanes.get(file) ?? []), paneId]);
+    }
+    for (const [file, paneIds] of sourcePanes) {
+      const entries = SETTINGS_ENTRIES.filter((entry) => paneIds.includes(entry.pane));
       const known = new Set(entries.flatMap((entry) => [entry.label, entry.labelKey ?? ""]));
-      for (const file of files) {
-        const source = readFileSync(path.join(SRC, file), "utf8");
-        for (const label of rowLabels(source)) {
-          scanned += 1;
-          if (NOT_ROWS.has(label) || known.has(label)) continue;
-          const translated = lookup(label);
-          if (translated && known.has(translated)) continue;
-          missing.push(`${paneId}: ${label}`);
-        }
+      const source = readFileSync(path.join(SRC, file), "utf8");
+      for (const label of rowLabels(source)) {
+        scanned += 1;
+        if (NOT_ROWS.has(label) || known.has(label)) continue;
+        const translated = lookup(label);
+        if (translated && known.has(translated)) continue;
+        missing.push(`${paneIds.join(", ")}: ${label}`);
       }
     }
     expect(missing).toEqual([]);

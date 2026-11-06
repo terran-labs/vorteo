@@ -195,7 +195,14 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
     label: "Language",
   },
   { id: "chat.chat", section: "interface", label: "Chat", legacySlugs: ["chat.chat", "chat"] },
-  { id: "chat.sending", legacySlugs: ["chat.sending"], section: "interface", label: "Sending" },
+  {
+    id: "chat.sending",
+    legacySlugs: ["chat.sending"],
+    section: "interface",
+    label: "Sending",
+    hardwareKeyboardOnly: true,
+    webOnly: true,
+  },
   {
     id: "chat.files",
     section: "interface",
@@ -728,6 +735,8 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   {
     id: "chat.sending.shortcut",
     pane: "chat.sending",
+    hardwareKeyboardOnly: true,
+    webOnly: true,
     label: "Send shortcut",
     labelKey: "settings.general.sendShortcut.label",
     keywords: ["enter", "command", "control", "keyboard"],
@@ -765,14 +774,7 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
     keywords: ["jump between prompts", "navigation"],
     scope: device,
   },
-  {
-    id: "chat.sending.defaultSend",
-    pane: "chat.sending",
-    label: "Default send",
-    labelKey: "settings.general.defaultSend.label",
-    keywords: ["enter", "steer", "queue", "interrupt", "submit"],
-    scope: device,
-  },
+
   {
     id: "chat.openLocation.destinations",
     pane: "chat.openLocation",
@@ -1018,6 +1020,22 @@ export const SETTINGS_ENTRIES: readonly SettingsEntryDefinition[] = [
   },
 
   // Maintenance
+  {
+    id: "system.overview.customDomain",
+    pane: "system.overview",
+    label: "Custom domain",
+    keywords: ["advanced", "https", "dns", "tls", "installation address"],
+    requiresInstallation: true,
+    scope: installation,
+  },
+  {
+    id: "system.overview.domain",
+    pane: "system.overview",
+    label: "Domain",
+    keywords: ["custom domain", "advanced", "https", "installation address"],
+    requiresInstallation: true,
+    scope: installation,
+  },
   {
     id: "system.overview.resumeOnStartup",
     pane: "system.overview",

@@ -493,6 +493,7 @@ test("owner maintenance queue shows cancellation failures and cancels the exact 
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
   await page.getByTestId("installation-unlock").click();
+  await openSystemDetails(page, "Host");
   const queue = page.getByTestId("maintenance-request-queue");
   const row = page.getByTestId(`maintenance-request-${id}`);
   await expect(queue).toBeVisible();
@@ -567,8 +568,11 @@ test("welcome signs in with the owner password and restores both environments", 
   await expect(form.getByText("Find your password", { exact: true })).toBeVisible();
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   const copyCommand = form.getByTestId("installation-password-copy-command");
-  await form.getByTestId("installation-password-command").click();
-  await expect(page.getByTestId("installation-command-copied")).toContainText("Command copied");
+  // Observe transient feedback while the click is handled, before it can dismiss itself.
+  await Promise.all([
+    expect(page.getByTestId("installation-command-copied")).toContainText("Command copied"),
+    form.getByTestId("installation-password-command").click(),
+  ]);
   await expect(copyCommand).toHaveAccessibleName("Copy command");
   await expect(form.getByTestId("installation-password-command")).toHaveText(
     `pbcopy < '${path.join(root, "owner-password")}'`,

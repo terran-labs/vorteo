@@ -164,11 +164,17 @@ export async function scrollSettingsDetailDown(page: Page): Promise<number> {
   await expect
     .poll(() => scrollBody.evaluate((node) => node.scrollHeight - node.clientHeight))
     .toBeGreaterThan(0);
+  const before = await scrollBody.evaluate((node) => ({
+    top: node.scrollTop,
+    maximum: node.scrollHeight - node.clientHeight,
+  }));
+  const target = Math.min(before.top + 1000, before.maximum);
+  expect(target).toBeGreaterThan(before.top);
   await scrollBody.hover();
   await page.mouse.wheel(0, 1000);
-  await expect.poll(() => scrollBody.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
-  const offset = await scrollBody.evaluate((node) => node.scrollTop);
-  return offset;
+  // Continuous Settings already has a positive offset before the wheel event arrives.
+  await expect.poll(() => scrollBody.evaluate((node) => node.scrollTop)).toBe(target);
+  return target;
 }
 
 export async function expectSettingsDetailScrollOffset(page: Page, offset: number): Promise<void> {
