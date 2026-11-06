@@ -2,12 +2,6 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## Unreleased - 2026-11-05
-
-### Added
-
-- Installation controls offer to update the installation coordinator when it runs an older release than the Host, as happens after Host source updates on an installation that follows `main`. The owner approves the exact Host release; the coordinator restarts on it and rolls back automatically if it does not answer within two minutes. Agents keep running.
-
 ## Unreleased - 2026-11-06
 
 ### Fixes
