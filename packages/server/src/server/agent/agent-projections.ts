@@ -111,6 +111,7 @@ export function toStoredAgentRecord(
     features: normalizeFeatures(agent.features),
     persistence,
     lastError: agent.lastError ?? undefined,
+    ...(agent.lastUsage ? { lastUsage: storedUsage(agent.lastUsage) } : {}),
     requiresAttention: agent.attention.requiresAttention,
     attentionReason: agent.attention.requiresAttention ? agent.attention.attentionReason : null,
     attentionTimestamp: agent.attention.requiresAttention
@@ -123,11 +124,12 @@ export function toStoredAgentRecord(
 
 function projectLaunchMetadata(
   config: StoredAgentRecord["config"],
-): Pick<AgentSnapshotPayload, "profile" | "quotaPausedAt" | "usageLimitHold"> {
+): Pick<AgentSnapshotPayload, "profile" | "quotaPausedAt" | "usageLimitHold" | "toolAccess"> {
   const profile = config?.profileLaunch?.profile;
   const quota = {
     ...(config?.quotaPausedAt ? { quotaPausedAt: config.quotaPausedAt } : {}),
     ...(config?.usageLimitHold ? { usageLimitHold: config.usageLimitHold } : {}),
+    ...(config?.toolAccess === "none" ? { toolAccess: "none" as const } : {}),
   };
   if (!profile) return quota;
   const modelChanged = Boolean(profile.model && profile.model !== config?.model);
@@ -316,6 +318,7 @@ export function buildStoredAgentPayload(
     ...(record.internal ? { internal: true } : {}),
     labels: normalizeLabels(record.labels),
     ...(typeof record.lastError === "string" ? { lastError: record.lastError } : {}),
+    ...storedUsagePayload(record.lastUsage),
     ...(providerAvailable ? {} : { providerUnavailable: true }),
   };
 }
@@ -450,6 +453,15 @@ function buildSerializableConfig(config: AgentSessionConfig): SerializableAgentC
   if (config.systemPrompt) {
     serializable.systemPrompt = config.systemPrompt;
   }
+  copyLaunchState(config, serializable);
+  if (config.mcpServers) {
+    serializable.mcpServers = config.mcpServers;
+  }
+  return Object.keys(serializable).length ? serializable : null;
+}
+
+/** Launch and quota state set by the daemon rather than by the agent's provider settings. */
+function copyLaunchState(config: AgentSessionConfig, serializable: SerializableAgentConfig): void {
   if (config.profileLaunch) serializable.profileLaunch = config.profileLaunch;
   if (config.skillSnapshot) serializable.skillSnapshot = config.skillSnapshot;
   if (config.controllerExecutionId)
@@ -458,10 +470,7 @@ function buildSerializableConfig(config: AgentSessionConfig): SerializableAgentC
   if (config.quotaResetAt) serializable.quotaResetAt = config.quotaResetAt;
   if (config.usageLimitHold) serializable.usageLimitHold = config.usageLimitHold;
   if (config.quotaReserve) serializable.quotaReserve = config.quotaReserve;
-  if (config.mcpServers) {
-    serializable.mcpServers = config.mcpServers;
-  }
-  return Object.keys(serializable).length ? serializable : null;
+  if (config.toolAccess === "none") serializable.toolAccess = "none";
 }
 
 function sanitizePendingPermissions(
@@ -651,4 +660,26 @@ function sanitizeRuntimeInfo(
     sanitized.extra = extra;
   }
   return sanitized;
+}
+
+/** Usage keeps only its finite numbers on disk. */
+function storedUsage(usage: AgentUsage): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(usage).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === "number" && Number.isFinite(entry[1]),
+    ),
+  );
+}
+
+function storedUsagePayload(
+  usage: StoredAgentRecord["lastUsage"],
+): Pick<AgentSnapshotPayload, "lastUsage"> {
+  const sanitized = sanitizeUsage(usage);
+  return sanitized ? { lastUsage: sanitized } : {};
+}
+
+/** The usage a stored record carries, for an agent the daemon brings back. */
+export function restoreStoredUsage(record: StoredAgentRecord): AgentUsage | undefined {
+  return sanitizeUsage(record.lastUsage);
 }

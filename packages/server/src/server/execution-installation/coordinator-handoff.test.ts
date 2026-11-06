@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  runCoordinatorConfigChange,
   runCoordinatorSwap,
   type CoordinatorSwapPlan,
   type SwapPorts,
@@ -80,4 +81,34 @@ test("refuses to act when the release link moved", async () => {
   fake.readLink = () => "/elsewhere";
   expect((await runCoordinatorSwap(plan, fake)).status).toBe("failed");
   expect(calls).toEqual([]);
+});
+
+test("restores the previous configuration when the coordinator fails on the new one", async () => {
+  let config = "new";
+  const { fake, calls } = ports(() => config === "old");
+  const outcome = await runCoordinatorConfigChange(
+    {
+      kind: "coordinator-config",
+      id: plan.id,
+      configFile: "/vorteo/host/coordinator.json",
+      backupFile: "/vorteo/state/coordinator/custom-domain/x/coordinator.json.before",
+      services: plan.services,
+      health: plan.health,
+      outcomeFile: "/vorteo/state/coordinator/custom-domain/x/outcome.json",
+      timeoutMs: plan.timeoutMs,
+    },
+    {
+      ...fake,
+      restoreFile: (backup, file) => {
+        calls.push(`restore ${backup} -> ${file}`);
+        config = "old";
+      },
+    },
+  );
+  expect(outcome.status).toBe("rolled-back");
+  expect(calls).toEqual([
+    "restart coordinator",
+    "restore /vorteo/state/coordinator/custom-domain/x/coordinator.json.before -> /vorteo/host/coordinator.json",
+    "restart coordinator",
+  ]);
 });

@@ -46,6 +46,7 @@ import {
 import type { PluginUsageSourceMetadata } from "./plugin-process-protocol.js";
 import { NativeFactoryObservationService } from "../factory/observation-service.js";
 import type { NativeFactorySetupService } from "../factory/setup-service.js";
+import { ProjectFactoryService } from "../factory/project/service.js";
 
 const BUILTIN_PROVIDER_ID_SET: ReadonlySet<string> = new Set(BUILTIN_PROVIDER_IDS);
 
@@ -94,7 +95,10 @@ interface PluginServiceDependencies {
   factorySetup?: () => Pick<NativeFactorySetupService, "read"> | null;
   factoryInstallation?: () => Pick<NativeFactorySetupService, "install"> | null;
   factoryControls?: () => Pick<NativeFactorySetupService, "readControls" | "control"> | null;
+  factoryProject?: () => Pick<ProjectFactoryService, "invoke"> | null;
   usageAgents?: AgentUsageLookup;
+  /** Keeps each account's last good usage reading across daemon restarts. */
+  usageSnapshotPath?: string;
   settingsDirectory?: string;
   runtime?: PluginRuntimePort;
   managedSources?: ManagedPluginSources;
@@ -144,6 +148,8 @@ export class PluginService {
       300_000,
       this.logger,
       dependencies.usageAgents,
+      undefined,
+      dependencies.usageSnapshotPath,
     );
     this.runtime =
       dependencies.runtime ??
@@ -758,6 +764,10 @@ export class PluginService {
       if (method === "factory.setup") {
         const setup = this.dependencies.factorySetup?.();
         if (setup) return setup.read(input);
+      }
+      if (ProjectFactoryService.supports(method)) {
+        const projectFactory = this.dependencies.factoryProject?.();
+        if (projectFactory) return projectFactory.invoke(method, input);
       }
       if (NativeFactoryObservationService.supports(method)) {
         const observer = this.dependencies.factoryObservation?.();

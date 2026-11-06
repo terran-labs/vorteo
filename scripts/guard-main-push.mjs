@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Pre-push guard (AGENTS.md, "Builds coordinator"). Every change reaches main through a pull
-// request, so nobody pushes main directly, Builds included. Only Builds pushes release tags.
+// request, so nobody pushes main directly, Builds included. Only Builds and Factory Releases push
+// release tags.
 // Git passes one "<local ref> <local sha> <remote ref> <remote sha>" line per pushed ref.
 import { readFileSync } from "node:fs";
 import { isMainModule } from "./is-main-module.mjs";
-import { isBuildsCoordinator } from "./lib/builds-guard.mjs";
+import { isReleaseTagger } from "./lib/builds-guard.mjs";
 
 const remoteRefs = (input) =>
   input
@@ -25,8 +26,8 @@ export function refusePush(input, env = process.env) {
   if (pushesMain(input)) {
     return "main changes only through a pull request. Push your branch and hand it to Builds, which delivers it with scripts/publish-main.mjs (docs/task-delivery.md).";
   }
-  if (pushesReleaseTag(input) && !isBuildsCoordinator(env)) {
-    return "Only the Vorteo :: Builds thread creates release tags, with scripts/vorteo-release.mjs (docs/release.md).";
+  if (pushesReleaseTag(input) && !isReleaseTagger(env)) {
+    return "Only the Vorteo :: Builds thread and Factory Releases create release tags, with scripts/vorteo-release.mjs (docs/release.md).";
   }
   return null;
 }

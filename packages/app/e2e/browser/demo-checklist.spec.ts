@@ -6,6 +6,7 @@ test("demo task edits persist and reset at 1800px", async ({ page }, info) => {
   await page.goto("/?demo=1");
   const workspace = page.getByTestId("sidebar-workspace-row-vorteo-demo:demo-workspace-0-1");
   await workspace.click();
+  await page.getByTestId("checklist-edit-mode").click();
   await page.getByRole("checkbox", { name: "Complete Approve release copy", exact: true }).click();
   await expect(
     page.getByRole("checkbox", { name: "Reopen Approve release copy", exact: true }),
@@ -18,6 +19,7 @@ test("demo task edits persist and reset at 1800px", async ({ page }, info) => {
     page.getByRole("checkbox", { name: "Reopen Approve simulated release copy", exact: true }),
   ).toBeVisible();
   await page.reload();
+  await page.getByTestId("checklist-edit-mode").click();
   await expect(
     page.getByRole("checkbox", { name: "Reopen Approve simulated release copy", exact: true }),
   ).toBeChecked();
@@ -32,6 +34,7 @@ test("demo task edits persist and reset at 1800px", async ({ page }, info) => {
   await page.screenshot({ path: info.outputPath("demo-checklist.png"), fullPage: true });
   await page.getByTestId("demo-reset").click();
   await page.getByTestId("sidebar-workspace-row-vorteo-demo:demo-workspace-0-1").click();
+  await page.getByTestId("checklist-edit-mode").click();
   await expect(
     page.getByRole("checkbox", { name: "Complete Approve release copy", exact: true }),
   ).toBeVisible();
@@ -50,6 +53,7 @@ test.describe("compact theme surfaces", () => {
     if (await backdrop.isVisible()) await backdrop.click({ position: { x: 5, y: 800 } });
     await expect(page.locator("html")).toHaveAttribute("data-vorteo-appearance", theme);
     await page.getByTestId("sidebar-workspace-row-vorteo-demo:demo-workspace-0-1").click();
+    await page.getByTestId("checklist-edit-mode").click();
     await page
       .getByRole("button", { name: "Details for Approve release copy", exact: true })
       .click();

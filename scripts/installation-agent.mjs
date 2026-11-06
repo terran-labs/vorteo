@@ -27,6 +27,7 @@ const PLAN_OPTIONS = [
   ["engine-restart-plan", "engineRestartPlanSha256"],
   ["engine-recovery-plan", "engineRecoveryPlanSha256"],
   ["host-launcher-plan", "hostLauncherPlanSha256"],
+  ["boot-entry-switch-plan", "bootEntrySwitchPlanSha256"],
 ];
 
 function planBindings(values) {
@@ -121,6 +122,7 @@ if (
     allowPositionals: true,
     options: {
       config: { type: "string" },
+      label: { type: "string" },
       target: { type: "string" },
       update: { type: "boolean" },
       "require-owner-approval": { type: "boolean" },
@@ -129,6 +131,7 @@ if (
       "engine-restart-plan": { type: "string" },
       "engine-recovery-plan": { type: "string" },
       "host-launcher-plan": { type: "string" },
+      "boot-entry-switch-plan": { type: "string" },
       "factory-runtime-recovery-of": { type: "string" },
       repository: { type: "string" },
       "contribution-id": { type: "string" },
@@ -142,6 +145,7 @@ if (
       reason: { type: "string" },
       "instructions-file": { type: "string" },
       "base-revision": { type: "string" },
+      "rollback-of": { type: "string" },
     },
   });
   // Vorteo :: Builds is the only writer of shared state (AGENTS.md, "Builds coordinator").
@@ -281,6 +285,35 @@ if (
     if (!capability?.available || capability.sha256 !== values["engine-recovery-plan"])
       throw new Error(
         "Reviewed degraded Docker recovery plan is unavailable or changed. No request submitted.",
+      );
+  }
+  if (values["boot-entry-switch-plan"]) {
+    if (
+      config.kind !== "host-agent" ||
+      values.update ||
+      values["supervisor-plan"] ||
+      values["factory-runtime-plan"] ||
+      values["engine-restart-plan"] ||
+      values["engine-recovery-plan"] ||
+      values["host-launcher-plan"] ||
+      values["require-owner-approval"] ||
+      values.target !== "container-daemon" ||
+      positionals[0] !== "request-restart"
+    )
+      throw new Error("--boot-entry-switch-plan requires a separate trusted Host Dev request");
+    const response = await fetch(new URL("/api/installation/capabilities", base), {
+      headers: { Authorization: `Bearer ${config.token}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok)
+      throw new Error(
+        "Coordinator cannot advertise the Dev boot-entry switch. No request submitted.",
+      );
+    const capability = (await response.json()).bootEntrySwitch;
+    if (!capability?.available || capability.sha256 !== values["boot-entry-switch-plan"])
+      throw new Error(
+        "Reviewed Dev boot-entry switch plan is unavailable or changed. No request submitted.",
       );
   }
   if (values["supervisor-plan"]) {
@@ -484,7 +517,7 @@ if (
       const capability = response.ok ? (await response.json()).installationManagement : null;
       if (!capability?.available || !capability.enabled || !capability.cancellation)
         throw new Error(
-          "Explicit installation management is unavailable or disabled. No decision sent.",
+          "Installation management is unavailable, or full maintenance delegation is off. No decision sent.",
         );
       resource = "/api/installation/management/requests";
       if (positionals[0] === "management-receipt") {
@@ -554,6 +587,30 @@ if (
       // Batch details include each contribution's merge result, such as a conflict.
       resource = `/api/installation/restart-requests/${positionals[1]}?sourceBatches=1`;
       break;
+    case "update-status":
+      // Read-only: update policy, the last release check and the upgrade waiting or running.
+      resource = "/api/installation/update-status";
+      break;
+    case "request-lab-update":
+      // Approved by the Lab installation type; a Stable installation refuses it.
+      if (config.kind !== "host-agent")
+        throw new Error("Lab self-updates require the trusted Host client");
+      if (values["rollback-of"] && !/^[a-f0-9-]{36}$/.test(values["rollback-of"]))
+        throw new Error("--rollback-of needs the lab update ID to roll back");
+      resource = "/api/installation/lab-update-requests";
+      body = {
+        ...(values.reason?.trim() ? { reason: values.reason.trim() } : {}),
+        ...(values.requester?.trim() ? { requester: values.requester.trim() } : {}),
+        ...(values["rollback-of"] ? { rollbackOf: values["rollback-of"] } : {}),
+      };
+      break;
+    case "lab-update-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Lab self-update inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A lab update ID is required");
+      resource = `/api/installation/lab-update-requests/${positionals[1]}`;
+      break;
     case "read-instructions":
       // Prints the shared agent instructions and the revision a change must be based on.
       resource = "/api/installation/settings/admission";
@@ -587,9 +644,28 @@ if (
       resource = "/api/installation/container-agents";
       body = JSON.parse(readFileSync(values["request-file"], "utf8"));
       break;
+    case "overview":
+      resource = "/api/installation/overview";
+      break;
+    case "overview-observers": {
+      // Observer tokens authorize only the read-only overview route.
+      if (config.kind !== "host-agent")
+        throw new Error("Overview observers require the Host client");
+      const action = positionals[1] ?? "list";
+      if (action === "list") resource = "/api/installation/overview/observers";
+      else if (action === "create") {
+        if (!values.label?.trim()) throw new Error("Use --label to name the observer");
+        resource = "/api/installation/overview/observers";
+        body = { label: values.label.trim() };
+      } else if (action === "revoke" && /^[0-9a-f]{16}$/.test(positionals[2] ?? "")) {
+        resource = `/api/installation/overview/observers/${positionals[2]}/revoke`;
+        body = {};
+      } else throw new Error("Use overview-observers list, create --label NAME, or revoke ID");
+      break;
+    }
     default:
       throw new Error(
-        "Commands: request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, container-agents (Host only)",
+        "Commands: overview, overview-observers list|create --label|revoke ID (Host only), request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, request-lab-update [--reason] [--rollback-of ID], lab-update-status ID, container-agents (Host only)",
       );
   }
   let upload;
@@ -695,6 +771,7 @@ if (
     requestUrl.searchParams.set("engineRestart", "1");
     requestUrl.searchParams.set("engineRecovery", "1");
     requestUrl.searchParams.set("hostLauncherUpdate", "1");
+    requestUrl.searchParams.set("bootEntrySwitch", "1");
   }
   const requestOptions = {
     method: body ? "POST" : "GET",

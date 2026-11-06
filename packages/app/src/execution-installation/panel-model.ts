@@ -1,3 +1,5 @@
+import type { CustomDomainStatus } from "@getpaseo/protocol/custom-domain";
+import type { LiveDevMode, LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import { brokerActionDisabledReason, type BrokerAction } from "./preview-broker-review";
 import type { MaintenanceDelegationStatus } from "@getpaseo/protocol/maintenance-approval";
@@ -53,6 +55,11 @@ interface InstallationPanelState {
   daemonAutomation: DaemonAutomationPreference | null;
   maintenanceDelegation: MaintenanceDelegationStatus | null;
   maintenanceDelegationError: string | null;
+  liveDev: LiveDevStatus | null;
+  liveDevError: string | null;
+  /** Null hides the Custom domain card: locked, or a coordinator without the route. */
+  customDomain: CustomDomainStatus | null;
+  customDomainError: string | null;
   maintenanceStatus: InstallationMaintenanceStatus | null;
   daemonAutomationError: string | null;
   restartSummary: RestartSummary | null;
@@ -96,6 +103,10 @@ export class InstallationPanelModel {
     daemonAutomation: null,
     maintenanceDelegation: null,
     maintenanceDelegationError: null,
+    liveDev: null,
+    liveDevError: null,
+    customDomain: null,
+    customDomainError: null,
     maintenanceStatus: null,
     daemonAutomationError: null,
     restartSummary: null,
@@ -155,6 +166,10 @@ export class InstallationPanelModel {
           | "daemonAutomation"
           | "maintenanceDelegation"
           | "changeMaintenanceDelegation"
+          | "liveDev"
+          | "changeLiveDev"
+          | "customDomain"
+          | "changeCustomDomain"
           | "maintenanceStatus"
           | "enrollmentStatus"
           | "recoveryAccess"
@@ -224,6 +239,10 @@ export class InstallationPanelModel {
         daemonAutomation: null,
         maintenanceDelegation: null,
         maintenanceDelegationError: null,
+        liveDev: null,
+        liveDevError: null,
+        customDomain: null,
+        customDomainError: null,
         maintenanceStatus: null,
         recoveryAccess: null,
         recoveryAccessError: null,
@@ -311,6 +330,8 @@ export class InstallationPanelModel {
         maintenanceStatus,
         sessionHost,
         instructionRequests,
+        liveDev,
+        customDomain,
       ] = await Promise.all([
         this.client.listRestarts(),
         this.client.profileSharingStatus(),
@@ -360,6 +381,8 @@ export class InstallationPanelModel {
             return this.state.instructionRequests;
           },
         ),
+        this.loadLiveDev(),
+        this.loadCustomDomain(),
       ]);
       if (generation !== this.accessGeneration) return;
       const targets = new Set(
@@ -382,6 +405,8 @@ export class InstallationPanelModel {
         brokerJobs,
         sessionHost,
         instructionRequests,
+        liveDev,
+        customDomain,
         pendingJobs: pending,
         profileSharing,
         ...(automationGeneration === this.automationGeneration
@@ -533,7 +558,7 @@ export class InstallationPanelModel {
     }
   }
 
-  async changeMaintenanceDelegation(enabled: boolean, management?: boolean): Promise<void> {
+  async changeMaintenanceDelegation(enabled: boolean): Promise<void> {
     const preference = this.state.maintenanceDelegation;
     if (
       this.state.busy ||
@@ -552,7 +577,7 @@ export class InstallationPanelModel {
       notice: "Saving full maintenance delegation...",
     });
     try {
-      const saved = await this.client.changeMaintenanceDelegation(preference, enabled, management);
+      const saved = await this.client.changeMaintenanceDelegation(preference, enabled);
       if (generation !== this.accessGeneration) return;
       this.automationGeneration++;
       this.publish({
@@ -566,6 +591,83 @@ export class InstallationPanelModel {
         notice: null,
         daemonAutomationError: toErrorMessage(error),
       });
+      if (error instanceof OwnerAccessExpired) this.fail(error);
+    } finally {
+      if (generation === this.accessGeneration) this.publish({ busy: false });
+    }
+  }
+
+  /** The Delivery mode card never blocks the rest of Installation controls. */
+  private async loadLiveDev(): Promise<LiveDevStatus | null> {
+    try {
+      const status = (await this.client.liveDev?.()) ?? null;
+      this.publish({ liveDevError: null });
+      return status;
+    } catch (error) {
+      if (error instanceof OwnerAccessExpired) throw error;
+      this.publish({ liveDevError: failureMessage(error, "Live dev mode is unavailable") });
+      return this.state.liveDev;
+    }
+  }
+
+  async changeLiveDev(mode: LiveDevMode): Promise<void> {
+    const status = this.state.liveDev;
+    if (this.state.busy || !this.state.unlocked || !status || !this.client.changeLiveDev) return;
+    if (mode === "live" && !status.available) return;
+    const generation = this.accessGeneration;
+    this.publish({ busy: true, error: null, liveDevError: null, notice: null });
+    try {
+      const saved = await this.client.changeLiveDev(status, mode);
+      if (generation !== this.accessGeneration) return;
+      this.publish({
+        liveDev: saved,
+        notice:
+          mode === "live"
+            ? "Live dev mode is on. Reload once the live dev server is ready."
+            : "Reliable mode is on. Reload to use the published interface.",
+      });
+    } catch (error) {
+      if (generation !== this.accessGeneration) return;
+      this.publish({ liveDevError: toErrorMessage(error) });
+      if (error instanceof OwnerAccessExpired) this.fail(error);
+    } finally {
+      if (generation === this.accessGeneration) this.publish({ busy: false });
+    }
+  }
+
+  /** The Custom domain card never blocks the rest of Installation controls. */
+  private async loadCustomDomain(): Promise<CustomDomainStatus | null> {
+    try {
+      const status = (await this.client.customDomain?.()) ?? null;
+      this.publish({ customDomainError: null });
+      return status;
+    } catch (error) {
+      if (error instanceof OwnerAccessExpired) throw error;
+      this.publish({ customDomainError: failureMessage(error, "Custom domain is unavailable") });
+      return this.state.customDomain;
+    }
+  }
+
+  /** Saves the custom domain; the coordinator restarts by itself and Installation controls reconnect. */
+  async changeCustomDomain(origin: string | null): Promise<void> {
+    const status = this.state.customDomain;
+    if (this.state.busy || !this.state.unlocked || !status?.available) return;
+    if (!this.client.changeCustomDomain) return;
+    const generation = this.accessGeneration;
+    this.publish({ busy: true, error: null, customDomainError: null, notice: null });
+    try {
+      const saved = await this.client.changeCustomDomain(status, origin);
+      if (generation !== this.accessGeneration) return;
+      this.publish({
+        customDomain: saved,
+        notice:
+          saved.lastChange?.status === "running"
+            ? "The coordinator is restarting with the new domain. Agents keep running."
+            : null,
+      });
+    } catch (error) {
+      if (generation !== this.accessGeneration) return;
+      this.publish({ customDomainError: toErrorMessage(error) });
       if (error instanceof OwnerAccessExpired) this.fail(error);
     } finally {
       if (generation === this.accessGeneration) this.publish({ busy: false });
@@ -894,6 +996,10 @@ export class InstallationPanelModel {
         daemonAutomation: null,
         maintenanceDelegation: null,
         maintenanceDelegationError: null,
+        liveDev: null,
+        liveDevError: null,
+        customDomain: null,
+        customDomainError: null,
         maintenanceStatus: null,
         daemonAutomationError: null,
         recoveryAccess: null,
@@ -995,6 +1101,20 @@ export function restartRepairGuidance(job: RestartJob): string | null {
   if (job.target === "host")
     return "The requesting agent must repair this update before you can approve it. Leave it queued for repair, or choose Cancel update if you no longer want it. Your running version is unchanged.";
   return "On a compatible coordinator, Prepare Dev repair captures the installed Host source and preserves queued contributions for a new installation review. Otherwise the requesting agent must correct the source. You can cancel the update; your running version is unchanged.";
+}
+
+/**
+ * A pending Dev supervisor repair whose target does not answer cannot finish
+ * turns: there is no worker to hold. The reviewer instead approves the exact
+ * plan immediately, which is the outage this repair exists to recover.
+ */
+export function supervisorRepairNeedsImmediateApproval(job: RestartJob): boolean {
+  return (
+    job.status === "pending" &&
+    job.target === "container-daemon" &&
+    Boolean(job.supervisorPlanSha256) &&
+    Boolean(job.impact?.error)
+  );
 }
 
 export function restartActionDisabledReason(

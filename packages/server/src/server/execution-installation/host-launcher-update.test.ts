@@ -234,3 +234,205 @@ test("a changed plan refuses before touching anything", async () => {
   expect(readFileSync(f.target.plist, "utf8")).toBe(f.liveBytes);
   expect(existsSync(path.join(f.target.stateDir, "host-launcher-fallback-job.plist"))).toBe(false);
 });
+
+/** A Host that already selects managed releases, with a candidate that toggles release seals. */
+function sealFixture(direction: "on" | "off") {
+  const f = fixture();
+  const managed = {
+    ...live,
+    EnvironmentVariables: {
+      ...live.EnvironmentVariables,
+      PASEO_MANAGED_RELEASE_LINK: f.link,
+      PASEO_MANAGED_RELEASE_ROOT: f.releases,
+    },
+  };
+  const sealed = {
+    ...managed,
+    EnvironmentVariables: { ...managed.EnvironmentVariables, VORTEO_RELEASE_SEALS: "enabled" },
+  };
+  const [before, after] = direction === "on" ? [managed, sealed] : [sealed, managed];
+  const liveBytes = JSON.stringify(before);
+  const candidateBytes = JSON.stringify(after);
+  writeFileSync(f.target.plist, liveBytes);
+  writeFileSync(f.target.candidate.path, candidateBytes);
+  f.target.candidate.sha256 = createHash("sha256").update(candidateBytes).digest("hex");
+  return { ...f, managed, sealed, liveBytes, candidateBytes };
+}
+
+test("on a managed launcher the candidate may add or remove only VORTEO_RELEASE_SEALS=enabled", () => {
+  const f = sealFixture("on");
+  const { managed, sealed } = f;
+  const check = (current: unknown, candidate: unknown) =>
+    verifyLauncherCandidate(current, candidate, f.link, f.releases);
+  const withEnvironment = (base: typeof managed, environment: Record<string, string>) => ({
+    ...base,
+    EnvironmentVariables: { ...base.EnvironmentVariables, ...environment },
+  });
+  expect(check(managed, sealed)).toBe("release-seals-on");
+  expect(check(sealed, managed)).toBe("release-seals-off");
+  expect(check(live, { ...managed })).toBe("managed-release");
+
+  for (const [current, candidate, message] of [
+    // Any other value, variable or key.
+    [
+      managed,
+      withEnvironment(managed, { VORTEO_RELEASE_SEALS: "1" }),
+      "changes more than VORTEO_RELEASE_SEALS=enabled: EnvironmentVariables.VORTEO_RELEASE_SEALS",
+    ],
+    [
+      managed,
+      withEnvironment(sealed, { PATH: "/elsewhere" }),
+      "changes more than VORTEO_RELEASE_SEALS=enabled: EnvironmentVariables.PATH",
+    ],
+    [
+      managed,
+      withEnvironment(managed, { OTHER: "enabled" }),
+      "EnvironmentVariables.OTHER, EnvironmentVariables.VORTEO_RELEASE_SEALS",
+    ],
+    [
+      managed,
+      { ...sealed, KeepAlive: false },
+      "changes more than VORTEO_RELEASE_SEALS=enabled: KeepAlive",
+    ],
+    [sealed, { ...managed, KeepAlive: false }, "KeepAlive"],
+    // Seals cannot ride along with the managed release update.
+    [
+      live,
+      withEnvironment(managed, { VORTEO_RELEASE_SEALS: "enabled" }),
+      "changes more than the managed release link and root: EnvironmentVariables.VORTEO_RELEASE_SEALS",
+    ],
+    // Unexpected current launcher state.
+    [
+      withEnvironment(managed, { VORTEO_RELEASE_SEALS: "1" }),
+      managed,
+      "sets VORTEO_RELEASE_SEALS to a value other than enabled",
+    ],
+    [
+      withEnvironment(managed, { PASEO_MANAGED_RELEASE_LINK: "/elsewhere" }),
+      withEnvironment(sealed, { PASEO_MANAGED_RELEASE_LINK: "/elsewhere" }),
+      "differs from the configured source updates",
+    ],
+    [
+      { ...live, EnvironmentVariables: { PASEO_MANAGED_RELEASE_LINK: f.link } },
+      sealed,
+      "differs from the configured source updates",
+    ],
+    [{ ...managed, EnvironmentVariables: "x" }, sealed, "not a string dictionary"],
+    [sealed, sealed, "already selects managed releases"],
+  ] as const)
+    expect(() => check(current, candidate), message).toThrow(message);
+});
+
+test("a release seal plan has its own digest and is not advertised once applied", () => {
+  const on = sealFixture("on");
+  const digest = hostLauncherPlanDigest(on.target, on.plistJson);
+  expect(digest).toMatch(/^[a-f0-9]{64}$/);
+  // The same bytes as a managed release update would not share its digest.
+  const managedDigest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        candidate: on.target.candidate.sha256,
+        live: createHash("sha256").update(on.liveBytes).digest("hex"),
+        link: on.target.link,
+        root: on.target.root,
+      }),
+    )
+    .digest("hex");
+  expect(digest).not.toBe(managedDigest);
+  writeFileSync(on.target.plist, on.candidateBytes);
+  expect(hostLauncherPlanDigest(on.target, on.plistJson)).toBeUndefined();
+});
+
+test("turning release seals on restarts the whole Host and verifies the new supervisor carries them", async () => {
+  const f = sealFixture("on");
+  const digest = hostLauncherPlanDigest(f.target, f.plistJson)!;
+  const launchd = fakeLaunchd(f.target);
+  let pid = 10;
+  const detail = await runHostLauncherUpdate(
+    f.target,
+    { jobId: "job", digest },
+    {
+      run: launchd.run,
+      plistJson: f.plistJson,
+      probe: async () => ({ pid: pid++, version: "0.11.0-beta.3.vorteo.810" }),
+      ...clock(),
+    },
+  );
+  expect(detail).toContain("release seals turned on");
+  expect(readFileSync(f.target.plist, "utf8")).toBe(f.candidateBytes);
+  expect(
+    readFileSync(path.join(f.target.stateDir, "host-launcher-fallback-job.plist"), "utf8"),
+  ).toBe(f.liveBytes);
+  expect(launchd.calls.filter((call) => call === "launchctl bootout")).toHaveLength(1);
+  expect(launchd.calls.filter((call) => call === "launchctl bootstrap")).toHaveLength(1);
+});
+
+test("turning release seals off verifies the new supervisor no longer carries them", async () => {
+  const f = sealFixture("off");
+  const digest = hostLauncherPlanDigest(f.target, f.plistJson)!;
+  const launchd = fakeLaunchd(f.target);
+  let pid = 10;
+  const detail = await runHostLauncherUpdate(
+    f.target,
+    { jobId: "job", digest },
+    {
+      run: launchd.run,
+      plistJson: f.plistJson,
+      probe: async () => ({ pid: pid++, version: "0.11.0-beta.3.vorteo.810" }),
+      ...clock(),
+    },
+  );
+  expect(detail).toContain("release seals turned off");
+  expect(readFileSync(f.target.plist, "utf8")).toBe(f.candidateBytes);
+});
+
+test("a supervisor that comes back without the seal setting restores the previous launcher", async () => {
+  const f = sealFixture("on");
+  const digest = hostLauncherPlanDigest(f.target, f.plistJson)!;
+  const launchd = fakeLaunchd(f.target);
+  // The reloaded supervisor reports the old environment, as if launchd kept the old plist.
+  const run: EngineCommand = async (file, args, timeout) =>
+    path.basename(file) === "ps"
+      ? {
+          stdout: `node supervisor-entrypoint.js ${Object.entries(f.managed.EnvironmentVariables)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(" ")}\n`,
+        }
+      : launchd.run(file, args, timeout);
+  let pid = 10;
+  await expect(
+    runHostLauncherUpdate(
+      f.target,
+      { jobId: "job", digest },
+      {
+        run,
+        plistJson: f.plistJson,
+        probe: async () => ({ pid: pid++, version: "0.11.0-beta.3.vorteo.810" }),
+        ...clock(),
+      },
+    ),
+  ).rejects.toThrow(
+    "The new Host supervisor does not carry VORTEO_RELEASE_SEALS=enabled. Restored and reloaded the previous launcher",
+  );
+  expect(readFileSync(f.target.plist, "utf8")).toBe(f.liveBytes);
+});
+
+test("a release seal plan changed after approval refuses before touching anything", async () => {
+  const f = sealFixture("on");
+  const digest = hostLauncherPlanDigest(f.target, f.plistJson)!;
+  writeFileSync(f.target.plist, JSON.stringify({ ...f.managed, KeepAlive: false }));
+  const launchd = fakeLaunchd(f.target);
+  await expect(
+    runHostLauncherUpdate(
+      f.target,
+      { jobId: "job", digest },
+      {
+        run: launchd.run,
+        plistJson: f.plistJson,
+        probe: async () => ({ pid: 10, version: "x" }),
+        ...clock(),
+      },
+    ),
+  ).rejects.toThrow("changes more than VORTEO_RELEASE_SEALS=enabled: KeepAlive");
+  expect(launchd.calls).toEqual([]);
+});

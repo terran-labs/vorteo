@@ -652,6 +652,7 @@ function ComposerKeyboardRegistration({
       "message-input.focus",
       "message-input.send",
       "message-input.dictation-toggle",
+      "message-input.dictation-insert-toggle",
       "message-input.dictation-cancel",
       "message-input.dictation-confirm",
       "message-input.voice-toggle",
@@ -680,6 +681,8 @@ function resolveMessageInputPassthroughAction(
       return "dictation-confirm";
     case "message-input.dictation-toggle":
       return "dictation-toggle";
+    case "message-input.dictation-insert-toggle":
+      return "dictation-insert-toggle";
     case "message-input.dictation-cancel":
       return "dictation-cancel";
     case "message-input.voice-toggle":
@@ -1490,6 +1493,8 @@ function ComposerContentImpl({
   const { pickImages } = useImageAttachmentPicker();
   const { pickFiles } = useFilePicker();
   const agentIdRef = useRef(agentId);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const sendAgentMessageRef = useRef<
     | ((
         agentId: string,
@@ -1680,6 +1685,8 @@ function ComposerContentImpl({
         setAttachments: (nextAttachments) => {
           setSelectedAttachments(composerWorkspaceAttachment.userAttachmentsOnly(nextAttachments));
         },
+        getUserInput: () => textSource.getSnapshot(),
+        getAttachments: () => attachmentsRef.current,
         setSendError: isParentManagedSubmit ? ignoreSubmitFailure : setSendError,
         reportConnectionError: isParentManagedSubmit ? ignoreSubmitFailure : reportActionError,
         setIsProcessing,
@@ -1708,6 +1715,7 @@ function ComposerContentImpl({
       submitBehavior,
       submitMessage,
       t,
+      textSource,
     ],
   );
 

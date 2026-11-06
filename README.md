@@ -41,6 +41,8 @@ To add a device, open your installation's address on it and enter the owner pass
 
 <img width="400" alt="Queued daemon upgrades" src="https://github.com/user-attachments/assets/3a1c344d-42ac-4da7-8fb0-b5059b3c280f" />
 
+- **Stay current on your channel.** Choose stable or beta releases and whether to install them yourself or automatically, per installation. Each new release arrives once in Open questions with its summary, security fixes marked, and installs after current work finishes. A safety snapshot comes first, so you can roll back from Installation controls. [Release updates](docs/execution-installation.md#release-updates).
+
 - **Pick up after usage limits.** When a Claude or Codex account hits its limit, stopped threads wait for the reset and then continue one at a time, checking what they already finished first. Each thread shows when it will resume, with Resume now and Don't resume, and each account has a switch to turn it off. See [quota behavior](docs/agent-presets.md#quota-stops-and-explicit-successors).
 - **Put local workers to work.** Choose a worker account and profile on each supervisor, including accounts from another provider or Pi models on local or private endpoints. Set a finite concurrency limit or choose Uncapped on an updated installation, and follow each worker beneath its originating task, even when it uses a separate worktree. Provider and quota limits still apply.
 
@@ -58,7 +60,7 @@ To add a device, open your installation's address on it and enter the owner pass
 
 <img width="400" alt="Protected and scheduled workspaces" src="https://github.com/user-attachments/assets/757352aa-a2e7-457d-b95f-7ded601444f7" />
 
-- **Tailor your own installation.** Every daemon keeps a Vorteo System project that sits with your other projects under the Vorteo mark. Point it at the checkout your installation was built from, and new workspaces branch from the code that is running; changes go live through your reviewed source update. It also holds standing upkeep such as the Vorteo :: Optimizer workspace, and it can't be removed. Requires the updated daemon. See [Vorteo System project](docs/system-project.md).
+- **Tailor your own installation.** Every daemon keeps a Vorteo System project that sits with your other projects under the Vorteo mark. Point it at the checkout your installation was built from, and new workspaces branch from the code that is running; changes go live through your reviewed source update. It also holds standing upkeep such as the Vorteo :: Mechanic workspace, and it can't be removed. Requires the updated daemon. See [Vorteo System project](docs/system-project.md).
 
 - **Run tasks in either environment within one workspace.** Choose Host or Dev container in a new task while retaining draft text and uploaded files. Task tabs identify their environment; mapped directories and remembered folder choices keep later tasks in the same visible workspace. Updated daemons are required.
 

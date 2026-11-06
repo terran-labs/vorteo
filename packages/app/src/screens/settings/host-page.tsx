@@ -72,6 +72,7 @@ import type { Theme } from "@/styles/theme";
 import { useProviderIcon } from "@/components/provider-icons";
 import { BrowserToolsOptInCard } from "./browser-tools-card";
 import { RestartRecoveryCard } from "./restart-recovery-card";
+import { ServiceAccessSection } from "./service-access-section";
 import { IdleRuntimeCleanupCard } from "./idle-runtime-cleanup-card";
 import { restartDaemonFromSettings, updateDaemonFromSettings } from "./daemon-lifecycle";
 
@@ -427,6 +428,8 @@ export function HostSettingsPage({
       {!installationOwned && !isLocalDaemon ? (
         <UpdateDaemonCard key={host.serverId} host={host} />
       ) : null}
+
+      <ServiceAccessSection serverId={serverId} />
 
       <RemoveHostSection
         host={host}

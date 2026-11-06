@@ -160,7 +160,7 @@ test("session-capable clients discard the password and restore verified connecti
     await client.unlock("recovery-password");
     await client.listRestarts();
     expect(calls.at(-1)).toEqual([
-      "restarts/query?sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&delegatedRequests=1",
+      "restarts/query?sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1",
       "",
     ]);
     expect(await client.restoreSession()).toBe(true);
@@ -195,7 +195,7 @@ test("capable installation clients request extended restart details without chan
   await client.listRestarts();
   expect(calls).toEqual([
     "unlock",
-    "restarts/query?idleRestarts=1&sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&delegatedRequests=1",
+    "restarts/query?idleRestarts=1&sourceUpdates=1&sourceBatches=1&containerSourceUpdates=1&supervisorMaintenance=1&hostAutomaticRestarts=1&factoryRuntimeAdoption=1&engineRestart=1&engineRecovery=1&hostLauncherUpdate=1&bootEntrySwitch=1&delegatedRequests=1",
   ]);
 });
 
@@ -711,11 +711,13 @@ test("session host query keeps jobs when the coordinator could not inspect the j
 
 test("full maintenance delegation requires unlocked access and a supported query", async () => {
   const calls: string[] = [];
+  const bodies: unknown[] = [];
   let supported = false;
   const preference = { available: true, revision: null, enabled: false, activatedAt: null };
   const client = new InstallationClient(installation, {
-    request: async (resource) => {
+    request: async (resource, _password, body) => {
       calls.push(resource);
+      bodies.push(body);
       if (resource === "unlock")
         return {
           installationId: installation.installationId,
@@ -742,9 +744,9 @@ test("full maintenance delegation requires unlocked access and a supported query
   expect(calls).toEqual(["unlock", "maintenance-delegation/query?management=1"]);
   supported = true;
   expect(await client.maintenanceDelegation()).toEqual(preference);
-  await expect(client.changeMaintenanceDelegation(preference, true, true)).rejects.toThrow(
-    "Installation management is unavailable",
-  );
+  await client.changeMaintenanceDelegation(preference, true);
+  // Management follows the full grant, so no separate switch is sent.
+  expect(bodies.at(-1)).toEqual({ expectedRevision: null, enabled: true });
   supported = false;
   await expect(client.maintenanceDelegation()).rejects.toThrow("Unavailable");
 });

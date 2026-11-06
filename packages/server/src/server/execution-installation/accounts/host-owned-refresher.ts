@@ -94,8 +94,6 @@ export interface HostRefresherPorts<G extends HostGrant, P> {
 const RECHECK_MS = 5 * 60_000;
 /** First retry delay after a failed refresh; it doubles up to RECHECK_MS. */
 const REFRESH_RETRY_MS = 60_000;
-/** Failed refreshes of one token before an expired grant counts as lost and needs sign-in. */
-const REFRESH_FAILURE_LIMIT = 3;
 /** First retry delay for an undelivered rotation; it doubles up to RECHECK_MS. */
 const DELIVERY_RETRY_MS = 30_000;
 
@@ -142,7 +140,9 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       policy = { revision: record.policyRevision, removed: true, targets: record.targets };
     }
     const current = policy.revision === record.policyRevision;
-    const usable = record.signedIn && record.hostGrant === "present" && !policy.removed;
+    const unexpired = record.expiresAt === null || record.expiresAt > this.ports.now();
+    const present = record.signedIn && record.hostGrant === "present" && !policy.removed;
+    const usable = present && unexpired;
     return {
       signedIn: record.signedIn,
       needsSignIn: record.signedIn && record.hostGrant === "missing",
@@ -160,8 +160,10 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
               saved.providerId === target.providerId &&
               saved.appliedRotation === record.rotation,
           )
-        )
-          status = usable ? "ready" : "disconnected";
+        ) {
+          status = present ? "pending" : "disconnected";
+          if (usable) status = "ready";
+        }
         return { serverId: target.serverId, status };
       }),
     };
@@ -237,14 +239,9 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
       grant = await this.refreshHost(definitionId, grant, next, now);
     next.checkedAt = now;
     next.expiresAt = grant?.expiresAt ?? null;
-    // An expired grant that failed to refresh repeatedly counts as lost: Dev is withdrawn and
-    // the owner is asked to sign in again.
-    const lost =
-      grant !== null &&
-      grant.expiresAt !== null &&
-      grant.expiresAt <= now &&
-      next.refreshFailures >= REFRESH_FAILURE_LIMIT;
-    const desired = lost ? null : this.adapter.project(grant);
+    // A failed request is not evidence of revocation. Keep the grant available to the
+    // official CLI for bounded retries; only a confirmed missing grant withdraws Dev.
+    const desired = this.adapter.project(grant);
     next.hostGrant = desired ? "present" : "missing";
     return desired;
   }
@@ -256,19 +253,28 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     now: number,
   ): Promise<G | null> {
     const before = grant?.expiresAt ?? null;
+    let failed = false;
     try {
       await this.ports.refresh(definitionId);
-      const after = await this.ports.grant(definitionId);
-      const advanced =
-        after !== null && after.expiresAt !== null && (before === null || after.expiresAt > before);
-      next.refresh = { at: now, outcome: advanced ? "refreshed" : "unchanged" };
-      next.refreshFailures = advanced ? 0 : next.refreshFailures + 1;
-      return after;
+    } catch {
+      // The CLI can save a rotated token before the model request fails or times out.
+      failed = true;
+    }
+    let after: G | null;
+    try {
+      after = await this.ports.grant(definitionId);
     } catch {
       next.refresh = { at: now, outcome: "failed" };
       next.refreshFailures += 1;
       return grant;
     }
+    const advanced =
+      after !== null && after.expiresAt !== null && (before === null || after.expiresAt > before);
+    let outcome: "refreshed" | "failed" | "unchanged" = failed ? "failed" : "unchanged";
+    if (advanced) outcome = "refreshed";
+    next.refresh = { at: now, outcome };
+    next.refreshFailures = advanced ? 0 : next.refreshFailures + 1;
+    return after;
   }
 
   private async deliverPending(
@@ -371,18 +377,14 @@ export class HostOwnedRefresher<G extends HostGrant, P> {
     if (next.targets.some((target) => target.appliedRotation !== next.rotation))
       return next.deliveryRetryAt === null || now >= next.deliveryRetryAt;
     if (next.checkedAt === null || now - next.checkedAt >= RECHECK_MS) return true;
-    // After giving up on a token, read once more when it expires (to withdraw Dev); otherwise
-    // only the normal cadence looks for a newer grant.
-    if (next.refreshFailures >= REFRESH_FAILURE_LIMIT)
-      return next.hostGrant === "present" && next.expiresAt !== null && now >= next.expiresAt;
+    if (next.refreshFailures > 0 && next.refresh !== null)
+      return now - next.refresh.at >= backoff(REFRESH_RETRY_MS, next.refreshFailures);
     return (
       next.expiresAt !== null && next.expiresAt - now <= this.adapter.leadMs + REFRESH_RETRY_MS
     );
   }
 
   private shouldRefresh(next: HostRefreshRecord, grant: G | null, now: number) {
-    // Gave up on this token: wait for a newer Host grant or a new sign-in.
-    if (next.refreshFailures >= REFRESH_FAILURE_LIMIT) return false;
     // Refresh only for a Dev that received the current rotation; an unreachable Dev could not
     // use a new token, and launching the CLI for it would only spend the account's usage.
     const reachable = next.targets.some(

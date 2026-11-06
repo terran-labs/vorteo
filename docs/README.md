@@ -49,6 +49,7 @@ Use this index to find the document that owns your task. Read relevant subjects 
 | [docs/private-domain.md](private-domain.md)                     | Optional custom-domain gateway: private Tailscale endpoint, Caddy templates, DNS, verification and removal                     |
 | [docs/host-handoff.md](host-handoff.md)                         | Team handoff entry point, fresh installation, migration and acceptance                                                         |
 | [docs/instance-continuity.md](instance-continuity.md)           | Persistent web publication and active-instance development                                                                     |
+| [docs/live-dev-mode.md](live-dev-mode.md)                       | Live dev delivery mode: the live checkout, dev server proxy, safe interface and live checkout commands                         |
 | [docs/agent-presets.md](agent-presets.md)                       | Saved presets, managed workers, quota lifecycle and implementation status                                                      |
 | [iOS Home Screen toolbar](ios-home-screen.md)                   | Native top blur, installation metadata, viewport ownership and acceptance                                                      |
 | [docs/vorton-touch-audit.md](vorton-touch-audit.md)             | Vorteo touch contract, historical checks and physical-device limits                                                            |
@@ -60,6 +61,8 @@ Use this index to find the document that owns your task. Read relevant subjects 
 | [public-docs/hub/security.md](../public-docs/hub/security.md)   | Public Hub guide — trust boundaries, untrusted triggers, provider controls, and output authority                               |
 
 Host and container setup, trust boundaries, restart requests and removal: [Host and container execution](execution-installation.md).
+
+- [Shared Voice credentials](voice-credential-sync.md): installation ownership, adoption, endpoint validation and conflict handling.
 
 - [Skill library](skill-library.md): inventory, ownership, reviewed changes, and profile selection.
 

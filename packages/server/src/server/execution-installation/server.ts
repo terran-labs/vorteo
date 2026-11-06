@@ -6,6 +6,7 @@ import {
   SnapshotRestoreRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
+  UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
 import {
@@ -57,8 +58,23 @@ import {
   ResolvedPluginSourceSchema,
 } from "@getpaseo/protocol/plugin-installation";
 import { OwnerSessions, OWNER_SESSION_MAX_AGE } from "./owner-sessions.js";
+import { createLiveDev, LiveDevUnavailable } from "./live-dev/service.js";
+import {
+  createCustomDomain,
+  CustomDomainConflict,
+  CustomDomainUnavailable,
+} from "./custom-domain.js";
+import { launchHandoff } from "./coordinator-handoff.js";
+import { LiveDevStateError } from "./live-dev/state.js";
 import { createInstallationProfiles } from "./profiles/runtime.js";
 import { createInstallationNameStore } from "./installation-name.js";
+import {
+  changeInstallationType,
+  InstallationTypeStateError,
+  reportedInstallationType,
+} from "./installation-type.js";
+import { createLabSelfUpdateRuntime } from "./lab-self-update-runtime.js";
+import { LabUpdateCancelSchema, LabUpdateRequestSchema } from "@getpaseo/protocol/lab-self-update";
 import { ProfileSharingConflict } from "./profiles/merge.js";
 import { ProviderPreferencesValidationError } from "../agent/provider-preferences/validation.js";
 import type { InstallationProfiles } from "./profiles/service.js";
@@ -119,6 +135,13 @@ import { InstructionRequestError, InstructionRequests } from "./settings/instruc
 import { inspectContainerSource } from "./container-updates.js";
 import { RestartTargetSchema } from "@getpaseo/protocol/execution-installation";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import {
+  InstallationOverviewReader,
+  productionOverviewDependencies,
+  type InstallationOverview,
+  type OverviewDependencies,
+} from "./overview.js";
+import { ServicePrincipalStore } from "../authorization/service-principals.js";
 import { FactoryGate, factoryRestartClass } from "./factory-gate.js";
 import {
   delegatedHandler,
@@ -227,6 +250,7 @@ function restartReply(
   engineRestart?: boolean,
   hostLauncherUpdate?: boolean,
   engineRecovery?: boolean,
+  bootEntrySwitch?: boolean,
 ) {
   // Captures are retained in the protected journal, not sent to legacy strict clients.
   // COMPAT(workerLaunchReply): added in v674; remove after 2027-04-17 once requester floor >= v674.
@@ -255,6 +279,7 @@ function restartReply(
     engineRestart,
     hostLauncherUpdate,
     engineRecovery,
+    bootEntrySwitch,
   });
   if (!hostAutomaticRestarts) {
     const { automaticApproval: _approval, ...compatible } = job;
@@ -389,6 +414,7 @@ export function createInstallationServer(
   // The private configuration file, captured by safety snapshots. Omitted in tests.
   files?: { configFile: string },
   codexSignIn?: CodexSignInRuntime,
+  overviewDependencies?: OverviewDependencies,
 ) {
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const instructionRequests = new InstructionRequests(
@@ -558,6 +584,16 @@ export function createInstallationServer(
     if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
     return releaseRuntime;
   };
+  // Lab self-updates and release upgrades both replace the Host and coordinator releases.
+  const labRuntime = createLabSelfUpdateRuntime({
+    config,
+    restarts,
+    logger,
+    conflict: () =>
+      releaseRuntime?.upgrades?.active()
+        ? "Wait for the release upgrade to finish before a lab self-update."
+        : null,
+  });
   const startupReleased = () => {
     if (startupFence && !startupFence.released()) return false;
     restarts.activate();
@@ -646,6 +682,10 @@ export function createInstallationServer(
         void releaseRuntime?.upgrades
           ?.drain()
           .catch((error) => logger.error({ err: error }, "Installation upgrade failed"));
+        // Lab builds run for minutes; like upgrades they advance beside the drain.
+        void labRuntime.updates
+          .drain()
+          .catch((error) => logger.error({ err: error }, "Lab self-update failed"));
         if (coordinatorRequests && !coordinatorReconciliation) {
           coordinatorReconciliation = reconcileInstallationCoordinator(config, coordinatorRequests)
             .catch(() => logger.warn("Automatic coordinator reconciliation remains unconfirmed"))
@@ -681,6 +721,29 @@ export function createInstallationServer(
       ?.slice(cookieName(req).length + 1);
   const configuredPasswordFile =
     config.ownerPasswordFile ?? path.resolve(config.stateDir, "../..", "owner-password");
+  const customDomain = createCustomDomain({
+    config,
+    configFile: files?.configFile,
+    logger,
+    ports: {
+      connect: (kind) => connectInstallationDaemon(config, kind),
+      launch: launchHandoff,
+      now: () => new Date(),
+    },
+  });
+  const liveDev = createLiveDev({
+    config,
+    logger,
+    ownerSession: (cookie) => {
+      const token = cookie
+        ?.split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(`${publicCookieName}=`))
+        ?.slice(publicCookieName.length + 1);
+      return Boolean(sessions.expiresAt(token));
+    },
+    secureCookies,
+  });
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", "loopback");
@@ -789,10 +852,23 @@ export function createInstallationServer(
     res.locals.updateRequester = host ? "host-agent" : "container-agent";
     next();
   }
-  const management = new InstallationManagement(config.stateDir, restarts, coordinatorRequests);
+  // Full maintenance delegation implies cancellation-only management; it never approves.
+  const management = new InstallationManagement(
+    config.stateDir,
+    restarts,
+    coordinatorRequests,
+    () => ({
+      installationId: config.public.installationId,
+      hostAgentTokenHash: config.hostAgentTokenHash,
+      containerAgentTokenHash: config.containerAgentTokenHash,
+      ownerPasswordHash: config.ownerPasswordHash,
+    }),
+  );
   function requireManagementHost(_req: Request, res: Response, next: NextFunction) {
     if (res.locals.updateRequester !== "host-agent" || !management.authority()) {
-      res.status(403).json({ error: "Explicit Host installation management grant required" });
+      res.status(403).json({
+        error: "Full maintenance delegation is required for Host installation management",
+      });
       return;
     }
     next();
@@ -1010,6 +1086,7 @@ export function createInstallationServer(
     );
     void (async () => {
       const brokerDeploymentAvailable = host && (await restarts.brokerDeploymentAvailable());
+      const labSelfUpdateAvailable = host && (await labRuntime.blocker()) === null;
       const brokerCompatible = host ? ((await executor.brokerCompatible?.()) ?? false) : false;
       const monitorCompatible = host ? ((await executor.monitorCompatible?.()) ?? false) : false;
       const coordinator = await coordinatorCapability();
@@ -1084,6 +1161,11 @@ export function createInstallationServer(
                 executor.verifyHelperRecovery,
               ),
               ownerApprovalRequired: !delegatedMaintenance,
+            },
+            // Lab self-updates are approved by the Lab installation type, never by request.
+            labSelfUpdate: {
+              available: labSelfUpdateAvailable,
+              ownerApprovalRequired: false,
             },
             sessionHostJob: {
               available: host && restarts.sessionHostAvailable(),
@@ -1240,6 +1322,7 @@ export function createInstallationServer(
             req.query.engineRestart === "1",
             req.query.hostLauncherUpdate === "1",
             req.query.engineRecovery === "1",
+            req.query.bootEntrySwitch === "1",
           ),
         });
         void drainRestarts();
@@ -1261,6 +1344,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
           );
     },
@@ -1288,6 +1372,7 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     });
   });
@@ -1797,6 +1882,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
       );
   });
@@ -1841,8 +1927,34 @@ export function createInstallationServer(
         req.query.engineRestart === "1",
         req.query.hostLauncherUpdate === "1",
         req.query.engineRecovery === "1",
+        req.query.bootEntrySwitch === "1",
       ),
     );
+  });
+
+  // Host agents may request a lab self-update; the Lab installation type approves it.
+  const isHostAgent = (req: Request) =>
+    matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash);
+  app.post("/api/installation/lab-update-requests", (req, res, next) => {
+    if (!isHostAgent(req)) {
+      res.sendStatus(401);
+      return;
+    }
+    const input = LabUpdateRequestSchema.parse(req.body ?? {});
+    void labRuntime.updates.request(input, "host-agent").then((update) => {
+      res.status(201).json(update);
+      return drainRestarts();
+    }, next);
+  });
+  app.get("/api/installation/lab-update-requests/:id", (req, res, next) => {
+    if (!isHostAgent(req)) {
+      res.sendStatus(401);
+      return;
+    }
+    void labRuntime.updates.get(req.params.id).then((update) => {
+      if (!update) return res.sendStatus(404);
+      return res.json(update);
+    }, next);
   });
 
   app.post("/api/installation/container-agents", (req, res, next) => {
@@ -1872,6 +1984,88 @@ export function createInstallationServer(
         next(error);
       }
     })();
+  });
+
+  // Read-only overview of every environment. Observer tokens are coordinator-issued
+  // service principals; they authorize this route and nothing else.
+  const observers = new ServicePrincipalStore(config.stateDir, "overview-observers.json");
+  const overview = new InstallationOverviewReader(
+    config,
+    overviewDependencies ?? productionOverviewDependencies(config),
+  );
+  let overviewCache: {
+    at: number;
+    settled: boolean;
+    value: Promise<InstallationOverview>;
+  } | null = null;
+  const OVERVIEW_CACHE_MS = 5_000;
+  app.get("/api/installation/overview", (req, res, next) => {
+    void (async () => {
+      try {
+        const token = extractHttpBearerToken(req.header("authorization"));
+        const observer = token ? await observers.authenticate(token) : null;
+        if (!matchesToken(token, config.hostAgentTokenHash) && !observer) {
+          res.sendStatus(401);
+          return;
+        }
+        // Coalesce polling clients so each daemon sees at most one read per interval.
+        // A read still in flight is always reused: overlapping reads would share one
+        // daemon client ID and displace each other's session.
+        if (
+          !overviewCache ||
+          (overviewCache.settled && Date.now() - overviewCache.at > OVERVIEW_CACHE_MS)
+        ) {
+          const entry = { at: Date.now(), settled: false, value: overview.read() };
+          overviewCache = entry;
+          entry.value.then(
+            () => {
+              entry.settled = true;
+              entry.at = Date.now();
+              return undefined;
+            },
+            () => {
+              if (overviewCache === entry) overviewCache = null;
+            },
+          );
+        }
+        res.json(await overviewCache.value);
+      } catch (error) {
+        next(error);
+      }
+    })();
+  });
+  function requireHostAgent(req: Request, res: Response, next: NextFunction) {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(403);
+      return;
+    }
+    next();
+  }
+  app.get("/api/installation/overview/observers", requireHostAgent, (_req, res, next) => {
+    observers.list().then((list) => res.json({ observers: list }), next);
+  });
+  app.post("/api/installation/overview/observers", requireHostAgent, (req, res) => {
+    const label = typeof req.body?.label === "string" ? req.body.label : "";
+    observers
+      .create({ label, permissions: ["workspace.read"], issuerPrincipalId: "host-agent" })
+      .then(
+        (created) => res.json(created),
+        (error: unknown) =>
+          res
+            .status(400)
+            .json({ error: error instanceof Error ? error.message : "Invalid observer" }),
+      );
+  });
+  app.post("/api/installation/overview/observers/:id/revoke", requireHostAgent, (req, res) => {
+    observers.revoke(String(req.params.id), "host-agent").then(
+      (observer) => res.json({ observer }),
+      (error: unknown) =>
+        res
+          .status(404)
+          .json({ error: error instanceof Error ? error.message : "Unknown observer" }),
+    );
   });
 
   // Public setup metadata contains a recovery path, never credentials or connection secrets.
@@ -2213,6 +2407,59 @@ export function createInstallationServer(
     res.json({ ...preference, services: daemonAutomation.servicePermissions() });
     void drainRestarts();
   });
+  app.post("/api/installation/owner/custom-domain/query", (_req, res, next) => {
+    void customDomain.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/custom-domain/change", (req, res, next) => {
+    void customDomain.change(req.body).then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/live-dev/query", (_req, res, next) => {
+    void liveDev.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/live-dev/change", (req, res, next) => {
+    void liveDev.change(req.body).then((status) => res.json(status), next);
+  });
+  const installationTypeStatus = async () => {
+    const record = await reportedInstallationType(config.stateDir);
+    const reason = await labRuntime.blocker();
+    return {
+      type: record.type,
+      revision: record.revision,
+      changedAt: record.changedAt,
+      labUpdateAvailable: reason === null,
+      labUpdateReason: reason,
+      releaseChannel: record.releaseChannel,
+    };
+  };
+  app.post("/api/installation/owner/installation-type/query", (_req, res, next) => {
+    void installationTypeStatus().then((status) => res.json(status), next);
+  });
+  // Owner changes run one at a time, so compare-and-set cannot interleave.
+  let installationTypeChanges: Promise<unknown> = Promise.resolve();
+  app.post("/api/installation/owner/installation-type/change", (req, res, next) => {
+    const change = installationTypeChanges.then(() =>
+      changeInstallationType(config.stateDir, req.body),
+    );
+    installationTypeChanges = change.catch(() => undefined);
+    void change.then(installationTypeStatus).then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/lab-updates/query", (_req, res, next) => {
+    void labRuntime.status().then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/lab-updates", (req, res, next) => {
+    const input = LabUpdateRequestSchema.parse(req.body ?? {});
+    void labRuntime.updates.request(input, "owner").then((update) => {
+      res.status(201).json(update);
+      return drainRestarts();
+    }, next);
+  });
+  app.post("/api/installation/owner/lab-updates/cancel", (req, res, next) => {
+    const input = LabUpdateCancelSchema.parse(req.body);
+    void labRuntime.updates.cancel(input.id, input.revision).then((update) => {
+      res.json(update);
+      return drainRestarts();
+    }, next);
+  });
   app.post("/api/installation/owner/maintenance-delegation/query", (req, res) => {
     const available = daemonAutomation.legacyPolicyAvailable();
     const status = maintenanceDelegationStatus(config.stateDir);
@@ -2234,6 +2481,8 @@ export function createInstallationServer(
       throw new RestartRequestError(
         "Enrolled installations require their exact standing maintenance grant.",
       );
+    // COMPAT(separateInstallationManagement): an older client's `management` field is
+    // ignored; the response reports management derived from the full grant.
     const status = changeMaintenanceDelegation(config.stateDir, req.body);
     coordinatorRequests?.revokeAutomatic();
     restarts.refreshApprovalPolicy();
@@ -2310,6 +2559,7 @@ export function createInstallationServer(
               req.query.engineRestart === "1",
               req.query.hostLauncherUpdate === "1",
               req.query.engineRecovery === "1",
+              req.query.bootEntrySwitch === "1",
             ),
             job,
             delegation,
@@ -2363,6 +2613,7 @@ export function createInstallationServer(
       decision.engineRestartPlanSha256,
       decision.hostLauncherPlanSha256,
       decision.engineRecoveryPlanSha256,
+      decision.bootEntrySwitchPlanSha256,
     );
     res.json(
       withDelegation(
@@ -2380,6 +2631,7 @@ export function createInstallationServer(
           req.query.engineRestart === "1",
           req.query.hostLauncherUpdate === "1",
           req.query.engineRecovery === "1",
+          req.query.bootEntrySwitch === "1",
         ),
         job,
         requestedDelegation(config.stateDir, req.query.delegatedRequests === "1"),
@@ -2413,14 +2665,47 @@ export function createInstallationServer(
   };
   app.post("/api/installation/owner/upgrades", (req, res, next) => {
     const { release } = UpgradeRequestSchema.parse(req.body);
-    void requireUpgrades()
-      .request(release)
+    void labRuntime.updates
+      .active()
+      .then((active) => {
+        if (active)
+          throw new RestartRequestError("Wait for the lab self-update to finish before upgrading.");
+        return requireUpgrades().request(release);
+      })
       .then((upgrade) => res.status(201).json(upgrade), next);
   });
   app.post("/api/installation/owner/upgrades/:id/decision", (req, res) => {
     const decision = UpgradeDecisionSchema.parse(req.body);
     res.json(requireUpgrades().decide(req.params.id, decision.revision, decision.decision));
     void drainRestarts();
+  });
+  const requireUpdates = () => {
+    const releaseUpdates = requireReleaseRuntime().updates;
+    if (!releaseUpdates)
+      throw new RestartRequestError(requireReleaseRuntime().upgradeStatus().detail);
+    return releaseUpdates;
+  };
+  // The status after a check; an upgrade the check approved advances at once.
+  const statusAfterCheck = async () => {
+    await requireUpdates().checkAgain();
+    void drainRestarts();
+    return requireReleaseRuntime().upgradeStatus();
+  };
+  // The owner's update policy. A changed policy runs a check at once, so switching channel
+  // or mode offers or approves the matching release without waiting for the hourly check.
+  app.post("/api/installation/owner/update-policy", (req, res, next) => {
+    const change = UpdatePolicyChangeSchema.parse(req.body);
+    void requireUpdates()
+      .changePolicy(change)
+      .then(statusAfterCheck)
+      .then((status) => res.json(status), next);
+  });
+  app.post("/api/installation/owner/update-check", (_req, res, next) => {
+    void statusAfterCheck().then((status) => res.json(status), next);
+  });
+  // Read-only for agents: the Mechanic reports stale offers and Builds plans drains from it.
+  app.get("/api/installation/update-status", authenticateUpdate, (_req, res) => {
+    res.json(requireUpdates().agentStatus());
   });
   const webUi = (origin: string, local = false) =>
     createWebUiMiddleware({
@@ -2439,6 +2724,15 @@ export function createInstallationServer(
       }),
     });
   const canonicalWebUi = webUi(config.public.origin);
+  const liveDevWebUi = liveDev.middleware(() => ({
+    ...config.public,
+    name: installationName.read(),
+    origin: config.public.origin,
+    environments: config.public.environments,
+    profileSharing: true,
+    idleRestarts: Boolean(executor.inspect && executor.restartWhenIdle),
+    gracefulRestarts: Boolean(executor.holdCurrentTurns && executor.releaseCurrentTurns),
+  }));
   const recoveryWebUi = config.recoveryOrigin ? webUi(config.recoveryOrigin) : canonicalWebUi;
   const localWebUi = new Map<string, ReturnType<typeof webUi>>();
   app.use((req, res, next) => {
@@ -2452,7 +2746,13 @@ export function createInstallationServer(
       middleware(req, res, next);
       return;
     }
-    (isRecoveryRequest(req) ? recoveryWebUi : canonicalWebUi)(req, res, next);
+    if (isRecoveryRequest(req)) {
+      recoveryWebUi(req, res, next);
+      return;
+    }
+    // The recovery and local origins always serve the static interface, so a broken live
+    // edit can never take every route to Installation controls with it.
+    liveDevWebUi(req, res, () => canonicalWebUi(req, res, next));
   });
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError) {
@@ -2465,6 +2765,18 @@ export function createInstallationServer(
     }
     if (error instanceof InstructionRequestError) {
       res.status(error.status).json({ error: error.message });
+      return;
+    }
+    if (error instanceof CustomDomainConflict || error instanceof CustomDomainUnavailable) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    if (
+      error instanceof LiveDevStateError ||
+      error instanceof LiveDevUnavailable ||
+      error instanceof InstallationTypeStateError
+    ) {
+      res.status(409).json({ error: error.message });
       return;
     }
     if (error instanceof InstallationSettingsInvalidUpdate) {
@@ -2492,6 +2804,15 @@ export function createInstallationServer(
   });
   return Object.assign(app, {
     drainRestarts,
+    /** Runs the release update check, then advances an upgrade it approved automatically. */
+    checkReleases: async () => {
+      if (!releaseRuntime?.updates) return;
+      await releaseRuntime.updates.check();
+      void drainRestarts();
+    },
+    /** Fast Refresh socket for live dev mode; true when handled. */
+    handleLiveDevUpgrade: liveDev.upgrade,
+    stopLiveDev: liveDev.stop,
     operationalQueueSummary: () => restarts.operationalSummary(),
     setOperationalActivitySink: restarts.setOperationalActivitySink.bind(restarts),
     assertRegistrationReadiness: standingRuntime.assertRegistrationReadiness,

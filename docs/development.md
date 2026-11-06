@@ -704,13 +704,27 @@ Get the session ID from the agent JSON (`persistence.sessionId`), then:
 ~/.codex/sessions/{YYYY}/{MM}/{DD}/rollout-{timestamp}-{session-id}.jsonl
 ```
 
-## Builds gate marker
+<a id="builds-gate-marker"></a>
 
-While Vorteo :: Builds runs an install gate, it writes `/Users/vtn/.local/share/vorteo-host/state/builds-gate-running.json` with the gate's `tip`, `startedAt` and `pid`. Before a full or heavy test suite, such as the coordinator bootstrap, renewal or restart suites or a whole package suite, check the marker. If it exists and its `pid` is alive, wait for the gate to finish, so your run neither slows the gate nor times out under its load. A marker whose `pid` has exited does not block. Run heavy suites under `nice -n 10` either way.
+## Heavy-job queue
+
+Run heavy work through one machine-wide slot: server or web builds, full typechecks, dependency installs, browser suites and whole-package or coordinator bootstrap, renewal or restart suites. Focused single-file tests do not need it.
 
 ```sh
-M=/Users/vtn/.local/share/vorteo-host/state/builds-gate-running.json; [ -f "$M" ] && kill -0 "$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["pid"])' "$M")" 2>/dev/null && echo "Builds gate running; wait"
+node scripts/heavy-job.mjs run --label "server build" -- npm run build:server
+node scripts/heavy-job.mjs status
 ```
+
+- **Foreground commands only.** Builds, typechecks and test runs must stay in the original job process group. Commands that daemonize or move descendants into another session or group, including `setsid()`, are outside this contract. The slot is released when the original group ends; escaped descendants do not retain it.
+- **Status counts commands.** Compatibility guards stay on disk for old callers, but status groups them with their originating ticket into one row. If the wrapper dies, the row shows the surviving child ownership.
+- **One at a time.** Tickets order the waiters; an atomic rename of a populated ownership directory grants the slot. Late ticket publication cannot displace a running job. Finished jobs remove their claim, and waiters recover claims whose owner process exited without a timeout that could evict a stalled live owner. Cleanup removes only the observed owner's entry, so concurrent recovery cannot remove a successor's claim. No per-thread grant from Builds is needed, and spare agent capacity is not build capacity.
+- **Legacy rollout.** New callers publish an earliest ticket that old callers honor and wait for old jobs already marked running. An old caller paused after its final queue check can still launch after a guard appears. This window ends as old worktrees pick up `main` and their finite jobs finish; fresh CI checkouts use one version. Claims record boot and process-start identity. A child starts only after its process-group ownership is published, so killing its wrapper does not free the slot.
+- **Builds gate first.** While Vorteo :: Builds runs an install gate, it writes `~/.local/share/vorteo-host/state/builds-gate-running.json` with the gate's `tip`, `startedAt` and `pid`. A marker with a live `pid` holds the slot ahead of every ticket; Builds runs the gate's own heavy steps through the queue too.
+- **Memory guard, not load.** The holder starts only when memory allows. Critical macOS memory pressure, under 10% free memory, or swap-outs above 1 MiB/s defer the start, and the reason is printed. Load average is ignored: the Dev virtual machine, the Host daemon and indexing keep it high on an otherwise healthy machine. Routine "warn" pressure does not defer.
+- **Background priority.** The job runs under `taskpolicy -b nice -n 10` on macOS and `nice -n 10` elsewhere, so it uses efficiency cores and throttled I/O while agents, the Dev machine and the interface keep priority.
+- **Bounded tests.** The queue sets `VITEST_MAX_WORKERS=2` and `E2E_WORKERS=1` unless the caller already set them.
+
+The queue lives in `~/.local/share/vorteo-host/state/heavy-jobs` and serializes work on one computer. `VORTEO_HEAVY_QUEUE_DIR` overrides it; a Dev container has its own queue.
 
 ## Testing with Playwright MCP
 

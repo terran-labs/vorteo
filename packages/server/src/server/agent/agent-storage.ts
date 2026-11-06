@@ -17,6 +17,7 @@ import {
   mutateQuestions,
   QuestionError,
   type AnsweredQuestions,
+  type OwnerAnswerInput,
 } from "./questions/model.js";
 import { AgentTaskItemSchema } from "@getpaseo/protocol/messages";
 import type { AgentTaskItem } from "@getpaseo/protocol/agent-types";
@@ -79,6 +80,7 @@ const SERIALIZABLE_CONFIG_SCHEMA = z
     usageLimitHold: UsageLimitHoldSchema.optional(),
     quotaReserve: QuotaReserveConfigSchema.optional(),
     mcpServers: z.record(z.string(), z.any()).nullable().optional(),
+    toolAccess: z.literal("none").optional(),
   })
   .nullable()
   .optional();
@@ -139,6 +141,11 @@ const STORED_AGENT_SCHEMA = z.object({
   features: z.array(AgentFeatureSchema).optional(),
   persistence: PERSISTENCE_HANDLE_SCHEMA,
   lastError: z.string().nullable().optional(),
+  /**
+   * The last reported usage, kept so the Context window card survives a daemon restart. Written
+   * with the record's other changes, not on every streamed update, so it can trail the live value.
+   */
+  lastUsage: z.record(z.string(), z.number()).optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
@@ -164,6 +171,7 @@ export type SerializableAgentConfig = Pick<
   | "usageLimitHold"
   | "quotaReserve"
   | "mcpServers"
+  | "toolAccess"
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
@@ -543,10 +551,7 @@ export class AgentStorage {
     return structuredClone(committed);
   }
 
-  async answerQuestion(
-    agentId: string,
-    input: { questionId: string; answer: string; answeredBy: string },
-  ): Promise<AnsweredQuestions> {
+  async answerQuestion(agentId: string, input: OwnerAnswerInput): Promise<AnsweredQuestions> {
     await this.load();
     let committed: AnsweredQuestions | null = null;
     await this.queueRecordMutation(
@@ -621,6 +626,7 @@ export class AgentStorage {
       const record = mutate(existing);
       if (!record) return undefined;
       preserveOwnedRecordFields({ record, existing, options });
+      preserveToolAccess(record, existing);
       // Loading sessions and metadata writers can hold snapshots from before
       // a reserve transition. All writes preserve the newest durable revision.
       const reserve = existing?.config?.quotaReserve;
@@ -980,6 +986,13 @@ function preserveOwnedRecordFields({ record, existing, options }: OwnedRecordFie
   if (!options.checklistWrite) preserveManagedChecklist(record, existing);
   if (!options.blockedReviewWrite && existing)
     record.lastBlockedReviewAt = existing.lastBlockedReviewAt;
+}
+
+/** Tool access is fixed at creation. No later snapshot or update can widen it. */
+function preserveToolAccess(record: StoredAgentRecord, existing: StoredAgentRecord | null): void {
+  if (existing?.config?.toolAccess === "none" && record.config?.toolAccess !== "none") {
+    record.config = { ...record.config, toolAccess: "none" };
+  }
 }
 
 class CorruptJournalError extends Error {

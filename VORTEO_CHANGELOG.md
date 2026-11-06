@@ -1,8 +1,623 @@
 # Vorteo changelog
 
-Vorteo change history, covering features, fixes, documentation, tests, tooling and upstream integration. Every commit adds a dated entry headed Unreleased; a release preparation heads its entry with the new calendar version, and the Unreleased entries below it belong to that release. See the [commit workflow](docs/release.md#vorteo-release-notes).
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Integrate shared Voice credential sync with current main, including the latest installation authority retry behavior. Validated credential adoption, delivery, revision conflicts and standalone fallback with focused tests and typechecks before deployment.
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
+
+## 26.11.503 - 2026-11-05
+
+Beta for VortLab: custom domains, lab self-update and the Mechanic CI duty. Supersedes the untagged 26.11.501 and 26.11.502 after main moved.
+
+### Tooling
+
+- Merged current `main` (Host delivery #142) and the Mechanic CI duty into the VortLab lab beta.
+
+### Factory charter changes
+
+- Mechanic: every review now measures CI, test and build cost (jobs per push, required-check runner wait, superseded and flaky runs, rebase churn) and proposes fixes through a PR, such as routing heavy suites to the merge queue, nightly or release, path filters, caching, concurrency cancellation and conflict-free changelog fragments. Required-check and merge queue changes go to the owner. It alerts when required checks wait over 15 minutes or one push starts over 10 jobs.
+- Optimizer (Vorteo System): reviews the Vorteo repository's CI and build cost the same way, read only.
+
+## Unreleased - 2026-11-05
+
+- Preserve the working setup token when an OAuth upgrade cannot verify a persisted, renewable grant. Temporary storage failures no longer trigger logout during upgrade verification.
+
+## Unreleased - 2026-11-05
+
+- Pin Claude Code 2.1.318, which fixes sign-outs caused by status commands exiting before a refresh is saved. Managed account health checks now read storage without launching Claude.
+- Keep account refresh recoverable through temporary outages, adopt credentials saved before a failed request, and distinguish unreadable storage from a missing login.
+- Keep dependent queued messages after a failed turn and show its delivery error without replaying accepted work.
+- Name the built-in Claude connection Claude (CLI), preserve custom names, and route account creation through one installation flow. Environment access no longer duplicates sign-in controls.
+
+Vorteo change history, covering features, fixes, documentation, tests, tooling and upstream integration. Every commit adds a dated entry headed Unreleased; a release preparation heads its entry with the new calendar version, and the Unreleased entries below it belong to that release. See the [commit workflow](docs/release.md#vorteo-release-notes).
+
+## 26.11.502 - 2026-11-05
+
+Supersedes the untagged 26.11.501 after `main` moved; same contents plus current `main`.
+
+### Tooling
+
+- Merged current `main` (the Unite touch icon fix) into the VortLab lab beta before release.
+- The secret scan allows the UUID idempotency key fixture in the Claude limit reset tests, a false positive that blocked every push from the shared repository.
+
+## 26.11.501 - 2026-11-05
+
+Beta for VortLab: custom domains for installer-made installations, and lab self-update.
+
+### Features
+
+- Custom domain: installer-made installations can set a custom domain from Installation controls. Saving it admits the domain on the Host and Dev daemons and restarts only the coordinator, restoring the previous configuration if the coordinator does not come back.
+- Installation type and release channel: each installation is Stable or Lab and follows the Stable or Beta release channel. Both default to Stable.
+- Lab self-update: a Lab installation can rebuild itself from its live checkout through a tracked job that swaps the Host and coordinator releases, with rollback.
+
+## Unreleased - 2026-11-05
+
+### Added
+
+- Installer-made installations can set a custom domain from Installation controls. Saving it allows the domain on the Host and Dev daemons and restarts only the coordinator. If the coordinator does not come back, the previous settings are restored automatically.
+- Installations have a type (Stable or Lab) and a release channel (Stable or Beta, Stable by default for every installation). A Lab rebuilds and swaps its own coordinator and Host daemon from its live checkout through a tracked, auto-approved lab self-update, with rollback.
+
+## Unreleased - 2026-11-05
+
+### Features
+
+- A middle click anywhere in Vorteo outside a link now starts and stops dictation like a triple click. Map a three-finger tap to middle click, on a Mac with a helper such as MiddleClick or on an Android touchpad, to dictate with a three-finger tap. iPads cannot make that mapping, so use the triple click there.
+
+### Fixes
+
+- The thread Chrome switch shows a browser icon labeled On or Off, with the tooltip "Enable Chrome developer access" or "Disable Chrome developer access". While a change is on its way to the daemon, a spinning ring circles the icon and further presses are ignored, so a second tap can't undo the first.
+
+### Fixes
+
+- An installation whose Dev is not an installer-made deployment moves only its Host to the installer layout. Its Dev container, network, boot entry and Factory settings stay untouched, and release upgrades skip the Dev step instead of rebuilding it. Adoption treats Dev as unmanaged only when Docker shows a running container publishing the Dev endpoint from a folder without the installer marker; anything else fails closed. Upgrades, snapshots and restores then cover the Host only, and a restore refuses an older snapshot that holds Dev's home.
+- Host installations from before the one-command installer whose coordinator runs a configuration from a reviewed plan folder can now move to the installer layout in place, from Installation controls or `install.sh`. Detection found no installation there, so upgrades and release updates stayed unavailable. Adoption now reads the configuration the coordinator actually runs instead of a stale copy from setup, which would have dropped every later coordinator setting, and writes the result to the installation's own `coordinator.json` without touching the plan's hash-pinned file. Only a record with the same installation ID counts, and a resumed adoption stops if the coordinator's configuration changed meanwhile.
+
+## 26.11.500 - 2026-11-05
+
+Beta for VortLab, delivered by Upgrade from Installation controls.
+
+### Features
+
+- Live dev status indicator: in Live dev mode, every owner page shows a small status circle (live, safe, slow, starting or down) that opens an explanation with links to the static interface, Live dev and Installation settings. It replaces the purple Live dev marker.
+
+### Fixes
+
+- When a fresh live page times out under load, the live dev proxy serves the last page from the same dev server instead of silently falling back to the static interface.
+- Live dev preparation builds the server package, so the first live commit's typecheck no longer fails on missing declarations.
+- Usage rings and the context donut no longer log an invalid DOM property warning in development.
+
+## Unreleased - 2026-11-05
+
+### Maintenance
+
+- Placed the Custom domain card directly after the daemon automation control in Installation controls.
+
+### Fixed
+
+- Site wrappers such as Unite now build a sharp Vorteo app icon. The web interface serves a 1024px touch icon from its `apple-touch-icon` link and from the precomposed and iPhone fallback paths, which previously returned the page instead of an image.
+
+## Unreleased - 2026-11-05
+
+### Tooling
+
+- Merged the latest `main` documentation and Factory issue template into the approved heavy-job queue fix, preserving both sides' entries. The queue implementation and tests are unchanged.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merged current main into the Factory task template branch, retaining both sides of the documentation records.
+
+## Unreleased - 2026-11-04
+
+### Added
+
+- Added a Factory task issue template with prompts for the goal, acceptance criteria, scope limits and notes.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Heavy-job status now shows one logical job instead of listing compatibility guards as queued jobs, and falls back to surviving child ownership after wrapper death. The documented workload contract covers foreground commands in the original process group; daemonized or `setsid` descendants do not retain the slot.
+
+- Opening a parent thread restores its provider subagents through live updates after an earlier sidebar poll returned an empty list.
+
+- Listing a thread's provider subagents no longer starts or resumes its provider session. Sidebar polling no longer retries threads that cannot load. An unloaded thread now answers at once with no subagents; opening the thread loads it, and its subagents arrive through live updates.
+- Project synchronization also renames the sidebar membership of Factory-managed workspaces when their project's key changes. A Factory role workspace grouped under Dev's old Vorteo System key showed as a second Vorteo System row.
+- Heavy-job claims now validate process start and boot identity, retain ownership while the job process group survives its wrapper, and publish legacy-visible guards. New callers wait for marked legacy holders; an old caller already past its final queue check remains a documented rollout window.
+- The heavy-job queue now acquires its slot atomically, preventing overlapping jobs when a delayed caller publishes an older ticket or a ticket rewrite briefly hides the holder. Waiters recover exited owners without removing a successor's claim. CLI options and environment variables are unchanged.
+
+### Tooling
+
+- Merged current `main` into the heavy-job queue fix, preserving both sides' entries. The approved queue implementation and tests are unchanged.
+
+- Merged current `main` into the provider subagent polling fix, retaining the service principals changes.
+
+- Merged current `main` into the service principals branch before handback.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch again before delivery.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch for handback.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- Cancel grants, like message grants, now apply only to tool-less agents. Service sessions read single agents and timelines only through agent grants. Directory data they receive with daemon-wide read, and the installation overview, is projected to identity, status and timestamps, without paths, scripts, terminals, git, forge or permission data. Workspace removals that carry an emptied project are projected too. The grant docs and CLI help warn that a workspace read grant covers agents created there later.
+
+## Unreleased - 2026-11-04
+
+### Tooling
+
+- Merged current `main` into the service principals branch before delivery.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge current `main` into the release updates branch, keeping both sides' changelog and inventory entries.
+
+### Added
+
+- Installations update themselves from GitHub Releases. Each installation chooses manual or automatic updates and the stable or beta channel in Settings. The coordinator checks hourly and offers each new release once in the sidebar's Open questions card, with its summary, a security marker, changed Factory charters and the rollback path. Install after current work holds new Host turns and waits for running turns and Dev agents before restarting; automatic mode installs that way without asking. Agents read the policy with `installation-agent.mjs update-status`. Older coordinators keep the previous Settings behavior.
+- While a release upgrade waits for current work, Install now ends the wait from Open questions or Settings, and turning automatic updates off stops an automatic upgrade before its Host restart.
+- The restart queue lets the owner approve a single reviewed source update to finish current turns first when the decision names its exact digest, as automatic Host updates already do. Combined batches still restart at once.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Synchronize projects across the Host and Dev. The installation coordinator joins each environment's projects by their folder in the shared Projects folder, gives each one fixed key that git no longer re-derives, and registers a project on every environment where its folder exists. Git remotes no longer join different folders. Vorteo System gets one identity, and Vorton appears on the Host.
+- File new worktrees under their repository's project even when the requesting thread names another, and let a misfiled checkout or worktree move into its repository's project. Builders started from Vorteo System had filed Vorton worktrees under it.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Recover a wedged Dev through the tracked supervisor maintenance route. `supervisorMaintenance` is a registered coordinator setting that an owner-reviewed renewal can carry, and `scripts/maintenance/dev-supervisor-recovery.mjs` prepares a protected plan for it. After a failed Dev source activation leaves the `paseo` program FATAL or its worker failing, the plan selects the previous release named by the protected Host receipts, starts only `paseo`, and verifies a replacement worker and container health, with intent, rollback and result records. It refuses anything else and never replays.
+
+### Changed
+
+- Supervisor maintenance runs when Dev does not answer and then accepts any worker that answers. The review of such a request offers **Repair Dev supervisor now, Dev is not answering**, an immediate approval of the exact plan, in place of a finish-turns choice it cannot honor.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Record in the customizations inventory that the Codex Chrome toggle launches Chrome DevTools MCP with its usage statistics and CrUX lookups off.
+
+## Unreleased - 2026-11-03
+
+### Improvements
+
+- Add an owner-only Chrome toggle to Codex threads on machines with Google Chrome. Threads with it on attach a pinned Chrome DevTools MCP server to the owner's running Chrome, with its usage statistics and CrUX lookups off, restarting the thread's Codex process on the next turn and keeping the conversation. It is off by default, needs remote debugging turned on once at chrome://inspect/#remote-debugging, and is never available to quota-managed workers or enabled by agents.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Show a Chrome switch next to Choose profile in threads that offer Chrome. Profile-based composers hid every thread toggle, so the owner had no way to turn on Claude in Chrome. The switch changes only that thread and is not saved as a default for new threads.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Clear completed removes every completed task from the card at once instead of one row at a time. Deletes still run in order in the background; tasks left by an error reappear with it.
+- Keep hover tooltips open while another part of the window scrolls. A streaming agent reply scrolls the chat, which closed any task tooltip you were reading; tooltips now close only when a scroll moves the item they describe.
+
+### Changed
+
+- Task cards are agent managed by default. Rows no longer offer completion toggles, edit pencils or dragging, and the header hides Add task, until you press the new Edit tasks toggle at the right end of the card header, which stays pushed in while editing. Edit mode resets when you switch threads or reload. Interface only.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Hovering a workspace in the sidebar shows where it lives: its root folders, project and project folders as a breadcrumb, so pinned workspaces say which project they belong to.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Pinned in the sidebar now looks and behaves like a root folder: a pin icon, the same title size as folders, and the whole row folds it. Pinned workspaces indent under it.
+- Pinned workspaces also stay in their project or status group, marked with a pin icon before their right-side icons, so pinning no longer moves them out of place.
+
+### Added
+
+- Focus into Pinned with its Focus button to see only pinned workspaces.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Show working subagents in the collapsed Subagents tile as their count inside a spinning ring. When every subagent is idle, the tile keeps its icon above the count.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Full maintenance delegation may approve a renewal that attaches the preview broker deployment or broker settings, as the owner decided. Consumer deployment and channel rebind still need the owner.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Let an owner-reviewed coordinator renewal attach the preview broker deployment or broker channel configuration, one section per renewal, so installations that update through renewals can restore the managed preview broker. Each section passes its existing protected file, scope and recovery reader checks before admission, rollback keeps the live configuration, and maintenance delegation cannot approve it. Consumer deployment and channel rebind remain separate owner decisions.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Merge current `main` into the sidebar placement branch, keeping both sides' changelog and customizations entries.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- New projects, workspaces and folders now appear as the first row of the list that holds them, and stay where they are on every device. Before, the sidebar saved new rows only on the device that saw them, so each sync update could move them, and a project with a saved folder order slotted new workspaces into the middle. In the Created and Last prompt sorts, workspaces inside folders follow the sort again, and drops there change only folder membership and folder positions. A device waits for its first Host snapshot before placing new rows, so it never replays a stale order over newer drags.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The Vorteo logo appears immediately in the startup loader, page loaders and tool-call rows. Each mark draws the master's traced silhouette with a 5 KB inline shading overlay instead of fetching the 57 KB master into two image masks. Theme colors and the loop shading are unchanged.
+
+### Live tweaks
+
+- Live dev shows a status indicator at lower right on every owner page, including the static fallback, with a details panel and actions, and reuses the last live page when the dev server is slow instead of falling back to static.
+
+## Unreleased - 2026-11-04
+
+### Live tweaks
+
+- Usage rings and the context donut no longer log an invalid transform-origin DOM property warning in development; they rotate with an SVG transform instead of react-native-svg's origin prop.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix again, bringing in the combined sidebar footer block and the Dev boot-entry switch fix; the changelog kept every dated entry.
+
+## Unreleased - 2026-11-04
+
+### Maintenance
+
+- Merge main into the sidebar keyboard move fix; the changelog kept both dated entries.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Moving a workspace with the keyboard in the web sidebar now shows its drop line on the first arrow key. Previously an arrow pressed right after Space picked the row up could be lost, so the move could not be placed. The sidebar reorder browser test also opens sorting through the current View preferences menu again.
+
+## Unreleased - 2026-11-04
+
+### Changes
+
+- Each release now ships Claude Code 2.1.311 instead of 2.1.284, so the Host and Dev daemons can offer Haiku 5.5, which needs 2.1.293 or later. Its Keychain item naming, credentials file and storage lock match 2.1.284.
+
+## Unreleased - 2026-11-04
+
+### Fixes
+
+- Live dev mode's first tweak commit no longer fails its typecheck. Preparing the live checkout now builds the server stack, whose declarations the command-line package typechecks against.
+
+## Unreleased - 2026-11-04
+
+- Answering an open question while its thread is busy now reaches the agent within its current turn, the way peer messages do, instead of waiting until the turn ends. Providers that cannot steer, and Pi and OMP, whose steer acknowledgements cannot prove delivery, still receive the answer when the turn finishes; reliable answer steering for Pi and OMP will follow separately. The question card shows the answer as queued until the agent receives it, and the thread message and journal entry are recorded at that moment. Pausing the queue no longer holds an answer back from a busy thread, and a steer whose acknowledgement is lost is settled from provider history instead of being sent again.
+
+### Maintenance
+
+- Merged current `main` into the open question answer delivery fix three times; both sides' entries are kept.
+
+### Changes
+
+- Merge the left sidebar's Open questions, Quotas, footer rows and installation name and version into one block at the bottom of the navigation card, separated by full-width lines. Drag the line above an open section to resize it; double-click restores automatic height. The installation name and version are spaced evenly. The browser demo now shows sample open questions and quota accounts.
+
+## Unreleased - 2026-11-04
+
+### Features
+
+- Triple click anywhere in Vorteo with a mouse or trackpad to start dictating into the active message field; triple click again to stop and edit the text, or press Send. Terminals, file editors and other text fields keep their usual triple-click selection.
+
+## Unreleased - 2026-11-04
+
+### Features
+
+- A reviewed Dev restart can switch Dev's boot entry away from the retired Factory launcher, or back, and verifies the new supervisor and Factory's reported boot form. Only the owner approves it, and its plan: neither automatic approval nor full maintenance delegation applies to the switch or to the coordinator review that sets its plan, and it refuses to run until every Factory gate pins the matching check. That coordinator review shows the full plan: both entries with their full digests, the Host file copied in, and whether it switches to the plain entry or rolls back.
+- Factory's checks around Dev restarts and the Docker restart accept a plain boot after the switch and refuse a boot-form change anywhere else.
+
+### Fixes
+
+- The Dev boot-entry switch reads and hashes its pinned files as paseo. Dev's root has no capabilities, so it could not read the paseo-private Factory entry or the managed releases, and the switch's checks would have refused every plan. A file paseo cannot read is now reported as unreadable rather than changed.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- The Vorteo System browser test, the README and a charter comment now name the Vorteo :: Mechanic workspace instead of the Optimizer.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Update the sidebar projection test's Factory fixture to a per-project Factory member, matching the Factory folder's grouping rule.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Changing a Factory role's provider or profile no longer drops its charter. The new session starts with the role's instructions ahead of the carried context, and the next prompt, sent right away, repeats them in full.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Turning Factory on again with a new repository, or any other change to a role's charter inputs, now updates each role agent's instructions and sends them once with its next heartbeat. Previously the agents kept the old repository's instructions.
+- A heartbeat that fired while Factory was being paused or turned off could rearm itself; it now stays off.
+- Clearing a role's provider or profile now switches the agent back to the default launch, and a launch set by profile alone uses that profile's provider.
+- Factory now records that it owns the Optimizer review pause before pausing it, and keeps the record until a resume succeeds, so a crash or failed resume is finished at the next start.
+- A charter-change notice that fails to reach the Mechanic is retried on the next start or Mechanic heartbeat instead of being dropped.
+- Ordinary projects no longer read Factory state every minute: the sidebar asks only for projects with Factory role workspaces, and its Factory list no longer changes identity on every render.
+- Instruction conflicts are recognized by the exact daemon conflict messages, which the app and daemon now share, instead of by keywords.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Add per-project Factory. Turning Factory on for a project creates, or adopts, five role workspaces (Triage, Foreman, Builds, Releases, Mechanic), each with one chartered agent and a heartbeat; reruns, restarts and a lost state file never create a second. Pause, resume and turn off control the heartbeats, and turning off releases the workspaces while keeping agents and history. On Vorteo System the Mechanic adopts the existing Optimizer agent.
+- Add the project menu's Factory controls: turn on with a GitHub repository, pause, resume and turn off. Role workspaces group in the sidebar's Factory folder in role order, and fresh role status lines appear beneath them.
+- Add editable per-role project instructions with revision checks, history and charter review: when a Vorteo update changes a role's shipped charter, the Mechanic reviews it and the operator accepts or dismisses its proposal. A revision conflict keeps the draft and shows the latest instructions beside it, review diffs show the changed lines in context, and accepting applies only the proposal the operator saw.
+- Choose each role's provider and profile, and the profiles the Foreman gives workers and reviewers, with the existing profile controls.
+- Send a thread to Factory from the tab menu. Triage turns it into one issue, routed through the thread's owning environment and project.
+- Gate Triage, Foreman and Builds heartbeats on a GitHub fingerprint, so an unchanged repository does not wake them; missing evidence always wakes.
+- Add `paseo factory project show|enable|pause|resume|disable|configure`, `paseo factory project status set` and `paseo factory project instructions show|set|propose|acknowledge|resolve`. The daemon serves these RPCs natively through the bundled Factory plugin and advertises Factory workspace membership.
+- `VORTEO_RELEASES=1` admits only `scripts/vorteo-release.mjs tag` and its release tag push, so a Factory Releases thread can tag without Builds rights.
+
+### Changed
+
+- The Vorteo :: Optimizer workspace and newly created Optimizer agents are now titled Mechanic; the stored role and label are unchanged.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- Close the re-review's findings on service messages. A leading `@` in service text is neutralized, because Claude reads `@path` files without a tool. Messages are wrapped in markers with a random per-message tag that the text cannot imitate, and labels lose invisible formatting characters. Expired credentials disconnect their live sessions, including expiries more than 24 days out. Tool-less agents never adopt a hosted session, and resuming with `toolAccess` is owner-only.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- The owner can create a Claude thread that cannot call any tool by setting `toolAccess: "none"` at creation. The daemon attaches no Vorteo tools, MCP servers or plugin tools, and Claude launches with built-in tools disabled, no MCP, plugins, skills, subagents or filesystem settings, and a permission handler that refuses every request. Only the owner can set it, nothing can clear it later, and it is refused for non-Claude providers. Daemons advertise it as `agentToolAccess`. This is the basis for granting service credentials message access to an agent.
+
+## Unreleased - 2026-11-04
+
+### Security
+
+- Tighten service principals after review. Message and cancel grants name exact agents only. Service sessions may use only an explicit list of operations. Service text starting with `/` is refused, and messages reach agents labeled as coming from the service credential. Credentials can expire, and only their issuer or the owner can change them. An unreadable principal store admits nobody and is never overwritten. The installation overview returns a fixed agent projection and strips credentials from URLs. `paseo access service create --expires-at` sets an expiry. Tests cover issuer and expiry limits, the fail-closed store, the operation allowlist and the overview route's token rules.
+
+### Tooling
+
+- Merged current `main` into the service principals branch before fixing review findings.
+
+## Unreleased - 2026-11-04
+
+### Fixed
+
+- Messages sent into a running Claude turn no longer fail with "The provider returned an invalid steerActiveTurn result." The message had already reached Claude, so the error put it back in the composer and every resend delivered another copy. A send that does fail now keeps anything typed meanwhile below the restored message instead of overwriting it.
+
+## 26.11.302 - 2026-11-03
+
+Fix-forward beta for the VortLab bootstrap. 26.11.301 merged but was never tagged because its full checks were not green.
+
+### Fixes
+
+- Settings search finds the Delivery mode row in Installation settings. Live dev mode added the row without a settings catalog entry, which failed the app tests.
+
+### Tests
+
+- The restarted-daemon usage test compares the saved reading with the time its fetch completed, which the registry records, instead of the start time. It failed intermittently on slower runners.
+
+## 26.11.301 - 2026-11-03
+
+Beta bootstrap release for installer-made installations. It carries every change listed below since 26.11.206; 26.11.300 was prepared but never tagged.
+
+### Documentation
+
+- The agent guide points to live dev delivery in the task delivery guide instead of repeating it, keeping the guide within its size budget.
+
+## 26.11.300 - 2026-11-03
+
+Prepared but never tagged; superseded by 26.11.301.
+
+### Features
+
+- Live dev mode: an owner-only Delivery mode in Installation settings that serves the signed-in owner the interface from a live checkout on the Host, with Fast Refresh and a safe link to the published interface.
+- Typed questions: agents can ask yes or no, single-choice and multiple-choice questions answered in one click.
+
+### Fixes
+
+- Upgrades from Installation controls finish on installer-made installations instead of staying "running" with a failed Host build.
+- Provider account connections survive concurrent settings writes, and a Dev container paired after its daemon started syncs accounts after its next daemon start.
+- The message queue reopens its browser storage after the browser closes it.
+- Server tests are green again; the daemon bootstrap no longer names a specific provider.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Agent grants for service principals: give a credential read, steering-message or cancel access to specific agents, or to every agent in a workspace, without any other write access. Use `paseo access service create --grants-file` or `set-grants`; changing grants reconnects the credential's sessions. Granted messages steer with text only, and service sessions receive only data about agents they were allowed to address. A message grant is delegated action: the target agent acts with its own tools, so the docs recommend it only on agents with tools disabled.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Service principals: issue a credential with only the permissions you choose, such as read-only access for a personal dashboard, with `paseo access service create --read-only` or in host Settings under Service access. Only read-only access is issuable for now; service sessions cannot read files, run git or terminal requests, or route to other hosts. Tokens are shown once and stored as hashes, and revoking a principal disconnects it immediately. Clients connect with the new `serviceCredential` option on daemons advertising `servicePrincipals`.
+- One read-only view of the installation: the Host coordinator's overview route returns projects, workspaces and agents from Host and Dev in one call, with each environment's status and errors. It reads each daemon through a read-only principal and accepts observer tokens that authorize nothing else. Host agents use `installation-agent.mjs overview` and `overview-observers`.
+
+### Tooling
+
+- Merged current `main` into the service principals branch before delivery.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- When a provider CLI is too old for its models, the whole profile card now shows the warning border and carries the update notice, instead of nesting a second warning card inside it. An **Upgrade** button opens a new Host workspace in the current project with an editable upgrade task; nothing runs until the owner submits it.
+- The **Profile permissions changed** prompt no longer offers **Recreate chat** while the chat still has an open permission request, which the daemon refuses. It asks the owner to answer that request first.
+- Connecting a Claude or Codex account no longer fails with "Daemon settings changed while verifying installation authority" when account sync writes local settings during the sign-in. The authority read repeats, up to three attempts, against the new settings.
+- A Dev container paired after its daemon started now finds the pairing client when its daemon next starts. Before this, the Dev daemon refused every shared settings request, so Claude accounts connected on the Host never synchronized to Dev.
+
+### Tooling
+
+- Merged current `main` into typed questions before delivery.
+- Merged live dev mode into typed questions for the VortLab bootstrap release.
+- Merged the server test repairs into the VortLab bootstrap release.
+- Merged the provider account connection fixes and current `main` into the VortLab bootstrap release.
+
+### Fixes
+
+- Upgrades from Installation controls finish on installations made by the one-command installer. The coordinator refused to save its own Host build ID, so it relaunched the Host build every two seconds, the overlapping builds failed, and the upgrade stayed running forever.
+- Harden live dev mode after an independent security review. The proxy no longer forwards your session to the dev server, refuses encoded and dotted paths, never redirects off-site, and keeps a failed live page's assets static. The supervisor only signals its own dev server, stops orphaned watchers and stays stopped after you switch to Reliable. The live checkout tool takes its lock atomically, promotes only local branches, checks merges before touching the tree, merges changelog entries as a union and writes its own changelog entry for tweaks.
+
+### Fixed
+
+- Add profile and Edit on a provider page no longer crash Settings with "Couldn't find a navigation object". The profile page now reads navigation from the expo-router copy the app runs on, and still guards unsaved edits; opened outside a navigator, as the chat composer's centered window will be, it simply skips that guard.
+
+## Unreleased - 2026-11-03
+
+### Features
+
+- Ask typed questions. Agents can offer Yes and No, a choice of options or checkboxes, and you answer in one click, with an optional note or your own answer when none fit. Free-text questions now show one editable field pre-filled with the recommendation.
+- Make every line in the Open questions cards the same size as normal sidebar text.
+- Add a Delivery mode to Installation settings. Reliable, the default, serves the published interface. Live dev serves your signed-in browser the interface from a live checkout on the Host, so agents' edits appear within seconds through Fast Refresh. A Live dev marker and a safe interface link keep the published interface one click away, and other browsers and the recovery address always get it.
+- Add a live checkout tool for agents: one-off tweaks with claims and commits, branch promotion and syncing with main, each under a lock that refuses conflicts.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The daemon bootstrap no longer names a provider. Claude usage-limit stops are now recorded by the provider usage service, which restores the upstream rule that keeps the generic bootstrap provider-neutral. Account usage behavior is unchanged.
+
+### Tests
+
+- Server test stubs follow two recent changes: agent manager stubs answer the new history reload check, and the coordinator ledger tests expect its read-only lifecycle view and dispatch status feature. These were the 13 server test failures on Ubuntu and Windows CI.
+
+- Turn release seals on or off through tracked workflows. A reviewed coordinator update with the new `releaseSeals` setting adds or removes exactly `VORTEO_RELEASE_SEALS=enabled` in the coordinator launcher, and the Host launcher update does the same for the Host service once managed release selection is in place. Full maintenance delegation covers both. Any other launcher difference, value or unexpected launcher state is refused with a message naming what differed.
+
+## Unreleased - 2026-11-03
+
+### Documentation
+
+- Builds now states what each long wait is watching, when it started, its usual duration and what ends it, and keeps its checklist current after each install, so the operator can tell progress from a stall.
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Run heavy builds, installs and suites through one queued slot with `node scripts/heavy-job.mjs run -- <command>`. Jobs start in arrival order, show their queue position, wait for a running Builds gate, defer under memory pressure or swapping instead of a load-average limit, and run at background priority with capped test workers.
+
+## Unreleased - 2026-11-03
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Main CI runs now finish instead of being cancelled by the next merge. Merges landed faster than a full run, so no recent main run completed its slowest browser shard. Pull request runs still cancel when superseded, and main keeps at most one queued run.
+- The container smoke frees unused preinstalled SDKs before building, after one run exhausted the runner disk while copying the web interface.
+
+## Unreleased - 2026-11-03
+
+### Tooling
+
+- Merged current `main` into the message queue reconnect fix before delivery.
+- Merged current `main`, including the message queue reconnect fix, into the provider account connection fixes before delivery.
+
+### Tests
+
+- Usage browser tests follow the retained visibility policy: the sidebar Usage summary, its footer icon and window pins stay hidden. Usage tests now open the full-screen Usage route directly, with names that start "direct-route", or through the Quota card's Open Usage link, which gains its first browser coverage. The reversed-refresh case checks each card's percentage before and after the refresh, and tests for the hidden summary and pins are retired. The glossary documents the policy. The Japanese Usage test now fails on a product regression: the Paseo merge replaced the translated Usage Settings labels (Percentages, Used, Remaining) with fixed English text.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- The message queue reopens its saved-queue storage after the browser closes the connection. It used to show "The database connection is closing" until the page reloaded, and Retry failed the same way.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Start the terminal worker when its home folder rejects chmod on a socket, as Docker Desktop virtiofs homes do. The Dev daemon failed to start on the upstream sync release; the socket's folder stays owner-only.
+
+## Unreleased - 2026-11-03
+
+### Added
+
+- Name the hosted agents holding a pending session host upgrade in the Session host card: those waiting for the owner's answer first, then those running a turn or still starting. Idle hosted agents are left out because they leave after about five quiet minutes. Interface only, with no wire change; older coordinators show no list.
+- Add `install-execution-host.mjs enable-durable-sessions` for Host setup. It refuses without Host source updates or a matching session host job, installs the job through the owner-approved request, waits until the coordinator sees its host answer, then writes `{"enabled": true}` only when no setting exists. An explicit off survives reruns, a broken setting file is reported as broken, and `--request <id>` resumes waiting on an earlier request.
+
+### Changed
+
+- The installer's removal refusal and `install` output name the durable sessions steps. The docs give the order for uninstalling or rolling back below the session host and say that turning the setting off ends no hosted session.
+
+### Maintenance
+
+- Merge current `main` into the durable sessions branch, keeping both sides' new installer tests and the browser test's mocks for the upgrade and snapshot cards.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- The Factory Overview row in the sidebar now steps in with the Factory workspaces below it at every nesting depth, instead of keeping a fixed indent.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Account tiles name the usage window their reset belongs to, such as Session resets in 3h or Weekly resets in 4 days, so a short session reset no longer reads as the weekly quota resetting.
+
+## Unreleased - 2026-11-03
+
+### Changed
+
+- Make the sidebar's waiting hourglass smaller and neutral grey, with sand that gently drains into a pile over eight seconds and then resets. Reduced motion holds the sand at rest.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Stop rate-limiting Claude account usage checks. The sidebar quota fetcher now waits out Claude's requested delay for each account and keeps showing its last good reading, and the Context window details no longer force a provider usage refresh each time they open.
+- Keep each account's last good usage reading across daemon restarts. While Claude limits checks, the account card shows that reading with its age and a muted note instead of a red error.
+
+## Unreleased - 2026-11-03
+
+### Maintenance
+
+- Remove a duplicate of the 26.11.107 installer note that a merge copied into a 2026-11-01 entry, so Dev source batches accept the release notes unchanged.
+
+## Unreleased - 2026-11-03
+
+### Fixes
+
+- Keep the Context window card after a daemon restart. Agents now save their last reported usage, so the card no longer disappears until each agent runs another turn.
+
+## Unreleased - 2026-11-03
+
+### Changes
+
+- Full maintenance delegation now includes installation management, so trusted Host agents can cancel pending or queued requests whenever the full grant is active, and revoking the grant removes it. Existing full grants gain this automatically, and Installation controls no longer show a separate management switch. Management still cannot approve requests that need the owner, stop claimed work, or change credentials or settings. Enrolled installations do not gain management. Its authority revision now binds the grant epoch and installation credentials. An older client's separate switch is accepted and ignored. A rollback to an older runtime keeps management only where its earlier separate opt-in is still recorded.
+- Explain that a management cancellation must use the `jobSha256` from `management-status`; a digest taken from a `request-*` submission response is refused.
 
 ## Unreleased - 2026-11-03
 
@@ -283,8 +898,6 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Make local relay regression tests exercise the local adapter instead of inheriting the deployment's external forwarding URL.
 
 ## Unreleased - 2026-11-01
-
-- Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
 - Add explicit delegated installation management for authenticated Host cancellation, with exact request checks, revocation and durable receipts. Existing grants and manual-review approvals retain their scope.
 - Import the installation panel's toast API without loading the native toast viewport, so browser review tests can load the panel through React Native Web.

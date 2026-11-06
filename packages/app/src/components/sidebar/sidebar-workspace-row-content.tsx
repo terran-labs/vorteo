@@ -1,3 +1,6 @@
+import { FactoryRoleStatus } from "./factory-status";
+import { useTranslation } from "react-i18next";
+import { useProjectFactory } from "./factory-instructions";
 import { useSidebarWidth } from "./sidebar-width";
 import { TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
 import { WorkspaceLifecycleIndicators } from "@/workspace/lifecycle/indicators";
@@ -18,7 +21,7 @@ import { useSidebarActionSize } from "./use-sidebar-action-size";
 import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
 import { Text, View, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import { CircleAlert, Folder, FolderGit2, Monitor, Pin } from "lucide-react-native";
 import { sidebarIndent } from "@/components/sidebar/indent";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
@@ -37,7 +40,7 @@ import {
 } from "@/components/sidebar/workspace-trailing";
 import { useAppSettings } from "@/hooks/use-settings";
 import { densityIconBox } from "@/styles/density";
-import type { Theme } from "@/styles/theme";
+import { ICON_SIZE, type Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import {
@@ -51,8 +54,12 @@ import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sideba
 import { WorkspaceLabelChip } from "@/workspace-labels/chip";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
 
-const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const managedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
+const foregroundMutedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundMuted,
+});
+const managedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundExtraMuted,
+});
 const managedAlertMapping = (theme: Theme) => ({
   color: theme.colors.surface0,
   fill: theme.colors.foregroundExtraMuted,
@@ -64,6 +71,7 @@ const needsInputColorMapping = (theme: Theme) => ({
 });
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
+const ThemedPin = withUnistyles(Pin);
 
 export function SidebarWorkspaceRowFrame({
   workspace,
@@ -91,7 +99,10 @@ export function SidebarWorkspaceRowFrame({
     if (open) setIsHovered(false);
   }, []);
   const hoverHandlers = useMemo(
-    () => ({ onPointerEnter: handlePointerEnter, onPointerLeave: handlePointerLeave }),
+    () => ({
+      onPointerEnter: handlePointerEnter,
+      onPointerLeave: handlePointerLeave,
+    }),
     [handlePointerEnter, handlePointerLeave],
   );
 
@@ -169,7 +180,10 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   const {
     settings: { workspaceTitleSource },
   } = useAppSettings();
-  const workspaceLabel = resolveSidebarWorkspacePrimaryLabel({ workspace, workspaceTitleSource });
+  const workspaceLabel = resolveSidebarWorkspacePrimaryLabel({
+    workspace,
+    workspaceTitleSource,
+  });
 
   const installedEnvironment = useHasExecutionEnvironment(workspace.serverId);
   const workspaceBranchTextStyle = useMemo(
@@ -215,6 +229,15 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
               {children}
             </View>
           </View>
+          <FactoryRoleStatus
+            serverId={workspace.serverId}
+            projectId={workspace.projectId ?? ""}
+            workspaceId={workspace.workspaceId}
+            enabled={Boolean(
+              workspace.factoryMembership ||
+              workspace.systemMembership?.role === "optimization-runner",
+            )}
+          />
           <WorkspaceMetaRow
             currentBranch={workspace.currentBranch}
             projectName={leadingProjectName}
@@ -355,7 +378,7 @@ export const sidebarWorkspaceRowStyles = StyleSheet.create((theme) => ({
   // How far a workspace row sits inside the group header above it — a project row or a
   // status group header. Both groupings share this one indent, so every grouped workspace row
   // in the sidebar sits on the same rail regardless of how the list is grouped. Pinned rows
-  // are not grouped and stay flush.
+  // indent from the Pinned header the same way.
   //
   // It is row padding rather than a margin on the list, because the row's hover and selected
   // backgrounds have to keep spanning the group's full width. Indenting the container instead
@@ -442,8 +465,11 @@ export function SidebarWorkspaceTrailingActionSlot({ children }: { children: Rea
 
 export function SidebarWorkspaceTrailingDetails({
   workspace,
+  showPinMarker = false,
 }: {
   workspace: SidebarWorkspaceEntry;
+  /** Marks a pinned workspace in its home location; its copy under Pinned needs no marker. */
+  showPinMarker?: boolean;
 }) {
   const {
     settings: { sidebarRowItems },
@@ -453,6 +479,11 @@ export function SidebarWorkspaceTrailingDetails({
   const labels = useWorkspaceLabelDefinitions(workspace.serverId, workspace.labels);
   return (
     <View style={styles.trailingDetails}>
+      {showPinMarker ? (
+        <View testID={`sidebar-workspace-pin-marker-${workspace.workspaceKey}`}>
+          <ThemedPin size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+        </View>
+      ) : null}
       <WorkspaceActivityBadges
         serverId={workspace.serverId}
         workspaceId={workspace.workspaceId}
@@ -470,7 +501,13 @@ export function SidebarWorkspaceTrailingDetails({
         hostOnly
         muted={Boolean(workspace.standing || workspace.factoryMembership)}
       />
-      <WorkspaceLifecycleIndicators workspace={workspace} />
+      <WorkspaceLifecycleIndicators
+        workspace={workspace}
+        hideFactory={Boolean(
+          workspace.factoryMembership?.installationId.startsWith("project-factory:"),
+        )}
+      />
+      <FactoryReviewBadge workspace={workspace} />
       {service ? <ServiceItem summary={service} iconOnly /> : null}
       {sidebarRowItems.activityBadges ? (
         <WorkspaceChecklistProgress
@@ -527,6 +564,24 @@ export function SidebarWorkspaceMenuReveal({
   );
 }
 
+function FactoryReviewBadge({ workspace }: { workspace: SidebarWorkspaceEntry }) {
+  const { t } = useTranslation();
+  const state = useProjectFactory(
+    workspace.serverId,
+    workspace.projectId ?? "",
+    Boolean(
+      workspace.factoryMembership?.installationId.startsWith("project-factory:") ||
+      workspace.systemMembership?.role === "optimization-runner",
+    ),
+  );
+  const role = state.data?.roles.find(
+    (candidate) => candidate.workspaceId === workspace.workspaceId,
+  );
+  return role?.instructions && role.instructions.review !== "none" ? (
+    <Text accessibilityLabel={t("projectFactory.reviewBadge")}>●</Text>
+  ) : null;
+}
+
 // The status dot centres on the title's first line, so both share its line height.
 const TITLE_LINE_HEIGHT = 20;
 
@@ -554,7 +609,9 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     overflow: "hidden",
   },
-  menuBackdrop: (backdrop: SidebarSurfaceBackdrop) => ({ backgroundColor: theme.colors[backdrop] }),
+  menuBackdrop: (backdrop: SidebarSurfaceBackdrop) => ({
+    backgroundColor: theme.colors[backdrop],
+  }),
   touchMenuSpace: { flexShrink: 0, marginLeft: 4 },
   menuEdge: {
     position: "absolute",
@@ -565,7 +622,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   alignedRow: { alignItems: "center" },
   alignedActions: { alignItems: "center", gap: 4 },
-  serviceSlot: { alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  serviceSlot: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
   workspaceRowContent: {
     position: "relative",
   },

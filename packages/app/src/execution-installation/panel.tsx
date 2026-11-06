@@ -1,3 +1,5 @@
+import type { CustomDomainStatus } from "@getpaseo/protocol/custom-domain";
+import type { LiveDevStatus } from "@getpaseo/protocol/live-dev";
 import { useToast } from "@/contexts/toast-api-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
@@ -36,6 +38,8 @@ import {
   sessionHostRestartWarning,
   sessionHostReviewSummary,
   sessionHostStatusLines,
+  sessionHostUpgradeHolderLines,
+  sessionHostUpgradeHolders,
   visibleSessionHostJobs,
   type SessionHostAction,
   type SessionHostOverview,
@@ -65,6 +69,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 
 import { getHostRuntimeStore, useHostRegistryLoaded } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
 import { useVortonTouch } from "@/vorton-touch";
 import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import {
@@ -96,6 +101,7 @@ import {
   restartBlockingReason,
   restartRepairGuidance,
   restartActionDisabledReason,
+  supervisorRepairNeedsImmediateApproval,
   passwordCopyCommand,
 } from "./panel-model";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
@@ -522,6 +528,8 @@ function InstallationPanel({
               onCancel={model.cancelMaintenanceService}
             />
             <DaemonAutomationControl model={model} state={state} />
+            <CustomDomainCard model={model} state={state} />
+            <DeliveryModeCard model={model} state={state} />
             {state.brokerJobs.map((job) => (
               <BrokerRequest
                 key={`${job.id}:${job.revision}`}
@@ -742,10 +750,6 @@ function FullMaintenanceDelegation({
     () => void model.changeMaintenanceDelegation(!delegation?.enabled),
     [model, delegation?.enabled],
   );
-  const changeManagement = useCallback(
-    () => void model.changeMaintenanceDelegation(true, !delegation?.managementEnabled),
-    [model, delegation?.managementEnabled],
-  );
   if (!delegation?.available) return null;
   return (
     <View>
@@ -768,24 +772,14 @@ function FullMaintenanceDelegation({
           : "Delegate all supported maintenance"}
       </Button>
       {delegation.managementAvailable ? (
-        <View>
-          <Text style={styles.text}>
-            Delegate installation management to trusted Host agents. This enables supported
-            automatic maintenance and cancellation of pending or queued requests, with durable
-            receipts. Exact manual-review jobs still require your decision. Agents cannot change
-            this grant, accounts or credentials. You can revoke management here at any time.
-          </Text>
-          <Button
-            size="md"
-            disabled={state.busy || Boolean(state.maintenanceDelegationError)}
-            onPress={changeManagement}
-            testID="installation-management-change"
-          >
-            {delegation.managementEnabled
-              ? "Revoke installation management"
-              : "Delegate installation management"}
-          </Button>
-        </View>
+        <Text style={styles.text} testID="installation-management-status">
+          {delegation.managementEnabled
+            ? "Installation management is enabled by this grant."
+            : "This grant also enables installation management."}{" "}
+          Trusted Host agents can cancel pending or queued requests, with durable receipts. They
+          cannot approve requests that need your review, stop claimed work, or change this grant,
+          accounts, credentials or settings.
+        </Text>
       ) : null}
     </View>
   );
@@ -1612,6 +1606,154 @@ function InstructionRequestReview({
  * The session host's launchd job, owned by the coordinator. Hidden for coordinators without session
  * host jobs. Install and Remove only prepare a plan; each plan needs its own Approve.
  */
+const LIVE_SERVER_TEXT: Record<LiveDevStatus["server"]["state"], string> = {
+  stopped: "The live dev server is stopped.",
+  starting: "The live dev server is starting.",
+  ready: "The live dev server is ready. Reload to use it.",
+  failed: "The live dev server is not running.",
+};
+
+/** Reliable serves the published interface; Live dev serves the Host's live checkout. */
+function DeliveryModeCard({
+  model,
+  state,
+}: {
+  model: InstallationPanelModel;
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  const status = state.liveDev;
+  const live = status?.mode === "live";
+  const toggle = useCallback(
+    () => void model.changeLiveDev(live ? "reliable" : "live"),
+    [model, live],
+  );
+  if (!status) return null;
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="delivery-mode-card">
+      <Text style={settingsStyles.rowTitle}>Delivery mode</Text>
+      <Text style={styles.text}>
+        {live
+          ? "Live dev. Your browser runs the interface from the Host's live checkout, and edits there appear within seconds. Other browsers and the recovery address keep the published interface."
+          : "Reliable. Every browser runs the published interface, and changes arrive through tracked updates."}
+      </Text>
+      {live ? (
+        <Text style={styles.text} testID="delivery-mode-server">
+          {status.server.detail ?? LIVE_SERVER_TEXT[status.server.state]}
+        </Text>
+      ) : null}
+      {!status.available && status.reason ? <Text style={styles.text}>{status.reason}</Text> : null}
+      {!live && status.available ? (
+        <Text style={styles.text}>
+          Live dev runs uncommitted edits by Host agents in your signed-in browser without a
+          publication step. Dev container agents cannot reach the live checkout.
+        </Text>
+      ) : null}
+      <Button
+        size="md"
+        disabled={state.busy || (!live && !status.available)}
+        onPress={toggle}
+        testID="delivery-mode-change"
+      >
+        {live ? "Switch to Reliable" : "Switch to Live dev"}
+      </Button>
+      {live ? (
+        <Text style={styles.text}>
+          If a live edit breaks the interface, open the safe interface at /?interface=safe.
+        </Text>
+      ) : null}
+      {state.liveDevError ? <Text style={styles.text}>{state.liveDevError}</Text> : null}
+    </View>
+  );
+}
+
+const CUSTOM_DOMAIN_CHANGE_TEXT = {
+  running: "The coordinator is restarting with this domain. Agents keep running.",
+  succeeded: "The coordinator restarted with this domain.",
+  "rolled-back": "The coordinator failed on this domain and its previous settings were restored.",
+  failed: "This change failed.",
+} as const;
+
+/** Trims the owner's entry and drops trailing slashes; the coordinator requires an exact origin. */
+function normalizeCustomDomain(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function customDomainChangeText(last: NonNullable<CustomDomainStatus["lastChange"]>): string {
+  const text = CUSTOM_DOMAIN_CHANGE_TEXT[last.status];
+  return last.status === "running" || last.status === "succeeded" ? text : `${text} ${last.detail}`;
+}
+
+/**
+ * The installation's extra HTTPS address beside its main one. Saving admits the domain to the
+ * Host and Dev daemons and restarts only the coordinator, which restores its previous settings
+ * if it does not come back. DNS, TLS and routing for the domain stay the operator's job.
+ */
+function CustomDomainCard({
+  model,
+  state,
+}: {
+  model: InstallationPanelModel;
+  state: ReturnType<InstallationPanelModel["getState"]>;
+}) {
+  const status = state.customDomain;
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = normalizeCustomDomain(draft ?? status?.origin ?? "");
+  const save = useCallback(() => {
+    void model.changeCustomDomain(value === "" ? null : value).then(() => setDraft(null));
+  }, [model, value]);
+  if (!status) return null;
+  const last = status.lastChange;
+  const running = last?.status === "running";
+  const unchanged = value === (status.origin ?? "");
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID="custom-domain-card">
+      <Text style={settingsStyles.rowTitle}>Custom domain</Text>
+      <Text style={styles.text}>
+        {status.origin
+          ? `This installation also answers at ${status.origin}.`
+          : "This installation answers only at its main address."}
+      </Text>
+      {!status.available && status.reason ? <Text style={styles.text}>{status.reason}</Text> : null}
+      {status.available ? (
+        <>
+          <Field label="Domain">
+            <FormTextInput
+              size="md"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              placeholder="https://vorteo.example.com"
+              initialValue={status.origin ?? ""}
+              onChangeText={setDraft}
+              editable={!state.busy && !running}
+              accessibilityLabel="Custom domain"
+              testID="custom-domain-input"
+            />
+          </Field>
+          <Text style={styles.text}>
+            Point the domain&apos;s DNS and HTTPS proxy at this Host first. Saving restarts only the
+            coordinator; this page reconnects in a few seconds.
+          </Text>
+          <Button
+            size="md"
+            disabled={state.busy || running || unchanged}
+            onPress={save}
+            testID="custom-domain-save"
+          >
+            {value === "" && status.origin ? "Remove domain" : "Save domain"}
+          </Button>
+        </>
+      ) : null}
+      {last ? (
+        <Text style={styles.text} testID="custom-domain-last-change">
+          {customDomainChangeText(last)}
+        </Text>
+      ) : null}
+      {state.customDomainError ? <Text style={styles.text}>{state.customDomainError}</Text> : null}
+    </View>
+  );
+}
+
 function SessionHostCard({
   model,
   state,
@@ -1630,6 +1772,18 @@ function SessionHostCard({
     void model.requestSessionHost("session-host-restart");
   }, [model]);
   const overview = state.sessionHost;
+  // The session host runs on Host, so only Host agents can hold its upgrade.
+  const hostServerId =
+    readExecutionInstallation()?.environments.find((environment) => environment.kind === "host")
+      ?.serverId ?? "";
+  const hostAgents = useSessionStore((store) => store.sessions[hostServerId]?.agents);
+  const holderLines = useMemo(
+    () =>
+      sessionHostUpgradeHolderLines(
+        sessionHostUpgradeHolders(overview?.status ?? null, hostAgents?.values() ?? []),
+      ),
+    [overview?.status, hostAgents],
+  );
   if (!overview) return null;
   const review = { busy: state.busy, unlocked: state.unlocked };
   return (
@@ -1645,6 +1799,11 @@ function SessionHostCard({
         <Text selectable style={styles.text} testID="session-host-status">
           {sessionHostStatusLines(overview.status).join("\n")}
         </Text>
+        {holderLines.length > 0 ? (
+          <Text selectable style={styles.text} testID="session-host-upgrade-holders">
+            {holderLines.join("\n")}
+          </Text>
+        ) : null}
         {state.sessionHostError ? (
           <>
             <Text accessibilityRole="alert" style={styles.error}>
@@ -1874,6 +2033,60 @@ function finishLabel(job: RestartJob): string {
   return restartOperationView(job)?.finishLabel ?? "Finish turns and restart";
 }
 
+/** The approval a pending request without source offers: an immediate exact-plan
+ * approval when there is no work to finish, otherwise Finish turns. */
+function PendingApprovalAction({
+  job,
+  busy,
+  gracefulRestarts,
+  approve,
+  finish,
+}: {
+  job: RestartJob;
+  busy: boolean;
+  gracefulRestarts: boolean;
+  approve: () => void;
+  finish: () => void;
+}) {
+  if (job.engineRecoveryPlanSha256)
+    return (
+      <RestartActionButton
+        variant="destructive"
+        disabledReason={busy ? "Request in progress" : null}
+        onPress={approve}
+        testID={`restart-recover-${job.id}`}
+      >
+        Recover Docker now, interrupt unknown work
+      </RestartActionButton>
+    );
+  if (supervisorRepairNeedsImmediateApproval(job))
+    return (
+      <RestartActionButton
+        variant="destructive"
+        disabledReason={busy ? "Request in progress" : null}
+        onPress={approve}
+        testID={`restart-supervisor-now-${job.id}`}
+      >
+        Repair Dev supervisor now, Dev is not answering
+      </RestartActionButton>
+    );
+  return (
+    <RestartActionButton
+      variant="outline"
+      disabledReason={restartActionDisabledReason(
+        job,
+        "finish",
+        busy,
+        Boolean(gracefulRestarts && job.impact?.gracefulRestartSupported),
+      )}
+      onPress={finish}
+      testID={`restart-finish-${job.id}`}
+    >
+      {finishLabel(job)}
+    </RestartActionButton>
+  );
+}
+
 export function RestartActions({
   job,
   model,
@@ -1938,30 +2151,13 @@ export function RestartActions({
               Restart when idle
             </RestartActionButton>
           ) : null}
-          {job.engineRecoveryPlanSha256 ? (
-            <RestartActionButton
-              variant="destructive"
-              disabledReason={busy ? "Request in progress" : null}
-              onPress={install}
-              testID={`restart-recover-${job.id}`}
-            >
-              Recover Docker now, interrupt unknown work
-            </RestartActionButton>
-          ) : (
-            <RestartActionButton
-              variant="outline"
-              disabledReason={restartActionDisabledReason(
-                job,
-                "finish",
-                busy,
-                Boolean(installation?.gracefulRestarts && job.impact?.gracefulRestartSupported),
-              )}
-              onPress={finish}
-              testID={`restart-finish-${job.id}`}
-            >
-              {finishLabel(job)}
-            </RestartActionButton>
-          )}
+          <PendingApprovalAction
+            job={job}
+            busy={busy}
+            gracefulRestarts={Boolean(installation?.gracefulRestarts)}
+            approve={install}
+            finish={finish}
+          />
           {plainHostRestart ? <ForceRestartButton job={job} model={model} busy={busy} /> : null}
           <Button variant="ghost" disabled={busy} onPress={cancel}>
             Cancel
