@@ -366,9 +366,34 @@ export function createReleaseUpgradeRuntime(input: {
         "--source",
         deployment.sourceDirectory,
         ...(commit ? ["--commit", commit] : []),
+        ...(commit ? hostReleaseArguments(commit) : []),
       ],
       { timeoutMs },
     );
+  }
+
+  /**
+   * The Host release built for `commit`, so Dev builds install its compiled packages.
+   * dev-release.mjs checks the release's marker and builds from source when it does not
+   * match, so a guess here never puts other code into Dev.
+   */
+  function hostReleaseArguments(commit: string): string[] {
+    const link = config.deployment?.hostReleaseLink ?? config.sourceUpdates?.currentReleaseLink;
+    if (!link) return [];
+    const candidates = [path.join(path.dirname(link), commit)];
+    try {
+      candidates.push(realpathSync(link));
+    } catch {
+      /* no Host release selected */
+    }
+    const release = candidates.find((item) =>
+      existsSync(path.join(item, ".installer-release.json")),
+    );
+    return [
+      ...(release ? ["--host-release", release] : []),
+      "--npm",
+      path.join(path.dirname(hostNode), "npm"),
+    ];
   }
 
   function launchAdoptionEngine(directory: string): void {
@@ -692,6 +717,13 @@ export function createReleaseUpgradeRuntime(input: {
       return readEnvImage(directory);
     },
     async buildDevImage(upgrade) {
+      const tool = devReleaseTool();
+      if (tool)
+        return String(
+          JSON.parse(await devReleaseCommand(tool, "image", upgrade.sourceCommit, 90 * 60_000))
+            .image,
+        );
+      // A coordinator release without the tool builds the image itself, from source.
       const source = config.deployment?.sourceDirectory;
       if (!source) throw new Error("The source directory is unknown");
       const work = path.join(upgradeDirectory, upgrade.id);

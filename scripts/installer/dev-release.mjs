@@ -180,16 +180,97 @@ export async function devUpgradeMode({ run, docker, git, source, commit, deploym
   return { mode: "release", reason: `Only Dev's daemon changed since ${built.slice(0, 12)}.` };
 }
 
+/** Workspaces the Dockerfile packs, in its order. */
+const PACKED_WORKSPACES = ["highlight", "relay", "protocol", "client", "plugin", "server", "cli"];
+const HOST_ENTRY = "packages/server/dist/scripts/supervisor-entrypoint.js";
+const HOST_WEB_UI = "packages/server/dist/server/web-ui/index.html";
+
 /**
- * Builds the commit's Dev release in a short-lived BuildKit build of the Dockerfile's
- * dev-release stage, so it shares the image's cached dependency layers and Node, then
- * moves it into place only once its receipt checks out. Reuses an existing release.
+ * Packs the Host release built for `commit` into <work>/packs, so a Dev build installs the
+ * Host's compiled packages instead of compiling them again in Linux. Their contents are
+ * JavaScript and the web UI; native modules still build in the Linux install. Returns
+ * { packs: null, reason } when no Host release matches: its installer marker must name
+ * the commit and must not be a lab build of uncommitted changes.
  */
-export async function buildDevRelease({ run, docker, git, source, commit, deployment }) {
+export async function packHostRelease({
+  run,
+  npm = "npm",
+  node = process.execPath,
+  hostRelease,
+  commit,
+  work,
+}) {
+  const refuse = (reason) => ({ packs: null, reason });
+  if (!hostRelease) return refuse("No Host release is known.");
+  let marker;
+  try {
+    marker = JSON.parse(readFileSync(path.join(hostRelease, ".installer-release.json"), "utf8"));
+  } catch {
+    return refuse("The Host release has no installer marker.");
+  }
+  if (marker.revision !== commit)
+    return refuse(`The Host release was built for ${String(marker.revision).slice(0, 12)}.`);
+  if (marker.lab)
+    return refuse("The Host release is a lab build, which may hold uncommitted changes.");
+  for (const file of [HOST_ENTRY, HOST_WEB_UI])
+    if (!existsSync(path.join(hostRelease, file)))
+      return refuse(`The Host release has no ${file}.`);
+  const packs = path.join(work, "packs");
+  try {
+    await run(node, ["--check", path.join(hostRelease, HOST_ENTRY)]);
+    mkdirSync(packs, { recursive: true, mode: 0o700 });
+    for (const name of PACKED_WORKSPACES)
+      await run(
+        npm,
+        ["pack", "--ignore-scripts", `--workspace=@getpaseo/${name}`, "--pack-destination", packs],
+        { cwd: hostRelease, timeout: 300_000 },
+      );
+    const count = readdirSync(packs).filter((name) => name.endsWith(".tgz")).length;
+    if (count !== PACKED_WORKSPACES.length) throw new Error(`packed ${count} packages`);
+  } catch (error) {
+    rmSync(packs, { recursive: true, force: true });
+    return refuse(`Packing the Host release failed: ${error.message}`);
+  }
+  return { packs, reason: null };
+}
+
+/**
+ * Runs one BuildKit build of the commit's Dockerfile from a `git archive`, with the Host
+ * release's packages when one matches and the Dockerfile's own compile stages otherwise.
+ */
+async function dockerBuild(input, work, args) {
+  const { run, docker, git, source, commit } = input;
+  const context = path.join(work, "source");
+  await extract(run, git, source, commit, [], context);
+  const host = await packHostRelease({ ...input, work });
+  await run(
+    docker,
+    [
+      "build",
+      ...args,
+      "--build-arg",
+      `PASEO_BUILD_COMMIT=${commit}`,
+      ...(host.packs ? ["--build-context", `packs=${host.packs}`] : []),
+      "-f",
+      path.join(context, "docker/base/Dockerfile"),
+      context,
+    ],
+    { timeout: 90 * 60_000 },
+  );
+  return host.packs ? "the Host release" : `source (${host.reason})`;
+}
+
+/**
+ * Builds the commit's Dev release from the Dockerfile's dev-release stage, so it shares the
+ * image's Node and cached layers, then moves it into place only once its receipt checks
+ * out. Reuses an existing release. Returns the release folder and what it was packed from.
+ */
+export async function buildDevRelease(input) {
+  const { commit, deployment } = input;
   if (!COMMIT.test(commit)) throw new Error(`${commit} is not a commit`);
   const root = releasesOf(deployment);
   const release = path.join(root, commit);
-  if (devReleaseReceipt(deployment, commit)) return release;
+  if (devReleaseReceipt(deployment, commit)) return { release, packedFrom: "an existing release" };
   // Dev's daemon user reads it, and a umask or an earlier mkdir can leave it private.
   mkdirSync(root, { recursive: true, mode: 0o755 });
   chmodSync(root, 0o755);
@@ -198,32 +279,33 @@ export async function buildDevRelease({ run, docker, git, source, commit, deploy
   rmSync(staging, { recursive: true, force: true });
   rmSync(release, { recursive: true, force: true });
   try {
-    const context = path.join(work, "source");
-    await extract(run, git, source, commit, [], context);
-    await run(
-      docker,
-      [
-        "build",
-        "--target",
-        "dev-release",
-        "--build-arg",
-        `PASEO_BUILD_COMMIT=${commit}`,
-        "--output",
-        `type=local,dest=${staging}`,
-        "-f",
-        path.join(context, "docker/base/Dockerfile"),
-        context,
-      ],
-      { timeout: 60 * 60_000 },
-    );
+    const packedFrom = await dockerBuild(input, work, [
+      "--target",
+      "dev-release",
+      "--output",
+      `type=local,dest=${staging}`,
+    ]);
     renameSync(staging, release);
     chmodSync(release, 0o755);
     if (!devReleaseReceipt(deployment, commit))
       throw new Error(`The Dev release for ${commit} has no valid receipt`);
-    return release;
+    return { release, packedFrom };
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
     throw error;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+/** Builds the commit's Dev image the same way; returns its image ID. */
+export async function buildDevImage(input) {
+  const work = path.join(os.tmpdir(), `vorteo-dev-image-${randomUUID()}`);
+  const iid = path.join(work, "image.iid");
+  try {
+    mkdirSync(work, { recursive: true, mode: 0o700 });
+    const packedFrom = await dockerBuild(input, work, ["--iidfile", iid]);
+    return { image: readFileSync(iid, "utf8").trim(), packedFrom };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -263,7 +345,7 @@ function runProcess(command, args, options = {}) {
     execFile(
       command,
       args,
-      { timeout: options.timeout ?? 120_000, maxBuffer: 64 * 1024 * 1024 },
+      { cwd: options.cwd, timeout: options.timeout ?? 120_000, maxBuffer: 64 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
           error.message = `${error.message}\n${String(stderr).slice(-4000)}`;
@@ -275,8 +357,9 @@ function runProcess(command, args, options = {}) {
 }
 
 /**
- * The coordinator's entry: node dev-release.mjs <prepare|build|current|prune> --source S
- * --commit C --deployment D [--docker X] [--git G]. Prints one JSON line.
+ * The coordinator's entry: node dev-release.mjs <prepare|build|image|current|prune>
+ * --source S --commit C --deployment D [--host-release H] [--npm N] [--docker X] [--git G].
+ * Prints one JSON line.
  */
 async function main(argv) {
   const [command, ...rest] = argv;
@@ -290,6 +373,8 @@ async function main(argv) {
     run: runProcess,
     docker: options.docker ?? "docker",
     git: options.git ?? "git",
+    npm: options.npm ?? "npm",
+    hostRelease: options["host-release"],
     source: options.source,
     commit: options.commit,
     deployment: options.deployment,
@@ -302,7 +387,9 @@ async function main(argv) {
       return { refreshed, ...(await devUpgradeMode(input)) };
     }
     case "build":
-      return { release: await buildDevRelease(input) };
+      return await buildDevRelease(input);
+    case "image":
+      return await buildDevImage(input);
     case "current":
       return { release: currentDevRelease(input.deployment) };
     case "prune":

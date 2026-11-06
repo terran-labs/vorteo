@@ -11,6 +11,7 @@ import {
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { detect } from "./detect.mjs";
+import { packHostRelease } from "./dev-release.mjs";
 import { fakeContext, fakeRunner } from "./fakes.mjs";
 import { AGENT_SCRIPT, INSTALLATION_SKILL } from "./host-installation.mjs";
 import { pointLink } from "./steps.mjs";
@@ -516,6 +517,33 @@ describe("upgrade", () => {
       expect(failure.message).toMatch(/started from the interface is running/);
       expect(record.status).toBe("running");
     }
+  });
+
+  test.each([
+    ["the same commit", { revision: NEW }, true],
+    ["another commit", { revision: OLD }, false],
+    ["a lab build of uncommitted changes", { revision: NEW, lab: { dirty: ["a.ts"] } }, false],
+  ])("Dev packs a Host release built from %s: %s", async (_name, marker, packed) => {
+    const { context } = machine();
+    const hostRelease = path.join(context.root, "host-release");
+    for (const file of [
+      "packages/server/dist/scripts/supervisor-entrypoint.js",
+      "packages/server/dist/server/web-ui/index.html",
+    ]) {
+      mkdirSync(path.dirname(path.join(hostRelease, file)), { recursive: true });
+      writeFileSync(path.join(hostRelease, file), "x");
+    }
+    writeJson(path.join(hostRelease, ".installer-release.json"), marker);
+    const run = fakeRunner([
+      [
+        "npm pack",
+        (args) => writeFileSync(path.join(args.at(-1), `${args[2].split("/")[1]}.tgz`), ""),
+      ],
+    ]);
+    const work = path.join(context.root, "work");
+    const result = await packHostRelease({ run, hostRelease, commit: NEW, work });
+    expect(Boolean(result.packs)).toBe(packed);
+    expect(run.commands().some((line) => line.startsWith("npm pack"))).toBe(packed);
   });
 
   test("a Dev release that fails rolls back, and a rerun swaps to it again", async () => {

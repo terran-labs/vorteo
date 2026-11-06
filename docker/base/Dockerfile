@@ -37,6 +37,12 @@ RUN set -eux; \
     npm pack --workspace=@getpaseo/server --pack-destination /tmp/paseo-packs; \
     npm pack --workspace=@getpaseo/cli --pack-destination /tmp/paseo-packs
 
+# The package tarballs the release and the image install. A build can replace this stage
+# with `--build-context packs=<folder>` of tarballs packed from the Host release built for
+# the same commit, which skips the compile stages above (dev-release.mjs does that).
+FROM scratch AS packs
+COPY --from=source-pack /tmp/paseo-packs/ /
+
 # A Dev release: the packages below installed under one prefix with this image's Node, so
 # Dev can run a new daemon from a read-only Host mount without rebuilding the image.
 # Only `docker build --target dev-release --output type=local,dest=<folder>` builds it;
@@ -44,7 +50,7 @@ RUN set -eux; \
 FROM ${NODE_IMAGE} AS dev-release-install
 ENV ONNXRUNTIME_NODE_INSTALL=skip
 ARG PASEO_BUILD_COMMIT
-COPY --from=source-pack /tmp/paseo-packs /tmp/paseo-packs
+COPY --from=packs / /tmp/paseo-packs
 # BuildKit keeps npm's download cache between releases; it never enters the output.
 RUN --mount=type=cache,id=vorteo-dev-release-npm,target=/root/.npm \
     set -eux; \
@@ -169,7 +175,7 @@ RUN set -eux; \
     command -v setpriv
 
 # Paseo itself changes on every release, so it installs after every stable layer above.
-COPY --from=source-pack /tmp/paseo-packs /tmp/paseo-packs
+COPY --from=packs / /tmp/paseo-packs
 RUN set -eux; \
 	npm install -g /tmp/paseo-packs/*.tgz; \
     rm -rf /tmp/paseo-packs; \

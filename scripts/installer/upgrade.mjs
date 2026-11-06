@@ -18,6 +18,7 @@ import { JOURNAL, readEnvFile } from "./detect.mjs";
 import { releaseRevision } from "./host-adoption.mjs";
 import { buildRelease, loadServerModules, waitForInstallation } from "./host-installation.mjs";
 import {
+  buildDevImage,
   buildDevRelease,
   currentDevRelease,
   devUpgradeMode,
@@ -26,7 +27,7 @@ import {
 } from "./dev-release.mjs";
 import { createJournalHandle, readJournal } from "./journal.mjs";
 import { PLAN_VERSION } from "./plan.mjs";
-import { InstallerError, build, writeJson } from "./primitives.mjs";
+import { InstallerError, writeJson } from "./primitives.mjs";
 import { STEPS, pointLink } from "./steps.mjs";
 import { writeSystemSource } from "../lib/system-source.mjs";
 import { compareVersions as compareCalendarVersions, parseTag } from "../vorteo-version.mjs";
@@ -763,6 +764,10 @@ async function devStep(s) {
       context.run(command, args, { env: devEnvironment(s), ...options }),
     docker: install.plan.executables.docker,
     git: context.which("git") ?? install.plan.executables.git,
+    npm: install.plan.executables.npm,
+    node: install.plan.executables.node,
+    // The Host release this upgrade built; Dev installs its compiled packages.
+    hostRelease: plan.release,
     source: plan.paths.source,
     commit: plan.to.revision,
     deployment,
@@ -771,7 +776,7 @@ async function devStep(s) {
   assertNoInterfaceUpgrade(s);
   await refreshDeploymentScripts(input);
   if (!s.outputs.devMode) journal.output({ devMode: (await devUpgradeMode(input)).mode });
-  return s.outputs.devMode === "release" ? devReleaseStep(s, input) : devImageStep(s);
+  return s.outputs.devMode === "release" ? devReleaseStep(s, input) : devImageStep(s, input);
 }
 
 /**
@@ -824,7 +829,7 @@ async function devReleaseStep(s, input) {
  * which waits for health and restores the previous image itself when the new one fails;
  * the same commands as the interface upgrade (release-upgrade-runtime.ts).
  */
-async function devImageStep(s) {
+async function devImageStep(s, input) {
   const { plan, install, context, journal } = s;
   const docker = install.plan.executables.docker;
   const deployment = install.plan.paths.container;
@@ -839,42 +844,8 @@ async function devImageStep(s) {
     }
   }
   if (!image) {
-    const work = path.join(plan.paths.work, plan.to.revision);
-    const sourceContext = path.join(work, "dev-source");
-    rmSync(sourceContext, { recursive: true, force: true });
-    mkdirSync(sourceContext, { recursive: true, mode: 0o700 });
-    const archive = path.join(work, "dev-source.tar");
-    await context.run(context.which("git") ?? install.plan.executables.git, [
-      "-C",
-      plan.paths.source,
-      "archive",
-      "--format=tar",
-      `--output=${archive}`,
-      plan.to.revision,
-    ]);
-    await context.run("tar", ["-xf", archive, "-C", sourceContext], { timeout: 300_000 });
-    const iid = path.join(work, "dev-image.iid");
-    rmSync(iid, { force: true });
-    await build(
-      docker,
-      [
-        "build",
-        "--build-arg",
-        `PASEO_BUILD_COMMIT=${plan.to.revision}`,
-        "--iidfile",
-        iid,
-        "-f",
-        path.join(sourceContext, "docker/base/Dockerfile"),
-        sourceContext,
-      ],
-      sourceContext,
-      path.join(install.plan.paths.logs, "dev-image-upgrade.log"),
-      {},
-      context.run,
-    );
-    image = readFileSync(iid, "utf8").trim();
+    ({ image } = await buildDevImage(input));
     journal.output({ devImage: image });
-    rmSync(work, { recursive: true, force: true });
   }
   // After the build, which takes minutes, and outside the rollback below, so a refusal
   // never touches another upgrade's Dev.
