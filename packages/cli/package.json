@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/cli",
-  "version": "26.11.504",
+  "version": "26.11.600",
   "description": "Vorteo CLI - control your AI coding agents from the command line",
   "license": "Apache-2.0",
   "bin": {
@@ -29,9 +29,9 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",
-    "@getpaseo/client": "26.11.504",
-    "@getpaseo/protocol": "26.11.504",
-    "@getpaseo/server": "26.11.504",
+    "@getpaseo/client": "26.11.600",
+    "@getpaseo/protocol": "26.11.600",
+    "@getpaseo/server": "26.11.600",
     "chalk": "^5.3.0",
     "commander": "^12.0.0",
     "mime-types": "^2.1.35",

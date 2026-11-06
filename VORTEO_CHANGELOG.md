@@ -2,6 +2,118 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.600 - 2026-11-06
+
+Beta for VortLab: Dev upgrades that restart only Dev's daemon and build everything before restarting, cached Dev image layers, shared Voice keys, Factory planning and drain controls, the Settings round 4 work, and the Live dev sidebar and upgrade work.
+
+### Fixes
+
+- Keep the Host update button disabled and visible while its confirmed request is pending, then restore retry after a failure. System update errors identify the Host action alongside the underlying error.
+- Open existing restart links in System, with active reviews in Restart and completed or missing requests in the environment's Details. Preserve the reviewed request and its status inside Restart.
+- Check the packaged restart action labels separately from the explanation hit targets above unavailable actions.
+- Preserve the owner's sidebar footer, main menu, Help, installation type, scroll fades, hover behavior, upgrade estimates and shared Voice credentials within Settings round four.
+- Keep installation name and type together behind owner access, make Help searchable in Settings, and reveal System Advanced when delivery mode is chosen from search.
+- Include the installation's measured upgrade duration in the System update confirmation.
+- Keep the single System attention notice in the sidebar instead of also rendering it in the floating notice viewport.
+- Retain a failed maintenance cancellation for review until Refresh requests is used, including when an earlier status read completes after the failure.
+- Let the packaged Force restart check retry the exact admission rejection raised when initial account settings synchronize before an agent starts.
+- Reopen Advanced when the same Custom domain search result is selected again after a manual collapse, while preserving the collapsed state during polls.
+- Reveal Advanced when a Settings search result or existing setting link targets Custom domain or Domain, so the indexed control can be reached.
+- Restore Dev's Force restart escape hatch alongside Host after the existing one-minute approval guard. Keep source updates and exact-plan operations behind their existing controls.
+- Return plugin settings to Projects & integrations and index custom domain controls under System.
+- Remove the ignored Default send choices while retaining the keyboard send shortcut and existing Sending links.
+- Submit pull requests to main's merge queue through GraphQL with the verified head pinned, preserving direct merges for rulesets without a queue.
+- Accept Dev preview workspace aliases only after verifying the configured bind mount and its unchanged destination. Preserve workspace grants, service identity and retained reservation checks.
+- Browser requests stop waiting after 10 seconds without killing a slow launch. The process keeps its 60-second startup budget and can serve later requests once ready.
+- Fatal launch errors stay within 4,000 characters without repeating Playwright's browser logs; errors without those logs still include stderr.
+- Preserve repository project ownership through filesystem aliases, including macOS temporary directory paths.
+- Normalize the expected registry path to native Windows separators while retaining exact path assertions.
+- Align worktree placement tests with repository-owned projects while requiring unrelated projects to remain unchanged.
+- Refresh the published configuration schema to include the daemon's Voice credential fields.
+- Show Dev's reason when it refuses delegated agent creation for a settings admission failure, such as an unreachable coordinator, instead of a bare 500.
+- Heavy CI jobs wait for format, lint and typecheck to finish, giving required checks priority over the merge group’s heavy suites. Failed or skipped checks still allow the selected suites to run unless the run is cancelled.
+- Host source updates use the verified candidate release's publisher and reviewed icon-migration rules, preventing stale tooling from refusing newer reviewed migrations. Publication rechecks the candidate artifact, source binding and preparation receipts after restart. Existing preparation-tool configuration stays compatible.
+- This fix takes effect only after Builds installs it and renews the coordinator through the tracked lifecycle workflow.
+- Browser requests now report headless startup failures within 10 seconds, with available exit diagnostics and recent Chromium stderr. Long launch errors fit the existing IPC limit, and failures are logged at warning level.
+- The agent MCP server no longer logs an error for every new Claude agent. Claude CLI 2.1.318 opens with an MCP 2026-07-28 discovery probe, which the server declines so the CLI falls back to the 2025-11-25 protocol the server implements. That expected decline is now a debug message. Any other discovery failure, such as malformed JSON-RPC, is still logged as an error, and a regression test covers both along with the full fallback through a tool call.
+- Keep key and endpoint updates atomic and revision checked. Reject endpoint-only adoption, validate endpoints, expire identity-bound adoption nonces, and prevent empty or withheld deliveries from persisting local fallbacks.
+- Release shared credential markers when an environment leaves the installation.
+- A gate-mode Dev can read shared settings and launch installation profiles through its gate route. Settings and profile admission now accept `http://host.docker.internal:<listenPort>` only from a container client in gate mode, using the same rule as the managed Dev client; every other plain-HTTP origin outside Host loopback is still refused.
+
+### Maintenance
+
+- System's Updates details and environment Details scroll through the shared Settings scroll view, so they get the edge fades main added and pass its lint rule.
+- Keep System browser checks within their existing deadlines by seeding storage before the first full app load and opening restart settings directly in System. Upstream checks begin in their owning pane and keep unrelated update controls closed until needed.
+- Check each selected Host's own restart settings, enter restart recovery through System, and apply the upstream test clock after startup completes.
+- Keep the Settings test adapters compatible with the shared fading list introduced on main.
+- Merge current `main` (26.11.504 and the change-fragment rules) and the Settings round 4 review fixes into the Settings round 4 integration branch. Changelog and inventory entries from both sides are kept unchanged, with Settings' older unreleased entries above the current ones.
+- A wrong owner password now keeps its error in the unlock dialog's reserved status line, and the panel stays locked. Before, clearing the password draft also cleared the error, so a failed unlock showed nothing.
+- The metadata picker browser check compares the picker's height with its content and borders, capped at 400 pixels, while still checking that it stays inside the viewport.
+- Follow the approved System locations in packaged Settings checks, including phone notices, owner access, finish-turn confirmation and the existing one-minute Force guard. Keep all assertion deadlines.
+- Remove the stale Settings section count from the README overview.
+- Verify that Help stays reachable from Settings and that installation name and type changes retain drafts, reviewed revisions and owner authorization after the main merge.
+- Check the post-login System notice in the Settings sidebar, where it now lives. Use the real System section jump for review helpers instead of reloading the whole app between controls.
+- Keep Settings open while verifying Host versions before and after a restart, matching the new System and Connected hosts layout.
+- Read both connected Host versions in one Settings visit after the former Help version menu moved there.
+- Scope Settings diagnostics checks to their row so the Help action can coexist with the diagnostic Run button.
+- Scope language and skills controls to their current panes, handle Settings moving between More and the toolbar, and wait for the actual wheel movement before comparing scroll positions.
+- Follow maintenance requests into System Details and observe the copy confirmation as its click runs. Retain the existing assertion deadlines.
+- Verify setup-token health through local delivery validation and require revoked credentials to fail without invoking the CLI.
+- Restore reconnect test coverage by implementing grant updates in the session test double.
+- Merged current main into the required-check scheduling change. The Playwright smoke and nightly shards wait for format, lint and typecheck while retaining their existing routing and cancellation guards.
+- Wait for background release retention before removing Host-install test fixtures, and document the publisher recheck’s same-account trust boundary.
+- Integrate current main and validate Voice credential adoption, delivery, conflicts and standalone fallback before delivery. Confirm that a Host updated before its coordinator retains existing transcription credentials while shared credential edits wait for the coordinator update.
+- Merged current `main` via the Factory drain branch into the issue stages branch.
+- Merged current `main`, including release 26.11.500, into the Factory drain and update duties branch; both sides' entries are kept.
+- Merged current `main` into the Factory drain and update duties branch; both sides' entries are kept.
+- Pull requests run only the required checks (`changes`, `format`, `lint`, `typecheck`, `scan`) and cheap Ubuntu suites: `quality`, server unit tests, `app-tests` and a new `cli-unit` job. Playwright, the Windows and macOS jobs, desktop, installer and CLI E2E run on merge groups, manual runs, a nightly schedule and `release-*` tags. Container and Desktop Packages left pull requests and run after merge or on demand. The secret scan now runs on merge groups.
+- The checked-in `main` ruleset adds a merge queue that merges with merge commits and drops the up-to-date branch requirement. It is not applied to GitHub yet.
+- The publisher no longer refuses a branch because `main` moved. It refuses only a pull request GitHub reports as conflicting, merges pinned to the tested head through the queue, and waits until GitHub reports it merged. Release preparations no longer need re-preparing when `main` moves.
+- Commits add a change fragment, `changes/YYYY-MM-DD-<slug>.md`, instead of editing the top of `VORTEO_CHANGELOG.md` and the inventory. The commit hook validates fragments, release preparation folds them into the new version's entry and the inventory, and `live-dev commit` writes one.
+
+### Tooling
+
+- The main-branch publisher enqueues a pull request in the merge queue directly when `gh pr merge` falls back to auto-merge, which this repository disallows, instead of stopping after its checks pass.
+- Merges to `main` run a short Playwright smoke of core flows instead of all eight Playwright shards. The full browser suite runs nightly on `main`, on manual runs and on release tags, so merge groups no longer fill GitHub's concurrent job limit and leave other pull requests' required checks waiting.
+- Merged current `main` into `live/main` for delivery, so the live edits reach `main` through the usual pull request.
+- Merged the latest `live/main` again, including the upgrade time estimate, which now joins main's release notes and install decisions in the upgrade approval text and card.
+- Merged `live/main` once more for the command center and status list hover surfaces.
+- Merged `live/main` for the Live dev `+N` version suffix and the always-visible breadcrumb plus. The version suffix file now references Expo's `require.context` types itself, so clean checkouts and CI type-check it without the dev server's generated `expo-env.d.ts`.
+- Merged `live/main` for the quieter sidebar busy ring and rows that no longer brighten on hover, keeping main's pin marker.
+- Merged current `main` into the Live dev publication before delivery.
+- The change fragment for the Live dev publication's merge of `main` now has a changelog bullet, so merging `main` into older branches and the Live dev checkout passes the commit hook again.
+- Merged current `main` into the CI merge-queue change before delivery.
+- The commit hook no longer reads a changelog top brought in by merging `main` as the commit's own entry when the commit carries a change fragment.
+- Merged current main into the Factory Overview branch again before delivery.
+- Merged current main into the Factory Overview branch.
+
+### Performance
+
+- Host release builds during installs and upgrades reuse cached dependencies on macOS instead of downloading and installing them from scratch.
+- Upgrades build both the Host and Dev before restarting anything, so running agents are interrupted only at the end. A failed build, or one that never reports, leaves everything running as it was.
+- Dev upgrades reuse the server the Host release already compiled for the same commit, so building Dev's release or image no longer compiles every package a second time.
+- Most Dev upgrades restart only Dev's daemon on a release the Host builds, instead of rebuilding and recreating Dev's image. The image is rebuilt only when its own files change, and Dev returns to the previous release if the new one is unhealthy. The first upgrade after this change still rebuilds the image once.
+- A Dev release that fails and is rolled back is swapped in again when the installer reruns, instead of being reported as installed, and returning Dev to an earlier image also returns it to the release that image ran.
+- Dev image rebuilds reuse Docker's cache for the dependency install, the agent command-line tools and Tailscale, so upgrades rebuild only the packages that changed. A version bump or new build commit alone no longer reinstalls every dependency. First installs are unchanged.
+
+### Features
+
+- Share Voice OpenAI keys and endpoints with every installation environment. Adopt existing keys once, require an owner choice for conflicts, and retain local saves without an installation.
+- Factory Overview names the project in its heading and shows per-project status, issue stage profiles, work in progress and role controls. Standing workspaces join the Factory folder after its roles, and adopted roles follow daemon workspace assignments. Older daemons retain the controls they support. Disabled Factories show setup guidance; overview links respect legacy surface availability and identify their environment when needed.
+- Add Factory issue planning and supervision with a configurable planner profile and a planning switch, plus a cached issue queue showing stages, pull request checks and participating agents. The Foreman assigns one lead per issue, routes repairs through it and records independent review results against the exact PR head. Planning off preserves the existing worker and reviewer flow. Paused leads and workers are exempt from stall recovery, and drains count mid-turn leads as well as workers. Queue comments must come from the authenticated GitHub viewer, CLI errors show the underlying diagnostic, and older daemons do not display unsupported planning settings.
+- Add `paseo factory project list`, `pause-all` and `resume-all` for draining Factory work before a restart or upgrade. Pause-all pauses every project whose Factory is on and records each drain with its own id, reason and time; resume-all resumes only those, so projects an operator paused by hand stay paused. A manual pause, resume or turn off takes a project out of the drain, and the record survives a daemon restart.
+- Pause-all sends each paused project's Foreman one drain notice carrying the drain id, steered into its current turn, and clears its status line; the Foreman acknowledges with "Drained <id>: <n> workers still finishing", so an earlier drain's reply cannot satisfy a new one. Resume-all tells it the drain ended. A failed notice is retried by the next pause-all, notices skip archived or missing projects until they are restored, and a drain recorded before ids existed gets a new notice with its id.
+
+### Live tweaks
+
+- Tests confirm setup-token Claude accounts still never read native credentials when resets are checked.
+- Hovering sidebar headings no longer brightens them; brightness now only marks something to review.
+
+### Changes
+
+- A damaged Factory state file makes list, pause-all and resume-all refuse instead of reporting an empty or successful drain.
+- Charters: the Mechanic reads `installation-agent.mjs update-status` and copes while it does not exist yet; Builds drains with pause-all and waits for the Foreman's acknowledgment, orders lifecycle actions, keeps release notes append-only and proposes restoring the pre-install snapshot on a regression; the Foreman checks the drain before every admission and cancels superseded CI runs; and every role gains the operating rules Builds learned running delivery.
+
 ## Unreleased - 2026-11-05
 
 - Keep System on the Host selected in Environment tabs, restore password re-add guidance, and expose the restart menu as an accessible button. Update upstream maintenance checks to open System disclosures.
