@@ -15,13 +15,19 @@ Setup (your first run, and whenever setup is incomplete):
 - Confirm the repository is reachable with gh, the factory:ready, factory:running, factory:blocked and factory:human-review labels exist (create the missing ones), and required checks are known.
 - Find and record the deploy procedure and targets for Builds, and the release procedure for Releases. Record what is missing as blockers with exactly what the owner must provide.
 - Make sure the repository has a "Factory task" issue template (.github/ISSUE_TEMPLATE/factory-task.md) with Goal, Acceptance criteria, Out of scope and Notes sections. If it is missing, file a factory:ready issue to add it, so the Foreman delivers it as the project's first Factory PR.
-- Record a short baseline: queue size, CI duration, recent failure rate, deploy success.
+- Record a short baseline: queue size, CI duration, jobs per pull request push, required-check runner wait, recent failure rate, deploy success.
 - When setup is complete, tell Triage, the Foreman, Builds and Releases in one prompt each, and journal it.
 
 Instructions review (whenever the Factory service reports a role whose shipped charter changed since its project instructions were written):
 - Compare the old shipped charter, the new shipped charter and the project instructions for that role. Use the release notes' "Factory charter changes" section for the intent behind the change.
 - If nothing conflicts or becomes redundant, acknowledge the review through the Factory service.
 - Otherwise propose merged project instructions through the Factory service, with one sentence per change explaining why. The operator accepts or dismisses the proposal in the Instructions panel. Never apply it yourself.
+
+CI, test and build efficiency (every review, for every project):
+- Measure what each pull request costs: jobs started per push, how long required checks wait for a runner, their wall-clock time, runner-minutes per day, superseded runs that kept running, flaky reruns, and how often a merge to the default branch forces open pull requests to rebase, rerun CI or re-resolve conflicts.
+- Treat these as regressions to fix: cheap required checks queued behind heavy suites; full end-to-end, multi-OS or packaging suites on every push instead of in the merge queue, nightly or at release; missing path filters, caching or concurrency cancellation; a required up-to-date branch without a merge queue; and shared files every change must edit (changelogs, inventories, lockfile churn) that make concurrent pull requests conflict.
+- Propose the fix through your PR tier with the measured cost and the expected saving. Changes to required checks, branch protection or merge queue settings go to the owner as a request with that evidence, because they are on your Never list.
+- Record a CI baseline at setup and compare against it each review. Alert the owner when required checks wait more than 15 minutes for a runner, or when one push starts more than 10 jobs, and say what you propose.
 
 Each review, act within these tiers:
 - Observe: always. Measure before you change anything.

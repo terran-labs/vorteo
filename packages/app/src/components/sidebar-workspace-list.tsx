@@ -135,7 +135,6 @@ import {
   SidebarWorkspaceMenu,
 } from "@/components/sidebar/sidebar-workspace-menu";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
-import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
 import {
   SidebarGroupToggleRow,
   SidebarListActionRow,
@@ -211,6 +210,7 @@ import {
   sidebarNestingStyle,
 } from "@/components/sidebar/indent";
 import { SidebarSectionRow } from "@/components/sidebar/container-row";
+import { PinnedSectionRow } from "@/components/sidebar/pinned-section-row";
 import { SidebarFocusButton } from "@/sidebar-focus/focus-button";
 import { reorderKeys, useSidebarTreeDrop } from "@/sidebar-drop/tree-drop";
 import {
@@ -263,6 +263,8 @@ import {
   ROOT_FOLDER_SCOPE,
   buildSidebarTreeRows,
   projectFolderScope,
+  savedSidebarAnchor,
+  sidebarEntryParent,
   type SidebarTreeRow,
 } from "@/sidebar-folders/tree";
 
@@ -877,6 +879,7 @@ function WorkspaceRowRightGroup({
   onRename,
   isPinned,
   onTogglePin,
+  showPinMarker,
 }: {
   workspace: SidebarWorkspaceEntry;
   backdrop: SidebarSurfaceBackdrop;
@@ -896,6 +899,7 @@ function WorkspaceRowRightGroup({
   onRename?: () => void;
   isPinned?: boolean;
   onTogglePin?: () => void;
+  showPinMarker: boolean;
 }) {
   const sessionMenu = useWorkspaceSessionMenu(workspace.serverId, workspace.workspaceId);
   const workspacePath = workspace.workspaceDirectory ?? workspace.projectRootPath;
@@ -927,7 +931,7 @@ function WorkspaceRowRightGroup({
           <SidebarWorkspaceTrailingActionBase presentation={trailingPresentation}>
             <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
           </SidebarWorkspaceTrailingActionBase>
-          <SidebarWorkspaceTrailingDetails workspace={workspace} />
+          <SidebarWorkspaceTrailingDetails workspace={workspace} showPinMarker={showPinMarker} />
           <SidebarWorkspaceMenuReveal
             visible={kebab.showKebab}
             pinned={kebab.menuProps.open}
@@ -1528,11 +1532,7 @@ function WorkspaceRowInner({
               aria-selected={selected}
               accessibilityRole="button"
               accessibilityState={accessibilityState}
-              style={[
-                workspaceRowStyle,
-                density,
-                !leadingProjectName && sidebarIndentStyle(indentLevel),
-              ]}
+              style={[workspaceRowStyle, density, sidebarIndentStyle(indentLevel)]}
               highlightStyle={styles.workspaceRowPressed}
               onPressIn={handleWorkspacePressIn}
               onTouchMove={interaction.handleTouchMove}
@@ -1556,6 +1556,8 @@ function WorkspaceRowInner({
               >
                 <WorkspaceRowRightGroup
                   workspace={workspace}
+                  // Only rows under Pinned lead with their project, so this is the home row.
+                  showPinMarker={Boolean(isPinned) && !leadingProjectName}
                   backdrop={backdrop}
                   isTouchPlatform={isTouchPlatform}
                   isCreating={isCreating}
@@ -2201,7 +2203,7 @@ function SidebarFocusActions({
     const folder = world.folders[focus.folderId];
     return folder ? <SidebarFolderMenuButton folder={folder} /> : null;
   }
-  if (focus.kind === "section") return null;
+  if (focus.kind === "section" || focus.kind === "pinned") return null;
   const project = projects.find((entry) => entry.viewKey === focus.projectKey);
   return project ? (
     <ProjectFocusActions
@@ -2310,11 +2312,13 @@ function ProjectBlock({
       items: groups.work,
       getKey: workspaceKeyExtractor,
       hideEmptyFolders,
+      // Time-based sorts order the rows; folders still keep their saved places.
+      itemOrder: manualSort ? "saved" : "given",
     });
     return focus?.kind === "folder"
       ? focusTreeRows(rows, sidebarFolderEntry(focus.folderId))
       : rows;
-  }, [focus, folderState, folderScope, groups.work, hideEmptyFolders]);
+  }, [focus, folderState, folderScope, groups.work, hideEmptyFolders, manualSort]);
   // Focused contents become the top level, so their rows lose the project's step in.
   const { showHeader, childLevel, sectionLevel, sectionItemLevel } =
     sidebarProjectBlockLevels(focus);
@@ -2516,14 +2520,31 @@ function ProjectBlock({
     (dragged: SidebarDropRow, placement: SidebarDropPlacement) => {
       if (folderState) {
         const container = placement.container;
+        const targetFolderId =
+          container === null || container === project.viewKey ? null : folderIdOfEntry(container);
+        const keys = groups.work.map(workspaceKeyExtractor);
+        let { beforeKey, afterKey } = placement;
+        if (!manualSort) {
+          // The sort orders workspaces, so only folder membership and folder slots can change.
+          const isFolder = folderIdOfEntry(dragged.key) !== null;
+          const sourceFolderId = sidebarEntryParent({
+            state: folderState,
+            scope: folderScope,
+            entry: dragged.key,
+          });
+          if (!isFolder && sourceFolderId === targetFolderId) return;
+          const anchor = (key: string | null) =>
+            savedSidebarAnchor({ state: folderState, scope: folderScope, keys, anchor: key });
+          beforeKey = anchor(beforeKey);
+          afterKey = anchor(afterKey);
+        }
         placeSidebarEntry({
           scope: folderScope,
           entry: dragged.key,
-          targetFolderId:
-            container === null || container === project.viewKey ? null : folderIdOfEntry(container),
-          before: placement.beforeKey,
-          after: placement.afterKey,
-          keys: groups.work.map(workspaceKeyExtractor),
+          targetFolderId,
+          before: beforeKey,
+          after: afterKey,
+          keys,
         });
         return;
       }
@@ -2535,7 +2556,15 @@ function ProjectBlock({
         keys.flatMap((key) => byKey.get(key) ?? []),
       );
     },
-    [folderState, folderScope, project.viewKey, groups.work, visibleWorkRows, onWorkspaceReorder],
+    [
+      folderState,
+      folderScope,
+      manualSort,
+      project.viewKey,
+      groups.work,
+      visibleWorkRows,
+      onWorkspaceReorder,
+    ],
   );
   const workTreeDrop = useSidebarTreeDrop({
     items: visibleWorkRows,
@@ -3007,8 +3036,10 @@ function useProjectModeView(input: {
   rootFolders: boolean;
   collapsedProjectKeys: ReadonlySet<string>;
   onFocusElsewhere?: () => void;
+  hasPinned: boolean;
 }) {
   const {
+    hasPinned,
     projects,
     workspaceEntriesByKey,
     folderState,
@@ -3046,8 +3077,16 @@ function useProjectModeView(input: {
           };
         }),
         hideEmptyFolders,
+        hasPinned,
       }),
-    [folderState, projects, workspaceEntriesByKey, supportsFactoryByServerId, hideEmptyFolders],
+    [
+      folderState,
+      projects,
+      workspaceEntriesByKey,
+      supportsFactoryByServerId,
+      hideEmptyFolders,
+      hasPinned,
+    ],
   );
   // The compact rail's single-project flyout has no room for a focused view: it never shows
   // focus itself, and its Focus buttons focus the sidebar instead.
@@ -3077,6 +3116,7 @@ function useProjectModeView(input: {
               allProjects: t("sidebar.focus.allProjects"),
               standing: "Standing",
               factory: t("projectFactory.folder"),
+              pinned: t("sidebar.pinned.title"),
             },
           })
         : null,
@@ -3171,7 +3211,6 @@ function ProjectModeListContent({
 }) {
   const onScroll = useScrollReporter(onScrolledChange);
   const pinnedExternalDrop = useWorkspaceProjectDrop();
-  const { t } = useTranslation();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const [creatingWorkspaceIds, setCreatingWorkspaceIds] = useState<Set<string>>(() => new Set());
   const creatingWorkspaceTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
@@ -3210,7 +3249,9 @@ function ProjectModeListContent({
     rootFolders,
     collapsedProjectKeys,
     onFocusElsewhere,
+    hasPinned: pinnedGroups.pinnedChats.length > 0,
   });
+  const pinnedFocused = focus?.kind === "pinned";
 
   const getProjectOrder = useSidebarOrderStore((state) => state.getProjectOrder);
   const setProjectOrder = useSidebarOrderStore((state) => state.setProjectOrder);
@@ -3224,7 +3265,7 @@ function ProjectModeListContent({
   );
   const selectionEnabled = isWorkspaceRoute;
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
-  const { pinnedChats, unpinnedProjects } = pinnedGroups;
+  const { pinnedChats } = pinnedGroups;
   const {
     leadingItem: leadingPinnedChat,
     visibleItems: visiblePinnedChats,
@@ -3296,24 +3337,16 @@ function ProjectModeListContent({
   }, [creatingWorkspaceIds, projects]);
 
   const rootRows = useMemo(() => {
-    // Focus hides Pinned, so pinned chats stay in their projects while focused.
+    // Pinned chats stay in their projects as well as under Pinned, so focus loses nothing.
     const rows = buildSidebarTreeRows({
       state: (rootFolders ? listFolderState : null) ?? EMPTY_SIDEBAR_FOLDER_STATE,
       scope: ROOT_FOLDER_SCOPE,
-      items: focus ? projects : unpinnedProjects,
+      items: projects,
       getKey: projectViewKeyExtractor,
       hideEmptyFolders,
     });
     return focus ? sidebarFocusRootRows(rows, focus, focusWorld) : rows;
-  }, [
-    rootFolders,
-    listFolderState,
-    focus,
-    focusWorld,
-    projects,
-    unpinnedProjects,
-    hideEmptyFolders,
-  ]);
+  }, [rootFolders, listFolderState, focus, focusWorld, projects, hideEmptyFolders]);
 
   const saveProjectOrder = useCallback(
     (reorderedProjectKeys: string[]) => {
@@ -3546,6 +3579,8 @@ function ProjectModeListContent({
         workspaceEntry={workspaceEntriesByKey.get(workspace.workspaceKey) ?? null}
         hostBadge={hostBadgeByServerId.get(workspace.serverId) ?? null}
         leadingProjectName={workspace.projectName}
+        // Pinned rows sit one level inside the Pinned heading; focused, they are the top level.
+        indentLevel={pinnedFocused ? 0 : 1}
         leadingProjectIconDataUri={
           projectIconByProjectViewKey.get(workspace.projectViewKey) ?? null
         }
@@ -3573,6 +3608,7 @@ function ProjectModeListContent({
       showShortcutBadges,
       supportsPinningByServerId,
       onToggleWorkspacePin,
+      pinnedFocused,
       projectIconByProjectViewKey,
       workspaceEntriesByKey,
     ],
@@ -3624,11 +3660,8 @@ function ProjectModeListContent({
 
   const showListHeader = useMemo(
     () =>
-      unpinnedProjects.length > 0 ||
-      hasActiveHostFilter ||
-      hasActiveProjectFilter ||
-      sidebarFilterEmpty,
-    [unpinnedProjects.length, hasActiveHostFilter, hasActiveProjectFilter, sidebarFilterEmpty],
+      projects.length > 0 || hasActiveHostFilter || hasActiveProjectFilter || sidebarFilterEmpty,
+    [projects.length, hasActiveHostFilter, hasActiveProjectFilter, sidebarFilterEmpty],
   );
   const projectBody =
     projects.length === 0 ? (
@@ -3653,52 +3686,55 @@ function ProjectModeListContent({
 
   // Rows dissolve under the dividers above and below the list while more lies past them.
   const listReach = useSidebarListReachReporter(onContentSizeChange);
+  // Shared by the Pinned section and the focused Pinned view, which lists them under its
+  // breadcrumb in place of the projects.
+  const pinnedRows = (
+    <>
+      {leadingPinnedChat ? renderPinnedChatRow(leadingPinnedChat) : null}
+      <DraggableList
+        testID="sidebar-pinned-list"
+        externalDrop={pinnedExternalDrop}
+        data={visiblePinnedChats}
+        keyExtractor={workspaceKeyExtractor}
+        renderItem={renderPinnedChat}
+        onDragEnd={onPinnedWorkspaceReorder}
+        extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
+        scrollEnabled={false}
+        useDragHandle
+        nestable={platformIsNative}
+        simultaneousGestureRef={parentGestureRef}
+        gestureHostPresented={dragGestureHostActive}
+        containerStyle={styles.workspaceListContainer}
+      />
+      {canTogglePinnedChats ? (
+        <SidebarGroupToggleRow
+          expanded={pinnedChatsExpanded}
+          onPress={togglePinnedChatsExpanded}
+          testID="sidebar-pinned-show-more"
+        />
+      ) : null}
+    </>
+  );
+  const listBody = sidebarFilterEmpty ? <SidebarFilterEmptyState /> : projectBody;
+
   const content = (
     <>
       {listTopComponent}
       {pinnedChats.length > 0 && focus === null ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
-          <SidebarSectionHeader
-            title={t("sidebar.pinned.title")}
+          <PinnedSectionRow
+            count={pinnedChats.length}
             collapsed={pinnedCollapsed}
             onToggle={togglePinnedCollapsed}
-            testID="sidebar-pinned-section-header"
           />
-          {pinnedCollapsed ? null : (
-            <>
-              {leadingPinnedChat ? renderPinnedChatRow(leadingPinnedChat) : null}
-              <DraggableList
-                testID="sidebar-pinned-list"
-                externalDrop={pinnedExternalDrop}
-                data={visiblePinnedChats}
-                keyExtractor={workspaceKeyExtractor}
-                renderItem={renderPinnedChat}
-                onDragEnd={onPinnedWorkspaceReorder}
-                extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
-                scrollEnabled={false}
-                useDragHandle
-                nestable={platformIsNative}
-                simultaneousGestureRef={parentGestureRef}
-                gestureHostPresented={dragGestureHostActive}
-                containerStyle={styles.workspaceListContainer}
-              />
-              {canTogglePinnedChats ? (
-                <SidebarGroupToggleRow
-                  expanded={pinnedChatsExpanded}
-                  onPress={togglePinnedChatsExpanded}
-                  testID="sidebar-pinned-show-more"
-                />
-              ) : null}
-            </>
-          )}
+          {pinnedCollapsed ? null : pinnedRows}
         </View>
       ) : null}
       {/* The header carries the display menu, which is the only way back out of a filter, so it
         stays for as long as a filter is what emptied the list. It is absent only when the
         sidebar is genuinely empty, where a section heading would sit over nothing.
-        Every filter that can empty this branch needs a term here: a project filter pinned to a
-        project whose chats are all pinned leaves `unpinnedProjects` empty, and without its term
-        the header would go with it, taking the only route back to the filter page. */}
+        Every filter that can empty this branch needs a term here; without its term the header
+        would go with it, taking the only route back to the filter page. */}
       {showListHeader ? listHeaderComponent : null}
       {focusTrail ? (
         <SidebarFocusBreadcrumb
@@ -3707,7 +3743,7 @@ function ProjectModeListContent({
           persistentActions={focusCreateAction}
         />
       ) : null}
-      {sidebarFilterEmpty ? <SidebarFilterEmptyState /> : projectBody}
+      {pinnedFocused ? pinnedRows : listBody}
       {listFooterComponent}
     </>
   );

@@ -21,6 +21,7 @@ for (const width of [1400]) {
       });
       await openAgentRoute(page, agent);
       const row = page.getByTestId("checklist-row-approval");
+      await page.getByTestId("checklist-edit-mode").click();
       await row.getByRole("button", { name: "Details for Approve installation" }).click();
       await page
         .getByTestId("checklist-editor")
@@ -38,6 +39,7 @@ for (const width of [1400]) {
       await expect(row.getByText("Review", { exact: true })).toBeVisible();
       await expect(row.getByText("Blocked", { exact: true })).not.toBeAttached();
       await expect(page.getByTestId("checklist-count")).toHaveText("0 / 1");
+      await page.getByTestId("checklist-edit-mode").click();
       await row.getByRole("checkbox", { name: "Complete Approve installation" }).click();
       await expect(row.getByText("Review", { exact: true })).not.toBeAttached();
       await expect(page.getByTestId("checklist-count")).toHaveText("1 / 1");

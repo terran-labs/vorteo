@@ -1,3 +1,5 @@
+/// <reference types="expo/types/metro-require" />
+
 /**
  * Live dev's record of committed work since the build the app's version names. `live-dev.mjs`
  * writes the gitignored `live-revision.local.json` beside this file after every change to the

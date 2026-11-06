@@ -64,8 +64,8 @@ function collapsibleChevron(collapsible: boolean, collapsed: boolean): SidebarDi
 }
 
 /**
- * A project's Standing or Factory heading. It reads as a folder: folder icon, hover arrow and
- * the same indent as the project's other direct children.
+ * A project's Standing or Factory heading, or the root Pinned heading. It reads as a folder:
+ * folder icon (or `icon`), hover arrow and the same indent as its sibling rows.
  */
 export function SidebarSectionRow({
   title,
@@ -76,6 +76,7 @@ export function SidebarSectionRow({
   level,
   testID,
   trailing,
+  icon,
 }: {
   title: string;
   count: number;
@@ -90,6 +91,8 @@ export function SidebarSectionRow({
    * mount the focus button. The row's fill, title, leading arrow and folder icon use CSS hover.
    */
   trailing?: (isHovered: boolean) => ReactNode;
+  /** The leading glyph; defaults to the folder icon. */
+  icon?: ReactNode;
 }) {
   const density = useSidebarRowDensity();
   const touch = useVortonTouch();
@@ -134,7 +137,7 @@ export function SidebarSectionRow({
         testID={`${testID}-toggle`}
       >
         <SidebarLeadingSlot chevron={collapsibleChevron(collapsible, collapsed)} cssHover>
-          <SidebarFolderIcon calm cssHover />
+          {icon ?? <SidebarFolderIcon calm cssHover />}
         </SidebarLeadingSlot>
         <Text
           style={[

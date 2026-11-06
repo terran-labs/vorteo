@@ -1099,12 +1099,22 @@ describe("archiveByScope", () => {
     },
   );
 
-  test.each(["archived-only", "shared-path", "shared-workspace"] as const)(
+  test.each(["archived-only", "shared-path", "shared-workspace", "registry-only-path"] as const)(
     "Factory retained backing refuses %s before ordinary archive mutation",
     async (scenario) => {
       const { tempDir, repoDir } = createGitRepo();
       const paseoHome = path.join(tempDir, ".paseo");
-      const worktree = await createPaseoOwnedWorktree(repoDir, paseoHome, "retained-member");
+      const worktree = await createWorktree({
+        cwd: repoDir,
+        paseoHome,
+        worktreeSlug: "retained-member",
+        source: { kind: "branch-off", baseBranch: "main", branchName: "retained-member" },
+        ...(scenario === "registry-only-path"
+          ? { worktreePath: path.join(tempDir, "placed-worktree") }
+          : {}),
+      });
+      if (scenario === "registry-only-path")
+        rmSync(await getPaseoWorktreeMetadataPath(worktree.worktreePath), { force: true });
       const retained: ActiveWorkspaceRef = {
         workspaceId: "archived-factory",
         cwd: worktree.worktreePath,
@@ -1142,6 +1152,47 @@ describe("archiveByScope", () => {
       expect(dependencies.archivedAgentIds).toEqual([]);
       expect(dependencies.activeWorkspaces).toHaveLength(scenario === "archived-only" ? 0 : 1);
       expect(existsSync(worktree.worktreePath)).toBe(true);
+    },
+  );
+
+  test.each(["active-member", "retained-member", "retained-member-by-path"] as const)(
+    "an ordinary workspace sharing a local checkout with a Factory member archives: %s",
+    async (scenario) => {
+      const { tempDir, repoDir } = createGitRepo();
+      const member: ActiveWorkspaceRef = {
+        workspaceId: "factory-role",
+        cwd: repoDir,
+        kind: "local_checkout",
+        isPaseoOwnedWorktree: false,
+        protected: true,
+        factoryMembership: {
+          installationId: "project-factory:project",
+          serverId: "server",
+          projectId: "project",
+          role: "factory-triage",
+        },
+      };
+      const dependencies = createArchiveDeps({
+        paseoHome: path.join(tempDir, ".paseo"),
+        activeWorkspaces: [
+          ...(scenario === "active-member" ? [member] : []),
+          { workspaceId: "ordinary", cwd: repoDir, kind: "local_checkout", protected: false },
+        ],
+      });
+      dependencies.listRetainedFactoryWorkspaces = vi.fn(async () => [member]);
+      const result = await archiveByScope(dependencies, {
+        scope:
+          scenario === "retained-member-by-path"
+            ? { kind: "worktree", targetPath: repoDir }
+            : { kind: "workspace", workspaceId: "ordinary" },
+        requestId: "shared-checkout",
+      });
+      expect(result.archivedWorkspaceIds).toEqual(["ordinary"]);
+      expect(result.removedDirectory).toBe(false);
+      expect(dependencies.activeWorkspaces.map((workspace) => workspace.workspaceId)).toEqual(
+        scenario === "active-member" ? ["factory-role"] : [],
+      );
+      expect(existsSync(repoDir)).toBe(true);
     },
   );
 

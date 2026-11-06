@@ -21,6 +21,8 @@ export const SidebarFocusTargetSchema = z.discriminatedUnion("kind", [
     projectKey: z.string(),
     section: SidebarFocusSectionSchema,
   }),
+  // The root Pinned section: only pinned workspaces, wherever they live.
+  z.object({ kind: z.literal("pinned") }),
 ]);
 export type SidebarFocusTarget = z.infer<typeof SidebarFocusTargetSchema>;
 
@@ -45,6 +47,8 @@ export interface SidebarFocusWorld {
   projects: ReadonlyMap<string, SidebarFocusProject>;
   /** Folders a filter emptied out of the list. */
   hiddenFolderIds: ReadonlySet<string>;
+  /** Whether the Pinned section lists anything. */
+  hasPinned?: boolean;
 }
 
 export interface SidebarFocusProjectInput extends SidebarFocusProject {
@@ -56,8 +60,9 @@ export function buildSidebarFocusWorld(input: {
   folderState: SidebarFolderState;
   projects: readonly SidebarFocusProjectInput[];
   hideEmptyFolders: boolean;
+  hasPinned?: boolean;
 }): SidebarFocusWorld {
-  const { folderState, projects, hideEmptyFolders } = input;
+  const { folderState, projects, hideEmptyFolders, hasPinned = false } = input;
   const hiddenFolderIds = new Set<string>();
   if (hideEmptyFolders) {
     const kept = sidebarFolderIdsWithItems({
@@ -84,6 +89,7 @@ export function buildSidebarFocusWorld(input: {
       projects.map((project) => [project.key, { name: project.name, sections: project.sections }]),
     ),
     hiddenFolderIds,
+    hasPinned,
   };
 }
 
@@ -98,9 +104,11 @@ export interface SidebarFocusLabels {
   allProjects: string;
   standing: string;
   factory: string;
+  pinned: string;
 }
 
 function parentOf(target: SidebarFocusTarget, world: SidebarFocusWorld): SidebarFocusTarget | null {
+  if (target.kind === "pinned") return null;
   if (target.kind === "section") return { kind: "project", projectKey: target.projectKey };
   if (target.kind === "project") {
     const folderId = world.itemFolder[target.projectKey];
@@ -116,6 +124,7 @@ function parentOf(target: SidebarFocusTarget, world: SidebarFocusWorld): Sidebar
 }
 
 function isListed(target: SidebarFocusTarget, world: SidebarFocusWorld): boolean {
+  if (target.kind === "pinned") return world.hasPinned === true;
   if (target.kind === "project") return world.projects.has(target.projectKey);
   if (target.kind === "section") {
     return world.projects.get(target.projectKey)?.sections.includes(target.section) === true;
@@ -174,6 +183,7 @@ function isKnown(target: SidebarFocusTarget, world: SidebarFocusWorld): boolean 
 }
 
 export function sidebarFocusKey(target: SidebarFocusTarget): string {
+  if (target.kind === "pinned") return "pinned";
   if (target.kind === "folder") return `folder:${target.folderId}`;
   if (target.kind === "project") return `project:${target.projectKey}`;
   return `section:${target.section}:${target.projectKey}`;
@@ -194,6 +204,7 @@ function labelOf(
 ): string {
   if (target.kind === "folder") return world.folders[target.folderId]?.name ?? "";
   if (target.kind === "project") return world.projects.get(target.projectKey)?.name ?? "";
+  if (target.kind === "pinned") return labels.pinned;
   return labels[target.section];
 }
 
@@ -215,11 +226,12 @@ export function sidebarFocusTrail(input: {
   ];
 }
 
-/** The project whose block holds the focused item, or null for a root folder. */
+/** The project whose block holds the focused item, or null for a root folder or Pinned. */
 export function sidebarFocusProjectKey(
   target: SidebarFocusTarget,
   world: SidebarFocusWorld,
 ): string | null {
+  if (target.kind === "pinned") return null;
   if (target.kind !== "folder") return target.projectKey;
   const folder = world.folders[target.folderId];
   return folder?.scope.kind === "project" ? folder.scope.projectKey : null;
@@ -248,7 +260,8 @@ export function focusTreeRows<T>(
 
 /**
  * Root-list rows while focused. A root folder lists its contents. Anything inside a project
- * keeps only that project's block at depth 0, which then renders without its header.
+ * keeps only that project's block at depth 0, which then renders without its header. Pinned
+ * lists no project rows; the Pinned section renders its workspaces instead.
  */
 export function sidebarFocusRootRows<T>(
   rows: readonly SidebarTreeRow<T>[],

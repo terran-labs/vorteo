@@ -77,6 +77,7 @@ export function CardDisclosure({
   testID,
   icon,
   trailing,
+  compactIndicator,
 }: {
   title: string;
   status?: string;
@@ -86,6 +87,8 @@ export function CardDisclosure({
   testID: string;
   icon: ReactNode;
   trailing?: ReactNode;
+  /** Replaces the icon and count in a collapsed tile, for example to show live activity. */
+  compactIndicator?: ReactNode;
 }) {
   const touch = useVortonTouch();
   const tile = useContext(CardTileContext);
@@ -108,6 +111,7 @@ export function CardDisclosure({
     [tile.compact, stacked],
   );
   const label = status ? `${title} (${status})` : title;
+  const indicator = compactTile ? compactIndicator : null;
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
   return (
     <View style={styles.hoverTarget} onLayout={measure}>
@@ -129,7 +133,7 @@ export function CardDisclosure({
           onPress={onPress}
           testID={testID}
         >
-          {icon}
+          {indicator ?? icon}
           <TruncatedText
             tooltipLabel={expanded ? label : ""}
             style={[taskCardStyles.heading, styles.title, compact && styles.collapsed]}
@@ -147,7 +151,7 @@ export function CardDisclosure({
           <View testID={`${testID}-arrow`} style={[styles.arrow, compact && styles.collapsed]}>
             {expanded ? <Down size={16} /> : <Right size={16} />}
           </View>
-          {count || trailing ? (
+          {!indicator && (count || trailing) ? (
             <View
               onLayout={measureMetadata}
               style={[

@@ -434,26 +434,32 @@ interface TaskCardActionProps extends Omit<
 > {
   iconOnly?: boolean;
   tooltipDescription?: ReactNode;
+  /** Renders a toggle that stays pushed in while its mode is on. */
+  selected?: boolean;
 }
 
 /** Heading actions share one visual contract; callers supply behavior and content only. */
 export function TaskCardAction({
   iconOnly = false,
   tooltipDescription,
+  selected,
   ...props
 }: TaskCardActionProps) {
   const touch = useVortonTouch();
   const tile = useContext(CardTileContext);
   if (tile.compact && tile.width < 320) return null;
+  const toggle = selected !== undefined;
   const button = (
     <Button
       {...props}
-      variant="ghost"
+      aria-pressed={toggle ? selected : undefined}
+      variant={selected ? "secondary" : "ghost"}
       size={touch ? "md" : "sm"}
       style={[
         taskCardStyles.headingAction,
         iconOnly && taskCardStyles.iconAction,
         iconOnly && touch && taskCardStyles.touchAction,
+        selected && taskCardStyles.selectedAction,
       ]}
       textStyle={taskCardStyles.headingActionText}
     />
