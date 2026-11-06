@@ -54,6 +54,8 @@ import {
 import {
   CoordinatorFollowJobSchema,
   CoordinatorFollowStatusSchema,
+  CoordinatorSettingsJobSchema,
+  CoordinatorSettingsStatusSchema,
   InstallationSnapshotSchema,
   InstallationUpgradeSchema,
   SnapshotListSchema,
@@ -62,6 +64,9 @@ import {
   type CoordinatorFollowDecision,
   type CoordinatorFollowJob,
   type CoordinatorFollowStatus,
+  type CoordinatorSettingsDecision,
+  type CoordinatorSettingsJob,
+  type CoordinatorSettingsStatus,
   type InstallationSnapshot,
   type InstallationUpgrade,
   type ReleaseTag,
@@ -187,6 +192,8 @@ const UPGRADE_STATUS_READER = tolerant(UpgradeStatusSchema);
 const UPGRADE_READER = tolerant(InstallationUpgradeSchema);
 const COORDINATOR_FOLLOW_STATUS_READER = tolerant(CoordinatorFollowStatusSchema);
 const COORDINATOR_FOLLOW_READER = tolerant(CoordinatorFollowJobSchema);
+const COORDINATOR_SETTINGS_STATUS_READER = tolerant(CoordinatorSettingsStatusSchema);
+const COORDINATOR_SETTINGS_READER = tolerant(CoordinatorSettingsJobSchema);
 
 export class InstallationClient {
   private password: string | null = null;
@@ -873,6 +880,48 @@ export class InstallationClient {
     return result;
   }
 
+  /** Null when the coordinator predates settings changes, so the card hides. */
+  async coordinatorSettingsStatus(): Promise<CoordinatorSettingsStatus | null> {
+    try {
+      return COORDINATOR_SETTINGS_STATUS_READER.parse(
+        await this.request("coordinator-settings/query", {}),
+      );
+    } catch (error) {
+      // COMPAT(coordinatorSettings): older coordinators answer 404 for these routes.
+      if (error instanceof InstallationRouteUnavailable) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Approves, rejects or cancels a settings change. With `follow`, one approval covers that
+   * coordinator update and these settings; a release string first creates the update for it.
+   */
+  async decideCoordinatorSettings(
+    job: CoordinatorSettingsJob,
+    decision: CoordinatorSettingsDecision["decision"],
+    follow?: CoordinatorFollowJob | string,
+  ): Promise<CoordinatorSettingsJob> {
+    let followJob = typeof follow === "string" ? undefined : follow;
+    if (typeof follow === "string") {
+      followJob = COORDINATOR_FOLLOW_READER.parse(
+        await this.request("coordinator-follow", { next: follow }),
+      );
+      if (followJob.next !== follow)
+        throw new Error("Coordinator update names another release. Refresh before another action.");
+    }
+    const result = COORDINATOR_SETTINGS_READER.parse(
+      await this.request(`coordinator-settings/${job.id}/decision`, {
+        revision: job.revision,
+        decision,
+        ...(followJob ? { follow: { id: followJob.id, revision: followJob.revision } } : {}),
+      }),
+    );
+    if (result.id !== job.id)
+      throw new Error("Coordinator settings receipt changed. Refresh before another action.");
+    return result;
+  }
+
   /** Saves the update policy and re-checks. Call only when the status reports `policy`. */
   async changeUpdatePolicy(change: UpdatePolicyChange): Promise<UpgradeStatus> {
     return UPGRADE_STATUS_READER.parse(await this.request("update-policy", change));
@@ -923,6 +972,7 @@ export async function requestInstallationOwner(
       "snapshots/query",
       "upgrades/query",
       "coordinator-follow/query",
+      "coordinator-settings/query",
       "claude/oauth/read",
       "claude/oauth/upgrade/read",
     ].includes(path) &&

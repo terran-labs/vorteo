@@ -258,6 +258,8 @@ export function createReleaseUpgradeRuntime(input: {
   entrypoint?: string;
   /** Replaces the GitHub Releases API in tests. */
   listReleases?: ReleaseUpdatePorts["listReleases"];
+  /** Another coordinator restart, such as a settings change, that blocks upgrades and follows. */
+  conflict?: () => string | null;
 }): ReleaseUpgradeRuntime {
   const { config, configFile, restarts, hostUpdates, logger } = input;
   const run = input.run ?? runCommand;
@@ -515,7 +517,7 @@ export function createReleaseUpgradeRuntime(input: {
       // `coordinatorFollow` is created below from these ports; it exists before any upgrade runs.
       coordinatorFollow.dispatching()
         ? "Wait for the coordinator update to finish before upgrading."
-        : null,
+        : (input.conflict?.() ?? null),
     adoptionRequired: adoptable,
     launchAdoption: (upgrade) => launchAdoptionEngine(path.join(upgradeDirectory, upgrade.id)),
     adoptionOutcome: (upgradeId) =>
@@ -727,7 +729,8 @@ export function createReleaseUpgradeRuntime(input: {
   const coordinatorFollow = new CoordinatorFollow(createCoordinatorFollowJournal(followDirectory), {
     now: () => new Date(),
     replacement: coordinatorReplacement(config, services),
-    conflict: () => (upgrades?.active() ? "Wait for the release upgrade to finish." : null),
+    conflict: () =>
+      upgrades?.active() ? "Wait for the release upgrade to finish." : (input.conflict?.() ?? null),
     hostRelease: () => ports.hostRelease(),
     runningRelease: () => ports.runningRelease(),
     coordinatorRelease: () => ports.coordinatorRelease(),

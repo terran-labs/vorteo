@@ -5,12 +5,15 @@ import { localInstallationOrigin, localInstallationEnvironments } from "./local-
 import {
   CoordinatorFollowDecisionSchema,
   CoordinatorFollowRequestSchema,
+  CoordinatorSettingsDecisionSchema,
+  CoordinatorSettingsRequestSchema,
   SnapshotRestoreRequestSchema,
   UpgradeDecisionSchema,
   UpgradeRequestSchema,
   UpdatePolicyChangeSchema,
 } from "@getpaseo/protocol/installation-upgrades";
 import { createReleaseUpgradeRuntime } from "./release-upgrade-runtime.js";
+import { createCoordinatorSettings } from "./coordinator-settings.js";
 import {
   lookupWorkerLaunch,
   parseWorkerLaunchLookupQuery,
@@ -400,6 +403,29 @@ function optionalReleaseRuntime(
   return files ? createReleaseUpgradeRuntime({ ...input, configFile: files.configFile }) : null;
 }
 
+/** Registered coordinator.json changes restart the coordinator; one restart runs at a time. */
+function serverCoordinatorSettings(
+  config: InstallationConfig,
+  files: { configFile: string } | undefined,
+  releaseRuntime: ReturnType<typeof optionalReleaseRuntime>,
+) {
+  return createCoordinatorSettings({
+    config,
+    configFile: files?.configFile,
+    conflict: () => {
+      if (releaseRuntime?.upgrades?.active()) return "Wait for the release upgrade to finish.";
+      if (releaseRuntime?.coordinatorFollow.dispatching())
+        return "Wait for the coordinator update to finish.";
+      return null;
+    },
+    // Only one coordinator update is active at a time, so a linked one is the one shown.
+    followJob: (id) => {
+      const job = releaseRuntime?.coordinatorFollow.status().job;
+      return job?.id === id ? job : null;
+    },
+  });
+}
+
 export function createInstallationServer(
   config: InstallationConfig,
   executor: RestartExecutor,
@@ -581,11 +607,17 @@ export function createInstallationServer(
     restarts,
     hostUpdates: updates.host,
     logger,
+    // `coordinatorSettings` is created below; it exists before any upgrade runs.
+    conflict: () =>
+      coordinatorSettings.dispatching()
+        ? "Wait for the coordinator settings change to finish."
+        : null,
   });
   const requireReleaseRuntime = () => {
     if (!releaseRuntime) throw new RestartRequestError("Upgrades and snapshots are unavailable");
     return releaseRuntime;
   };
+  const coordinatorSettings = serverCoordinatorSettings(config, files, releaseRuntime);
   // Lab self-updates and release upgrades both replace the Host and coordinator releases.
   const labRuntime = createLabSelfUpdateRuntime({
     config,
@@ -596,6 +628,8 @@ export function createInstallationServer(
         return "Wait for the release upgrade to finish before a lab self-update.";
       if (releaseRuntime?.coordinatorFollow.dispatching())
         return "Wait for the coordinator update to finish before a lab self-update.";
+      if (coordinatorSettings.dispatching())
+        return "Wait for the coordinator settings change to finish before a lab self-update.";
       return null;
     },
   });
@@ -690,6 +724,13 @@ export function createInstallationServer(
         // Moving the coordinator onto the Host release restarts this process; the next one
         // resumes the job from its journal here.
         releaseRuntime?.coordinatorFollow.drain();
+        // A settings change also restarts this process and resumes here; a linked approval
+        // advances once the coordinator update above succeeds.
+        try {
+          coordinatorSettings.drain();
+        } catch (error) {
+          logger.error({ err: error }, "Coordinator settings change failed");
+        }
         // Lab builds run for minutes; like upgrades they advance beside the drain.
         void labRuntime.updates
           .drain()
@@ -1785,6 +1826,35 @@ export function createInstallationServer(
       .then((job) => res.status(201).json(job), next);
   });
 
+  // Host agents (Builds) propose registered coordinator.json changes; the owner approves them.
+  app.get(
+    "/api/installation/coordinator-settings",
+    authenticateUpdate,
+    requireHostAgent,
+    (_req, res) => res.json(coordinatorSettings.base()),
+  );
+  app.post(
+    "/api/installation/coordinator-settings-requests",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = coordinatorSettings.request(CoordinatorSettingsRequestSchema.parse(req.body));
+      res.status(201).json(job);
+    },
+  );
+  app.get(
+    "/api/installation/coordinator-settings-requests/:id",
+    authenticateUpdate,
+    requireHostAgent,
+    (req, res) => {
+      const job = coordinatorSettings.get(z.string().uuid().parse(req.params.id));
+      if (!job) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(job);
+    },
+  );
   app.get("/api/installation/coordinator-requests/:id", authenticateUpdate, (req, res) => {
     const id = z.string().uuid().parse(req.params.id);
     try {
@@ -2712,6 +2782,27 @@ export function createInstallationServer(
         return res.json(job);
       }, next);
   });
+  app.post("/api/installation/owner/coordinator-settings/query", (_req, res) =>
+    res.json(coordinatorSettings.status()),
+  );
+  app.post("/api/installation/owner/coordinator-settings/:id/decision", (req, res, next) => {
+    const decision = CoordinatorSettingsDecisionSchema.parse(req.body);
+    const id = z.string().uuid().parse(req.params.id);
+    void (decision.decision === "approve" ? refuseDuringLabUpdate() : Promise.resolve())
+      .then(() => {
+        const { follow } = decision;
+        if (decision.decision !== "approve" || !follow)
+          return coordinatorSettings.decide(id, decision.revision, decision.decision);
+        // One owner decision: the coordinator update first, then these settings on it.
+        return coordinatorSettings.approveWithFollow(id, decision.revision, () =>
+          requireReleaseRuntime().coordinatorFollow.decide(follow.id, follow.revision, "approve"),
+        );
+      })
+      .then((job) => {
+        void drainRestarts();
+        return res.json(job);
+      }, next);
+  });
   const requireUpdates = () => {
     const releaseUpdates = requireReleaseRuntime().updates;
     if (!releaseUpdates)
@@ -2741,6 +2832,7 @@ export function createInstallationServer(
     res.json({
       ...requireUpdates().agentStatus(),
       coordinatorFollow: requireReleaseRuntime().coordinatorFollow.agentStatus(),
+      coordinatorSettings: coordinatorSettings.status(),
     });
   });
   const webUi = (origin: string, local = false) =>

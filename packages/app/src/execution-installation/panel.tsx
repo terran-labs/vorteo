@@ -91,6 +91,7 @@ import { installationHasDev, readExecutionInstallation } from "./policy";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
 import { CoordinatorFollowCard, InstallationUpgradeCard } from "./installation-upgrade-card";
+import { CoordinatorSettingsCard } from "./coordinator-settings-card";
 import {
   InstallationPanelModel,
   restartRequestSummary,
@@ -576,6 +577,7 @@ function InstallationPanel({
             <SafetySnapshotsCard client={panelClient} />
             <InstallationUpgradeCard client={panelClient} />
             <CoordinatorFollowCard client={panelClient} />
+            <CoordinatorSettingsCard client={panelClient} />
             {hasDev ? (
               <View style={[styles.cardBody, settingsStyles.rowBorder]}>
                 <View style={styles.requestHeader}>

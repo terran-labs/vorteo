@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   CoordinatorFollowStatus,
+  CoordinatorSettingsStatus,
   InstallationSnapshot,
   InstallationUpgrade,
   SnapshotList,
@@ -22,6 +23,7 @@ import {
   upgradeOffer,
   upgradeStepRows,
 } from "./installation-upgrades-model";
+import { coordinatorSettingsView } from "./coordinator-settings-model";
 
 const snapshot: InstallationSnapshot = {
   version: 1,
@@ -250,5 +252,42 @@ describe("coordinatorFollowView", () => {
     },
   ])("$name shows $kind", ({ status, kind }) => {
     expect(coordinatorFollowView(status).kind).toBe(kind);
+  });
+});
+
+describe("coordinatorSettingsView", () => {
+  const job: NonNullable<CoordinatorSettingsStatus["job"]> = {
+    id: "8f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    revision: "9f1d7c2e-3c1b-4b8f-9d0a-1e2f3a4b5c6d",
+    createdAt: "2026-11-05T12:00:00.000Z",
+    status: "pending",
+    detail: "",
+    baseSha256: "a".repeat(64),
+    changes: [
+      { key: "claudeHostRefresh", displaySafe: true, before: null, after: "true" },
+      { key: "futureSecret", displaySafe: false },
+    ],
+  };
+  const follow: CoordinatorFollowStatus = {
+    available: true,
+    detail: "",
+    current: {
+      coordinatorRelease: "/releases/old",
+      runningRelease: "/releases/old",
+      hostRelease: "/releases/new",
+    },
+    job: null,
+  };
+  it("hides without a change and redacts values that are not display-safe", () => {
+    expect(coordinatorSettingsView(null, follow).kind).toBe("hidden");
+    expect(coordinatorSettingsView({ available: true, detail: "", job }, follow)).toEqual({
+      kind: "job",
+      job,
+      rows: [
+        { key: "claudeHostRefresh", before: "not set", after: "true" },
+        { key: "futureSecret", before: "hidden", after: "changed" },
+      ],
+      follow: "/releases/new",
+    });
   });
 });
