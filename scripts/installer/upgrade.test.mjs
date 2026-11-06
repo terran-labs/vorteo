@@ -343,6 +343,7 @@ describe("upgrade plan", () => {
     expect(result.plan.steps).toEqual([
       "upgrade-check",
       "upgrade-release",
+      "upgrade-dev-build",
       "upgrade-snapshot",
       "upgrade-host",
       "upgrade-coordinator",

@@ -46,7 +46,8 @@ export const UPGRADE_STEP_TITLES = {
   "upgrade-settings": "Saving the installation settings",
   "upgrade-host": "Restarting the Host daemon on the new release",
   "upgrade-coordinator": "Restarting the coordinator on the new release",
-  "upgrade-dev": "Recreating Dev on the new release",
+  "upgrade-dev-build": "Building Dev's release from the new Host release",
+  "upgrade-dev": "Moving Dev to the new release",
   "upgrade-guest-client": "Refreshing the installation client in Dev",
   "upgrade-verify": "Checking readiness and in-app updates",
   "upgrade-finish": "Finishing",
@@ -257,6 +258,8 @@ export function upgradeSteps({ devContainer, upgrade, settings, restartCoordinat
   return [
     "upgrade-check",
     "upgrade-release",
+    // Dev builds from the Host release before anything restarts.
+    ...(devContainer ? ["upgrade-dev-build"] : []),
     "upgrade-snapshot",
     ...(settings ? ["upgrade-settings"] : []),
     "upgrade-host",
@@ -756,10 +759,10 @@ async function waitForDev(s) {
  * image is unchanged and Dev mounts its releases, only Dev's daemon restarts on a
  * Host-built release (dev-release.mjs); otherwise the image is rebuilt.
  */
-async function devStep(s) {
-  const { plan, install, context, journal } = s;
-  const deployment = install.plan.paths.container;
-  const input = {
+/** What dev-release.mjs needs for this upgrade. */
+function devInput(s) {
+  const { plan, install, context } = s;
+  return {
     run: (command, args, options = {}) =>
       context.run(command, args, { env: devEnvironment(s), ...options }),
     docker: install.plan.executables.docker,
@@ -770,8 +773,37 @@ async function devStep(s) {
     hostRelease: plan.release,
     source: plan.paths.source,
     commit: plan.to.revision,
-    deployment,
+    deployment: install.plan.paths.container,
   };
+}
+
+/**
+ * Builds Dev's release, or its image when the image itself changed, from the Host release
+ * the previous step built. It runs before the snapshot and every restart, so agents are
+ * interrupted only once all builds have passed. The Dev step reuses what it recorded.
+ */
+async function devBuildStep(s) {
+  const { journal } = s;
+  const input = devInput(s);
+  if (!s.outputs.devMode) journal.output({ devMode: (await devUpgradeMode(input)).mode });
+  if (s.outputs.devMode === "release") {
+    if (!s.outputs.devPreviousRelease)
+      journal.output({ devPreviousRelease: currentDevRelease(input.deployment) });
+    const { packedFrom } = await buildDevRelease(input);
+    return { message: `Built Dev's release from ${packedFrom}.` };
+  }
+  if (!s.outputs.devPreviousImage) journal.output({ devPreviousImage: devImage(s) });
+  if (!s.outputs.devImage) {
+    const { image, packedFrom } = await buildDevImage(input);
+    journal.output({ devImage: image });
+    return { message: `Built Dev's image from ${packedFrom}.` };
+  }
+  return { skip: "Dev's image is already built." };
+}
+
+async function devStep(s) {
+  const { journal } = s;
+  const input = devInput(s);
   // Before touching the deployment: an interface upgrade may be running its update.sh.
   assertNoInterfaceUpgrade(s);
   await refreshDeploymentScripts(input);
@@ -966,6 +998,7 @@ export const UPGRADE_STEPS = {
   "upgrade-settings": settingsStep,
   "upgrade-host": hostStep,
   "upgrade-coordinator": coordinatorStep,
+  "upgrade-dev-build": devBuildStep,
   "upgrade-dev": devStep,
   "upgrade-guest-client": guestClientStep,
   "upgrade-verify": verify,

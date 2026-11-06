@@ -46,6 +46,11 @@ function fakePorts(changes: Partial<UpgradePorts> = {}) {
     currentCommit: () => INSTALLED_COMMIT,
     automaticAllowed: () => true,
     directHost: false,
+    directHostBuild: false,
+    launchHostBuild: () => {
+      calls.push("host-build");
+    },
+    hostBuild: () => ({ status: "succeeded", detail: "Built" }),
     busy: async () => null,
     resolveRelease: async () => RELEASE_COMMIT,
     snapshot: async () => {
@@ -334,6 +339,40 @@ test("a Dev release swap keeps the image and rolls back to the previous release"
   expect(upgrades.list()[0].detail).toContain(`release ${"a".repeat(40)} again`);
   // Release-mode keys are dropped so an older coordinator can still read the journal.
   expect(journal.read()[0].private).not.toHaveProperty("devMode");
+});
+
+test.each([
+  ["builds Host and Dev before the first restart", true],
+  ["fails without restarting anything when Dev's build fails", false],
+])("an upgrade %s", async (_name, devBuilds) => {
+  const fake = fakePorts({
+    directHost: true,
+    directHostBuild: true,
+    prepareDev: async () => "release",
+    hostUpdate: () => ({ status: "succeeded", detail: "Host restarted" }),
+  });
+  fake.ports.buildDevRelease = async () => {
+    fake.calls.push("dev-release-build");
+    if (!devBuilds) throw new Error("docker build failed");
+  };
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  await upgrades.drain();
+  await upgrades.drain();
+  if (devBuilds) {
+    expect(fake.calls).toEqual([
+      "snapshot",
+      "fetch",
+      "host-build",
+      "dev-release-build",
+      "host-request",
+    ]);
+  } else {
+    expect(fake.calls).not.toContain("host-request");
+    expect(statuses(upgrades).status).toBe("failed");
+    expect(upgrades.list()[0].detail).toMatch(/Nothing was restarted/);
+    expect(journal.read()[0].private).not.toHaveProperty("devMode");
+  }
 });
 
 test("a coordinator that restarted while Dev was recreated verifies before replacing again", async () => {

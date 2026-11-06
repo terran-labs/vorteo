@@ -1980,6 +1980,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 5, 2026: upgrades build the Host release and Dev's release or image before restarting anything, on installer-made Hosts with a current installer engine, so agents are interrupted only after every build passes. README overview and onboarding are unchanged.
+
 November 5, 2026: Dev release and image builds during upgrades install the packages the Host release already compiled for the same commit, instead of compiling them again in Linux, and compile from source when no clean matching Host release exists. README overview and onboarding are unchanged.
 
 November 5, 2026: review fixes for Dev releases. An installer rerun swaps again after a rolled-back release, returning to an image restores the release it ran, failed Dev steps drop their new journal keys, the release folder stays readable on Linux, Compose changes force an image upgrade, and deployment scripts are renamed into place. README overview and onboarding are unchanged.

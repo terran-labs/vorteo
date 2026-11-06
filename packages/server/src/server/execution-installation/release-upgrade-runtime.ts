@@ -290,6 +290,49 @@ export function createReleaseUpgradeRuntime(input: {
     path.join(upgradeDirectory, upgradeId, "host-release.json");
 
   /** Starts the engine's Host release build detached, so it survives this coordinator. */
+  /**
+   * Whether the source checkout's installer engine can build the Host release without
+   * restarting the Host. Its parser refuses unknown options before writing an outcome, so
+   * an older engine given the option would leave the upgrade waiting.
+   */
+  function engineBuildsOnly(): boolean {
+    const deployment = config.deployment;
+    if (!deployment || !directHostUpgrades(config)) return false;
+    try {
+      return readFileSync(path.join(deployment.sourceDirectory, INSTALLER_ENGINE), "utf8").includes(
+        '"build-only"',
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  const hostBuildOutcome = (upgradeId: string) =>
+    path.join(upgradeDirectory, upgradeId, "host-build.json");
+
+  function launchHostBuild(upgrade: InstallationUpgrade): void {
+    const deployment = config.deployment;
+    if (!deployment) throw new Error("The installation deployment is unknown");
+    const directory = path.join(upgradeDirectory, upgrade.id);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    if (existsSync(hostBuildOutcome(upgrade.id))) return;
+    spawnDetached(
+      hostNode,
+      [
+        path.join(deployment.sourceDirectory, INSTALLER_ENGINE),
+        "host-release",
+        "--build-only",
+        "--root",
+        deployment.installRoot,
+        "--revision",
+        upgrade.sourceCommit,
+        "--outcome",
+        hostBuildOutcome(upgrade.id),
+      ],
+      path.join(directory, "host-build.log"),
+    );
+  }
+
   function launchDirectHostRelease(upgrade: InstallationUpgrade): string {
     const deployment = config.deployment;
     if (!deployment) throw new Error("The installation deployment is unknown");
@@ -621,6 +664,18 @@ export function createReleaseUpgradeRuntime(input: {
         restarts.decide(job.id, job.revision, "finish-current-turns", update.sha256);
       else restarts.decide(job.id, job.revision, "approve", update.sha256);
       return job.id;
+    },
+    get directHostBuild() {
+      return engineBuildsOnly();
+    },
+    launchHostBuild,
+    hostBuild(upgradeId) {
+      const outcome = hostBuildOutcome(upgradeId);
+      if (!existsSync(outcome)) return { status: "running", detail: "Building the Host release." };
+      const result = JSON.parse(readFileSync(outcome, "utf8"));
+      return result.status === "succeeded"
+        ? { status: "succeeded", detail: String(result.detail) }
+        : { status: "failed", detail: String(result.detail ?? "The Host release failed.") };
     },
     hostUpdate(jobId) {
       if (jobId.startsWith(DIRECT_JOB_PREFIX)) {
