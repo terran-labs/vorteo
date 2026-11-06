@@ -8,7 +8,17 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { createReadStream, createWriteStream } from "node:fs";
+import { constants, createReadStream, createWriteStream } from "node:fs";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  readdir,
+  readlink,
+  symlink,
+  utimes,
+} from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
@@ -221,6 +231,62 @@ function copyTree(
   return counted;
 }
 
+function vanished(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * Captures a live tree for a snapshot. Unlike copyTree it yields to the event loop, so the
+ * coordinator keeps serving the interface while gigabytes copy, and it skips entries that
+ * vanish mid-copy, such as a daemon log rotated away, instead of failing the whole snapshot.
+ * Files are cloned where the file system supports it (APFS), so unchanged data costs no space.
+ */
+async function captureTree(
+  source: string,
+  destination: string,
+  excludeTopLevel: readonly string[] = [],
+  skip: readonly string[] = [],
+): Promise<Counted> {
+  const counted: Counted = { files: 0, bytes: 0 };
+  async function visit(entry: string, target: string, relative: string): Promise<void> {
+    if (skip.some((root) => entry === root || entry.startsWith(root + path.sep))) return;
+    if (relative && !relative.includes(path.sep) && excludeTopLevel.includes(relative)) return;
+    if (relative && relative.split(path.sep).some(excluded)) return;
+    let stat;
+    try {
+      stat = await lstat(entry);
+    } catch (error) {
+      if (vanished(error)) return;
+      throw error;
+    }
+    try {
+      if (stat.isDirectory()) {
+        // Writable while its entries copy; the source's mode is applied afterward.
+        await mkdir(target, { mode: 0o700 });
+        for (const name of await readdir(entry))
+          await visit(path.join(entry, name), path.join(target, name), path.join(relative, name));
+        await chmod(target, stat.mode & 0o7777);
+        await utimes(target, stat.atime, stat.mtime);
+      } else if (stat.isFile()) {
+        await copyFile(entry, target, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
+        await chmod(target, stat.mode & 0o7777);
+        await utimes(target, stat.atime, stat.mtime);
+        counted.files += 1;
+        counted.bytes += stat.size;
+      } else if (stat.isSymbolicLink()) {
+        await symlink(await readlink(entry), target);
+      }
+      // Sockets and FIFOs are skipped, as copyTree does.
+    } catch (error) {
+      if (vanished(error)) return;
+      throw error;
+    }
+  }
+  await visit(source, destination, "");
+  return counted;
+}
+
 function partDirectory(index: number, kind: SnapshotPartKind): string {
   return `${String(index).padStart(2, "0")}-${kind}`;
 }
@@ -296,10 +362,10 @@ export function createInstallationSnapshots(input: {
     }
     if (source.type === "file") {
       ensurePrivateDirectory(destination);
-      return copyTree(source.path, path.join(destination, path.basename(source.path)));
+      return captureTree(source.path, path.join(destination, path.basename(source.path)));
     }
     // A snapshot root inside a captured directory would copy earlier snapshots.
-    return copyTree(source.path, destination, source.excludeTopLevel, [root]);
+    return captureTree(source.path, destination, source.excludeTopLevel, [root]);
   }
 
   return {
