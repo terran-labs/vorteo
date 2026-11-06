@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { InstallationSourceUpdates } from "./source-updates.js";
+import { hostReleaseRetentionIdle } from "./host-release-retention.js";
 import { digestBootstrapArtifact } from "./coordinator-bootstrap-artifact.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1555,6 +1556,7 @@ test("Host publication uses the verified candidate migration rules after replace
     ).resolves.toContain("Installed source");
     expect(await readFile(path.join(root, "published"), "utf8")).toBe("yes");
   } finally {
+    await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -1805,6 +1807,7 @@ test("source builds fail before activation, uncertain dispatch retains selection
     await queue.drain();
     expect(restart).toHaveBeenCalledTimes(5);
   } finally {
+    await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -5368,6 +5371,7 @@ test("source updates refuse a release without the session host while its job is 
     expect(await realpath(link)).toBe(path.join(root, supported.id, "release"));
   } finally {
     setReleaseSelectionGuard(null);
+    await hostReleaseRetentionIdle();
     await rm(root, { recursive: true, force: true });
   }
 });

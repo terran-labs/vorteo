@@ -737,6 +737,8 @@ export class InstallationSourceUpdates {
     try {
       // Restart is an asynchronous boundary. Recheck the exact admitted source and
       // artifact before executing its publisher, including all supporting imports.
+      // Only the Host account can write this release; it already controls the running
+      // daemon. The child reopening these files does not isolate that same account.
       await this.verifiedHostPublication({ job, receiptSha256 });
       await execute(
         validation.node,
