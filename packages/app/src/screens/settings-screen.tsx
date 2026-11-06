@@ -1,14 +1,14 @@
+import { OwnerLockBadge } from "@/components/settings/owner-lock";
+import { SettingsPaneScope, SettingsCard, SettingsDetailRow } from "@/components/settings";
 import { selectSettingsHost } from "@/navigation/settings-presentation";
 import { useHardwareKeyboardPresent } from "@/keyboard";
 import { useAddHost } from "@/hosts/add-host";
 import { FilesSection } from "@/screens/settings/files-section";
 import { SidebarIdentityFooter } from "@/components/sidebar-identity-footer";
-import { InstallationNameRow } from "@/screens/settings/general/installation-name-section";
-import { InstallationTypeRow } from "@/screens/settings/general/installation-type-section";
+import { InstallationNameSection } from "@/screens/settings/general/installation-name-section";
 import { HelpSection } from "@/screens/settings/general/help-section";
-import { DeliveryModeSetting } from "@/execution-installation/panel";
 import { DataSaverSection } from "@/screens/settings/general/data-saver-section";
-import { InstallationConnectionCheck } from "@/execution-installation/connection-check-wrapper";
+import { SystemPane } from "@/screens/settings/system/system-pane";
 import { InstallationRestartBanner, InstallationControls } from "@/execution-installation/panel";
 import { SystemProjectCard } from "@/execution-installation/system-project-card";
 import { WorkspaceDefaultsSection } from "@/screens/settings/general/workspace-defaults-section";
@@ -19,11 +19,10 @@ import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout"
 import { usePanelStore } from "@/stores/panel-store";
 import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
-import { Alert, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { useWindowDimensions } from "@/appearance/interface-geometry";
 import { useRouter } from "expo-router";
-import { useFocusEffect } from "expo-router/react-navigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -35,12 +34,11 @@ import {
   Palette,
   Server,
   Bot,
-  MessageSquare,
+  Bell,
   Plus,
   FolderGit2,
-  SquareTerminal,
   Sparkles,
-  Blocks,
+  Mic,
   Wrench,
   ChevronRight,
   ExternalLink,
@@ -48,22 +46,17 @@ import {
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { AppearanceSection } from "@/screens/settings/appearance/appearance-section";
+import { HostVoicePage } from "@/screens/settings/voice/voice-page";
 import { OpenLocationSection } from "@/screens/settings/open-location/open-location-section";
 import { TerminalSection } from "@/screens/settings/terminal/terminal-section";
 import { ChatSection } from "@/screens/settings/chat/chat-section";
 import { SendingSection } from "@/screens/settings/general/sending-section";
-import {
-  useAppSettings,
-  useSettings,
-  type AppSettings,
-  type Settings as EffectiveSettings,
-} from "@/hooks/use-settings";
+import { useAppSettings, type AppSettings } from "@/hooks/use-settings";
 import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { type HostProfile } from "@/types/host-connection";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { WindowChromeRegion, WindowChromeSafeArea } from "@/utils/desktop-window";
-import { confirmDialog } from "@/utils/confirm-dialog";
 import { BackHeader } from "@/components/headers/back-header";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { PageLayout } from "@/components/page-layout";
@@ -74,17 +67,13 @@ import { Switch } from "@/components/ui/switch";
 import { VORTEO_GITHUB_URL } from "@/components/community-links";
 import { GitHubIcon } from "@/components/icons/github-icon";
 import { openExternalUrl } from "@/utils/open-external-url";
-import { SegmentedControl } from "@/components/ui/segmented-control";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { DesktopPermissionsSection } from "@/desktop/components/desktop-permissions-section";
 import { DesktopNotificationsSection } from "@/desktop/components/desktop-notifications-section";
 import { BrowserDataSection } from "@/desktop/browser/settings/browser-data-section";
 import { IntegrationsSection } from "@/desktop/components/integrations-section";
 import { isElectronRuntime } from "@/desktop/host";
-import { useDesktopAppUpdater } from "@/desktop/updates/use-desktop-app-updater";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
-import { UpstreamUpdatesSection } from "@/vorton-updates/upstream-section";
-import { VortonUpdatesSection } from "@/vorton-updates/section";
 import { resolveAppVersion } from "@/utils/app-version";
 import { useVortonUpdate } from "@/vorton-updates/use-update";
 import { openChangelog } from "@/changelog";
@@ -149,22 +138,21 @@ type IconComponent = ComponentType<{
 }>;
 
 const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
+  interface: Palette,
+  privacy: Bell,
   general: Settings,
-  accounts: Bot,
+  providers: Bot,
   agents: Sparkles,
-  chat: MessageSquare,
-  terminal: SquareTerminal,
-  appearance: Palette,
-  workspaces: FolderGit2,
+  voice: Mic,
   environments: Server,
-  plugins: Blocks,
-  maintenance: Wrench,
+  projects: FolderGit2,
+  system: Wrench,
 };
 
 /** The section a drill-in page belongs to, for the sidebar highlight. */
 function sectionForView(view: SettingsView): SettingsSectionId | null {
-  if (view.kind === "project") return "workspaces";
-  if (view.kind === "plugin") return "plugins";
+  if (view.kind === "project") return "projects";
+  if (view.kind === "plugin") return "projects";
   return null;
 }
 
@@ -322,13 +310,18 @@ function LanguageSection({ settings, handleLanguageChange }: LanguageSectionProp
   const selectedLanguageOption = LANGUAGE_OPTIONS.find(
     (option) => option.value === settings.language,
   );
-  const selectedLanguageLabel = selectedLanguageOption
+  const languageLabel = selectedLanguageOption
     ? formatLanguageOptionLabel(
         selectedLanguageOption,
         activeLocale,
         t(selectedLanguageOption.labelKey),
       )
     : settings.language;
+  const resolvedOption = LANGUAGE_OPTIONS.find((option) => option.value === activeLocale);
+  const selectedLanguageLabel =
+    settings.language === "system" && resolvedOption
+      ? `${languageLabel} (${t(resolvedOption.labelKey)})`
+      : languageLabel;
   return (
     <SettingsSection title={t("settings.general.language.label")}>
       <View style={settingsStyles.card}>
@@ -389,8 +382,6 @@ interface DiagnosticsRowsProps {
 
 /** This device's diagnostic rows, rendered inside the Connected hosts card. */
 function DiagnosticsRows({
-  useLegacyTerminalRenderer,
-  onUseLegacyTerminalRendererChange,
   voiceAudioEngine,
   isPlaybackTestRunning,
   playbackTestResult,
@@ -405,28 +396,7 @@ function DiagnosticsRows({
   const firstRowStyle = [settingsStyles.row, showTopBorder && settingsStyles.rowBorder];
   return (
     <>
-      {isNative ? (
-        <View style={firstRowStyle} testID="legacy-terminal-renderer-row">
-          <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>
-              {t("settings.diagnostics.legacyTerminalRenderer.label")}
-            </Text>
-            <Text style={settingsStyles.rowHint}>
-              {t("settings.diagnostics.legacyTerminalRenderer.description")}
-            </Text>
-          </View>
-          <Switch
-            value={useLegacyTerminalRenderer}
-            onValueChange={onUseLegacyTerminalRendererChange}
-            accessibilityLabel={t("settings.diagnostics.legacyTerminalRenderer.accessibilityLabel")}
-            testID="legacy-terminal-renderer-switch"
-          />
-        </View>
-      ) : null}
-      <View
-        style={isNative ? [settingsStyles.row, settingsStyles.rowBorder] : firstRowStyle}
-        testID="app-diagnostic-row"
-      >
+      <View style={firstRowStyle} testID="app-diagnostic-row">
         <View style={settingsStyles.rowContent}>
           <Text style={settingsStyles.rowTitle}>{t("settings.diagnostics.app.rowTitle")}</Text>
           <Text style={settingsStyles.rowHint}>{t("settings.diagnostics.app.rowHint")}</Text>
@@ -457,26 +427,40 @@ function DiagnosticsRows({
   );
 }
 
-interface AboutSectionProps {
-  appVersionText: string;
-  isDesktopApp: boolean;
+function LegacyTerminalRow({ context }: { context: PaneContext }) {
+  const { t } = useTranslation();
+  return (
+    <SettingsSection title="Advanced">
+      <View style={settingsStyles.card}>
+        <View style={settingsStyles.row} testID="legacy-terminal-renderer-row">
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>
+              {t("settings.diagnostics.legacyTerminalRenderer.label")}
+            </Text>
+            <Text style={settingsStyles.rowHint}>
+              {t("settings.diagnostics.legacyTerminalRenderer.description")}
+            </Text>
+          </View>
+          <Switch
+            value={context.settings.useLegacyTerminalRenderer}
+            onValueChange={context.onUseLegacyTerminalRendererChange}
+            accessibilityLabel={t("settings.diagnostics.legacyTerminalRenderer.accessibilityLabel")}
+            testID="legacy-terminal-renderer-switch"
+          />
+        </View>
+      </View>
+    </SettingsSection>
+  );
 }
 
-function AboutSection({ appVersionText, isDesktopApp }: AboutSectionProps) {
+interface AboutSectionProps {
+  appVersionText: string;
+}
+
+function AboutSection({ appVersionText }: AboutSectionProps) {
   const { t } = useTranslation();
   return (
     <SettingsSection title={t("settings.about.title")}>
-      {/* What this installation is and how it gets changes; each row hides without one. */}
-      <View
-        style={[settingsStyles.card, styles.aboutInstallation]}
-        testID="settings-about-installation"
-      >
-        <InstallationNameRow />
-        <View style={settingsStyles.rowBorder}>
-          <InstallationTypeRow />
-        </View>
-        <DeliveryModeSetting />
-      </View>
       <View style={settingsStyles.card}>
         <View style={settingsStyles.row}>
           <View style={settingsStyles.rowContent}>
@@ -487,7 +471,6 @@ function AboutSection({ appVersionText, isDesktopApp }: AboutSectionProps) {
         </View>
         <WhatsNewRow />
         <GitHubRow />
-        {isDesktopApp ? <DesktopAppUpdateRow /> : null}
       </View>
     </SettingsSection>
   );
@@ -557,7 +540,7 @@ function ConnectedHostsSection({ context }: { context: PaneContext }) {
   return (
     <SettingsSection
       title={t("settings.about.connectedHosts")}
-      info="Daemon versions for each environment, a connection check from this device and app diagnostics. Checks send no passwords or tokens and never restart services."
+      info="Host versions for each environment and app diagnostics. The connection check lives in System."
     >
       <View style={settingsStyles.card}>
         {hosts.map((host, index) => (
@@ -568,9 +551,6 @@ function ConnectedHostsSection({ context }: { context: PaneContext }) {
             clientVersion={context.appVersion}
           />
         ))}
-        {hasInstallation ? (
-          <InstallationConnectionCheck embedded showTopBorder={hosts.length > 0} />
-        ) : null}
         <DiagnosticsRows
           useLegacyTerminalRenderer={context.settings.useLegacyTerminalRenderer}
           onUseLegacyTerminalRendererChange={context.onUseLegacyTerminalRendererChange}
@@ -641,165 +621,6 @@ function HostVersionRow({
   );
 }
 
-function getUpdateButtonLabel(
-  t: TFunction,
-  isInstalling: boolean,
-  latestVersion: string | null | undefined,
-): string {
-  if (isInstalling) return t("settings.about.updates.installing");
-  if (latestVersion) {
-    return t("settings.about.updates.updateTo", {
-      version: formatVersionWithPrefix(latestVersion),
-    });
-  }
-  return t("settings.about.updates.update");
-}
-
-function DesktopAppUpdateRow() {
-  const isCompactLayout = useIsCompactFormFactor();
-  const { t } = useTranslation();
-  const { settings, updateSettings } = useSettings();
-  const {
-    isDesktopApp,
-    statusText,
-    availableUpdate,
-    errorMessage,
-    isChecking,
-    isInstalling,
-    checkForUpdates,
-    installUpdate,
-  } = useDesktopAppUpdater();
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!isDesktopApp) {
-        return undefined;
-      }
-      void checkForUpdates({ intent: "automatic", silent: true });
-      return undefined;
-    }, [checkForUpdates, isDesktopApp]),
-  );
-
-  const handleCheckForUpdates = useCallback(() => {
-    if (!isDesktopApp) {
-      return;
-    }
-    void checkForUpdates();
-  }, [checkForUpdates, isDesktopApp]);
-
-  const handleReleaseChannelChange = useCallback(
-    (releaseChannel: EffectiveSettings["releaseChannel"]) => {
-      void updateSettings({ releaseChannel });
-    },
-    [updateSettings],
-  );
-  const releaseChannelOptions = useMemo(
-    () => [
-      {
-        value: "stable" as const,
-        label: t("settings.about.releaseChannel.stable"),
-      },
-      {
-        value: "beta" as const,
-        label: t("settings.about.releaseChannel.beta"),
-      },
-    ],
-    [t],
-  );
-
-  const handleInstallUpdate = useCallback(() => {
-    if (!isDesktopApp) {
-      return;
-    }
-
-    void confirmDialog({
-      title: t("settings.about.updates.installTitle"),
-      message: t("settings.about.updates.installMessage"),
-      confirmLabel: t("settings.about.updates.installConfirm"),
-      cancelLabel: t("common.actions.cancel"),
-    })
-      .then((confirmed) => {
-        if (!confirmed) {
-          return;
-        }
-        void installUpdate();
-        return;
-      })
-      .catch((error) => {
-        console.error("[Settings] Failed to open app update confirmation", error);
-        Alert.alert(
-          t("settings.about.updates.alertTitle"),
-          t("settings.about.updates.alertMessage"),
-        );
-      });
-  }, [installUpdate, isDesktopApp, t]);
-
-  const isUpdateReady = availableUpdate?.readyToInstall === true;
-  const readyUpdateVersion = isUpdateReady ? availableUpdate?.latestVersion : null;
-
-  if (!isDesktopApp) {
-    return null;
-  }
-
-  return (
-    <>
-      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("settings.about.releaseChannel.label")}</Text>
-          <Text style={settingsStyles.rowHint}>
-            {t("settings.about.releaseChannel.description")}
-          </Text>
-        </View>
-        <SegmentedControl
-          value={settings.releaseChannel}
-          onValueChange={handleReleaseChannelChange}
-          options={releaseChannelOptions}
-        />
-      </View>
-      <View
-        style={[
-          settingsStyles.row,
-          settingsStyles.rowBorder,
-          isCompactLayout && styles.narrowDesktopAppUpdateRow,
-        ]}
-      >
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("settings.about.updates.label")}</Text>
-          <Text style={settingsStyles.rowHint}>{statusText}</Text>
-          {readyUpdateVersion ? (
-            <Text style={settingsStyles.rowHint}>
-              {t("settings.about.updates.readyToInstall", {
-                version: formatVersionWithPrefix(readyUpdateVersion),
-              })}
-            </Text>
-          ) : null}
-          {errorMessage ? <Text style={styles.aboutErrorText}>{errorMessage}</Text> : null}
-        </View>
-        <View style={styles.aboutUpdateActions}>
-          <Button
-            variant="outline"
-            onPress={handleCheckForUpdates}
-            disabled={isChecking || isInstalling}
-          >
-            {isChecking ? t("settings.about.updates.checking") : t("settings.about.updates.check")}
-          </Button>
-          <Button
-            variant="default"
-            onPress={handleInstallUpdate}
-            disabled={isChecking || isInstalling || !isUpdateReady}
-          >
-            {getUpdateButtonLabel(t, isInstalling, readyUpdateVersion)}
-          </Button>
-        </View>
-      </View>
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sidebar
-// ---------------------------------------------------------------------------
-
 interface SidebarSectionButtonProps {
   sectionId: SettingsSectionId;
   label: string;
@@ -808,7 +629,6 @@ interface SidebarSectionButtonProps {
   onSelect: (section: SettingsSectionId) => void;
 }
 
-// Lighter than lucide's default 2px stroke so the nav reads quieter than the content.
 const SIDEBAR_ICON_STROKE_WIDTH = 1.5;
 
 function SidebarSectionButton({
@@ -819,6 +639,14 @@ function SidebarSectionButton({
   onSelect,
 }: SidebarSectionButtonProps) {
   const { theme } = useUnistyles();
+  const compact = useIsCompactFormFactor();
+  const itemStyle = useMemo(
+    () => [
+      isSelected ? selectedSidebarItemStyle : sidebarItemStyle,
+      compact && sidebarStyles.touchItem,
+    ],
+    [compact, isSelected],
+  );
   const handlePress = useCallback(() => {
     onSelect(sectionId);
   }, [onSelect, sectionId]);
@@ -833,7 +661,7 @@ function SidebarSectionButton({
       accessibilityState={accessibilityState}
       onPress={handlePress}
       testID={`settings-section-${sectionId}`}
-      style={isSelected ? selectedSidebarItemStyle : sidebarItemStyle}
+      style={itemStyle}
     >
       <Icon
         size={theme.iconSize.md}
@@ -871,7 +699,7 @@ function SettingsSidebar({
   // status lives, in Maintenance.
   const openUpdates = useCallback(() => {
     checkNow();
-    onSelectSection("maintenance");
+    onSelectSection("system");
   }, [onSelectSection, checkNow]);
   const { theme } = useUnistyles();
   const { t } = useTranslation();
@@ -888,8 +716,8 @@ function SettingsSidebar({
   });
   const outerContainerStyle = useMemo(
     () => [
-      floatingPanelStyles.surface,
-      sidebarStyles.floatingContainer,
+      isDesktop && floatingPanelStyles.surface,
+      isDesktop && sidebarStyles.floatingContainer,
       isDesktop ? sidebarStyles.desktopContainer : sidebarStyles.mobileContainer,
       isDesktop && { width: visibleSidebarWidth - FLOATING_PANEL_INSET * 2 },
     ],
@@ -902,15 +730,27 @@ function SettingsSidebar({
 
   const sidebarBody = (
     <View style={sidebarStyles.list}>
-      {sections.map((section) => (
-        <SidebarSectionButton
-          key={section.id}
-          sectionId={section.id}
-          label={section.label}
-          icon={SECTION_ICONS[section.id]}
-          isSelected={selectedSection === section.id}
-          onSelect={onSelectSection}
-        />
+      {!isDesktop ? (
+        <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
+          <OwnerLockBadge />
+        </View>
+      ) : null}
+      {(["This device", "Vorteo"] as const).map((group) => (
+        <View key={group}>
+          <Text style={sidebarStyles.groupLabel}>{group}</Text>
+          {sections
+            .filter((section) => getSection(section.id).group === group)
+            .map((section) => (
+              <SidebarSectionButton
+                key={section.id}
+                sectionId={section.id}
+                label={section.label}
+                icon={SECTION_ICONS[section.id]}
+                isSelected={selectedSection === section.id}
+                onSelect={onSelectSection}
+              />
+            ))}
+        </View>
       ))}
       {hasHosts ? null : (
         <View>
@@ -973,13 +813,14 @@ function SettingsSidebar({
                 onPress={onBackToWorkspace}
                 testID="settings-back-to-workspace"
                 style={sidebarStyles.backButton}
+                accessibilityLabel={t("settings.backToWorkspace")}
               >
-                {t("settings.backToWorkspace")}
+                Back
               </Button>
+              <View style={sidebarStyles.search}>
+                <SettingsSearchBox search={search} />
+              </View>
             </View>
-          </View>
-          <View style={sidebarStyles.search}>
-            <SettingsSearchBox search={search} />
           </View>
           <ScrollView
             style={sidebarStyles.scrollBody}
@@ -988,6 +829,9 @@ function SettingsSidebar({
           >
             {sidebarBody}
           </ScrollView>
+          <View style={sidebarStyles.ownerSlot} testID="settings-owner-slot">
+            <OwnerLockBadge />
+          </View>
           <InstallationRestartBanner placement="sidebar" />
           <SidebarIdentityFooter
             onOpenUpdates={openUpdates}
@@ -1012,6 +856,8 @@ interface PaneContext {
   isDesktopApp: boolean;
   settings: AppSettings;
   restartRequestId: string | null;
+  focusedSettingId: string | null;
+  focusRequestNonce: number;
   voiceAudioEngine: ReturnType<typeof useVoiceAudioEngineOptional>;
   isPlaybackTestRunning: boolean;
   playbackTestResult: string | null;
@@ -1021,9 +867,22 @@ interface PaneContext {
   onPlaybackTest: () => Promise<void>;
   onUseLegacyTerminalRendererChange: (value: boolean) => void;
   onOpenPane: (paneId: string) => void;
+  onOpenShortcuts: () => void;
 }
 
 type InstallationPaneSection = Parameters<typeof InstallationSettingsContent>[0]["section"];
+
+/**
+ * Voice settings live on the Host daemon: the installation's Host when there is one,
+ * otherwise the first saved host, the same rule the other host-backed panes use.
+ */
+function VoicePane() {
+  const hosts = useHosts();
+  const installation = readExecutionInstallation();
+  const authority = installation?.environments.find((environment) => environment.kind === "host");
+  const serverId = authority?.serverId ?? hosts[0]?.serverId;
+  return serverId ? <HostVoicePage serverId={serverId} /> : null;
+}
 
 function installationPane(section: InstallationPaneSection) {
   return (context: PaneContext) => (
@@ -1035,23 +894,21 @@ function installationPane(section: InstallationPaneSection) {
 const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "general.attention": (context) => <AttentionSection onOpenPane={context.onOpenPane} />,
   "general.notifications": () => <DesktopNotificationsSection />,
+  "general.installation": () => <InstallationNameSection />,
   "general.about": (context) => (
     <>
-      <AboutSection appVersionText={context.appVersionText} isDesktopApp={context.isDesktopApp} />
+      <AboutSection appVersionText={context.appVersionText} />
       <HelpSection />
     </>
   ),
-  "general.hosts": (context) => (
-    <>
-      <ConnectedHostsSection context={context} />
-      <DataSaverSection />
-    </>
-  ),
+  "general.hosts": (context) => <ConnectedHostsSection context={context} />,
+  "privacy.dataSaver": () => <DataSaverSection />,
   "accounts.providers": installationPane("providers"),
   "accounts.profiles": installationPane("profiles"),
   "accounts.usage": installationPane("usage"),
   "agents.tools": installationPane("agents"),
   "agents.skills": () => <SkillLibraryContent />,
+  "voice.voice": () => <VoicePane />,
   "agents.metadata": installationPane("metadata"),
   "agents.browserData": () => <BrowserDataSection />,
   "agents.permissions": () => <DesktopPermissionsSection />,
@@ -1060,8 +917,24 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
   "chat.openLocation": () => <OpenLocationSection />,
   "chat.editor": () => <EditorSection />,
   "chat.files": () => <FilesSection />,
-  "chat.shortcuts": () => <KeyboardShortcutsSection />,
-  "terminal.terminal": () => <TerminalSection />,
+  "chat.shortcuts": (context) => (
+    <SettingsSection title="Keyboard">
+      <SettingsCard>
+        <SettingsDetailRow
+          label="Keyboard shortcuts"
+          hint="View and customize shortcuts"
+          onPress={context.onOpenShortcuts}
+          testID="settings-keyboard-shortcuts"
+        />
+      </SettingsCard>
+    </SettingsSection>
+  ),
+  "terminal.terminal": (context) => (
+    <>
+      <TerminalSection />
+      {isNative ? <LegacyTerminalRow context={context} /> : null}
+    </>
+  ),
   "terminal.profiles": installationPane("terminals"),
   "appearance.appearance": () => <AppearanceSection />,
   "appearance.language": (context) => (
@@ -1082,8 +955,14 @@ const PANE_RENDERERS: Record<string, (context: PaneContext) => ReactNode> = {
       <SystemProjectCard />
     </>
   ),
-  "maintenance.updates": () => <VortonUpdatesSection />,
-  "maintenance.upstream": () => <UpstreamUpdatesSection />,
+  // One view of Host and Dev status, restarts, updates and their technical details.
+  "system.overview": (context) => (
+    <SystemPane
+      restartRequestId={context.restartRequestId}
+      focusedSettingId={context.focusedSettingId}
+      focusRequestNonce={context.focusRequestNonce}
+    />
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -1148,6 +1027,10 @@ export interface SettingsScreenProps {
   settingId?: string | null;
 }
 
+function showsSettingsPage(view: SettingsView, shortcutsOpen: boolean, searching: boolean) {
+  return (view.kind === "section" && !shortcutsOpen) || searching;
+}
+
 export default function SettingsScreen({
   view,
   installationRequested = false,
@@ -1158,6 +1041,9 @@ export default function SettingsScreen({
   const { t } = useTranslation();
   const voiceAudioEngine = useVoiceAudioEngineOptional();
   const { settings, isLoading: settingsLoading, updateSettings } = useAppSettings();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
+  const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
   const [isPlaybackTestRunning, setIsPlaybackTestRunning] = useState(false);
   const [playbackTestResult, setPlaybackTestResult] = useState<string | null>(null);
   const isDesktopApp = isElectronRuntime();
@@ -1173,13 +1059,45 @@ export default function SettingsScreen({
   const navigation = useSettingsNavigation({
     view,
     installationRequested,
+    restartRequestId,
     settingId,
     isCompactLayout,
     hasInstallation: availability.hasInstallation,
     sections,
     entries,
   });
-  const { query, search, results, request, activeSection } = navigation;
+  const {
+    query,
+    search,
+    results,
+    request,
+    activeSection,
+    handleSelectSection,
+    handleSelectResult,
+  } = navigation;
+  const selectSection = useCallback(
+    (section: SettingsSectionId) => {
+      closeShortcuts();
+      handleSelectSection(section);
+    },
+    [closeShortcuts, handleSelectSection],
+  );
+  const selectResult = useCallback(
+    (entry: ResolvedSettingsEntry) => {
+      closeShortcuts();
+      handleSelectResult(entry);
+    },
+    [closeShortcuts, handleSelectResult],
+  );
+  const headerSearch = useMemo(
+    () =>
+      isCompactLayout ? (
+        <View style={styles.headerSearch} testID="settings-header-search">
+          <SettingsSearchBox search={search} />
+        </View>
+      ) : undefined,
+    [isCompactLayout, search],
+  );
   useSettingsSearchShortcut();
   const searching = query.trim().length > 0;
 
@@ -1265,6 +1183,8 @@ export default function SettingsScreen({
       isDesktopApp,
       settings,
       restartRequestId,
+      focusedSettingId: request.entry?.id ?? null,
+      focusRequestNonce: request.nonce,
       voiceAudioEngine,
       isPlaybackTestRunning,
       playbackTestResult,
@@ -1274,6 +1194,7 @@ export default function SettingsScreen({
       onPlaybackTest: handlePlaybackTest,
       onUseLegacyTerminalRendererChange: handleUseLegacyTerminalRendererChange,
       onOpenPane: navigation.openPane,
+      onOpenShortcuts: openShortcuts,
     }),
     [
       appVersion,
@@ -1286,14 +1207,38 @@ export default function SettingsScreen({
       isDesktopApp,
       isPlaybackTestRunning,
       navigation.openPane,
+      openShortcuts,
       playbackTestResult,
       restartRequestId,
+      request.entry,
+      request.nonce,
       settings,
       voiceAudioEngine,
     ],
   );
   const renderPane = useCallback(
-    (paneId: string): ReactNode => PANE_RENDERERS[paneId]?.(paneContext) ?? null,
+    (paneId: string): ReactNode => {
+      const scopes = [
+        ...new Set(
+          SETTINGS_ENTRIES.filter((entry) => entry.pane === paneId).map((entry) => entry.scope),
+        ),
+      ];
+      const labels = scopes.map(
+        (scope) =>
+          ({
+            device: "This device",
+            installation: "All environments",
+            environment: "Per environment",
+          })[scope],
+      );
+      const pane = getPane(paneId);
+      return (
+        <SettingsPaneScope value={labels.join(" · ") || null}>
+          {pane?.group ? <Text style={settingsStyles.sectionHeaderTitle}>{pane.group}</Text> : null}
+          {PANE_RENDERERS[paneId]?.(paneContext) ?? null}
+        </SettingsPaneScope>
+      );
+    },
     [paneContext],
   );
 
@@ -1324,14 +1269,13 @@ export default function SettingsScreen({
         results={results}
         matchedPanes={navigation.matchedPanes}
         selectedResult={navigation.selectedResult}
-        onSelectResult={navigation.handleSelectResult}
-        search={isCompactLayout ? search : undefined}
+        onSelectResult={selectResult}
         bottomInset={insets.bottom}
       />
     </SettingsFocusContext.Provider>
   );
 
-  const showScrollPage = view.kind === "section" || searching;
+  const showScrollPage = showsSettingsPage(view, shortcutsOpen, searching);
   const activeLabel = sections.find((section) => section.id === activeSection)?.label;
   const detailPage = showScrollPage ? (
     <View style={styles.container}>
@@ -1339,6 +1283,7 @@ export default function SettingsScreen({
         <BackHeader
           title={view.kind === "section" && !searching ? activeLabel : t("settings.title")}
           onBack={view.kind === "section" ? handleBackFromDetail : handleBackToWorkspace}
+          rightContent={headerSearch}
         />
       ) : (
         <MenuHeader borderless />
@@ -1347,44 +1292,44 @@ export default function SettingsScreen({
     </View>
   ) : (
     <PageLayout
-      title={detailTitle}
+      title={shortcutsOpen ? "Keyboard shortcuts" : detailTitle}
+      actions={headerSearch}
       titleTestID="settings-detail-header-title"
-      onBack={handleBackFromDetail}
+      onBack={shortcutsOpen ? closeShortcuts : handleBackFromDetail}
     >
-      {detailContent}
+      {shortcutsOpen ? <KeyboardShortcutsSection /> : detailContent}
     </PageLayout>
   );
 
   const selectedSection = selectedSidebarSection(view, searching, activeSection);
 
-  // Mobile root: search above the section list; a query swaps the list for results.
+  // Keep the phone header mounted while results replace the index, preserving input focus.
   if (isCompactLayout && view.kind === "root") {
     return (
       <View style={styles.container}>
+        <BackHeader
+          title={t("settings.title")}
+          onBack={handleBackToWorkspace}
+          rightContent={headerSearch}
+        />
         {searching ? (
-          detailPage
+          scrollPage
         ) : (
-          <>
-            <BackHeader title={t("settings.title")} onBack={handleBackToWorkspace} />
-            <ScrollView
-              style={styles.scrollView}
-              contentContainerStyle={insetBottomStyle}
-              keyboardShouldPersistTaps="handled"
-            >
-              <View style={styles.compactSearch}>
-                <SettingsSearchBox search={search} />
-              </View>
-              <SettingsSidebar
-                sections={sections}
-                selectedSection={null}
-                onSelectSection={navigation.handleSelectSection}
-                onAddHost={handleAddHost}
-                onBackToWorkspace={handleBackToWorkspace}
-                search={search}
-                layout="mobile"
-              />
-            </ScrollView>
-          </>
+          <ScrollView
+            style={styles.scrollView}
+            contentContainerStyle={insetBottomStyle}
+            keyboardShouldPersistTaps="handled"
+          >
+            <SettingsSidebar
+              sections={sections}
+              selectedSection={null}
+              onSelectSection={selectSection}
+              onAddHost={handleAddHost}
+              onBackToWorkspace={handleBackToWorkspace}
+              search={search}
+              layout="mobile"
+            />
+          </ScrollView>
         )}
       </View>
     );
@@ -1404,7 +1349,7 @@ export default function SettingsScreen({
           <SettingsSidebar
             sections={sections}
             selectedSection={selectedSection}
-            onSelectSection={navigation.handleSelectSection}
+            onSelectSection={selectSection}
             onAddHost={handleAddHost}
             onBackToWorkspace={handleBackToWorkspace}
             search={search}
@@ -1466,16 +1411,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
   },
-  compactSearch: {
-    flexDirection: "row",
-    paddingTop: theme.spacing[3],
-    paddingHorizontal: theme.spacing[4],
-  },
-  narrowDesktopAppUpdateRow: {
-    flexDirection: "column",
-    alignItems: "stretch",
-    gap: theme.spacing[3],
-  },
+  headerSearch: { width: 164, height: 44, flexDirection: "row" },
   aboutUpdateActions: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1515,12 +1451,11 @@ const sidebarStyles = StyleSheet.create((theme) => ({
   },
   scrollBody: {
     flex: 1,
+    // Font changes must preserve the sidebar offset, not anchor its group headings.
+    ...(isWeb ? { overflowAnchor: "none" as const } : {}),
   },
-  search: {
-    flexDirection: "row",
-    paddingHorizontal: theme.spacing[2],
-    paddingTop: theme.spacing[2],
-  },
+  search: { flex: 1, minWidth: 0, flexDirection: "row" },
+  ownerSlot: { minHeight: 84, paddingHorizontal: theme.spacing[2] },
   modeHeader: {
     height: VORTON_HEADER_HEIGHT,
     flexDirection: "row",
@@ -1530,7 +1465,7 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
   },
   backButton: {
-    flex: 1,
+    flexShrink: 0,
     minWidth: 0,
     justifyContent: "flex-start",
     borderRadius: theme.borderRadius.md,
@@ -1563,6 +1498,7 @@ const sidebarStyles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
     borderRadius: theme.borderRadius.lg,
   },
+  touchItem: { minHeight: 44 },
   itemHoverable: hoverStyle({ backgroundColor: theme.colors.surfaceSidebarHover }),
   itemSelected: {
     backgroundColor: theme.colors.surfaceSidebarHover,

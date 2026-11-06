@@ -20,6 +20,16 @@ const runtime = vi.hoisted(() => ({
   client: null as DaemonClient | null,
 }));
 
+// These cases exercise a standalone host, which has no installation owner session.
+vi.mock("@/execution-installation/owner-access", () => ({
+  useOwnerAccess: () => ({
+    status: "none",
+    busy: false,
+    error: null,
+    unlock: vi.fn(),
+    lock: vi.fn(),
+  }),
+}));
 vi.mock("@/runtime/host-runtime", () => ({
   useHostRuntimeClient: () => runtime.client,
   useHostRuntimeIsConnected: () => runtime.connected,
@@ -89,13 +99,14 @@ vi.mock("react-native-reanimated", () => ({
 
 vi.mock("@gorhom/bottom-sheet", async () => {
   const ReactModule = await vi.importActual<typeof import("react")>("react");
-  const { ScrollView, TextInput } =
+  const { FlatList, ScrollView, TextInput } =
     await vi.importActual<typeof import("react-native")>("react-native");
   return {
     BottomSheetBackdrop: () => null,
     BottomSheetHandle: () => null,
     BottomSheetModal: ReactModule.forwardRef(() => null),
     BottomSheetScrollView: ScrollView,
+    BottomSheetFlatList: FlatList,
     BottomSheetTextInput: TextInput,
     useBottomSheetInternal: () => null,
   };

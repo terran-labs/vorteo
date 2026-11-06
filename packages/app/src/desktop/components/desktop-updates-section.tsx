@@ -1,3 +1,4 @@
+import { SettingsStatusLine } from "@/components/settings/settings-status-line";
 import { ActionFooter } from "@/components/ui/action-footer";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import React, { type ReactElement, useCallback, useMemo, useState } from "react";
@@ -249,8 +250,8 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
     <View style={settingsStyles.card}>
       <View style={settingsStyles.row}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("desktop.daemon.status.title")}</Text>
-          <Text style={settingsStyles.rowHint}>{t("desktop.daemon.status.builtInOnly")}</Text>
+          <Text style={settingsStyles.rowTitle}>{"Status"}</Text>
+          <Text style={settingsStyles.rowHint}>{"Status of the built-in Host."}</Text>
         </View>
         <View style={styles.statusValueGroup}>
           <Text style={styles.valueText}>{daemonStatusStateText}</Text>
@@ -259,31 +260,31 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
       </View>
       <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("desktop.daemon.management.title")}</Text>
-          <Text style={settingsStyles.rowHint}>{t("desktop.daemon.management.hint")}</Text>
+          <Text style={settingsStyles.rowTitle}>{"Manage built-in Host"}</Text>
+          <Text style={settingsStyles.rowHint}>{"Use the Host bundled with this app."}</Text>
         </View>
         <Switch
           value={!isDaemonManagementPaused}
           onValueChange={handleToggleDaemonManagement}
           disabled={isUpdatingDaemonManagement}
-          accessibilityLabel={t("desktop.daemon.management.title")}
+          accessibilityLabel={"Manage built-in Host"}
         />
       </View>
       <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("desktop.daemon.keepRunning.title")}</Text>
+          <Text style={settingsStyles.rowTitle}>{"Keep running"}</Text>
           <Text style={settingsStyles.rowHint}>{t("desktop.daemon.keepRunning.hint")}</Text>
         </View>
         <Switch
           value={keepRunningAfterQuit}
           onValueChange={handleToggleKeepRunningAfterQuit}
           disabled={isUpdatingKeepRunningAfterQuit}
-          accessibilityLabel={t("desktop.daemon.keepRunning.title")}
+          accessibilityLabel={"Keep running"}
         />
       </View>
       <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("desktop.daemon.logs.title")}</Text>
+          <Text style={settingsStyles.rowTitle}>{"Logs"}</Text>
           <Text style={settingsStyles.rowHint}>
             {daemonLogs?.logPath ?? t("desktop.daemon.logs.unavailable")}
           </Text>
@@ -306,7 +307,7 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
       </View>
       <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("desktop.daemon.fullStatus.title")}</Text>
+          <Text style={settingsStyles.rowTitle}>{"Full status"}</Text>
           <Text style={settingsStyles.rowHint}>{t("desktop.daemon.fullStatus.hint")}</Text>
         </View>
         <Button
@@ -320,6 +321,16 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
       </View>
     </View>
   );
+}
+
+function desktopRuntimeStatusText(
+  error: string | null,
+  running: boolean,
+  readyLabel: string,
+  stoppedLabel: string,
+) {
+  if (error) return error;
+  return running ? readyLabel : stoppedLabel;
 }
 
 export function LocalDaemonSection() {
@@ -351,13 +362,14 @@ export function LocalDaemonSection() {
   }, [setStatus, t]);
 
   const daemonVersionMismatch = isVersionMismatch(appVersion, daemonVersion);
-  const daemonStatusStateText =
-    statusError ??
-    (daemonStatus?.status === "running"
-      ? t("desktop.daemon.status.running")
-      : t("desktop.daemon.status.notRunning"));
+  const daemonStatusStateText = desktopRuntimeStatusText(
+    statusError,
+    daemonStatus?.status === "running",
+    t("desktop.daemon.status.running"),
+    t("desktop.daemon.status.notRunning"),
+  );
   const daemonStatusDetailText = t("desktop.daemon.status.pid", {
-    pid: daemonStatus?.pid ? daemonStatus.pid : "—",
+    pid: daemonStatus?.pid ? daemonStatus.pid : "Unknown",
   });
   const isDaemonManagementPaused = !daemonSettings.manageBuiltInDaemon;
 
@@ -418,7 +430,7 @@ export function LocalDaemonSection() {
 
   return (
     <SettingsSection
-      title={t("desktop.daemon.title")}
+      title={"Host runtime"}
       link={advancedSettingsLink}
       testID="host-page-daemon-lifecycle-card"
     >
@@ -467,11 +479,12 @@ export function LocalDaemonSection() {
             </View>
           ) : null}
 
-          {daemonVersionMismatch ? (
-            <View style={styles.warningCard}>
-              <Text style={styles.warningText}>{t("desktop.daemon.versionMismatch")}</Text>
-            </View>
-          ) : null}
+          <SettingsStatusLine
+            message={
+              statusError ??
+              (daemonVersionMismatch ? "The app and Host have different versions." : null)
+            }
+          />
         </>
       )}
 
