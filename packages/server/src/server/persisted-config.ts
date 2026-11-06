@@ -99,6 +99,8 @@ const SpeechProviderIdSchema = z
 
 const SpeechModelSchema = z.string().min(1).optional();
 const OpenAiConnectionFields = {
+  /** Once delivered, a cleared key must not fall back to a different process-local key. */
+  credentialsManaged: z.boolean().optional(),
   apiKey: z.string().trim().min(1).optional(),
   baseUrl: z.string().trim().min(1).optional(),
 };
@@ -107,6 +109,7 @@ export const SpeechSttConfigSchema = z.discriminatedUnion("provider", [
   z
     .object({
       provider: z.literal("local"),
+      ...OpenAiConnectionFields,
       model: SpeechModelSchema,
       language: z.string().trim().min(1).optional(),
     })
@@ -126,6 +129,7 @@ export const SpeechTtsConfigSchema = z.discriminatedUnion("provider", [
   z
     .object({
       provider: z.literal("local"),
+      ...OpenAiConnectionFields,
       model: SpeechModelSchema,
       speakerId: z.number().int().optional(),
       speed: z.number().optional(),

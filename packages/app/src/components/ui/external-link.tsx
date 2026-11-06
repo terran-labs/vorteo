@@ -104,6 +104,7 @@ const styles = StyleSheet.create((theme) => ({
     ),
   },
   label: {
+    flexShrink: 1,
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     ...groupHoverStyle(EXTERNAL_LINK_HOVER_GROUP, { color: theme.colors.foreground }),
