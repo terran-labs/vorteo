@@ -597,6 +597,26 @@ test("container installation smokes run after merge and on demand, not on pull r
   assert.match(trigger, /- "docker\/\*\*"/);
   assert.match(source, /architecture: \[amd64, arm64\]/);
   assert.match(source, /bash docker\/multiplex\/smoke.sh paseo-container:check/);
+  // Version-only manifest bumps do not rebuild the container; manual runs always do.
+  const jobs = jobBlocks(source);
+  const changes = jobs.get("changes").join("\n");
+  assert.match(changes, /node scripts\/ci-neutralize-version-bumps\.mjs[\s\S]*dorny\/paths-filter/);
+  for (const path of ["docker/**", "package-lock.json", "packages/server/**"]) {
+    assert.ok(changes.includes(`- "${path}"`), path);
+  }
+  const verify = jobs.get("verify").join("\n");
+  assert.match(verify, /^    needs: changes$/m);
+  const condition = /^    if: \$\{\{ (.+) \}\}$/m.exec(verify)[1];
+  const run = (event_name, container) =>
+    runInNewContext(condition, {
+      github: { event_name },
+      needs: { changes: { outputs: container === undefined ? {} : { container } } },
+    });
+  assert.equal(run("push", "false"), false);
+  assert.equal(run("push", "true"), true);
+  assert.equal(run("push", undefined), true);
+  assert.equal(run("workflow_dispatch", "false"), true);
+  assert.match(jobs.get("smoke").join("\n"), /^    needs: verify$/m);
 });
 
 test("desktop packaging smokes main pushes and manual runs, not pull requests", () => {
