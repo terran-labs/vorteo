@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Quota charts now build real history while the app is open; frequent polling had kept each account at a single sample.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - Idle sidebar rows are quieter, and drilling into a project no longer shifts the rows below.
 
 ## Unreleased - 2026-11-05

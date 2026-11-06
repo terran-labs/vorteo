@@ -351,6 +351,37 @@ describe("ProviderUsageService", () => {
     }
   });
 
+  // A client polling every two minutes once slid a single sample forward forever.
+  it("keeps adding samples while usage is polled more often than the sample spacing", async () => {
+    let now = Date.parse("2026-06-19T00:00:00.000Z");
+    let used = 10;
+    const service = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => now,
+      historyFile: null,
+      fetchers: [
+        {
+          providerId: "claude",
+          displayName: "Claude",
+          fetchUsage: async () => ({
+            providerId: "claude",
+            displayName: "Claude",
+            status: "available",
+            windows: [{ id: "weekly", label: "Weekly", usedPct: used }],
+          }),
+        },
+      ],
+    });
+    let latest = await service.listUsage({ forceRefresh: true });
+    for (let minute = 2; minute <= 12; minute += 2) {
+      now += 2 * 60_000;
+      used += 1;
+      latest = await service.listUsage({ forceRefresh: true });
+    }
+    // Twelve minutes span three five-minute buckets.
+    expect(latest.providers[0]?.windows[0]?.history?.length).toBe(3);
+  });
+
   it("serves cached usage for two minutes by default", async () => {
     let now = Date.parse("2026-06-19T00:00:00.000Z");
     let calls = 0;
