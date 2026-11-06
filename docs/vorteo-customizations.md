@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): browser warm-up applies its configured deadline to HTTP headers and body reads. Local HTTP checks cover successful compilation, bundle errors and invalid deadlines. Assertion deadlines and production behavior are unchanged.
+
 Maintenance review (2026-11-05): System offers tracked Dev repair through the Host when Dev is unavailable. The session-host holder regression now renders System Details and retains its permission and named-agent assertions. README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-05): prepared beta release 26.11.503 for VortLab, superseding the untagged 26.11.501 and 26.11.502 after main moved, and adding the Mechanic CI duty. Version and changelog only. README overview and onboarding are unchanged.

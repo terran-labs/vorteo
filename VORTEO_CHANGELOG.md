@@ -2,6 +2,8 @@
 
 ## Unreleased - 2026-11-05
 
+- Let browser bundle warm-up use its configured HTTP deadline instead of stopping at Node’s shorter default.
+
 - Merge the latest main into Settings round 4, keeping custom domain controls under System Advanced and retaining tracked Dev recovery.
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
