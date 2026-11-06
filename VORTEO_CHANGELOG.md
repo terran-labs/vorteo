@@ -6,7 +6,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Performance
 
-- Dev image rebuilds reuse Docker's cache for the dependency install, the agent command-line tools and Tailscale, so upgrades rebuild only the packages that changed. A version bump alone no longer reinstalls every dependency. First installs are unchanged.
+- Dev image rebuilds reuse Docker's cache for the dependency install, the agent command-line tools and Tailscale, so upgrades rebuild only the packages that changed. A version bump or new build commit alone no longer reinstalls every dependency. First installs are unchanged.
 
 ## 26.11.503 - 2026-11-05
 

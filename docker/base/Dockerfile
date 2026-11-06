@@ -8,15 +8,16 @@ COPY . /tmp/paseo-src
 RUN node /tmp/paseo-src/docker/base/dependency-manifests.mjs /tmp/paseo-src /tmp/paseo-manifests
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS source-pack
-ARG PASEO_VERSION
-ARG PASEO_BUILD_COMMIT
-ENV PASEO_BUILD_COMMIT=${PASEO_BUILD_COMMIT}
-
 ENV ONNXRUNTIME_NODE_INSTALL=skip
 
 WORKDIR /tmp/paseo-src
 COPY --from=dependency-manifests /tmp/paseo-manifests/ ./
 RUN npm ci
+
+# Declared after the install: a new commit every release must not invalidate that layer.
+ARG PASEO_VERSION
+ARG PASEO_BUILD_COMMIT
+ENV PASEO_BUILD_COMMIT=${PASEO_BUILD_COMMIT}
 
 # The real source replaces the normalized manifests; node_modules is excluded from the context.
 COPY . .
