@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Calm sidebar rows: Idle sidebar rows are quieter, and drilling into a project no longer shifts the rows below.
+
 Maintenance review (2026-11-05): live tweak by Lower left sidebar: The sidebar footer now pairs the installation name with small per-account quota charts that show each account's week and flag accounts that will run out before their reset; View preferences live in the main menu, and Help moved to Settings.
 
 Maintenance review (2026-11-05): live tweak by Fix stale hover states: Sidebar calm rows, project arrows, status-ring halos, menu triggers and desktop tab chips follow CSS hover, so no visual hover sticks after layout moves under a resting cursor

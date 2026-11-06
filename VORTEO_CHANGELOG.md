@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Live tweaks
 
+- Idle sidebar rows are quieter, and drilling into a project no longer shifts the rows below.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - The sidebar footer now pairs the installation name with small per-account quota charts that show each account's week and flag accounts that will run out before their reset; View preferences live in the main menu, and Help moved to Settings.
 
 ## Unreleased - 2026-11-05
