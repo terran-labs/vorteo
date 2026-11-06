@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Text, View, Pressable, StyleSheet, ScrollView, useWindowDimensions } from "react-native";
+import { Text, View, Pressable, StyleSheet, useWindowDimensions } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { Button } from "@/components/ui/button";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 

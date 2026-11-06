@@ -5,7 +5,8 @@ import {
 } from "@/execution-installation/use-installation-upgrades";
 import { supportsUpdatePolicy } from "@/execution-installation/installation-upgrades-model";
 import { useCallback, useMemo, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { ScrollView } from "@/components/ui/scroll-view";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { SelectField } from "@/components/ui/select-field";
