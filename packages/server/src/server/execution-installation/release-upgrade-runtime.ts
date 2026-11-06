@@ -669,6 +669,8 @@ export function createReleaseUpgradeRuntime(input: {
       return engineBuildsOnly();
     },
     launchHostBuild,
+    // A cold Host build installs dependencies and compiles the server, app and web UI.
+    hostBuildDeadlineMs: 2 * 60 * 60_000,
     hostBuild(upgradeId) {
       const outcome = hostBuildOutcome(upgradeId);
       if (!existsSync(outcome)) return { status: "running", detail: "Building the Host release." };
@@ -743,6 +745,25 @@ export function createReleaseUpgradeRuntime(input: {
       const result = JSON.parse(await devReleaseCommand(tool, "prepare", upgrade.sourceCommit));
       logger.info({ upgradeId: upgrade.id, devMode: result.mode }, String(result.reason));
       return result.mode === "release" ? "release" : "image";
+    },
+    async devUpgradeMode(upgrade) {
+      const tool = devReleaseTool();
+      if (!tool) return "image";
+      const result = JSON.parse(await devReleaseCommand(tool, "mode", upgrade.sourceCommit));
+      logger.info({ upgradeId: upgrade.id, devMode: result.mode }, String(result.reason));
+      return result.mode === "release" ? "release" : "image";
+    },
+    async refreshDevScripts(upgrade) {
+      const tool = devReleaseTool();
+      if (tool) await devReleaseCommand(tool, "refresh", upgrade.sourceCommit);
+    },
+    async hasDevImage(image) {
+      try {
+        await run("docker", ["image", "inspect", image]);
+        return true;
+      } catch {
+        return false;
+      }
     },
     async devRelease() {
       const tool = devReleaseTool();

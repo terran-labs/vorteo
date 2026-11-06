@@ -1980,6 +1980,8 @@ No complete replacement of these custom workflows was established in this review
 
 ## Maintenance review
 
+November 5, 2026: review fixes for building before restarting: the Host build is recorded before it starts and fails after two hours without a result, new journal keys are dropped whenever an upgrade ends, Dev's scripts change only in the Dev step, and early Dev images are tagged and rechecked. README overview and onboarding are unchanged.
+
 November 5, 2026: installer-made Host release builds clone dependencies from the shared dependency cache instead of running a fresh `npm ci` each time. README overview and onboarding are unchanged.
 
 November 5, 2026: upgrades build the Host release and Dev's release or image before restarting anything, on installer-made Hosts with a current installer engine, so agents are interrupted only after every build passes. README overview and onboarding are unchanged.

@@ -304,7 +304,13 @@ export async function buildDevImage(input) {
   const iid = path.join(work, "image.iid");
   try {
     mkdirSync(work, { recursive: true, mode: 0o700 });
-    const packedFrom = await dockerBuild(input, work, ["--iidfile", iid]);
+    // Tagged, so a dangling-image prune between the build and Dev's recreation keeps it.
+    const packedFrom = await dockerBuild(input, work, [
+      "--iidfile",
+      iid,
+      "--tag",
+      `vorteo-dev:${input.commit}`,
+    ]);
     return { image: readFileSync(iid, "utf8").trim(), packedFrom };
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -357,7 +363,7 @@ function runProcess(command, args, options = {}) {
 }
 
 /**
- * The coordinator's entry: node dev-release.mjs <prepare|build|image|current|prune>
+ * The coordinator's entry: node dev-release.mjs <prepare|mode|refresh|build|image|current|prune>
  * --source S --commit C --deployment D [--host-release H] [--npm N] [--docker X] [--git G].
  * Prints one JSON line.
  */
@@ -386,6 +392,10 @@ async function main(argv) {
       const refreshed = await refreshDeploymentScripts(input);
       return { refreshed, ...(await devUpgradeMode(input)) };
     }
+    case "mode":
+      return await devUpgradeMode(input);
+    case "refresh":
+      return { refreshed: await refreshDeploymentScripts(input) };
     case "build":
       return await buildDevRelease(input);
     case "image":

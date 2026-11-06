@@ -785,6 +785,8 @@ function devInput(s) {
 async function devBuildStep(s) {
   const { journal } = s;
   const input = devInput(s);
+  // An interface upgrade would build into the same release folder.
+  assertNoInterfaceUpgrade(s);
   if (!s.outputs.devMode) journal.output({ devMode: (await devUpgradeMode(input)).mode });
   if (s.outputs.devMode === "release") {
     if (!s.outputs.devPreviousRelease)

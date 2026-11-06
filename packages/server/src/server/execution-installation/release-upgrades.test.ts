@@ -74,6 +74,12 @@ function fakePorts(changes: Partial<UpgradePorts> = {}) {
     coordinatorOutcome: () => outcome,
     coordinatorDeadlineMs: 60_000,
     prepareDev: async () => "image",
+    devUpgradeMode: async () => "image",
+    refreshDevScripts: async () => {
+      calls.push("dev-refresh");
+    },
+    hasDevImage: async () => true,
+    hostBuildDeadlineMs: 60_000,
     devRelease: async () => devRelease,
     buildDevRelease: async () => {
       calls.push("dev-release-build");
@@ -348,7 +354,7 @@ test.each([
   const fake = fakePorts({
     directHost: true,
     directHostBuild: true,
-    prepareDev: async () => "release",
+    devUpgradeMode: async () => "release",
     hostUpdate: () => ({ status: "succeeded", detail: "Host restarted" }),
   });
   fake.ports.buildDevRelease = async () => {
