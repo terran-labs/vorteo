@@ -60,11 +60,24 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
 // 2025-era initialize. That rejection is expected, not a transport failure.
 const DISCOVERY_PROBE_METHOD = "server/discover";
 
-function isDiscoveryProbe(body: unknown): boolean {
+/**
+ * True only for the SDK transport's unsupported-protocol-version rejection of a
+ * server/discover request, for the version that request sent. The SDK raises a
+ * plain Error without a code, so this matches its exact message prefix. Every
+ * other discovery failure, such as malformed JSON-RPC, stays a transport error.
+ */
+function isDeclinedDiscoveryProbe(input: {
+  body: unknown;
+  requestedVersion: string | string[] | undefined;
+  err: Error;
+}): boolean {
+  const { body, requestedVersion, err } = input;
   return (
     typeof body === "object" &&
     body !== null &&
-    (body as { method?: unknown }).method === DISCOVERY_PROBE_METHOD
+    (body as { method?: unknown }).method === DISCOVERY_PROBE_METHOD &&
+    typeof requestedVersion === "string" &&
+    err.message.startsWith(`Bad Request: Unsupported protocol version: ${requestedVersion} (`)
   );
 }
 
@@ -86,10 +99,15 @@ export async function serveStatelessAgentMcpRequest(input: {
     // StreamableHTTPServerTransport's built-in check requires exact Host header matches.
     enableDnsRebindingProtection: false,
   });
-  const discoveryProbe = isDiscoveryProbe(body);
   Object.assign(transport, {
     onerror: (err: Error) => {
-      if (discoveryProbe) {
+      if (
+        isDeclinedDiscoveryProbe({
+          body,
+          requestedVersion: req.headers["mcp-protocol-version"],
+          err,
+        })
+      ) {
         logger.debug({ err }, "Declined MCP discovery probe; client falls back to initialize");
         return;
       }

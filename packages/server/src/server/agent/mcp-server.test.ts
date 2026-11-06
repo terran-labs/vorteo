@@ -1659,6 +1659,13 @@ describe("Agent MCP HTTP protocol negotiation", () => {
       expect(transportLogger.debug).toHaveBeenCalledTimes(1);
       expect(transportLogger.error).not.toHaveBeenCalled();
 
+      // Any other discovery failure, such as malformed JSON-RPC, is still an error.
+      const malformed = await post({ id: "server-discover-probe-2", method: "server/discover" });
+      expect(malformed.status).toBe(400);
+      expect(transportLogger.error).toHaveBeenCalledTimes(1);
+      expect(transportLogger.debug).toHaveBeenCalledTimes(1);
+      transportLogger.error.mockClear();
+
       const initialize = await post({
         jsonrpc: "2.0",
         id: 1,
