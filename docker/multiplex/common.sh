@@ -11,6 +11,8 @@ paseo_gate_mode() {
 
 paseo_compose() {
   local files
+  # Compose would create a missing bind source as root; the Host must own this folder.
+  mkdir -p "$deployment/dev-releases"
   if paseo_gate_mode; then
     files=(-f "$deployment/compose.gate.yaml")
   else

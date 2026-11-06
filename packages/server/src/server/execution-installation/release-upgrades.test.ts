@@ -31,6 +31,7 @@ function fakePorts(changes: Partial<UpgradePorts> = {}) {
   let hostJob: "running" | "succeeded" | "failed" = "running";
   let outcome: HandoffOutcome | null = null;
   let devImage = "sha256:old";
+  let devRelease = "none";
   let adoption: AdoptionOutcome | null = null;
   const ports: UpgradePorts = {
     now: () => new Date(clock),
@@ -67,6 +68,18 @@ function fakePorts(changes: Partial<UpgradePorts> = {}) {
     },
     coordinatorOutcome: () => outcome,
     coordinatorDeadlineMs: 60_000,
+    prepareDev: async () => "image",
+    devRelease: async () => devRelease,
+    buildDevRelease: async () => {
+      calls.push("dev-release-build");
+    },
+    selectDevRelease: async (release) => {
+      calls.push(`dev-select ${release}`);
+      devRelease = release;
+    },
+    pruneDevReleases: async () => {
+      calls.push("dev-prune");
+    },
     devImage: async () => devImage,
     buildDevImage: async () => {
       calls.push("dev-build");
@@ -292,6 +305,35 @@ test("an unhealthy Dev image rolls back to the previous image", async () => {
     steps: ["succeeded", "succeeded", "succeeded", "succeeded", "rolled-back"],
   });
   expect(upgrades.list()[0].detail).toContain("previous image");
+});
+
+test("a Dev release swap keeps the image and rolls back to the previous release", async () => {
+  const fake = fakePorts({ prepareDev: async () => "release" });
+  let healthy = true;
+  fake.ports.verifyDev = async () => {
+    fake.calls.push("dev-verify");
+    if (!healthy) throw new Error("Dev did not answer");
+  };
+  await fake.ports.selectDevRelease("a".repeat(40));
+  const upgrades = new InstallationUpgrades(journal, fake.ports);
+  await approved(upgrades);
+  fake.finishHost("succeeded");
+  await upgrades.drain();
+  await upgrades.drain();
+  healthy = false;
+  fake.reportCoordinator("succeeded");
+  await upgrades.drain();
+  expect(fake.calls.slice(-4)).toEqual([
+    "dev-release-build",
+    `dev-select ${RELEASE_COMMIT}`,
+    "dev-verify",
+    `dev-select ${"a".repeat(40)}`,
+  ]);
+  expect(fake.calls).not.toContain("dev-build");
+  expect(statuses(upgrades).steps.at(-1)).toBe("rolled-back");
+  expect(upgrades.list()[0].detail).toContain(`release ${"a".repeat(40)} again`);
+  // Release-mode keys are dropped so an older coordinator can still read the journal.
+  expect(journal.read()[0].private).not.toHaveProperty("devMode");
 });
 
 test("a coordinator that restarted while Dev was recreated verifies before replacing again", async () => {

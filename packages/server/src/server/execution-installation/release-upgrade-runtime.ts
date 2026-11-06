@@ -337,6 +337,40 @@ export function createReleaseUpgradeRuntime(input: {
   }
 
   /** Runs the engine's `adopt` on this installation's root, detached; it restarts this process. */
+  /** dev-release.mjs beside the installer engine this coordinator would run, if it has one. */
+  function devReleaseTool(): string | null {
+    try {
+      const tool = path.join(path.dirname(adoptionEngine()), "dev-release.mjs");
+      return existsSync(tool) ? tool : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function devReleaseCommand(
+    tool: string,
+    command: string,
+    commit?: string,
+    timeoutMs = 300_000,
+  ): Promise<string> {
+    const deployment = config.deployment;
+    if (!deployment?.containerDirectory || !deployment.sourceDirectory)
+      throw new Error("Dev's deployment or source directory is unknown");
+    return run(
+      hostNode,
+      [
+        tool,
+        command,
+        "--deployment",
+        deployment.containerDirectory,
+        "--source",
+        deployment.sourceDirectory,
+        ...(commit ? ["--commit", commit] : []),
+      ],
+      { timeoutMs },
+    );
+  }
+
   function launchAdoptionEngine(directory: string): void {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     spawnDetached(
@@ -622,6 +656,36 @@ export function createReleaseUpgradeRuntime(input: {
       readHandoffOutcome(path.join(upgradeDirectory, upgradeId, "coordinator-handoff.json")),
     // Two readiness windows (new release, then rollback) plus restart slack.
     coordinatorDeadlineMs: COORDINATOR_READY_TIMEOUT_MS * 2 + 60_000,
+    async prepareDev(upgrade) {
+      const tool = devReleaseTool();
+      // A coordinator release without the tool upgrades Dev the way it always has.
+      if (!tool) return "image";
+      const result = JSON.parse(await devReleaseCommand(tool, "prepare", upgrade.sourceCommit));
+      logger.info({ upgradeId: upgrade.id, devMode: result.mode }, String(result.reason));
+      return result.mode === "release" ? "release" : "image";
+    },
+    async devRelease() {
+      const tool = devReleaseTool();
+      if (!tool) return "none";
+      return String(JSON.parse(await devReleaseCommand(tool, "current")).release);
+    },
+    async buildDevRelease(upgrade) {
+      const tool = devReleaseTool();
+      if (!tool) throw new Error("This coordinator release cannot build Dev releases");
+      await devReleaseCommand(tool, "build", upgrade.sourceCommit, 60 * 60_000);
+    },
+    async selectDevRelease(release) {
+      const directory = config.deployment?.containerDirectory;
+      if (!directory) throw new Error("Dev's deployment directory is unknown");
+      // update.sh restores the previous selection itself when Dev is unhealthy on this one.
+      await run("/bin/bash", [path.join(directory, "update.sh"), "--release", release], {
+        timeoutMs: 15 * 60_000,
+      });
+    },
+    async pruneDevReleases() {
+      const tool = devReleaseTool();
+      if (tool) await devReleaseCommand(tool, "prune");
+    },
     async devImage() {
       const directory = config.deployment?.containerDirectory;
       if (!directory) throw new Error("Dev's deployment directory is unknown");
