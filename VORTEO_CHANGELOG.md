@@ -4,6 +4,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-05
 
+### Maintenance
+
+- Put the installer runner's doc comment back on `run()`; the Tailscale CLI-mode helper sat between them.
+
+## Unreleased - 2026-11-05
+
 ### Fixes
 
 - In-place adoption no longer reports "Tailscale is not signed in" on a signed-in Mac. Started by the coordinator under launchd, the Tailscale app's binary opened its GUI instead of answering as a CLI, so the status read as signed out. Every installer call to Tailscale now sets `TAILSCALE_BE_CLI=1`.
