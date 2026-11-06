@@ -596,6 +596,12 @@ test("container installation smokes run after merge and on demand, not on pull r
   assert.match(trigger, /^  workflow_dispatch:/m);
   assert.match(trigger, /- "docker\/\*\*"/);
   assert.match(source, /architecture: \[amd64, arm64\]/);
+  // Each architecture runs natively; QEMU emulation made the arm64 smoke the slowest job.
+  assert.match(
+    source,
+    /runs-on: \$\{\{ matrix\.architecture == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/,
+  );
+  assert.doesNotMatch(source, /setup-qemu-action/);
   assert.match(source, /bash docker\/multiplex\/smoke.sh paseo-container:check/);
 });
 
