@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-05): live tweak by Static interface fallback button: A Live dev page that cannot start offers Load static interface beside the other fallback buttons. Live dev's declaration watchers now stamp their output, so commit hooks in the live checkout no longer rebuild declarations under the running dev server.
+
 Maintenance review (2026-11-05): live tweak by Quota usage history: Quota charts now build real history while the app is open; frequent polling had kept each account at a single sample.
 
 Maintenance review (2026-11-05): live tweak by Calm sidebar rows: Idle sidebar rows are quieter, and drilling into a project no longer shifts the rows below.
