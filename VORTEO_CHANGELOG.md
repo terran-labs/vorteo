@@ -423,6 +423,12 @@ Beta for VortLab, delivered by Upgrade from Installation controls.
 
 ### Live tweaks
 
+- Live dev mode documentation describes the sidebar's v<version>+N suffix and the live-dev revision command.
+
+## Unreleased - 2026-11-05
+
+### Live tweaks
+
 - When drilled into a project, its new workspace plus is always visible in the breadcrumb; the menu still appears on hover.
 
 ## Unreleased - 2026-11-05
