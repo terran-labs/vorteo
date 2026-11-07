@@ -73,6 +73,20 @@ export function spawnProcess(
   });
 }
 
+// Allow ordinary cancellation cleanup one second before forcing the direct child to exit.
+const ABORT_GRACE_MS = 1000;
+
+function escalateAbortedChild(child: ChildProcess): void {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  const timer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, ABORT_GRACE_MS);
+  // Exit can precede close when a descendant retains stdio. Never signal a reused PID.
+  child.once("exit", () => clearTimeout(timer));
+  child.once("close", () => clearTimeout(timer));
+  timer.unref();
+}
+
 export async function execCommand(
   command: string,
   args: string[],
@@ -103,8 +117,10 @@ export async function execCommand(
   } catch (error) {
     // Node's execFile forwards killSignal for timeouts but uses SIGTERM on abort.
     const aborted = error instanceof Error && "code" in error && error.code === "ABORT_ERR";
-    if (aborted && options.signal?.aborted && options.killSignal)
-      pending.child.kill(options.killSignal);
+    if (aborted && options.signal?.aborted) {
+      if (options.killSignal) pending.child.kill(options.killSignal);
+      escalateAbortedChild(pending.child);
+    }
     throw error;
   } finally {
     await closed;

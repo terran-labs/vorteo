@@ -55,9 +55,13 @@ test("spawnProcess delivers shell arguments to the real child unchanged", async 
 });
 
 // Windows terminates immediately on SIGTERM, so only POSIX can hold this boundary open.
-test.skipIf(process.platform === "win32").each([undefined, "SIGKILL"] as const)(
+test.skipIf(process.platform === "win32").each([
+  { killSignal: undefined, cooperative: true },
+  { killSignal: undefined, cooperative: false },
+  { killSignal: "SIGKILL", cooperative: false },
+] as const)(
   "aborted commands wait for child closure with kill signal %s",
-  async (killSignal) => {
+  async ({ killSignal, cooperative }) => {
     const server = createServer();
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -95,7 +99,8 @@ test.skipIf(process.platform === "win32").each([undefined, "SIGKILL"] as const)(
         controller.abort();
         await stopping;
         expect(settled).toBe(false);
-        socket.write("exit");
+        if (cooperative) socket.write("exit");
+        else await expect.poll(() => settled, { timeout: 4000 }).toBe(true);
       }
       expect(await pending).toMatchObject({ code: "ABORT_ERR" });
       expect(() => process.kill(pid, 0)).toThrow();
