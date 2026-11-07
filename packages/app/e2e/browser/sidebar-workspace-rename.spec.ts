@@ -3,7 +3,11 @@ import { gotoAppShell } from "../support/helpers/app";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { getServerId } from "../support/helpers/server-id";
-import { selectSidebarStatusGrouping } from "../support/helpers/sidebar";
+import {
+  closeSidebarDisplayPreferences,
+  openSidebarDisplayPreferences,
+  selectSidebarStatusGrouping,
+} from "../support/helpers/sidebar";
 
 function workspaceRowTestId(workspaceId: string): string {
   return `sidebar-workspace-row-${getServerId()}:${workspaceId}`;
@@ -77,9 +81,10 @@ test.describe("Sidebar workspace rename", () => {
 });
 
 async function toggleBackgroundWorkspaces(page: Page): Promise<void> {
-  await page.getByLabel("Display preferences", { exact: true }).click();
+  // View preferences live in the sidebar's main menu since 469492c4e.
+  await openSidebarDisplayPreferences(page);
   await page.getByRole("menuitem", { name: "Show background", exact: true }).click();
-  await page.keyboard.press("Escape");
+  await closeSidebarDisplayPreferences(page);
 }
 
 async function expectWorkspaceInSidebar(page: Page, workspaceId: string): Promise<void> {
@@ -93,7 +98,7 @@ async function expectWorkspaceHidden(page: Page, workspaceId: string): Promise<v
 
 async function reconnectApp(page: Page): Promise<void> {
   await page.reload();
-  await expect(page.getByLabel("Display preferences", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("sidebar-footer-overflow").filter({ visible: true })).toBeVisible();
 }
 
 async function expectWorkerOpen(page: Page): Promise<void> {
