@@ -276,9 +276,67 @@ jobs:
           npm pack --dry-run --ignore-scripts --workspace=@getpaseo/client
           npm pack --dry-run --ignore-scripts --workspace=@getpaseo/server
 
+  # Vorteo: heavy runs build the server stack once here and share it with the Ubuntu and
+  # macOS suites. It needs only `changes`, so it runs beside the required checks without
+  # delaying them, and it finishes before typecheck, which keeps its own build. Pull
+  # requests and main pushes skip it; their suites build as before. A consumer that cannot
+  # unpack the archive builds locally, so a failed, skipped or expired build changes no
+  # routing. Windows suites build natively: their checkout converts line endings, so the
+  # copied plugin, skill and shell-integration files differ from a Linux build.
+  build:
+    name: build
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Build server stack
+        run: npm run build:server
+
+      - name: Build native app dependency
+        run: npm run build --workspace=@getpaseo/expo-two-way-audio
+
+      # A tarball keeps file modes and links, which upload-artifact does not. The list
+      # covers build:server, build:app-deps and build:server-deps, including the
+      # protocol validators that the protocol build generates into its source tree.
+      - name: Pack server stack build
+        run: >-
+          tar -czf "$RUNNER_TEMP/server-stack-dist.tgz"
+          packages/protocol/dist
+          packages/protocol/src/generated/validation/ws-outbound.aot.ts
+          packages/protocol/src/generated/validation/ws-outbound-schema-metadata.ts
+          packages/protocol/codegen/generated
+          packages/relay/dist
+          packages/client/dist
+          packages/highlight/dist
+          packages/plugin/dist
+          packages/server/dist
+          packages/cli/dist
+          packages/expo-two-way-audio/build
+
+      - name: Upload server stack build
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-stack-dist
+          path: ${{ runner.temp }}/server-stack-dist.tgz
+          if-no-files-found: error
+          retention-days: 1
+          # The tarball is already gzipped.
+          compression-level: 0
+
   server-tests-ubuntu:
     name: server-tests (ubuntu-latest)
-    needs: changes
+    needs: [changes, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') }}
     runs-on: ubuntu-latest
     steps:
@@ -312,8 +370,27 @@ jobs:
         if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
         run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code opencode-ai
 
+      # Vorteo: reuse the `build` job's output when it exists. Both steps tolerate
+      # failure; the build steps that follow run unless the unpack set the flag.
+      - &dist_download
+        name: Download shared server stack build
+        id: dist
+        if: ${{ needs.build.result == 'success' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: server-stack-dist
+          path: ${{ runner.temp }}/server-stack-dist
+
+      - &dist_unpack
+        name: Unpack shared server stack build
+        if: ${{ steps.dist.outcome == 'success' }}
+        continue-on-error: true
+        run: tar -xzf "$RUNNER_TEMP/server-stack-dist/server-stack-dist.tgz" && echo "PASEO_PREBUILT_SERVER_STACK=1" >> "$GITHUB_ENV"
+
       - &server_build
         name: Build server stack
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
         run: npm run build:server
 
       - name: Run server tests
@@ -387,7 +464,7 @@ jobs:
   # bound runtime.
   server-tests-macos:
     name: server-tests (macos-15, file observation)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: macos-15
     steps:
@@ -401,7 +478,12 @@ jobs:
       - name: Install dependencies
         run: node scripts/npm-retry.mjs ci
 
+      # These suites run server source; the dependency dist is plain JavaScript.
+      - *dist_download
+      - *dist_unpack
+
       - name: Build server dependencies
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
         run: npm run build:server-deps
 
       - name: Run file observation tests
@@ -509,7 +591,7 @@ jobs:
 
   app-tests:
     name: app-tests
-    needs: changes
+    needs: [changes, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.app != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -528,7 +610,11 @@ jobs:
         timeout-minutes: 10
         run: npx playwright install chromium
 
+      - *dist_download
+      - *dist_unpack
+
       - name: Build app dependencies
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
         run: npm run build:app-deps
 
       - name: Run app unit tests
@@ -536,7 +622,7 @@ jobs:
 
   playwright-1:
     name: playwright (shard 1/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     # A hung browser or daemon must fail the shard instead of holding a runner for hours.
@@ -563,10 +649,15 @@ jobs:
         timeout-minutes: 10
         run: npx playwright install chromium
 
+      - *dist_download
+      - *dist_unpack
+
       - name: Build server stack
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
         run: npm run build:server
 
       - name: Build native app dependency
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
         run: npm run build --workspace=@getpaseo/expo-two-way-audio
 
       - name: Install agent CLIs for provider tests
@@ -597,7 +688,7 @@ jobs:
 
   playwright-2:
     name: playwright (shard 2/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -608,7 +699,7 @@ jobs:
 
   playwright-3:
     name: playwright (shard 3/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -619,7 +710,7 @@ jobs:
 
   playwright-4:
     name: playwright (shard 4/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -630,7 +721,7 @@ jobs:
 
   playwright-5:
     name: playwright (shard 5/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -640,7 +731,7 @@ jobs:
 
   playwright-6:
     name: playwright (shard 6/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -650,7 +741,7 @@ jobs:
 
   playwright-7:
     name: playwright (shard 7/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -660,7 +751,7 @@ jobs:
 
   playwright-8:
     name: playwright (shard 8/8)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-24.04
     env:
@@ -672,7 +763,7 @@ jobs:
   # restart and reconnect, settings). The full suite runs nightly and on release tags.
   playwright-smoke:
     name: playwright (smoke)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') && needs.changes.outputs.heavy != 'false' && needs.changes.outputs.e2e == 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -691,10 +782,15 @@ jobs:
         timeout-minutes: 10
         run: npx playwright install chromium
 
+      - *dist_download
+      - *dist_unpack
+
       - name: Build server stack
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
         run: npm run build:server
 
       - name: Build native app dependency
+        if: ${{ env.PASEO_PREBUILT_SERVER_STACK != '1' }}
         run: npm run build --workspace=@getpaseo/expo-two-way-audio
 
       - name: Install agent CLIs for provider tests
@@ -749,7 +845,7 @@ jobs:
 
   cli-tests-1:
     name: cli-tests (shard 1/3)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
     env:
@@ -772,19 +868,23 @@ jobs:
       - name: Install agent CLIs for provider tests
         run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
 
-      # The local runner builds its dependencies and shards its own E2E files.
+      # The unpack sets PASEO_PREBUILT_SERVER_STACK, which tells the runner to skip its build.
+      - *dist_download
+      - *dist_unpack
+
+      # The local runner builds its dependencies unless they are prebuilt, and shards its own E2E files.
       - name: Run CLI E2E tests
         run: npm run test:local --workspace=@getpaseo/cli
 
       # Source tests do not read PASEO_CLI_TEST_SHARD. Run them once, on the
-      # shortest E2E shard, after its runner has built the server stack.
+      # shortest E2E shard, after its runner has built or unpacked the server stack.
       - name: Run CLI source tests
         if: ${{ env.PASEO_CLI_TEST_SHARD == '3' }}
         run: npm run test:unit --workspace=@getpaseo/cli
 
   cli-tests-2:
     name: cli-tests (shard 2/3)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
     env:
@@ -797,7 +897,7 @@ jobs:
 
   cli-tests-3:
     name: cli-tests (shard 3/3)
-    needs: [changes, format, lint, typecheck]
+    needs: [changes, format, lint, typecheck, build]
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
     env:
