@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseChangelog } from "../../src/changelog/internal/parse-changelog";
 import { expect, test, type Page } from "../support/fixtures";
 import { gotoAppShell, openSettings } from "../support/helpers/app";
-import { openSettingsSection } from "../support/helpers/settings";
+import { openSettingsSection, revealSettingsLocation } from "../support/helpers/settings";
 import { release, serveChangelog } from "../support/helpers/changelog";
 
 const customReleases = parseChangelog(
@@ -166,6 +166,8 @@ test.describe("compact sidebar help", () => {
   test("offers diagnostics without advertising disabled keyboard shortcuts", async ({ page }) => {
     await gotoAppShell(page);
     await openSettings(page);
+    // Help lives in System > About since 2eda5255a; phones open Settings on its section list.
+    await revealSettingsLocation(page, "about");
     await expect(page.getByTestId("settings-help-shortcuts")).toHaveCount(0);
     await page.getByTestId("settings-help-diagnostics").click();
     await expectDiagnosticReport(page);
@@ -193,9 +195,10 @@ async function expectFingerSizedToolbarTargets(page: Page): Promise<void> {
     // Flex layout can report a 44px box as 43.99999px; round to a hundredth before comparing.
     expect(Math.round(bounds.width * 100) / 100).toBeGreaterThanOrEqual(44);
     expect(Math.round(bounds.height * 100) / 100).toBeGreaterThanOrEqual(44);
-    expect(Number(await button.locator("svg").first().getAttribute("width"))).toBeLessThanOrEqual(
-      20,
-    );
+    // The phone menu toggle draws its glyph from lines rather than an svg icon.
+    const glyph = button.locator("svg").first();
+    if (await glyph.count())
+      expect(Number(await glyph.getAttribute("width"))).toBeLessThanOrEqual(20);
   }
 }
 
