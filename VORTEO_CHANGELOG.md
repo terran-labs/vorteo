@@ -2,6 +2,12 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-06
+
+### Fixes
+
+- Handle SIGTERM and SIGINT before session host startup awaits, and close a listener still starting before exiting.
+
 ## 26.11.600 - 2026-11-06
 
 Beta for VortLab: Dev upgrades that restart only Dev's daemon and build everything before restarting, cached Dev image layers, shared Voice keys, Factory planning and drain controls, the Settings round 4 work, and the Live dev sidebar and upgrade work.
