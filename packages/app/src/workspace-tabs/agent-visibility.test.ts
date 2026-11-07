@@ -1092,3 +1092,31 @@ it("does not classify archived or detail-only group members as foreign", () => {
   expect(visibility.foreignAgentIds).toEqual(new Set([foreign.id]));
   expect(visibility.activeAgentIds.has(archived.id)).toBe(false);
 });
+
+it("keeps subagents out of auto-open while the environment's workspaces are still loading", () => {
+  const parent = makeAgent({ id: "parent", workspaceId: "current", cwd: "/current" });
+  const child = makeAgent({
+    id: "child",
+    workspaceId: "current",
+    cwd: "/current",
+    parentAgentId: "parent",
+  });
+  const visibility = deriveEnvironmentWorkspaceAgentVisibility({
+    serverId: "host",
+    workspaceId: "current",
+    sessions: {
+      host: {
+        agents: new Map([
+          [parent.id, parent],
+          [child.id, child],
+        ]),
+        agentDetails: new Map(),
+        workspaces: new Map(),
+        hasHydratedAgents: true,
+        hasHydratedWorkspaces: false,
+      },
+    },
+  });
+  expect(visibility.activeAgentIds).toEqual(new Set([parent.id, child.id]));
+  expect(visibility.autoOpenAgentIds).toEqual(new Set([parent.id]));
+});

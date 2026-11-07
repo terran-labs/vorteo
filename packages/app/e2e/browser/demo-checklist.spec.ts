@@ -69,7 +69,10 @@ test.describe("compact theme surfaces", () => {
     await page.screenshot({ path: info.outputPath(`${theme}-task-sheet.png`) });
     await save.click();
     await expect(page.getByTestId("checklist-editor")).toBeHidden();
-    await expect(page.getByText("Review compact theme", { exact: true })).toBeVisible();
+    // The demo's open question also names the task it blocks, so check the checklist row.
+    await expect(
+      page.getByRole("checkbox", { name: "Complete Review compact theme", exact: true }),
+    ).toBeVisible();
     // Phones show Files inline in the conversation since 56b01ba3a.
     const files = page.getByTestId("supporting-card-files").filter({ visible: true });
     await files.scrollIntoViewIfNeeded();

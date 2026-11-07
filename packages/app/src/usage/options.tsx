@@ -7,18 +7,12 @@ import {
 } from "@/components/settings";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { settingsStyles } from "@/styles/settings";
-import { usageCopy } from "./copy";
 import { useUsageDisplay, type UsageDisplay } from "./display";
 import { useUsageSetting } from "./setting";
 import { useTranslation } from "react-i18next";
 import { Alert } from "@/components/ui/alert";
 
 import type { UsageDisplayAs } from "./preferences";
-
-const DISPLAY_AS_OPTIONS: SegmentedControlOption<UsageDisplayAs>[] = [
-  { value: "used", label: usageCopy.displayUsed, testID: "usage-display-used" },
-  { value: "remaining", label: usageCopy.displayRemaining, testID: "usage-display-remaining" },
-];
 
 export function UsageOptions({
   display: providedDisplay,
@@ -31,10 +25,19 @@ export function UsageOptions({
   const display = providedDisplay ?? defaultDisplay;
   const setting = useUsageSetting(serverId);
   const { t } = useTranslation();
+  // Rendered labels follow the app language; usageCopy holds English text for non-UI messages.
+  const displayAsOptions: SegmentedControlOption<UsageDisplayAs>[] = [
+    { value: "used", label: t("providerUsage.displayUsed"), testID: "usage-display-used" },
+    {
+      value: "remaining",
+      label: t("providerUsage.displayRemaining"),
+      testID: "usage-display-remaining",
+    },
+  ];
   return (
     <View style={settingsStyles.section}>
       <SettingsCard>
-        <SettingsCollapsibleRow label={usageCopy.options} testID="usage-options">
+        <SettingsCollapsibleRow label={t("providerUsage.options")} testID="usage-options">
           {setting.error ? <Alert variant="error" description={setting.error.message} /> : null}
           {setting.supported ? (
             <SettingsSwitch
@@ -44,9 +47,9 @@ export function UsageOptions({
               onValueChange={setting.setEnabled}
             />
           ) : null}
-          <SettingsRow label={usageCopy.displayAs}>
+          <SettingsRow label={t("providerUsage.displayAs")}>
             <SegmentedControl
-              options={DISPLAY_AS_OPTIONS}
+              options={displayAsOptions}
               value={display.displayAs}
               onValueChange={display.setDisplayAs}
               size="sm"

@@ -2,6 +2,9 @@ import { expect, test } from "../support/fixtures";
 import type { Page } from "@playwright/test";
 import { openSettingsSection } from "../support/helpers/settings";
 
+// Appearance is a pane in the Interface section since 2eda5255a; its sidebar entry stays reachable.
+const appearanceSection = { name: "Interface", exact: true };
+
 async function openAppearance(page: Page) {
   await page.goto("/settings");
   await openSettingsSection(page, "appearance");
@@ -21,13 +24,13 @@ for (const name of ["Code font family", "Interface font family"]) {
 
     await setFontFamily(page, name, "'foo");
     await expect(page.getByRole("textbox", { name })).toHaveValue("'Fira Code', monospace");
-    await expect(page.getByRole("button", { name: "Appearance", exact: true })).toBeInViewport();
+    await expect(page.getByRole("button", appearanceSection)).toBeInViewport();
     await expect(page.getByText("Theme", { exact: true }).first()).toHaveCSS("font-size", "12px");
 
     await page.screenshot({ path: testInfo.outputPath("rejected-font.png") });
     await page.reload();
     await expect(page.getByRole("textbox", { name })).toHaveValue("'Fira Code', monospace");
-    await expect(page.getByRole("button", { name: "Appearance", exact: true })).toBeInViewport();
+    await expect(page.getByRole("button", appearanceSection)).toBeInViewport();
     await setFontFamily(page, name, "");
     await expect(page.getByRole("textbox", { name })).toHaveValue("");
   });
@@ -43,6 +46,6 @@ test("opens settings with defaults when a malformed font was already saved", asy
   await openAppearance(page);
   await expect(page.getByRole("textbox", { name: "Code font family" })).toHaveValue("");
   await expect(page.getByRole("textbox", { name: "Interface font family" })).toHaveValue("");
-  await expect(page.getByRole("button", { name: "Appearance", exact: true })).toBeInViewport();
+  await expect(page.getByRole("button", appearanceSection)).toBeInViewport();
   await expect(page.getByText("Theme", { exact: true }).first()).toHaveCSS("font-size", "12px");
 });
