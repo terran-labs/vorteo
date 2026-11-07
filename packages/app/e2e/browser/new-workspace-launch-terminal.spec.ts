@@ -162,7 +162,12 @@ async function expectNewWorkspaceHeaderHidden(page: Page): Promise<void> {
 }
 
 async function expectNewWorkspaceHeaderVisible(page: Page): Promise<void> {
-  await expect(page.getByTestId("menu-button").filter({ visible: true }).first()).toBeVisible();
+  // Vorteo's New workspace screen has no header on any width; the form's own Import session
+  // action is the chrome that fullscreen covers and exit restores.
+  await expect(page.getByRole("button", { name: "Exit fullscreen", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByTestId("new-workspace-import-session").filter({ visible: true }),
+  ).toBeVisible();
 }
 
 /**

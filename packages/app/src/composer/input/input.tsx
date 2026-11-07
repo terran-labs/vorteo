@@ -908,12 +908,14 @@ function resolveModifiedSendButton(input: {
   action: "default" | "alternate" | "newline" | "send";
   queues: boolean;
   disabled: boolean;
+  /** The caller named its submit action, such as Create on the new workspace screen. */
+  namedSubmit: boolean;
   t: ReturnType<typeof useTranslation>["t"];
   baseline: SendButtonPresentation;
 }): SendButtonPresentation {
   const presentation = { ...input.baseline };
   if (input.queues) presentation.buttonIcon = "queue";
-  if (input.action === "send") {
+  if (input.action === "send" && !input.namedSubmit) {
     presentation.submitAccessibilityLabel = input.t("composer.input.sendMessage");
     presentation.sendTooltipLabel = presentation.submitAccessibilityLabel;
   }
@@ -2073,6 +2075,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       action: submitAction.action,
       queues: submitAction.queues,
       disabled,
+      namedSubmit: Boolean(submitButtonAccessibilityLabel),
       t,
       baseline: {
         buttonIcon: submitIcon,
@@ -2315,23 +2318,31 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           shouldShow
           canPressLoadingButton={canPressLoadingButton}
           onSubmitLoadingPress={onSubmitLoadingPress}
-          onDefaultSendAction={isFullscreen ? handleSendMessage : handleButtonAction}
+          // Fullscreen has no separate queue button, so its Send follows the configured
+          // behavior while an agent runs, as upstream's does (merge 51f16b39f made it send).
+          onDefaultSendAction={isFullscreen ? handleDefaultSendAction : handleButtonAction}
           onLongPressSend={handleLongPressSend}
           isSendButtonDisabled={isFullscreen ? isPresentedSendDisabled : buttonDisabled}
-          submitAccessibilityLabel={buttonPresentation.submitAccessibilityLabel}
+          submitAccessibilityLabel={
+            isFullscreen ? submitAccessibilityLabel : buttonPresentation.submitAccessibilityLabel
+          }
           submitAccessibilityHint={submitAccessibilityHint}
           sendButtonCombinedStyle={sendButtonCombinedStyle}
           isSubmitLoading={isSubmitLoading}
-          submitIcon={buttonIcon}
+          submitIcon={isFullscreen ? submitIcon : buttonIcon}
           submitLabel={submitLabel}
           submitButtonTestID={submitButtonTestID}
           buttonIconSize={buttonIconSize}
           sendKeys={buttonKeys}
           allowDisabledTooltip={Boolean(props.submitDisabledReason)}
-          sendTooltipLabel={buttonPresentation.sendTooltipLabel}
+          sendTooltipLabel={isFullscreen ? sendTooltipLabel : buttonPresentation.sendTooltipLabel}
         />
       ),
       [
+        handleDefaultSendAction,
+        submitAccessibilityLabel,
+        submitIcon,
+        sendTooltipLabel,
         isFullscreen,
         buttonKind,
         buttonDisabled,
@@ -2339,7 +2350,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         buttonIcon,
         buttonKeys,
         handleButtonAction,
-        handleSendMessage,
         props.submitDisabledReason,
         activeActionContent,
         canPressLoadingButton,

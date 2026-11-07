@@ -44,6 +44,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Composer } from "@/composer";
 
 import { useComposerEditingSession, useComposerFullscreen } from "@/composer/editing-session";
+import { useFullscreenSlotFrame } from "@/composer/dock";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import {
   resolveComposerAttachmentSubmitFormat,
@@ -2476,6 +2477,7 @@ function useNewWorkspaceComposerEditing() {
 
 function NewWorkspaceLayout({
   isCompact,
+  fullscreen,
   title,
   formStack,
   onImportSession,
@@ -2494,25 +2496,37 @@ function NewWorkspaceLayout({
   const importSessionButton = <ImportSessionButton compact={isCompact} onPress={onImportSession} />;
   // Compact has no title: the fields name themselves. The free space above pushes them down onto
   // the composer, where the thumb is.
+  // Merge 51f16b39f took upstream's compact fields, whose import button lives in a header this
+  // screen does not render; keep Vorteo's top placement.
   const setupFields = isCompact ? (
     <>
+      <View style={styles.compactTopActions}>{importSessionButton}</View>
       <View style={styles.compactSetupSpace} pointerEvents="none" />
       {formStack}
     </>
   ) : (
     <>
-      {isCompact ? <View style={styles.compactTopActions}>{importSessionButton}</View> : null}
-      {!isCompact ? (
-        <View style={styles.composerTitleContainer} pointerEvents="none">
-          <Text style={styles.composerTitle}>{title}</Text>
-        </View>
-      ) : null}
+      <View style={styles.composerTitleContainer} pointerEvents="none">
+        <Text style={styles.composerTitle}>{title}</Text>
+      </View>
       {formStack}
     </>
   );
 
+  // Fullscreen covers the visible content with the composer alone, as the dock does elsewhere.
+  // The slot is always mounted so entering fullscreen restyles the composer instead of
+  // remounting it, which keeps the live draft and its selection.
+  const contentRef = useRef<View>(null);
+  const [contentSize, setContentSize] = useState<{ width: number; height: number }>();
+  const measureContent = useCallback((event: import("react-native").LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    if (height > 0) setContentSize({ width, height });
+  }, []);
+  const fullscreenFrame = useFullscreenSlotFrame(fullscreen, contentRef, contentSize);
   return (
     <View
+      ref={contentRef}
+      onLayout={measureContent}
       style={[
         styles.content,
         styles.vortonContent,
@@ -2523,7 +2537,12 @@ function NewWorkspaceLayout({
     >
       <KeyboardTranslateView style={[styles.centered, isCompact && styles.centeredCompact]}>
         {setupFields}
-        {children}
+        <View
+          style={fullscreen ? [styles.fullscreenComposer, fullscreenFrame] : styles.composerSlot}
+        >
+          {children}
+        </View>
+        {isCompact || fullscreen ? null : importSessionButton}
       </KeyboardTranslateView>
     </View>
   );
@@ -2532,6 +2551,14 @@ function NewWorkspaceLayout({
 const PROJECT_ICON_FALLBACK_FONT_SIZE = 10;
 
 const styles = StyleSheet.create((theme) => ({
+  composerSlot: { width: "100%" },
+  // Fixed, not absolute, for the dock's reason: touch pans must reach the visual viewport.
+  // React Native Web renders `fixed`; React Native's style type omits it.
+  fullscreenComposer: {
+    position: "fixed" as "absolute",
+    zIndex: 1,
+    backgroundColor: theme.colors.surface0,
+  },
   compactSetupSpace: { flex: 1, minHeight: theme.spacing[4] },
 
   compactHeading: { flex: 1, minWidth: 0 },
