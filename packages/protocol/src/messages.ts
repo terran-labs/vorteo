@@ -12,6 +12,7 @@ import {
 import { InstallationProviderProjectionSchema } from "./installation-provider.js";
 import { PluginDirectoryBindingSchema, ResolvedPluginSourceSchema } from "./plugin-installation.js";
 import {
+  DaemonPrimaryConnectionSchema,
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "./installation-settings.js";
@@ -383,11 +384,11 @@ const InstallationProjectPoliciesWireSchema = z.record(
   InstallationProjectPolicySchema.loose(),
 );
 
-/** A daemon's primary connection: a provider id in this environment and an optional profile. */
-export const DaemonPrimaryConnectionSchema = z
-  .object({ provider: z.string().min(1), profileId: z.string().min(1).optional() })
-  .passthrough();
-export type DaemonPrimaryConnection = z.infer<typeof DaemonPrimaryConnectionSchema>;
+// Defined beside the installation settings so lightweight config readers avoid the wire schemas.
+export {
+  DaemonPrimaryConnectionSchema,
+  type DaemonPrimaryConnection,
+} from "./installation-settings.js";
 
 export const MutableDaemonConfigSchema = z
   .object({

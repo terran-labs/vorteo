@@ -1,8 +1,8 @@
 import {
+  DaemonPrimaryConnectionSchema,
   InstallationProjectPolicySchema,
   InstallationResourceBindingsSchema,
 } from "@getpaseo/protocol/installation-settings";
-import { DaemonPrimaryConnectionSchema } from "@getpaseo/protocol/messages";
 import { readFile } from "node:fs/promises";
 import { PluginRegistriesSchema } from "@getpaseo/protocol/plugin-registry";
 import { existsSync, readFileSync } from "node:fs";

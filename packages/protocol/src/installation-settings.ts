@@ -147,6 +147,12 @@ export function effectiveProjectPolicy(
   return effective;
 }
 
+/** A daemon's primary connection: a provider id in this environment and an optional profile. */
+export const DaemonPrimaryConnectionSchema = z
+  .object({ provider: z.string().min(1), profileId: z.string().min(1).optional() })
+  .passthrough();
+export type DaemonPrimaryConnection = z.infer<typeof DaemonPrimaryConnectionSchema>;
+
 /**
  * The one connection system threads (the Optimizer, Factory and other daemon-created agents)
  * launch with. `providerId` is an installation provider definition id, never a label;
