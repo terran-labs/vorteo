@@ -252,6 +252,20 @@ class NativeDeploymentTests(unittest.TestCase):
         self.assertTrue((self.evidence / 'effect-0-bootout-intent.json').exists())
         self.assertFalse((self.evidence / 'intent.json').exists())
 
+    def test_plist_swapped_after_enable_refuses_before_bootstrap(self):
+        import plistlib
+        worker, observer, states, effects = self.native()
+        plist = Path(observer.bindings[0]['plist']['path'])
+        record = worker.record
+        # Swap once enable's readback has passed, before launchd loads the plist.
+        def swap_after_enable(name, value):
+            record(name, value)
+            if name == 'effect-0-enable-ack.json':
+                self.write(plist, plistlib.dumps({'Label': 'local.test.broker0', 'ProgramArguments': ['/tmp/agent']}))
+        worker.record = swap_after_enable
+        with self.assertRaisesRegex(ValueError, 'Broker plist changed'): worker.execute()
+        self.assertNotIn((0, 'bootstrap'), effects)
+
     def test_live_manual_generation_and_unknown_caller_refuse(self):
         worker, observer, states, effects = self.native()
         self.plan['manualParticipants'] = [{'pid': 42, 'birth': [1,2], 'uid': os.getuid(), 'argv': ['/python','-c','import broker']}]

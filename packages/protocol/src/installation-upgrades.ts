@@ -306,6 +306,18 @@ const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
  * One registered key of a coordinator settings change. Keys the registry does not mark
  * display-safe omit `before` and `after`, so the owner sees only that the key changed.
  */
+/** One changed field of a structured setting, as readable text rather than a JSON blob. */
+export const CoordinatorSettingFieldSchema = z.object({
+  /** Where in the setting, such as `worker` or `modules[2]`. */
+  field: z.string(),
+  /** A file shows as its path and the first 12 hex digits of its SHA-256; null when unset. */
+  before: z.string().nullable(),
+  after: z.string().nullable(),
+  /** The coordinator hashed the named file itself and it matched. */
+  verified: z.boolean().optional(),
+});
+export type CoordinatorSettingField = z.infer<typeof CoordinatorSettingFieldSchema>;
+
 export const CoordinatorSettingChangeSchema = z.object({
   key: z.string(),
   displaySafe: z.boolean(),
@@ -313,6 +325,8 @@ export const CoordinatorSettingChangeSchema = z.object({
   before: z.string().nullable().optional(),
   /** JSON text of the value after the change, or null when the change removes the key. */
   after: z.string().nullable().optional(),
+  /** Per-field changes of a reviewed structured setting; older coordinators omit it. */
+  fields: z.array(CoordinatorSettingFieldSchema).optional(),
 });
 export type CoordinatorSettingChange = z.infer<typeof CoordinatorSettingChangeSchema>;
 
@@ -372,6 +386,12 @@ export const CoordinatorSettingsDecisionSchema = z.strictObject({
   revision: z.string().uuid(),
   decision: z.enum(["approve", "reject", "cancel"]),
   follow: z.strictObject({ id: z.string().uuid(), revision: z.string().uuid() }).optional(),
+  /**
+   * The owner interface rendered each change's `fields`. Coordinators refuse to approve
+   * reviewed broker settings without it. Send it only for a job whose changes carry `fields`:
+   * older coordinators never return them and refuse unknown decision fields.
+   */
+  reviewedFields: z.literal(true).optional(),
 });
 export type CoordinatorSettingsDecision = z.infer<typeof CoordinatorSettingsDecisionSchema>;
 

@@ -755,12 +755,11 @@ export function createInstallationServer(
         // resumes the job from its journal here.
         releaseRuntime?.coordinatorFollow.drain();
         // A settings change also restarts this process and resumes here; a linked approval
-        // advances once the coordinator update above succeeds.
-        try {
-          coordinatorSettings.drain();
-        } catch (error) {
-          logger.error({ err: error }, "Coordinator settings change failed");
-        }
+        // advances once the coordinator update above succeeds. Broker settings hash their
+        // files again before dispatch, so it runs beside the drain under its own guard.
+        void coordinatorSettings
+          .drain()
+          .catch((error) => logger.error({ err: error }, "Coordinator settings change failed"));
         // Lab builds run for minutes; like upgrades they advance beside the drain.
         void labRuntime.updates
           .drain()
@@ -1905,9 +1904,10 @@ export function createInstallationServer(
     "/api/installation/coordinator-settings-requests",
     authenticateUpdate,
     requireHostAgent,
-    (req, res) => {
-      const job = coordinatorSettings.request(CoordinatorSettingsRequestSchema.parse(req.body));
-      res.status(201).json(job);
+    (req, res, next) => {
+      void Promise.resolve()
+        .then(() => coordinatorSettings.request(CoordinatorSettingsRequestSchema.parse(req.body)))
+        .then((job) => res.status(201).json(job), next);
     },
   );
   app.get(
@@ -2865,11 +2865,16 @@ export function createInstallationServer(
     void (decision.decision === "approve" ? refuseDuringLabUpdate() : Promise.resolve())
       .then(() => {
         const { follow } = decision;
+        const client = { reviewedFields: decision.reviewedFields === true };
         if (decision.decision !== "approve" || !follow)
-          return coordinatorSettings.decide(id, decision.revision, decision.decision);
+          return coordinatorSettings.decide(id, decision.revision, decision.decision, client);
         // One owner decision: the coordinator update first, then these settings on it.
-        return coordinatorSettings.approveWithFollow(id, decision.revision, () =>
-          requireReleaseRuntime().coordinatorFollow.decide(follow.id, follow.revision, "approve"),
+        return coordinatorSettings.approveWithFollow(
+          id,
+          decision.revision,
+          () =>
+            requireReleaseRuntime().coordinatorFollow.decide(follow.id, follow.revision, "approve"),
+          client,
         );
       })
       .then((job) => {
