@@ -88,6 +88,9 @@ class FakeGitHub implements FactoryGitHub {
     const comments = /^\/issues\/(\d+)\/comments/.exec(resource);
     if (comments) return ok(this.comments.get(Number(comments[1])) ?? []);
     if (resource.startsWith("/pulls?")) return ok([]);
+    const compare = /^\/compare\/(\w+)\.\.\.(\w+)$/.exec(resource);
+    // Every fake commit is unrelated, so only an identical head contains a commit.
+    if (compare) return ok({ status: compare[1] === compare[2] ? "identical" : "diverged" });
     if (resource.startsWith("/git/commits/"))
       return ok({ committer: { date: this.commitDates.get(resource.slice(13)) ?? T0 } });
     if (resource === "/contents/.github/factory.json")
@@ -1694,9 +1697,19 @@ describe("several installations on one repository", () => {
     github.beforeDelete = null;
     github.refs.set("heads/factory/issue-5", MAIN);
 
-    // A crash while archiving is finished by the next release call.
+    // Interrupted before its delete: the owner keeps its claim, and the next call deletes first.
+    github.beforeDelete = async () => {
+      throw new Error("network down");
+    };
+    await expect(release(ours, 5)).rejects.toThrow("network down");
+    expect((await claim(theirs, 5)).outcome).toBe("held");
+    github.beforeDelete = null;
+
+    // A crash while archiving is finished by the next release call, even across a re-enable.
     github.crashAfterCreate = true;
     await expect(release(ours, 5)).rejects.toThrow("daemon stopped");
+    await ours.invoke("factory.project.disable", { projectId: PROJECT });
+    await enable(ours);
     expect(await release(ours, 5)).toMatchObject({ outcome: "archived", headSha: MAIN });
     expect(github.refs.has("heads/factory/issue-5")).toBe(false);
     expect([...github.refs].filter(([name]) => name.startsWith("heads/factory-released/"))).toEqual(

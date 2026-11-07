@@ -273,7 +273,7 @@ export interface ReleaseContext extends ClaimContext {
  */
 export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryClaimRelease> {
   const branch = projectFactoryClaimBranch(ctx.issue);
-  if (ctx.pending) return finishRelease(ctx, branch, ctx.pending);
+  if (ctx.pending) return resumeRelease(ctx, branch, ctx.pending);
   const own = await ctx.read();
   if (own?.status === "conflict") {
     await ctx.write(undefined);
@@ -296,12 +296,51 @@ export async function releaseClaim(ctx: ReleaseContext): Promise<ProjectFactoryC
     .replace(/\.\d+Z$/, "Z");
   const pending = { sha: head, archivedAs: `${ARCHIVE_PREFIX}/issue-${ctx.issue}/${stamp}` };
   await ctx.writePending(pending);
+  return deleteThenArchive(ctx, branch, pending);
+}
+
+async function deleteThenArchive(
+  ctx: ReleaseContext,
+  branch: string,
+  pending: PendingReleaseState,
+): Promise<ProjectFactoryClaimRelease> {
   // Deleted only while it still points at that head: a push since the owner was asked keeps it.
-  if (!(await ctx.github.deleteBranchAt(ctx.repository, branch, head))) {
+  if (!(await ctx.github.deleteBranchAt(ctx.repository, branch, pending.sha))) {
     await ctx.writePending(undefined);
     throw new FactoryGitHubError(`${branch} moved while releasing it; it is active again.`);
   }
   return finishRelease(ctx, branch, pending);
+}
+
+/**
+ * Continues a release interrupted at any point after its pending record. It archives only
+ * once the claim branch is gone, so an interrupted release never reads as a finished one.
+ */
+async function resumeRelease(
+  ctx: ReleaseContext,
+  branch: string,
+  pending: PendingReleaseState,
+): Promise<ProjectFactoryClaimRelease> {
+  const head = await readHead(ctx, branch);
+  // The delete never happened: retry it, still leased on the head the owner was asked about.
+  if (head === pending.sha) return deleteThenArchive(ctx, branch, pending);
+  // A head that still contains the released commit is its owner's push: the claim is active.
+  if (head !== null && (await contains(ctx, head, pending.sha))) {
+    await ctx.writePending(undefined);
+    throw new FactoryGitHubError(`${branch} moved while releasing it; it is active again.`);
+  }
+  // Gone, or deleted and claimed again from the default branch: archive the released head.
+  return finishRelease(ctx, branch, pending);
+}
+
+async function contains(ctx: ClaimContext, head: string, commit: string): Promise<boolean> {
+  const body = expect(
+    await ctx.github.rest("GET", `repos/${ctx.repository}/compare/${commit}...${head}`),
+    [200],
+    `comparing ${commit.slice(0, 9)} with ${head.slice(0, 9)}`,
+  );
+  const status = z.object({ status: z.string() }).parse(body).status;
+  return status === "identical" || status === "ahead";
 }
 
 async function finishRelease(

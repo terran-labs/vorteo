@@ -365,6 +365,7 @@ export class ProjectFactoryService {
             ? {
                 ...(current.claims ? { claims: current.claims } : {}),
                 ...(current.foreignClaims ? { foreignClaims: current.foreignClaims } : {}),
+                ...(current.pendingReleases ? { pendingReleases: current.pendingReleases } : {}),
                 ...(current.assignment ? { assignment: current.assignment } : {}),
               }
             : {}),
