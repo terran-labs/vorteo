@@ -22,6 +22,8 @@ interface PageLayoutProps {
   actions?: ReactNode;
   /** Persistent controls above the scrolling content column. */
   fixedHeader?: ReactNode;
+  /** A working surface, such as a dashboard: widens the column from 720 to 1440. */
+  wide?: boolean;
   children: ReactNode;
 }
 
@@ -37,6 +39,7 @@ export function PageLayout({
   titleTestID,
   actions,
   fixedHeader,
+  wide = false,
   children,
 }: PageLayoutProps) {
   const isCompact = useIsCompactFormFactor();
@@ -51,7 +54,9 @@ export function PageLayout({
       ) : (
         <MenuHeader borderless />
       )}
-      {fixedHeader ? <View style={styles.fixedHeader}>{fixedHeader}</View> : null}
+      {fixedHeader ? (
+        <View style={[styles.fixedHeader, wide && styles.wide]}>{fixedHeader}</View>
+      ) : null}
       <PageScrollView
         // Leave room for field borders and padding around the focused native input.
         {...(Platform.OS === "android" ? { bottomOffset: SPACING[4] } : {})}
@@ -61,7 +66,7 @@ export function PageLayout({
         automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.content}>
+        <View style={[styles.content, wide && styles.wide]}>
           {showTitle ? (
             <View style={styles.titleRow} testID={titleTestID}>
               <Text style={styles.title} testID="page-title">
@@ -98,6 +103,9 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     maxWidth: 720,
     alignSelf: "center",
+  },
+  wide: {
+    maxWidth: 1440,
   },
   titleRow: {
     flexDirection: "row",

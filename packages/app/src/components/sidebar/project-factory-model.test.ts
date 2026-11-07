@@ -16,6 +16,7 @@ import {
   writeInstructions,
   type Instructions,
 } from "./factory-instructions-model";
+import { factoryRunnerTrack, factoryStageCounts } from "./factory-card-model";
 describe("Factory menu and repository dialog", () => {
   it("offers the actions appropriate to each state", () => {
     expect(factoryActions("off")).toEqual(["enable"]);
@@ -163,7 +164,7 @@ it("uses the existing LCS diff and collapses unchanged charter runs", () => {
   ]);
 });
 
-describe("FactoryOverviewRow routing", () => {
+describe("Factory card overview routing", () => {
   const target = {
     serverId: "host",
     projectId: "project",
@@ -183,4 +184,45 @@ describe("FactoryOverviewRow routing", () => {
       "/h/host/plugin/factory/surface/overview?param.projectId=project",
     );
   });
+});
+
+it("counts queue stages for the card's bar and places each runner on its five-step track", () => {
+  const issue = (stage: Parameters<typeof factoryRunnerTrack>[0]["stage"], number: number) => ({
+    number,
+    title: `Issue ${number}`,
+    url: `https://example.test/${number}`,
+    label: "running" as const,
+    stage,
+    pr: null,
+    agents: [] as { role: "lead" | "worker" | "reviewer"; agentId: string; status: string }[],
+  });
+  const issues = [issue("queued", 1), issue("queued", 2), issue("repair", 3), issue("blocked", 4)];
+  expect(factoryStageCounts(issues).map(({ segment, count }) => [segment, count])).toEqual([
+    ["queued", 2],
+    ["repair", 2],
+  ]);
+  expect(factoryRunnerTrack(issue("building", 5)).boxes).toEqual([
+    "done",
+    "current",
+    "pending",
+    "pending",
+    "pending",
+  ]);
+  expect(factoryRunnerTrack(issue("repair", 6))).toMatchObject({
+    step: "review",
+    boxes: ["done", "done", "danger", "pending", "pending"],
+  });
+  // Blocked stops at the latest step its agents reached.
+  const blocked = {
+    ...issue("blocked", 7),
+    agents: [{ role: "worker" as const, agentId: "a", status: "idle" }],
+  };
+  expect(factoryRunnerTrack(blocked).boxes).toEqual([
+    "done",
+    "danger",
+    "pending",
+    "pending",
+    "pending",
+  ]);
+  expect(factoryRunnerTrack(issue("queued", 8))).toMatchObject({ step: null });
 });
