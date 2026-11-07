@@ -91,7 +91,9 @@ function RestartMenu({
         {namedHost ? (
           <HostRestartControls host={namedHost} />
         ) : (
-          <Text>Reconnect this environment to request a restart.</Text>
+          <Text style={settingsStyles.rowHint}>
+            Reconnect this environment to request a restart.
+          </Text>
         )}
         {adapter.model && adapter.state?.unlocked
           ? jobs.map((job) => (

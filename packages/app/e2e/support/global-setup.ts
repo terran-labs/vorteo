@@ -2,6 +2,7 @@ import { warmMetro } from "./metro-warmup.mjs";
 export { warmMetro } from "./metro-warmup.mjs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { killProcessTree } from "./helpers/spawn-node";
+import { loadDaemonClientConstructor, loadProtocolSchemas } from "./helpers/daemon-client-loader";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import net from "node:net";
@@ -157,6 +158,19 @@ async function loadHarnessEnvironment(repoRoot: string): Promise<void> {
   if (existsSync(envTestPath)) dotenv.config({ path: envTestPath });
 }
 
+/**
+ * Fills Playwright's transform cache for the built client and protocol modules before any worker
+ * starts. Each worker's ESM loader thread writes that shared cache with a plain writeFileSync,
+ * so two workers importing the same module on a cold cache can read a file the other has only
+ * truncated. The empty module then fails to link, as in "does not provide an export named
+ * 'ChunkedTransport'" on the first test of a fresh CI runner. Importing here, in the runner,
+ * writes every entry once, and workers only read complete files.
+ */
+async function warmBuiltModuleTransforms(): Promise<void> {
+  await loadDaemonClientConstructor();
+  await loadProtocolSchemas();
+}
+
 export default async function globalSetup() {
   if (process.env.PASEO_REPLICA_CACHE_MEASUREMENT === "1") {
     if (!process.env.PASEO_REPLICA_CACHE_MEASUREMENT_URL) {
@@ -166,6 +180,7 @@ export default async function globalSetup() {
   }
   const repoRoot = path.resolve(__dirname, "../../../..");
   await loadHarnessEnvironment(repoRoot);
+  await warmBuiltModuleTransforms();
 
   const metroPort = await getAvailableE2EPort();
   const metroOutput = createLineBuffer();

@@ -136,7 +136,11 @@ export function MaintenanceProvisioning({ banner = false }: { banner?: boolean }
           </Text>
         </SettingsExpansion>
       ) : null}
-      {error ? <Text accessibilityRole="alert">{error}</Text> : null}
+      {error ? (
+        <Text accessibilityRole="alert" style={settingsStyles.rowError}>
+          {error}
+        </Text>
+      ) : null}
       <Button variant="ghost" onPress={refreshStatus}>
         Refresh status
       </Button>
