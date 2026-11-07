@@ -12,6 +12,9 @@ import {
   newestRelease,
   readReleaseNotes,
   ReleaseUpdates,
+  requiredChecksOf,
+  summarizeRequiredChecks,
+  type CheckRun,
 } from "./release-updates.js";
 
 let directory: string;
@@ -115,4 +118,69 @@ test("switching to automatic approves the standing offer to install after curren
     automatic: true,
     restart: "after-work",
   });
+});
+
+const RULESET = JSON.stringify({
+  rules: [
+    {
+      type: "required_status_checks",
+      parameters: {
+        required_status_checks: ["changes", "lint", "scan"].map((context) => ({
+          context,
+          integration_id: 15368,
+        })),
+      },
+    },
+  ],
+});
+
+function run(name: string, conclusion: string | null, changes: Partial<CheckRun> = {}): CheckRun {
+  return { id: 1, name, status: "completed", conclusion, app: { id: 15368 }, ...changes };
+}
+
+test.each([
+  {
+    name: "passes when every required check succeeded",
+    runs: [run("changes", "success"), run("lint", "success"), run("scan", "success")],
+    passed: true,
+  },
+  {
+    name: "accepts a path-filtered skip beside a passing changes check",
+    runs: [run("changes", "success"), run("lint", "skipped"), run("scan", "success")],
+    passed: true,
+  },
+  {
+    name: "refuses a failure that a newer run did not replace",
+    runs: [
+      run("changes", "success"),
+      run("lint", "success"),
+      run("lint", "failure", { id: 2 }),
+      run("scan", "success"),
+    ],
+    passed: false,
+  },
+  {
+    name: "refuses a check another app reported",
+    runs: [
+      run("changes", "success"),
+      run("lint", "success"),
+      run("scan", "success", { app: { id: 1 } }),
+    ],
+    passed: false,
+  },
+  {
+    name: "refuses a check still running",
+    runs: [
+      run("changes", "success"),
+      run("lint", "success"),
+      run("scan", null, { status: "in_progress" }),
+    ],
+    passed: false,
+  },
+])("required checks for a source upgrade $name", ({ runs, passed }) => {
+  expect(summarizeRequiredChecks(runs, requiredChecksOf(RULESET)).passed).toBe(passed);
+});
+
+test("a ruleset without required checks is an error, never a pass", () => {
+  expect(() => requiredChecksOf(JSON.stringify({ rules: [] }))).toThrow("no required checks");
 });

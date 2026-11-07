@@ -450,6 +450,22 @@ const activeInterfaceUpgrades = (s) =>
       ["approved", "running"].includes(item.status) && !s.outputs.supersede?.includes(item.id),
   );
 
+/** A source upgrade of one commit from main, approved or running in the interface. */
+const activeSourceUpgrade = (s) =>
+  (
+    readJson(path.join(s.install.plan.paths.coordinatorState, "source-upgrades", "journal.json"))
+      ?.upgrades ?? []
+  ).find((item) => ["approved", "running"].includes(item.status));
+
+function refuseSourceUpgrade(s, fix) {
+  const source = activeSourceUpgrade(s);
+  if (source)
+    throw new InstallerError(
+      `A source upgrade to commit ${String(source.sourceCommit).slice(0, 12)} started from the interface is ${source.status}.`,
+      fix,
+    );
+}
+
 /**
  * An interface upgrade approved while this one built would change the same links. Old
  * coordinators cannot be told to hold off, so each restart checks again first.
@@ -461,6 +477,10 @@ function assertNoInterfaceUpgrade(s) {
       `An upgrade to ${active.release} was started from the interface and is ${active.status}.`,
       "Wait for it to finish or cancel it in Settings, then rerun the installer to resume.",
     );
+  refuseSourceUpgrade(
+    s,
+    "Wait for it to finish or cancel it in Settings, then rerun the installer to resume.",
+  );
 }
 
 async function check(s) {
@@ -474,6 +494,10 @@ async function check(s) {
       "Wait for it to finish or cancel it in Settings, then rerun the installer.",
     );
   if (active.length) s.journal.output({ supersede: active.map((item) => item.id) });
+  refuseSourceUpgrade(
+    s,
+    "Wait for it to finish or cancel it in Settings, then rerun the installer.",
+  );
   if (s.plan.devContainer) {
     try {
       await context.run(install.plan.executables.docker, [
@@ -1085,7 +1109,10 @@ function lifecycleJobConflict(state) {
   return null;
 }
 
-/** Custom domain changes, lab updates and coordinator updates from Installation controls. */
+/**
+ * Custom domain changes, lab updates, source upgrades and coordinator updates from Installation
+ * controls.
+ */
 function interfaceWorkConflict(s, state) {
   const domain = path.join(state, "custom-domain");
   const change = readJson(path.join(domain, "last.json"));
@@ -1102,6 +1129,12 @@ function interfaceWorkConflict(s, state) {
     "running",
   ]);
   if (lab) return `A lab update is ${lab.status}.`;
+  // Source upgrades run the interface upgrade's steps from their own journal.
+  const source = active(readJson(path.join(state, "source-upgrades", "journal.json"))?.upgrades, [
+    "approved",
+    "running",
+  ]);
+  if (source) return `A source upgrade from Installation controls is ${source.status}.`;
   const follow = active(readJson(path.join(state, "coordinator-follow", "journal.json"))?.jobs, [
     "pending",
     "approved",

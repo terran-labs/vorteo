@@ -526,6 +526,18 @@ describe("upgrade", () => {
     }
   });
 
+  test("a source upgrade running in the interface makes the installer wait", async () => {
+    const { context, paths } = machine();
+    writeJson(path.join(paths.coordinatorState, "source-upgrades", "journal.json"), {
+      version: 1,
+      upgrades: [{ id: "s1", sourceCommit: "c".repeat(40), status: "running", steps: [] }],
+    });
+    const { plan } = await upgradePlan(context);
+    const { ok, failure } = await apply(context, plan);
+    expect(ok).toBe(false);
+    expect(failure.message).toMatch(/source upgrade to commit c{12} started from the interface/);
+  });
+
   test.each([
     ["the same commit", { revision: NEW }, true],
     ["another commit", { revision: OLD }, false],
@@ -835,6 +847,15 @@ describe("coordinator follow", () => {
         },
       },
       /lab update is running/,
+    ],
+    [
+      "a source upgrade",
+      {
+        stateFiles: {
+          "source-upgrades/journal.json": { version: 1, upgrades: [{ status: "approved" }] },
+        },
+      },
+      /source upgrade from Installation controls is approved/,
     ],
   ])("refuses %s without restarting anything", async (_name, options, message) => {
     const { context, state, paths } = followMachine(options);
