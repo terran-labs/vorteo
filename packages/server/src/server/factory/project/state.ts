@@ -117,6 +117,7 @@ const ProjectStateSchema = z.object({
         profileId: z.string().nullable(),
         provider: z.string().nullable(),
         remainingPct: z.number().nullable(),
+        bound: z.boolean().optional(),
         pickedAt: z.string(),
       }),
     )

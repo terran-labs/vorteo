@@ -412,6 +412,11 @@ export const ProjectFactoryAccountPickSchema = z.object({
   provider: z.string().nullable(),
   /** The chosen account's lowest remaining window, in percent. */
   remainingPct: z.number().nullable(),
+  /**
+   * True when the stage profile is bound to one account (a local profile or an older
+   * shared-workflow reference), so that account is used without ranking.
+   */
+  bound: z.boolean(),
   /** Every account of the profile's provider type, with why it was or was not chosen. */
   considered: z.array(
     z.object({

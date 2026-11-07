@@ -23,6 +23,8 @@ export interface FactoryAccounts {
   readyProviders(): Promise<string[]>;
   /** The provider type an account or profile launches as, such as "codex". */
   providerType(providerOrProfile: { provider?: string; profileId?: string }): string | null;
+  /** The account an account-bound profile launches on. */
+  profileAccount(profileId: string): string | null;
   /** Usage readings, refreshed now. */
   readUsage(): Promise<ProviderUsage[]>;
   /** The default launch's provider, used when the stage has no configured profile. */
@@ -73,6 +75,15 @@ function judge(
   return lowest > 0 ? verdict("qualifies", lowest) : verdict("exhausted", lowest);
 }
 
+/**
+ * Only a canonical `shared-profile/<type>/<workflow>` profile, or no profile, can launch on
+ * any account of its type. A local profile or an older `shared-workflow/<account>/...`
+ * reference is bound to its own account, so that account is used as is, without ranking.
+ */
+export function isAccountBound(profileId: string | null): boolean {
+  return profileId !== null && !profileId.startsWith("shared-profile/");
+}
+
 /** Chooses an account for a stage profile, or reports why none qualifies. */
 export async function chooseAccount(input: {
   accounts: FactoryAccounts;
@@ -82,27 +93,31 @@ export async function chooseAccount(input: {
 }): Promise<{
   provider: string | null;
   remainingPct: number | null;
+  bound: boolean;
   considered: Considered[];
 }> {
+  const none = { provider: null, remainingPct: null, bound: false, considered: [] };
+  if (input.profileId && isAccountBound(input.profileId)) {
+    const provider = input.accounts.profileAccount(input.profileId);
+    return { ...none, provider, bound: provider !== null };
+  }
   const type = input.profileId
     ? input.accounts.providerType({ profileId: input.profileId })
     : await input.accounts
         .defaultProvider()
         .then((provider) => (provider ? input.accounts.providerType({ provider }) : null));
-  if (!type) return { provider: null, remainingPct: null, considered: [] };
+  if (!type) return none;
   const candidates = (await input.accounts.readyProviders()).filter(
     (provider) => input.accounts.providerType({ provider }) === type,
   );
-  if (candidates.length === 0) return { provider: null, remainingPct: null, considered: [] };
-  const ranked = rankAccounts({
-    candidates,
-    usage: await input.accounts.readUsage(),
-    nowMs: input.nowMs,
-    avoid: input.avoid,
-  });
+  if (candidates.length === 0) return none;
+  // A failed usage read leaves every account unknown, so the configured default is used.
+  const usage = await input.accounts.readUsage().catch((): ProviderUsage[] => []);
+  const ranked = rankAccounts({ candidates, usage, nowMs: input.nowMs, avoid: input.avoid });
   return {
     provider: ranked.chosen?.provider ?? null,
     remainingPct: ranked.chosen?.remainingPct ?? null,
+    bound: false,
     considered: ranked.considered,
   };
 }
@@ -128,6 +143,9 @@ export function daemonFactoryAccounts(input: {
         .filter((entry) => entry.enabled && entry.status === "ready")
         .map((entry) => entry.provider)
         .sort((left, right) => Number(right === preferred) - Number(left === preferred));
+    },
+    profileAccount(profileId) {
+      return profileProvider(profileId, input.getSettings());
     },
     providerType({ provider, profileId }) {
       const account = profileId ? profileProvider(profileId, input.getSettings()) : provider;

@@ -386,6 +386,7 @@ export class ProjectFactoryService {
                 ...(current.claims ? { claims: current.claims } : {}),
                 ...(current.foreignClaims ? { foreignClaims: current.foreignClaims } : {}),
                 ...(current.assignment ? { assignment: current.assignment } : {}),
+                ...(current.accountPicks ? { accountPicks: current.accountPicks } : {}),
               }
             : {}),
           enabled: true,
@@ -932,6 +933,7 @@ export class ProjectFactoryService {
           profileId: pick.profileId,
           provider: pick.provider,
           remainingPct: pick.remainingPct,
+          bound: pick.bound,
           pickedAt: pick.pickedAt,
         };
         next.accountPicks = [...(next.accountPicks ?? []), record].slice(-ACCOUNT_PICKS_KEPT);

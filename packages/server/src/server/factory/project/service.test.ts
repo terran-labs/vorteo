@@ -382,6 +382,7 @@ beforeEach(async () => {
   accounts = {
     readyProviders: async () => [],
     providerType: () => null,
+    profileAccount: () => null,
     readUsage: async () => [],
     defaultProvider: async () => null,
   };
@@ -1810,6 +1811,7 @@ describe("account choice for new Factory agents", () => {
       readyProviders: async () => ready,
       providerType: ({ provider, profileId }) =>
         (profileId ?? provider ?? "").includes("claude") ? "claude" : "codex",
+      profileAccount: (profileId) => (profileId === "local-codex" ? "codex-a" : null),
       readUsage: async () =>
         [
           reading("codex-a", [80, 40]),
@@ -1844,12 +1846,29 @@ describe("account choice for new Factory agents", () => {
     // With nothing qualifying, the Foreman falls back to the configured default.
     ready = ["codex-stale", "codex-out"];
     expect((await pick()).provider).toBeNull();
+    // So it does when usage cannot be read at all.
+    ready = ["codex-a", "codex-b"];
+    const readUsage = accounts.readUsage;
+    accounts.readUsage = async () => {
+      throw new Error("usage service down");
+    };
+    expect((await pick()).provider).toBeNull();
+    accounts.readUsage = readUsage;
+    // A profile bound to one account launches there, unranked: another account would not match it.
+    await factory.invoke("factory.project.configure", {
+      projectId: PROJECT,
+      workerProfileId: "local-codex",
+    });
+    expect(await pick()).toMatchObject({ provider: "codex-a", bound: true, considered: [] });
 
+    // Turning Factory off and on again keeps the history.
+    await factory.invoke("factory.project.disable", { projectId: PROJECT });
+    await enable(factory);
     const state = JSON.parse(readFileSync(projectFactoryStatePath(home), "utf8"));
     expect(
       state.projects[PROJECT].accountPicks.map(
         (item: { provider: string | null }) => item.provider,
       ),
-    ).toEqual(["codex-b", "codex-a", null]);
+    ).toEqual(["codex-b", "codex-a", null, null, "codex-a"]);
   });
 });

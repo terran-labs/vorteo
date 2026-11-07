@@ -424,9 +424,7 @@ const pickSchema: OutputSchema<ProjectFactoryAccountPick> = {
     return [
       `Stage: ${value.stage}`,
       `Profile: ${value.profileId ?? "default"}`,
-      value.provider
-        ? `Account: ${value.provider} (${value.remainingPct}% left in its lowest window)`
-        : "Account: none qualifies; use the configured default",
+      describePickedAccount(value),
       ...value.considered.map(
         (item) =>
           `  ${item.provider}: ${item.verdict}${item.remainingPct === null ? "" : ` ${item.remainingPct}%`}`,
@@ -434,6 +432,12 @@ const pickSchema: OutputSchema<ProjectFactoryAccountPick> = {
     ].join("\n");
   },
 };
+
+function describePickedAccount(value: ProjectFactoryAccountPick): string {
+  if (!value.provider) return "Account: none qualifies; use the configured default";
+  if (value.bound) return `Account: ${value.provider} (the profile is bound to it)`;
+  return `Account: ${value.provider} (${value.remainingPct}% left in its lowest window)`;
+}
 
 function createPickAccountCommand(): Command {
   return addJsonAndDaemonHostOptions(

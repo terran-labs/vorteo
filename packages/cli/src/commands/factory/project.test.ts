@@ -225,6 +225,7 @@ describe("paseo factory project", () => {
       profileId: null,
       provider: "codex-account-a",
       remainingPct: 64,
+      bound: false,
       considered: [{ provider: "codex-account-a", verdict: "qualifies", remainingPct: 64 }],
       pickedAt: "now",
     });
