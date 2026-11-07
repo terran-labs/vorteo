@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -61,9 +62,11 @@ const unpinIcon = <ThemedPinOff size={ICON_SIZE.sm} uniProps={mutedColor} />;
 /** The toggle's own hover group, which swaps the Factory glyph for the chevron. */
 const TOGGLE_HOVER_GROUP = "factory-card-toggle";
 
-/** Queue refresh while the stage detail is visible, and while only the collapsed bar shows. */
-const DETAIL_REFRESH_MS = 30_000;
-const SUMMARY_REFRESH_MS = 60_000;
+/**
+ * Queue refresh while the card's detail is visible. Each daemon read is a GitHub query on the
+ * Foreman's token, so a collapsed card shows the last cached queue and fetches nothing.
+ */
+const DETAIL_REFRESH_MS = 120_000;
 
 /**
  * Where the card's border sits: just outside the content inset, so the Factory icon shares the
@@ -236,14 +239,19 @@ function useFactoryQueueIssues(input: {
   const { card, plugin, state, collapsed } = input;
   const active = useRetainedPanelActive();
   const [tooltipOpen, setTooltipOpen] = useState(false);
-  const refreshMs = !collapsed || tooltipOpen ? DETAIL_REFRESH_MS : SUMMARY_REFRESH_MS;
+  // Only a running Factory changes its queue, and only an open card or tooltip shows the detail.
+  const live = active && !!plugin && state?.state === "on" && (!collapsed || tooltipOpen);
+  const queryKey = ["factoryQueue", card.serverId, card.projectId];
+  // A card with nothing cached loads once, so a collapsed card still has a stage bar to show.
+  const cached = useQueryClient().getQueryData(queryKey) !== undefined;
+  const readable = active && !!plugin && !!state && state.state !== "off";
   // Shares the overview's cache, so opening either shows the other's latest queue.
   const queue = useFetchQuery({
     dataShape: "value",
-    queryKey: ["factoryQueue", card.serverId, card.projectId],
+    queryKey,
     staleTimeMs: 30_000,
-    enabled: active && !!plugin && !!state && state.state !== "off",
-    refetchInterval: (query) => (active && query.state.data !== null ? refreshMs : false),
+    enabled: live || (readable && !cached),
+    refetchInterval: (query) => (live && query.state.data !== null ? DETAIL_REFRESH_MS : false),
     queryFn: () => loadFactoryQueue(plugin!.invoke, card.projectId),
   });
   return { issues: queue.data?.issues ?? null, setTooltipOpen };
