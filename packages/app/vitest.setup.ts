@@ -67,7 +67,8 @@ if (typeof globalThis.cancelAnimationFrame !== "function") {
 }
 
 // The shared scroll view measures its edges for the overflow fade with ResizeObserver,
-// which jsdom lacks. Tests never resize, so an observer that never fires is enough.
+// which jsdom lacks. Tests never resize, so an observer that never fires is enough; a test
+// that needs resize callbacks installs its own observer, which replaces this one.
 if (typeof globalThis.ResizeObserver !== "function") {
   globalThis.ResizeObserver = class ResizeObserver {
     observe() {}
