@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Text, View, Pressable, StyleSheet, useWindowDimensions } from "react-native";
+import { Text, View, Pressable, useWindowDimensions } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { Button } from "@/components/ui/button";
+import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
+import { settingsStyles } from "@/styles/settings";
 import type { SystemAction, SystemStatus } from "./system-status-model";
 
 const labels: Record<SystemStatus, string> = {
   healthy: "Healthy",
   updating: "Updating",
   attention: "Needs attention",
+};
+const badgeVariants: Record<SystemStatus, StatusBadgeVariant> = {
+  healthy: "success",
+  updating: "muted",
+  attention: "warning",
 };
 export interface SystemEnvironmentRow {
   name: "Host" | "Dev";
@@ -24,10 +32,13 @@ export interface SystemEnvironmentRow {
   /** Reveal a linked review once; subsequent polls must respect manual collapse. */
   detailsRequestId?: string | null;
 }
-function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
+function EnvironmentRow({ row, first }: { row: SystemEnvironmentRow; first: boolean }) {
   const { width } = useWindowDimensions();
   const compact = width < 1100;
-  const rowStyle = useMemo(() => [styles.row, compact && styles.compactRow], [compact]);
+  const rowStyle = useMemo(
+    () => [styles.row, compact && styles.compactRow, !first && settingsStyles.rowBorder],
+    [compact, first],
+  );
   const descriptionStyle = useMemo(
     () => [styles.description, compact && styles.compactDescription],
     [compact],
@@ -46,12 +57,12 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
     <View>
       <View style={rowStyle}>
         <View style={descriptionStyle}>
-          <Text>{row.name}</Text>
+          <Text style={settingsStyles.rowTitle}>{row.name}</Text>
           <Text style={styles.reason} numberOfLines={1} accessibilityLabel={row.reason}>
             {row.reason ?? ""}
           </Text>
         </View>
-        <Text accessibilityRole="text">{labels[row.status]}</Text>
+        <StatusBadge label={labels[row.status]} variant={badgeVariants[row.status]} />
         <View style={styles.action}>
           {displayedAction ? (
             <Button
@@ -75,7 +86,7 @@ function EnvironmentRow({ row }: { row: SystemEnvironmentRow }) {
         onPress={toggle}
         style={styles.details}
       >
-        <Text>{`${row.name} Details`}</Text>
+        <Text style={styles.detailsText}>{`${row.name} Details`}</Text>
       </Pressable>
       {expanded ? <ScrollView style={styles.detailsViewport}>{row.details}</ScrollView> : null}
     </View>
@@ -89,16 +100,16 @@ export function SystemView({
   services?: SystemStatus | null;
 }) {
   return (
-    <View>
-      {environments.map((row) => (
-        <EnvironmentRow key={row.name} row={row} />
+    <View style={settingsStyles.card}>
+      {environments.map((row, index) => (
+        <EnvironmentRow key={row.name} row={row} first={index === 0} />
       ))}
       {/* Reserve this slot so readiness polling cannot move the next section. */}
-      <View style={styles.services}>
+      <View style={[styles.services, environments.length > 0 && settingsStyles.rowBorder]}>
         {services ? (
           <>
-            <Text>System services</Text>
-            <Text>{labels[services]}</Text>
+            <Text style={settingsStyles.rowTitle}>System services</Text>
+            <StatusBadge label={labels[services]} variant={badgeVariants[services]} />
           </>
         ) : null}
       </View>
@@ -106,15 +117,31 @@ export function SystemView({
   );
 }
 
-const styles = StyleSheet.create({
-  row: { height: 80, flexDirection: "row", alignItems: "center", gap: 12 },
+// Colors come from the theme so rows stay legible in light and dark; fixed heights keep
+// polling from moving the sections below.
+const styles = StyleSheet.create((theme) => ({
+  row: {
+    height: 80,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[3],
+    paddingHorizontal: theme.spacing[4],
+  },
   compactRow: { height: 136, flexWrap: "wrap", alignContent: "center" },
   compactDescription: { flexBasis: "65%", flexGrow: 1 },
   description: { flex: 1, minWidth: 0 },
-  reason: { height: 20 },
+  reason: { height: 20, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   action: { flexGrow: 1, flexBasis: 160, maxWidth: 240 },
-  menu: { width: 72 },
+  // The overflow trigger sizes to its label instead of truncating to an ellipsis.
+  menu: { minWidth: 72, flexShrink: 0 },
   detailsViewport: { height: 560 },
-  details: { height: 40, justifyContent: "center" },
-  services: { height: 48, flexDirection: "row", alignItems: "center", gap: 12 },
-});
+  details: { height: 40, justifyContent: "center", paddingHorizontal: theme.spacing[4] },
+  detailsText: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
+  services: {
+    height: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[3],
+    paddingHorizontal: theme.spacing[4],
+  },
+}));

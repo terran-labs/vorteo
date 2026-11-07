@@ -135,7 +135,11 @@ export function ClaimedRepairProvisioning({ banner = false }: { banner?: boolean
           </Text>
         </SettingsExpansion>
       ) : null}
-      {error ? <Text accessibilityRole="alert">{error}</Text> : null}
+      {error ? (
+        <Text accessibilityRole="alert" style={settingsStyles.rowError}>
+          {error}
+        </Text>
+      ) : null}
       <EditingTextInput
         secureTextEntry
         key={busy ? "busy" : "idle"}

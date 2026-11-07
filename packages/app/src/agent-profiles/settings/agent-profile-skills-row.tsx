@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import { profileSkillChoices } from "@/agent-skills/profile-selection";
+import { settingsStyles } from "@/styles/settings";
 
 const header = { title: "Skills" };
 const policyOptions = [
@@ -37,7 +38,7 @@ function SkillRow({
   );
   return (
     <View style={styles.row}>
-      <Text>{identity}</Text>
+      <Text style={settingsStyles.rowTitle}>{identity}</Text>
       <Switch value={value.skills.includes(identity)} onValueChange={toggle} />
     </View>
   );
