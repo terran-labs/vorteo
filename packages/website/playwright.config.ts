@@ -25,6 +25,8 @@ export default defineConfig({
           env: {
             CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
             PLUGINS_REGISTRY_URL: "http://127.0.0.1:8188",
+            // The same fixture server answers GitHub release and star lookups.
+            GITHUB_API_URL: "http://127.0.0.1:8188",
           },
         },
       ],
