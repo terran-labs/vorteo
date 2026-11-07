@@ -1647,6 +1647,20 @@ describe("several installations on one repository", () => {
     // GitHub cannot tell that rival from this installation's own branch, so the owner decides.
     expect((await claim(restarted, 9)).outcome).toBe("conflict");
 
+    // So does a release archived since the intent; the question stands until the owner keeps it.
+    github.crashAfterCreate = true;
+    await expect(claim(restarted, 11)).rejects.toThrow("daemon stopped");
+    github.refs.set("heads/factory-released/issue-11/20261103T110000Z", MAIN);
+    expect((await claim(restarted, 11)).outcome).toBe("conflict");
+    expect((await claim(restarted, 11)).outcome).toBe("conflict");
+    const keptAfterArchive = await restarted.invoke("factory.project.claim", {
+      projectId: PROJECT,
+      issue: 11,
+      keep: true,
+    });
+    expect(keptAfterArchive).toMatchObject({ outcome: "held" });
+    expect((await claim(restarted, 11)).outcome).toBe("held");
+
     // A rival marker on a held branch is a conflict until the owner picks this installation.
     github.comments.set(8, [
       {

@@ -211,7 +211,14 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
     // either way the owner decides.
     const rivals = await foreignMarkers(ctx, branch);
     const status = rivals.length === 0 && !(await wasReleased(ctx, intent)) ? "held" : "conflict";
-    await ctx.write({ ...intent, status, claimedAt: ctx.now.toISOString() });
+    // The snapshot moves to now, so the archive that raised the question is not later read as
+    // a release, while any release after this point still is.
+    await ctx.write({
+      ...intent,
+      status,
+      claimedAt: ctx.now.toISOString(),
+      archivesAtClaim: await archives(ctx),
+    });
     return result(status, head);
   }
   await ctx.write(undefined);
