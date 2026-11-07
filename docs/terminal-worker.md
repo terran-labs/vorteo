@@ -33,12 +33,12 @@ The worker writes `$PASEO_HOME/terminal-worker/<pid>.json` (owner-only) with its
 
 `TERMINAL_WORKER_PROTOCOL_VERSION` (`terminal-worker-protocol.ts`) is bumped whenever a request, response or event changes shape. A daemon classifies each live worker at start:
 
-| Worker reports                     | Daemon does                                                                                                                                                  |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| its own version                    | adopts it                                                                                                                                                    |
-| one version older                  | adopts it to drain: it keeps its terminals, takes no new ones, and is let go after its last terminal exits                                                   |
-| two or more older                  | shuts it down; its terminals close (logged)                                                                                                                  |
-| newer, or a version it cannot read | leaves it running, undriven; `list_terminals` and `create_terminal` answer `rpc_error` `terminal_worker_incompatible`, and `vorteo daemon status` prints why |
+| Worker reports                     | Daemon does                                                                                                                                                 |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| its own version                    | adopts it                                                                                                                                                   |
+| one version older                  | adopts it to drain: it keeps its terminals, takes no new ones, and is let go after its last terminal exits                                                  |
+| two or more older                  | shuts it down; its terminals close (logged)                                                                                                                 |
+| newer, or a version it cannot read | leaves it running, undriven; `list_terminals` and `create_terminal` answer `rpc_error` `terminal_worker_incompatible`, and `paseo daemon status` prints why |
 
 Never more than two workers run. A new worker launches only when none is current, none is incompatible and fewer than two run. The count comes from the records, so an unreachable or unidentified worker counts, and so does one a cleanup could not confirm gone. When two run, the daemon starts with no current worker, and the first terminal created after one of them exits launches it.
 

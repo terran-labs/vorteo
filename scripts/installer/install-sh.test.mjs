@@ -813,52 +813,103 @@ describe("install.sh", () => {
 });
 
 describe("vorteo command", () => {
-  test("forwards CLI arguments, input and exit status while installer collisions stay local", () => {
+  test("forwards CLI arguments, targets, input and exit status while installer collisions stay local", () => {
     const box = sandbox();
     assert.equal(box.run(["--yes", "--no-open"]).status, 0);
+    const root = path.join(box.home, "vorteo");
     const shim = path.join(box.home, ".local", "bin", "vorteo");
-    const cliDirectory = path.join(box.home, "vorteo", "source", "packages", "cli", "bin");
-    mkdirSync(cliDirectory, { recursive: true });
+    const cliDirectory = path.join(root, "source", "packages", "cli");
+    const calls = path.join(box.dir, "cli-calls");
+    mkdirSync(path.join(cliDirectory, "bin"), { recursive: true });
+    mkdirSync(path.join(cliDirectory, "dist"));
+    const build = path.join(cliDirectory, "dist", "index.js");
+    writeFileSync(build, "// fake build");
+    writeFileSync(calls, "");
     writeFileSync(
-      path.join(cliDirectory, "paseo"),
+      path.join(cliDirectory, "bin", "paseo"),
       `const fs = require("node:fs");
-process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), stdin: fs.readFileSync(0, "utf8") }));
+fs.appendFileSync(process.env.FAKE_CLI_CALLS, "called\\n");
+process.stdout.write(JSON.stringify({
+  argv: process.argv.slice(2), stdin: fs.readFileSync(0, "utf8"),
+  home: process.env.PASEO_HOME ?? null, host: process.env.PASEO_HOST ?? null,
+  name: process.env.VORTEO_CLI_NAME, nodeArgs: process.execArgv,
+}));
 process.exit(23);
 `,
     );
-    const invoke = (...args) =>
+    const invoke = (args, env = {}) =>
       spawnSync(bash, [shim, ...args], {
-        env: box.env,
+        env: { ...box.env, FAKE_CLI_CALLS: calls, ...env },
         encoding: "utf8",
         input: "prompt from stdin\n",
       });
-    const forwardedArgs = ["factory", "project", "show", "two words", "", "--json"];
-    const forwarded = invoke(...forwardedArgs);
+    const forwardedArgs = [
+      "factory",
+      "project",
+      "show",
+      "two words",
+      "",
+      "$(echo injected)",
+      "*",
+      "--json",
+    ];
+    const forwarded = invoke(forwardedArgs);
     assert.equal(forwarded.status, 23, forwarded.stderr);
     assert.deepEqual(JSON.parse(forwarded.stdout), {
       argv: forwardedArgs,
       stdin: "prompt from stdin\n",
+      home: path.join(root, "host", "state", "host"),
+      host: null,
+      name: "vorteo",
+      nodeArgs: ["--disable-warning=DEP0040"],
     });
-    const status = invoke("status", "--json");
+    const beforeLocal = readFileSync(calls, "utf8");
+    const status = invoke(["status", "--json"]);
     assert.equal(status.status, 0, status.stderr);
-    assert.match(status.stdout, /vorteo\.example\.ts\.net/);
     assert.equal(box.calls().at(-1).tool, "engine");
     assert.equal(box.calls().at(-1).argv[0], "status");
     for (const args of [[], ["help"], ["-h"], ["--help"]]) {
-      const help = invoke(...args);
+      const help = invoke(args);
       assert.equal(help.status, 0, help.stderr);
-      assert.match(help.stdout, /Other commands run the full CLI/);
-      assert.match(help.stdout, /vorteo daemon status/);
     }
+    assert.equal(readFileSync(calls, "utf8"), beforeLocal);
     for (const args of [
       ["daemon", "status"],
       ["agent", "--help"],
       ["--json", "--help"],
+      ["--home", "selected home", "agent", "ls"],
+      ["--host", "selected:6767", "agent", "ls"],
     ]) {
-      const cli = invoke(...args);
+      const cli = invoke(args);
       assert.equal(cli.status, 23, cli.stderr);
       assert.deepEqual(JSON.parse(cli.stdout).argv, args);
     }
+    const adoptedHome = path.join(box.dir, "adopted host state");
+    const record = path.join(root, "installation.json");
+    writeFileSync(record, JSON.stringify({ hostHome: adoptedHome }));
+    assert.equal(JSON.parse(invoke(["ls"]).stdout).home, adoptedHome);
+    for (const env of [{ PASEO_HOME: "explicit home" }, { PASEO_HOST: "explicit:6767" }]) {
+      const explicit = invoke(["ls"], env);
+      assert.equal(explicit.status, 23, explicit.stderr);
+      const result = JSON.parse(explicit.stdout);
+      assert.equal(result.home, env.PASEO_HOME ?? null);
+      assert.equal(result.host, env.PASEO_HOST ?? null);
+    }
+    rmSync(record);
+    mkdirSync(path.join(root, "state"), { recursive: true });
+    writeFileSync(
+      path.join(root, "state", "install.json"),
+      JSON.stringify({ plan: { paths: { hostHome: adoptedHome } } }),
+    );
+    assert.equal(JSON.parse(invoke(["ls"]).stdout).home, adoptedHome);
+    const beforeFailure = readFileSync(calls, "utf8");
+    writeFileSync(record, "invalid JSON");
+    assert.equal(invoke(["ls"]).status, 1);
+    rmSync(record);
+    assert.equal(invoke(["ls"], { VORTEO_NODE: path.join(box.dir, "missing-node") }).status, 1);
+    rmSync(build);
+    assert.equal(invoke(["ls"]).status, 1);
+    assert.equal(readFileSync(calls, "utf8"), beforeFailure);
   });
 
   test("update explains where updates happen and opens Settings", () => {

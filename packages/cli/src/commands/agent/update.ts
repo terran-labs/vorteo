@@ -1,3 +1,4 @@
+import { cliCommand } from "@getpaseo/server/vorteo-cli";
 import type { Command } from "commander";
 import type { AgentProviderNotice } from "@getpaseo/protocol/agent-types";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
@@ -165,8 +166,7 @@ function parseAgentChanges(options: AgentUpdateOptions): AgentChanges {
     throw {
       code: "INVALID_THINKING_OPTION",
       message: "--thinking cannot be empty",
-      details:
-        'Provide a thinking option ID. Use "vorteo provider models <provider> --thinking" to list valid IDs.',
+      details: `Provide a thinking option ID. Use "${cliCommand()} provider models <provider> --thinking" to list valid IDs.`,
     } satisfies CommandError;
   }
 
@@ -208,7 +208,7 @@ export async function runUpdateCommand(
     const error: CommandError = {
       code: "MISSING_AGENT_ID",
       message: "Agent ID is required",
-      details: "Usage: vorteo agent update <id> [--name <name>] [--label <key=value>]",
+      details: `Usage: ${cliCommand()} agent update <id> [--name <name>] [--label <key=value>]`,
     };
     throw error;
   }
@@ -223,7 +223,7 @@ export async function runUpdateCommand(
       const error: CommandError = {
         code: "AGENT_NOT_FOUND",
         message: `Agent not found: ${agentIdArg}`,
-        details: 'Use "vorteo ls" to list available agents',
+        details: `Use "${cliCommand()} ls" to list available agents`,
       };
       throw error;
     }

@@ -4,7 +4,7 @@ Local plugins contribute daemon RPCs, native app surfaces, workspace panels, Com
 client slash commands, timeline items, header buttons, composer pills, app themes, composer attachment sources, and settings screens.
 Vorteo executes `index.server.ts` in a subprocess and `index.client.tsx` in every connected app.
 
-> **Trust every plugin you add.** `vorteo plugin add` and `vorteo plugin install` mean “I trust this codebase.” Plugins are unsandboxed: server code and preparation commands run with the daemon user's access on the daemon host, and client contributions run inside Vorteo. The repository's dependencies and future updates are part of that trust decision. With `--host`, preparation runs on that remote daemon host.
+> **Trust every plugin you add.** `paseo plugin add` and `paseo plugin install` mean “I trust this codebase.” Plugins are unsandboxed: server code and preparation commands run with the daemon user's access on the daemon host, and client contributions run inside Vorteo. The repository's dependencies and future updates are part of that trust decision. With `--host`, preparation runs on that remote daemon host.
 
 ## Install a directory source
 
@@ -12,13 +12,13 @@ Create a typecheckable plugin project, install its development dependencies, the
 the daemon. `init` only writes the project files; it does not run the package manager.
 
 ```bash
-vorteo plugin init /absolute/path/to/my-plugin
+paseo plugin init /absolute/path/to/my-plugin
 cd /absolute/path/to/my-plugin
 npm install
 npm run typecheck
-vorteo plugin install /absolute/path/to/my-plugin
-vorteo plugin install /absolute/path/to/my-plugin --id another-runtime-id
-vorteo plugin ls
+paseo plugin install /absolute/path/to/my-plugin
+paseo plugin install /absolute/path/to/my-plugin --id another-runtime-id
+paseo plugin ls
 ```
 
 The daemon stores directory sources under the root `plugins` object:
@@ -38,7 +38,7 @@ The daemon stores directory sources under the root `plugins` object:
 
 Installed plugins are disabled unless `pluginsEnabled` is `true`. Built-in plugins remain active.
 Changing that root field is
-runtime-safe: run `vorteo reload` after editing `config.json`. Enabling starts every configured,
+runtime-safe: run `paseo reload` after editing `config.json`. Enabling starts every configured,
 enabled plugin; disabling tears them all down without restarting the daemon. Plugin source entries
 remain lifecycle-owned and do not reload from manual config edits.
 
@@ -81,7 +81,7 @@ Never enable plugins on a user's behalf without explicit permission. Before aski
 target daemon's current `pluginsEnabled` value. State that plugins are trusted, unsandboxed code:
 backend code can access the daemon machine, while client contributions run inside the Vorteo app.
 
-Source changes are explicit. Run `vorteo plugin reload <id>` to stop and fully tear down the old
+Source changes are explicit. Run `paseo plugin reload <id>` to stop and fully tear down the old
 plugin before compiling and starting from disk. A failed reload stays failed; Vorteo does not restore
 the old code. Use `enable`, `disable`, and `remove` to manage one plugin. Removing a directory source
 never deletes it. The global `pluginsEnabled` switch remains available.
@@ -175,7 +175,7 @@ An explicit environment value overrides the saved setting. While disabled, regis
 and updates make no registry requests, and bare `owner/repo` remains GitHub shorthand.
 Retained registry installations keep their identity; updating them requires enabling registry access.
 
-With registry access enabled, `vorteo plugin add owner/slug` installs its reviewed artifact.
+With registry access enabled, `paseo plugin add owner/slug` installs its reviewed artifact.
 Browse published plugins at [paseo.sh/plugins](https://paseo.sh/plugins).
 Use `git:owner/repository` or a full Git URL for a Git source. Registry installs
 keep the registry URL and ID, so update checks use its approved pin. Explicit version/ref
@@ -206,10 +206,10 @@ GitHub repositories use `git:owner/repository` or `github:owner/repository`. Oth
 URL. Bare `owner/repository` also selects GitHub while registry access is disabled.
 
 ```bash
-vorteo plugin install git:owner/repository
-vorteo plugin install https://gitlab.com/group/repository.git
-vorteo plugin install git:owner/monorepo:plugins/review
-vorteo plugin install github:owner/repository --ref main
+paseo plugin install git:owner/repository
+paseo plugin install https://gitlab.com/group/repository.git
+paseo plugin install git:owner/monorepo:plugins/review
+paseo plugin install github:owner/repository --ref main
 ```
 
 Append `:relative/path` for a plugin below the repository root. `--ref` chooses the initial
@@ -273,7 +273,7 @@ of this happens on the remote daemon host.
 Server contributions can write to stdout and stderr with normal Node logging. Vorteo adds `[paseo]`
 entries for loading, ready, stopping, and stopped transitions. Compilation and load failures are
 recorded as stderr entries before a subprocess exists. Inspect the recent in-memory
-tail from the host plugin settings or with `vorteo plugin logs <id>`. Git preparation commands are
+tail from the host plugin settings or with `paseo plugin logs <id>`. Git preparation commands are
 recorded in `$PASEO_HOME/daemon.log` before a plugin exists, rather than the plugin log tail. Reload, disable, and process
 failure retain the tail; removing the plugin clears it. Daemon restarts do not retain the tail, but
 structured copies remain in `$PASEO_HOME/daemon.log`. Plugin output can contain secrets, so do not

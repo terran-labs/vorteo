@@ -205,7 +205,36 @@ vorteo_command() {
       ;;
     "" | help | -h | --help) usage ;;
     *)
-      exec "$node_bin" "$source_dir/packages/cli/bin/paseo" "$command" "$@"
+      local cli_entry="$source_dir/packages/cli/bin/paseo"
+      if [ ! -x "$(command -v "$node_bin" 2>/dev/null)" ]; then
+        echo "Vorteo cannot run its configured Node runtime ($node_bin). Run: vorteo repair" >&2
+        return 1
+      fi
+      if [ ! -f "$cli_entry" ] || [ ! -f "$source_dir/packages/cli/dist/index.js" ]; then
+        echo "Vorteo CLI is not built in $source_dir. Run: vorteo repair" >&2
+        return 1
+      fi
+      if [ -z "${PASEO_HOME-}" ] && [ -z "${PASEO_HOST-}" ]; then
+        PASEO_HOME=$("$node_bin" -e '
+          const fs = require("node:fs"), path = require("node:path");
+          const root = process.argv[1];
+          const records = [path.join(root, "installation.json"), path.join(root, "host", "installation.json")];
+          const record = records.find(file => fs.existsSync(file));
+          const journal = path.join(root, "state", "install.json");
+          let home;
+          if (record) home = JSON.parse(fs.readFileSync(record, "utf8")).hostHome;
+          else if (fs.existsSync(journal)) home = JSON.parse(fs.readFileSync(journal, "utf8")).plan?.paths?.hostHome;
+          else home = path.join(root, "host", "state", "host");
+          if (typeof home !== "string" || !path.isAbsolute(home)) process.exit(1);
+          process.stdout.write(home);
+        ' "$root" 2>/dev/null) || {
+          echo "Vorteo could not read the installation daemon home. Run: vorteo repair" >&2
+          return 1
+        }
+        export PASEO_HOME
+      fi
+      export VORTEO_CLI_NAME=vorteo
+      exec "$node_bin" --disable-warning=DEP0040 "$cli_entry" "$command" "$@"
       ;;
   esac
 }

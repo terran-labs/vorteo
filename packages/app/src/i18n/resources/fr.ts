@@ -1520,7 +1520,7 @@ export const fr: TranslationResources = {
       fullStatus: {
         title: "Statut complet",
         modalTitle: "Statut du daemon",
-        hint: "Exécute `vorteo daemon status` et affiche la sortie",
+        hint: "Exécute `paseo daemon status` et affiche la sortie",
         view: "Afficher le statut",
         copied: "Statut copié dans le presse-papiers.",
         fetchFailed: "Impossible de récupérer le statut du daemon : {{message}}",

@@ -384,7 +384,7 @@ the daemon-global Git process limits in `$PASEO_HOME/config.json`:
 }
 ```
 
-Reload the daemon with `vorteo reload`. Environment-variable overrides still require a restart because
+Reload the daemon with `paseo reload`. Environment-variable overrides still require a restart because
 the launch environment remains authoritative. Lower values reduce machine pressure but make Git-backed workspace state and
 Git RPCs wait longer. See [Git process limits](data-model.md#git-process-limits) for defaults,
 semantics, and environment-variable overrides.
@@ -428,7 +428,7 @@ Worktrees inherit committed Git state only; uncommitted source-checkout changes 
 `paseo.local.json` holds machine-local overrides and is ignored by Git. The daemon merges each of
 its `scripts` entries over the same-named entry in `paseo.json` when it runs scripts; the project
 settings editor reads and writes `paseo.json` alone. Daemons that support the file advertise the
-`localProjectConfig` feature, and `vorteo daemon status --json` reports it. The preview helper
+`localProjectConfig` feature, and `paseo daemon status --json` reports it. The preview helper
 writes its launch wrapper there, so starting a preview never dirties a shared checkout.
 
 `worktree.setup` and `worktree.teardown` accept either a multiline shell script or an array
@@ -505,14 +505,14 @@ The daemon can optionally serve the browser web client from the same HTTP server
 Enable it in persistent configuration:
 
 ```bash
-vorteo daemon config set features.webUi.enabled true
-vorteo daemon start
+paseo daemon config set features.webUi.enabled true
+paseo daemon start
 ```
 
 Or set the environment variable:
 
 ```bash
-PASEO_WEB_UI_ENABLED=true vorteo daemon run
+PASEO_WEB_UI_ENABLED=true paseo daemon run
 ```
 
 Or persist it in `config.json`:
@@ -637,9 +637,9 @@ install.
 
 ## CLI reference
 
-Use `npm run cli` to run the in-repo CLI from source (`npx tsx packages/cli/src/index.ts`). The script wraps the CLI with `scripts/dev-home.sh`, so it automatically uses this checkout's `.dev/paseo-home` and dev daemon endpoint unless you pass an explicit override. The installer’s `vorteo` command runs the installed source’s CLI, not this checkout. Use `npm run cli` when you want to test the CLI you are editing. Desktop installations may also provide a `paseo` compatibility binary.
+Use `npm run cli` to run the in-repo CLI from source (`npx tsx packages/cli/src/index.ts`). The script wraps the CLI with `scripts/dev-home.sh`, so it automatically uses this checkout's `.dev/paseo-home` and dev daemon endpoint unless you pass an explicit override. The globally installed `paseo` binary on macOS is a symlink into the installed Vorteo desktop app, not this checkout — use it to drive the desktop's built-in daemon, but use `npm run cli` when you want to talk to the CLI you are editing.
 
-Canonical automation uses `vorteo project create/ls/rename/delete`, `vorteo workspace create/ls/rename/archive`, `vorteo heartbeat create/update/delete`, and the full `vorteo schedule` group. MCP heartbeat automation is intentionally smaller: create and delete only. Detach remains an explicit user lifecycle action rather than an agent tool. `vorteo run --new-workspace local|worktree` composes workspace creation with agent creation. The old `vorteo worktree` and `vorteo run --worktree` forms are hidden compatibility aliases.
+Canonical automation uses `paseo project create/ls/rename/delete`, `paseo workspace create/ls/rename/archive`, `paseo heartbeat create/update/delete`, and the full `paseo schedule` group. MCP heartbeat automation is intentionally smaller: create and delete only. Detach remains an explicit user lifecycle action rather than an agent tool. `paseo run --new-workspace local|worktree` composes workspace creation with agent creation. The old `paseo worktree` and `paseo run --worktree` forms are hidden compatibility aliases.
 
 ```bash
 npm run cli -- ls -a -g              # List all agents globally
@@ -665,7 +665,7 @@ In an SSH URI, the URL port is the SSH server port. The remote daemon defaults t
 
 Desktop integrations can focus an existing agent without creating one or
 sending a message. Use `paseo://h/<server-id>/agent/<agent-id>`, or run
-`vorteo agent open <agent-id>`. The CLI reads the local daemon's server ID by
+`paseo agent open <agent-id>`. The CLI reads the local daemon's server ID by
 default; pass `--server <server-id>` when targeting another server.
 
 ## Agent state

@@ -1231,7 +1231,7 @@ export class ProjectFactoryService {
       try {
         await this.input.agents.sendPrompt(
           mechanic,
-          `The shipped ${role.title} charter changed in this Vorteo update, and this project has its own instructions for that role. The old and new charter texts are available through factory.project.instructions.get (vorteo factory project instructions show ${record.projectId} ${role.id}). Review them: acknowledge when nothing conflicts, or propose revised instructions for the owner.`,
+          `The shipped ${role.title} charter changed in this Vorteo update, and this project has its own instructions for that role. The old and new charter texts are available through factory.project.instructions.get (paseo factory project instructions show ${record.projectId} ${role.id}). Review them: acknowledge when nothing conflicts, or propose revised instructions for the owner.`,
           { steer: true },
         );
       } catch (error) {

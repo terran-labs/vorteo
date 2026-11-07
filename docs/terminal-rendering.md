@@ -72,4 +72,4 @@ FONTCONFIG_FILE=fonts.conf node e2e/mobile/terminal-rendering/identity.mjs <run 
 
 `overhang.mjs` prints rows whose marks reach the rows next to them. In one update it writes into two rows that hold a neighbour's marks and erases two rows whose marks reach a blank row. The marks must be drawn before the update, stay drawn in the written rows, and leave no ink behind the erased rows. Run it like `render.mjs`.
 
-`reattach.mjs` checks the restore size. It changes the PTY size by opening the keyboard (`RESIZE=keyboard`) or folding an Android foldable (`RESIZE=fold`), relaunches the app, and compares the client's rows with `vorteo terminal capture`. A trial where no terminal rows appear, for example after a launch crash, counts as never attached and fails the run.
+`reattach.mjs` checks the restore size. It changes the PTY size by opening the keyboard (`RESIZE=keyboard`) or folding an Android foldable (`RESIZE=fold`), relaunches the app, and compares the client's rows with `paseo terminal capture`. A trial where no terminal rows appear, for example after a launch crash, counts as never attached and fails the run.
