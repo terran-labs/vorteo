@@ -20,7 +20,7 @@ const releases = [
     draft: false,
     assets: [
       `Paseo-${VERSION}-arm64.dmg`,
-      `Paseo-${VERSION}-x86_64.AppImage`,
+      "Paseo-x86_64.AppImage",
       `Paseo-Setup-${VERSION}-x64.exe`,
       `Paseo-Setup-${VERSION}-arm64.exe`,
       `paseo-v${VERSION}-android.apk`,
