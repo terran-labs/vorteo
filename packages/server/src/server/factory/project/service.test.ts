@@ -52,10 +52,13 @@ class FakeGitHub implements FactoryGitHub {
   factoryJson: string | null = null;
   /** Creates the next ref, then fails as if the daemon crashed before reading the response. */
   crashAfterCreate = false;
+  /** Runs before a ref is created, as another installation acting in that moment would. */
+  beforeCreate: (() => Promise<void>) | null = null;
 
   async rest(method: string, route: string, body?: unknown): Promise<GitHubResponse> {
     const resource = route.replace(/^repos\/[^/]+\/[^/]+/, "");
-    const response = method === "GET" ? this.read(resource) : this.write(method, resource, body);
+    const response =
+      method === "GET" ? this.read(resource) : await this.write(method, resource, body);
     if (!response) throw new Error(`unexpected GitHub call ${method} ${route}`);
     return response;
   }
@@ -88,8 +91,13 @@ class FakeGitHub implements FactoryGitHub {
     return null;
   }
 
-  private write(method: string, resource: string, body: unknown): GitHubResponse | null {
+  private async write(
+    method: string,
+    resource: string,
+    body: unknown,
+  ): Promise<GitHubResponse | null> {
     if (method === "POST" && resource === "/git/refs") {
+      await this.beforeCreate?.();
       const { ref, sha } = body as { ref: string; sha: string };
       const name = ref.replace(/^refs\//, "");
       if (this.refs.has(name))
@@ -1695,6 +1703,17 @@ describe("several installations on one repository", () => {
     expect((await claim(third, 5)).outcome).toBe("claimed");
     expect((await claim(theirs, 5)).outcome).toBe("lost");
     expect((await claim(third, 5)).outcome).toBe("held");
+
+    // A release landing between a claimant's first archive read and its branch creation does
+    // not read as that claimant's release.
+    github.refs.set("heads/factory/issue-6", MAIN);
+    github.beforeCreate = async () => {
+      github.beforeCreate = null;
+      github.refs.delete("heads/factory/issue-6");
+      github.refs.set("heads/factory-released/issue-6/20261104T130000Z", MAIN);
+    };
+    expect((await claim(third, 6)).outcome).toBe("claimed");
+    expect((await claim(third, 6)).outcome).toBe("held");
   });
 
   test("factory.json turns Triage and Releases off unless it names this installation", async () => {

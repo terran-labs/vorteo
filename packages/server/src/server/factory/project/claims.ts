@@ -187,7 +187,15 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
     sha: intent.baseSha,
   });
   if (created.status === 201) {
-    await ctx.write({ ...intent, status: "held", claimedAt: ctx.now.toISOString() });
+    // Read again now that the branch exists: a release of the previous claim can land between
+    // the first read and the creation, and must not count as this claim's release. This claim
+    // cannot have been released yet; a release needs a day of inactivity and the owner's yes.
+    await ctx.write({
+      ...intent,
+      status: "held",
+      claimedAt: ctx.now.toISOString(),
+      archivesAtClaim: await archives(ctx),
+    });
     return result("claimed", intent.baseSha);
   }
   if (created.status !== 422) {
@@ -199,8 +207,10 @@ export async function claimIssue(ctx: ClaimContext): Promise<ProjectFactoryClaim
     // This installation's own claim from before a crash or lost response, unless another
     // installation's marker says it created the branch at the same commit. GitHub cannot tell
     // the two apart, so that case waits for the owner instead of resolving either way.
+    // A new archive since the intent may be this claim's release or the previous claim's;
+    // either way the owner decides.
     const rivals = await foreignMarkers(ctx, branch);
-    const status = rivals.length === 0 ? "held" : "conflict";
+    const status = rivals.length === 0 && !(await wasReleased(ctx, intent)) ? "held" : "conflict";
     await ctx.write({ ...intent, status, claimedAt: ctx.now.toISOString() });
     return result(status, head);
   }
