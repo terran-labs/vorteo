@@ -595,7 +595,11 @@ function SubagentRowActions({
   const { t } = useTranslation();
   const iconSize = paneContentToolbarIconSize(compact);
   return (
-    <View style={revealOnHover ? ACTION_CLUSTER_REVEAL_STYLE : styles.actionCluster}>
+    <View
+      style={
+        revealOnHover ? [styles.actionCluster, styles.actionClusterReveal] : styles.actionCluster
+      }
+    >
       {onDetachPress ? (
         <SubagentActionButton
           accessibilityLabel={t("subagents.detachAction", { label: displayLabel })}
@@ -766,5 +770,3 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const HEADING_ICON = <TaskCardIcon kind="subagents" />;
-
-const ACTION_CLUSTER_REVEAL_STYLE = [styles.actionCluster, styles.actionClusterReveal];

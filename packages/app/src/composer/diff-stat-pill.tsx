@@ -22,7 +22,7 @@ export function ComposerDiffStatPill({ additions, deletions, onPress }: Composer
       accessibilityRole="button"
       accessibilityLabel={t("workspace.git.diff.openChangesTab")}
       onPress={onPress}
-      style={BODY_STYLE}
+      style={[composerPillStyles.body, styles.bodyHoverable]}
     >
       <DiffStat additions={additions} deletions={deletions} />
     </Pressable>
@@ -55,4 +55,3 @@ export const WorkspaceDiffStatPill = memo(function WorkspaceDiffStatPill({
 const styles = StyleSheet.create((theme) => ({
   bodyHoverable: hoverStyle({ backgroundColor: theme.colors.surface2 }),
 }));
-const BODY_STYLE = [composerPillStyles.body, styles.bodyHoverable];

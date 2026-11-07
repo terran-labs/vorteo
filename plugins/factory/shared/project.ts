@@ -46,10 +46,43 @@ export const ProjectFactoryDrainSchema = z.object({
   pausedAt: z.string(),
 });
 
+/**
+ * Who runs Triage and Releases for a repository, from `.github/factory.json` on its default
+ * branch. "none" means no file, so every installation keeps single-installation behavior.
+ * "invalid" and "unreadable" turn both roles off here until the file reads cleanly.
+ */
+export const ProjectFactoryAssignmentSchema = z.object({
+  source: z.enum(["none", "file", "invalid", "unreadable"]),
+  triage: z.string().nullable(),
+  releases: z.string().nullable(),
+  /** Why the file could not be used; null when it was. */
+  detail: z.string().nullable(),
+  readAt: z.string(),
+});
+export type ProjectFactoryAssignment = z.infer<typeof ProjectFactoryAssignmentSchema>;
+
+/** The roles `.github/factory.json` assigns to one installation per repository. */
+export const PROJECT_FACTORY_ASSIGNED_ROLES = {
+  "factory-triage": "triage",
+  "factory-releases": "releases",
+} as const;
+
+/** The branch that claims an issue for exactly one installation. */
+export function projectFactoryClaimBranch(issue: number): string {
+  return `factory/issue-${issue}`;
+}
+
 export const ProjectFactoryStateSchema = z.object({
   schemaVersion: z.literal(1),
   serverId: z.string().min(1),
   projectId,
+  /**
+   * `<serverId>/<projectId>`: this installation's name in claim markers and
+   * `.github/factory.json`. Optional so older daemons still parse.
+   */
+  installation: z.string().min(1).optional(),
+  /** The last `.github/factory.json` read; null before the first. Optional for older daemons. */
+  assignment: ProjectFactoryAssignmentSchema.nullable().optional(),
   state: z.enum(["off", "on", "paused", "unavailable"]),
   repository: ProjectFactoryRepositorySchema.nullable(),
   /** Human-readable; set for "unavailable". */
@@ -114,6 +147,19 @@ export const ProjectFactoryQueueSchema = z.object({
           status: z.string(),
         }),
       ),
+      /**
+       * The claim branch's owner when its PR comes from `factory/issue-<n>`. A foreign claim
+       * belongs to another installation, which this one never starts, repairs or merges.
+       */
+      claim: z
+        .object({
+          branch: z.string(),
+          local: z.boolean(),
+          /** From the PR's claim marker; null when the PR carries none. */
+          installation: z.string().nullable(),
+        })
+        .nullable()
+        .optional(),
     }),
   ),
 });
@@ -304,6 +350,101 @@ export const factoryProjectInstructionsResolve = defineRpc({
   output: ProjectFactoryInstructionsSchema,
 });
 
+export const ProjectFactoryClaimSchema = z.object({
+  issue: z.number().int(),
+  branch: z.string(),
+  /**
+   * claimed: this call created the branch. held: this installation already owns it.
+   * foreign: another installation does. lost: this installation's claim was released.
+   * conflict: another installation's marker names this branch too; ask the owner.
+   */
+  outcome: z.enum(["claimed", "held", "foreign", "lost", "conflict"]),
+  installation: z.string(),
+  headSha: z.string().nullable(),
+  /** Lines to put in the plan comment and PR body; set when this installation owns the claim. */
+  marker: z.string().nullable(),
+});
+export type ProjectFactoryClaim = z.infer<typeof ProjectFactoryClaimSchema>;
+
+const issueInput = z.strictObject({ projectId, issue: z.number().int().positive() });
+
+/** Claims an issue by creating its branch on GitHub; GitHub, not timing, decides the owner. */
+export const factoryProjectClaim = defineRpc({
+  name: "factory.project.claim",
+  input: issueInput.extend({
+    /**
+     * After the owner chose this installation in a conflict: keep the claim and ignore the
+     * other installation's existing markers on this branch.
+     */
+    keep: z.boolean().optional(),
+  }),
+  output: ProjectFactoryClaimSchema,
+});
+
+export const ProjectFactoryClaimReleaseSchema = z.object({
+  issue: z.number().int(),
+  branch: z.string(),
+  /**
+   * archived: a stale foreign claim moved to `archivedAs` with its commits intact.
+   * forgotten: this installation dropped its own conflicting claim; GitHub is unchanged.
+   * absent: there was no claim branch to release.
+   */
+  outcome: z.enum(["archived", "forgotten", "absent"]),
+  archivedAs: z.string().nullable(),
+  headSha: z.string().nullable(),
+});
+export type ProjectFactoryClaimRelease = z.infer<typeof ProjectFactoryClaimReleaseSchema>;
+
+/** Runs only after the owner answers the stale or conflicting claim question yes. */
+export const factoryProjectClaimRelease = defineRpc({
+  name: "factory.project.claim.release",
+  input: issueInput,
+  output: ProjectFactoryClaimReleaseSchema,
+});
+
+export const ProjectFactoryStageSchema = z.enum(["planner", "worker", "reviewer"]);
+
+export const ProjectFactoryAccountPickSchema = z.object({
+  stage: ProjectFactoryStageSchema,
+  /** The stage's configured profile, or null for the installation default. */
+  profileId: z.string().nullable(),
+  /** The account to launch on; null means none qualifies, so use the configured default. */
+  provider: z.string().nullable(),
+  /** The chosen account's lowest remaining window, in percent. */
+  remainingPct: z.number().nullable(),
+  /**
+   * True when the stage profile is bound to one account (a local profile or an older
+   * shared-workflow reference), so that account is used without ranking.
+   */
+  bound: z.boolean(),
+  /** Every account of the profile's provider type, with why it was or was not chosen. */
+  considered: z.array(
+    z.object({
+      provider: z.string(),
+      verdict: z.enum(["qualifies", "unknown", "stale", "exhausted", "avoided"]),
+      remainingPct: z.number().nullable(),
+    }),
+  ),
+  pickedAt: z.string(),
+});
+export type ProjectFactoryAccountPick = z.infer<typeof ProjectFactoryAccountPickSchema>;
+
+/**
+ * Picks the account a new worker, reviewer or planner starts on by the most fresh remaining
+ * quota, and records the choice. Advisory at launch: it never switches a running agent.
+ */
+export const factoryProjectPickAccount = defineRpc({
+  name: "factory.project.pick_account",
+  input: z.strictObject({
+    projectId,
+    stage: ProjectFactoryStageSchema,
+    issue: z.number().int().positive().optional(),
+    /** An account to leave out, such as the worker's when picking its reviewer. */
+    avoid: z.string().min(1).optional(),
+  }),
+  output: ProjectFactoryAccountPickSchema,
+});
+
 /** Every per-project Factory method the daemon serves natively. */
 export const PROJECT_FACTORY_RPCS = [
   factoryProjectGet,
@@ -323,4 +464,7 @@ export const PROJECT_FACTORY_RPCS = [
   factoryProjectInstructionsPropose,
   factoryProjectInstructionsAcknowledge,
   factoryProjectInstructionsResolve,
+  factoryProjectClaim,
+  factoryProjectClaimRelease,
+  factoryProjectPickAccount,
 ] as const;
