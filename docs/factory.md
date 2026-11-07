@@ -26,6 +26,38 @@ The charters ship in [`packages/server/src/server/factory/project/charters/`](..
 
 **Release tags.** `VORTEO_RELEASES=1` admits only `scripts/vorteo-release.mjs tag` and the release tag push it makes. Everything else that writes shared state still requires `VORTEO_BUILDS=1`.
 
+## Several installations on one repository
+
+Several Vorteo installations can run Factory against the same GitHub repository. GitHub, not timing, decides which one works on each issue. An installation's name is `<serverId>/<projectId>`, such as `srv_dDYiqxDpCkRy/prj_cb8cd4328bd060f1`; `paseo factory project show` prints it as Installation. It holds no secrets.
+
+**Do not run a second Factory against a repository until every installation that runs Factory on it has this release.** Earlier releases do not claim issues and would work on another installation's issues. There is no cross-installation version check.
+
+**Claims.** Before admitting an issue, and before each later step on it, the Foreman runs `paseo factory project claim issue <project-id> <n>`. The daemon creates the branch `factory/issue-<n>` through the GitHub API at the default branch's head. GitHub's 201 means this installation owns the issue; 422 "Reference already exists" means another one does. Branch names are fixed; new Factory work uses no type prefix. Workers push to that branch and the PR opens from it. An issue already in progress on an older `<prefix>/factory-issue-<n>` branch finishes there.
+
+**Ownership.** The daemon records the claims it makes in `$PASEO_HOME/factory/projects.json`. It writes an intent (issue, default-branch commit, attempt id) before creating the branch, so a crash between creating the branch and recording it is recovered on the next claim: a branch at the recorded commit is this installation's own, unless another installation's marker names it too, which makes it a `conflict` for the owner to decide. A `factory/issue-<n>` branch it did not create is foreign: the Foreman never starts, repairs, merges or closes that work and never adopts the branch. The claim command reports one of:
+
+| Outcome    | Meaning                                                                                                                                        |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claimed`  | This call created the branch.                                                                                                                  |
+| `held`     | This installation already owns it.                                                                                                             |
+| `foreign`  | Another installation owns it.                                                                                                                  |
+| `lost`     | This installation's claim was released or the branch is gone.                                                                                  |
+| `conflict` | Another installation's marker names the same branch, as after a crash in the same moment. The Foreman stops and asks the owner which keeps it. |
+
+**Markers.** The lead's "Resolution plan" comment and every Factory PR body carry a visible line naming the owning installation and a hidden marker, `<!-- factory-claim v1 installation=<name> branch=<branch> -->`. The claim command prints both. Markers are for people and for conflict detection; there is no separate claim comment and no heartbeat edit. Builds and role PRs that are not issue work carry the marker plus `Refs #<n>`, `Closes #<n>` or `No-Issue: <reason>`. The Factory Overview queue marks issues another installation owns.
+
+**Stale claims.** A foreign claim is stale when its latest activity is more than 24 hours old: its branch head commit, its marked plan comment or PR, and never earlier than when this installation first saw that head, so a fresh claim on an old default-branch commit is not stale. The Foreman is told once per stale head and asks the owner once whether to release it. It never takes over by itself. After the owner says yes, `paseo factory project claim release <project-id> <n>` renames `factory/issue-<n>` to `factory-released/issue-<n>/<time>`. GitHub moves the branch and every commit on it in one step, so nothing is lost or rewritten and no release is ever half done. The release refuses unless the Foreman was told about the branch's current head. Any later claim of the issue sees that archive before it can claim, so it never reads the archive as its own release. The former owner's next claim reports `lost`. For a `conflict`, the installation the owner chose runs `paseo factory project claim issue <project-id> <n> --keep`, which ignores the other installation's existing markers on that branch; the other runs `claim release`, which only forgets its own record and changes nothing on GitHub.
+
+**One Triage and one Releases.** A committed `.github/factory.json` on the default branch names the installation that runs each role:
+
+```json
+{ "version": 1, "triage": "<installation>", "releases": "<installation>" }
+```
+
+Triage and Releases read it on every tick and when Factory is turned on, and the Foreman refreshes it for the Overview. A role whose entry names another installation, or no installation, does not wake and says so in its status line, such as "Off here: .github/factory.json assigns Triage to srv_x/prj_y". An invalid or unreadable file turns both roles off here until it reads cleanly. Without the file, every installation keeps single-installation behavior. Only the owner edits the file; roles never do. The Factory Overview shows the current assignment and flags a role that is off here. Before labeling, Triage compares the files changed by other installations' open PRs with an issue's scope and asks the owner instead of labeling on overlap. If two installations race for a release tag, Releases reads the existing tag and prepares the next version; tags are never moved or reused. On Vorteo, `scripts/vorteo-release.mjs tag` does this itself.
+
+**One Factory per repository per installation.** Turning on Factory refuses a repository that another project on the same installation already runs.
+
 The sections below describe the earlier read-only observer and controller boundary. They remain until that code is removed.
 
 ## Observation contract

@@ -30,7 +30,7 @@ const STORAGE_LOCK = ".storage-write.lock";
 const LOCK_STALE_MS = 15_000;
 const MAX_CREDENTIALS_BYTES = 1024 * 1024;
 
-interface LockOptions {
+export interface LockOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   attempts?: number;
@@ -53,7 +53,7 @@ function code(error: unknown): string | undefined {
   return error instanceof Error && "code" in error ? String(error.code) : undefined;
 }
 
-async function acquireStorageLock(home: string, options: LockOptions): Promise<() => void> {
+export async function acquireStorageLock(home: string, options: LockOptions): Promise<() => void> {
   const lock = join(home, STORAGE_LOCK);
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms: number) => delay(ms));

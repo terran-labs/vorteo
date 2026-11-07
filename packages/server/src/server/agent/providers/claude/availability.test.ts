@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { createServer } from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,4 +52,51 @@ it("keeps an absent executable distinct from a signed-out executable", async () 
     runtimeSettings: { command: { mode: "replace", argv: [join(directory, "absent")] } },
   });
   await expect(client.isAvailable()).resolves.toBe(false);
+});
+
+it("shutdown ends availability writers and prevents later probes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "claude-availability-stop-"));
+  directories.push(directory);
+  const server = createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing server address");
+  const script = join(directory, "cli.cjs");
+  await writeFile(
+    script,
+    `
+    if (process.argv.slice(2).join(' ') !== 'auth status') process.exit(2);
+    const socket = require('node:net').connect(${address.port}, '127.0.0.1');
+    socket.on('connect', () => socket.write(String(process.pid)));
+  `,
+  );
+  const settings = {
+    command: { mode: "replace" as const, argv: [process.execPath, script] },
+    env: { CLAUDE_CONFIG_DIR: directory },
+  };
+  const client = new ClaudeAgentClient({ logger: createTestLogger(), runtimeSettings: settings });
+  const connected = once(server, "connection");
+  const probe = client.isAvailable().catch((error: unknown) => error);
+  const [socket] = await connected;
+  const pid = Number(String((await once(socket, "data"))[0]));
+  try {
+    await Promise.all([client.shutdown(), client.shutdown()]);
+    expect(await probe).toMatchObject({ code: "CHECK_FAILED" });
+    expect(() => process.kill(pid, 0)).toThrow();
+    await expect(client.isAvailable()).rejects.toMatchObject({ name: "AbortError" });
+
+    // Shutdown while executable resolution is pending must not launch auth status afterward.
+    const resolving = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      runtimeSettings: settings,
+    });
+    const earlyProbe = resolving.isAvailable().catch((error: unknown) => error);
+    await resolving.shutdown();
+    expect(await earlyProbe).toMatchObject({ name: "AbortError" });
+  } finally {
+    await client.shutdown();
+    socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
