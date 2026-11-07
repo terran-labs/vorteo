@@ -48,6 +48,9 @@ const retiredUpstreamTests = [
   // device's pre-beta local order is ignored by design, so upstream's restore step cannot apply.
   // Manual drag order across sorting and reloads stays covered by this file's other Manual tests.
   /sidebar-reorder\.spec\.ts.* Manual restores pre-beta order and keeps drag order across sorting and reloads/,
+  // The compact sidebar's close button and New workspace nav row went with the Vorton toolbar
+  // (471d7f22a); New workspace is a main menu item, so there is no row to sit beside.
+  /sidebar-workspace\.spec\.ts.* places the close button beside the first nav row instead of over it/,
 ];
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {

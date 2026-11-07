@@ -32,12 +32,21 @@ for (const vortonMode of [false, true]) {
     await expectConnectionDefaults(page);
     await page.getByTestId("direct-host-input").fill("another-host.example.com");
     await page.getByTestId("direct-password-input").fill("discard-on-cancel");
+    // Cancel returns to the method chooser instead of closing the flow (7c2812dde).
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    await page.getByTestId("welcome-direct-connection").click();
+    await page.getByTestId("add-host-method-direct").click();
     await expectConnectionDefaults(page);
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page
+      .getByTestId("add-host-method-modal")
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
     await page.getByTestId("welcome-open-settings").click();
-    await page.getByTestId("settings-add-host").click();
+    // The sidebar also offers Add host; use the one in Environments > Connections.
+    await page
+      .getByTestId("settings-pane-environments.connections")
+      .getByTestId("settings-add-host")
+      .click();
     await page.getByTestId("add-host-method-direct").click();
     await expectConnectionDefaults(page);
     await page.getByTestId("direct-host-input").fill("settings-edit.example.com");
