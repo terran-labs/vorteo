@@ -114,7 +114,11 @@ function FeatureField({
   const options = useMemo(
     () =>
       feature.type === "select"
-        ? feature.options.map((option) => ({ ...option, value: option.id }))
+        ? feature.options.map((option) => ({
+            ...option,
+            value: option.id,
+            testID: `agent-profile-feature-option-${feature.id}-${option.id}`,
+          }))
         : [],
     [feature],
   );
@@ -140,6 +144,8 @@ function FeatureField({
         placeholder="Choose"
         emptyText="No options"
         disabled={disabled}
+        testID={`agent-profile-feature-field-${feature.id}`}
+        triggerTestID={`agent-profile-feature-trigger-${feature.id}`}
       />
     );
   return (

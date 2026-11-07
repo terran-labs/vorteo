@@ -41,6 +41,9 @@ const retiredUpstreamTests = [
   // Asserts the chevron's CSS transform through an svg/../.. lookup; the testing budget in
   // AGENTS.md forbids CSS assertions.
   /usage-modal\.spec\.ts.* direct-route Usage Settings disclosure (desktop|compact) (light|dark)/,
+  // The compact sidebar's close button and New workspace nav row went with the Vorton toolbar
+  // (471d7f22a); New workspace is a main menu item, so there is no row to sit beside.
+  /sidebar-workspace\.spec\.ts.* places the close button beside the first nav row instead of over it/,
 ];
 
 function videoMode(): "on" | "on-first-retry" | "retain-on-failure" {

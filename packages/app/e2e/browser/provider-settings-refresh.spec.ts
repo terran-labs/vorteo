@@ -223,6 +223,8 @@ async function openTimedOutProvider(page: Page, projectKey: string, width: numbe
   await page.setViewportSize({ width, height: 900 });
   // The schedule form retains the catalog browser after retirement of composer model controls.
   await openScheduleModelSelector(page, projectKey);
+  // The selector opens drilled into the selected provider; go back to the provider list.
+  await page.getByTestId("sheet-header-back").filter({ visible: true }).first().click();
   await page.getByTestId("model-provider-picker-timeout").click();
   await expect(page.getByText(/Timed out refreshing Pi timeout/)).toBeVisible();
 }
