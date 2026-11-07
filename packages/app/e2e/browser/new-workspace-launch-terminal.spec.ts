@@ -177,7 +177,10 @@ async function expectNewWorkspaceHeaderVisible(page: Page): Promise<void> {
 async function expectNewWorkspaceFullscreen(page: Page, submitLabel: string): Promise<void> {
   const frame = page.getByTestId("composer-fullscreen");
   await expect(page.getByRole("button", { name: "Exit fullscreen", exact: true })).toBeVisible();
-  await expect(frame.getByRole("button")).toHaveCount(2);
+  // Exit and submit; touch layouts also keep dictation (owner decision, 2026-11-07).
+  await expect(
+    frame.getByRole("button").and(page.locator(':not([aria-label$="dictation"])')),
+  ).toHaveCount(2);
   await expect(frame.getByRole("button", { name: submitLabel })).toBeVisible();
   await expectNewWorkspaceHeaderHidden(page);
   const picker = (await page.getByRole("button", { name: "Workspace project" }).boundingBox())!;

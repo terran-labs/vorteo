@@ -2200,7 +2200,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         styles.textInput,
         mode.isMonospace && styles.textInputMonospace,
         isFullscreen ? styles.fullscreenTextInput : composerHeightStyle,
-        touch && mode.showVoice && !isFullscreen && styles.touchTextInput,
+        touch && mode.showVoice && styles.touchTextInput,
         fullscreenBesideDictation && showFullscreenButton && styles.touchTextInputWithFullscreen,
       ],
       [
@@ -2302,12 +2302,12 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       () => (onQueue && !readOnly ? handleAcceptAndQueueRecording : undefined),
       [onQueue, readOnly, handleAcceptAndQueueRecording],
     );
-    // Fullscreen shows only Exit and Send, as upstream draws it; dictation there runs from the
-    // gesture or shortcut, which return to the inline composer.
+    // Touch fullscreen keeps dictation in its top-right corner below Exit (owner decision,
+    // 2026-11-07); the inline Fullscreen button is the only control fullscreen drops there.
     const dictationPlacement = placeDictationButton(
       voiceButton,
       touch,
-      mode.showVoice && !isFullscreen,
+      mode.showVoice,
       mobileComposer.enabled,
     );
     const sendButton = useMemo(
