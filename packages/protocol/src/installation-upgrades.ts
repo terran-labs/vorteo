@@ -386,6 +386,12 @@ export const CoordinatorSettingsDecisionSchema = z.strictObject({
   revision: z.string().uuid(),
   decision: z.enum(["approve", "reject", "cancel"]),
   follow: z.strictObject({ id: z.string().uuid(), revision: z.string().uuid() }).optional(),
+  /**
+   * The owner interface rendered each change's `fields`. Coordinators refuse to approve
+   * reviewed broker settings without it. Send it only for a job whose changes carry `fields`:
+   * older coordinators never return them and refuse unknown decision fields.
+   */
+  reviewedFields: z.literal(true).optional(),
 });
 export type CoordinatorSettingsDecision = z.infer<typeof CoordinatorSettingsDecisionSchema>;
 

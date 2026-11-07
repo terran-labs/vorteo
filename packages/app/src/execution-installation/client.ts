@@ -948,6 +948,10 @@ export class InstallationClient {
         revision: job.revision,
         decision,
         ...(followJob ? { follow: { id: followJob.id, revision: followJob.revision } } : {}),
+        // COMPAT(coordinatorSettingFields): added in 26.11.6, remove after 2027-05-07 once every coordinator accepts reviewedFields.
+        ...(job.changes.some((change) => change.fields !== undefined)
+          ? { reviewedFields: true as const }
+          : {}),
       }),
     );
     if (result.id !== job.id)

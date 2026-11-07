@@ -2865,11 +2865,16 @@ export function createInstallationServer(
     void (decision.decision === "approve" ? refuseDuringLabUpdate() : Promise.resolve())
       .then(() => {
         const { follow } = decision;
+        const client = { reviewedFields: decision.reviewedFields === true };
         if (decision.decision !== "approve" || !follow)
-          return coordinatorSettings.decide(id, decision.revision, decision.decision);
+          return coordinatorSettings.decide(id, decision.revision, decision.decision, client);
         // One owner decision: the coordinator update first, then these settings on it.
-        return coordinatorSettings.approveWithFollow(id, decision.revision, () =>
-          requireReleaseRuntime().coordinatorFollow.decide(follow.id, follow.revision, "approve"),
+        return coordinatorSettings.approveWithFollow(
+          id,
+          decision.revision,
+          () =>
+            requireReleaseRuntime().coordinatorFollow.decide(follow.id, follow.revision, "approve"),
+          client,
         );
       })
       .then((job) => {

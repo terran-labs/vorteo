@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -13,7 +15,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { CoordinatorFollowJob } from "@getpaseo/protocol/installation-upgrades";
-import { reviewBrokerSettings } from "./coordinator-broker-settings.js";
+import {
+  BrokerReviewUnavailable,
+  recordedConnection,
+  reviewBrokerSettings,
+  SCOPE_LIFETIME_MS,
+} from "./coordinator-broker-settings.js";
 import type { InstallationConfig } from "./config.js";
 import type { HandoffOutcome } from "./coordinator-handoff.js";
 import {
@@ -83,7 +90,7 @@ function settingsPorts(
     launchBlocker: () => null,
     launch: () => calls.push(`launch ${recorded()}`),
     outcome: () => outcome,
-    reviewBroker: async () => ({}),
+    reviewBroker: async () => ({ fields: {}, values: {} }),
     deadlineMs: 60_000,
     warn: (message) => calls.push(`warn ${message}`),
     ...changes,
@@ -372,9 +379,19 @@ test.each([
   },
 ])("coordinator settings $name", ({ run }) => run());
 
+/** The broker code files one release holds at their fixed paths. */
+const DEPLOYMENT_MODULES = [
+  "channel_identity",
+  "broker_rebind",
+  "broker_deployment",
+  "broker_deployment_kernel",
+  "broker_deployment_observation",
+];
+
 /**
- * An installer layout on disk: a coordinator release holding the broker code and recovery
- * readers, plus the interpreters and broker placement the installation already records.
+ * An installer layout on disk: a running coordinator release holding the recorded broker code
+ * and recovery readers, a newer installed Host release, an older retained release, and the
+ * interpreters and broker placement the installation already records.
  */
 function brokerInstallation() {
   const root = realpathSync(directory);
@@ -384,20 +401,35 @@ function brokerInstallation() {
     chmodSync(file, mode);
     return { path: file, sha256: sha256(text) };
   };
-  const release = path.join(root, "releases", "coordinator-1");
-  const dist = path.join(release, "packages/server/dist/server/server/execution-installation");
-  const tailscale = path.join(release, "docker/tailscale");
-  mkdirSync(release, { recursive: true });
-  symlinkSync(release, path.join(root, "releases", "coordinator-current"));
-  const node = write(path.join(root, "bin/node"), "node", 0o755);
+  const release = (name: string, commit: string) => {
+    const at = path.join(root, "releases", name);
+    write(path.join(at, ".installation-source.json"), JSON.stringify({ sourceCommit: commit }));
+    const code = (relative: string) => write(path.join(at, relative), `${name} ${relative}`);
+    return {
+      at,
+      worker: code("docker/tailscale/broker_deployment_worker.py"),
+      nativeInspector: code("scripts/inspect-coordinator-process.py"),
+      modules: DEPLOYMENT_MODULES.map((module) => code(`docker/tailscale/${module}.py`)),
+    };
+  };
+  const coordinator = release("coordinator-1", "c".repeat(40));
+  const host = release("host-2", "d".repeat(40));
+  const retained = release("old-0", "e".repeat(40));
+  symlinkSync(coordinator.at, path.join(root, "releases", "coordinator-current"));
+  symlinkSync(host.at, path.join(root, "releases", "host-current"));
+  const dist = path.join(
+    coordinator.at,
+    "packages/server/dist/server/server/execution-installation",
+  );
   const brokerRoots = [path.join(root, "brokers/native"), path.join(root, "brokers/dev")] as const;
+  const python = write(path.join(root, "bin/python"), "python", 0o755);
   const binding = (broker: string, name: string) => ({
     root: broker,
     domain: "gui/501",
     label: `local.paseo.https-preview-broker.${name}`,
     plist: write(path.join(root, `agents/${name}.plist`), `plist ${name}`),
-    interpreter: path.join(root, "bin/python"),
-    argv: [path.join(root, "bin/python"), "-I", path.join(broker, "https_broker.py")],
+    interpreter: python.path,
+    argv: [python.path, "-I", path.join(broker, "https_broker.py")],
   });
   const recorded = {
     docker: "/usr/local/bin/docker",
@@ -405,16 +437,14 @@ function brokerInstallation() {
     containerId: "a".repeat(64),
     roots: brokerRoots,
     bindings: [binding(brokerRoots[0], "native"), binding(brokerRoots[1], "dev")],
-    scope: write(path.join(root, "task/participant-scope.json"), "{}"),
-    nativeInspector: write(path.join(release, "scripts/inspect-coordinator-process.py"), "inspect"),
-    python: write(path.join(root, "bin/python"), "python", 0o755),
-    worker: write(path.join(tailscale, "broker_deployment_worker.py"), "worker v1"),
-    modules: ["channel_identity", "broker_rebind", "broker_deployment"].map((name) =>
-      write(path.join(tailscale, `${name}.py`), name),
-    ),
+    scope: write(path.join(root, "task/participant-scope.json"), "{}", 0o600),
+    nativeInspector: coordinator.nativeInspector,
+    python,
+    worker: coordinator.worker,
+    modules: coordinator.modules,
     evidenceRoot: path.join(root, "task/evidence"),
     recovery: {
-      node,
+      node: write(path.join(root, "bin/node"), "node", 0o755),
       journal: write(path.join(dist, "lifecycle-journal.js"), "journal"),
       queue: write(path.join(dist, "restarts.js"), "queue"),
       configModule: write(path.join(dist, "config.js"), "config"),
@@ -422,11 +452,13 @@ function brokerInstallation() {
   };
   const state = installation();
   state.disk.config = `${JSON.stringify({
+    public: { installationId: "7785796d-d4b1-445a-a2ad-b673a4dd6683" },
     listenPort: 6000,
     stateDir: path.join(root, "state"),
     deployment: {
       installRoot: root,
       sourceDirectory: path.join(root, "source"),
+      hostReleaseLink: path.join(root, "releases", "host-current"),
       coordinator: {
         releaseLink: path.join(root, "releases", "coordinator-current"),
         service: { launchdService: "gui/501/local.vorteo.test.installation" },
@@ -435,114 +467,270 @@ function brokerInstallation() {
     previewBrokerDeployment: recorded,
   })}\n`;
   const ports = settingsPorts(state, {
-    reviewBroker: ({ keys, current, candidate }) =>
+    reviewBroker: ({ keys, current, candidate, phase }) =>
       reviewBrokerSettings(
         {
           keys,
           current: JSON.parse(current) as InstallationConfig,
           candidate: JSON.parse(candidate) as InstallationConfig,
-          candidateFile: { path: path.join(root, "candidate.json"), sha256: "0".repeat(64) },
+          phase,
         },
         {
           writableMountRoots: async () => [],
-          coordinatorNode: () => node.path,
+          coordinatorNode: () => recorded.recovery.node.path,
           executorInputs: async () => {},
+          now: () => new Date(state.clock.now),
+          randomUUID,
+          bootUUID: async () => "11111111-2222-4333-8444-555555555555",
+          writeScope: async (file, text) => void write(file, text, 0o600),
+          reviewScopeFile: () => path.join(root, "state/participant-scope.review.json"),
+          removeFile: async (file) => rmSync(file, { force: true }),
         },
       ),
   });
-  /** A renewal that moves the worker to new bytes in the managed release. */
-  const renewed = write(path.join(tailscale, "broker_deployment_worker.v2.py"), "worker v2");
-  const request = (change: Record<string, unknown>) =>
+  /** A renewal onto the installed Host release's code. */
+  const renewal = (change: Record<string, unknown> = {}) => ({
+    ...recorded,
+    worker: host.worker,
+    nativeInspector: host.nativeInspector,
+    modules: host.modules,
+    ...change,
+  });
+  const request = (change: Record<string, unknown> = {}) =>
     ports.settings.request({
-      patch: { previewBrokerDeployment: { ...recorded, worker: renewed, ...change } },
+      patch: { previewBrokerDeployment: renewal(change) },
       baseSha256: sha256(state.disk.config),
     });
-  return { ...ports, root, release, renewed, write, request };
+  return { ...ports, state, root, host, coordinator, retained, recorded, write, request };
 }
+
+type BrokerFixture = ReturnType<typeof brokerInstallation>;
 
 test.each([
   {
-    name: "refuses a digest that does not match the file",
-    change: (fx: BrokerFixture) => ({ worker: { ...fx.renewed, sha256: "b".repeat(64) } }),
+    name: "a digest that does not match the file",
+    change: (fx: BrokerFixture) => ({ worker: { ...fx.host.worker, sha256: "b".repeat(64) } }),
     refused: "digest changed",
   },
   {
-    name: "refuses a symlinked file",
+    name: "a symlinked file",
     change: (fx: BrokerFixture) => {
-      const link = path.join(fx.release, "docker/tailscale/linked_worker.py");
-      symlinkSync(fx.renewed.path, link);
-      return { worker: { ...fx.renewed, path: link } };
+      rmSync(fx.host.worker.path);
+      symlinkSync(fx.coordinator.worker.path, fx.host.worker.path);
+      return { worker: { ...fx.coordinator.worker, path: fx.host.worker.path } };
     },
     refused: "symbolic link",
   },
   {
-    name: "refuses a file outside the managed release directories",
+    name: "a downgrade to a retained release that is not installed",
+    change: (fx: BrokerFixture) => ({
+      worker: fx.retained.worker,
+      nativeInspector: fx.retained.nativeInspector,
+      modules: fx.retained.modules,
+    }),
+    refused: "installed Host or running coordinator release",
+  },
+  {
+    name: "a module mixed in from another release",
+    change: (fx: BrokerFixture) => ({
+      modules: fx.host.modules.map((pin, index) => (index === 1 ? fx.coordinator.modules[1] : pin)),
+    }),
+    refused: "modules[1] must be",
+  },
+  {
+    name: "a worker outside any release",
     change: (fx: BrokerFixture) => ({
       worker: fx.write(path.join(fx.root, "worktrees/task/broker_deployment_worker.py"), "x"),
     }),
-    refused: "installer-managed release",
+    refused: "installed Host or running coordinator release",
   },
   {
-    name: "refuses a group-writable file",
-    change: (fx: BrokerFixture) => ({
-      worker: fx.write(path.join(fx.release, "docker/tailscale/open_worker.py"), "x", 0o664),
-    }),
+    name: "a group-writable file",
+    change: (fx: BrokerFixture) => {
+      chmodSync(fx.host.worker.path, 0o664);
+      return {};
+    },
     refused: "writable by another account",
   },
   {
-    name: "refuses a Docker socket other than the recorded one",
+    name: "recovery readers from the named release rather than the running coordinator",
+    change: (fx: BrokerFixture) => ({
+      recovery: {
+        ...fx.recorded.recovery,
+        journal: fx.write(
+          path.join(
+            fx.host.at,
+            "packages/server/dist/server/server/execution-installation/lifecycle-journal.js",
+          ),
+          "journal",
+        ),
+      },
+    }),
+    refused: "recovery readers",
+  },
+  {
+    name: "a Docker socket other than the recorded one",
     change: () => ({ socket: "/tmp/agent.sock" }),
     refused: "must equal the installation's",
   },
   {
-    name: "refuses a Dev container other than the recorded one",
-    change: () => ({ containerId: "c".repeat(64) }),
+    name: "a Dev container other than the recorded one",
+    change: () => ({ containerId: "f".repeat(64) }),
     refused: "must equal the installation's",
   },
   {
-    name: "refuses a Python other than the recorded one",
+    name: "a Python other than the recorded one",
     change: (fx: BrokerFixture) => ({
-      python: fx.write(path.join(fx.release, "bin/python"), "agent python", 0o755),
+      python: fx.write(path.join(fx.host.at, "bin/python"), "agent python", 0o755),
     }),
     refused: "python must stay",
   },
-])("broker settings $name", async ({ change, refused }) => {
+  {
+    name: "other broker roots",
+    change: (fx: BrokerFixture) => ({ roots: [fx.recorded.roots[1], fx.recorded.roots[0]] }),
+    refused: "roots must stay",
+  },
+  {
+    name: "other launchd bindings",
+    change: (fx: BrokerFixture) => ({
+      bindings: [
+        { ...fx.recorded.bindings[0], label: "local.agent.broker" },
+        fx.recorded.bindings[1],
+      ],
+    }),
+    refused: "bindings must stay",
+  },
+  {
+    name: "another scope path",
+    change: (fx: BrokerFixture) => ({
+      scope: fx.write(path.join(fx.root, "task/agent-scope.json"), "{}", 0o600),
+    }),
+    refused: "scope must stay",
+  },
+  {
+    name: "another evidence root",
+    change: (fx: BrokerFixture) => ({ evidenceRoot: path.join(fx.root, "tmp/evidence") }),
+    refused: "evidenceRoot must stay",
+  },
+])("broker settings refuse $name", async ({ change, refused }) => {
   const fx = brokerInstallation();
   await expect(fx.request(change(fx))).rejects.toThrow(refused);
   expect(fx.settings.status().job).toBeNull();
 });
 
-type BrokerFixture = ReturnType<typeof brokerInstallation>;
+test("broker settings show the release commit and mint a bounded scope only when applied", async () => {
+  const fx = brokerInstallation();
+  const job = await fx.request();
+  const fields = job.changes[0]?.fields ?? [];
+  expect(fields[0]).toMatchObject({
+    field: "release",
+    after: expect.stringMatching(/^release dddddddddddd \(Host release/),
+  });
+  expect(fields.find((field) => field.field === "worker")).toMatchObject({
+    after: `${fx.host.worker.path} · sha256 ${fx.host.worker.sha256.slice(0, 12)}`,
+    verified: true,
+  });
+  // Before approval the recorded scope is untouched and the review copy is gone.
+  expect(readFileSync(fx.recorded.scope.path, "utf8")).toBe("{}");
+  expect(existsSync(path.join(fx.root, "state/participant-scope.review.json"))).toBe(false);
+  // An interface that cannot show the fields may not approve them.
+  expect(() => fx.settings.decide(job.id, job.revision, "approve")).toThrow("Update Vorteo");
+  fx.settings.decide(job.id, job.revision, "approve", { reviewedFields: true });
+  fx.state.clock.now += 60_000;
+  await fx.settings.drain();
+  expect(fx.calls).toEqual(["write running", "launch running"]);
+  const scope = JSON.parse(readFileSync(fx.recorded.scope.path, "utf8"));
+  expect(scope).toMatchObject({
+    manualParticipants: [],
+    bindings: fx.recorded.bindings,
+    bootUUID: "11111111-2222-4333-8444-555555555555",
+  });
+  expect(Date.parse(scope.validUntil)).toBe(fx.state.clock.now + SCOPE_LIFETIME_MS);
+  expect(JSON.parse(fx.state.disk.config).previewBrokerDeployment.scope.sha256).toBe(
+    sha256(readFileSync(fx.recorded.scope.path, "utf8")),
+  );
+});
 
-test("broker settings apply a verified change and refuse a file swapped after approval", async () => {
-  const applied = brokerInstallation();
-  const job = await applied.request({});
-  expect(job.changes).toEqual([
-    {
-      key: "previewBrokerDeployment",
-      displaySafe: true,
-      fields: [
-        {
-          field: "worker",
-          before: expect.stringMatching(/broker_deployment_worker\.py · sha256 [a-f0-9]{12}$/),
-          after: `${applied.renewed.path} · sha256 ${applied.renewed.sha256.slice(0, 12)}`,
-          verified: true,
-        },
-      ],
+test.each([
+  {
+    name: "a file swapped after approval",
+    after: (fx: BrokerFixture) => writeFileSync(fx.host.worker.path, "worker swapped"),
+    detail: "digest changed",
+  },
+])("broker settings fail at dispatch for $name", async ({ after, detail }) => {
+  const fx = brokerInstallation();
+  const job = await fx.request();
+  fx.settings.decide(job.id, job.revision, "approve", { reviewedFields: true });
+  after(fx);
+  await fx.settings.drain();
+  expect(fx.settings.status().job).toMatchObject({ status: "failed" });
+  expect(fx.settings.status().job?.detail).toContain(detail);
+  expect(fx.calls).toEqual([]);
+});
+
+test("broker settings retry a review that could not run, and stop after a cancel during review", async () => {
+  const fx = brokerInstallation();
+  const job = await fx.request();
+  fx.settings.decide(job.id, job.revision, "approve", { reviewedFields: true });
+  let before = async (): Promise<void> => {
+    throw new BrokerReviewUnavailable("Docker mount inspection failed: timed out");
+  };
+  const review = fx.settings["ports"].reviewBroker;
+  fx.settings["ports"].reviewBroker = async (input) => {
+    if (input.phase === "dispatch") await before();
+    return review(input);
+  };
+  await fx.settings.drain();
+  expect(fx.settings.status().job).toMatchObject({ status: "approved" });
+  expect(fx.settings.status().job?.detail).toContain("Waiting to check");
+  // The owner cancels while the next review runs; nothing is applied.
+  before = async () => {
+    fx.settings.decide(job.id, fx.settings.status().job!.revision, "cancel");
+  };
+  await fx.settings.drain();
+  expect(fx.settings.status().job).toMatchObject({ status: "cancelled" });
+  expect(fx.calls).toEqual([]);
+});
+
+test("broker settings refuse a request when the configuration changed during review", async () => {
+  const fx = brokerInstallation();
+  const review = fx.settings["ports"].reviewBroker;
+  fx.settings["ports"].reviewBroker = async (input) => {
+    const result = await review(input);
+    fx.state.disk.config = fx.state.disk.config.replace('"listenPort":6000', '"listenPort":6001');
+    return result;
+  };
+  await expect(fx.request()).rejects.toThrow("changed since");
+  expect(fx.settings.status().job).toBeNull();
+});
+
+test("broker connection pins come from one recorded section", () => {
+  const engine = {
+    docker: "/engine/docker",
+    socket: "/engine/docker.sock",
+    containers: {
+      dev: "a".repeat(64),
+      gatewayTailscale: "b".repeat(64),
+      gatewayCaddy: "c".repeat(64),
     },
-  ]);
-  applied.settings.decide(job.id, job.revision, "approve");
-  await applied.settings.drain();
-  expect(applied.calls).toEqual(["write running", "launch running"]);
-
-  rmSync(directory, { recursive: true, force: true });
-  mkdirSync(directory);
-  const swapped = brokerInstallation();
-  const pending = await swapped.request({});
-  swapped.settings.decide(pending.id, pending.revision, "approve");
-  writeFileSync(swapped.renewed.path, "worker swapped");
-  await swapped.settings.drain();
-  expect(swapped.settings.status().job).toMatchObject({ status: "failed" });
-  expect(swapped.settings.status().job?.detail).toContain("no longer pass review");
-  expect(swapped.calls).toEqual([]);
+  };
+  const config = (extra: Record<string, unknown>) => extra as unknown as InstallationConfig;
+  // Without a broker section, the Dev engine section supplies all three, never a mix.
+  expect(
+    recordedConnection(
+      config({
+        containerSourceUpdates: { docker: "/other/docker", containerId: "d".repeat(64) },
+        container: { engineRestart: engine },
+      }),
+    ),
+  ).toEqual({
+    docker: "/engine/docker",
+    socket: "/engine/docker.sock",
+    containerId: "a".repeat(64),
+  });
+  expect(() =>
+    recordedConnection(
+      config({ containerSourceUpdates: { docker: "/other/docker", containerId: "d".repeat(64) } }),
+    ),
+  ).toThrow("operator must set them");
 });

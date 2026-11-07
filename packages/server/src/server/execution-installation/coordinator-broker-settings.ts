@@ -3,7 +3,11 @@ import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { CoordinatorSettingField } from "@getpaseo/protocol/installation-upgrades";
-import { readBootstrapPreparedFile } from "./coordinator-bootstrap-artifact.js";
+import { BrokerDeploymentScopeSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import {
+  readBootstrapPreparedFile,
+  readProtectedDocument,
+} from "./coordinator-bootstrap-artifact.js";
 import type { InstallationConfig } from "./config.js";
 import {
   verifyBrokerBinding,
@@ -14,21 +18,27 @@ import { verifyExecutable } from "./preview-monitor-executor.js";
 
 /**
  * Reviewed broker settings: `previewBrokerDeployment` and `previewBroker` name what the
- * coordinator executes, so a requester may move only their release code to another
- * installer-managed release. The coordinator derives every other value from what the
- * installation already records, and computes every digest from the bytes on disk.
+ * coordinator executes. The requester picks one anchored release; the coordinator derives
+ * everything else and computes every digest from the bytes on disk.
  *
- * - Docker, socket and Dev container equal the installation's recorded connection.
+ * - Release code (worker, modules, native inspector, identity verifier) lives at fixed paths in
+ *   ONE release: the installed Host release or the running coordinator release. No other
+ *   retained release, build cache or source checkout qualifies, so a downgrade, a module mixed
+ *   in from another release, or an arbitrary script is refused.
  * - Recovery readers and Node bind the release and executable this coordinator runs, by the
  *   check the coordinator bootstrap review shares.
- * - Python, broker roots, launchd bindings, participant scope, consumer files and the
- *   evidence root stay where the installation already put them.
- * - Worker, modules, inspector and identity verifier are files inside the coordinator's and
- *   Host's release directories, never a worktree, temporary or project folder.
- * - Every file is canonical (no symlink), regular, owned by this account, not writable by
- *   group or others, outside writable Dev mounts, and hashes to the requested digest.
+ * - Docker, socket and Dev container come from one recorded configuration section.
+ * - Python, broker roots, launchd bindings, scope path, consumer files and the evidence root
+ *   stay where the installation already put them.
+ * - The coordinator writes the deployment participant scope itself, bounded to 24 hours with no
+ *   manual participants, instead of accepting a requester's file. A request probes with a
+ *   private review copy; only dispatch, after approval, writes the recorded scope path.
  *
- * The executors repeat their own protected-input checks before every broker effect.
+ * Who this stops: Host agents run as the owner's account, so the ownership, mode and link
+ * checks below stop Dev-side tampering (writable Dev mounts) and accidents, not a Host agent.
+ * The real gate is the owner approving "release <commit>" together with values the requester
+ * cannot choose. Dispatch repeats every check, and the executors repeat theirs before each
+ * broker effect.
  */
 export const BROKER_SETTINGS: readonly BrokerSetting[] = [
   "previewBrokerDeployment",
@@ -39,26 +49,67 @@ export function isBrokerSetting(key: string): key is BrokerSetting {
   return (BROKER_SETTINGS as readonly string[]).includes(key);
 }
 
+/** The minted participant scope never outlives this bound. */
+export const SCOPE_LIFETIME_MS = 24 * 60 * 60_000;
+/** The deployment executor needs this much scope left to run. */
+const SCOPE_MARGIN_MS = 180_000;
+
+/** Release code paths, relative to the anchored release. */
+const DEPLOYMENT_CODE = {
+  worker: "docker/tailscale/broker_deployment_worker.py",
+  nativeInspector: "scripts/inspect-coordinator-process.py",
+  // The deployment executor loads exactly these modules, in this order, by basename.
+  modules: [
+    "channel_identity",
+    "broker_rebind",
+    "broker_deployment",
+    "broker_deployment_kernel",
+    "broker_deployment_observation",
+  ].map((name) => `docker/tailscale/${name}.py`),
+};
+const BROKER_CODE = {
+  worker: "docker/tailscale/broker_rebind.py",
+  identityModule: "docker/tailscale/channel_identity.py",
+};
+
 export interface BrokerSettingsReviewPorts {
   /** Writable Dev container mount roots, inspected through the pinned Docker endpoint. */
   writableMountRoots(connection: Omit<BrokerBindingPins, "recovery">): Promise<readonly string[]>;
   /** The Node executable this coordinator runs. */
   coordinatorNode(): string;
-  /** The executors' own compatibility checks on the candidate configuration file. */
+  /** The executors' own compatibility checks on the candidate configuration. */
   executorInputs(input: {
     settings: readonly BrokerSetting[];
     config: InstallationConfig;
-    configurationFile: { path: string; sha256: string };
     writableMountRoots(): Promise<readonly string[]>;
   }): Promise<void>;
+  now(): Date;
+  randomUUID(): string;
+  /** This boot's session UUID, which the participant scope binds. */
+  bootUUID(): Promise<string>;
+  /** Replaces the file at `file` privately and atomically with `text`. */
+  writeScope(file: string, text: string): Promise<void>;
+  /** A fresh private path for the request-time review copy of the scope. */
+  reviewScopeFile(): string;
+  removeFile(file: string): Promise<void>;
 }
 
 export interface BrokerSettingsReview {
   keys: readonly BrokerSetting[];
   current: InstallationConfig;
   candidate: InstallationConfig;
-  /** The candidate written privately on disk, for the deployment executor to reread. */
-  candidateFile: { path: string; sha256: string };
+  /**
+   * A request mints the participant scope into a private review copy for the executor probe;
+   * dispatch mints it at the recorded scope path.
+   */
+  phase: "request" | "dispatch";
+}
+
+export interface BrokerSettingsReviewResult {
+  /** Changed fields per key, for the owner. */
+  fields: Record<string, CoordinatorSettingField[]>;
+  /** The values to store, with coordinator-filled entries such as the minted scope digest. */
+  values: Partial<Record<BrokerSetting, unknown>>;
 }
 
 interface Pin {
@@ -66,10 +117,34 @@ interface Pin {
   sha256: string;
 }
 
-class BrokerSettingRefused extends Error {}
+/** The request does not match what the installation allows; fails the change. */
+export class BrokerSettingRefused extends Error {}
+
+/** A check could not run, such as a Docker inspection timeout; dispatch retries. */
+export class BrokerReviewUnavailable extends Error {}
 
 function refuse(reason: string): never {
   throw new BrokerSettingRefused(reason);
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const TRANSIENT_CODES = new Set(["EIO", "EAGAIN", "EBUSY", "EMFILE", "ENFILE", "ETIMEDOUT"]);
+
+/** Wraps a failing check: transient system errors stay retryable, anything else refuses. */
+async function check<T>(label: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof BrokerSettingRefused || error instanceof BrokerReviewUnavailable)
+      throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code && TRANSIENT_CODES.has(code))
+      throw new BrokerReviewUnavailable(`${label}: ${describe(error)}`);
+    refuse(`${label}: ${describe(error)}`);
+  }
 }
 
 function contains(directory: string, file: string): boolean {
@@ -85,20 +160,18 @@ async function canonical(file: string): Promise<string | null> {
   }
 }
 
-/** The release directories the installer manages, derived from the current configuration. */
-export async function managedReleaseRoots(current: InstallationConfig): Promise<string[]> {
+interface AnchoredRelease {
+  directory: string;
+  kind: "Host" | "coordinator";
+}
+
+/** The installed Host release and the running coordinator release, canonical. */
+export async function anchoredReleases(current: InstallationConfig): Promise<AnchoredRelease[]> {
   const deployment = current.deployment;
   if (!deployment?.coordinator)
     refuse("Broker settings change only on installations made by the one-command installer.");
-  const candidates = [
-    // The installer's releases folder, which holds every coordinator and Host release.
-    path.dirname(deployment.coordinator.releaseLink),
-    deployment.coordinator.releaseLink,
-    deployment.hostReleaseLink,
-    current.sourceUpdates?.releaseRoot,
-  ];
-  // A layout that keeps a release link in the installation root must not admit that root,
-  // which also holds state, worktrees and task folders.
+  // A release link that resolves to the installation root, its state, source or homes would
+  // admit worktrees and task folders; such a link is not an anchor.
   const excluded: string[] = [];
   for (const place of [
     deployment.installRoot,
@@ -108,42 +181,59 @@ export async function managedReleaseRoots(current: InstallationConfig): Promise<
     current.stateDir,
   ])
     if (place) excluded.push((await canonical(place)) ?? place);
-  const roots = new Set<string>();
-  for (const item of candidates) {
-    const root = item ? await canonical(item) : null;
-    if (!root) continue;
-    if (excluded.some((place) => place === root || contains(root, place))) continue;
-    roots.add(root);
+  const anchors: AnchoredRelease[] = [];
+  for (const [link, kind] of [
+    [deployment.hostReleaseLink ?? current.sourceUpdates?.currentReleaseLink, "Host"],
+    [deployment.coordinator.releaseLink, "coordinator"],
+  ] as const) {
+    const directory = link ? await canonical(link) : null;
+    if (!directory) continue;
+    if (excluded.some((place) => place === directory || contains(directory, place))) continue;
+    if (!anchors.some((item) => item.directory === directory)) anchors.push({ directory, kind });
   }
-  if (roots.size === 0) refuse("This installation records no managed release directory.");
-  return [...roots];
+  if (anchors.length === 0) refuse("This installation records no installed release.");
+  return anchors;
 }
 
-/** The Docker endpoint and Dev container the installation already uses. */
+/** The release's source commit, from its installation receipt or its commit-named folder. */
+async function releaseCommit(directory: string): Promise<string> {
+  const commit = /^[a-f0-9]{40}$/;
+  try {
+    const receipt = JSON.parse(
+      (await readProtectedDocument(path.join(directory, ".installation-source.json"))).toString(
+        "utf8",
+      ),
+    ) as { sourceCommit?: unknown };
+    if (typeof receipt.sourceCommit === "string" && commit.test(receipt.sourceCommit))
+      return receipt.sourceCommit;
+  } catch {
+    // Fall back to the folder name below.
+  }
+  if (commit.test(path.basename(directory))) return path.basename(directory);
+  refuse(`Release ${directory} records no source commit.`);
+}
+
+/**
+ * Docker endpoint and Dev container from ONE recorded section, never mixed across sections:
+ * the broker's own, then the preview monitor's, native helper's or Dev engine restart's.
+ */
 export function recordedConnection(
   current: InstallationConfig,
 ): Omit<BrokerBindingPins, "recovery"> {
-  const recorded = [
+  const section = [
     current.previewBrokerDeployment,
     current.previewBroker,
     current.previewMonitor,
     current.nativeHelper,
   ].find((item) => item !== undefined);
+  if (section)
+    return { docker: section.docker, socket: section.socket, containerId: section.containerId };
   const engine = current.container?.engineRestart ?? current.container?.engineRecovery;
-  const docker = recorded?.docker ?? current.containerSourceUpdates?.docker ?? engine?.docker;
-  const socket = recorded?.socket ?? engine?.socket;
-  const containerId =
-    recorded?.containerId ?? current.containerSourceUpdates?.containerId ?? engine?.containers.dev;
-  const missing = [
-    ["Docker executable", docker],
-    ["Docker socket", socket],
-    ["Dev container", containerId],
-  ].find(([, value]) => !value)?.[0];
-  if (missing)
-    refuse(
-      `The installation records no ${missing} for the broker to bind. The operator must set it in coordinator.json first.`,
-    );
-  return { docker: docker!, socket: socket!, containerId: containerId! };
+  if (engine)
+    return { docker: engine.docker, socket: engine.socket, containerId: engine.containers.dev };
+  refuse(
+    "The installation records no Docker executable, socket and Dev container together for the broker to bind. The operator must set them in coordinator.json first.",
+  );
 }
 
 async function digestFile(file: string): Promise<string> {
@@ -218,14 +308,33 @@ export function brokerFieldChanges(before: unknown, after: unknown): Coordinator
 interface BrokerFiles {
   /** Interpreters: pinned paths, verified as protected executables. */
   executables: Pin[];
-  /** Release code: inside an installer-managed release directory. */
-  release: [string, Pin][];
+  /** Code as [field, requested pin, derived path]: the anchored release or the readers. */
+  code: [string, Pin, string][];
   /** Files at recorded broker locations. */
   placed: Pin[];
 }
 
-/** Deployment placement stays as recorded; returns its files by rule. */
-function deploymentFiles(current: InstallationConfig, candidate: InstallationConfig): BrokerFiles {
+/** The anchored release the worker names; every other code path must follow it. */
+function selectRelease(
+  key: BrokerSetting,
+  worker: string,
+  relative: string,
+  anchors: readonly AnchoredRelease[],
+): AnchoredRelease {
+  const release = anchors.find((item) => path.join(item.directory, relative) === worker);
+  if (!release)
+    refuse(
+      `${key}.worker must be ${relative} in the installed Host or running coordinator release (${anchors.map((item) => item.directory).join(", ")}).`,
+    );
+  return release;
+}
+
+/** Deployment placement stays as recorded; code follows the selected release. */
+function deploymentFiles(
+  current: InstallationConfig,
+  candidate: InstallationConfig,
+  release: string,
+): BrokerFiles {
   const value = candidate.previewBrokerDeployment!;
   const recorded = current.previewBrokerDeployment;
   const label = (field: string) => `previewBrokerDeployment.${field}`;
@@ -248,22 +357,30 @@ function deploymentFiles(current: InstallationConfig, candidate: InstallationCon
     value.evidenceRoot,
     recorded?.evidenceRoot ?? current.previewBroker?.evidenceRoot,
   );
+  if (value.modules.length !== DEPLOYMENT_CODE.modules.length)
+    refuse(`${label("modules")} must be the release's ${DEPLOYMENT_CODE.modules.length} modules.`);
+  const at = (relative: string) => path.join(release, relative);
   return {
     executables: [value.python, value.recovery.node],
-    release: [
-      ["nativeInspector", value.nativeInspector],
-      ["worker", value.worker],
-      ...value.modules.map((pin, index): [string, Pin] => [`modules[${index}]`, pin]),
-      ["recovery.journal", value.recovery.journal],
-      ["recovery.queue", value.recovery.queue],
-      ["recovery.configModule", value.recovery.configModule],
+    code: [
+      ["worker", value.worker, at(DEPLOYMENT_CODE.worker)],
+      ["nativeInspector", value.nativeInspector, at(DEPLOYMENT_CODE.nativeInspector)],
+      ...DEPLOYMENT_CODE.modules.map((relative, index): [string, Pin, string] => [
+        `modules[${index}]`,
+        value.modules[index]!,
+        at(relative),
+      ]),
     ],
-    placed: [value.scope, ...value.bindings.map((binding) => binding.plist)],
+    placed: value.bindings.map((binding) => binding.plist),
   };
 }
 
 /** Broker placement stays as recorded, or for a first broker follows the deployed roots. */
-function brokerFiles(current: InstallationConfig, candidate: InstallationConfig): BrokerFiles {
+function brokerFiles(
+  current: InstallationConfig,
+  candidate: InstallationConfig,
+  release: string,
+): BrokerFiles {
   const value = candidate.previewBroker!;
   const recorded = current.previewBroker;
   const deployment = current.previewBrokerDeployment;
@@ -288,46 +405,38 @@ function brokerFiles(current: InstallationConfig, candidate: InstallationConfig)
       refuse(`${label("consumerFiles")}: ${consumer.path} is outside the broker's config folders.`);
   return {
     executables: [value.python, value.recovery.node],
-    release: [
-      ["worker", value.worker],
-      ["identityModule", value.identityModule],
-      ["recovery.journal", value.recovery.journal],
-      ["recovery.queue", value.recovery.queue],
-      ["recovery.configModule", value.recovery.configModule],
+    code: [
+      ["worker", value.worker, path.join(release, BROKER_CODE.worker)],
+      ["identityModule", value.identityModule, path.join(release, BROKER_CODE.identityModule)],
     ],
     placed: value.consumerFiles,
   };
 }
 
-/** Confines release code, then hashes every file from disk with its protection checks. */
+/** Recovery readers; the shared binding check already placed them in the coordinator release. */
+function recoveryFiles(recovery: Record<"journal" | "queue" | "configModule", Pin>) {
+  return (["journal", "queue", "configModule"] as const).map((name): [string, Pin, string] => [
+    `recovery.${name}`,
+    recovery[name],
+    recovery[name].path,
+  ]);
+}
+
+/** Code at its derived path, then every file hashed from disk with its protection checks. */
 async function verifyFiles(
   key: BrokerSetting,
   files: BrokerFiles,
-  releaseRoots: readonly string[],
   mounts: readonly string[],
 ): Promise<void> {
-  for (const [field, pin] of files.release) {
+  for (const [field, pin, expected] of files.code) {
+    if (pin.path !== expected) refuse(`${key}.${field} must be ${expected}.`);
     if ((await canonical(pin.path)) !== pin.path)
       refuse(`${key}.${field}: ${pin.path} is a symbolic link or not a canonical path.`);
-    if (!releaseRoots.some((root) => contains(root, pin.path)))
-      refuse(
-        `${key}.${field}: ${pin.path} must be a file inside an installer-managed release directory (${releaseRoots.join(", ")}).`,
-      );
   }
-  for (const pin of files.executables) {
-    try {
-      await verifyExecutable(pin, mounts);
-    } catch (error) {
-      refuse(`${key}: executable ${pin.path} was refused: ${describe(error)}`);
-    }
-  }
-  for (const pin of [...files.release.map(([, item]) => item), ...files.placed]) {
-    try {
-      await readBootstrapPreparedFile(pin, mounts);
-    } catch (error) {
-      refuse(`${key}: ${pin.path} was refused: ${describe(error)}`);
-    }
-  }
+  for (const pin of files.executables)
+    await check(`${key}: executable ${pin.path} was refused`, () => verifyExecutable(pin, mounts));
+  for (const pin of [...files.code.map(([, item]) => item), ...files.placed])
+    await check(`${key}: ${pin.path} was refused`, () => readBootstrapPreparedFile(pin, mounts));
 }
 
 /** Docker, socket and container are the installation's; recovery is this coordinator's. */
@@ -347,50 +456,188 @@ async function bindingPins(
   };
 }
 
+type DeploymentValue = NonNullable<InstallationConfig["previewBrokerDeployment"]>;
+
+/** Writes a fresh participant scope at `file` and returns its file pin. */
+async function mintScope(
+  value: DeploymentValue,
+  file: string,
+  installationId: string,
+  ports: BrokerSettingsReviewPorts,
+): Promise<Pin> {
+  const bootUUID = await ports.bootUUID().catch((error: unknown) => {
+    throw new BrokerReviewUnavailable(`The boot identity could not be read: ${describe(error)}`);
+  });
+  const scope = BrokerDeploymentScopeSchema.parse({
+    version: 1,
+    installationId,
+    requestId: ports.randomUUID(),
+    bootUUID,
+    validUntil: new Date(ports.now().getTime() + SCOPE_LIFETIME_MS).toISOString(),
+    declaration:
+      "Only the declared managed routes and manual participants are known; no new manual broker calls until release",
+    bindings: value.bindings,
+    manualParticipants: [],
+  });
+  const text = `${JSON.stringify(scope, null, 2)}\n`;
+  await check("The participant scope could not be written", () => ports.writeScope(file, text));
+  return { path: file, sha256: createHash("sha256").update(text).digest("hex") };
+}
+
+/** The scope on disk must be coordinator-shaped: bounded, bound and without extras. */
+async function verifyScope(
+  value: DeploymentValue,
+  installationId: string,
+  mounts: readonly string[],
+  now: Date,
+) {
+  const bytes = await check(`previewBrokerDeployment: ${value.scope.path} was refused`, () =>
+    readBootstrapPreparedFile(value.scope, mounts),
+  );
+  let parsed: ReturnType<typeof BrokerDeploymentScopeSchema.safeParse>;
+  try {
+    parsed = BrokerDeploymentScopeSchema.safeParse(JSON.parse(bytes.toString("utf8")));
+  } catch {
+    refuse("The participant scope is not valid JSON.");
+  }
+  if (!parsed.success) refuse("The participant scope is not a valid scope.");
+  const scope = parsed.data;
+  const left = Date.parse(scope.validUntil) - now.getTime();
+  if (scope.installationId !== installationId || !isDeepStrictEqual(scope.bindings, value.bindings))
+    refuse("The participant scope names another installation or other broker routes.");
+  if (scope.manualParticipants.length > 0)
+    refuse("The participant scope declares manual participants the installation does not record.");
+  if (left <= SCOPE_MARGIN_MS || left > SCOPE_LIFETIME_MS)
+    refuse(
+      `The participant scope must be valid for at most 24 hours; it ends ${scope.validUntil}.`,
+    );
+  return scope;
+}
+
+/** One broker key: pins, anchored code, files on disk, and the minted or verified scope. */
+async function reviewKey(
+  key: BrokerSetting,
+  candidate: InstallationConfig,
+  context: {
+    current: InstallationConfig;
+    pins: BrokerBindingPins;
+    anchors: readonly AnchoredRelease[];
+    mounts: readonly string[];
+    phase: BrokerSettingsReview["phase"];
+    ports: BrokerSettingsReviewPorts;
+  },
+): Promise<{ shown: CoordinatorSettingField[]; probeScope?: Pin }> {
+  const { current, pins, ports } = context;
+  try {
+    verifyBrokerBinding(key, candidate[key], pins);
+  } catch (error) {
+    refuse(
+      `${key}: ${describe(error)}. Docker, socket and Dev container must equal the installation's (${pins.docker}, ${pins.socket}); recovery readers and Node must be this coordinator's release and executable.`,
+    );
+  }
+  const value = candidate[key] as { worker: Pin; recovery: Parameters<typeof recoveryFiles>[0] };
+  const relative = key === "previewBrokerDeployment" ? DEPLOYMENT_CODE.worker : BROKER_CODE.worker;
+  const release = selectRelease(key, value.worker.path, relative, context.anchors);
+  const files =
+    key === "previewBrokerDeployment"
+      ? deploymentFiles(current, candidate, release.directory)
+      : brokerFiles(current, candidate, release.directory);
+  files.code.push(...recoveryFiles(value.recovery));
+  await verifyFiles(key, files, context.mounts);
+  const commit = await releaseCommit(release.directory);
+  const shown: CoordinatorSettingField[] = [
+    {
+      field: "release",
+      before: null,
+      after: `release ${commit.slice(0, 12)} (${release.kind} release, ${release.directory})`,
+      verified: true,
+    },
+  ];
+  if (key !== "previewBrokerDeployment") return { shown };
+  const deployment = candidate.previewBrokerDeployment!;
+  const installationId = current.public.installationId;
+  if (context.phase === "request") {
+    // Nothing at the recorded path changes before approval: the stored value keeps the
+    // recorded scope, and the executor probe reads a private copy minted the same way.
+    candidate.previewBrokerDeployment = {
+      ...deployment,
+      scope: current.previewBrokerDeployment!.scope,
+    };
+    const probe = {
+      ...deployment,
+      scope: await mintScope(deployment, ports.reviewScopeFile(), installationId, ports),
+    };
+    try {
+      await verifyScope(probe, installationId, context.mounts, ports.now());
+    } catch (error) {
+      await ports.removeFile(probe.scope.path).catch(() => {});
+      throw error;
+    }
+    shown.push({
+      field: "scope",
+      before: null,
+      after: `${deployment.scope.path}, written when applied: recorded routes, no manual participants, valid 24 hours on this boot`,
+    });
+    return { shown, probeScope: probe.scope };
+  }
+  const minted = {
+    ...deployment,
+    scope: await mintScope(deployment, deployment.scope.path, installationId, ports),
+  };
+  candidate.previewBrokerDeployment = minted;
+  await verifyScope(minted, installationId, context.mounts, ports.now());
+  return { shown };
+}
+
 /**
- * Reviews each broker key the candidate sets. Throws a message naming the refused field;
- * returns the per-field changes the owner reviews. Run at request and again at dispatch.
+ * Reviews each broker key the candidate sets. Throws BrokerSettingRefused naming the refused
+ * field, or BrokerReviewUnavailable when a check could not run. Run at request and dispatch.
  */
 export async function reviewBrokerSettings(
   review: BrokerSettingsReview,
   ports: BrokerSettingsReviewPorts,
-): Promise<Record<string, CoordinatorSettingField[]>> {
-  const { current, candidate } = review;
-  const result: Record<string, CoordinatorSettingField[]> = {};
-  for (const key of review.keys) result[key] = brokerFieldChanges(current[key], candidate[key]);
+): Promise<BrokerSettingsReviewResult> {
+  const { current } = review;
+  const candidate: InstallationConfig = { ...review.candidate };
+  const values: Partial<Record<BrokerSetting, unknown>> = {};
+  const shown: Record<string, CoordinatorSettingField[]> = {};
   const attached = review.keys.filter((key) => candidate[key] !== undefined);
-  if (attached.length === 0) return result;
-
-  const { recovery, ...connection } = await bindingPins(current, ports);
-  const releaseRoots = await managedReleaseRoots(current);
-  const mounts = await ports.writableMountRoots(connection);
-  for (const key of attached) {
-    try {
-      verifyBrokerBinding(key, candidate[key], { ...connection, recovery });
-    } catch (error) {
-      refuse(
-        `${key}: ${describe(error)}. Docker, socket and Dev container must equal the installation's (${connection.docker}, ${connection.socket}); recovery readers and Node must be this coordinator's release and executable.`,
-      );
-    }
-    const files =
-      key === "previewBrokerDeployment"
-        ? deploymentFiles(current, candidate)
-        : brokerFiles(current, candidate);
-    await verifyFiles(key, files, releaseRoots, mounts);
-  }
-  try {
-    await ports.executorInputs({
-      settings: attached,
-      config: candidate,
-      configurationFile: review.candidateFile,
-      writableMountRoots: () => ports.writableMountRoots(connection),
+  if (attached.length > 0) {
+    const pins = await bindingPins(current, ports);
+    const anchors = await anchoredReleases(current);
+    const { recovery: _recovery, ...connection } = pins;
+    const mounts = await ports.writableMountRoots(connection).catch((error: unknown) => {
+      throw new BrokerReviewUnavailable(`Docker mount inspection failed: ${describe(error)}`);
     });
-  } catch (error) {
-    refuse(describe(error));
+    const context = { current, pins, anchors, mounts, phase: review.phase, ports };
+    let probeScope: Pin | undefined;
+    try {
+      for (const key of attached) {
+        const result = await reviewKey(key, candidate, context);
+        shown[key] = result.shown;
+        probeScope ??= result.probeScope;
+        values[key] = candidate[key];
+      }
+      const probe: InstallationConfig =
+        probeScope && candidate.previewBrokerDeployment
+          ? {
+              ...candidate,
+              previewBrokerDeployment: { ...candidate.previewBrokerDeployment, scope: probeScope },
+            }
+          : candidate;
+      await check("The broker executors refused the configuration", () =>
+        ports.executorInputs({
+          settings: attached,
+          config: probe,
+          writableMountRoots: () => ports.writableMountRoots(connection),
+        }),
+      );
+    } finally {
+      if (probeScope) await ports.removeFile(probeScope.path).catch(() => {});
+    }
   }
-  return result;
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const fields: Record<string, CoordinatorSettingField[]> = {};
+  for (const key of review.keys)
+    fields[key] = [...(shown[key] ?? []), ...brokerFieldChanges(current[key], candidate[key])];
+  return { fields, values };
 }

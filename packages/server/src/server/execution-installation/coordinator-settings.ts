@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -27,9 +30,11 @@ import {
   type HandoffOutcome,
 } from "./coordinator-handoff.js";
 import {
+  BrokerReviewUnavailable,
   isBrokerSetting,
   reviewBrokerSettings,
   type BrokerSettingsReviewPorts,
+  type BrokerSettingsReviewResult,
 } from "./coordinator-broker-settings.js";
 import type { BrokerSetting } from "./preview-broker-configuration-checks.js";
 import { RestartRequestError } from "./restarts.js";
@@ -62,18 +67,24 @@ export const COORDINATOR_SETTINGS: readonly {
   { key: "previewBroker", displaySafe: true, reviewed: "broker" },
 ];
 
+const execFileAsync = promisify(execFile);
+
 /** One readiness window; a failed restart waits twice, then restores. */
 const COORDINATOR_READY_TIMEOUT_MS = 120_000;
 const CHANGE_DEADLINE_MS = COORDINATOR_READY_TIMEOUT_MS * 2 + 60_000;
 /** How long a finished job stays in the status, so the owner sees how it ended. */
 const RESULT_MS = 24 * 60 * 60_000;
 const RETAINED_JOBS = 20;
+/** Dispatch reviews that may fail to run before an approved broker change fails. */
+const REVIEW_ATTEMPTS = 3;
 
 const SettingsRecordSchema = CoordinatorSettingsJobSchema.extend({
   /** The exact patch, values included. Never leaves the coordinator. */
   patch: z.record(z.string(), z.unknown()),
   /** SHA-256 of the configuration written in place, once the change started. */
   appliedSha256: z.string().optional(),
+  /** Dispatch reviews that could not run, such as a Docker inspection timeout. */
+  reviewAttempts: z.number().int().nonnegative().optional(),
 });
 type SettingsRecord = z.infer<typeof SettingsRecordSchema>;
 
@@ -144,7 +155,8 @@ export interface CoordinatorSettingsPorts {
     keys: BrokerSetting[];
     current: string;
     candidate: string;
-  }): Promise<Record<string, CoordinatorSettingField[]>>;
+    phase: "request" | "dispatch";
+  }): Promise<BrokerSettingsReviewResult>;
   deadlineMs: number;
   warn(message: string): void;
 }
@@ -171,7 +183,7 @@ function merge(text: string, patch: Record<string, unknown>): string {
 }
 
 function project(record: SettingsRecord): CoordinatorSettingsJob {
-  const { patch: _patch, appliedSha256: _applied, ...job } = record;
+  const { patch: _patch, appliedSha256: _applied, reviewAttempts: _attempts, ...job } = record;
   return job;
 }
 
@@ -263,9 +275,19 @@ export class CoordinatorSettings {
     if (changed.length === 0) throw new RestartRequestError("The patch changes nothing");
     const brokerKeys = changed.filter(isBrokerSetting);
     let fields: Record<string, CoordinatorSettingField[]> = {};
+    let patch = input.patch;
     if (brokerKeys.length > 0) {
       try {
-        fields = await this.ports.reviewBroker({ keys: brokerKeys, current: text, candidate });
+        const review = await this.ports.reviewBroker({
+          keys: brokerKeys,
+          current: text,
+          candidate,
+          phase: "request",
+        });
+        fields = review.fields;
+        // The coordinator fills in values it derives itself, such as the minted scope digest.
+        patch = { ...patch, ...review.values };
+        this.ports.validate(merge(text, patch));
       } catch (error) {
         throw new RestartRequestError(`The broker settings were refused: ${message(error)}`);
       }
@@ -276,7 +298,7 @@ export class CoordinatorSettings {
           "The coordinator configuration changed since the patch was prepared. Fetch the base hash again.",
         );
     }
-    const changes = changed.map((key) => this.change(key, current[key], input.patch[key], fields));
+    const changes = changed.map((key) => this.change(key, current[key], patch[key], fields));
     const record = SettingsRecordSchema.parse({
       id: randomUUID(),
       revision: randomUUID(),
@@ -286,7 +308,7 @@ export class CoordinatorSettings {
       baseSha256: input.baseSha256,
       changes,
       ...(input.requester ? { requester: input.requester } : {}),
-      patch: input.patch,
+      patch,
     });
     this.jobs = [...this.jobs, record];
     this.journal.write(this.jobs);
@@ -304,9 +326,11 @@ export class CoordinatorSettings {
     id: string,
     revision: string,
     decision: CoordinatorSettingsDecision["decision"],
+    client: { reviewedFields?: boolean } = {},
   ): CoordinatorSettingsJob {
     const job = this.reviewed(id, revision);
     if (decision === "approve" && job.status === "pending") {
+      this.refuseBlindApproval(job, client);
       this.refuseStale(job);
       const conflict = this.ports.conflict();
       if (conflict) throw new RestartRequestError(conflict);
@@ -336,12 +360,14 @@ export class CoordinatorSettings {
     id: string,
     revision: string,
     approveFollow: () => CoordinatorFollowJob,
+    client: { reviewedFields?: boolean } = {},
   ): CoordinatorSettingsJob {
     const job = this.reviewed(id, revision);
     if (job.status !== "pending")
       throw new RestartRequestError(
         `A coordinator settings change that is ${job.status} cannot be approved`,
       );
+    this.refuseBlindApproval(job, client);
     this.refuseStale(job);
     const follow = approveFollow();
     return project(
@@ -350,6 +376,18 @@ export class CoordinatorSettings {
         detail: "Approved with the coordinator update. Applies after it succeeds.",
       }),
     );
+  }
+
+  /**
+   * An owner interface that cannot show per-field changes renders reviewed broker keys as
+   * "hidden → changed", so its approval would be blind.
+   */
+  private refuseBlindApproval(job: SettingsRecord, client: { reviewedFields?: boolean }): void {
+    // COMPAT(coordinatorSettingFields): added in 26.11.6, remove after 2027-05-07 once every owner app sends reviewedFields.
+    if (Object.keys(job.patch).some(isBrokerSetting) && client.reviewedFields !== true)
+      throw new RestartRequestError(
+        "Update Vorteo to review these broker settings field by field before approving them.",
+      );
   }
 
   /** Advances a linked approval, starts an approved job or follows a running one. */
@@ -397,27 +435,39 @@ export class CoordinatorSettings {
     const brokerKeys = Object.keys(job.patch).filter(isBrokerSetting);
     if (brokerKeys.length > 0) {
       // Hash and confine every broker file again: one swapped after approval is refused.
+      let review: BrokerSettingsReviewResult;
       try {
         const text = this.ports.readConfig();
-        await this.ports.reviewBroker({
+        review = await this.ports.reviewBroker({
           keys: brokerKeys,
           current: text,
           candidate: merge(text, job.patch),
+          phase: "dispatch",
         });
       } catch (error) {
         const latest = this.jobs.find((item) => item.id === job.id);
-        if (latest?.status === "approved")
-          this.finish(
-            latest,
-            "failed",
-            `The broker settings no longer pass review: ${message(error)}. Nothing was applied.`,
-          );
+        if (latest?.status !== "approved") return;
+        const attempts = (latest.reviewAttempts ?? 0) + 1;
+        // A check that could not run stays approved and runs again on the next drain.
+        if (error instanceof BrokerReviewUnavailable && attempts < REVIEW_ATTEMPTS) {
+          this.save(latest, {
+            reviewAttempts: attempts,
+            detail: `Approved. Waiting to check the broker files again: ${message(error)}`,
+          });
+          return;
+        }
+        this.finish(
+          latest,
+          "failed",
+          `The broker settings no longer pass review: ${message(error)}. Nothing was applied.`,
+        );
         return;
       }
       // The owner may have cancelled, or another restart started, during the review.
       const latest = this.jobs.find((item) => item.id === job.id);
       if (latest?.status !== "approved") return;
-      job = latest;
+      // The participant scope was minted at its recorded path; apply its digest.
+      job = this.save(latest, { patch: { ...latest.patch, ...review.values } });
       const conflict = this.blocker() ?? this.ports.conflict();
       if (conflict) {
         this.finish(job, "failed", conflict);
@@ -606,12 +656,53 @@ export class CoordinatorSettings {
   }
 }
 
-/** Docker mount inspection and executor probes on the macOS Host. */
-const nativeBrokerReview: BrokerSettingsReviewPorts = {
-  writableMountRoots: (connection) => inspectBootstrapWritableMountRoots(connection),
-  coordinatorNode: () => process.execPath,
-  executorInputs: (input) => verifyBrokerExecutorInputs(input),
-};
+/** Docker mount inspection, executor probes and scope writes on the macOS Host. */
+function nativeBrokerReview(directory: string): BrokerSettingsReviewPorts {
+  return {
+    writableMountRoots: (connection) => inspectBootstrapWritableMountRoots(connection),
+    coordinatorNode: () => process.execPath,
+    async executorInputs({ settings, config, writableMountRoots }) {
+      // The deployment executor rereads the candidate as a protected, hash-pinned file.
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const text = `${JSON.stringify(config, null, 2)}\n`;
+      const file = path.join(directory, `coordinator.json.review-${randomUUID()}`);
+      await writeFile(file, text, { mode: 0o600, flag: "wx" });
+      try {
+        await verifyBrokerExecutorInputs({
+          settings,
+          config,
+          configurationFile: { path: await realpath(file), sha256: sha256(text) },
+          writableMountRoots,
+        });
+      } finally {
+        await rm(file, { force: true });
+      }
+    },
+    now: () => new Date(),
+    randomUUID,
+    async bootUUID() {
+      const { stdout } = await execFileAsync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], {
+        env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+        timeout: 10_000,
+      });
+      return stdout.trim();
+    },
+    reviewScopeFile: () => path.join(directory, `participant-scope.review-${randomUUID()}.json`),
+    removeFile: (file) => rm(file, { force: true }),
+    async writeScope(file, text) {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      // Replace atomically beside the pinned path; the rename never follows a planted link.
+      const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}`);
+      await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
+      try {
+        await rename(temporary, file);
+      } catch (error) {
+        await rm(temporary, { force: true });
+        throw error;
+      }
+    },
+  };
+}
 
 /** Why this coordinator cannot change its own configuration, or null. */
 function settingsBlocker(config: InstallationConfig, configFile: string | undefined) {
@@ -708,25 +799,16 @@ export function createCoordinatorSettings(input: {
       });
     },
     outcome: (jobId) => readHandoffOutcome(path.join(work(jobId), "outcome.json")),
-    async reviewBroker({ keys, current, candidate }) {
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      // The deployment executor rereads the candidate as a protected, hash-pinned file.
-      const file = path.join(directory, `coordinator.json.review-${randomUUID()}`);
-      writePrivateFileAtomicSync(file, candidate);
-      try {
-        return await reviewBrokerSettings(
-          {
-            keys,
-            current: InstallationConfigSchema.parse(JSON.parse(current)),
-            candidate: InstallationConfigSchema.parse(JSON.parse(candidate)),
-            candidateFile: { path: realpathSync(file), sha256: sha256(candidate) },
-          },
-          input.brokerReview ?? nativeBrokerReview,
-        );
-      } finally {
-        rmSync(file, { force: true });
-      }
-    },
+    reviewBroker: ({ keys, current, candidate, phase }) =>
+      reviewBrokerSettings(
+        {
+          keys,
+          current: InstallationConfigSchema.parse(JSON.parse(current)),
+          candidate: InstallationConfigSchema.parse(JSON.parse(candidate)),
+          phase,
+        },
+        input.brokerReview ?? nativeBrokerReview(directory),
+      ),
     deadlineMs: CHANGE_DEADLINE_MS,
     warn: input.warn,
   });
