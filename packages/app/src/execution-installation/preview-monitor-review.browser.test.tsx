@@ -46,7 +46,10 @@ vi.mock("./client", () => ({
 }));
 // Upgrades and snapshots are covered by their own tests and need a query client.
 vi.mock("./safety-snapshots", () => ({ SafetySnapshotsCard: () => null }));
-vi.mock("./installation-upgrade-card", () => ({ InstallationUpgradeCard: () => null }));
+vi.mock("./installation-upgrade-card", () => ({
+  InstallationUpgradeCard: () => null,
+  CoordinatorFollowCard: () => null,
+}));
 vi.mock("./policy", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./policy")>()),
   readExecutionInstallation: () => ({ environments: [] }),

@@ -154,6 +154,33 @@ A Dev container added later needs: a `container` block and public `container` en
 
 Installation controls offer an upgrade to the latest GitHub release of `terran-labs/vorteo`. The owner reviews and approves it; the approval binds the commit the tag named. The coordinator then takes a snapshot, fetches the tag into `deployment.sourceDirectory`, stages it as an approved Host source update (the existing build, Host restart and interface publication), repoints the coordinator release link and restarts the coordinator through a detached helper that restores the previous link if the new coordinator does not answer within two minutes, and, with a Dev container, moves Dev to the release as described in [Dev releases](#dev-releases). On an installer-made Host whose installer engine supports `host-release --build-only`, the Host step first builds the Host release without restarting, then builds Dev's release or image from it, and restarts the Host only once both builds have passed. A failed build, or one with no result after two hours, ends the upgrade with nothing restarted; Dev's deployment scripts are refreshed only in the Dev step, and an image built early is tagged `vorteo-dev:<commit>` and rebuilt if Docker pruned it. Older engines and restart-queue Hosts build and restart the Host together as before. Each step is journaled in `<stateDir>/upgrades/journal.json` and resumes after a restart. The release must contain the installed Host commit.
 
+Host source updates repoint only the Host release link, and an installation that tracks `main` never receives release tags, so its coordinator would stay on an older release. When the coordinator link or the running coordinator differs from the selected Host release and that release contains the coordinator, Installation controls offer **Update the coordinator**. The owner approves a job bound to the exact Host release reviewed; approval is refused if the Host release changed since, or while a release upgrade or lab self-update is active. The job then runs the release upgrade's coordinator swap, with the same two-minute readiness check and automatic rollback, journaled in `<stateDir>/coordinator-follow/journal.json` before each effect. Agents keep running, and `update-status` reports the job read-only. This is the supported way to move an installer-layout coordinator onto a Host source update's release; do not use plan-folder renewal on these installations. The offer needs a coordinator service that starts through its release link. It is unavailable for one that starts a fixed release, and it fails a swap after which the coordinator still runs its previous release, because a new process alone does not prove the move.
+
+Use **Update the coordinator** whenever Installation controls offer it. Run the installer's `coordinator-follow` command instead when the coordinator runs a release from before that offer, so Installation controls cannot show it. The command exists only in Host releases installed by the Host source update that ships it, so run it from the installed Host release, on the Host, in a terminal, like `install.sh`. Keep the terminal open; if it is interrupted, run the same command again. First check, which changes nothing:
+
+```sh
+node "$(realpath ~/.local/share/vorteo-host/current)/scripts/installer/main.mjs" coordinator-follow --check --root ~/.local/share/vorteo-host
+```
+
+Then move the coordinator:
+
+```sh
+node "$(realpath ~/.local/share/vorteo-host/current)/scripts/installer/main.mjs" coordinator-follow --root ~/.local/share/vorteo-host
+```
+
+These paths are for an installation rooted at `~/.local/share/vorteo-host`. Elsewhere, use its root and the Host release link recorded as `deployment.hostReleaseLink` in `<root>/coordinator.json`.
+
+The command refuses, and changes nothing, while any of these holds:
+
+- A restart or other maintenance job is approved or running. This includes a restart approved to wait until agents are idle, which can block the command for a long time; cancel it or let it run first.
+- A native helper, preview broker or preview monitor job is still preparing, or a Dev repair's last attempt is preparing.
+- A coordinator update from Installation controls is pending, approved or running, or an owner-reviewed coordinator request is still open.
+- A custom domain change has started and not reported an outcome, for up to five minutes.
+- A lab update or an interface release upgrade is approved or running.
+- The coordinator service starts a fixed release instead of the coordinator link. Moving the link would not move it, so neither this command nor **Update the coordinator** can; report it.
+
+It checks again immediately before it moves the link. It then repoints the coordinator link, prints `Restarting the coordinator now. Running Host and Dev agents keep working; Installation controls and agent maintenance requests pause until it answers.`, and restarts only the coordinator service; the Host daemon, session host and Dev keep running. The coordinator is ready when a new, unfenced coordinator process answers within two minutes and the same process still answers 15 seconds later. Otherwise the command returns the link to the previous release and restarts that. A closed terminal does not interrupt this switch: the command finishes the check or the rollback, then exits. `<root>/state/coordinator-follow.json` lets a rerun resume. Owner-reviewed coordinator updates cannot do this move: they require canonical release paths and a launcher whose arguments name them exactly, so they cannot describe a service that starts through a link.
+
 <a id="release-updates"></a>
 
 #### Release updates

@@ -93,7 +93,7 @@ import {
 import { installationHasDev, readExecutionInstallation } from "./policy";
 import { InstallationClient, requestInstallationOwner, hasInstallationConnections } from "./client";
 import { SafetySnapshotsCard } from "./safety-snapshots";
-
+import { CoordinatorFollowCard } from "./installation-upgrade-card";
 import {
   InstallationPanelModel,
   restartRequestSummary,
@@ -597,7 +597,12 @@ function InstallationSystemDetailsBody({
                 This restart request is no longer available.
               </Text>
             ) : null}
-            {target === "host" ? <SafetySnapshotsCard client={panelClient} /> : null}
+            {target === "host" ? (
+              <>
+                <SafetySnapshotsCard client={panelClient} />
+                <CoordinatorFollowCard client={panelClient} />
+              </>
+            ) : null}
             {hasDev && target === "host" ? (
               <View style={[styles.cardBody, settingsStyles.rowBorder]}>
                 <View style={styles.requestHeader}>
